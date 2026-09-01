@@ -1,4 +1,4 @@
-"""BDD coverage for the qwen drainer's database-backed seams."""
+"""BDD coverage for the Luna drainer's database-backed seams."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def _create_session(
         local_session_id,
         "/workspace",
         "main",
-        model="qwen",
+        model="luna",
         repo="jomcgi-org/homelab",
     )
     assert row.id is not None

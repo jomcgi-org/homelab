@@ -106,8 +106,8 @@ runtimeClassName: nvidia
 # the monolith's Discord, summarize, chat, vision and classifier callsites,
 # monolith-dev, and EmberVM pi-runtime qwen sessions. They fail at DNS, so
 # expect fast errors and dead letters rather than hangs. The Service rename
-# also takes public /health unhealthy: the inference component in
-# chat_public/health.py and the ember_qwen synthetic both depend on that lane.
+# also takes public /health unhealthy through the inference component in
+# chat_public/health.py.
 # Embeddings are untouched, so retrieval keeps working.
 #
 # The Service rename does not roll the pod (the Deployment name is unchanged),

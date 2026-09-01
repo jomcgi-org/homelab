@@ -17,17 +17,6 @@ from ember_public.synthetic import read_probe
 # prober still surfaces.
 EMBER_SYNTHETIC_STALENESS_S = 750.0
 
-# The qwen session synthetic is a SEPARATE CronWorkflow
-# (ember-qwen-session-synthetic) on an HOURLY schedule, deliberately not folded
-# into the 5-minute run: it cold-boots a real EmberVM guest and runs a full
-# agent turn, which is not something to do twice a minute.
-#
-# It therefore must NOT reuse EMBER_SYNTHETIC_STALENESS_S. At 750s an hourly
-# latch is stale 12.5 minutes into every hour, so the component would report
-# "prober may be dead" for roughly 80% of the time it is working perfectly.
-# Same 2.5x rule, applied to the cadence this probe actually has.
-EMBER_QWEN_STALENESS_S = 9000.0
-
 
 def synthetic_probe_health(demo: str, staleness_s: float):
     """Build a health component backed by one synthetic probe latch row."""

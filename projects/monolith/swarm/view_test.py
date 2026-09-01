@@ -923,7 +923,7 @@ def test_composed_prose_carries_no_machine_formatting():
 def test_compose_master_skips_non_run_workflows():
     """A drain_cycle workflow in the registry must not 500 the master view.
 
-    Regression for the qwen drainer rollout: drain_cycle rows are top-level
+    Regression for the Luna drainer rollout: drain_cycle rows are top-level
     DBOS workflows with an empty input, and compose_master's title line
     (`task.text.splitlines()[0]`) raised IndexError on them, taking down
     GET /api/swarm/runs entirely.

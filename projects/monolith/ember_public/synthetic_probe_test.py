@@ -159,35 +159,6 @@ async def test_postgres_aggregate_roundtrip_success(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_qwen_requires_completed_nonempty_turn(monkeypatch):
-    class Turn:
-        terminal_reason = "stop"
-        result = " qwen synthetic ok "
-
-    async def run_session(*_, **__):
-        return Turn()
-
-    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
-    result = await probe.probe_qwen()
-    assert result["ok"] is True
-    assert result["detail"].startswith("completed,")
-
-
-@pytest.mark.asyncio
-async def test_qwen_failure_is_latched_in_band(monkeypatch):
-    async def run_session(*_, **__):
-        raise RuntimeError("llama.cpp rejected absolute-form target")
-
-    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
-    result = await probe.probe_qwen()
-    assert result == {
-        "ok": False,
-        "detail": "llama.cpp rejected absolute-form target",
-        "latency_ms": None,
-    }
-
-
-@pytest.mark.asyncio
 async def test_page_5xx_retried_once_then_failed(monkeypatch):
     class Response:
         status_code = 503

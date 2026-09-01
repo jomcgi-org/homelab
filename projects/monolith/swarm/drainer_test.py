@@ -110,7 +110,7 @@ def test_drain_cycle_claims_then_completes(monkeypatch):
         (
             "workflow-1:qwen-drain:job-1",
             "do work",
-            "qwen",
+            "luna",
             "jomcgi-org/homelab",
             "main",
             "workflow-1",
@@ -129,7 +129,7 @@ def test_drain_cycle_claims_then_completes(monkeypatch):
     [
         # No key in the payload takes the lane default, which is what every
         # registered job does today. Before this defaulted from settings the
-        # answer was always False, and thinking off is what makes qwen loop.
+        # answer was always False, so the configured Luna lane default was lost.
         (None, True, True),
         (None, False, False),
         # An explicit per-job value still wins over the lane default in both

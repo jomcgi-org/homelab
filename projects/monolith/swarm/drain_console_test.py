@@ -25,7 +25,7 @@ def _job(**overrides) -> dict:
 class TestJobState:
     def test_live_lock_is_running(self):
         job = _job(
-            locked_by="qwen-drainer",
+            locked_by="luna-drainer",
             locked_at=NOW - timedelta(seconds=60),
             next_run_at=NOW - timedelta(hours=1),
         )
@@ -35,7 +35,7 @@ class TestJobState:
         # The reclaimable case: the claim predicate ignores a dead lock, so
         # the console must not render it as running.
         job = _job(
-            locked_by="qwen-drainer",
+            locked_by="luna-drainer",
             locked_at=NOW - timedelta(seconds=3000),
             next_run_at=NOW - timedelta(hours=1),
         )
@@ -187,7 +187,7 @@ class TestComposeJobs:
             _job(name="due-a", next_run_at=NOW - timedelta(minutes=30)),
             _job(
                 name="live",
-                locked_by="qwen-drainer",
+                locked_by="luna-drainer",
                 locked_at=NOW,
                 next_run_at=NOW - timedelta(minutes=2),
             ),

@@ -27,7 +27,7 @@ describe("agents data poll endpoint", () => {
     globalThis.fetch = vi.fn(async (url) =>
       jsonResponse(
         String(url).includes("models")
-          ? { models: [{ name: "qwen", family: "pi" }] }
+          ? { models: [{ name: "luna", family: "codex" }] }
           : sessions,
       ),
     );
@@ -37,7 +37,7 @@ describe("agents data poll endpoint", () => {
 
     expect(res.status).toBe(200);
     expect(body.sessions).toEqual(sessions);
-    expect(body.models).toEqual([{ name: "qwen", family: "pi" }]);
+    expect(body.models).toEqual([{ name: "luna", family: "codex" }]);
   });
 
   it("serves an empty catalogue as empty rather than a bundled list", async () => {

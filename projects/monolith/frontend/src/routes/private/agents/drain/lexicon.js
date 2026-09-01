@@ -4,7 +4,7 @@
 // grown onto RUN_LEXICON because the two surfaces share no strings.
 export const DRAIN_LEXICON = {
   labels: {
-    title: "qwen drain",
+    title: "luna drain",
     backToAgents: "agents",
     kick: "run a cycle now",
     kicking: "kicking",

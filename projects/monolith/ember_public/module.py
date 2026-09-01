@@ -7,11 +7,7 @@ demos/module.py.
 
 import ember_public as _domain
 from ember_public.durability import build_durability_health
-from ember_public.health import (
-    EMBER_QWEN_STALENESS_S,
-    EMBER_SYNTHETIC_STALENESS_S,
-    synthetic_probe_health,
-)
+from ember_public.health import EMBER_SYNTHETIC_STALENESS_S, synthetic_probe_health
 
 from framework import Module as _Module
 
@@ -35,11 +31,6 @@ MODULE = _Module(
         "ember_postgres": synthetic_probe_health(
             "postgres", EMBER_SYNTHETIC_STALENESS_S
         ),
-        # The qwen session synthetic. probe_qwen has been writing this latch
-        # since it landed, but nothing read it, so a failing qwen turn was
-        # invisible to health. Registered here on its OWN staleness because its
-        # CronWorkflow is hourly, not the 5-minute one (see EMBER_QWEN_*).
-        "ember_qwen": synthetic_probe_health("qwen", EMBER_QWEN_STALENESS_S),
         **({"ember-durability": _DURABILITY_CHECK} if _DURABILITY_CHECK else {}),
     },
 )

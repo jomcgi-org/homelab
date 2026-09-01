@@ -274,38 +274,6 @@ async def probe_postgres() -> dict:
     return await _retry_probe(_probe_postgres_once)
 
 
-async def probe_qwen() -> dict:
-    """Exercise a real pi-family session through the EmberVM egress path."""
-    started = perf_counter()
-    try:
-        from agent_sessions.api import run_synthetic_session
-        from agent_sessions.constants import QWEN_SYNTHETIC_PROMPT
-
-        turn = await run_synthetic_session(
-            QWEN_SYNTHETIC_PROMPT,
-            model="qwen",
-        )
-        if turn.terminal_reason not in {"completed", "stop"}:
-            return {
-                "ok": False,
-                "detail": f"turn reason {turn.terminal_reason!r}",
-                "latency_ms": (perf_counter() - started) * 1000,
-            }
-        if not turn.result.strip():
-            return {
-                "ok": False,
-                "detail": "completed turn had an empty result",
-                "latency_ms": (perf_counter() - started) * 1000,
-            }
-        return {
-            "ok": True,
-            "detail": f"completed, destroyed, {(perf_counter() - started) * 1000:.0f}ms",
-            "latency_ms": (perf_counter() - started) * 1000,
-        }
-    except Exception as exc:  # noqa: BLE001 - probes report failures in-band
-        return _failure(exc)
-
-
 def _record_sync(demo: str, result: dict) -> None:
     now = datetime.now(timezone.utc)
     with Session(get_engine()) as session:  # jobs use the private app-role DATABASE_URL

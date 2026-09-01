@@ -1694,12 +1694,12 @@ class TestStartAgentFlowOrchestrator:
                 offered_models(env_value)
             ), f"AGENT_MODELS={configured!r}"
 
-        # The universe itself cannot drift from what model_family accepts,
-        # and Discord caps a slash-command choice list at 25.
+        # Every offered model must be accepted by model_family, and Discord
+        # caps a slash-command choice list at 25.
         assert tuple(_ALL_AGENT_MODEL_CHOICES) == tuple(SUPPORTED_MODELS)
         assert 0 < len(AGENT_MODEL_CHOICES) <= 25
         for name in AGENT_MODEL_CHOICES:
-            assert model_family(name) in {"codex", "claude", "pi"}
+            assert model_family(name) in {"codex", "claude"}
 
     @pytest.mark.asyncio
     async def test_plan_verdict_opens_thread_and_submits_raw_prompt(

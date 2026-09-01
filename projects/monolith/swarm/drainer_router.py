@@ -99,7 +99,7 @@ def _reap_stale_drain_cycles(dbos) -> int:
                 # Leaving a genuinely wedged cycle for the next tick is cheap;
                 # cancelling a live one destroys its guest and re-runs its job.
                 logger.warning(
-                    "qwen drainer could not read steps for %s, skipping reap",
+                    "Luna drainer could not read steps for %s, skipping reap",
                     workflow_uuid,
                     exc_info=True,
                 )
@@ -124,20 +124,20 @@ def _reap_stale_drain_cycles(dbos) -> int:
                     asyncio.run(reap_sessions_for_workflow(workflow_uuid))
 
                     logger.warning(
-                        "qwen drainer reaped stale workflow %s (%.0f seconds stale)",
+                        "Luna drainer reaped stale workflow %s (%.0f seconds stale)",
                         workflow_uuid,
                         age_seconds,
                     )
                     reaped += 1
                 except Exception:  # noqa: BLE001
                     logger.warning(
-                        "qwen drainer failed to reap workflow %s",
+                        "Luna drainer failed to reap workflow %s",
                         workflow_uuid,
                         exc_info=True,
                     )
     except Exception:  # noqa: BLE001
         logger.warning(
-            "qwen drainer workflow query failed",
+            "Luna drainer workflow query failed",
             exc_info=True,
         )
 
@@ -207,7 +207,7 @@ def _reap_version_stranded_cycles(dbos) -> int:
             try:
                 dbos.cancel_workflow(workflow.workflow_id, cancel_children=True)
                 logger.warning(
-                    "qwen drainer cancelled version-stranded cycle %s "
+                    "Luna drainer cancelled version-stranded cycle %s "
                     "(enqueued at version %s, running %s)",
                     workflow.workflow_id,
                     version,
@@ -216,12 +216,12 @@ def _reap_version_stranded_cycles(dbos) -> int:
                 reaped += 1
             except Exception:  # noqa: BLE001
                 logger.warning(
-                    "qwen drainer failed to cancel stranded cycle %s",
+                    "Luna drainer failed to cancel stranded cycle %s",
                     workflow.workflow_id,
                     exc_info=True,
                 )
     except Exception:  # noqa: BLE001
-        logger.warning("qwen drainer stranded-cycle query failed", exc_info=True)
+        logger.warning("Luna drainer stranded-cycle query failed", exc_info=True)
 
     return reaped
 
@@ -248,7 +248,7 @@ def _has_live_drain_cycle() -> bool:
         return len(workflows) > 0
     except Exception:  # noqa: BLE001
         logger.warning(
-            "qwen drainer status check failed",
+            "Luna drainer status check failed",
             exc_info=True,
         )
         # On error, assume there is NOT a live cycle to be conservative and allow

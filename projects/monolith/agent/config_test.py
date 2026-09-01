@@ -51,9 +51,8 @@ def test_drainer_defaults(monkeypatch):
     assert settings.repo == GITHUB_REPO
     assert settings.repo in REPO_CATALOG
     assert settings.branch == "main"
-    # Unlike the pi lane's own default, this one is on: drain jobs are
-    # multi-step repo audits and thinking off makes qwen loop until the
-    # context window fills.
+    # Luna drain jobs are usually multi-step repo audits, so high reasoning is
+    # the lane default while payloads can still opt out.
     assert settings.reasoning is True
 
 

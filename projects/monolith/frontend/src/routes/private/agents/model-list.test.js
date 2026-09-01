@@ -6,14 +6,14 @@ describe("modelEntries", () => {
   it("passes through the catalogue the endpoint returned", () => {
     const entries = [
       { name: "luna", family: "codex" },
-      { name: "qwen", family: "pi" },
+      { name: "opus", family: "claude" },
     ];
 
     expect(modelEntries({ models: entries })).toEqual(entries);
   });
 
   it("accepts bare-string entries", () => {
-    expect(modelEntries({ models: ["qwen"] })).toEqual(["qwen"]);
+    expect(modelEntries({ models: ["luna"] })).toEqual(["luna"]);
   });
 
   it("renders an empty response as an EMPTY catalogue, never a fallback", () => {
@@ -23,7 +23,7 @@ describe("modelEntries", () => {
   it("treats a missing or malformed list as empty", () => {
     expect(modelEntries(undefined)).toEqual([]);
     expect(modelEntries({})).toEqual([]);
-    expect(modelEntries({ models: "qwen" })).toEqual([]);
+    expect(modelEntries({ models: "luna" })).toEqual([]);
   });
 
   it("drops entries without a usable name", () => {
@@ -41,8 +41,8 @@ describe("modelName / modelLabel", () => {
     expect(modelName("luna")).toBe("luna");
   });
 
-  it("labels only the free in-cluster pi lane as local", () => {
-    expect(modelLabel({ name: "qwen", family: "pi" })).toBe("qwen (local)");
+  it("uses canonical model names for labels", () => {
+    expect(modelLabel({ name: "luna", family: "codex" })).toBe("luna");
     expect(modelLabel({ name: "opus", family: "claude" })).toBe("opus");
     expect(modelLabel({ name: "sol" })).toBe("sol");
   });

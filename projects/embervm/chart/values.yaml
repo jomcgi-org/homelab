@@ -1897,14 +1897,12 @@ claudeRuntimeWorkload:
 # claude-runtime (vsock 1027, /shim/ready, invoke at /shim/turn) served by the
 # SAME shim, from an image carrying only the pi CLI (runtimes/pi).
 #
-# THE NAMED CONSUMER IS THE SYNTHETIC PROBE. The monolith maps model `qwen` to
-# family `pi` (agent_sessions/__init__.py), and ember_public's probe_qwen runs
-# one trivial turn HOURLY, from its own ember-qwen-session-synthetic
-# CronWorkflow. It is NOT part of the */5 ember-synthetic run: that one covers
-# bazel, semgrep, pages and postgres only. Read the CronWorkflow rather than
-# this comment if the cadence matters to you. Served on claude-runtime that is
-# a 4096 MiB cold boot of a guest holding a 262 MB Node ELF and a 114 MB codex
-# binary the turn can never invoke. Here it is 256 MiB.
+# The monolith still maps explicitly requested qwen sessions to family `pi`
+# (agent_sessions/__init__.py), so this workload remains enabled for persisted
+# sessions and direct callers. Production no longer offers qwen in its agent
+# catalogue, and neither the queue drainer nor an EmberVM session synthetic
+# consumes this lane. Served on claude-runtime, a qwen session would cold-boot
+# a 4096 MiB guest holding CLIs it cannot invoke. Here it is 256 MiB.
 #
 # WHY 256 MiB HOLDS, and where it stops holding. What lives in guest RAM is the
 # Bun-compiled pi binary, the stdlib-python shim, and the tmpfs the guest-init

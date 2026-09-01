@@ -59,7 +59,7 @@ DEFAULT_AGENT_MODEL = "luna"
 # supported_models) in a target that already depends on both, and the filter
 # below mirroring agent_sessions.offered_models, which the same test checks
 # for behavioural equality across env settings.
-_ALL_AGENT_MODEL_CHOICES = ("luna", "terra", "sol", "opus", "sonnet", "fable", "qwen")
+_ALL_AGENT_MODEL_CHOICES = ("luna", "terra", "sol", "opus", "sonnet", "fable")
 
 
 def _filter_agent_models(models, configured: str) -> tuple:
@@ -77,8 +77,8 @@ def _filter_agent_models(models, configured: str) -> tuple:
 
 # Per-env narrowing (issue #4859), read at import like the rest of this
 # module's config: AGENT_MODELS is a comma-separated subset; empty or unset
-# offers everything. Wired from chart value agents.models so dev offers only
-# what it routes (the free qwen lane) without shipping a different image.
+# offers everything. Wired from chart value agents.models so each deployment
+# can narrow the shared image's picker without shipping a different image.
 AGENT_MODEL_CHOICES = _filter_agent_models(
     _ALL_AGENT_MODEL_CHOICES, os.environ.get("AGENT_MODELS", "")
 )

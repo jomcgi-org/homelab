@@ -1,4 +1,4 @@
-"""HTTP surface for the qwen drain console (/api/agents/drain).
+"""HTTP surface for the Luna drain console (/api/agents/drain).
 
 Reads live in the database because that is where the drainer's truth lives:
 routine_jobs carries the queue and outcomes, the DBOS system tables carry

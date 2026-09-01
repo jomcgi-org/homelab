@@ -621,7 +621,7 @@ def compose_master(
         kwargs.update(limit=limit, sort_desc=True)
     statuses = list(dbos.list_workflows(**kwargs) or [])
 
-    # The DBOS registry also holds non-run workflows (the qwen drain_cycle),
+    # The DBOS registry also holds non-run workflows (the Luna drain_cycle),
     # whose input has none of the run shape compose_run assumes. A workflow
     # that names itself something other than implement_then_review is not a
     # swarm run; one with no name at all is kept and the per-run shape guard

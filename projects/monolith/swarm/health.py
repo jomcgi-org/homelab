@@ -1,4 +1,4 @@
-"""Advisory health for the serial qwen routine-job drainer.
+"""Advisory health for the serial Luna routine-job drainer.
 
 This advisory is read by the private /api/health endpoint; alert wiring is
 tracked in #5328.
