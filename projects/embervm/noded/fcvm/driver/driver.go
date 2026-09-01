@@ -386,6 +386,17 @@ func (d *Driver) VsockUDSPath(threadID string) string {
 	return filepath.Join(d.threadDir(threadID), "vsock.sock")
 }
 
+// StatefulAPISocketPath returns the live Firecracker API socket for h. An empty
+// result means the driver no longer supervises the handle.
+func (d *Driver) StatefulAPISocketPath(h substrate.Handle) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if inst := d.live[h.ID]; inst != nil {
+		return inst.sock
+	}
+	return ""
+}
+
 // removeStaleVsockUDS unlinks any leftover vsock unix-domain socket before a
 // (re)launch. Firecracker *binds* the vsock UDS on PUT /vsock, and bind() fails
 // with EADDRINUSE when the path already exists. A thread's bundle dir lives on

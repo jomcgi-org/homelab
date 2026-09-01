@@ -99,6 +99,7 @@ defmodule Embervm.StatefulManagerTest do
           :evict_artifact_fun,
           :node_confirmed_destroy,
           :destroying_alarm_ms,
+          :destroying_escape_ms,
           :orphan_grace_ms
         ])
 
@@ -1486,6 +1487,104 @@ defmodule Embervm.StatefulManagerTest do
 
     assert [instance] = StatefulStore.list(ctx.store, "wl-a")
     assert instance.state == :destroyed
+  end
+
+  describe "bounded destroying escape" do
+    test "missing owner report fails the instance only after the configured budget" do
+      {:ok, manager_clock} = Agent.start_link(fn -> 1_000 end)
+
+      ctx =
+        start_stack(
+          node_confirmed_destroy: true,
+          clock: fn -> Agent.get(manager_clock, & &1) end,
+          destroying_escape_ms: 100,
+          stop_stateful_fun: fn _ch, _req -> {:ok, %{teardown_confirmed: false}} end
+        )
+
+      stateful_workload(ctx, "wl-a")
+      stateful_node(ctx, "node-4")
+      assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+      assert %{destroyed: 0, evicted: 0} = StatefulManager.destroy_instance(ctx.mgr, "wl-a")
+
+      NodeCapacity.drop(ctx.cap_table, "node-4")
+      Agent.update(manager_clock, &(&1 + 99))
+      :ok = StatefulManager.reconcile(ctx.mgr)
+      assert [instance] = StatefulStore.list(ctx.store, "wl-a")
+      assert instance.state == :destroying
+
+      Agent.update(manager_clock, &(&1 + 1))
+      :ok = StatefulManager.reconcile(ctx.mgr)
+      assert [instance] = StatefulStore.list(ctx.store, "wl-a")
+      assert instance.state == :failed
+      assert instance.terminal_reason == "destroy_owner_absent_timeout"
+    end
+
+    test "an owner report that still contains the VM preserves redrive behavior past the budget" do
+      {:ok, manager_clock} = Agent.start_link(fn -> 1_000 end)
+
+      ctx =
+        start_stack(
+          node_confirmed_destroy: true,
+          clock: fn -> Agent.get(manager_clock, & &1) end,
+          destroying_escape_ms: 100,
+          stop_stateful_fun: fn _ch, _req -> {:ok, %{teardown_confirmed: false}} end
+        )
+
+      stateful_workload(ctx, "wl-a")
+      stateful_node(ctx, "node-4")
+      assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+      assert %{destroyed: 0, evicted: 0} = StatefulManager.destroy_instance(ctx.mgr, "wl-a")
+      assert [instance] = StatefulStore.list(ctx.store, "wl-a")
+
+      stateful_node(ctx, "node-4",
+        stateful_vms: [
+          %{
+            vm_id: instance.vm_id,
+            workload: "wl-a",
+            ip: "10.88.0.5",
+            port: 5432,
+            healthy: true,
+            generation: 1,
+            last_probe_unix_ms: 1
+          }
+        ]
+      )
+
+      Agent.update(manager_clock, &(&1 + 100))
+      :ok = StatefulManager.reconcile(ctx.mgr)
+      assert {:ok, %{state: :destroying}} = StatefulStore.get(ctx.store, instance.instance_id)
+    end
+
+    test "a persistent destroying instance re-alarms once per alarm interval" do
+      {:ok, manager_clock} = Agent.start_link(fn -> 1_000 end)
+
+      ctx =
+        start_stack(
+          node_confirmed_destroy: true,
+          clock: fn -> Agent.get(manager_clock, & &1) end,
+          destroying_alarm_ms: 100,
+          destroying_escape_ms: 10_000,
+          stop_stateful_fun: fn _ch, _req -> {:ok, %{teardown_confirmed: false}} end
+        )
+
+      stateful_workload(ctx, "wl-a")
+      stateful_node(ctx, "node-4")
+      assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+      assert %{destroyed: 0, evicted: 0} = StatefulManager.destroy_instance(ctx.mgr, "wl-a")
+      assert [instance] = StatefulStore.list(ctx.store, "wl-a")
+      NodeCapacity.drop(ctx.cap_table, "node-4")
+
+      Agent.update(manager_clock, &(&1 + 100))
+      :ok = StatefulManager.reconcile(ctx.mgr)
+      assert :sys.get_state(ctx.mgr).destroying_alarmed[instance.instance_id] == 1_100
+
+      :ok = StatefulManager.reconcile(ctx.mgr)
+      assert :sys.get_state(ctx.mgr).destroying_alarmed[instance.instance_id] == 1_100
+
+      Agent.update(manager_clock, &(&1 + 100))
+      :ok = StatefulManager.reconcile(ctx.mgr)
+      assert :sys.get_state(ctx.mgr).destroying_alarmed[instance.instance_id] == 1_200
+    end
   end
 
   test "gate-off destroy records destroyed before an unconfirmed teardown" do

@@ -74,6 +74,10 @@ type statefulDriver interface {
 	// StatefulDir is the directory holding banked stateful bundles, rescanned
 	// on start.
 	StatefulDir() string
+	// StatefulAPISocketPath returns the Firecracker API socket for a live handle.
+	// The wake path uses a connect probe to reject stale registry entries whose
+	// process has died without running normal teardown.
+	StatefulAPISocketPath(substrate.Handle) string
 }
 
 // statefulEntry is one LIVE stateful microVM the daemon supervises (R4). Like a

@@ -29,6 +29,10 @@ defmodule Embervm.LogFormatter do
     :error,
     # CapacityObserver metadata.
     :instance_id,
+    :vm_id,
+    :elapsed_ms,
+    :alarm_threshold_ms,
+    :escape_threshold_ms,
     :size_class,
     :mem_budget_mib,
     :mem_headroom_mib,

@@ -218,6 +218,11 @@ defmodule Embervm.StatefulState do
     {:relighting, :begin_destroy} => :destroying,
     {:cold_booting, :begin_destroy} => :destroying,
     {:destroying, :destroy} => :destroyed,
+    # A bounded owner-report absence cannot truthfully confirm teardown. Fail the
+    # lifecycle instead, preserving `destroyed` for node-confirmed teardown while
+    # releasing the singleton gate. stateful_destroy_escape_unsafe.cfg models the
+    # rejected alternative and violates NoDestroyBeforeConfirm.
+    {:destroying, :fail} => :failed,
     # Fail (daemon transport/timeout, readiness timeout, unrestorable snapshot,
     # repeated bank failure): from every LIVE state that touches the daemon. banked
     # cannot `fail` (it holds no VM); a broken banked bundle `evict`s, it does not

@@ -1254,6 +1254,52 @@ defmodule Embervm.StatefulSweeperTest do
     assert {"wl-i", :abort} in resolved_notes(ctx)
   end
 
+  describe "checkpoint failure backoff" do
+    test "persistent CHECKPOINT errors retry at exponential injected-clock spacing" do
+      ctx = start_stack(bank_backoff_base_ms: 1_000, bank_backoff_cap_ms: 4_000)
+
+      :sys.replace_state(ctx.sweeper, fn state ->
+        %{
+          state
+          | stop_stateful_fun: fn _channel, req ->
+              Agent.update(ctx.stop_calls, &[req | &1])
+              {:error, :checkpoint_boom}
+            end
+        }
+      end)
+
+      prefix = prime_idle_interruptible(ctx, "wl-i", 5400, "sf-1", "vm-1")
+      checkpoint_calls = fn -> Enum.count(stop_calls(ctx), &(&1.mode == :STOP_STATEFUL_MODE_CHECKPOINT)) end
+
+      advance(ctx.clock_agent, 65_000)
+      set_scrape(ctx, reading(prefix, 0, 3))
+      StatefulSweeper.sweep(ctx.sweeper)
+      wait_until(ctx, fn -> checkpoint_calls.() == 1 end)
+      assert match?({:ok, %{state: :serving}}, StatefulStore.get(ctx.store, "sf-1"))
+      assert :sys.get_state(ctx.sweeper).bank_backoff["wl-i"] == {81_000, 1_000}
+
+      advance(ctx.clock_agent, 999)
+      StatefulSweeper.sweep(ctx.sweeper)
+      flush(ctx)
+      assert checkpoint_calls.() == 1
+
+      advance(ctx.clock_agent, 1)
+      StatefulSweeper.sweep(ctx.sweeper)
+      wait_until(ctx, fn -> checkpoint_calls.() == 2 end)
+      assert :sys.get_state(ctx.sweeper).bank_backoff["wl-i"] == {83_000, 2_000}
+
+      advance(ctx.clock_agent, 1_999)
+      StatefulSweeper.sweep(ctx.sweeper)
+      flush(ctx)
+      assert checkpoint_calls.() == 2
+
+      advance(ctx.clock_agent, 1)
+      StatefulSweeper.sweep(ctx.sweeper)
+      wait_until(ctx, fn -> checkpoint_calls.() == 3 end)
+      assert :sys.get_state(ctx.sweeper).bank_backoff["wl-i"] == {87_000, 4_000}
+    end
+  end
+
   test "non-interruptible workload is unchanged: atomic BANK, never CHECKPOINT/ResolveStateful" do
     ctx = start_stack()
     # Default cfg: interruptible_bank absent (false).
