@@ -1221,23 +1221,16 @@ defmodule Embervm.OpLog.Postgres do
   defp project(conn, %Op{kind: :volume_recovery_updated} = op, _seq) do
     payload = op.payload
     sql = """
-    INSERT INTO volumes (workload, node_id, generation, exported_generation, size_bytes, allocated_bytes, created_at, updated_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-    ON CONFLICT(workload) DO UPDATE SET
-      node_id = excluded.node_id,
-      exported_generation = excluded.exported_generation,
-      updated_at = excluded.updated_at
+    UPDATE volumes
+    SET node_id = $1, exported_generation = $2, updated_at = $3
+    WHERE workload = $4
     """
 
     exec(conn, sql, [
-      op.workload,
       Map.get(payload, :node_id),
-      Map.get(payload, :generation, 0),
       Map.get(payload, :exported_generation, 0),
-      Map.get(payload, :size_bytes),
-      Map.get(payload, :allocated_bytes),
       op.ts,
-      op.ts
+      op.workload
     ])
   end
 

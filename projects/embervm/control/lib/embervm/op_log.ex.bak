@@ -159,7 +159,6 @@ defmodule Embervm.OpLog do
     # connection deltas from the idle-signal scrape (D-R3.2.1 shape at L4).
     :volume_created,
     :volume_deleted,
-    :volume_recovery_updated,
     :stateful_started,
     :stateful_published,
     :stateful_unpublished,
