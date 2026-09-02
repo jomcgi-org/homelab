@@ -171,6 +171,7 @@ defmodule Embervm.StatefulManager do
   # create an endpoint blip while noded reconnects, but that optimism must have
   # the same finite bound as the registry's registration-lapse policy.
   @resident_health_grace_ms 90_000
+  @anchor_expire_after_ms @resident_health_grace_ms
 
   # A 2x bound on the StopStateful checkpoint worst case: a fresh atomic bank
   # owns its row until the bank completion records the bundle facts.
@@ -310,6 +311,11 @@ defmodule Embervm.StatefulManager do
       # manager booted. A later capacity retraction is handled by registry
       # liveness, not by the durable-only endpoint grace.
       seen_reporting_nodes: MapSet.new(),
+      # node_id -> first manager-clock millisecond at which a durable volume's
+      # anchor was absent from NodeCapacity. Presence clears the observation.
+      # This is deliberately process-local: after a CP restart the full expiry
+      # window must elapse again before any volume can move to another writer.
+      missing_anchor_since_ms: %{},
       id_fun: Keyword.get(opts, :id_fun, nil),
       tenant: Keyword.get(opts, :tenant, "homelab"),
       # Daemon stateful-verb seams (injected for tests; production dials the
@@ -653,6 +659,11 @@ defmodule Embervm.StatefulManager do
   # another workload's wake; the worker reports the RPC result and finish_wake
   # completes the durable transition + publish on this process.
   defp start_wake(state, workload) do
+    # Record anchor presence before planning. A first miss only starts the
+    # expiry clock; this wake cannot consume its own observation as proof that
+    # the anchor is gone. Reconcile drives the same observation continuously,
+    # so a later wake sees the full clock-driven absence interval.
+    state = observe_missing_volume_anchors(state)
     entry = catalog_entry(state, workload)
 
     # Stamp the wake phase's start + the cold bool into the tracing bundle now
@@ -856,8 +867,14 @@ defmodule Embervm.StatefulManager do
             spawn_wake(owner, workload, fn ->
               # Restore onto the boot's instance (dial_id), not the node-name alias
               # (see the relight-with-restore note above): the cold boot reads the
-              # volume from dial_id's local disk.
-              _ = restore_volume(state, dial_id, node_id, wl, volume)
+              # volume from dial_id's local disk. A successful restore is also the
+              # point at which a confirmed-gone source may be re-anchored. There is
+              # no source eviction to attempt, and this writes only node_id: the
+              # already-issued blessing remains the sole generation authority.
+              if restore_volume(state, dial_id, node_id, wl, volume) == :ok do
+                _ = StatefulStore.upsert_volume(state.store, wl, %{node_id: node_id})
+              end
+
               run_cold(state, wl, node_id, dial_id, boot_ref, :cold, reason, req)
             end)
 
@@ -1009,22 +1026,52 @@ defmodule Embervm.StatefulManager do
   # -- restore-on-miss (R6, Task 8) -------------------------------------------
 
   # No banked bundle to resume. If the VOLUME itself is missing locally but a
-  # (vol.img, gen) pair is exported and the store is reachable, restore the volume
-  # first then cold-boot at the restored generation; otherwise the ordinary cold
-  # plan (FRESH first boot or COLD against an existing volume). A missing volume
-  # ROW whose exported_generation is unknown here (no fact at all) cannot restore,
-  # so it stays a fresh boot: exported_generation only survives as a node fact while
-  # the volume is at least reported, which is exactly the "disk present, bundle
-  # lost" case restore-on-miss targets.
+  # (vol.img, gen) pair is exported, restore the volume first then cold-boot at
+  # the restored generation; otherwise use the ordinary cold plan. The exported
+  # generation is durable because it is the only recovery proof left after the
+  # anchor and all of its NodeStatus facts disappear.
   defp restore_volume_or_cold(state, workload, volume) do
     cond do
       volume_restorable?(state, volume) ->
-        # The anchor node still reports the volume row (so exported_generation is
-        # known) but the local pair is unusable; restore the exported volume pair,
-        # then cold-boot at that generation. anchor_node guards the node is present.
         case anchor_node(state, volume) do
-          {:ok, node_id} -> {:restore_volume_then_cold, workload, node_id, volume}
-          {:error, reason} -> {:error, reason}
+          {:ok, node_id} ->
+            # The ordinary local-miss case retains the anchor. Store reachability
+            # is inferred from current live reports rather than coupled to this
+            # particular node's latest fact.
+            {:restore_volume_then_cold, workload, node_id, volume}
+
+          {:error, :volume_node_gone} ->
+            if confirmed_anchor_gone?({state, volume}) do
+              # Reuse the nil-volume cold planner only to select a live target.
+              # Its serving-subnet, base-readiness, slot, and memory gates are
+              # exactly the eligibility a restored COLD attach still needs. The
+              # returned :fresh mode is discarded: restore creates the local
+              # volume pair before the downstream arm issues a :cold request.
+              case cold_plan(state, workload, nil, cold_reason(volume)) do
+                {:cold, target, _dial_id, _boot_ref, :fresh, _reason} ->
+                  if store_reachable?(state, target) do
+                    # No eviction is attempted because the source is confirmed
+                    # absent. The restore worker writes the exported pair on target
+                    # and only then re-anchors the durable row. It never hand-writes
+                    # a generation: start_wake's blessing path remains the sole
+                    # issuer of the next writable generation.
+                    {:restore_volume_then_cold, workload, target, volume}
+                  else
+                    # Unknown reachability remains fail-closed. Preserve the old
+                    # dead-anchor error because no restore was dispatched and the
+                    # durable anchor has not moved.
+                    {:error, :volume_node_gone}
+                  end
+
+                {:error, reason} ->
+                  {:error, reason}
+              end
+            else
+              {:error, :volume_node_gone}
+            end
+
+          {:error, reason} ->
+            {:error, reason}
         end
 
       true ->
@@ -1052,13 +1099,22 @@ defmodule Embervm.StatefulManager do
 
   defp bundle_local?(_state, _node_id, _ref), do: false
 
-  # Whether a missing/broken-pair volume can be restored: the store is reachable
-  # and a (vol.img, gen) pair is exported (exported_generation > 0). The node the
-  # volume is anchored to owns the store reachability verdict.
+  # Whether a missing/broken-pair volume can be restored. A present anchor keeps
+  # the existing exported-pair plus reachable-store gate. A confirmed-gone anchor
+  # may move only when the durable projection proves an export exists. This does
+  # not weaken the single-writer fence from ADR embervm/011: a returning anchor's
+  # stale pair fails the generation check, the restored target receives a fresh
+  # generation through the blessing path, and generation is the sole writer-fence
+  # authority.
   defp volume_restorable?(_state, nil), do: false
 
   defp volume_restorable?(state, %{node_id: node_id} = volume) when is_binary(node_id) do
-    store_reachable?(state, node_id) and exported_generation(volume) > 0
+    exported_generation(volume) > 0 and
+      case anchor_node(state, volume) do
+        {:ok, _node_id} -> store_reachable?(state, node_id)
+        {:error, :volume_node_gone} -> confirmed_anchor_gone?({state, volume})
+        {:error, _reason} -> false
+      end
   end
 
   defp volume_restorable?(_state, _volume), do: false
@@ -1066,15 +1122,57 @@ defmodule Embervm.StatefulManager do
   defp exported_generation(nil), do: 0
   defp exported_generation(volume), do: Map.get(volume, :exported_generation, 0) || 0
 
-  # The anchor node's latest object-store reachability verdict (R6). Absent/false
-  # (a node with no store configured, or one that never reported) reads as NOT
-  # reachable, so no restore is attempted and the wake degrades to cold (never
-  # blocked: this only gates the store consultation, never a local-state wake).
-  defp store_reachable?(state, node_id) do
-    case NodeCapacity.fetch(state.capacity_table, node_id) do
-      {:ok, fact} -> Map.get(fact, :store_reachable, false) == true
-      :error -> false
-    end
+  # Store reachability is a property of the shared object store, not of the node
+  # that happens to anchor this volume. Accept a positive report from any live
+  # capacity fact. Missing and false reports remain conservative NOT reachable.
+  # The second argument is retained for call-site context and may be the selected
+  # restore target, but it never narrows the proof to a dead or stale anchor.
+  defp store_reachable?(state, _restore_node_id) do
+    state.capacity_table
+    |> NodeCapacity.all()
+    |> Enum.any?(&(Map.get(&1, :store_reachable, false) == true))
+  end
+
+  # A missing capacity row alone is not permission to move a writable volume.
+  # Registry silence can be a short pod restart while the old writer and its disk
+  # still exist. We therefore require three simultaneous facts: the anchor is
+  # absent NOW, this manager first observed that absence at least one registry
+  # expiry window ago, and this control plane itself has been alive for a full
+  # window. Presence clears the observation, and restart clears all observations.
+  # Together those rules preserve the single-writer fence while allowing a GCS
+  # export to recover from confirmed SPOT-node loss.
+  defp confirmed_anchor_gone?({state, %{node_id: node_id}})
+       when is_binary(node_id) and node_id != "" do
+    now = state.clock.()
+    missing_since = Map.get(state.missing_anchor_since_ms, node_id)
+
+    match?(:error, NodeCapacity.fetch(state.capacity_table, node_id)) and
+      is_integer(missing_since) and
+      now - missing_since >= @anchor_expire_after_ms and
+      now - state.booted_at_ms >= @anchor_expire_after_ms
+  end
+
+  defp confirmed_anchor_gone?(_state_and_volume), do: false
+
+  defp observe_missing_volume_anchors(state) do
+    now = state.clock.()
+
+    missing_anchor_since_ms =
+      StatefulStore.all_volumes(state.store)
+      |> Enum.reduce(%{}, fn volume, acc ->
+        case Map.get(volume, :node_id) do
+          node_id when is_binary(node_id) and node_id != "" ->
+            case NodeCapacity.fetch(state.capacity_table, node_id) do
+              {:ok, _fact} -> acc
+              :error -> Map.put(acc, node_id, Map.get(state.missing_anchor_since_ms, node_id, now))
+            end
+
+          _missing_anchor ->
+            acc
+        end
+      end)
+
+    %{state | missing_anchor_since_ms: missing_anchor_since_ms}
   end
 
   # Cold placement: FRESH (no volume row exists yet, the daemon must create it)
@@ -1969,6 +2067,7 @@ defmodule Embervm.StatefulManager do
       state
       | seen_reporting_nodes: MapSet.union(state.seen_reporting_nodes, reporting_nodes)
     }
+    state = observe_missing_volume_anchors(state)
     live_vms = index_stateful_vms(facts)
     bundles = index_stateful_bundles(facts)
     bundles_by_workload = index_stateful_bundles_by_workload(facts)

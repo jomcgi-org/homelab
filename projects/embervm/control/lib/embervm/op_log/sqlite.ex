@@ -302,6 +302,7 @@ defmodule Embervm.OpLog.SQLite do
       workload TEXT PRIMARY KEY,
       node_id TEXT,
       generation INTEGER NOT NULL DEFAULT 0,
+      exported_generation INTEGER NOT NULL DEFAULT 0,
       size_bytes INTEGER,
       allocated_bytes INTEGER,
       created_at INTEGER NOT NULL,
@@ -949,6 +950,7 @@ defmodule Embervm.OpLog.SQLite do
     :serving_failed,
     :serving_stats,
     :volume_created,
+    :volume_recovery_updated,
     :volume_deleted,
     :stateful_started,
     :stateful_published,
@@ -1534,11 +1536,12 @@ defmodule Embervm.OpLog.SQLite do
     payload = op.payload
 
     sql = """
-    INSERT INTO volumes (workload, node_id, generation, size_bytes, allocated_bytes, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO volumes (workload, node_id, generation, exported_generation, size_bytes, allocated_bytes, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(workload) DO UPDATE SET
       node_id = excluded.node_id,
       generation = excluded.generation,
+      exported_generation = excluded.exported_generation,
       size_bytes = excluded.size_bytes,
       allocated_bytes = excluded.allocated_bytes,
       updated_at = excluded.updated_at
@@ -1550,6 +1553,39 @@ defmodule Embervm.OpLog.SQLite do
              op.workload,
              Map.get(payload, :node_id),
              Map.get(payload, :generation, 0),
+             Map.get(payload, :exported_generation, 0),
+             Map.get(payload, :size_bytes),
+             Map.get(payload, :allocated_bytes),
+             op.ts,
+             op.ts
+           ]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  # Durable recovery facts are intentionally narrower than volume_created. A
+  # node report can refresh export proof, and a successful restore can move the
+  # anchor, but neither path may rewrite the blessed generation ledger.
+  defp project(conn, %Op{kind: :volume_recovery_updated} = op, _seq) do
+    payload = op.payload
+    sql = """
+    INSERT INTO volumes (workload, node_id, generation, exported_generation, size_bytes, allocated_bytes, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(workload) DO UPDATE SET
+      node_id = excluded.node_id,
+      exported_generation = excluded.exported_generation,
+      updated_at = excluded.updated_at
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <-
+           Sqlite3.bind(stmt, [
+             op.workload,
+             Map.get(payload, :node_id),
+             Map.get(payload, :generation, 0),
+             Map.get(payload, :exported_generation, 0),
              Map.get(payload, :size_bytes),
              Map.get(payload, :allocated_bytes),
              op.ts,
@@ -2907,7 +2943,7 @@ defmodule Embervm.OpLog.SQLite do
 
   defp do_load_volumes(conn) do
     sql = """
-    SELECT workload, node_id, generation, size_bytes, allocated_bytes, created_at, updated_at
+    SELECT workload, node_id, generation, exported_generation, size_bytes, allocated_bytes, created_at, updated_at
     FROM volumes
     """
 
@@ -2921,11 +2957,12 @@ defmodule Embervm.OpLog.SQLite do
   defp collect_volumes(conn, stmt, acc) do
     case Sqlite3.step(conn, stmt) do
       {:row,
-       [workload, node_id, generation, size_bytes, allocated_bytes, created_at, updated_at]} ->
+       [workload, node_id, generation, exported_generation, size_bytes, allocated_bytes, created_at, updated_at]} ->
         volume = %{
           workload: workload,
           node_id: node_id,
           generation: generation,
+          exported_generation: exported_generation,
           size_bytes: size_bytes,
           allocated_bytes: allocated_bytes,
           created_at: created_at,
@@ -3684,6 +3721,7 @@ defmodule Embervm.OpLog.SQLite do
          :ok <- migrate_ops_serving_instance_id(conn),
          :ok <- migrate_usage_request_count(conn),
          :ok <- migrate_ops_stateful_instance_id(conn),
+         :ok <- migrate_volumes_exported_generation(conn),
          :ok <- migrate_ops_group_instance_id(conn) do
       :ok
     end
@@ -3819,6 +3857,21 @@ defmodule Embervm.OpLog.SQLite do
       Sqlite3.execute(
         conn,
         "CREATE INDEX IF NOT EXISTS ops_stateful_instance_id_idx ON ops(stateful_instance_id)"
+      )
+    end
+  end
+
+  # Restore eligibility must survive both the exporting node and this process.
+  # Older databases have no column because exported_generation was formerly an
+  # ETS-only NodeStatus fact. Existing rows conservatively migrate to 0, so an
+  # upgraded CP cannot infer an export that it has not durably observed.
+  defp migrate_volumes_exported_generation(conn) do
+    with {:ok, cols} <- table_columns(conn, "volumes") do
+      add_column_if_missing(
+        conn,
+        cols,
+        "exported_generation",
+        "ALTER TABLE volumes ADD COLUMN exported_generation INTEGER NOT NULL DEFAULT 0"
       )
     end
   end
