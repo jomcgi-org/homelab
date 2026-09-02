@@ -578,11 +578,13 @@
     height: auto;
   }
 
+  /* The caption leads the drawing, as a stroke-framed title row like a
+     table header (no band: the panel's title keeps the only one). The
+     figure's own top rule is the row's top; its bottom rule opens the art. */
   .post-body :global(.fig figcaption) {
     padding: 0.45em 1rem;
-    border-top: 1px solid var(--stroke);
-    background: var(--band);
-    color: var(--ink-2);
+    border-bottom: 1px solid var(--stroke);
+    color: var(--ink);
     font-family: var(--font-code);
     font-size: 0.72rem;
   }

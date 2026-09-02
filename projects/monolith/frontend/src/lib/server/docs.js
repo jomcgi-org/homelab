@@ -226,7 +226,9 @@ export function renderDoc(entry, slugByPath) {
           const caption = text
             ? `<figcaption>${escapeHtml(text)}</figcaption>`
             : "";
-          return `<figure class="fig"><div class="fig-art">${entry.figures[href]}</div>${caption}</figure>`;
+          // The caption leads: it is the figure's title band, read before
+          // the drawing is parsed, and the key table docks onto the art.
+          return `<figure class="fig">${caption}<div class="fig-art">${entry.figures[href]}</div></figure>`;
         }
         // README images are authored as repo-relative refs (GitHub-native).
         // Resolve against the doc's repo path and serve via the signed
