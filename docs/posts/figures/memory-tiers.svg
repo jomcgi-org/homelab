@@ -91,14 +91,14 @@
   <text x="40" y="219" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="middle">3</text>
   <line x1="49.0" y1="215.0" x2="150" y2="215" stroke="currentColor" stroke-width="1"/>
   <circle cx="150" cy="215" r="2" fill="currentColor"/>
-  <rect x="590" y="196" width="96" height="58" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="598" y="214" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">CPU MoE</text>
-  <text x="598" y="228" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">executor</text>
-  <text x="598" y="242" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">8 cores</text>
-  <circle cx="638" cy="166" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
-  <text x="638" y="170" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">6</text>
-  <line x1="638.0" y1="175.0" x2="638" y2="196" stroke="currentColor" stroke-width="1"/>
-  <circle cx="638" cy="196" r="2" fill="currentColor"/>
+  <rect x="590" y="176" width="96" height="78" fill="none" stroke="currentColor" stroke-width="1.25"/>
+  <text x="598" y="203" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">CPU MoE</text>
+  <text x="598" y="217" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">executor</text>
+  <text x="598" y="231" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">8 cores</text>
+  <circle cx="638" cy="148" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
+  <text x="638" y="152" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">6</text>
+  <line x1="638.0" y1="157.0" x2="638" y2="176" stroke="currentColor" stroke-width="1"/>
+  <circle cx="638" cy="176" r="2" fill="currentColor"/>
   <polyline points="550,308 570,308 570,236 590,236" fill="none" stroke="currentColor" stroke-width="1"/>
   <line x1="590" y1="236" x2="585.9549150281252" y2="238.93892626146237" stroke="currentColor" stroke-width="1"/>
   <line x1="590" y1="236" x2="585.9549150281252" y2="233.06107373853763" stroke="currentColor" stroke-width="1"/>
