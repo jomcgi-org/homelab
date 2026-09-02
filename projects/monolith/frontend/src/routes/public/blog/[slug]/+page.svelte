@@ -164,6 +164,19 @@
     margin-bottom: 0;
   }
 
+  /* A table, figure, or code block that ends a panel ends on the panel's
+     own border: no strip of sheet between its last rule and the outline. */
+  .post-body :global(> table:last-child),
+  .post-body :global(> figure.fig:last-child),
+  .post-body :global(> pre.doc-code:last-child) {
+    margin-bottom: -1rem;
+  }
+
+  .post-body :global(> table:last-child tr:last-child td),
+  .post-body :global(> figure.fig:last-child) {
+    border-bottom: 0;
+  }
+
   .post-body :global(h3) {
     margin: 1.35rem 0 0.55rem;
     font-family: var(--font-ui);
