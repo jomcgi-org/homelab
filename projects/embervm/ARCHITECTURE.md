@@ -318,7 +318,10 @@ Facts that make this safe:
 
 - **Bank only starts at zero active connections**; a long-lived connection
   is never severed by an idle bank (rolls are the exception, bounded by the
-  two-minute preemption contract).
+  drain contract). Note that contract has two different numbers and they
+  must not be conflated: a graceful roll is bounded by the platform's own
+  110s budget, while a GCE Spot preemption gives approximately 30 seconds,
+  not the two minutes an earlier AWS-derived figure assumed (ADR 040).
 - **Resume requires an exact (memory snapshot, volume generation) pair**;
   mismatch discards warmth and cold-boots from the durable volume.
   Model-checked (`bank_relight.tla`), including the monotonic floor: a
@@ -1132,9 +1135,13 @@ demand. Internal rung IDs R0-R9 map onto the capabilities.
 **Current work**: promoting brick autoscale from `up` to `full`,
 node-local activator soak, and the conciseness program (#4009).
 
-The availability contract is spot semantics: a routine roll gives every
-workload up to two minutes of drain notice; state durability within the
-stated archive interval is the guarantee, connection continuity is not
-(narrowed for stateful by the planned-drain contract). Artifact retention
+The availability contract is spot semantics, with two distinct budgets. A
+routine roll, upgrade or scale-down is a clock the platform sets and gives
+a workload up to 110 seconds of drain notice. A GCE Spot preemption is a
+clock the provider sets and gives approximately 30 seconds; the two-minute
+figure this doc previously quoted is the AWS contract and was never true
+here (ADR 040). State durability within the stated archive interval is the
+guarantee, connection continuity is not (narrowed for stateful by the
+planned-drain contract). Artifact retention
 TTLs and the GC sweep behaviour are in
 [deploy/README.md](deploy/README.md).
