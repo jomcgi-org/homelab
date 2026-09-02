@@ -1,6 +1,12 @@
 /* These public document tokens intentionally duplicate
  * lib/private/dashboard-theme.css because the public build excludes
  * lib/private. Change both files together when the palette changes.
+ *
+ * Scheme resolution, in priority order: an explicit choice stamped on the
+ * root as data-theme="light" or "dark" (the blog's toggle, persisted in
+ * localStorage), then prefers-color-scheme. The night block therefore
+ * appears twice: once under the media query guarded against an explicit
+ * "light", once under data-theme="dark". Keep the two blocks identical.
  */
 
 .td {
@@ -19,10 +25,16 @@
   --band: color-mix(in srgb, var(--ink) 5%, var(--sheet));
   --accent-ink: color-mix(in srgb, var(--accent) 85%, var(--ink));
   --stroke: color-mix(in srgb, var(--ink) 28%, transparent);
+  /* Figure tones: one per memory tier, meaningful colour only. Each pair
+   * clears 4.5:1 against its sheet at the 11px mono label size. */
+  --tone-gpu: #2f5f9e;
+  --tone-ram: #2f7d4f;
+  --tone-cache: #9a6a10;
+  --tone-disk: #b23a2f;
 }
 
 @media (prefers-color-scheme: dark) {
-  .td {
+  :root:not([data-theme="light"]) .td {
     --sheet: #181a20;
     --paper: #14151b;
     --card-bg: #1c1e26;
@@ -32,20 +44,47 @@
     --line: rgba(232, 227, 210, 0.12);
     --accent: #d3a45f;
     --ok: #6fbf8d;
+    --tone-gpu: #8fb8ef;
+    --tone-ram: #7fd39a;
+    --tone-cache: #e3b45c;
+    --tone-disk: #f08a7a;
   }
 }
 
-/* The public tier does not scale the root. Pinning it here also keeps the
+:root[data-theme="dark"] .td {
+  --sheet: #181a20;
+  --paper: #14151b;
+  --card-bg: #1c1e26;
+  --ink: #e8e5dc;
+  --ink-2: #a5a297;
+  --ink-3: #6f6d65;
+  --line: rgba(232, 227, 210, 0.12);
+  --accent: #d3a45f;
+  --ok: #6fbf8d;
+  --tone-gpu: #8fb8ef;
+  --tone-ram: #7fd39a;
+  --tone-cache: #e3b45c;
+  --tone-disk: #f08a7a;
+}
+
+/* The document scales with the viewport between 16px and 19px so a wide
+ * desktop reads at a comfortable size and a phone keeps the 16px floor;
+ * every measure on the blog is in em or rem, so the sheet, the figures,
+ * and the type grow together. Pinning the root here also keeps the
  * overscroll ground on the sheet colour in both schemes. */
 html:has(.td) {
   background: #ffffff; /* nosemgrep: svelte-hardcoded-color-in-style */
-  font-size: 16px;
+  font-size: clamp(16px, 0.5vw + 11px, 19px);
 }
 
 @media (prefers-color-scheme: dark) {
-  html:has(.td) {
+  html:not([data-theme="light"]):has(.td) {
     background: #181a20; /* nosemgrep: svelte-hardcoded-color-in-style */
   }
+}
+
+html[data-theme="dark"]:has(.td) {
+  background: #181a20; /* nosemgrep: svelte-hardcoded-color-in-style */
 }
 
 body:has(.td) {

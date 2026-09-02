@@ -50,7 +50,7 @@
     background: var(--sheet);
     color: var(--ink);
     font-family: var(--font-ui);
-    font-size: 16px;
+    font-size: 1rem;
   }
 
   .post-page a:focus-visible {

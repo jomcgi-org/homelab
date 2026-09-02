@@ -168,7 +168,7 @@
     background: var(--sheet);
     color: var(--ink);
     font-family: var(--font-ui);
-    font-size: 16px;
+    font-size: 1rem;
   }
 
   .blog-page a:focus-visible,

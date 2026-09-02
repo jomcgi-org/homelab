@@ -18,6 +18,22 @@ from xml.sax.saxutils import escape
 
 MONO = "ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace"
 ACCENT = "var(--accent-ink)"
+# Tier tones, defined in technical-drawing.css for both schemes. A tone names
+# the memory tier a part belongs to; it is never decoration.
+TONES = {
+    "gpu": "var(--tone-gpu)",
+    "ram": "var(--tone-ram)",
+    "cache": "var(--tone-cache)",
+    "disk": "var(--tone-disk)",
+}
+
+
+def _paint(accent: bool, tone: str | None) -> str:
+    if tone:
+        return TONES[tone]
+    return ACCENT if accent else "currentColor"
+
+
 OUTLINE = 1.25
 LEADER = 1
 CALLOUT_R = 9
@@ -42,10 +58,11 @@ class Figure:
         *,
         dashed: bool = False,
         accent: bool = False,
+        tone: str | None = None,
         weight: float = OUTLINE,
     ) -> None:
         dash = ' stroke-dasharray="4 3"' if dashed else ""
-        stroke = ACCENT if accent else "currentColor"
+        stroke = _paint(accent, tone)
         self.parts.append(
             f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="none" '
             f'stroke="{stroke}" stroke-width="{weight}"{dash}/>'
@@ -60,9 +77,10 @@ class Figure:
         anchor: str = "start",
         size: float = 11,
         accent: bool = False,
+        tone: str | None = None,
         weight: str | None = None,
     ) -> None:
-        fill = ACCENT if accent else "currentColor"
+        fill = _paint(accent, tone)
         fw = f' font-weight="{weight}"' if weight else ""
         self.parts.append(
             f'<text x="{x}" y="{y}" font-family="{MONO}" font-size="{size}" '
@@ -79,16 +97,22 @@ class Figure:
         anchor: str = "start",
         size: float = 11,
         accent: bool = False,
+        tone: str | None = None,
     ) -> None:
         for i, row in enumerate(rows):
-            self.text(x, y + i * step, row, anchor=anchor, size=size, accent=accent)
+            self.text(
+                x, y + i * step, row, anchor=anchor, size=size, accent=accent, tone=tone
+            )
 
-    def callout(self, cx: float, cy: float, label: str) -> None:
+    def callout(
+        self, cx: float, cy: float, label: str, *, tone: str | None = None
+    ) -> None:
+        stroke = _paint(False, tone)
         self.parts.append(
             f'<circle cx="{cx}" cy="{cy}" r="{CALLOUT_R}" fill="none" '
-            f'stroke="currentColor" stroke-width="{LEADER}"/>'
+            f'stroke="{stroke}" stroke-width="{LEADER}"/>'
         )
-        self.text(cx, cy + 4, label, anchor="middle", size=11)
+        self.text(cx, cy + 4, label, anchor="middle", size=11, tone=tone)
 
     def dot(self, x: float, y: float) -> None:
         self.parts.append(
@@ -128,10 +152,19 @@ class Figure:
         self.line(x1, y1, x2, y2)
         self.dot(x2, y2)
 
-    def keyed(self, cx: float, cy: float, label: str, px: float, py: float) -> None:
+    def keyed(
+        self,
+        cx: float,
+        cy: float,
+        label: str,
+        px: float,
+        py: float,
+        *,
+        tone: str | None = None,
+    ) -> None:
         """A callout whose leader starts at the circle's edge, towards the part."""
         ang = math.atan2(py - cy, px - cx)
-        self.callout(cx, cy, label)
+        self.callout(cx, cy, label, tone=tone)
         self.leader(
             cx + CALLOUT_R * math.cos(ang), cy + CALLOUT_R * math.sin(ang), px, py
         )
