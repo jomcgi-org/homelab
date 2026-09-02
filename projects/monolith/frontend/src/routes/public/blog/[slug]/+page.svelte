@@ -366,6 +366,49 @@
     text-align: right;
   }
 
+  /* The key column repeats the figure's callout: the same circle, the same
+     tone, so a letter in the table is found in the drawing by colour. The
+     radius is the figure's mark, not page chrome. */
+  .post-body :global(td.key) {
+    padding-top: 0.4em;
+    padding-bottom: 0.4em;
+    text-align: center;
+  }
+
+  .post-body :global(td.key .co) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.6em;
+    height: 1.6em;
+    border: 1px solid var(--key-tone, currentColor);
+    border-radius: 50%;
+    color: var(--key-tone, currentColor);
+    font-size: 0.78rem;
+    font-weight: 600;
+    line-height: 1;
+  }
+
+  .post-body :global(td.key[data-tone="gpu"]) {
+    --key-tone: var(--tone-gpu);
+  }
+
+  .post-body :global(td.key[data-tone="ram"]) {
+    --key-tone: var(--tone-ram);
+  }
+
+  .post-body :global(td.key[data-tone="cache"]) {
+    --key-tone: var(--tone-cache);
+  }
+
+  .post-body :global(td.key[data-tone="disk"]) {
+    --key-tone: var(--tone-disk);
+  }
+
+  .post-body :global(td.key[data-tone="hot"]) {
+    --key-tone: var(--tone-hot);
+  }
+
   @media (max-width: 600px) {
     .post-page {
       padding-right: 1em;

@@ -111,9 +111,12 @@ class Figure:
         self, cx: float, cy: float, label: str, *, tone: str | None = None
     ) -> None:
         stroke = _paint(False, tone)
+        # data-key/data-tone let the blog renderer paint the matching key
+        # table cell in the same circle and colour as the figure callout.
+        data = f' data-key="{escape(label)}" data-tone="{tone}"' if tone else ""
         self.parts.append(
             f'<circle cx="{cx}" cy="{cy}" r="{CALLOUT_R}" fill="none" '
-            f'stroke="{stroke}" stroke-width="{LEADER}"/>'
+            f'stroke="{stroke}" stroke-width="{LEADER}"{data}/>'
         )
         self.text(cx, cy + 4, label, anchor="middle", size=11, tone=tone)
 
