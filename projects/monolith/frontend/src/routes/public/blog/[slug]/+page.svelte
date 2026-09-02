@@ -509,12 +509,15 @@
     border-collapse: collapse;
   }
 
+  /* The column band: banded like the section title, closed below by a
+     stroke-weight rule rather than the hairline between data rows, so a
+     header never reads as the first row. */
   .post-body :global(th) {
     padding: 0.5em 1rem;
     border-top: 1px solid var(--stroke);
-    border-bottom: 1px solid var(--line);
+    border-bottom: 1px solid var(--stroke);
     background: var(--band);
-    color: var(--ink-2);
+    color: var(--ink);
     font-family: var(--font-code);
     font-size: 0.72rem;
     font-weight: 600;
@@ -593,10 +596,6 @@
   .post-body :global(h2 + table),
   .post-body :global(h2 + figure.fig) {
     margin-top: calc(-0.85rem - 1px);
-  }
-
-  .post-body :global(h2 + table th) {
-    background: none;
   }
 
   .post-body :global(tr:last-child td) {
