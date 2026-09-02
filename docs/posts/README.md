@@ -37,9 +37,12 @@ a 2px dot at the part end. Labels use `var(--font-code)` at 11px. Outlines use
 only for callout dots. One part may use `var(--accent-ink)`. Use no other
 colour, gradients, filters, shadows, or raster images.
 
-Inline `<style>` elements are allowed by the validator, but presentation
-attributes keep figures easier to review. Do not use `url(`. For text, prefer
-`font-family="ui-monospace, SF Mono, Cascadia Mono, monospace"`.
+The validator rejects `<style>` elements and `style` attributes (an inlined
+`<style>` is document-scoped and CSS escapes defeat a `url(` check), a root
+`width` or `height`, and every element or attribute that can load or run
+anything. Use presentation attributes only. For text, use
+`font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace"`, which
+is what `figlib.py` emits.
 
 An operating sequence explains a cycle as a left-to-right strip of outlined
 panels with the same parts held in the same positions. Number each stage and

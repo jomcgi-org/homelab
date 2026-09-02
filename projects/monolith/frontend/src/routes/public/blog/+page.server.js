@@ -7,8 +7,13 @@ import {
 import manifest from "$lib/public/posts/posts-manifest.json";
 import { groupByMonth } from "./blog.js";
 
+// Tags come from the generator, which enforces this shape; anything else in
+// the query string is ignored rather than echoed into headers or the page.
+const TAG = /^[a-z0-9][a-z0-9-]{0,23}$/;
+
 export function load({ setHeaders, url }) {
-  const selectedTag = url.searchParams.get("tag") || "";
+  const requested = url.searchParams.get("tag") || "";
+  const selectedTag = TAG.test(requested) ? requested : "";
   const allPosts = manifest.map(({ slug, title, date, summary, tags }) => ({
     slug,
     title,

@@ -40,7 +40,7 @@ export function GET() {
           ({ slug, title, summary }) =>
             `- [${title}](${PUBLIC_BASE}/blog/${slug}): ${summary}`,
         )
-        .join("\n")}\n`
+        .join("\n")}\n\n`
     : "\n";
   const body = `${INTRO}${blog}${ELSEWHERE}`;
 

@@ -205,7 +205,15 @@ export function renderDoc(entry, slugByPath) {
       },
       paragraph({ tokens: pTokens }) {
         const inner = this.parser.parseInline(pTokens);
-        if (/^<figure class="fig">[\s\S]*<\/figure>$/.test(inner.trim())) {
+        // A paragraph that is exactly one inlined figure renders as the
+        // block-level <figure>; anything else keeps its <p>.
+        const only = pTokens.length === 1 ? pTokens[0] : null;
+        if (
+          only &&
+          only.type === "image" &&
+          entry.figures &&
+          Object.prototype.hasOwnProperty.call(entry.figures, only.href)
+        ) {
           return `${inner}\n`;
         }
         return `<p>${inner}</p>\n`;
