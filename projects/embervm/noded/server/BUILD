@@ -12,6 +12,7 @@ go_library(
         "group_member.go",
         "group_registry.go",
         "pressure.go",
+        "preemption.go",
         "register.go",
         "registry.go",
         "registry_workload.go",

@@ -1,10 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -63,6 +67,180 @@ func TestSetDrainingPublishesDeadline(t *testing.T) {
 	}
 	if got, want := ns.GetDrainDeadlineUnixMs(), deadline.UnixMilli(); got != want {
 		t.Fatalf("NodeStatus.drain_deadline_unix_ms = %d, want %d", got, want)
+	}
+}
+
+func TestPreemptionNoticeStartsShortDrain(t *testing.T) {
+	_, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 10)
+	s.cfg.PreemptionNoticeEnabled = true
+	s.cfg.PreemptionDrainTimeout = 2 * time.Second
+	s.cfg.DrainTimeout = 110 * time.Second
+
+	metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Metadata-Flavor"); got != "Google" {
+			t.Errorf("Metadata-Flavor = %q, want Google", got)
+		}
+		query := r.URL.Query()
+		if got := query.Get("wait_for_change"); got != "true" {
+			t.Errorf("wait_for_change = %q, want true", got)
+		}
+		if got := query.Get("last_etag"); got != "0" {
+			t.Errorf("last_etag = %q, want 0", got)
+		}
+		if got := query.Get("timeout_sec"); got != "360" {
+			t.Errorf("timeout_sec = %q, want 360", got)
+		}
+		w.Header().Set("ETag", "preempted-etag")
+		_, _ = io.WriteString(w, "TRUE\n")
+	}))
+	defer metadata.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	before := time.Now()
+	s.WatchPreemptionNotices(ctx, metadata.Client(), metadata.URL, cancel)
+	after := time.Now()
+
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("preemption notice did not request shutdown")
+	}
+	deadline := time.UnixMilli(s.drainDeadline())
+	if deadline.Before(before.Add(s.cfg.PreemptionDrainTimeout-time.Millisecond)) ||
+		deadline.After(after.Add(s.cfg.PreemptionDrainTimeout)) {
+		t.Fatalf("drain deadline = %s, want now + %s", deadline, s.cfg.PreemptionDrainTimeout)
+	}
+	if !deadline.Before(before.Add(s.cfg.DrainTimeout)) {
+		t.Fatalf("preemption used graceful drain deadline: %s", deadline)
+	}
+}
+
+func TestPreemptionWatcherErrorDisablesAfterOneLog(t *testing.T) {
+	var requests atomic.Int32
+	metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer metadata.Close()
+
+	var logs bytes.Buffer
+	s := New(Options{
+		Config: config.Config{
+			PreemptionNoticeEnabled: true,
+			PreemptionDrainTimeout:  20 * time.Second,
+		},
+		Driver:    &fakeDriver{},
+		Transport: &fakeTransport{},
+		Logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s.WatchPreemptionNotices(ctx, metadata.Client(), metadata.URL, cancel)
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("metadata requests = %d, want 1", got)
+	}
+	if got := strings.Count(logs.String(), "GCE preemption notice watcher disabled"); got != 1 {
+		t.Fatalf("disable log count = %d, want 1; logs: %s", got, logs.String())
+	}
+	if s.isDraining() {
+		t.Fatal("metadata error should not start draining")
+	}
+}
+
+func TestPreemptionWatcherNonTrueKeepsWatching(t *testing.T) {
+	var requests atomic.Int32
+	secondStarted := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	defer func() {
+		select {
+		case <-releaseSecond:
+		default:
+			close(releaseSecond)
+		}
+	}()
+	metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch requestNumber := requests.Add(1); requestNumber {
+		case 1:
+			w.Header().Set("ETag", "false-etag")
+			_, _ = io.WriteString(w, "FALSE")
+		case 2:
+			if got := r.URL.Query().Get("last_etag"); got != "false-etag" {
+				t.Errorf("rotated last_etag = %q, want false-etag", got)
+			}
+			close(secondStarted)
+			<-releaseSecond
+			w.Header().Set("ETag", "true-etag")
+			_, _ = io.WriteString(w, "TRUE")
+		default:
+			t.Errorf("unexpected metadata request %d", requestNumber)
+		}
+	}))
+	defer metadata.Close()
+
+	_, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 10)
+	s.cfg.PreemptionNoticeEnabled = true
+	s.cfg.PreemptionDrainTimeout = time.Second
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		s.WatchPreemptionNotices(ctx, metadata.Client(), metadata.URL, cancel)
+		close(done)
+	}()
+
+	select {
+	case <-secondStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watcher did not continue after FALSE response")
+	}
+	if s.isDraining() {
+		t.Fatal("non-TRUE metadata response started draining")
+	}
+	close(releaseSecond)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watcher did not finish after TRUE response")
+	}
+	if !s.isDraining() {
+		t.Fatal("watcher did not drain after subsequent TRUE response")
+	}
+}
+
+func TestSignalAfterPreemptionDoesNotExtendDeadline(t *testing.T) {
+	_, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 10)
+	preemptionDeadline := time.Now().Add(20 * time.Second)
+	effectivePreemptionDeadline := s.SetDraining(preemptionDeadline)
+
+	effectiveSignalDeadline := s.SetDraining(time.Now().Add(110 * time.Second))
+	if got, want := effectiveSignalDeadline.UnixMilli(), effectivePreemptionDeadline.UnixMilli(); got != want {
+		t.Fatalf("deadline after SIGTERM = %d, want earlier preemption deadline %d", got, want)
+	}
+	if got, want := s.drainDeadline(), preemptionDeadline.UnixMilli(); got != want {
+		t.Fatalf("published deadline after SIGTERM = %d, want %d", got, want)
+	}
+}
+
+func TestPreemptionWatcherDisabledDoesNotRun(t *testing.T) {
+	var requests atomic.Int32
+	metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("ETag", "unused")
+		_, _ = io.WriteString(w, "TRUE")
+	}))
+	defer metadata.Close()
+
+	_, s := newTestServer(t, &fakeDriver{}, &fakeTransport{}, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.WatchPreemptionNotices(ctx, metadata.Client(), metadata.URL, cancel)
+
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("metadata requests = %d, want 0 when disabled", got)
+	}
+	if s.isDraining() {
+		t.Fatal("disabled watcher started draining")
 	}
 }
 

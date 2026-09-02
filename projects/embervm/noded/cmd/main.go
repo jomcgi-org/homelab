@@ -50,8 +50,10 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
+	ctx, cancelRun := context.WithCancel(signalCtx)
+	defer cancelRun()
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -367,6 +369,9 @@ func run(logger *slog.Logger) error {
 		logger.Info("gRPC NodeService listening", "addr", cfg.ListenAddr)
 		errCh <- gs.Serve(lis)
 	}()
+	if cfg.PreemptionNoticeEnabled {
+		go srv.WatchPreemptionNotices(ctx, http.DefaultClient, server.GCEPreemptionMetadataURL, cancelRun)
+	}
 
 	// Dial-home registration (R0 PR-2): now that the gRPC surface is up, advertise
 	// this instance's identity to the control plane so it adopts us without ever
@@ -387,11 +392,11 @@ func run(logger *slog.Logger) error {
 		// time so those Bank/Stop/Resolve rpcs are served; only new BuildBase/Prime/
 		// Assign are refused (the draining flag). We hold until the managed live-VM
 		// registry empties or the deadline passes, then drain in-flight task Assigns
-		// via GracefulStop. The pod's terminationGracePeriodSeconds is drain + 30s so
-		// Kubernetes never SIGKILLs mid-bank.
-		deadline := time.Now().Add(cfg.DrainTimeout)
-		logger.Info("shutdown signal received; draining", "budget", cfg.DrainTimeout, "deadline", deadline.UTC())
-		srv.SetDraining(deadline)
+		// via GracefulStop. For ordinary Kubernetes termination, the pod's
+		// terminationGracePeriodSeconds is graceful drain + 30s so Kubernetes never
+		// SIGKILLs mid-bank. GCE preemption uses its separate shorter deadline.
+		deadline := srv.SetDraining(time.Now().Add(cfg.DrainTimeout))
+		logger.Info("shutdown requested; draining", "deadline", deadline.UTC(), "remaining", time.Until(deadline))
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = health.Shutdown(shutdownCtx)
