@@ -140,8 +140,15 @@ func TestPreemptionWatcherErrorDisablesAfterOneLog(t *testing.T) {
 	if got := requests.Load(); got != 1 {
 		t.Fatalf("metadata requests = %d, want 1", got)
 	}
-	if got := strings.Count(logs.String(), "GCE preemption notice watcher disabled"); got != 1 {
-		t.Fatalf("disable log count = %d, want 1; logs: %s", got, logs.String())
+	// Exactly one line, at INFO: a metadata server that never answered means this
+	// is not GCP, which is a fact about the environment rather than a fault. The
+	// assertion is on the count and the level, not on the wording, so renaming a
+	// message does not fail a test about behaviour.
+	if got := strings.Count(logs.String(), "level=INFO"); got != 1 {
+		t.Fatalf("info log count = %d, want 1; logs: %s", got, logs.String())
+	}
+	if strings.Contains(logs.String(), "level=WARN") {
+		t.Fatalf("a server that never answered must not warn; logs: %s", logs.String())
 	}
 	if s.isDraining() {
 		t.Fatal("metadata error should not start draining")
@@ -379,5 +386,52 @@ func TestWaitForBuildsOrAbortDeadline(t *testing.T) {
 	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor)
 	if e, ok := s.bases.get(baseKey); ok && e.state == nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
 		t.Errorf("aborted base %q is READY; want re-queueable", baseKey)
+	}
+}
+
+// A metadata server that answered and THEN failed is a fault, not an absence, so
+// the watcher must keep watching. Going quiet here is how a watcher stops
+// covering the event it exists for without anyone noticing.
+func TestPreemptionWatcherRetriesAfterAnEarlierSuccess(t *testing.T) {
+	var requests atomic.Int32
+	metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		switch requests.Add(1) {
+		case 1:
+			// One good answer, so the watcher learns the server is real.
+			w.Header().Set("ETag", "etag-1")
+			_, _ = w.Write([]byte("FALSE"))
+		case 2:
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		default:
+			// Preempted on the retry: proves the watcher was still watching.
+			w.Header().Set("ETag", "etag-2")
+			_, _ = w.Write([]byte("TRUE"))
+		}
+	}))
+	defer metadata.Close()
+
+	var logs bytes.Buffer
+	s := New(Options{
+		Config: config.Config{
+			PreemptionNoticeEnabled: true,
+			PreemptionDrainTimeout:  20 * time.Second,
+		},
+		Driver:    &fakeDriver{},
+		Transport: &fakeTransport{},
+		Logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s.WatchPreemptionNotices(ctx, metadata.Client(), metadata.URL, cancel)
+
+	if got := requests.Load(); got < 3 {
+		t.Fatalf("metadata requests = %d, want at least 3 (success, failure, retry)", got)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") {
+		t.Fatalf("a failure after a success must warn; logs: %s", logs.String())
+	}
+	if !s.isDraining() {
+		t.Fatal("the notice seen on the retry should have started the drain")
 	}
 }
