@@ -276,7 +276,9 @@ describe("renderDoc", () => {
 
     expect(result.html).toContain('<figure class="fig">');
     expect(result.html).toContain('<div class="fig-art"><svg');
-    expect(result.html).toContain("<figcaption>Memory tiers</figcaption>");
+    expect(result.html).toContain(
+      '<figure class="fig"><figcaption>Memory tiers</figcaption><div class="fig-art">',
+    );
     expect(result.html).not.toContain("<p><figure");
   });
 
