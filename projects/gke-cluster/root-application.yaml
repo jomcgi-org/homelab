@@ -1,0 +1,85 @@
+# The GKE cluster's root Application, captured from the live object.
+#
+# NOT SYNCED BY ANYTHING, deliberately. kustomization.yaml in this directory
+# lists its resources explicitly and does not list this file, so `hub` does not
+# manage itself. That avoids the self-referential failure where a bad commit to
+# the root orphans the very Application that would sync the fix, recoverable
+# only by hand against a cluster you may not be able to reach.
+#
+# So what is this file for? Until now the root existed ONLY as a live object
+# (the same convention `canada` followed on the home cluster: see
+# projects/home-cluster/kustomization.yaml). Nothing recorded what the cluster's
+# root of trust actually was, nothing reviewed changes to it, and nothing could
+# diff it. Every other resource in this repository gets a pull request; the one
+# resource that decides what the cluster syncs got a shell prompt.
+#
+# That gap is about to become load-bearing. Kargo owns `targetRevision` at
+# runtime for the Applications it promotes (ADR platform/009), which requires an
+# `ignoreDifferences` entry here plus `RespectIgnoreDifferences=true`, or ArgoCD
+# stamps each promotion straight back. Leaving that config as an unreviewed hand
+# patch would put the mechanism that keeps production deploying somewhere nobody
+# can read.
+#
+# HOW TO CHANGE THE ROOT
+#
+# Edit this file, get it reviewed like anything else, merge, and then apply it
+# ONCE by hand:
+#
+#     kubectl --context <gke-context> apply -f projects/gke-cluster/root-application.yaml
+#
+# The apply is manual on purpose and is the whole point of the arrangement: git
+# is the reviewable record, and a human decides when the root changes. A merged
+# change to this file has NOT taken effect until someone runs that command, so
+# treat this file as a proposal until you have applied it.
+#
+# WHEN YOU ADD A KARGO PIPELINE
+#
+# Add an `ignoreDifferences` entry for that Application's
+# `/spec/sources/0/targetRevision` AND ensure `RespectIgnoreDifferences=true` is
+# in syncOptions, in the same change that arms the pipeline, never before it.
+# `ignoreDifferences` alone suppresses DIFFING, not APPLYING, so without the
+# sync option the field survives idle reconciliation and is stamped back by the
+# next real sync.
+#
+# The entry is not free, and the cost is easy to miss:
+# `RespectIgnoreDifferences` with a jsonPointer into `spec.sources` stops ArgoCD
+# patching ANY field in that array, permanently, not just the one named. On
+# 2026-08-26 that left all four Kargo-owned Applications on the pre-org-move
+# `github.com/jomcgi/homelab` repoURL while git said `jomcgi-org`, for weeks,
+# with the root reporting "successfully synced (all tasks run)" on every pass.
+# The 27 Applications without `ignoreDifferences` healed; the 4 with it did not.
+# That is why bazel/tools/ci/check-application-drift.sh exists: it renders this
+# cluster's Applications from git and diffs them against the live objects, so a
+# field ArgoCD has silently stopped healing is something you can see on demand
+# rather than discover during an outage. It needs a live cluster context, so it
+# is an operator command rather than a CI gate; run it after any change to an
+# Application's sources, and whenever a promotion behaves oddly.
+#
+# Add an entry per Kargo-managed Application, only once its pipeline is armed.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hub
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    # platform-gke (shared infrastructure) plus gke-apps (workloads). Both are
+    # kustomize directories, so adding a workload to the cluster is a change to
+    # projects/gke-apps/kustomization.yaml, not to this file.
+    path: projects/gke-cluster
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
