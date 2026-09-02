@@ -1,7 +1,9 @@
 """Primitives for the keyed workshop-manual figures under docs/posts/figures.
 
 Every figure on the blog is a line drawing: currentColor strokes, mono labels,
-numbered callouts for stages, lettered callouts for parts, one accent part.
+numbered callouts for stages, lettered callouts for parts, and a fixed tone per
+memory tier (GPU, host RAM, page cache, NVMe, hot set) so colour means the same
+thing in every figure.
 This module holds the vocabulary so every figure shares one geometry (callout
 radius, leader weight, hatch pitch, arrowhead) and a new figure is a layout,
 never a restyle. The output is plain SVG with presentation attributes only, so
@@ -25,6 +27,7 @@ TONES = {
     "ram": "var(--tone-ram)",
     "cache": "var(--tone-cache)",
     "disk": "var(--tone-disk)",
+    "hot": "var(--tone-hot)",
 }
 
 
@@ -129,9 +132,10 @@ class Figure:
         dashed: bool = False,
         weight: float = LEADER,
         accent: bool = False,
+        tone: str | None = None,
     ) -> None:
         dash = ' stroke-dasharray="4 3"' if dashed else ""
-        stroke = ACCENT if accent else "currentColor"
+        stroke = _paint(accent, tone)
         self.parts.append(
             f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" '
             f'stroke="{stroke}" stroke-width="{weight}"{dash}/>'

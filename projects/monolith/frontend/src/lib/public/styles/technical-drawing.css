@@ -25,12 +25,15 @@
   --band: color-mix(in srgb, var(--ink) 5%, var(--sheet));
   --accent-ink: color-mix(in srgb, var(--accent) 85%, var(--ink));
   --stroke: color-mix(in srgb, var(--ink) 28%, transparent);
-  /* Figure tones: one per memory tier, meaningful colour only. Each pair
-   * clears 4.5:1 against its sheet at the 11px mono label size. */
-  --tone-gpu: #2f5f9e;
-  --tone-ram: #2f7d4f;
-  --tone-cache: #9a6a10;
-  --tone-disk: #b23a2f;
+  /* Figure tones: one fixed meaning each across every figure (GPU, host
+   * RAM, page cache, NVMe, and the hot expert set), meaningful colour only.
+   * Each value is the most saturated one that clears 4.5:1 against its
+   * sheet at the 11px mono label size. */
+  --tone-gpu: #0b6bff;
+  --tone-ram: #0b7f47;
+  --tone-cache: #a85600;
+  --tone-disk: #d0262a;
+  --tone-hot: #d100b5;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -44,10 +47,11 @@
     --line: rgba(232, 227, 210, 0.12);
     --accent: #d3a45f;
     --ok: #6fbf8d;
-    --tone-gpu: #8fb8ef;
-    --tone-ram: #7fd39a;
-    --tone-cache: #e3b45c;
-    --tone-disk: #f08a7a;
+    --tone-gpu: #63a8ff;
+    --tone-ram: #3ddc84;
+    --tone-cache: #ffb347;
+    --tone-disk: #ff6b6b;
+    --tone-hot: #ff7be5;
   }
 }
 
@@ -61,10 +65,11 @@
   --line: rgba(232, 227, 210, 0.12);
   --accent: #d3a45f;
   --ok: #6fbf8d;
-  --tone-gpu: #8fb8ef;
-  --tone-ram: #7fd39a;
-  --tone-cache: #e3b45c;
-  --tone-disk: #f08a7a;
+  --tone-gpu: #63a8ff;
+  --tone-ram: #3ddc84;
+  --tone-cache: #ffb347;
+  --tone-disk: #ff6b6b;
+  --tone-hot: #ff7be5;
 }
 
 /* The document scales with the viewport between 16px and 19px so a wide

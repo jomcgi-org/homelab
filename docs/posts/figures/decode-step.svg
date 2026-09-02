@@ -3,42 +3,42 @@
   <circle cx="18" cy="18" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
   <text x="18" y="22" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">1</text>
   <text x="34" y="22" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">Route</text>
-  <rect x="48" y="40" width="210" height="62" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="54" y="54" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">GPU</text>
+  <rect x="48" y="40" width="210" height="62" fill="none" stroke="var(--tone-gpu)" stroke-width="1.25"/>
+  <text x="54" y="54" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-gpu)" text-anchor="start">GPU</text>
   <rect x="54" y="60" width="74" height="34" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="58" y="80" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">slot cache</text>
-  <rect x="134" y="60" width="54" height="34" fill="none" stroke="var(--accent-ink)" stroke-width="1.25"/>
-  <text x="140" y="80" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--accent-ink)" text-anchor="start">hot set</text>
+  <rect x="134" y="60" width="54" height="34" fill="none" stroke="var(--tone-hot)" stroke-width="1.25"/>
+  <text x="140" y="80" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-hot)" text-anchor="start">hot set</text>
   <rect x="194" y="60" width="58" height="34" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="200" y="80" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">KV</text>
   <rect x="272" y="118" width="56" height="40" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="278" y="134" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">CPU</text>
   <text x="278" y="148" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">exec</text>
-  <rect x="48" y="118" width="210" height="40" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="54" y="134" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">pinned banks</text>
-  <text x="54" y="148" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">40 GB</text>
-  <rect x="48" y="172" width="210" height="34" fill="none" stroke="currentColor" stroke-width="1.25" stroke-dasharray="4 3"/>
-  <text x="54" y="192" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">page cache</text>
-  <rect x="48" y="220" width="210" height="40" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <line x1="170" y1="220" x2="170" y2="260" stroke="currentColor" stroke-width="1.25"/>
-  <text x="54" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">expert banks</text>
-  <text x="54" y="250" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">72.7 GiB</text>
-  <text x="176" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">table</text>
-  <text x="176" y="250" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">27 GiB</text>
-  <circle cx="26" cy="71" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
-  <text x="26" y="75" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">A</text>
+  <rect x="48" y="118" width="210" height="40" fill="none" stroke="var(--tone-ram)" stroke-width="1.25"/>
+  <text x="54" y="134" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">pinned banks</text>
+  <text x="54" y="148" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">40 GB</text>
+  <rect x="48" y="172" width="210" height="34" fill="none" stroke="var(--tone-cache)" stroke-width="1.25" stroke-dasharray="4 3"/>
+  <text x="54" y="192" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-cache)" text-anchor="start">page cache</text>
+  <rect x="48" y="220" width="210" height="40" fill="none" stroke="var(--tone-disk)" stroke-width="1.25"/>
+  <line x1="170" y1="220" x2="170" y2="260" stroke="var(--tone-disk)" stroke-width="1.25"/>
+  <text x="54" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">expert banks</text>
+  <text x="54" y="250" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">72.7 GiB</text>
+  <text x="176" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">table</text>
+  <text x="176" y="250" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">27 GiB</text>
+  <circle cx="26" cy="71" r="9" fill="none" stroke="var(--tone-gpu)" stroke-width="1"/>
+  <text x="26" y="75" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-gpu)" text-anchor="middle">A</text>
   <line x1="35.0" y1="71.0" x2="48" y2="71" stroke="currentColor" stroke-width="1"/>
   <circle cx="48" cy="71" r="2" fill="currentColor"/>
-  <circle cx="26" cy="138" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
-  <text x="26" y="142" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">B</text>
+  <circle cx="26" cy="138" r="9" fill="none" stroke="var(--tone-ram)" stroke-width="1"/>
+  <text x="26" y="142" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="middle">B</text>
   <line x1="35.0" y1="138.0" x2="48" y2="138" stroke="currentColor" stroke-width="1"/>
   <circle cx="48" cy="138" r="2" fill="currentColor"/>
-  <circle cx="26" cy="189" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
-  <text x="26" y="193" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">C</text>
+  <circle cx="26" cy="189" r="9" fill="none" stroke="var(--tone-cache)" stroke-width="1"/>
+  <text x="26" y="193" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-cache)" text-anchor="middle">C</text>
   <line x1="35.0" y1="189.0" x2="48" y2="189" stroke="currentColor" stroke-width="1"/>
   <circle cx="48" cy="189" r="2" fill="currentColor"/>
-  <circle cx="26" cy="240" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
-  <text x="26" y="244" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">D</text>
+  <circle cx="26" cy="240" r="9" fill="none" stroke="var(--tone-disk)" stroke-width="1"/>
+  <text x="26" y="244" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="middle">D</text>
   <line x1="35.0" y1="240.0" x2="48" y2="240" stroke="currentColor" stroke-width="1"/>
   <circle cx="48" cy="240" r="2" fill="currentColor"/>
   <circle cx="300" cy="174" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
@@ -49,80 +49,80 @@
   <circle cx="376" cy="18" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
   <text x="376" y="22" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">2</text>
   <text x="392" y="22" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">Sort by residency</text>
-  <rect x="406" y="40" width="210" height="62" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="412" y="54" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">GPU</text>
+  <rect x="406" y="40" width="210" height="62" fill="none" stroke="var(--tone-gpu)" stroke-width="1.25"/>
+  <text x="412" y="54" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-gpu)" text-anchor="start">GPU</text>
   <rect x="412" y="60" width="74" height="34" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="416" y="80" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">slot cache</text>
-  <rect x="492" y="60" width="54" height="34" fill="none" stroke="var(--accent-ink)" stroke-width="1.25"/>
-  <text x="498" y="80" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--accent-ink)" text-anchor="start">hot set</text>
+  <rect x="492" y="60" width="54" height="34" fill="none" stroke="var(--tone-hot)" stroke-width="1.25"/>
+  <text x="498" y="80" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-hot)" text-anchor="start">hot set</text>
   <rect x="552" y="60" width="58" height="34" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="558" y="80" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">KV</text>
   <rect x="630" y="118" width="56" height="40" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="636" y="134" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">CPU</text>
   <text x="636" y="148" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">exec</text>
-  <rect x="406" y="118" width="210" height="40" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="412" y="134" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">pinned banks</text>
-  <text x="412" y="148" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">40 GB</text>
-  <rect x="406" y="172" width="210" height="34" fill="none" stroke="currentColor" stroke-width="1.25" stroke-dasharray="4 3"/>
-  <text x="412" y="192" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">page cache</text>
-  <rect x="406" y="220" width="210" height="40" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <line x1="528" y1="220" x2="528" y2="260" stroke="currentColor" stroke-width="1.25"/>
-  <text x="412" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">expert banks</text>
-  <text x="412" y="250" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">72.7 GiB</text>
-  <text x="534" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">table</text>
-  <text x="534" y="250" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">27 GiB</text>
+  <rect x="406" y="118" width="210" height="40" fill="none" stroke="var(--tone-ram)" stroke-width="1.25"/>
+  <text x="412" y="134" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">pinned banks</text>
+  <text x="412" y="148" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">40 GB</text>
+  <rect x="406" y="172" width="210" height="34" fill="none" stroke="var(--tone-cache)" stroke-width="1.25" stroke-dasharray="4 3"/>
+  <text x="412" y="192" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-cache)" text-anchor="start">page cache</text>
+  <rect x="406" y="220" width="210" height="40" fill="none" stroke="var(--tone-disk)" stroke-width="1.25"/>
+  <line x1="528" y1="220" x2="528" y2="260" stroke="var(--tone-disk)" stroke-width="1.25"/>
+  <text x="412" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">expert banks</text>
+  <text x="412" y="250" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">72.7 GiB</text>
+  <text x="534" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">table</text>
+  <text x="534" y="250" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">27 GiB</text>
   <rect x="0" y="324" width="342" height="308" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <circle cx="18" cy="342" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
   <text x="18" y="346" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">3</text>
   <text x="34" y="346" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">Move</text>
-  <rect x="48" y="364" width="210" height="62" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="54" y="378" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">GPU</text>
+  <rect x="48" y="364" width="210" height="62" fill="none" stroke="var(--tone-gpu)" stroke-width="1.25"/>
+  <text x="54" y="378" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-gpu)" text-anchor="start">GPU</text>
   <rect x="54" y="384" width="74" height="34" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="58" y="404" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">slot cache</text>
-  <rect x="134" y="384" width="54" height="34" fill="none" stroke="var(--accent-ink)" stroke-width="1.25"/>
-  <text x="140" y="404" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--accent-ink)" text-anchor="start">hot set</text>
+  <rect x="134" y="384" width="54" height="34" fill="none" stroke="var(--tone-hot)" stroke-width="1.25"/>
+  <text x="140" y="404" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-hot)" text-anchor="start">hot set</text>
   <rect x="194" y="384" width="58" height="34" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="200" y="404" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">KV</text>
   <rect x="272" y="442" width="56" height="40" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="278" y="458" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">CPU</text>
   <text x="278" y="472" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">exec</text>
-  <rect x="48" y="442" width="210" height="40" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="54" y="458" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">pinned banks</text>
-  <text x="54" y="472" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">40 GB</text>
-  <rect x="48" y="496" width="210" height="34" fill="none" stroke="currentColor" stroke-width="1.25" stroke-dasharray="4 3"/>
-  <text x="54" y="516" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">page cache</text>
-  <rect x="48" y="544" width="210" height="40" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <line x1="170" y1="544" x2="170" y2="584" stroke="currentColor" stroke-width="1.25"/>
-  <text x="54" y="560" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">expert banks</text>
-  <text x="54" y="574" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">72.7 GiB</text>
-  <text x="176" y="560" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">table</text>
-  <text x="176" y="574" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">27 GiB</text>
+  <rect x="48" y="442" width="210" height="40" fill="none" stroke="var(--tone-ram)" stroke-width="1.25"/>
+  <text x="54" y="458" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">pinned banks</text>
+  <text x="54" y="472" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">40 GB</text>
+  <rect x="48" y="496" width="210" height="34" fill="none" stroke="var(--tone-cache)" stroke-width="1.25" stroke-dasharray="4 3"/>
+  <text x="54" y="516" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-cache)" text-anchor="start">page cache</text>
+  <rect x="48" y="544" width="210" height="40" fill="none" stroke="var(--tone-disk)" stroke-width="1.25"/>
+  <line x1="170" y1="544" x2="170" y2="584" stroke="var(--tone-disk)" stroke-width="1.25"/>
+  <text x="54" y="560" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">expert banks</text>
+  <text x="54" y="574" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">72.7 GiB</text>
+  <text x="176" y="560" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">table</text>
+  <text x="176" y="574" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">27 GiB</text>
   <rect x="358" y="324" width="342" height="308" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <circle cx="376" cy="342" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
   <text x="376" y="346" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">4</text>
   <text x="392" y="346" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">Compute and tally</text>
-  <rect x="406" y="364" width="210" height="62" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="412" y="378" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">GPU</text>
+  <rect x="406" y="364" width="210" height="62" fill="none" stroke="var(--tone-gpu)" stroke-width="1.25"/>
+  <text x="412" y="378" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-gpu)" text-anchor="start">GPU</text>
   <rect x="412" y="384" width="74" height="34" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="416" y="404" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">slot cache</text>
-  <rect x="492" y="384" width="54" height="34" fill="none" stroke="var(--accent-ink)" stroke-width="1.25"/>
-  <text x="498" y="404" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--accent-ink)" text-anchor="start">hot set</text>
+  <rect x="492" y="384" width="54" height="34" fill="none" stroke="var(--tone-hot)" stroke-width="1.25"/>
+  <text x="498" y="404" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-hot)" text-anchor="start">hot set</text>
   <rect x="552" y="384" width="58" height="34" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="558" y="404" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">KV</text>
   <rect x="630" y="442" width="56" height="40" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="636" y="458" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">CPU</text>
   <text x="636" y="472" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">exec</text>
-  <rect x="406" y="442" width="210" height="40" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="412" y="458" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">pinned banks</text>
-  <text x="412" y="472" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">40 GB</text>
-  <rect x="406" y="496" width="210" height="34" fill="none" stroke="currentColor" stroke-width="1.25" stroke-dasharray="4 3"/>
-  <text x="412" y="516" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">page cache</text>
-  <rect x="406" y="544" width="210" height="40" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <line x1="528" y1="544" x2="528" y2="584" stroke="currentColor" stroke-width="1.25"/>
-  <text x="412" y="560" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">expert banks</text>
-  <text x="412" y="574" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">72.7 GiB</text>
-  <text x="534" y="560" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">table</text>
-  <text x="534" y="574" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">27 GiB</text>
+  <rect x="406" y="442" width="210" height="40" fill="none" stroke="var(--tone-ram)" stroke-width="1.25"/>
+  <text x="412" y="458" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">pinned banks</text>
+  <text x="412" y="472" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">40 GB</text>
+  <rect x="406" y="496" width="210" height="34" fill="none" stroke="var(--tone-cache)" stroke-width="1.25" stroke-dasharray="4 3"/>
+  <text x="412" y="516" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-cache)" text-anchor="start">page cache</text>
+  <rect x="406" y="544" width="210" height="40" fill="none" stroke="var(--tone-disk)" stroke-width="1.25"/>
+  <line x1="528" y1="544" x2="528" y2="584" stroke="var(--tone-disk)" stroke-width="1.25"/>
+  <text x="412" y="560" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">expert banks</text>
+  <text x="412" y="574" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">72.7 GiB</text>
+  <text x="534" y="560" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">table</text>
+  <text x="534" y="574" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">27 GiB</text>
   <text x="54" y="112" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">n-gram ids for this token: already known</text>
   <text x="54" y="282" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">hidden state</text>
   <line x1="136" y1="278" x2="150" y2="278" stroke="currentColor" stroke-width="1"/>
@@ -155,7 +155,7 @@
   <line x1="320" y1="290" x2="320" y2="282" stroke="currentColor" stroke-width="1"/>
   <line x1="325" y1="290" x2="325" y2="282" stroke="currentColor" stroke-width="1"/>
   <text x="210" y="304" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">512 a layer, top-k</text>
-  <text x="412" y="274" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">hot</text>
+  <text x="412" y="274" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-hot)" text-anchor="start">hot</text>
   <rect x="462" y="266" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/>
   <rect x="474" y="266" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/>
   <rect x="486" y="266" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/>
@@ -163,11 +163,11 @@
   <rect x="510" y="266" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/>
   <rect x="522" y="266" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/>
   <text x="538" y="274" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">stay on A (72%)</text>
-  <text x="412" y="288" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">pinned</text>
+  <text x="412" y="288" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">pinned</text>
   <rect x="462" y="280" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/>
   <rect x="474" y="280" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/>
   <text x="538" y="288" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">fetched from B</text>
-  <text x="412" y="302" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">cold</text>
+  <text x="412" y="302" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">cold</text>
   <rect x="462" y="294" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/>
   <rect x="474" y="294" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/>
   <rect x="486" y="294" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/>
