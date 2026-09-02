@@ -66,7 +66,7 @@ compare against.
 | Composite | **Built** | No current consumer |
 | Node-local activator | **Planned** | Partly landed |
 | Brick autoscale | **Built** at rung `up`; **Planned** scale-down | Full ladder remains |
-| S3 archive-at-bank | **Built** | Asynchronous volume and warmth export on bank commit |
+| S3 archive-at-bank | **Decided direction** | Archive at bank commit |
 | Transport auth CP-to-noded | **Built** (bearer + policy) | mTLS/SPIFFE remains the upgrade path |
 | Encryption at rest | **Built** | Per-principal mutable artifacts (#4691), enabled per environment by values; Account-scoped immutable rootfs chunks remain planned (ADR 028, #4182) |
 | Cells / multi-cell | **Planned** | No cell seams exist in code yet (#4753); one control plane today |
@@ -175,8 +175,7 @@ make correct):
 | Object store (S3-compatible) | Artifact export/archive, off-node durability | Anything on a hot path (read only on deliberate restore or local miss) |
 
 Bricks **dial home**: on start and on a jittered interval each noded POSTs
-its identity `{node, pod_uid, address, boot_id, scratch_generation}` to
-`/v1/nodes/register`;
+its identity `{node, pod_uid, address, boot_id}` to `/v1/nodes/register`;
 the control plane adopts it keyed by `(node, pod_uid)` and streams
 `WatchNode`. The control plane never lists-and-watches daemon pods. Growing
 the fleet is labelling a node (`homelab.io/firecracker=true`), not a values
@@ -326,8 +325,7 @@ Facts that make this safe:
   lagging node report can never regress the stored pair key, so a stale
   report cannot legalise a stale snapshot.
 - **The interruptible bank** (`spec.stateful.interruptibleBank: true`, off
-  by default; armed in the reference deployment for demo-postgres only,
-  with the chart-default one-second idle window)
+  by default; armed in the reference deployment for demo-postgres only)
   makes steady-state wakes always hot or warm, never cold. The
   three cold exceptions: genuine first boot, explicit operator reset, and
   the max-lifetime forced roll.
@@ -361,6 +359,15 @@ three legitimate issuance shapes:
 
 The advance changes who may *issue* a generation, never who may *write* a
 volume (invariant 6).
+
+That fence is also what makes anchor-loss recovery safe (ADR 040). When a
+brick is confirmed gone and the volume has an export, the control plane
+restores it onto a live peer and re-anchors there, writing `node_id` alone:
+the blessing remains the sole generation authority, so a stale copy on a
+node that later returns carries an older generation and loses its pair
+check rather than competing for the write. The anchor pin from standing
+decision 11 is unchanged for a volume that exists on exactly one disk,
+which is still the case the fence was built for.
 
 ### Wake path and the node-local activator
 
@@ -429,17 +436,7 @@ memory admission and the per-principal wake-rate limit are what protect the
 receiving node.
 
 The S3 artifact GC uses an 8-hour TTL for stateful warmth and 7-day TTLs for
-session memory, serving snapshots, session workspaces, and group sets. Its
-fleet contract comes from the live `NodeRegistry` on every sweep. Expired
-instances remain as in-memory tombstones for an eight-hour grace window, the
-shortest warmth TTL, so a recently lost brick remains required while its
-artifacts are still eligible. Warmth GC has no static expected-node value or
-environment variable. GKE sets `warmthS3Gc.enabled` to the
-empty value because a control-plane restart loses those tombstones; this
-explicit setting keeps destructive sweeping disarmed there
-(`projects/embervm/control/lib/embervm/node_registry.ex`,
-`projects/embervm/control/lib/embervm/s3_warmth_gc.ex`,
-`projects/embervm/deploy/values-gke.yaml`).
+session memory, serving snapshots, session workspaces, and group sets.
 
 **Why.** A control-plane restart during an interruptible bank could leave a
 benign generation advance indistinguishable from an unauthorized one, forcing
@@ -581,38 +578,6 @@ discardable (ADR embervm/006, ADR embervm/014).
   actions. The debug-gated SpecTrace implementation (#4770) ships and runs
   in dev with `specTrace.enabled`; production keeps it off. ADR embervm/034
   records the full delivery path and is still a draft.
-- **Invoke start stamp**: `maybe_start_next` appends a
-  `session_invoke_started` op and waits for it before spawning the invoke
-  worker. A failed append refuses the invoke
-  (`{:error, {:invoke_start_not_recorded, reason}}`) rather than running work
-  no durable record admits to. The projected `invoke_started_at` is
-  monotonic and never cleared: projection takes the greater of the stored and
-  incoming value, `session_invoked` seeds it for a start that was never
-  recorded, and the schema migration backfills it from `last_invoke_at`.
-  `session_view` exposes it. It exists because `last_invoke_at` is stamped
-  when an invoke COMPLETES, which makes a healthy long first turn
-  indistinguishable from a guest that never started. The monolith's
-  zombie-session recovery destroys guests on that read, so keying it to a
-  completion timestamp would have reaped live turns
-  (`projects/embervm/control/lib/embervm/session.ex`,
-  `projects/embervm/control/lib/embervm/session_store.ex`).
-- **Scratch generation**: with `scratchPrep.enabled`, preparation publishes
-  `.scratch-generation` with an atomic rename as its final step; readiness
-  and every size-classed brick pod's first init container require a nonempty
-  marker. Scratch consumers use `HostToContainer` mount propagation. Noded
-  refuses base adoption until it can read the marker, records the adopted
-  generation, atomically re-adopts its on-disk inventories after a live
-  generation change, and reports the generation in registration and every
-  `NodeStatus`. The control plane reruns the workload boot `LIST` and queues
-  base repair per workload when registration reports a new generation; only
-  a status carrying that generation consumes the pending repair
-  (`projects/embervm/chart/templates/scratch-prep-daemonset.yaml`,
-  `projects/embervm/chart/templates/_noded-pod.tpl`,
-  `projects/embervm/noded/server/server.go`,
-  `projects/embervm/noded/server/register.go`,
-  `projects/embervm/proto/embervm/node/v1/node.proto`,
-  `projects/embervm/control/lib/embervm/node_registry.ex`,
-  `projects/embervm/control/lib/embervm/workload_watcher.ex`).
 - **Cells**: the unit of horizontal scale is a cell, a complete
   single-writer control plane owning a bounded set of bricks and workloads,
   with one op-log appender (ordering is within-cell only). **Planned**
@@ -698,9 +663,8 @@ its -10 expendable-pods cutoff) while remaining first-evicted; this
 reopens, and only partially answers, the mass-VM-death preemption concern
 ADR embervm/016 raised against below-default brick priority (scheduler
 preemption deletes rather than drains). The Firecracker jailer that backs
-the guest rung of the ladder is **Shipped-but-suspended** (#5520; section 10
-has the containment detail). It lands dark pending live verification on one
-brick, after which a values-only change can arm it.
+the guest rung of the ladder is **Planned** (#5520; section 10 has the
+containment detail).
 
 **Decided direction**: PriorityClass ranking of brick
 pools by lane with sacrificial balloon bricks for burst headroom, and
@@ -736,19 +700,13 @@ drain coordination as explicit costs.
 
 **Artifact model**: one typed verb family,
 `ExportArtifact` / `RestoreArtifact` / `EvictArtifact`, over `ArtifactRef
-{kind: BASE | SESSION | SESSION_WORKSPACE | SERVING | STATEFUL | GROUP_SET |
-VOLUME}`.
+{kind: BASE | SESSION | SERVING | STATEFUL | GROUP_SET | VOLUME}`.
 Control-plane-driven, idempotent per key; evict refuses while referenced, and
 base retention holds when the current base is unverified (#4401). Keys are
-namespaced by workload. Vendor-bound kinds include the vendor in the prefix;
-the portable `VOLUME` and `SESSION_WORKSPACE` kinds omit it. A volume uses an
-empty artifact `ref`, so export, restore, and remote eviction all address
-`volume/<workload>/...` with no extra ref segment
-(`projects/embervm/noded/store/store.go`,
-`projects/embervm/control/lib/embervm/artifact_prefix.ex`,
-`projects/embervm/control/lib/embervm/stateful_manager.ex`). A principal-scoped
+namespaced by workload (and vendor, below); a principal-scoped
 `shared/<principal>/<sha256>` keyspace is **Planned** (#5075), not
-implemented. `ArtifactRef` remains `{kind, workload, ref}`.
+implemented: `ArtifactRef` is `{kind, workload, ref}` with keys
+`<kind>/<vendor>/<workload>/<ref>/<file>`.
 
 **Planned rootfs plane (ADR 028, #4182)**: OCI images convert to deterministic
 flattened EROFS manifests and immutable chunks. Private chunks deduplicate under
@@ -761,27 +719,13 @@ live guest block-read dependency.
 | Failure | task | session | serving | stateful |
 | ------- | ---- | ------- | ------- | -------- |
 | VM process | Fresh VM is discarded; **Built** cold boot fallback | Lineage restores from warmth; **Built** | Endpoint wakes a replacement; **Built** | Volume remains authoritative; **Built** |
-| brick | Assignment and primed pool reconcile; **Built** | Banked state can relight; **Built** | Cold wake fallback; **Built** | Volume is node-resident; failover is the **Built** manual handover RPC (`POST /v1/stateful/:name/handover/:target`, a banked-volume move to a peer anchor) |
-| Kubernetes node | Recreate on another brick; **Built** | S3 warmth is available on deliberate restore; **Built** | Cold wake fallback; **Built** | The latest complete, blessed volume export produced by a bank can restore to an eligible brick after the anchor is confirmed gone; **Built** |
+| brick | Assignment and primed pool reconcile; **Built** | Banked state can relight; **Built** | Cold wake fallback; **Built** | Volume is node-resident, and failover is now automatic when an export exists: the wake restores the exported volume onto a live peer and re-anchors it there, once the anchor is absent from capacity AND absent for the full registry-expiry window AND the CP has been up that long (**Built**, ADR 040). The manual handover RPC (`POST /v1/stateful/:name/handover/:target`) remains for moving a volume off a brick that is still alive |
+| Kubernetes node | Recreate on another brick; **Built** | S3 warmth is available on deliberate restore; **Built** | Cold wake fallback; **Built** | Export at bank commit is **Built** and is what makes the brick row's automatic failover possible; recovery is to the last export, so a write made after it and before the node vanished is lost (ADR 040) |
 | control plane | No new task admission; **Built** | Existing local state continues; **Built** | Hits continue; misses wait, node-local activator **Planned** | Existing local state continues; **Built** |
-| object store | Local execution continues; **Built** | Local warmth continues, restore falls back cold; **Built** | Local warmth continues, restore falls back cold; **Built** | Local volume continues; remote recovery fails closed while the store is unavailable; **Built** |
+| object store | Local execution continues; **Built** | Local warmth continues, restore falls back cold; **Built** | Local warmth continues, restore falls back cold; **Built** | Local volume remains authoritative; archive is **Decided direction** |
 
-The latest completed volume export is the state durability floor. Noded queues
-asynchronous stateful-memory and volume exports when a bank commits. If a
-stateful volume's anchor is confirmed gone and its durable row says it has never
-been exported, the control plane consults `volume/<workload>/` for store truth.
-Each wake owns a monotonic token, so a stale consult cannot abort or duplicate a
-successor wake. A complete export must carry its metadata, image, generation,
-and a valid blessing. The control plane then adopts the exported generation in
-the durable op-log before exposing it to readers. The existing
-`RestoreArtifact` reader then runs through `:restore_volume_then_cold`.
-Definitive unusable results are memoized for ten minutes. Store failures,
-incomplete exports, and unblessed generations remain fail-closed with separate
-diagnoses
-(`projects/embervm/control/lib/embervm/stateful_manager.ex`,
-`projects/embervm/control/lib/embervm/stateful_store.ex`,
-`projects/embervm/noded/server/stateful.go`). The matrix defines the current
-recovery and the remaining operator-mediated paths.
+State durability within the stated archive interval is the guarantee. The
+matrix defines the current recovery and the gaps in automated recovery.
 
 **Vendor pinning**: Firecracker memory snapshots restore only within a CPU
 vendor (and a narrow intra-vendor matrix), so all warmth artifacts are keyed
@@ -822,6 +766,8 @@ preserves unknown marker fields and never reads an artifact payload object.
 **Decided direction:**
 
 - **Local disk is authoritative**: local node NVMe relight needs no network.
+- **S3 is a zstd content-addressed archive**, written at bank commit, not a
+  hot tier.
 - **`archiveInterval`** is the user-facing durability control in
   acceptable-loss units.
 - **Failover and node rotation** are deliberate operator actions; the
@@ -856,10 +802,10 @@ holds. Timer-driven copies of live volumes were rejected as crash-inconsistent,
 and network demand-loading of root filesystems was rejected because an object
 store outage could stall a running guest (ADR embervm/025, ADR embervm/028).
 Authoritative local volumes, bank-time archives, and eager local chunk hydration
-accept a latest-completed-export loss window and slower restore after node loss.
-Mutable warmth is encrypted per principal because storage ACLs alone expose
-process memory to a compromised storage reader, accepting that loss of the
-platform root forces cold boot (ADR embervm/033, ADR embervm/036).
+accept an archive-interval loss window and slower restore after node loss. Mutable
+warmth is encrypted per principal because storage ACLs alone expose process
+memory to a compromised storage reader, accepting that loss of the platform root
+forces cold boot (ADR embervm/033, ADR embervm/036).
 
 ---
 
@@ -976,11 +922,10 @@ embervm/032).
 - **Accepted risk**: privileged noded with /dev/kvm; external-allow guest
   egress via the broker; taint optional; CPU side-channel between
   co-resident tenant guests on the same brick, unmapped (#5255).
-- **Shipped-but-suspended** (ADR embervm/039, #5520): the Firecracker jailer
-  provides per-VM chroot, uid/gid drop, and cgroup containment, closing the
-  direct-root-exec gap when enabled. The chart lands it dark pending live
-  verification on one brick. `--new-pid-ns` is deliberately omitted because
-  a PID namespace breaks `execProcess` `Wait` and `Pid` supervision semantics.
+- **Decided direction** (ADR embervm/039, #5520): adopt the Firecracker
+  jailer for per-VM chroot, uid/gid drop, cgroup, and PID namespace
+  containment, closing the gap where noded execs firecracker directly as
+  root today with none of it.
 - **Planned**: mTLS/SPIFFE as the noded transport-auth upgrade.
 
 EmberVM evaluates itself against the threat model published by
@@ -1106,12 +1051,8 @@ S3-compatible object store.
 - **Scratch is a node-provisioning contract**: every FC-labelled Kubernetes
   node
   bind-mounts its real device at `/var/lib/embervm/scratch` (hostPath type
-  Directory fails closed if unsatisfied). The chart-managed GKE preparation
-  publishes an atomic generation marker only after the device is ready; pod
-  readiness, brick init, and noded adoption all fail closed without it. Scratch
-  mounts use `HostToContainer` propagation so a mount completed in the host
-  namespace is visible to the pods. Karpenter `instanceStorePolicy` RAID0
-  satisfies the device contract on EKS; local NVMe does so elsewhere.
+  Directory fails closed if unsatisfied). Karpenter `instanceStorePolicy`
+  RAID0 satisfies it on EKS; local NVMe elsewhere.
 - **Warmth never crosses a CPU vendor** (until CPU templates land):
   artifacts are keyed per vendor, the gate fails closed at the daemon, and
   each vendor pool holds its own warmth.
@@ -1134,37 +1075,20 @@ S3-compatible object store.
 The reference deployment's concrete fleet (node roles, current brick mix,
 shared Postgres) is in [deploy/README.md](deploy/README.md).
 
-### Production delivery
+### Promotion gate
 
-On the GKE hub, Kargo watches the OCI chart registries for EmberVM, monolith,
-and monolith-public. Each production stage subscribes directly to its Warehouse,
-patches the corresponding live Argo CD Application, and waits for that
-Application to become Synced and Healthy. GKE has no dev Applications. This
-production deploy health check provides no pre-production soak or functional
-gate (`projects/platform/kargo/values.yaml`,
-`projects/platform/kargo/templates/promotion.yaml`).
-
-The versions checked into `projects/gke-apps` are frozen bootstrap floors.
-The GKE root Application ignores `targetRevision` for these three children and
-respects that ignore during apply, leaving Kargo as the runtime owner. A Git pin
-that differs from production is therefore correct. Deployment verification reads
-the live Application's `spec.sources[0].targetRevision`, together with its sync
-and health status (`projects/gke-cluster/root-application.yaml`,
-`projects/gke-apps/embervm/application.yaml`,
-`projects/gke-apps/monolith/application.yaml`,
-`projects/gke-apps/monolith-public/application.yaml`).
-
-The `demo-postgres` workload uses the chart-default one-second idle bank.
-Each five-minute synthetic probe opens a short database connection. With no
-visitor holding a connection open, the one-second sweeper parks the workload
-between completed database round trips and the next round trip relights it
-(`projects/embervm/chart/values.yaml`,
-`projects/embervm/deploy/values.yaml`,
-`projects/monolith/chart/values.yaml`,
-`projects/monolith/ember_public/synthetic_probe.py`). The hourly Spark synthetic
-allows 420 seconds for its internal trigger and 480 seconds for the workflow
-while #5607 is diagnosed (`projects/monolith/app/jobs_main.py`,
-`projects/monolith/chart/values.yaml`).
+EmberVM promotes the dev chart to production through Kargo. The existing
+`argocd-wait` step proves the Application is Synced and Healthy, while the
+soak interval exposes failures that appear only after reconciliation has settled.
+The in-cluster conformance runner adds synthetic API coverage against the deployed
+dev control plane. Its S1 through S4 scenarios exercise task execution, session
+sleep and relight, second-session restart latency, and control-plane invariants.
+The `/verdict` contract passes only when every scenario passes, so a failed or
+all-vacuous run blocks promotion and never becomes a hold state. Each verdict is
+stamped with the chart version so Kargo cannot accept evidence from an older
+deployment. Freight approval remains the explicit operator override when a
+promotion must proceed despite the gate or soak. The Phase 1 implementation is
+tracked in [GitHub issue #5224](https://github.com/jomcgi/homelab/issues/5224).
 
 **Known walls and provisional numbers** (each states what would move it):
 
@@ -1209,8 +1133,8 @@ demand. Internal rung IDs R0-R9 map onto the capabilities.
 node-local activator soak, and the conciseness program (#4009).
 
 The availability contract is spot semantics: a routine roll gives every
-workload up to two minutes of drain notice; state durability through the
-latest completed volume export is the guarantee, connection continuity is not
+workload up to two minutes of drain notice; state durability within the
+stated archive interval is the guarantee, connection continuity is not
 (narrowed for stateful by the planned-drain contract). Artifact retention
 TTLs and the GC sweep behaviour are in
 [deploy/README.md](deploy/README.md).
