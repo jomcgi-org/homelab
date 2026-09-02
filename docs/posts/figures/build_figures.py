@@ -56,10 +56,12 @@ def memory_tiers() -> Figure:
     f.lines(420, 222, ["hot rows, 6 GB", "18 disk layers"], tone="hot")
     f.keyed(40, 215, "3", 150, 215, tone="ram")
 
-    # 6 CPU executor, fed from the page cache
-    f.box(590, 196, 96, 58)
-    f.lines(598, 214, ["CPU MoE", "executor", "8 cores"])
-    f.keyed(638, 166, "6", 638, 196)
+    # 6 CPU executor, fed from the page cache. Level with the pinned host
+    # memory part: same top and bottom edges, so the CPU reads as the
+    # other half of the host beside its memory.
+    f.box(590, 176, 96, 78)
+    f.lines(598, 203, ["CPU MoE", "executor", "8 cores"])
+    f.keyed(638, 148, "6", 638, 176)
     f.path_arrow([(550, 308), (570, 308), (570, 236), (590, 236)])
 
     # 4 page cache
