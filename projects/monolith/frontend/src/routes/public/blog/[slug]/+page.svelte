@@ -6,6 +6,13 @@
   let { data } = $props();
   let activeId = $state("");
 
+  // "5.1 Prefill was copying whole layers" -> ["5.1", "Prefill was ..."] so
+  // the number sits in its own fixed column and the titles align.
+  function split(text) {
+    const m = /^(\d+(?:\.\d+)*\.?)\s+(.*)$/.exec(text);
+    return m ? [m[1], m[2]] : ["", text];
+  }
+
   // The spine follows the reader: the topmost heading in the upper band of
   // the viewport is the active one, and the URL hash follows it so a copied
   // link lands on the section being read. Two cases the band cannot decide
@@ -141,7 +148,10 @@
                     class:active={activeId === section.id}
                     aria-current={activeId === section.id
                       ? "location"
-                      : undefined}>{section.text}</a
+                      : undefined}
+                    ><span class="num">{split(section.text)[0]}</span><span
+                      >{split(section.text)[1]}</span
+                    ></a
                   >
                   {#if section.children.length}
                     <ol>
@@ -152,7 +162,10 @@
                             class:active={activeId === sub.id}
                             aria-current={activeId === sub.id
                               ? "location"
-                              : undefined}>{sub.text}</a
+                              : undefined}
+                            ><span class="num">{split(sub.text)[0]}</span><span
+                              >{split(sub.text)[1]}</span
+                            ></a
                           >
                         </li>
                       {/each}
@@ -251,7 +264,7 @@
   }
 
   .toc a {
-    display: block;
+    display: flex;
     padding: 0.34em 0 0.34em 0.6rem;
     border-left: 2px solid transparent;
     color: var(--ink-2);
@@ -260,9 +273,21 @@
     text-decoration: none;
   }
 
+  /* The number is a fixed column so every title starts on the same line
+     and a wrapped title hangs under itself, not under its number. */
+  .toc .num {
+    flex: none;
+    width: 1.7em;
+    font-variant-numeric: tabular-nums;
+  }
+
   .toc ol ol a {
     padding-left: 1.4rem;
     font-size: 0.74em;
+  }
+
+  .toc ol ol .num {
+    width: 2.3em;
   }
 
   .toc a:hover,
@@ -702,6 +727,11 @@
       border-left: 0;
       border-bottom: 2px solid transparent;
       white-space: nowrap;
+    }
+
+    .toc .num {
+      width: auto;
+      margin-right: 0.35em;
     }
 
     .toc a.active {
