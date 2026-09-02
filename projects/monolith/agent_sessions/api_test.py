@@ -1,11 +1,206 @@
+import asyncio
+
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine
 
 import agent_sessions.api as api
 import agent_sessions.mcp as mcp
 from agent_sessions.models import AgentSession
-from agent_sessions.transport import EmberSessionGone
+from agent_sessions.transport import EmberSessionGone, Turn
 from faas.embervm_client import EmberVMTransportError
+
+
+def _completed_synthetic_turn() -> Turn:
+    return Turn(
+        result="synthetic ok",
+        terminal_reason="completed",
+        stop_reason="end_turn",
+        is_error=False,
+        permission_denials=[],
+        num_turns=1,
+        session_id="cli-session",
+        usage={},
+        total_cost_usd=0.01,
+        duration_ms=100,
+        activities=[],
+    )
+
+
+def test_run_synthetic_session_claims_pending_before_deliver(monkeypatch):
+    row = AgentSession(
+        id=41,
+        local_session_id="codex-synthetic-test",
+        workspace="<guest>",
+        branch="main",
+    )
+    turn = _completed_synthetic_turn()
+    delivered = []
+    deleted = []
+    released = []
+
+    async def deliver(*args, **kwargs):
+        delivered.append((args, kwargs))
+        return turn, None
+
+    monkeypatch.setattr(api, "_persist_session", lambda *args, **kwargs: row)
+    monkeypatch.setattr(api, "_persist_pending_message", lambda *args: 1)
+    monkeypatch.setattr(api, "_claim_pending_message_sync", lambda session_id: 1)
+    monkeypatch.setattr(api._transport, "deliver", deliver)
+    monkeypatch.setattr(api, "_persist_turn_from_pending_sync", lambda *args: None)
+    monkeypatch.setattr(
+        api,
+        "_delete_pending_message_sync",
+        lambda session_id, turn_seq: deleted.append((session_id, turn_seq)),
+    )
+    monkeypatch.setattr(
+        api,
+        "_release_pending_message_claim_sync",
+        lambda session_id, turn_seq: released.append((session_id, turn_seq)),
+    )
+
+    result = asyncio.run(api.run_synthetic_session("probe"))
+
+    assert result is turn
+    assert len(delivered) == 1
+    assert deleted == [(41, 1)]
+    assert released == [(41, 1)]
+
+
+def test_run_synthetic_session_does_not_deliver_when_claim_lost(monkeypatch):
+    row = AgentSession(
+        id=42,
+        local_session_id="codex-synthetic-test",
+        workspace="<guest>",
+        branch="main",
+    )
+    delivered = []
+    deleted = []
+
+    async def deliver(*args, **kwargs):
+        delivered.append((args, kwargs))
+        return _completed_synthetic_turn(), None
+
+    monkeypatch.setattr(api, "_persist_session", lambda *args, **kwargs: row)
+    monkeypatch.setattr(api, "_persist_pending_message", lambda *args: 1)
+    monkeypatch.setattr(api, "_claim_pending_message_sync", lambda session_id: None)
+    monkeypatch.setattr(api._transport, "deliver", deliver)
+    monkeypatch.setattr(
+        api,
+        "_delete_pending_message_sync",
+        lambda session_id, turn_seq: deleted.append((session_id, turn_seq)),
+    )
+
+    result = asyncio.run(api.run_synthetic_session("probe"))
+
+    assert result is None
+    assert delivered == []
+    assert deleted == [(42, 1)]
+
+
+def test_run_synthetic_session_tolerates_duplicate_turn_insert(monkeypatch):
+    row = AgentSession(
+        id=43,
+        local_session_id="codex-synthetic-test",
+        workspace="<guest>",
+        branch="main",
+    )
+    turn = _completed_synthetic_turn()
+    deleted = []
+    released = []
+
+    async def deliver(*args, **kwargs):
+        return turn, None
+
+    def persist_turn(*args):
+        raise IntegrityError("INSERT", {}, Exception("duplicate seq"))
+
+    monkeypatch.setattr(api, "_persist_session", lambda *args, **kwargs: row)
+    monkeypatch.setattr(api, "_persist_pending_message", lambda *args: 1)
+    monkeypatch.setattr(api, "_claim_pending_message_sync", lambda session_id: 1)
+    monkeypatch.setattr(api._transport, "deliver", deliver)
+    monkeypatch.setattr(api, "_persist_turn_from_pending_sync", persist_turn)
+    monkeypatch.setattr(
+        api,
+        "_delete_pending_message_sync",
+        lambda session_id, turn_seq: deleted.append((session_id, turn_seq)),
+    )
+    monkeypatch.setattr(
+        api,
+        "_release_pending_message_claim_sync",
+        lambda session_id, turn_seq: released.append((session_id, turn_seq)),
+    )
+
+    result = asyncio.run(api.run_synthetic_session("probe"))
+
+    assert result is turn
+    assert deleted == [(43, 1)]
+    assert released == [(43, 1)]
+
+
+def test_run_synthetic_session_refreshes_claim_and_delivers_once_when_lease_would_expire(
+    monkeypatch,
+):
+    row = AgentSession(
+        id=44,
+        local_session_id="codex-synthetic-test",
+        workspace="<guest>",
+        branch="main",
+    )
+    turn = _completed_synthetic_turn()
+    delivered = []
+    deleted = []
+    refresh_calls = []
+    sleep_calls = 0
+    elapsed = 0
+    fourth_sleep = asyncio.Event()
+    real_sleep = asyncio.sleep
+
+    async def sleep(delay):
+        nonlocal elapsed, sleep_calls
+        assert delay == 10
+        sleep_calls += 1
+        if sleep_calls > 3:
+            await fourth_sleep.wait()
+        else:
+            elapsed += delay
+            await real_sleep(0)
+
+    def refresh_claim(session_id, turn_seq, replica_id):
+        refresh_calls.append((session_id, turn_seq, replica_id))
+        return True
+
+    async def deliver(*args, **kwargs):
+        delivered.append((args, kwargs))
+        while len(refresh_calls) < 3:
+            await real_sleep(0)
+        return turn, None
+
+    monkeypatch.setattr(api, "_persist_session", lambda *args, **kwargs: row)
+    monkeypatch.setattr(api, "_persist_pending_message", lambda *args: 1)
+    monkeypatch.setattr(api, "_claim_pending_message_sync", lambda session_id: 1)
+    monkeypatch.setattr(api, "_refresh_claim_sync", refresh_claim)
+    monkeypatch.setattr(api.asyncio, "sleep", sleep)
+    monkeypatch.setattr(api._transport, "deliver", deliver)
+    monkeypatch.setattr(api, "_persist_turn_from_pending_sync", lambda *args: None)
+    monkeypatch.setattr(
+        api,
+        "_delete_pending_message_sync",
+        lambda session_id, turn_seq: deleted.append((session_id, turn_seq)),
+    )
+    monkeypatch.setattr(
+        api,
+        "_release_pending_message_claim_sync",
+        lambda session_id, turn_seq: None,
+    )
+
+    result = asyncio.run(api.run_synthetic_session("probe"))
+
+    assert result is turn
+    assert elapsed == 30
+    assert len(delivered) == 1
+    assert refresh_calls == [(44, 1, api._REPLICA_ID)] * 3
+    assert deleted == [(44, 1)]
 
 
 def test_start_session_for_swarm_retry_preserves_original_workflow_id(

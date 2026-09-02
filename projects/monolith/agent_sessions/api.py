@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import platform
 from uuid import uuid4
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from agent_sessions import model_family, store
@@ -13,6 +15,7 @@ from agent_sessions.codex_login import codex_login_gate, watch_for_login
 from agent_sessions.constants import SYNTHETIC_SESSION_PREFIX
 from agent_sessions.mcp import (
     _append_rationale_trailer,
+    _claim_pending_message_sync,
     _clear_ember_bindings_for,
     _delete_pending_message_sync,
     _load_session_row,
@@ -21,6 +24,8 @@ from agent_sessions.mcp import (
     _persist_pending_message,
     _persist_session,
     _persist_turn_from_pending_sync,
+    _refresh_claim_sync,
+    _release_pending_message_claim_sync,
     _schedule_next_message,
     _set_session_status,
     _transport,
@@ -30,6 +35,7 @@ from core.db import get_engine
 from goosecracker.api import REPO_CATALOG
 
 logger = logging.getLogger(__name__)
+_REPLICA_ID = platform.node()
 
 
 async def run_synthetic_session(prompt: str, model: str = "luna"):
@@ -53,6 +59,52 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
     )
     assert row.id is not None
     turn_seq = await asyncio.to_thread(_persist_pending_message, row.id, prompt, model)
+
+    # The monolith runs multiple replicas; an unclaimed pending message is fair
+    # game for another replica's worker. Claiming it here ensures the prompt is
+    # delivered at most once per probe run.
+    claimed_seq = await asyncio.to_thread(_claim_pending_message_sync, row.id)
+    if claimed_seq is None:
+        logger.warning(
+            "Pending turn %s for synthetic session %s was claimed by another replica",
+            turn_seq,
+            row.id,
+        )
+        await asyncio.to_thread(_delete_pending_message_sync, row.id, turn_seq)
+        return None
+
+    # The claim lease is 30 seconds. An observed run on 2026-09-02 06:00:27 took
+    # about 27 seconds end to end, leaving only a 3 second margin. A cold guest
+    # boot or relight would exceed that, causing the claim to expire mid-delivery
+    # and another replica to reclaim, reintroducing double delivery. Refresh the
+    # claim every 10 seconds against the 30 second lease, reusing the same
+    # mechanism as the worker path (mcp.py:416-440).
+    claim_stolen = False
+
+    async def _refresh_heartbeat() -> None:
+        nonlocal claim_stolen
+        while not claim_stolen:
+            try:
+                await asyncio.sleep(10)
+                still_held = await asyncio.to_thread(
+                    _refresh_claim_sync, row.id, turn_seq, _REPLICA_ID
+                )
+                if not still_held:
+                    claim_stolen = True
+                    logger.warning(
+                        "Claim for turn %s in session %s was reclaimed",
+                        turn_seq,
+                        row.id,
+                    )
+                    break
+            except Exception:
+                logger.exception(
+                    "Failed to refresh claim for turn %s in session %s",
+                    turn_seq,
+                    row.id,
+                )
+
+    refresh_task = asyncio.create_task(_refresh_heartbeat())
     ember = None
 
     async def persist_callback(created_ember, _cli_session_id):
@@ -63,6 +115,14 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
         await asyncio.to_thread(_persist_ember_session, row.id, created_ember)
 
     try:
+        if claim_stolen:
+            await asyncio.to_thread(_delete_pending_message_sync, row.id, turn_seq)
+            logger.warning(
+                "Claim for turn %s in session %s was reclaimed before delivery, aborting",
+                turn_seq,
+                row.id,
+            )
+            return None
         turn, _returned_ember = await _transport.deliver(
             None,
             None,
@@ -71,18 +131,35 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
             on_create=persist_callback,
         )
         ember = _returned_ember
+        if claim_stolen:
+            logger.warning(
+                "Claim was stolen during deliver for turn %s in session %s, not persisting result",
+                turn_seq,
+                row.id,
+            )
+            await asyncio.to_thread(_delete_pending_message_sync, row.id, turn_seq)
+            return None
         status = _turn_status(turn)
-        await asyncio.to_thread(
-            _persist_turn_from_pending_sync,
-            row.id,
-            turn_seq,
-            prompt,
-            turn,
-            turn.result.strip()[:200],
-            status,
-            turn.session_id,
-            model,
-        )
+        try:
+            await asyncio.to_thread(
+                _persist_turn_from_pending_sync,
+                row.id,
+                turn_seq,
+                prompt,
+                turn,
+                turn.result.strip()[:200],
+                status,
+                turn.session_id,
+                model,
+            )
+        except IntegrityError:
+            logger.warning(
+                "Turn %s for session %s already exists (duplicate seq), discarding retry",
+                turn_seq,
+                row.id,
+            )
+            await asyncio.to_thread(_delete_pending_message_sync, row.id, turn_seq)
+            return turn
         await asyncio.to_thread(_delete_pending_message_sync, row.id, turn_seq)
         return turn
     except Exception as exc:
@@ -92,6 +169,10 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
         await asyncio.to_thread(_mark_turn_error_sync, row.id, turn_seq, str(exc))
         raise
     finally:
+        refresh_task.cancel()
+        await asyncio.to_thread(
+            _release_pending_message_claim_sync, row.id, claimed_seq
+        )
         if ember is not None:
             try:
                 await _transport.destroy_session(ember.session_id)
