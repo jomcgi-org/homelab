@@ -23,7 +23,12 @@
     "Schibsted Grotesk", "Avenir Next", "Segoe UI", system-ui, sans-serif;
   --font-code: ui-monospace, "SF Mono", "Cascadia Mono", monospace;
   --band: color-mix(in srgb, var(--ink) 5%, var(--sheet));
-  --accent-ink: color-mix(in srgb, var(--accent) 85%, var(--ink));
+  /* Day's accent-ink is set outright rather than mixed from --accent: the
+   * steel-blue mix sat within a hair of --ink-2, so a hovered or active
+   * link was hard to tell from its neighbours. This is a saturated navy
+   * with the same luminance, so the difference is chroma, and it clears
+   * 7.8:1 on the sheet. Night keeps the mix; the gold reads on its own. */
+  --accent-ink: #1f4f9f;
   --stroke: color-mix(in srgb, var(--ink) 28%, transparent);
   /* Figure tones: one fixed meaning each across every figure (GPU, host
    * RAM, page cache, NVMe, and the hot expert set), meaningful colour only.
@@ -46,6 +51,7 @@
     --ink-3: #6f6d65;
     --line: rgba(232, 227, 210, 0.12);
     --accent: #d3a45f;
+    --accent-ink: color-mix(in srgb, var(--accent) 85%, var(--ink));
     --ok: #6fbf8d;
     --tone-gpu: #63a8ff;
     --tone-ram: #3ddc84;
@@ -64,6 +70,7 @@
   --ink-3: #6f6d65;
   --line: rgba(232, 227, 210, 0.12);
   --accent: #d3a45f;
+  --accent-ink: color-mix(in srgb, var(--accent) 85%, var(--ink));
   --ok: #6fbf8d;
   --tone-gpu: #63a8ff;
   --tone-ram: #3ddc84;
