@@ -6,6 +6,11 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   annotations:
+    # Kargo will not update an Application that has not named the Stage allowed
+    # to touch it. Without this the promotion errors with "is not authorized"
+    # and the pin never moves, which is exactly how this cluster's first three
+    # promotions failed. Mirrors projects/embervm/deploy/application.yaml.
+    kargo.akuity.io/authorized-stage: kargo-embervm:prod
     argocd.argoproj.io/sync-wave: "2"
 spec:
   project: default
