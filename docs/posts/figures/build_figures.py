@@ -118,11 +118,11 @@ def _decode_parts(f: Figure, px: float, py: float, *, letters: bool) -> None:
 
 def decode_step() -> Figure:
     f = Figure(700, 632, "One decode step through one expert layer")
-    pw, ph = 342, 308
-    slots = [(0, 0), (358, 0), (0, 324), (358, 324)]
+    slots = [(0, 0), (350, 0), (0, 316), (350, 316)]
+    f.grid(700, 632, cols=[350], rows=[316])
     titles = ["Route", "Sort by residency", "Move", "Compute and tally"]
     for i, ((px, py), title) in enumerate(zip(slots, titles)):
-        f.panel(px, py, pw, ph, i + 1, title)
+        f.panel(px, py, i + 1, title)
         _decode_parts(f, px, py, letters=(i == 0))
 
     # 1 Route
@@ -190,10 +190,12 @@ def decode_step() -> Figure:
 
 
 def _strip(f: Figure, titles: list[str], ph: int = 250) -> list[tuple[float, float]]:
-    pw, gap = 224, 14
-    slots = [(i * (pw + gap), 0) for i in range(3)]
+    """Three stages across one outline, divided by two partition lines."""
+    pw = 233
+    slots = [(i * pw, 0) for i in range(3)]
+    f.grid(700, ph, cols=[pw, 2 * pw], rows=[])
     for i, ((px, py), title) in enumerate(zip(slots, titles)):
-        f.panel(px, py, pw, ph, i + 1, title)
+        f.panel(px, py, i + 1, title)
     return slots
 
 
@@ -285,7 +287,7 @@ def prefill_chunk() -> Figure:
             (px + 60, py + 208),
             (px + 20, py + 208),
             (px + 20, py + 68),
-            (px + 36, py + 68),
+            (px + 28, py + 68),
         ]
     )
     f.lines(px + 34, py + 152, ["table rows:", "one coalesced", "read"])

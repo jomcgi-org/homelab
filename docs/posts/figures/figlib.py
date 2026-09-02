@@ -237,10 +237,19 @@ class Figure:
 
     # ---- panels ---------------------------------------------------------
 
-    def panel(self, x: float, y: float, w: float, h: float, n: int, title: str) -> None:
-        self.box(x, y, w, h)
+    def panel(self, x: float, y: float, n: int, title: str) -> None:
+        """A stage's callout and title; the cell itself is drawn by grid()."""
         self.callout(x + 18, y + 18, str(n))
         self.text(x + 34, y + 22, title, size=11)
+
+    def grid(self, w: float, h: float, cols: list[float], rows: list[float]) -> None:
+        """One outline partitioned into cells by edge-to-edge lines, never
+        separate boxes with dead space between them."""
+        self.box(0, 0, w, h)
+        for x in cols:
+            self.vline(x, 0, h)
+        for y in rows:
+            self.hline(0, w, y)
 
     # ---- output ---------------------------------------------------------
 
