@@ -293,12 +293,8 @@ def prefill_chunk() -> Figure:
         ]
     )
     f.lines(px + 34, py + 152, ["table rows:", "one coalesced", "read"])
-    f.arrow(px + 138, py + 216, px + 138, py + 130)
-    f.lines(
-        px + 144,
-        py + 152,
-        ["expert rows:", "populated", "per layer,", "after", "routing"],
-    )
+    f.arrow(px + 130, py + 216, px + 130, py + 130)
+    f.lines(px + 137, py + 152, ["expert rows:", "per layer,", "after routing"])
 
     # 3 Forward
     px, py = slots[2]
