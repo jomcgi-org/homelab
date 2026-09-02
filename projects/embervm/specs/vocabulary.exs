@@ -139,7 +139,12 @@
         # sole generation issuer), part of the same out-of-scope volume machinery.
         # blessing_lease_granted is a durability operation, not modeled in
         # adoption.tla per ADR embervm/006 scope.
-        ~w(volume_created volume_deleted generation_blessed blessing_lease_granted
+        # volume_recovery_updated carries the two facts anchor-loss recovery needs
+        # durably (export proof, and the anchor after a restore onto a live node).
+        # It deliberately cannot rewrite the blessing ledger, so it belongs with
+        # the volume machinery above rather than with the generation kinds.
+        ~w(volume_created volume_deleted volume_recovery_updated
+           generation_blessed blessing_lease_granted
            stateful_unpublished stateful_stats)a ++
         # R5 composite-group lifecycle kinds, out of scope. group_destroying is the
         # ADR embervm/014 destroy-intent kind.
