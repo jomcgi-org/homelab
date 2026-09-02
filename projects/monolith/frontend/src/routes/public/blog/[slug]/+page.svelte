@@ -173,13 +173,13 @@
     gap: clamp(2em, 4vw, 4em);
   }
 
-  /* Sticks below the fixed chrome (its links sit at 1.1rem, about 2rem
-     tall) so the index label never slides under the back link. */
+  /* Sticks below the fixed trail (two rows from 1.1rem, a wrapped title
+     makes three) so the index label never slides under it. */
   .spine {
     position: sticky;
-    top: 3.6rem;
+    top: 6.5rem;
     align-self: start;
-    max-height: calc(100vh - 5rem);
+    max-height: calc(100vh - 8rem);
     padding-left: 0.4rem;
     overflow-y: auto;
     scrollbar-width: none;
@@ -656,6 +656,7 @@
 
   @media (max-width: 600px) {
     .post-page {
+      padding-top: 1rem;
       padding-right: 1em;
       padding-left: 1em;
     }
