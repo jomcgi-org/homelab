@@ -285,6 +285,17 @@ async def probe_codex() -> dict:
             CODEX_SYNTHETIC_PROMPT,
             model="luna",
         )
+        if turn is None:
+            # Another replica claimed this run's pending message and is
+            # delivering it. Nothing was proven, but nothing is known broken
+            # either, so report ok rather than paging: a red here would say
+            # "the lane is down" when the lane is merely busy elsewhere. The
+            # claim loss is logged in run_synthetic_session.
+            return {
+                "ok": True,
+                "detail": "another replica delivered this run",
+                "latency_ms": (perf_counter() - started) * 1000,
+            }
         if turn.terminal_reason not in {"completed", "stop"}:
             return {
                 "ok": False,

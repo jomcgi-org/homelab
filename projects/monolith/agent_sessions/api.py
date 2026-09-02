@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import platform
 from uuid import uuid4
 
 from sqlalchemy.exc import IntegrityError
@@ -24,6 +23,7 @@ from agent_sessions.mcp import (
     _persist_pending_message,
     _persist_session,
     _persist_turn_from_pending_sync,
+    _REPLICA_ID,
     _refresh_claim_sync,
     _release_pending_message_claim_sync,
     _schedule_next_message,
@@ -35,7 +35,6 @@ from core.db import get_engine
 from goosecracker.api import REPO_CATALOG
 
 logger = logging.getLogger(__name__)
-_REPLICA_ID = platform.node()
 
 
 async def run_synthetic_session(prompt: str, model: str = "luna"):
