@@ -366,26 +366,29 @@
     text-align: right;
   }
 
-  /* The key column repeats the figure's callout: the same circle, the same
-     tone, so a letter in the table is found in the drawing by colour. The
-     radius is the figure's mark, not page chrome. */
+  /* The key column carries the part's tier colour as a solid block with the
+     letter reversed out, so a key in the table is found in the drawing by
+     colour. Keys without a tone (ink parts, stage numbers) stay plain. */
   .post-body :global(td.key) {
-    padding-top: 0.4em;
-    padding-bottom: 0.4em;
+    padding-top: 0.35em;
+    padding-bottom: 0.35em;
     text-align: center;
   }
 
   .post-body :global(td.key .co) {
+    font-weight: 600;
+  }
+
+  .post-body :global(td.key[data-tone] .co) {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 1.6em;
-    height: 1.6em;
-    border: 1px solid var(--key-tone, currentColor);
-    border-radius: 50%;
-    color: var(--key-tone, currentColor);
+    min-width: 1.7em;
+    height: 1.7em;
+    padding: 0 0.3em;
+    background: var(--key-tone);
+    color: var(--sheet);
     font-size: 0.78rem;
-    font-weight: 600;
     line-height: 1;
   }
 
