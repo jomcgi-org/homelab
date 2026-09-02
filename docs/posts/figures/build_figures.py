@@ -36,7 +36,7 @@ def memory_tiers() -> Figure:
     f.hline(150, 550, 54, tone="gpu")
     f.vline(270, 54, 128, tone="gpu")
     f.vline(420, 54, 128, tone="gpu")
-    f.lines(160, 74, ["dense layers", "9.2 GiB"])
+    f.lines(160, 74, ["dense layers", "9.2 GB"])
     f.lines(280, 74, ["expert slot cache", "hot set stays", "resident here"])
     f.text(430, 74, "KV cache")
     f.keyed(40, 78, "1", 150, 78, tone="gpu")
@@ -53,7 +53,7 @@ def memory_tiers() -> Figure:
     f.hline(150, 550, 202, tone="ram")
     f.vline(410, 202, 254, tone="hot")
     f.lines(160, 222, ["expert banks, 40 GB", "30 whole layers"])
-    f.lines(420, 222, ["hot rows, 6 GiB", "18 disk layers"], tone="hot")
+    f.lines(420, 222, ["hot rows, 6 GB", "18 disk layers"], tone="hot")
     f.keyed(40, 215, "3", 150, 215, tone="ram")
 
     # 6 CPU executor, fed from the page cache
@@ -75,8 +75,8 @@ def memory_tiers() -> Figure:
     f.text(160, 384, "NVMe: 1.9 TB", tone="disk")
     f.hline(150, 550, 392, tone="disk")
     f.vline(400, 392, 442, tone="disk")
-    f.lines(160, 412, ["expert banks, 63.5 GiB", "48 layers x 512 experts"])
-    f.lines(410, 412, ["lookup table, 27 GiB", "n-gram rows"])
+    f.lines(160, 412, ["expert banks, 63.5 GB", "48 layers x 512 experts"])
+    f.lines(410, 412, ["lookup table, 27 GB", "n-gram rows"])
     f.keyed(40, 404, "5", 150, 404, tone="disk")
     return f
 
@@ -106,8 +106,8 @@ def _decode_parts(f: Figure, px: float, py: float, *, letters: bool) -> None:
     # D NVMe
     f.box(x(48), y(220), 210, 40, tone="disk")
     f.line(x(170), y(220), x(170), y(260), weight=1.25, tone="disk")
-    f.lines(x(54), y(236), ["expert banks", "63.5 GiB"], tone="disk")
-    f.lines(x(176), y(236), ["table", "27 GiB"], tone="disk")
+    f.lines(x(54), y(236), ["expert banks", "63.5 GB"], tone="disk")
+    f.lines(x(176), y(236), ["table", "27 GB"], tone="disk")
     if letters:
         f.keyed(x(26), y(71), "A", x(48), y(71), tone="gpu")
         f.keyed(x(26), y(138), "B", x(48), y(138), tone="ram")
@@ -230,13 +230,13 @@ def hot_set_swap() -> Figure:
             f.box(bx, py + 176 - h, 8, h)
     f.line(px + 30, py + 176, px + 182, py + 176)
     f.line(px + 105, py + 112, px + 105, py + 180, dashed=True)
-    f.text(px + 110, py + 122, "6 GiB budget")
+    f.text(px + 110, py + 122, "6 GB budget")
 
     # 2 Stage
     px, py = slots[1]
     f.arrow(px + 180, py + 196, px + 180, py + 84, dashed=True)
     f.text(px + 36, py + 104, "old row still serves")
-    f.lines(px + 64, py + 130, ["background copy,", "0.5 GiB a tick"])
+    f.lines(px + 64, py + 130, ["background copy,", "0.5 GB a tick"])
 
     # 3 Flip
     px, py = slots[2]

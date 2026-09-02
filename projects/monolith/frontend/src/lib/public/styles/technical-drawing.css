@@ -31,7 +31,7 @@
    * sheet at the 11px mono label size. */
   --tone-gpu: #0b6bff;
   --tone-ram: #0b7f47;
-  --tone-cache: #a85600;
+  --tone-cache: #0e7c86;
   --tone-disk: #d0262a;
   --tone-hot: #d100b5;
 }
@@ -49,7 +49,7 @@
     --ok: #6fbf8d;
     --tone-gpu: #63a8ff;
     --tone-ram: #3ddc84;
-    --tone-cache: #ffb347;
+    --tone-cache: #4dd0e1;
     --tone-disk: #ff6b6b;
     --tone-hot: #ff7be5;
   }
@@ -67,7 +67,7 @@
   --ok: #6fbf8d;
   --tone-gpu: #63a8ff;
   --tone-ram: #3ddc84;
-  --tone-cache: #ffb347;
+  --tone-cache: #4dd0e1;
   --tone-disk: #ff6b6b;
   --tone-hot: #ff7be5;
 }
