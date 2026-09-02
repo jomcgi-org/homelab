@@ -25,17 +25,6 @@
         <p>{data.summary}</p>
       </header>
 
-      <div class="meta-rows">
-        <p class="meta-kv">
-          <span class="k">Filed</span>
-          <span class="v filed-tags">
-            {#each data.tags as tag}
-              <a href={`/blog?tag=${encodeURIComponent(tag)}`}>{tag}</a>
-            {/each}
-          </span>
-        </p>
-      </div>
-
       <!-- Server-rendered, constrained first-party markdown. -->
       <div class="post-body">{@html data.html}</div>
     </article>
@@ -59,7 +48,7 @@
   }
 
   .post-frame {
-    max-width: 48em;
+    max-width: 54em;
     margin: 0 auto;
   }
 
@@ -109,53 +98,6 @@
     color: var(--ink);
     font-size: 0.92rem;
     line-height: 1.55;
-  }
-
-  .meta-rows {
-    border-top: 1px solid var(--stroke);
-  }
-
-  .meta-kv {
-    display: grid;
-    grid-template-columns: 6.5em minmax(0, 1fr);
-    align-items: stretch;
-    margin: 0;
-  }
-
-  .meta-kv .k {
-    padding: 0.5em 0 0.5em 1rem;
-  }
-
-  .meta-kv .v {
-    border-left: 1px solid var(--line);
-  }
-
-  .meta-kv .k,
-  .meta-kv .v {
-    color: var(--ink-2);
-    font-family: var(--font-code);
-    font-size: 0.72rem;
-  }
-
-  .filed-tags {
-    display: flex;
-    flex-wrap: wrap;
-    overflow: hidden;
-  }
-
-  .filed-tags a {
-    box-sizing: border-box;
-    flex: 0 0 10.5rem;
-    margin: -1px 0 0 -1px;
-    padding: 0.5em 0.7em;
-    border-top: 1px solid var(--line);
-    border-left: 1px solid var(--line);
-    color: var(--ink-2);
-    text-decoration: none;
-  }
-
-  .filed-tags a:hover {
-    color: var(--accent-ink);
   }
 
   .post-body {
@@ -366,30 +308,33 @@
     text-align: right;
   }
 
-  /* The key column carries the part's tier colour as a solid block with the
-     letter reversed out, so a key in the table is found in the drawing by
-     colour. Keys without a tone (ink parts, stage numbers) stay plain. */
-  .post-body :global(td.key) {
-    padding-top: 0.35em;
-    padding-bottom: 0.35em;
+  /* The key column carries the part's tier colour as the cell itself: the
+     colour fills the cell edge to edge and the table rules close it on all
+     four sides, so each key is a box in the grid, joined to the drawing by
+     colour. Keys without a tone (ink parts, stage numbers) keep the box and
+     stay ink. */
+  .post-body :global(table.fig-key) {
+    border: 1px solid var(--line);
+  }
+
+  .post-body :global(table.fig-key th:first-child),
+  .post-body :global(table.fig-key td.key) {
+    width: 3em;
+    padding: 0.55em 0.4em;
+    border-right: 1px solid var(--line);
     text-align: center;
+    vertical-align: middle;
   }
 
   .post-body :global(td.key .co) {
+    font-family: var(--font-code);
+    font-size: 0.85rem;
     font-weight: 600;
   }
 
-  .post-body :global(td.key[data-tone] .co) {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 1.7em;
-    height: 1.7em;
-    padding: 0 0.3em;
+  .post-body :global(td.key[data-tone]) {
     background: var(--key-tone);
     color: var(--sheet);
-    font-size: 0.78rem;
-    line-height: 1;
   }
 
   .post-body :global(td.key[data-tone="gpu"]) {
