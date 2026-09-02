@@ -1,6 +1,7 @@
 <script>
   import { Seo } from "$lib/public/components";
   import { formatDate } from "./blog.js";
+  import Trail from "./Trail.svelte";
 
   let { data } = $props();
   let activeSlug = $state("");
@@ -40,6 +41,9 @@
 
     <div class="journal">
       <aside class="spine">
+        <div class="trail-dock">
+          <Trail />
+        </div>
         {#if data.months.length}
           <nav class="date-rail" aria-label="Blog index">
             <p class="sec-label">/ Index</p>
@@ -106,7 +110,7 @@
   .blog-page {
     box-sizing: border-box;
     min-height: 100vh;
-    padding: clamp(3.25rem, 5vh, 3.75rem) clamp(1.5em, 5vw, 4.5em) 6em;
+    padding: 1.5rem clamp(4rem, 5vw, 4.5em) 6em;
     background: var(--sheet);
     color: var(--ink);
     font-family: var(--font-ui);
@@ -133,6 +137,10 @@
     overflow: hidden;
     clip-path: inset(50%);
     white-space: nowrap;
+  }
+
+  .trail-dock {
+    margin-bottom: 1.4rem;
   }
 
   .sec-label {
@@ -342,6 +350,10 @@
       max-height: none;
       padding-left: 0;
       overflow: visible;
+    }
+
+    .trail-dock {
+      display: none;
     }
 
     .date-rail {

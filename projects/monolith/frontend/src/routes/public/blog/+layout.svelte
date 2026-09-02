@@ -1,6 +1,7 @@
 <script>
   import { page } from "$app/state";
   import "$lib/public/styles/technical-drawing.css";
+  import Trail from "./Trail.svelte";
 
   let { children } = $props();
 
@@ -60,17 +61,9 @@
 </svelte:head>
 
 <div class="td chrome">
-  <nav class="trail" aria-label="You are here">
-    <div class="trail-row">
-      <a class="crumb" href="/">jomcgi.dev</a>
-      <a class="crumb" href="/blog" aria-current={post ? undefined : "page"}
-        >blog</a
-      >
-    </div>
-    {#if post}
-      <span class="crumb current" aria-current="page">{post}</span>
-    {/if}
-  </nav>
+  <div class="trail-slot">
+    <Trail {post} />
+  </div>
   <button
     class="scheme"
     type="button"
@@ -113,70 +106,25 @@
 {@render children()}
 
 <style>
-  /* On a wide screen the chrome floats over the page margins: the trail
-     top left, the scheme switch top right, neither reaching the content
-     (the trail is capped at the index column's width and the pages pad
-     their top to clear it). On a phone there is no margin to float in,
-     so the same row sits in the flow at the top of the page and scrolls
-     away with it. */
+  /* On a wide screen only the scheme switch floats, top right; the trail
+     is docked at the top of the index column by the pages themselves so
+     it lines up with the index and sticks with it. On a phone there is
+     no index column to dock in, so the trail joins the switch in one row
+     in the flow at the top of the page and scrolls away with it. */
   .chrome {
     position: fixed;
     top: 1.1rem;
     right: 1.2rem;
-    left: 1.2rem;
     z-index: 1000;
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
     gap: 1rem;
-    pointer-events: none;
   }
 
-  .trail,
-  .scheme {
-    pointer-events: auto;
-  }
-
-  /* Two rows: site and blog, then the post under a rule. */
-  .trail {
-    display: flex;
-    flex-direction: column;
-    max-width: 16em;
-    border: 1px solid var(--stroke);
-    background: var(--sheet);
-  }
-
-  .trail-row {
-    display: flex;
-  }
-
-  .trail-row .crumb:first-child {
-    flex: 1;
-  }
-
-  .crumb {
-    padding: 5px 8px;
-    color: var(--ink-2);
-    font-family: var(--font-code);
-    font-size: 0.72rem;
-    font-weight: 500;
-    letter-spacing: 0.02em;
-    text-decoration: none;
-    white-space: nowrap;
-  }
-
-  .trail-row .crumb + .crumb {
-    border-left: 1px solid var(--stroke);
-  }
-
-  .crumb.current {
-    border-top: 1px solid var(--stroke);
-    color: var(--ink);
-    white-space: normal;
-  }
-
-  a.crumb:hover {
-    color: var(--accent-ink);
+  .trail-slot {
+    display: none;
+    min-width: 0;
   }
 
   .scheme {
@@ -201,7 +149,6 @@
     display: block;
   }
 
-  .crumb:focus-visible,
   .scheme:focus-visible {
     outline: 2px solid var(--accent-ink);
     outline-offset: -2px;
@@ -214,8 +161,8 @@
       background: var(--sheet);
     }
 
-    .trail {
-      max-width: none;
+    .trail-slot {
+      display: block;
     }
   }
 </style>

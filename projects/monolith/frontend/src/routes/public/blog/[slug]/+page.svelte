@@ -1,6 +1,7 @@
 <script>
   import { Seo } from "$lib/public/components";
   import { formatDate } from "../blog.js";
+  import Trail from "../Trail.svelte";
 
   let { data } = $props();
   let activeId = $state("");
@@ -8,21 +9,37 @@
   // The spine follows the reader: the topmost heading in the upper band of
   // the viewport is the active one, and the URL hash follows it so a copied
   // link lands on the section being read. Two cases the band cannot decide
-  // on its own: a clicked entry stays active while the page scrolls to it
-  // (the first and last sections never reach the band, there is no room
-  // above or below to absorb the scroll), and the last heading wins once
-  // the page is scrolled to its end.
-  let pinnedUntil = 0;
+  // on its own: a clicked entry stays active until the scroll it started
+  // has stopped (the first and last sections never reach the band, there
+  // is no room above or below to absorb the scroll), and the last heading
+  // wins once the page is scrolled to its end. The first entry goes to the
+  // top of the page rather than to its heading, so the title comes too.
+  let pinned = false;
+  let settle = 0;
+  let first = "";
+  let last = "";
+
+  function setActive(id) {
+    if (id === activeId) return;
+    activeId = id;
+    history.replaceState(null, "", `#${id}`);
+  }
 
   function pin(id) {
+    pinned = true;
     activeId = id;
-    pinnedUntil = Date.now() + 1000;
   }
 
   function onIndexClick(event) {
     const link = event.target.closest("a[href^='#']");
     if (!link) return;
-    pin(link.getAttribute("href").slice(1));
+    const id = link.getAttribute("href").slice(1);
+    pin(id);
+    if (id === first) {
+      event.preventDefault();
+      history.replaceState(null, "", `#${id}`);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
   }
 
   $effect(() => {
@@ -30,7 +47,8 @@
       ".post-frame h2[id], .post-frame h3[id]",
     );
     if (!headings.length) return;
-    const last = headings[headings.length - 1].id;
+    first = headings[0].id;
+    last = headings[headings.length - 1].id;
     if (location.hash.length > 1)
       pin(decodeURIComponent(location.hash.slice(1)));
 
@@ -38,36 +56,60 @@
       window.innerHeight + window.scrollY >=
       document.documentElement.scrollHeight - 2;
 
+    // The band: a heading is "being read" when its top sits between 10%
+    // and 30% of the viewport. Used by the observer and, once a pinned
+    // scroll settles, by a direct re-read of the page.
+    const bandPick = () => {
+      if (atEnd()) return last;
+      if (window.scrollY === 0) return first;
+      const lo = window.innerHeight * 0.1;
+      const hi = window.innerHeight * 0.3;
+      let best = null;
+      for (const h of headings) {
+        const top = h.getBoundingClientRect().top;
+        if (top >= lo && top <= hi && (best === null || top < best.top)) {
+          best = { id: h.id, top };
+        }
+      }
+      return best ? best.id : null;
+    };
+
     const observer = new IntersectionObserver(
-      (observed) => {
-        if (Date.now() < pinnedUntil) return;
-        if (atEnd()) return;
-        const visible = observed
-          .filter((item) => item.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
-        if (!visible[0]) return;
-        const id = visible[0].target.id;
-        if (id === activeId) return;
-        activeId = id;
-        history.replaceState(null, "", `#${id}`);
+      () => {
+        if (pinned) return;
+        const id = bandPick();
+        if (id) setActive(id);
       },
       { rootMargin: "-10% 0px -70% 0px" },
     );
     headings.forEach((h) => observer.observe(h));
 
+    // A scroll that has gone quiet for a beat has stopped: release the
+    // pin and read the page as it now stands. scrollend is not universal,
+    // so the quiet period is the mechanism and scrollend only shortens it.
+    const release = () => {
+      pinned = false;
+      const id = bandPick();
+      if (id) setActive(id);
+    };
     const onScroll = () => {
-      if (atEnd() && activeId !== last) {
-        activeId = last;
-        history.replaceState(null, "", `#${last}`);
+      if (!pinned) {
+        if (atEnd()) setActive(last);
+        return;
       }
+      clearTimeout(settle);
+      settle = setTimeout(release, 160);
     };
     const onScrollEnd = () => {
-      pinnedUntil = 0;
+      if (!pinned) return;
+      clearTimeout(settle);
+      release();
     };
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("scrollend", onScrollEnd);
     return () => {
       observer.disconnect();
+      clearTimeout(settle);
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("scrollend", onScrollEnd);
     };
@@ -85,6 +127,9 @@
   <div class="frame">
     <div class="journal">
       <aside class="spine">
+        <div class="trail-dock">
+          <Trail post={data.title} />
+        </div>
         {#if data.toc.length}
           <nav class="toc" aria-label="Sections" onclick={onIndexClick}>
             <p class="sec-label">/ Index</p>
@@ -150,7 +195,7 @@
   .post-page {
     box-sizing: border-box;
     min-height: 100vh;
-    padding: clamp(3.25rem, 5vh, 3.75rem) clamp(1.35em, 5vw, 4.5em) 6em;
+    padding: 1.5rem clamp(4rem, 5vw, 4.5em) 6em;
     background: var(--sheet);
     color: var(--ink);
     font-family: var(--font-ui);
@@ -173,16 +218,18 @@
     gap: clamp(2em, 4vw, 4em);
   }
 
-  /* Sticks below the fixed trail (two rows from 1.1rem, a wrapped title
-     makes three) so the index label never slides under it. */
   .spine {
     position: sticky;
-    top: 6.5rem;
+    top: 1.5rem;
     align-self: start;
-    max-height: calc(100vh - 8rem);
+    max-height: calc(100vh - 3rem);
     padding-left: 0.4rem;
     overflow-y: auto;
     scrollbar-width: none;
+  }
+
+  .trail-dock {
+    margin-bottom: 1.4rem;
   }
 
   .sec-label {
@@ -629,6 +676,7 @@
       background: var(--sheet);
     }
 
+    .trail-dock,
     .sec-label {
       display: none;
     }
