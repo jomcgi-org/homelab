@@ -6691,6 +6691,11 @@ py_test(
     srcs = ["ember_public/synthetic_probe_test.py"],
     imports = ["."],
     deps = [
+        # probe_codex imports agent_sessions.api lazily, inside the function, so
+        # the public binary never pulls it in at module load. The private probe
+        # endpoint has the package at runtime, and this test needs the module on
+        # its path so monkeypatch can resolve run_synthetic_session.
+        ":pkg_agent_sessions",
         ":pkg_ember_public",
         "@pip//httpx",
         "@pip//pytest",

@@ -10,12 +10,17 @@ from sqlmodel import Session
 
 from agent_sessions import model_family, store
 from agent_sessions.codex_login import codex_login_gate, watch_for_login
+from agent_sessions.constants import SYNTHETIC_SESSION_PREFIX
 from agent_sessions.mcp import (
     _append_rationale_trailer,
     _clear_ember_bindings_for,
+    _delete_pending_message_sync,
     _load_session_row,
+    _mark_turn_error_sync,
+    _persist_ember_session,
     _persist_pending_message,
     _persist_session,
+    _persist_turn_from_pending_sync,
     _schedule_next_message,
     _set_session_status,
     _transport,
@@ -25,6 +30,75 @@ from core.db import get_engine
 from goosecracker.api import REPO_CATALOG
 
 logger = logging.getLogger(__name__)
+
+
+async def run_synthetic_session(prompt: str, model: str = "luna"):
+    """Run and persist one short synthetic session through the normal path.
+
+    This is intentionally a direct, awaited form of the session worker for
+    probes. It still uses the shared transport and turn persistence, but gives
+    the caller the completed turn instead of requiring a background task and a
+    database poll. The session is always destroyed before returning.
+    """
+    from agent_sessions.mcp import _turn_status
+
+    model_family(model)
+    row = await asyncio.to_thread(
+        _persist_session,
+        f"{SYNTHETIC_SESSION_PREFIX}{uuid4()}",
+        "<guest>",
+        "main",
+        model,
+        None,
+    )
+    assert row.id is not None
+    turn_seq = await asyncio.to_thread(_persist_pending_message, row.id, prompt, model)
+    ember = None
+
+    async def persist_callback(created_ember, _cli_session_id):
+        nonlocal ember
+        # Capture the created session before the persistence hop so a failed
+        # invoke or callback still reaches the cleanup block below.
+        ember = created_ember
+        await asyncio.to_thread(_persist_ember_session, row.id, created_ember)
+
+    try:
+        turn, _returned_ember = await _transport.deliver(
+            None,
+            None,
+            prompt,
+            model,
+            on_create=persist_callback,
+        )
+        ember = _returned_ember
+        status = _turn_status(turn)
+        await asyncio.to_thread(
+            _persist_turn_from_pending_sync,
+            row.id,
+            turn_seq,
+            prompt,
+            turn,
+            turn.result.strip()[:200],
+            status,
+            turn.session_id,
+            model,
+        )
+        await asyncio.to_thread(_delete_pending_message_sync, row.id, turn_seq)
+        return turn
+    except Exception as exc:
+        # Transport errors already contain _status_error_detail when the
+        # control plane supplied a response body. Persist that same detail on
+        # the failed turn, not only in the transport log.
+        await asyncio.to_thread(_mark_turn_error_sync, row.id, turn_seq, str(exc))
+        raise
+    finally:
+        if ember is not None:
+            try:
+                await _transport.destroy_session(ember.session_id)
+            except EmberSessionGone:
+                pass
+            finally:
+                await asyncio.to_thread(_clear_ember_bindings_for, ember.session_id)
 
 
 def start_session_for_swarm(

@@ -17,6 +17,10 @@ from ember_public.synthetic import read_probe
 # prober still surfaces.
 EMBER_SYNTHETIC_STALENESS_S = 750.0
 
+# The Codex lane synthetic runs hourly. Apply the same 2.5x cadence rule so one
+# missed or slow run does not flap the health check.
+EMBER_CODEX_STALENESS_S = 9000.0
+
 
 def synthetic_probe_health(demo: str, staleness_s: float):
     """Build a health component backed by one synthetic probe latch row."""

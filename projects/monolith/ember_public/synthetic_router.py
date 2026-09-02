@@ -39,6 +39,14 @@ internal_router = APIRouter(prefix="/internal/ember", tags=["ember-internal"])
 # no-op rather than a second concurrent sweep competing for the same demo VMs
 # (mirrors semgrep_scan.router's _harvest_in_flight).
 _probe_in_flight = False
+# The hourly Codex lane probe must not block, or be blocked by, the demo sweep.
+_codex_probe_in_flight = False
+
+
+async def _notify(message: str, level: str) -> None:
+    from agent.api import notify
+
+    await notify(message, level=level)
 
 
 @internal_router.post("/synthetic-probe")
@@ -77,3 +85,26 @@ async def synthetic_probe_endpoint() -> dict:
         return results
     finally:
         _probe_in_flight = False
+
+
+@internal_router.post("/codex-session-probe")
+async def codex_session_probe_endpoint() -> dict:
+    """Run and latch only the Codex lane session synthetic."""
+    global _codex_probe_in_flight
+
+    if _codex_probe_in_flight:
+        logger.warning("Codex synthetic probe already in flight, skipping this trigger")
+        return {"skipped": True, "detail": "already running"}
+
+    _codex_probe_in_flight = True
+    try:
+        from ember_public import synthetic_probe
+
+        result = await synthetic_probe.probe_codex()
+        if not result["ok"]:
+            logger.warning("ember synthetic codex failed: %s", result["detail"])
+            await _notify(result["detail"], level="warn")
+        await synthetic_probe.record("codex", result)
+        return {"codex": result}
+    finally:
+        _codex_probe_in_flight = False

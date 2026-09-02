@@ -50,6 +50,14 @@ def ember_synthetic_trigger() -> None:
     _post_internal("/internal/ember/synthetic-probe", "ember-synthetic-trigger")
 
 
+@app.command("ember-codex-synthetic-trigger")
+def ember_codex_synthetic_trigger() -> None:
+    """Trigger the Codex session synthetic in the monolith API pod."""
+    _post_internal(
+        "/internal/ember/codex-session-probe", "ember-codex-synthetic-trigger"
+    )
+
+
 @app.command("agent-drain-trigger")
 def agent_drain_trigger() -> None:
     """Trigger one asynchronous Luna work-queue drain cycle."""

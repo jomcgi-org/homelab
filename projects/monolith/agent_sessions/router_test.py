@@ -17,6 +17,7 @@ from agent_sessions import transport
 import agent_sessions.router as agent_router
 from agent_sessions.codex_login import codex_login_gate
 from agent_sessions.constants import (
+    CODEX_SYNTHETIC_PROMPT,
     LEGACY_QWEN_SYNTHETIC_PROMPT,
     SYNTHETIC_SESSION_PREFIX,
 )
@@ -271,6 +272,28 @@ def test_list_sessions_excludes_qwen_synthetics(client, session):
         "ordinary-luna",
     }
     assert client.get(f"/api/agents/sessions/{completed.id}").status_code == 200
+
+
+def test_list_sessions_excludes_codex_synthetics(client, session):
+    synthetic = _session(
+        session,
+        f"{SYNTHETIC_SESSION_PREFIX}codex",
+        model="luna",
+    )
+    session.add(
+        AgentTurn(
+            session_id=synthetic.id,
+            seq=1,
+            prompt=CODEX_SYNTHETIC_PROMPT,
+            result_text="codex synthetic ok",
+        )
+    )
+    session.commit()
+
+    body = client.get("/api/agents/sessions").json()
+
+    assert body == []
+    assert client.get(f"/api/agents/sessions/{synthetic.id}").status_code == 200
 
 
 def test_models_endpoint_offers_everything_when_env_unset(client, monkeypatch):
