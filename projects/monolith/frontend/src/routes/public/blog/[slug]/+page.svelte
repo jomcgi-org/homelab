@@ -549,9 +549,12 @@
     font-weight: 600;
   }
 
+  /* A solid block of a tone reads heavier than the 1.25px outline it
+     stands for, so the cell carries a tint of the tone and the letter the
+     tone itself: the same hue as the drawing's lines, at line weight. */
   .post-body :global(td.key[data-tone]) {
-    background: var(--key-tone);
-    color: var(--sheet);
+    background: color-mix(in srgb, var(--key-tone) 18%, var(--sheet));
+    color: var(--key-tone);
   }
 
   .post-body :global(td.key[data-tone="gpu"]) {
