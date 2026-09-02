@@ -1,4 +1,4 @@
-"""Generate the frontmatter-gated manifest for the public /posts route.
+"""Generate the frontmatter-gated manifest for the public /blog route.
 
 Tracked Markdown files under ``docs/posts`` are considered, except README.md.
 Files with a ``public`` key are parsed and validated, and only those declaring
@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
 from datetime import date
 from pathlib import Path
+from xml.etree import ElementTree
 
 try:  # imported as knowledge.tools.* by tests, run as a bare script by CI
     from knowledge.tools.public_content import check_public_content
@@ -34,6 +36,22 @@ _KEY_VALUE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):[ \t]*(.*?)[ \t]*$")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _PUBLIC_KEY = re.compile(r"^[ \t]*public[ \t]*:")
 _PUBLIC_VALUES = {"public: true": True, "public: false": False}
+_TAG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+_MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)")
+_FIGURE_DENIED_ELEMENTS = {
+    "script",
+    "foreignobject",
+    "use",
+    "image",
+    "a",
+    "iframe",
+    "embed",
+    "object",
+    "animate",
+    "set",
+    "animatetransform",
+}
+_FIGURE_MAX_BYTES = 200 * 1024
 
 
 def _should_index(rel_path: str) -> bool:
@@ -142,6 +160,92 @@ def _validate_public_post(rel_path: str, metadata: dict[str, object]) -> None:
         )
 
 
+def _parse_tags(metadata: dict[str, object]) -> list[str]:
+    if "tags" not in metadata:
+        return []
+    raw = metadata["tags"]
+    if not isinstance(raw, str):
+        raise ValueError("tags must be a comma-separated string")
+    parts = raw.split(",")
+    if any(not part.strip() for part in parts):
+        raise ValueError("tags may not contain an empty item")
+
+    tags = list(dict.fromkeys(part.strip().lower() for part in parts))
+    if not 1 <= len(tags) <= 6:
+        raise ValueError("tags must contain between 1 and 6 unique values")
+    for tag in tags:
+        if len(tag) > 24:
+            raise ValueError(f"tag '{tag}' must be at most 24 characters")
+        if not _TAG.fullmatch(tag):
+            raise ValueError(f"invalid tag '{tag}'")
+    return tags
+
+
+def _local_name(name: str) -> str:
+    return name.rsplit("}", 1)[-1]
+
+
+def _validate_figure(rel_path: str, figure_path: str, svg: str) -> None:
+    prefix = f"{rel_path}: {figure_path}:"
+    if len(svg.encode("utf-8")) > _FIGURE_MAX_BYTES:
+        raise ValueError(f"{prefix} SVG exceeds 200 KiB")
+    lowered = svg.lower()
+    if "<!doctype" in lowered or "<?xml-stylesheet" in lowered:
+        raise ValueError(f"{prefix} processing instructions and DOCTYPE are forbidden")
+    if "url(" in lowered:
+        raise ValueError(f"{prefix} CSS url() references are forbidden")
+    try:
+        root = ElementTree.fromstring(svg)
+    except ElementTree.ParseError as exc:
+        raise ValueError(f"{prefix} invalid SVG: {exc}") from exc
+    if _local_name(root.tag).lower() != "svg":
+        raise ValueError(f"{prefix} root element must be svg")
+    if "viewBox" not in root.attrib:
+        raise ValueError(f"{prefix} SVG must declare a viewBox")
+
+    for element in root.iter():
+        element_name = _local_name(element.tag).lower()
+        if element_name in _FIGURE_DENIED_ELEMENTS:
+            raise ValueError(f"{prefix} forbidden element <{element_name}>")
+        for raw_name, value in element.attrib.items():
+            attribute = _local_name(raw_name).lower()
+            if attribute.startswith("on") or attribute == "href":
+                raise ValueError(f"{prefix} forbidden attribute {attribute}")
+            if attribute == "style" and "url(" in value.lower():
+                raise ValueError(f"{prefix} CSS url() references are forbidden")
+
+    try:
+        check_public_content(figure_path, svg)
+    except SystemExit as exc:
+        raise ValueError(f"{prefix} {exc}") from exc
+
+
+def _load_figures(
+    root: Path, rel_path: str, body: str, tracked_figures: set[str]
+) -> dict[str, str]:
+    figures: dict[str, str] = {}
+    for href in _MARKDOWN_IMAGE.findall(body):
+        if re.match(r"^[a-z][a-z0-9+.-]*:", href, re.IGNORECASE):
+            continue
+        if href.startswith("/") or not href.lower().endswith(".svg"):
+            continue
+        normalized = posixpath.normpath(href)
+        raw_parts = href.split("/")
+        is_figure = href.startswith("figures/") or normalized.startswith("figures/")
+        if not is_figure:
+            continue
+        if ".." in raw_parts or not normalized.startswith("figures/"):
+            raise ValueError(f"{rel_path}: {href}: figure path may not escape figures/")
+
+        figure_path = f"{POSTS_PREFIX}{normalized}"
+        if figure_path not in tracked_figures or not (root / figure_path).is_file():
+            raise ValueError(f"{rel_path}: {href}: figure must exist and be tracked")
+        svg = (root / figure_path).read_text(encoding="utf-8")
+        _validate_figure(rel_path, figure_path, svg)
+        figures[href] = svg
+    return figures
+
+
 def iter_post_paths(root: Path) -> list[str]:
     """Return tracked post paths, excluding the directory README."""
     result = subprocess.run(
@@ -157,9 +261,25 @@ def iter_post_paths(root: Path) -> list[str]:
     )
 
 
-def build_manifest(root: Path, paths: list[str]) -> list[dict]:
+def iter_figure_paths(root: Path) -> set[str]:
+    """Return tracked SVG figure paths under the shared posts figure directory."""
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "--", "docs/posts/figures/*.svg"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    return {path for path in result.stdout.split("\0") if path}
+
+
+def build_manifest(
+    root: Path, paths: list[str], figure_paths: set[str] | None = None
+) -> list[dict]:
     entries: list[dict] = []
     path_by_slug: dict[str, str] = {}
+    tracked_figures = figure_paths or set()
     for rel_path in paths:
         if not _should_index(rel_path) or not (root / rel_path).is_file():
             continue
@@ -174,9 +294,11 @@ def build_manifest(root: Path, paths: list[str]) -> list[dict]:
             if not public:
                 continue
             _validate_public_post(rel_path, metadata)
+            tags = _parse_tags(metadata)
         except ValueError as exc:
             raise ValueError(f"{rel_path}: {exc}") from exc
         check_public_content(rel_path, body)
+        figures = _load_figures(root, rel_path, body, tracked_figures)
         slug = make_slug(rel_path)
         previous_path = path_by_slug.get(slug)
         if previous_path is not None:
@@ -184,16 +306,18 @@ def build_manifest(root: Path, paths: list[str]) -> list[dict]:
                 f"duplicate post slug '{slug}' in {previous_path} and {rel_path}"
             )
         path_by_slug[slug] = rel_path
-        entries.append(
-            {
-                "path": rel_path,
-                "slug": slug,
-                "title": metadata["title"],
-                "date": metadata["date"],
-                "summary": metadata["summary"],
-                "content": body.replace("\x00", ""),
-            }
-        )
+        entry = {
+            "path": rel_path,
+            "slug": slug,
+            "title": metadata["title"],
+            "date": metadata["date"],
+            "summary": metadata["summary"],
+            "tags": tags,
+            "content": body.replace("\x00", ""),
+        }
+        if figures:
+            entry["figures"] = figures
+        entries.append(entry)
     return sorted(
         entries,
         key=lambda entry: (
@@ -212,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     out = root / MANIFEST_REL
     out.parent.mkdir(parents=True, exist_ok=True)
-    entries = build_manifest(root, iter_post_paths(root))
+    entries = build_manifest(root, iter_post_paths(root), iter_figure_paths(root))
     out.write_text(
         json.dumps(entries, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

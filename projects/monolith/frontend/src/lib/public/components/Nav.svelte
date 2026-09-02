@@ -1,24 +1,30 @@
 <script>
   import { apps as appsRegistry } from "$lib/public/apps.js";
+  import { page } from "$app/stores";
 
   /** @type {{ route?: string, isPrivate?: boolean }} */
   let { route = "home", isPrivate = false } = $props();
 
-  // ENGINEERING, DOCS, and CV are same-host relative URLs so they resolve to
-  // jomcgi.dev/* from the public homepage and to private.jomcgi.dev/* from the
-  // private dashboard, without bouncing public visitors into the auth-gated
-  // private surface. HOME always points at the public site. Notes is no longer
-  // a top-level link: it moved under the APPS dropdown alongside the other apps.
-  // DOCS is reference material (repo docs + ADRs), a peer of ENGINEERING, not an
+  // ENGINEERING, BLOG, DOCS, and CV are same-host relative URLs. They resolve
+  // to jomcgi.dev/* from the public homepage and to private.jomcgi.dev/* from
+  // the private dashboard, without bouncing public visitors into the
+  // auth-gated private surface. HOME always points at the public site. Notes is
+  // no longer a top-level link: it moved under the APPS dropdown alongside the
+  // other apps.
+  // BLOG only appears on the public tier when a post is published. DOCS is
+  // reference material (repo docs + ADRs), a peer of ENGINEERING, not an
   // interactive app, so it sits in the top row rather than the APPS dropdown.
-  const publicItems = [
+  let publicItems = $derived([
     { slug: "home", label: "HOME", href: "/" },
     { slug: "engineering", label: "ENGINEERING", href: "/engineering" },
+    ...(!isPrivate && $page.data.hasBlog
+      ? [{ slug: "blog", label: "BLOG", href: "/blog" }]
+      : []),
     { slug: "docs", label: "DOCS", href: "/docs" },
     { slug: "cv", label: "CV", href: "/cv" },
-  ];
+  ]);
 
-  // REVIEW only renders on the private tier — the route exists only at
+  // REVIEW only renders on the private tier. The route exists only at
   // routes/private/review/ and showing the link on public.jomcgi.dev
   // would leak the existence of an internal surface.
   const privateItems = [{ slug: "review", label: "REVIEW", href: "/review" }];
@@ -284,7 +290,7 @@
 
 <style>
   /* Nav is shared 1:1 across tiers (public.jomcgi.dev + private.jomcgi.dev).
-     Colours and font are hardcoded — not theme-able — so the component
+     Colours and font are hardcoded and not theme-able, so the component
      looks identical regardless of which tier's design tokens are loaded. */
   .md-nav {
     position: sticky;
@@ -543,7 +549,7 @@
       white-space: nowrap;
     }
     /* On mobile the links row is overflow-x:auto, which also clips the
-       cross axis — an absolutely-positioned panel would be cut off. Pin
+       cross axis. An absolutely-positioned panel would be cut off. Pin
        the panel to the viewport instead so it renders as a full-width
        sheet below the nav, escaping the scroll container entirely. */
     .md-apps-panel {

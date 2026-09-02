@@ -174,6 +174,17 @@ export function renderDoc(entry, slugByPath) {
         return `<pre class="doc-code${mermaidCls}"${label}><code${cls}>${escapeHtml(text)}</code></pre>\n`;
       },
       image({ href, title, text }) {
+        if (
+          href &&
+          entry.figures &&
+          Object.prototype.hasOwnProperty.call(entry.figures, href)
+        ) {
+          // Inserted as-is after gen_posts_manifest.py validates the SVG.
+          const caption = text
+            ? `<figcaption>${escapeHtml(text)}</figcaption>`
+            : "";
+          return `<figure class="fig"><div class="fig-art">${entry.figures[href]}</div>${caption}</figure>`;
+        }
         // README images are authored as repo-relative refs (GitHub-native).
         // Resolve against the doc's repo path and serve via the signed
         // imgproxy URL over s3://docs-assets/ (objects keyed by repo path).
@@ -191,6 +202,13 @@ export function renderDoc(entry, slugByPath) {
         const repoPath = posix.normalize(posix.join(dir, href));
         if (repoPath.startsWith("..")) return text ? escapeHtml(text) : "";
         return `<img src="${escapeAttr(signedDocsImgUrl(repoPath))}" alt="${alt}"${t} loading="lazy" />`;
+      },
+      paragraph({ tokens: pTokens }) {
+        const inner = this.parser.parseInline(pTokens);
+        if (/^<figure class="fig">[\s\S]*<\/figure>$/.test(inner.trim())) {
+          return `${inner}\n`;
+        }
+        return `<p>${inner}</p>\n`;
       },
       html({ text }) {
         // Neutralise raw HTML blocks rather than passing them through. The docs

@@ -1,9 +1,10 @@
 import { LOCATION, PUBLIC_BASE } from "$lib/public/seo.js";
+import manifest from "$lib/public/posts/posts-manifest.json";
 
 // /llms.txt (llmstxt.org convention): a markdown digest an LLM can read to
 // understand who this is and what to cite, without scraping every page. Kept
 // terse and factual; the canonical detail lives on the linked pages.
-const BODY = `# Joe McGinley
+const INTRO = `# Joe McGinley
 
 > Senior Platform Engineer at Semgrep, based in ${LOCATION.short}. Runs Kubernetes hands-on from ingress to eBPF: controllers, CRDs, observability, and per-customer cost attribution, across AWS and GCP. Currently open to senior platform / infrastructure / reliability roles.
 
@@ -19,8 +20,9 @@ const BODY = `# Joe McGinley
 - [CV](${PUBLIC_BASE}/cv): full work history and project case studies
 - [Notes](${PUBLIC_BASE}/app/notes): chat with my public knowledge graph, or switch to the graph view to browse it
 - [Home](${PUBLIC_BASE}/): overview and homelab status
+`;
 
-## Elsewhere
+const ELSEWHERE = `## Elsewhere
 
 - LinkedIn: https://www.linkedin.com/in/jomcgi/
 - GitHub: https://github.com/jomcgi
@@ -28,7 +30,21 @@ const BODY = `# Joe McGinley
 `;
 
 export function GET() {
-  return new Response(BODY, {
+  const blog = manifest.length
+    ? `\n## Blog\n\n${[...manifest]
+        .sort(
+          (a, b) =>
+            b.date.localeCompare(a.date) || a.slug.localeCompare(b.slug),
+        )
+        .map(
+          ({ slug, title, summary }) =>
+            `- [${title}](${PUBLIC_BASE}/blog/${slug}): ${summary}`,
+        )
+        .join("\n")}\n`
+    : "\n";
+  const body = `${INTRO}${blog}${ELSEWHERE}`;
+
+  return new Response(body, {
     headers: {
       "content-type": "text/plain; charset=utf-8",
       "cache-control": "public, max-age=86400",

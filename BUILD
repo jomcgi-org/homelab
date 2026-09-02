@@ -34,6 +34,7 @@ npm_link_all_packages(name = "node_modules")
 # Explicit-only agent procedures + helper scripts (not py packages; imports are
 # runtime/monolith paths Gazelle cannot resolve). Same class as .claude/skills.
 # gazelle:exclude docs/runbooks
+# gazelle:exclude docs/posts/figures
 
 # gazelle:semgrep_target_kinds py_venv_binary
 

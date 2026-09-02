@@ -261,6 +261,40 @@ describe("renderDoc", () => {
     expect(html).not.toContain("<div>raw html</div>");
   });
 
+  it("renders a validated keyed figure at block level", () => {
+    const result = renderDoc(
+      {
+        path: "docs/posts/2026-01-15-example.md",
+        content: "![Memory tiers](figures/memory.svg)\n",
+        figures: {
+          "figures/memory.svg":
+            '<svg viewBox="0 0 10 10"><path d="M0 0L10 10"/></svg>',
+        },
+      },
+      new Map(),
+    );
+
+    expect(result.html).toContain('<figure class="fig">');
+    expect(result.html).toContain('<div class="fig-art"><svg');
+    expect(result.html).toContain("<figcaption>Memory tiers</figcaption>");
+    expect(result.html).not.toContain("<p><figure");
+  });
+
+  it("keeps image rendering unchanged when an entry has no figures", () => {
+    const result = renderDoc(
+      {
+        path: "docs/posts/2026-01-15-example.md",
+        content: "![Photo](https://example.com/photo.png)\n",
+      },
+      new Map(),
+    );
+
+    expect(result.html).toContain(
+      '<p><img src="https://example.com/photo.png" alt="Photo" loading="lazy" /></p>',
+    );
+    expect(result.html).not.toContain('<figure class="fig">');
+  });
+
   it("de-duplicates repeated heading ids", () => {
     const duplicate = ["## Notes", "", "x", "", "## Notes", "", "y"].join("\n");
     const result = renderDoc(

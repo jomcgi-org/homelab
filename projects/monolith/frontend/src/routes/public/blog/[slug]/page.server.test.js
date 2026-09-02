@@ -8,6 +8,8 @@ vi.mock("$lib/public/posts/posts-manifest.json", () => ({
       title: "Example",
       date: "2026-01-15",
       summary: "One sentence.",
+      tags: ["example"],
+      figures: {},
       content:
         "# Body\n\nHello **world**.\n\n[rel](./other.md)\n\n" +
         '[link](https://example.com)\n\n<script>alert("nope")</script>\n',
@@ -21,7 +23,7 @@ import {
 } from "$lib/cache-headers.js";
 import { load } from "./+page.server.js";
 
-describe("/public/posts/[slug] load", () => {
+describe("/public/blog/[slug] load", () => {
   it("throws a 404 for an unknown slug", () => {
     expect(() =>
       load({ params: { slug: "missing" }, setHeaders: vi.fn() }),
@@ -41,9 +43,10 @@ describe("/public/posts/[slug] load", () => {
     expect(result.html).toContain('<h1 id="body">Body</h1>');
     expect(result.html).toContain("Hello <strong>world</strong>.");
     expect(result.summary).toBe("One sentence.");
+    expect(result.tags).toEqual(["example"]);
     expect(setHeaders).toHaveBeenCalledWith({
       ...cloudflareCacheHeaders(DOCS_CACHE_CONTROL),
-      etag: '"testbuild-posts-example"',
+      etag: '"testbuild-blog-example"',
     });
   });
 
