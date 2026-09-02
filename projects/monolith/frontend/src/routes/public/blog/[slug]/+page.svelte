@@ -25,9 +25,16 @@
         <p>{data.summary}</p>
       </header>
 
-      <!-- Server-rendered, constrained first-party markdown. -->
-      <div class="post-body">{@html data.html}</div>
+      {#if data.preamble}
+        <!-- Server-rendered, constrained first-party markdown. -->
+        <div class="post-body">{@html data.preamble}</div>
+      {/if}
     </article>
+
+    <!-- One panel per numbered section: a page flip between them. -->
+    {#each data.sections as section}
+      <section class="edition post-body">{@html section}</section>
+    {/each}
   </div>
 </main>
 
@@ -54,6 +61,10 @@
 
   .edition {
     border: 1px solid var(--ink);
+  }
+
+  .edition + .edition {
+    margin-top: 1.5rem;
   }
 
   .ed-head {
@@ -102,8 +113,20 @@
 
   .post-body {
     padding: 0 1rem 1rem;
-    border-top: 1px solid var(--stroke);
     counter-reset: fig;
+  }
+
+  .ed-lead + .post-body {
+    border-top: 1px solid var(--stroke);
+  }
+
+  /* The panel body counts figures across the whole post, not per panel. */
+  .post-frame {
+    counter-reset: fig;
+  }
+
+  .post-body {
+    counter-reset: none;
   }
 
   .post-body :global(h1),
@@ -135,6 +158,10 @@
   .post-body :global(> h2:first-child) {
     margin-top: 0;
     border-top: 0;
+  }
+
+  .post-body :global(> :last-child) {
+    margin-bottom: 0;
   }
 
   .post-body :global(h3) {
@@ -310,7 +337,7 @@
   }
 
   .post-body :global(figure.fig + table) {
-    margin-top: -1px;
+    margin-top: calc(-1.5rem - 1px);
   }
 
   /* A table or figure that opens a section docks to the band: the band's
@@ -321,7 +348,7 @@
   }
 
   .post-body :global(h2 + table th) {
-    border-top: 0;
+    background: none;
   }
 
   .post-body :global(tr:last-child td) {

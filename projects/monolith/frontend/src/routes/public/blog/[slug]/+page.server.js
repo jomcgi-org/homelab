@@ -16,6 +16,12 @@ export function load({ params, setHeaders }) {
   if (!entry) throw error(404, "Post not found");
 
   const { html } = renderDoc(entry, emptyPathIndex);
+  // Each numbered section is its own panel on the page, so split the
+  // rendered body at the h2 boundaries the renderer emits. The chunk before
+  // the first h2 (if any) stays with the head panel.
+  const chunks = html.split(/(?=<h2 id=)/);
+  const preamble = chunks[0]?.startsWith("<h2 ") ? "" : (chunks.shift() ?? "");
+  const sections = chunks.filter((c) => c.trim());
   setHeaders({
     ...cloudflareCacheHeaders(DOCS_CACHE_CONTROL),
     etag: `"${version}-blog-${entry.slug}"`,
@@ -28,5 +34,7 @@ export function load({ params, setHeaders }) {
     summary: entry.summary,
     tags: entry.tags,
     html,
+    preamble,
+    sections,
   };
 }

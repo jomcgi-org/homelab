@@ -36,7 +36,7 @@ def memory_tiers() -> Figure:
     f.hline(150, 550, 54, tone="gpu")
     f.vline(270, 54, 128, tone="gpu")
     f.vline(420, 54, 128, tone="gpu")
-    f.lines(160, 74, ["dense layers, 9.2 GiB", "attention, GDN"])
+    f.lines(160, 74, ["dense layers", "9.2 GiB"])
     f.lines(280, 74, ["expert slot cache", "hot set stays", "resident here"])
     f.text(430, 74, "KV cache")
     f.keyed(40, 78, "1", 150, 78, tone="gpu")
