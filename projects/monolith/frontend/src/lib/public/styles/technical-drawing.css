@@ -87,6 +87,12 @@
 html:has(.td) {
   background: #ffffff; /* nosemgrep: svelte-hardcoded-color-in-style */
   font-size: clamp(16px, 0.5vw + 11px, 19px);
+  /* The public design system smooths every scroll, which turns a reload
+   * on a #fragment into an animated jump and a second animated jump when
+   * the webfont swaps in and the anchor re-settles. A manual is opened at
+   * a page, not scrolled to it: fragments land instantly, and the index
+   * scrolls smoothly on its own when clicked. */
+  scroll-behavior: auto;
 }
 
 @media (prefers-color-scheme: dark) {

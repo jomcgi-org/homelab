@@ -41,12 +41,13 @@
     const link = event.target.closest("a[href^='#']");
     if (!link) return;
     const id = link.getAttribute("href").slice(1);
+    const target = id === first ? null : document.getElementById(id);
+    if (id !== first && !target) return;
+    event.preventDefault();
     pin(id);
-    if (id === first) {
-      event.preventDefault();
-      history.replaceState(null, "", `#${id}`);
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    }
+    history.replaceState(null, "", `#${id}`);
+    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    else window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   $effect(() => {
@@ -63,22 +64,20 @@
       window.innerHeight + window.scrollY >=
       document.documentElement.scrollHeight - 2;
 
-    // The band: a heading is "being read" when its top sits between 10%
-    // and 30% of the viewport. Used by the observer and, once a pinned
-    // scroll settles, by a direct re-read of the page.
+    // The heading being read is the last one whose top has passed the
+    // reading line at 30% of the viewport (so a fragment that lands a
+    // heading at the very top still counts as that heading). Used by the
+    // observer and, once a pinned scroll settles, by a direct re-read.
     const bandPick = () => {
       if (atEnd()) return last;
       if (window.scrollY === 0) return first;
-      const lo = window.innerHeight * 0.1;
-      const hi = window.innerHeight * 0.3;
+      const line = window.innerHeight * 0.3;
       let best = null;
       for (const h of headings) {
         const top = h.getBoundingClientRect().top;
-        if (top >= lo && top <= hi && (best === null || top < best.top)) {
-          best = { id: h.id, top };
-        }
+        if (top <= line + 1) best = h.id;
       }
-      return best ? best.id : null;
+      return best ?? first;
     };
 
     const observer = new IntersectionObserver(
@@ -295,9 +294,10 @@
     color: var(--accent-ink);
   }
 
+  /* Colour and the rule mark the active entry; no weight change, which
+     would rewrap the line and jog the whole index on every change. */
   .toc a.active {
     border-left-color: var(--accent-ink);
-    font-weight: 650;
   }
 
   .post-frame {
