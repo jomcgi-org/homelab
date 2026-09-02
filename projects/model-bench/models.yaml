@@ -28,6 +28,16 @@ models:
         reasoning_effort: xhigh
     params:
       max_tokens: 16384
+  # Bare-metal FreeToken Qwen3.8-Flash-Next (125B-A6B, expert-granular tier) on
+  # node-4, reached over the tailnet on the private port. Served alias remains
+  # qwen3.6-27b. experimental so bare `bench run` never sends this slug to
+  # OpenRouter. Cost is $0.
+  - id: qwen/qwen3.8-flash-next
+    display_name: qwen3.8-flash-next-local
+    status: experimental
+    api_model: qwen3.6-27b
+    params:
+      max_tokens: 16384
   - id: qwen/qwen3.6-35b-a3b
     status: active
   - id: qwen/qwen3-coder-30b-a3b-instruct

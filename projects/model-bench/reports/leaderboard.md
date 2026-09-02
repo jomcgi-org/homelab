@@ -6,6 +6,7 @@ Cleared the easy+standard viability floor (at most one miss). Ranked by hard-tas
 
 | Model | hard | mean tokens | mean turns | wall-time (s) | cost ($) | $/solve | tool-use ok |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| qwen/qwen3.8-flash-next | 9/9 | 207542 | 12.5 | 2931.4 | 0.0000 | 0.0000 | 1.00 |
 | qwen/qwen3-coder-30b-a3b-instruct | 7/7 | 71151 | 9.1 | 103.2 | 0.0063 | 0.0069 | 0.73 |
 | qwen/qwen3-coder-next | 7/7 | 217279 | 17.3 | 44.9 | 0.0279 | 0.0279 | 1.00 |
 | deepseek/deepseek-v4-pro | 7/7 | 98685 | 9.7 | 146.4 | 0.0454 | 0.0454 | 1.00 |
@@ -46,9 +47,10 @@ No qualifying budget candidates yet.
 
 | Model | Class | pass@1 | cost ($) | tier | qualifies |
 | --- | --- | --- | --- | --- | --- |
-| cohere/north-mini-code:free | config-plumbing | 0.00 | 0.0000 | can't | no |
-| qwen/qwen3.8-27b | config-plumbing | 0.50 | 0.0000 | needs-repair | no |
 | tencent/hy3:free | config-plumbing | 0.50 | 0.0000 | can't | no |
+| qwen/qwen3.8-flash-next | config-plumbing | 0.50 | 0.0000 | needs-repair | no |
+| qwen/qwen3.8-27b | config-plumbing | 0.50 | 0.0000 | needs-repair | no |
+| cohere/north-mini-code:free | config-plumbing | 0.00 | 0.0000 | can't | no |
 | qwen/qwen3-coder-30b-a3b-instruct | config-plumbing | 0.50 | 0.0020 | can't | no |
 | deepseek/deepseek-v4-flash | config-plumbing | 0.50 | 0.0027 | can't | no |
 | google/gemma-4-26b-a4b-it | config-plumbing | 0.50 | 0.0035 | can't | no |
@@ -61,9 +63,10 @@ No qualifying budget candidates yet.
 | z-ai/glm-4.7 | config-plumbing | 0.50 | 0.0225 | can't | no |
 | qwen/qwen3.6-27b | config-plumbing | 0.00 | 0.0295 | can't | no |
 | z-ai/glm-5.2 | config-plumbing | 0.50 | 0.0374 | can't | no |
-| cohere/north-mini-code:free | free-text | 1.00 | 0.0000 | one-shots | no |
-| qwen/qwen3.8-27b | free-text | 1.00 | 0.0000 | one-shots | no |
 | tencent/hy3:free | free-text | 1.00 | 0.0000 | one-shots | no |
+| qwen/qwen3.8-flash-next | free-text | 1.00 | 0.0000 | one-shots | no |
+| qwen/qwen3.8-27b | free-text | 1.00 | 0.0000 | one-shots | no |
+| cohere/north-mini-code:free | free-text | 1.00 | 0.0000 | one-shots | no |
 | qwen/qwen3-coder-30b-a3b-instruct | free-text | 1.00 | 0.0000 | one-shots | no |
 | google/gemma-4-26b-a4b-it | free-text | 1.00 | 0.0000 | one-shots | no |
 | google/gemma-4-31b-it | free-text | 1.00 | 0.0000 | one-shots | no |
@@ -81,14 +84,14 @@ No qualifying budget candidates yet.
 
 | Model | Class | pass@1 | cost ($) |
 | --- | --- | --- | --- |
+| anthropic/claude-opus-4.8 | config-plumbing | 1.00 | 0.0000 |
 | anthropic/claude-sonnet-4.6 | free-text | 1.00 | 0.0000 |
 | anthropic/claude-sonnet-4.6 | config-plumbing | 1.00 | 0.0000 |
-| anthropic/claude-opus-4.8 | config-plumbing | 1.00 | 0.0000 |
 
 ## Pareto frontier
 
-**config-plumbing:** qwen/qwen3.8-27b, tencent/hy3:free
-**free-text:** cohere/north-mini-code:free, qwen/qwen3.8-27b, tencent/hy3:free
+**config-plumbing:** qwen/qwen3.8-27b, qwen/qwen3.8-flash-next, tencent/hy3:free
+**free-text:** cohere/north-mini-code:free, qwen/qwen3.8-27b, qwen/qwen3.8-flash-next, tencent/hy3:free
 
 ## Retired
 
