@@ -1,5 +1,4 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 270" role="img" aria-label="A prefill chunk: known before the forward, read once">
-  <rect x="0" y="0" width="700" height="270" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <line x1="233" y1="0" x2="233" y2="270" stroke="currentColor" stroke-width="1.25"/>
   <line x1="466" y1="0" x2="466" y2="270" stroke="currentColor" stroke-width="1.25"/>
   <circle cx="18" cy="18" r="9" fill="none" stroke="currentColor" stroke-width="1"/>

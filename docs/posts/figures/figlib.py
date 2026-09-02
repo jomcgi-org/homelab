@@ -243,9 +243,11 @@ class Figure:
         self.text(x + 34, y + 22, title, size=11)
 
     def grid(self, w: float, h: float, cols: list[float], rows: list[float]) -> None:
-        """One outline partitioned into cells by edge-to-edge lines, never
-        separate boxes with dead space between them."""
-        self.box(0, 0, w, h)
+        """Partition the whole canvas into cells with edge-to-edge lines.
+
+        No outer rectangle is drawn: the figure sits flush against its
+        panel on the page, so the panel's walls and the figure's top and
+        bottom rules are the outline, and only the partitions live here."""
         for x in cols:
             self.vline(x, 0, h)
         for y in rows:

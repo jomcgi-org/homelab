@@ -469,8 +469,12 @@
     counter-increment: fig;
   }
 
+  /* The drawing is flush with the panel: no padding, so an operating
+     sequence's partitions meet the panel walls and the figure's rules,
+     and those four lines are its outline. Exploded views carry their own
+     margin inside the canvas. */
   .post-body :global(.fig-art) {
-    padding: 1rem;
+    padding: 0;
     overflow-x: auto;
     color: var(--ink);
   }

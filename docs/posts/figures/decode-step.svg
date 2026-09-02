@@ -1,5 +1,4 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 632" role="img" aria-label="One decode step through one expert layer">
-  <rect x="0" y="0" width="700" height="632" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <line x1="350" y1="0" x2="350" y2="632" stroke="currentColor" stroke-width="1.25"/>
   <line x1="0" y1="316" x2="700" y2="316" stroke="currentColor" stroke-width="1.25"/>
   <circle cx="18" cy="18" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
