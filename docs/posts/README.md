@@ -34,8 +34,15 @@ of radius 9 with a 1px stroke and a mono 11px number. Leader lines are 1px with
 a 2px dot at the part end. Labels use `var(--font-code)` at 11px. Outlines use
 `currentColor` at `stroke-width="1.25"`; leaders use `currentColor` at
 `stroke-width="1"`. Use `fill="none"` by default and `fill="currentColor"`
-only for callout dots. One part may use `var(--accent-ink)`. Use no other
-colour, gradients, filters, shadows, or raster images.
+only for callout dots. Colour is a fixed vocabulary, one tone per memory tier,
+identical in every figure so a reader learns it once: `var(--tone-gpu)` for
+the GPU and anything resident in VRAM, `var(--tone-ram)` for pinned host
+memory, `var(--tone-cache)` for the page cache, `var(--tone-disk)` for the
+NVMe, and `var(--tone-hot)` for the hot expert set. A part takes its tone on
+its outline, title, and callout; parts inside it, leaders, and arrows stay
+ink so movement reads as movement. The values live in
+`technical-drawing.css` for both schemes. Use no other colour, gradients,
+filters, shadows, or raster images.
 
 The validator rejects `<style>` elements and `style` attributes (an inlined
 `<style>` is document-scoped and CSS escapes defeat a `url(` check), a root
