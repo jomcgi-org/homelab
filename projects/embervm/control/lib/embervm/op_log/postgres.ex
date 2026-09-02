@@ -274,12 +274,17 @@ defmodule Embervm.OpLog.Postgres do
       workload TEXT PRIMARY KEY,
       node_id TEXT,
       generation INTEGER NOT NULL DEFAULT 0,
+      exported_generation BIGINT NOT NULL DEFAULT 0,
       size_bytes BIGINT,
       allocated_bytes BIGINT,
       created_at BIGINT NOT NULL,
       updated_at BIGINT NOT NULL
     )
     """,
+    # exported_generation was originally a live NodeStatus fact. Add it
+    # conservatively to upgraded projections so anchor-loss recovery never
+    # treats an unknown historical export as present.
+    "ALTER TABLE volumes ADD COLUMN IF NOT EXISTS exported_generation BIGINT NOT NULL DEFAULT 0",
     """
     CREATE TABLE IF NOT EXISTS volume_blessing (
       workload TEXT PRIMARY KEY,
@@ -754,6 +759,7 @@ defmodule Embervm.OpLog.Postgres do
     :serving_failed,
     :serving_stats,
     :volume_created,
+    :volume_recovery_updated,
     :volume_deleted,
     :stateful_started,
     :stateful_published,
@@ -1189,11 +1195,12 @@ defmodule Embervm.OpLog.Postgres do
     payload = op.payload
 
     sql = """
-    INSERT INTO volumes (workload, node_id, generation, size_bytes, allocated_bytes, created_at, updated_at)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    INSERT INTO volumes (workload, node_id, generation, exported_generation, size_bytes, allocated_bytes, created_at, updated_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     ON CONFLICT(workload) DO UPDATE SET
       node_id = excluded.node_id,
       generation = excluded.generation,
+      exported_generation = excluded.exported_generation,
       size_bytes = excluded.size_bytes,
       allocated_bytes = excluded.allocated_bytes,
       updated_at = excluded.updated_at
@@ -1203,6 +1210,30 @@ defmodule Embervm.OpLog.Postgres do
       op.workload,
       Map.get(payload, :node_id),
       Map.get(payload, :generation, 0),
+      Map.get(payload, :exported_generation, 0),
+      Map.get(payload, :size_bytes),
+      Map.get(payload, :allocated_bytes),
+      op.ts,
+      op.ts
+    ])
+  end
+
+  defp project(conn, %Op{kind: :volume_recovery_updated} = op, _seq) do
+    payload = op.payload
+    sql = """
+    INSERT INTO volumes (workload, node_id, generation, exported_generation, size_bytes, allocated_bytes, created_at, updated_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    ON CONFLICT(workload) DO UPDATE SET
+      node_id = excluded.node_id,
+      exported_generation = excluded.exported_generation,
+      updated_at = excluded.updated_at
+    """
+
+    exec(conn, sql, [
+      op.workload,
+      Map.get(payload, :node_id),
+      Map.get(payload, :generation, 0),
+      Map.get(payload, :exported_generation, 0),
       Map.get(payload, :size_bytes),
       Map.get(payload, :allocated_bytes),
       op.ts,
@@ -2144,18 +2175,19 @@ defmodule Embervm.OpLog.Postgres do
 
   defp do_load_volumes(conn) do
     sql = """
-    SELECT workload, node_id, generation, size_bytes, allocated_bytes, created_at, updated_at
+    SELECT workload, node_id, generation, exported_generation, size_bytes, allocated_bytes, created_at, updated_at
     FROM volumes
     """
 
     case Postgrex.query(conn, sql, []) do
       {:ok, %Postgrex.Result{rows: rows}} ->
         {:ok,
-         Enum.map(rows, fn [workload, node_id, generation, size_bytes, allocated_bytes, created_at, updated_at] ->
+         Enum.map(rows, fn [workload, node_id, generation, exported_generation, size_bytes, allocated_bytes, created_at, updated_at] ->
            %{
              workload: workload,
              node_id: node_id,
              generation: generation,
+             exported_generation: exported_generation,
              size_bytes: size_bytes,
              allocated_bytes: allocated_bytes,
              created_at: created_at,

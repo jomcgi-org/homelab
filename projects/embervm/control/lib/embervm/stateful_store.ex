@@ -394,9 +394,10 @@ defmodule Embervm.StatefulStore do
   end
 
   @doc """
-  The volume row for `workload` (`%{workload, node_id, generation, size_bytes,
-  allocated_bytes, updated_at}`), or nil if the workload has no volume. Read by the
-  pairing check and the router's `volume_bytes` field.
+  The volume row for `workload` (`%{workload, node_id, generation,
+  exported_generation, size_bytes, allocated_bytes, updated_at}`), or nil if the
+  workload has no volume. Read by the pairing check, restore planner, and the
+  router's `volume_bytes` field.
   """
   @spec get_volume(GenServer.server(), String.t()) :: map() | nil
   def get_volume(store \\ __MODULE__, workload) do
@@ -410,11 +411,11 @@ defmodule Embervm.StatefulStore do
   end
 
   @doc """
-  Upsert the volume fact for `workload` (ETS-only: the durable volume row is
-  written by the op-log's `volume_created` projection; this is the live-fact
-  primitive Task 8 drives from NodeStatus scrapes, the way `set_health/2` /
-  `touch_active/3` update lossy node facts). Merges the given fields over any
-  existing row (or inserts a fresh one) and returns the merged volume row.
+  Upsert the volume fact for `workload`. Most high-frequency node facts remain
+  ETS-only, but changes to `exported_generation`, and re-anchors of an exported
+  volume, write through `volume_recovery_updated` so restore proof and ownership
+  survive a control-plane rebuild. Merges the given fields over any existing row
+  (or inserts a fresh one) and returns the merged volume row.
   `generation_blessed` (R7, the node's per-volume wire fact) is NOT stored on
   this row (see the moduledoc's "generation blessing and quarantine" section
   for why): when present it instead re-derives `quarantined` in the SEPARATE
@@ -774,6 +775,11 @@ defmodule Embervm.StatefulStore do
       workload: vol.workload,
       node_id: vol.node_id,
       generation: vol.generation || 0,
+      # exported_generation used to exist only in the NodeStatus-derived ETS
+      # row. That state disappears with the dead anchor and again on a control
+      # plane restart, exactly when recovery needs it, so the projection now
+      # carries the last confirmed exported pair generation durably.
+      exported_generation: Map.get(vol, :exported_generation, 0) || 0,
       size_bytes: vol.size_bytes,
       allocated_bytes: vol.allocated_bytes,
       updated_at: vol.updated_at
@@ -981,6 +987,52 @@ defmodule Embervm.StatefulStore do
       |> Map.put(:workload, workload)
       |> Map.put(:updated_at, ts)
 
+    # Keep high-frequency size and generation reports on the established ETS
+    # path. Export proof is different: after the anchor disappears no node can
+    # report it again, and a CP rebuild must still know whether recovery is legal.
+    # A successful restore likewise has to durably move node_id. The narrow
+    # volume_recovery_updated projection changes only those two fields, so a live
+    # report can never overwrite the generation issued by the blessing path.
+    merged =
+      if volume_projection_changed?(base, merged, fields) do
+        op = %Op{
+          kind: :volume_recovery_updated,
+          tenant: "homelab",
+          principal: "system:stateful:#{workload}",
+          workload: workload,
+          ts: ts,
+          payload: %{
+            node_id: recovery_projection_node_id(base, merged, fields),
+            exported_generation: Map.get(merged, :exported_generation, 0),
+            generation: Map.get(merged, :generation, 0),
+            size_bytes: Map.get(merged, :size_bytes),
+            allocated_bytes: Map.get(merged, :allocated_bytes)
+          }
+        }
+
+        case state.op_log_mod.append(state.op_log, op) do
+          {:ok, _seq} ->
+            merged
+            |> Map.delete(:volume_projection_dirty)
+            |> Map.delete(:volume_projection_node_id)
+
+          {:error, reason} ->
+            # Preserve the existing live-fact contract on an audit-store outage.
+            # The restore RPC remains fenced by its already-durable blessing. The
+            # dirty bit makes the next identical report retry the projection write.
+            Logger.warning("embervm stateful: durable volume fact append failed",
+              workload: workload,
+              reason: inspect(reason)
+            )
+
+            merged
+            |> Map.put(:volume_projection_dirty, true)
+            |> Map.put(:volume_projection_node_id, recovery_projection_node_id(base, merged, fields))
+        end
+      else
+        merged
+      end
+
     :ets.insert(state.volumes, {workload, merged})
 
     # generation_blessed (R7) is a node-report wire fact feeding the SEPARATE
@@ -1007,6 +1059,38 @@ defmodule Embervm.StatefulStore do
       end
 
     {:reply, merged, state}
+  end
+
+  defp volume_projection_changed?(base, merged, fields) do
+    export_changed? =
+      Map.has_key?(fields, :exported_generation) and
+        (Map.get(base, :exported_generation, 0) || 0) !=
+          (Map.get(merged, :exported_generation, 0) || 0)
+
+    exported_reanchored? =
+      Map.has_key?(base, :exported_generation) and
+        (Map.get(base, :exported_generation, 0) || 0) > 0 and
+        map_size(fields) == 1 and Map.has_key?(fields, :node_id) and
+        Map.get(base, :node_id) != Map.get(merged, :node_id)
+
+    Map.get(base, :volume_projection_dirty, false) or export_changed? or exported_reanchored?
+  end
+
+  # A node report carries node_id alongside many live facts. That report may be
+  # from a foreign node and can quarantine the workload, so an export refresh
+  # never changes the durable anchor. Only the explicit node_id-only write used
+  # after a successful restore (and by the fenced handover path) may re-anchor.
+  defp recovery_projection_node_id(base, merged, fields) do
+    cond do
+      Map.has_key?(base, :volume_projection_node_id) ->
+        Map.get(base, :volume_projection_node_id)
+
+      map_size(fields) == 1 and Map.has_key?(fields, :node_id) ->
+        Map.get(merged, :node_id)
+
+      true ->
+        Map.get(base, :node_id) || Map.get(merged, :node_id)
+    end
   end
 
   def handle_call({:next_blessed_generation, workload}, _from, state) do
@@ -1197,6 +1281,7 @@ defmodule Embervm.StatefulStore do
       payload: %{
         node_id: Map.get(fields, :node_id),
         generation: Map.get(fields, :generation, 0),
+        exported_generation: Map.get(fields, :exported_generation, 0),
         size_bytes: Map.get(fields, :size_bytes),
         allocated_bytes: Map.get(fields, :allocated_bytes)
       }
@@ -1210,6 +1295,7 @@ defmodule Embervm.StatefulStore do
           base
           |> Map.merge(fields)
           |> Map.put(:workload, workload)
+          |> Map.put_new(:exported_generation, 0)
           |> Map.put(:updated_at, ts)
 
         :ets.insert(state.volumes, {workload, merged})

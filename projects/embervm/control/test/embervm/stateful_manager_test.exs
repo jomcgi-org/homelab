@@ -2288,6 +2288,164 @@ defmodule Embervm.StatefulManagerTest do
     assert inst.generation == 3
   end
 
+  test "restores volume to live node when anchor dead > expiry window" do
+    {:ok, now} = Agent.start_link(fn -> 0 end)
+    clock = fn -> Agent.get(now, & &1) end
+    {restore_fun, restore_calls} = recording_restore_fun()
+
+    cold_fun = fn _ch, _req ->
+      {:ok, %StartStatefulResponse{vm_id: "vm-reanchored", ip: "10.88.0.21", port: 5432, generation: 4, was_relight: false}}
+    end
+
+    ctx =
+      start_stack(
+        clock: clock,
+        start_stateful_fun: cold_fun,
+        restore_artifact_fun: restore_fun
+      )
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-live", store_reachable: true)
+
+    {:ok, _} =
+      StatefulStore.create_volume(ctx.store, "wl-a", %{
+        node_id: "node-dead",
+        generation: 3,
+        exported_generation: 3,
+        size_bytes: 100,
+        allocated_bytes: 10
+      })
+
+    _ = StatefulStore.seed_blessed_generation_if_unset(ctx.store, "wl-a", 3)
+
+    # First reconcile observes the absent anchor but cannot confirm it yet.
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    assert :sys.get_state(ctx.mgr).missing_anchor_since_ms["node-dead"] == 0
+
+    Agent.update(now, fn _ -> 90_000 end)
+
+    assert {:ok, %{ip: "10.88.0.21", port: 5432}} =
+             StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    assert [%{kind: :ARTIFACT_KIND_VOLUME, ref: "wl-a", workload: "wl-a"}] =
+             Agent.get(restore_calls, & &1)
+
+    # The restore-volume-then-cold arm moves the durable anchor before the cold
+    # attach completes. The attach advances generation only through blessing.
+    assert %{node_id: "node-live", generation: 4, exported_generation: 3} =
+             StatefulStore.get_volume(ctx.store, "wl-a")
+
+    {:ok, rebuilt} = StatefulStore.start_link(name: nil, op_log: ctx.op_log, clock: fn -> 2_000 end)
+
+    assert %{node_id: "node-live", generation: 4, exported_generation: 3} =
+             StatefulStore.get_volume(rebuilt, "wl-a")
+  end
+
+  test "still fails when anchor missing < expiry window" do
+    {:ok, now} = Agent.start_link(fn -> 0 end)
+    clock = fn -> Agent.get(now, & &1) end
+    {restore_fun, restore_calls} = recording_restore_fun()
+    ctx = start_stack(clock: clock, restore_artifact_fun: restore_fun)
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-live", store_reachable: true)
+
+    {:ok, _} =
+      StatefulStore.create_volume(ctx.store, "wl-a", %{
+        node_id: "node-dead",
+        generation: 3,
+        exported_generation: 3
+      })
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    Agent.update(now, fn _ -> 89_999 end)
+
+    assert {:error, {:wake_failed, :volume_node_gone}} =
+             StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    assert Agent.get(restore_calls, & &1) == []
+    assert %{node_id: "node-dead"} = StatefulStore.get_volume(ctx.store, "wl-a")
+  end
+
+  test "never re-anchors within CP uptime floor" do
+    {:ok, now} = Agent.start_link(fn -> 100_000 end)
+    clock = fn -> Agent.get(now, & &1) end
+    {restore_fun, restore_calls} = recording_restore_fun()
+    ctx = start_stack(clock: clock, restore_artifact_fun: restore_fun)
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-live", store_reachable: true)
+
+    {:ok, _} =
+      StatefulStore.create_volume(ctx.store, "wl-a", %{
+        node_id: "node-dead",
+        generation: 3,
+        exported_generation: 3
+      })
+
+    # Isolate the uptime half of the predicate: model an old external absence
+    # observation while this manager has only just booted. The current capacity
+    # table still has no anchor row, but the boot-relative floor must win.
+    :sys.replace_state(ctx.mgr, fn state ->
+      %{state | missing_anchor_since_ms: %{"node-dead" => 0}}
+    end)
+
+    assert {:error, {:wake_failed, :volume_node_gone}} =
+             StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    assert Agent.get(restore_calls, & &1) == []
+    assert %{node_id: "node-dead"} = StatefulStore.get_volume(ctx.store, "wl-a")
+  end
+
+  test "no export present, anchor gone: behaves as before" do
+    {:ok, now} = Agent.start_link(fn -> 0 end)
+    clock = fn -> Agent.get(now, & &1) end
+    {restore_fun, restore_calls} = recording_restore_fun()
+    ctx = start_stack(clock: clock, restore_artifact_fun: restore_fun)
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-live", store_reachable: true)
+
+    {:ok, _} =
+      StatefulStore.create_volume(ctx.store, "wl-a", %{
+        node_id: "node-dead",
+        generation: 3,
+        exported_generation: 0
+      })
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    Agent.update(now, fn _ -> 90_000 end)
+
+    assert {:error, {:wake_failed, :volume_node_gone}} =
+             StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    assert Agent.get(restore_calls, & &1) == []
+    assert %{node_id: "node-dead", exported_generation: 0} =
+             StatefulStore.get_volume(ctx.store, "wl-a")
+  end
+
+  test "rebuilt store preserves exported_generation for anchor-loss recovery" do
+    ctx = start_stack()
+
+    {:ok, _} =
+      StatefulStore.create_volume(ctx.store, "wl-a", %{
+        node_id: "node-dead",
+        generation: 3,
+        exported_generation: 0,
+        size_bytes: 100,
+        allocated_bytes: 10
+      })
+
+    # This is the NodeStatus refresh transition that used to live only in ETS.
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{exported_generation: 3})
+
+    {:ok, rebuilt} =
+      StatefulStore.start_link(name: nil, op_log: ctx.op_log, clock: fn -> 2_000 end)
+
+    assert %{node_id: "node-dead", generation: 3, exported_generation: 3} =
+             StatefulStore.get_volume(rebuilt, "wl-a")
+  end
+
   test "an UNREACHABLE store on a true local-bundle miss attempts no restore and degrades to the relight/cold path" do
     {restore_fun, restore_calls} = recording_restore_fun()
 
