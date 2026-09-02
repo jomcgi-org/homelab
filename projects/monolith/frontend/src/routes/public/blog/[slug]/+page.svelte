@@ -509,14 +509,15 @@
     border-collapse: collapse;
   }
 
-  /* The column band: banded like the section title, closed below by a
-     stroke-weight rule rather than the hairline between data rows, so a
-     header never reads as the first row. */
+  /* Column labels sit on the sheet, framed by stroke-weight rules above,
+     below, and between them, while data rows keep hairlines. One band per
+     panel, the title's; the header is a drawn grid line, not a second
+     band, so it never merges with the title or reads as the first row. */
   .post-body :global(th) {
     padding: 0.5em 1rem;
     border-top: 1px solid var(--stroke);
     border-bottom: 1px solid var(--stroke);
-    background: var(--band);
+    background: none;
     color: var(--ink);
     font-family: var(--font-code);
     font-size: 0.72rem;
@@ -536,9 +537,12 @@
     vertical-align: top;
   }
 
-  .post-body :global(th + th),
   .post-body :global(td + td) {
     border-left: 1px solid var(--line);
+  }
+
+  .post-body :global(th + th) {
+    border-left: 1px solid var(--stroke);
   }
 
   .post-body :global(img) {
