@@ -318,3 +318,42 @@ describe("getMeta", () => {
     expect(meta.description).toBe("This is the first paragraph.");
   });
 });
+
+describe("figure key tables", () => {
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">' +
+    '<circle cx="1" cy="1" r="1" data-key="A" data-tone="gpu"/></svg>';
+  const table = "| Key | Part |\n|---|---|\n| A | GPU |\n| 2 | PCIe |\n";
+
+  it("draws the key column as callouts in the figure's tones", () => {
+    const { html } = renderDoc(
+      {
+        path: "docs/posts/x.md",
+        content: `![Tiers](figures/t.svg)\n\n${table}`,
+        figures: { "figures/t.svg": svg },
+      },
+      buildPathIndex([]),
+    );
+
+    expect(html).toContain('<table class="fig-key">');
+    expect(html).toContain(
+      '<td class="key" data-tone="gpu"><span class="co">A</span></td>',
+    );
+    expect(html).toContain('<td class="key"><span class="co">2</span></td>');
+    expect(html).toContain("<td>GPU</td>");
+  });
+
+  it("leaves a table that does not follow a figure alone", () => {
+    const { html } = renderDoc(
+      {
+        path: "docs/posts/x.md",
+        content: `Intro.\n\n${table}`,
+        figures: { "figures/t.svg": svg },
+      },
+      buildPathIndex([]),
+    );
+
+    expect(html).not.toContain("fig-key");
+    expect(html).toContain("<td>A</td>");
+  });
+});

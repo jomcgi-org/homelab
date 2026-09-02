@@ -25,7 +25,10 @@ with the exact relative path, for example
 `![Memory tiers](figures/memory-tiers.svg)`. The generator validates and embeds
 tracked SVG figures so the drawing inherits the blog theme. SVGs need a
 `viewBox` and no `width` or `height` attributes. Every figure is followed by a
-two-column `Key | Part` table with one row per callout in number order.
+two-column `Key | Part` table with one row per callout in number order. The
+renderer draws that table's key column as the figure's callouts, in the same
+circle and tone, using the `data-key` and `data-tone` attributes `figlib.py`
+stamps on each toned callout.
 
 Figures use the Haynes workshop-manual register: an exploded view or sectioned
 view of the mechanism, with parts separated along one axis and a dashed

@@ -143,9 +143,52 @@ export function renderDoc(entry, slugByPath) {
       toc.push({ depth: t.depth, text: plain, id });
   }
 
+  // A key table docked under an inlined figure gets its first column drawn
+  // as callouts: the figure's circles carry data-key/data-tone (see
+  // docs/posts/figures/figlib.py), and the table token that immediately
+  // follows the figure paragraph is looked up here by identity.
+  const isFigure = (t) =>
+    t.type === "paragraph" &&
+    t.tokens?.length === 1 &&
+    t.tokens[0].type === "image" &&
+    !!entry.figures &&
+    Object.prototype.hasOwnProperty.call(entry.figures, t.tokens[0].href);
+  const keysByTable = new Map();
+  let lastFigure = null;
+  for (const t of tokens) {
+    if (t.type === "space") continue;
+    if (t.type === "table" && lastFigure) {
+      const tones = new Map();
+      const svg = entry.figures[lastFigure.tokens[0].href];
+      for (const m of svg.matchAll(/data-key="([^"]+)" data-tone="([a-z]+)"/g))
+        tones.set(m[1], m[2]);
+      keysByTable.set(t, tones);
+    }
+    lastFigure = isFigure(t) ? t : null;
+  }
+
   let hIdx = 0;
   m.use({
     renderer: {
+      table(token) {
+        const tones = keysByTable.get(token);
+        if (!tones) return false;
+        const cell = (c, first) => {
+          const inner = this.parser.parseInline(c.tokens);
+          const tag = c.header ? "th" : "td";
+          if (!c.header && first && /^[A-Z0-9]{1,2}$/.test(c.text)) {
+            const tone = tones.get(c.text);
+            const attr = tone ? ` data-tone="${tone}"` : "";
+            return `<td class="key"${attr}><span class="co">${inner}</span></td>`;
+          }
+          return `<${tag}>${inner}</${tag}>`;
+        };
+        const row = (cells) =>
+          `<tr>${cells.map((c, i) => cell(c, i === 0)).join("")}</tr>\n`;
+        const head = row(token.header);
+        const body = token.rows.map(row).join("");
+        return `<table class="fig-key">\n<thead>\n${head}</thead>\n<tbody>${body}</tbody></table>\n`;
+      },
       heading({ tokens: hTokens, depth }) {
         const inner = this.parser.parseInline(hTokens);
         const id = headingIds[hIdx] ?? slugifyHeading(stripTags(inner));
