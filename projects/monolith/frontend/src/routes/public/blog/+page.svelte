@@ -40,44 +40,6 @@
 
     <div class="journal">
       <aside class="spine">
-        {#if data.tags.length}
-          <nav class="spine-filters" aria-label="Filter blog posts">
-            <p class="sec-label">/ Filter</p>
-            <div class="filter-content">
-              <div class="spine-list">
-                {#each data.tags as tag}
-                  <a
-                    class:active={data.selectedTag === tag.name}
-                    aria-current={data.selectedTag === tag.name
-                      ? "true"
-                      : undefined}
-                    href={data.selectedTag === tag.name
-                      ? "/blog"
-                      : `/blog?tag=${encodeURIComponent(tag.name)}`}
-                  >
-                    <span>{tag.name}</span>
-                    <span class="count"
-                      >{tag.count}{#if data.selectedTag === tag.name}
-                        <span class="remove" aria-hidden="true">×</span>
-                      {/if}</span
-                    >
-                  </a>
-                {/each}
-              </div>
-              {#if data.selectedTag}
-                <p class="filter-results">
-                  <span>
-                    {data.posts.length}
-                    {data.posts.length === 1 ? "post" : "posts"} ·
-                    {data.selectedTag}
-                  </span>
-                  <a class="clear" href="/blog">Clear</a>
-                </p>
-              {/if}
-            </div>
-          </nav>
-        {/if}
-
         {#if data.months.length}
           <nav class="date-rail" aria-label="Blog index">
             <p class="sec-label">/ Index</p>
@@ -111,14 +73,7 @@
         {#if !data.posts.length}
           <section class="empty-entry">
             <p class="sec-label">/ Status</p>
-            <h2>
-              {data.selectedTag
-                ? "No posts match this tag."
-                : "Nothing published yet."}
-            </h2>
-            {#if data.selectedTag}
-              <p><a href="/blog">Clear the filter</a> to see every post.</p>
-            {/if}
+            <h2>Nothing published yet.</h2>
           </section>
         {:else}
           <section class="editions" aria-label="Blog posts">
@@ -131,19 +86,6 @@
                 <div class="ed-lead">
                   <h2><a href={`/blog/${post.slug}`}>{post.title}</a></h2>
                   <p>{post.summary}</p>
-                </div>
-
-                <div class="meta-rows">
-                  <p class="meta-kv">
-                    <span class="k">Filed</span>
-                    <span class="v filed-tags">
-                      {#each post.tags as tag}
-                        <a href={`/blog?tag=${encodeURIComponent(tag)}`}
-                          >{tag}</a
-                        >
-                      {/each}
-                    </span>
-                  </p>
                 </div>
               </article>
             {/each}
@@ -179,7 +121,7 @@
 
   .frame {
     position: relative;
-    max-width: 69em;
+    max-width: 75em;
     margin: 0 auto;
   }
 
@@ -207,7 +149,7 @@
 
   .journal {
     display: grid;
-    grid-template-columns: minmax(12em, 15em) minmax(0, 48em);
+    grid-template-columns: minmax(12em, 15em) minmax(0, 54em);
     gap: clamp(2em, 4vw, 4em);
   }
 
@@ -225,73 +167,24 @@
     display: none;
   }
 
-  .spine-list {
-    padding: 0.35em 0;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .spine-list a {
-    display: flex;
-    gap: 0.6em;
-    align-items: baseline;
-    justify-content: space-between;
-    padding: 0.34em 0 0.34em 0.6rem;
-    border-left: 2px solid transparent;
-    color: var(--ink-2);
-    font-size: 0.8em;
-    text-decoration: none;
-  }
-
-  .spine-list a:hover,
-  .spine-list a.active {
-    color: var(--accent-ink);
-  }
-
-  .spine-list a.active {
-    border-left-color: var(--accent-ink);
-    font-weight: 650;
-  }
-
-  .count,
   .group-count {
     color: var(--ink-2);
     font-family: var(--font-code);
     font-size: 0.7em;
   }
 
-  .spine-list a.active .count {
-    color: inherit;
-  }
-
-  .remove {
-    margin-left: 0.2em;
-  }
-
-  .filter-results {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem 0.6rem;
-    align-items: baseline;
-    margin: 0.8em 0 0;
-    color: var(--ink-2);
-    font-family: var(--font-code);
-    font-size: 0.72rem;
-  }
-
-  .clear,
   .empty-entry a {
     color: var(--ink-2);
     text-decoration: underline;
     text-underline-offset: 0.2em;
   }
 
-  .clear:hover,
   .empty-entry a:hover {
     color: var(--accent-ink);
   }
 
   .date-rail {
-    margin-top: 1.8rem;
+    margin-top: 0;
   }
 
   .rail-month summary {
@@ -416,53 +309,6 @@
     line-height: 1.55;
   }
 
-  .meta-rows {
-    border-top: 1px solid var(--stroke);
-  }
-
-  .meta-kv {
-    display: grid;
-    grid-template-columns: 6.5em minmax(0, 1fr);
-    align-items: stretch;
-    margin: 0;
-  }
-
-  .meta-kv .k {
-    padding: 0.5em 0 0.5em 1rem;
-  }
-
-  .meta-kv .v {
-    border-left: 1px solid var(--line);
-  }
-
-  .meta-kv .k,
-  .meta-kv .v {
-    color: var(--ink-2);
-    font-family: var(--font-code);
-    font-size: 0.72rem;
-  }
-
-  .filed-tags {
-    display: flex;
-    flex-wrap: wrap;
-    overflow: hidden;
-  }
-
-  .filed-tags a {
-    box-sizing: border-box;
-    flex: 0 0 10.5rem;
-    margin: -1px 0 0 -1px;
-    padding: 0.5em 0.7em;
-    border-top: 1px solid var(--line);
-    border-left: 1px solid var(--line);
-    color: var(--ink-2);
-    text-decoration: none;
-  }
-
-  .filed-tags a:hover {
-    color: var(--accent-ink);
-  }
-
   .empty-entry {
     padding: 1rem;
     border: 1px solid var(--ink);
@@ -496,22 +342,6 @@
       max-height: none;
       padding-left: 0;
       overflow: visible;
-    }
-
-    .spine-list {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0 1.1em;
-    }
-
-    .spine-list a {
-      padding: 0.62em 0;
-      border-bottom: 2px solid transparent;
-      border-left: 0;
-    }
-
-    .spine-list a.active {
-      border-bottom-color: var(--accent-ink);
     }
 
     .date-rail {
