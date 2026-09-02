@@ -130,6 +130,13 @@
     line-height: 1.2;
   }
 
+  /* The body's top rule already closes the lead, so a section band that
+     opens the body sits directly on it. */
+  .post-body :global(> h2:first-child) {
+    margin-top: 0;
+    border-top: 0;
+  }
+
   .post-body :global(h3) {
     margin: 1.35rem 0 0.55rem;
     font-family: var(--font-ui);
@@ -202,11 +209,15 @@
     font-size: 0.85em;
   }
 
+  /* Tables, figures, and code blocks run to the panel's edges so their rules
+     join the outline: boxes made of lines inside the boundary, never a box
+     inside a box. */
   .post-body :global(pre.doc-code) {
-    margin: 1rem 0;
+    margin: 1rem -1rem;
     padding: 1rem;
     overflow-x: auto;
-    border: 1px solid var(--stroke);
+    border-top: 1px solid var(--stroke);
+    border-bottom: 1px solid var(--stroke);
     background: var(--band);
     color: var(--ink);
     font-family: var(--font-code);
@@ -222,14 +233,14 @@
   }
 
   .post-body :global(table) {
-    width: 100%;
-    margin: 1rem 0;
+    width: calc(100% + 2rem);
+    margin: 1rem -1rem;
     border-collapse: collapse;
   }
 
   .post-body :global(th) {
-    padding: 0.5em 0.7em;
-    border-top: 1px solid var(--line);
+    padding: 0.5em 1rem;
+    border-top: 1px solid var(--stroke);
     border-bottom: 1px solid var(--line);
     background: var(--band);
     color: var(--ink-2);
@@ -242,7 +253,7 @@
   }
 
   .post-body :global(td) {
-    padding: 0.55em 0.7em;
+    padding: 0.55em 1rem;
     border-bottom: 1px solid var(--line);
     color: var(--ink);
     font-size: 0.85rem;
@@ -263,8 +274,9 @@
   }
 
   .post-body :global(.fig) {
-    margin: 1.5rem 0;
-    border: 1px solid var(--stroke);
+    margin: 1.5rem -1rem;
+    border-top: 1px solid var(--stroke);
+    border-bottom: 1px solid var(--stroke);
     counter-increment: fig;
   }
 
@@ -301,6 +313,10 @@
     margin-top: -1px;
   }
 
+  .post-body :global(tr:last-child td) {
+    border-bottom: 1px solid var(--stroke);
+  }
+
   .post-body :global(figure.fig + table th:first-child),
   .post-body :global(figure.fig + table td:first-child) {
     width: 3.5em;
@@ -313,13 +329,10 @@
      four sides, so each key is a box in the grid, joined to the drawing by
      colour. Keys without a tone (ink parts, stage numbers) keep the box and
      stay ink. */
-  .post-body :global(table.fig-key) {
-    border: 1px solid var(--line);
-  }
 
   .post-body :global(table.fig-key th:first-child),
   .post-body :global(table.fig-key td.key) {
-    width: 3em;
+    width: 3.4em;
     padding: 0.55em 0.4em;
     border-right: 1px solid var(--line);
     text-align: center;
