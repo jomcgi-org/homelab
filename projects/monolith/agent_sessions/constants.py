@@ -9,6 +9,7 @@ DRAINER_NODE_KEY = "qwen-drain"
 # using their origin marker and original prompt to hide existing database rows.
 SYNTHETIC_SESSION_PREFIX = "synthetic:"
 LEGACY_QWEN_SYNTHETIC_PROMPT = "Reply with exactly: qwen synthetic ok"
+CODEX_SYNTHETIC_PROMPT = "Reply with exactly: codex synthetic ok"
 
 # Terminal reasons that mean the turn ended normally. The claude lane reports
 # "completed" or "end_turn"; the pi lane passes the model's raw stopReason

@@ -882,6 +882,18 @@ jobs:
           memory: 256Mi
         limits:
           memory: 256Mi
+    - name: ember-codex-session-synthetic
+      args: ["ember-codex-synthetic-trigger"]
+      schedule: "0 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 300
+      suspend: false
+      env:
+        MONOLITH_INTERNAL_URL: "http://monolith.monolith.svc.cluster.local:8000"
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
 
 # Ember synthetic probes (the ember-synthetic CronWorkflow above). This now
 # feeds the Deployment, not the cron; the probes' control-plane address is read from

@@ -64,3 +64,4 @@ async def test_fresh_success_is_ok(monkeypatch):
 
 def test_staleness_thresholds_match_cron_cadences():
     assert health.EMBER_SYNTHETIC_STALENESS_S == 750.0
+    assert health.EMBER_CODEX_STALENESS_S == 9000.0

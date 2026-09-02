@@ -94,6 +94,83 @@ def test_in_flight_flag_is_cleared_after_a_run(app, recorded):
     assert set(client.post("/internal/ember/synthetic-probe").json()) == set(DEMOS)
 
 
+def test_codex_session_probe_success(app, monkeypatch):
+    result = {"ok": True, "detail": "completed, destroyed", "latency_ms": 1.0}
+    recorded = {}
+
+    async def probe_codex():
+        return result
+
+    async def record(demo, outcome):
+        recorded[demo] = outcome
+
+    monkeypatch.setattr("ember_public.synthetic_probe.probe_codex", probe_codex)
+    monkeypatch.setattr("ember_public.synthetic_probe.record", record)
+
+    response = TestClient(app).post("/internal/ember/codex-session-probe")
+
+    assert response.status_code == 200
+    assert response.json() == {"codex": result}
+    assert recorded == {"codex": result}
+
+
+def test_codex_session_probe_failure_sends_notify(app, monkeypatch):
+    detail = "Codex lane failed verbatim"
+    result = {"ok": False, "detail": detail, "latency_ms": None}
+    notifications = []
+    recorded = {}
+
+    async def probe_codex():
+        return result
+
+    async def notify(message, level):
+        notifications.append({"message": message, "level": level})
+
+    async def record(demo, outcome):
+        recorded[demo] = outcome
+
+    monkeypatch.setattr("ember_public.synthetic_probe.probe_codex", probe_codex)
+    monkeypatch.setattr("ember_public.synthetic_probe.record", record)
+    monkeypatch.setattr(synthetic_router, "_notify", notify)
+
+    response = TestClient(app).post("/internal/ember/codex-session-probe")
+
+    assert response.status_code == 200
+    assert response.json() == {"codex": result}
+    assert notifications == [{"message": detail, "level": "warn"}]
+    assert recorded == {"codex": result}
+
+
+def test_codex_probe_independent_guard(app, monkeypatch):
+    calls = 0
+    result = {"ok": True, "detail": "completed", "latency_ms": 1.0}
+
+    async def probe_codex():
+        nonlocal calls
+        calls += 1
+        return result
+
+    async def record(*_):
+        return None
+
+    monkeypatch.setattr("ember_public.synthetic_probe.probe_codex", probe_codex)
+    monkeypatch.setattr("ember_public.synthetic_probe.record", record)
+    monkeypatch.setattr(synthetic_router, "_probe_in_flight", True)
+
+    response = TestClient(app).post("/internal/ember/codex-session-probe")
+
+    assert response.json() == {"codex": result}
+    assert calls == 1
+
+    monkeypatch.setattr(synthetic_router, "_probe_in_flight", False)
+    monkeypatch.setattr(synthetic_router, "_codex_probe_in_flight", True)
+
+    response = TestClient(app).post("/internal/ember/codex-session-probe")
+
+    assert response.json() == {"skipped": True, "detail": "already running"}
+    assert calls == 1
+
+
 def test_record_failure_propagates(app, monkeypatch):
     """A failed write must surface, so the job fails rather than going blind."""
     for demo in DEMOS:

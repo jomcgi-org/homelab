@@ -23,6 +23,7 @@ def test_module_registers_synthetic_postgres_health_hook():
         "ember_semgrep",
         "ember_pages",
         "ember_postgres",
+        "ember_codex",
     }
 
 

@@ -159,6 +159,72 @@ async def test_postgres_aggregate_roundtrip_success(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_probe_codex_success(monkeypatch):
+    class Turn:
+        terminal_reason = "completed"
+        result = " codex synthetic ok "
+
+    async def run_session(prompt, model):
+        assert prompt == "Reply with exactly: codex synthetic ok"
+        assert model == "luna"
+        return Turn()
+
+    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
+
+    result = await probe.probe_codex()
+
+    assert result["ok"] is True
+    assert isinstance(result["latency_ms"], (int, float))
+
+
+@pytest.mark.asyncio
+async def test_probe_codex_bad_terminal_reason(monkeypatch):
+    class Turn:
+        terminal_reason = "pending"
+        result = "not done"
+
+    async def run_session(*_, **__):
+        return Turn()
+
+    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
+
+    result = await probe.probe_codex()
+
+    assert result["ok"] is False
+    assert "turn reason" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_probe_codex_empty_result(monkeypatch):
+    class Turn:
+        terminal_reason = "completed"
+        result = ""
+
+    async def run_session(*_, **__):
+        return Turn()
+
+    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
+
+    result = await probe.probe_codex()
+
+    assert result["ok"] is False
+    assert "empty result" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_probe_codex_exception(monkeypatch):
+    async def run_session(*_, **__):
+        raise RuntimeError("Codex transport unavailable")
+
+    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
+
+    result = await probe.probe_codex()
+
+    assert result["ok"] is False
+    assert result["latency_ms"] is None
+
+
+@pytest.mark.asyncio
 async def test_page_5xx_retried_once_then_failed(monkeypatch):
     class Response:
         status_code = 503
