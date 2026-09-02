@@ -1,4 +1,6 @@
 <script>
+  import { replaceState } from "$app/navigation";
+  import { page } from "$app/state";
   import { Seo } from "$lib/public/components";
   import { formatDate } from "../blog.js";
   import Trail from "../Trail.svelte";
@@ -26,10 +28,17 @@
   let first = "";
   let last = "";
 
+  // The hash follows the reader through SvelteKit's replaceState, never
+  // history.replaceState directly: the raw call drops the router's index
+  // off the history entry and the Back button stops navigating.
+  function setHash(id) {
+    replaceState(`#${id}`, page.state);
+  }
+
   function setActive(id) {
     if (id === activeId) return;
     activeId = id;
-    history.replaceState(null, "", `#${id}`);
+    setHash(id);
   }
 
   function pin(id) {
@@ -38,6 +47,15 @@
   }
 
   function onIndexClick(event) {
+    // A modified click (new tab, new window) keeps its native meaning.
+    if (
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    )
+      return;
     const link = event.target.closest("a[href^='#']");
     if (!link) return;
     const id = link.getAttribute("href").slice(1);
@@ -45,9 +63,13 @@
     if (id !== first && !target) return;
     event.preventDefault();
     pin(id);
-    history.replaceState(null, "", `#${id}`);
-    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
-    else window.scrollTo({ top: 0, behavior: "smooth" });
+    setHash(id);
+    const behavior = window.matchMedia("(prefers-reduced-motion: reduce)")
+      .matches
+      ? "auto"
+      : "smooth";
+    if (target) target.scrollIntoView({ behavior, block: "start" });
+    else window.scrollTo({ top: 0, behavior });
   }
 
   $effect(() => {
@@ -57,8 +79,14 @@
     if (!headings.length) return;
     first = headings[0].id;
     last = headings[headings.length - 1].id;
-    if (location.hash.length > 1)
-      pin(decodeURIComponent(location.hash.slice(1)));
+    if (location.hash.length > 1) {
+      // A malformed escape in the hash must not take the index down with it.
+      try {
+        pin(decodeURIComponent(location.hash.slice(1)));
+      } catch {
+        // Leave the band to decide.
+      }
+    }
 
     const atEnd = () =>
       window.innerHeight + window.scrollY >=
@@ -590,6 +618,12 @@
   .post-body :global(.fig-art) {
     padding: 0;
     overflow-x: auto;
+    /* The scroll container's own right border sits on the same pixel as
+       the panel wall (one pixel of negative margin), so it is invisible
+       when the drawing fits and closes the drawing's last cell when it
+       scrolls on a narrow screen. */
+    margin-right: -1px;
+    border-right: 1px solid var(--ink);
     color: var(--ink);
   }
 
@@ -668,7 +702,7 @@
      tone itself: the same hue as the drawing's lines, at line weight. */
   .post-body :global(td.key[data-tone]) {
     background: color-mix(in srgb, var(--key-tone) 18%, var(--sheet));
-    color: var(--key-tone);
+    color: color-mix(in srgb, var(--key-tone) var(--key-letter), var(--ink));
   }
 
   .post-body :global(td.key[data-tone="gpu"]) {
