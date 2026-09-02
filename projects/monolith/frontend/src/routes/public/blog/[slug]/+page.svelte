@@ -3,6 +3,32 @@
   import { formatDate } from "../blog.js";
 
   let { data } = $props();
+  let activeId = $state("");
+
+  // The spine follows the reader: the topmost heading in the upper band of
+  // the viewport is the active one, and the URL hash follows it so a copied
+  // link lands on the section being read.
+  $effect(() => {
+    const headings = document.querySelectorAll(
+      ".post-frame h2[id], .post-frame h3[id]",
+    );
+    if (!headings.length) return;
+    const observer = new IntersectionObserver(
+      (observed) => {
+        const visible = observed
+          .filter((item) => item.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (!visible[0]) return;
+        const id = visible[0].target.id;
+        if (id === activeId) return;
+        activeId = id;
+        history.replaceState(null, "", `#${id}`);
+      },
+      { rootMargin: "-10% 0px -70% 0px" },
+    );
+    headings.forEach((h) => observer.observe(h));
+    return () => observer.disconnect();
+  });
 </script>
 
 <Seo
@@ -13,28 +39,68 @@
 />
 
 <main class="td post-page">
-  <div class="post-frame">
-    <article class="edition">
-      <p class="ed-head">
-        <time datetime={data.date}>{formatDate(data.date)}</time>
-        <a href="/blog">Index</a>
-      </p>
+  <div class="frame">
+    <div class="journal">
+      <aside class="spine">
+        {#if data.toc.length}
+          <nav class="toc" aria-label="Sections">
+            <p class="sec-label">/ Index</p>
+            <ol>
+              {#each data.toc as section}
+                <li>
+                  <a
+                    href={`#${section.id}`}
+                    class:active={activeId === section.id}
+                    aria-current={activeId === section.id
+                      ? "location"
+                      : undefined}>{section.text}</a
+                  >
+                  {#if section.children.length}
+                    <ol>
+                      {#each section.children as sub}
+                        <li>
+                          <a
+                            href={`#${sub.id}`}
+                            class:active={activeId === sub.id}
+                            aria-current={activeId === sub.id
+                              ? "location"
+                              : undefined}>{sub.text}</a
+                          >
+                        </li>
+                      {/each}
+                    </ol>
+                  {/if}
+                </li>
+              {/each}
+            </ol>
+          </nav>
+        {/if}
+      </aside>
 
-      <header class="ed-lead">
-        <h1>{data.title}</h1>
-        <p>{data.summary}</p>
-      </header>
+      <div class="post-frame">
+        <article class="edition">
+          <p class="ed-head">
+            <time datetime={data.date}>{formatDate(data.date)}</time>
+            <a href="/blog">Index</a>
+          </p>
 
-      {#if data.preamble}
-        <!-- Server-rendered, constrained first-party markdown. -->
-        <div class="post-body">{@html data.preamble}</div>
-      {/if}
-    </article>
+          <header class="ed-lead">
+            <h1>{data.title}</h1>
+            <p>{data.summary}</p>
+          </header>
 
-    <!-- One panel per numbered section: a page flip between them. -->
-    {#each data.sections as section}
-      <section class="edition post-body">{@html section}</section>
-    {/each}
+          {#if data.preamble}
+            <!-- Server-rendered, constrained first-party markdown. -->
+            <div class="post-body">{@html data.preamble}</div>
+          {/if}
+        </article>
+
+        <!-- One panel per numbered section: a page flip between them. -->
+        {#each data.sections as section}
+          <section class="edition post-body">{@html section}</section>
+        {/each}
+      </div>
+    </div>
   </div>
 </main>
 
@@ -54,9 +120,73 @@
     outline-offset: 3px;
   }
 
+  .frame {
+    max-width: 75em;
+    margin: 0 auto;
+  }
+
+  .journal {
+    display: grid;
+    grid-template-columns: minmax(12em, 15em) minmax(0, 54em);
+    gap: clamp(2em, 4vw, 4em);
+  }
+
+  .spine {
+    position: sticky;
+    top: 1.5rem;
+    align-self: start;
+    max-height: calc(100vh - 3rem);
+    padding-left: 0.4rem;
+    overflow-y: auto;
+    scrollbar-width: none;
+  }
+
+  .sec-label {
+    margin: 0 0 1em;
+    padding-bottom: 0.55em;
+    border-bottom: 1px solid var(--stroke);
+    color: var(--ink-2);
+    font-family: var(--font-code);
+    font-size: 0.68rem;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .toc ol {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .toc a {
+    display: block;
+    padding: 0.34em 0 0.34em 0.6rem;
+    border-left: 2px solid transparent;
+    color: var(--ink-2);
+    font-size: 0.8em;
+    line-height: 1.3;
+    text-decoration: none;
+  }
+
+  .toc ol ol a {
+    padding-left: 1.4rem;
+    font-size: 0.74em;
+  }
+
+  .toc a:hover,
+  .toc a.active {
+    color: var(--accent-ink);
+  }
+
+  .toc a.active {
+    border-left-color: var(--accent-ink);
+    font-weight: 650;
+  }
+
   .post-frame {
     max-width: 54em;
-    margin: 0 auto;
+    min-width: 0;
   }
 
   .edition {
@@ -438,6 +568,48 @@
 
   .post-body :global(td.key[data-tone="hot"]) {
     --key-tone: var(--tone-hot);
+  }
+
+  @media (max-width: 760px) {
+    .journal {
+      display: block;
+    }
+
+    .spine {
+      position: sticky;
+      z-index: 4;
+      top: 0;
+      max-height: none;
+      margin: 0 -1.35em 1.5rem;
+      padding: 0.5em 1.35em;
+      overflow-x: auto;
+      border-bottom: 1px solid var(--stroke);
+      background: var(--sheet);
+    }
+
+    .sec-label {
+      display: none;
+    }
+
+    .toc > ol {
+      display: flex;
+      gap: 1em;
+    }
+
+    .toc ol ol {
+      display: none;
+    }
+
+    .toc a {
+      padding: 0.5em 0;
+      border-left: 0;
+      border-bottom: 2px solid transparent;
+      white-space: nowrap;
+    }
+
+    .toc a.active {
+      border-bottom-color: var(--accent-ink);
+    }
   }
 
   @media (max-width: 600px) {
