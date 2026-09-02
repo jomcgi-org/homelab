@@ -177,8 +177,13 @@
     border-bottom: 0;
   }
 
+  /* A subsection is a partition of its section panel: a hairline rule edge
+     to edge above the heading, the same way a part is divided inside its
+     outline in the figures. */
   .post-body :global(h3) {
-    margin: 1.35rem 0 0.55rem;
+    margin: 1.6rem -1rem 0.55rem;
+    padding: 1rem 1rem 0;
+    border-top: 1px solid var(--line);
     font-family: var(--font-ui);
     font-size: 0.95rem;
     font-weight: 700;
@@ -212,10 +217,24 @@
     font-weight: 650;
   }
 
+  /* The public tier's reset strips list markers; the post body wants them.
+     Square markers, drawn in ink like everything else on the sheet. */
   .post-body :global(ul),
   .post-body :global(ol) {
     margin: 0.85rem 0;
     padding-left: 1.5rem;
+  }
+
+  .post-body :global(ul) {
+    list-style: square;
+  }
+
+  .post-body :global(ol) {
+    list-style: decimal;
+  }
+
+  .post-body :global(li::marker) {
+    color: var(--ink-2);
   }
 
   .post-body :global(li) {
