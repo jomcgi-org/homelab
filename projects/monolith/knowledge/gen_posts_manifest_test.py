@@ -13,9 +13,24 @@ def write_post(root: Path, name: str, frontmatter: str, body: str = "Body.\n") -
 
 
 def public_frontmatter(
-    *, title: str = "Example", date: str = "2026-01-15", summary: str = "One sentence."
+    *,
+    title: str = "Example",
+    date: str = "2026-01-15",
+    summary: str = "One sentence.",
+    tags: str | None = None,
 ) -> str:
-    return f"title: \"{title}\"\ndate: {date}\nsummary: '{summary}'\npublic: true\n"
+    tag_line = f"tags: {tags}\n" if tags is not None else ""
+    return (
+        f"title: \"{title}\"\ndate: {date}\nsummary: '{summary}'\n"
+        f"{tag_line}public: true\n"
+    )
+
+
+def write_figure(root: Path, name: str, source: str) -> str:
+    figures = root / "docs" / "posts" / "figures"
+    figures.mkdir(parents=True, exist_ok=True)
+    (figures / name).write_text(source, encoding="utf-8")
+    return f"docs/posts/figures/{name}"
 
 
 def test_public_true_is_included_and_frontmatter_is_stripped(tmp_path: Path):
@@ -35,6 +50,7 @@ def test_public_true_is_included_and_frontmatter_is_stripped(tmp_path: Path):
             "title": "Example",
             "date": "2026-01-15",
             "summary": "One sentence.",
+            "tags": [],
             "content": "# Body\n\nPublished text.\n",
         }
     ]
@@ -61,6 +77,15 @@ def test_readme_is_excluded(tmp_path: Path):
         f"---\n{public_frontmatter()}---\nInternal.\n", encoding="utf-8"
     )
     assert build_manifest(tmp_path, ["docs/posts/README.md"]) == []
+
+
+def test_figures_readme_is_excluded(tmp_path: Path):
+    figures = tmp_path / "docs" / "posts" / "figures"
+    figures.mkdir(parents=True)
+    (figures / "README.md").write_text(
+        f"---\n{public_frontmatter()}---\nInternal.\n", encoding="utf-8"
+    )
+    assert build_manifest(tmp_path, ["docs/posts/figures/README.md"]) == []
 
 
 def test_malformed_frontmatter_on_public_post_raises(tmp_path: Path):
@@ -179,6 +204,127 @@ def test_entries_sort_newest_first_then_slug(tmp_path: Path):
     entries = build_manifest(tmp_path, paths)
 
     assert [entry["slug"] for entry in entries] == ["alpha", "zebra", "old"]
+
+
+def test_tags_are_normalized_and_deduplicated(tmp_path: Path):
+    path = write_post(
+        tmp_path,
+        "2026-01-15-example.md",
+        public_frontmatter(tags="Inference, freetoken, INFERENCE, moe"),
+    )
+
+    entries = build_manifest(tmp_path, [path])
+
+    assert entries[0]["tags"] == ["inference", "freetoken", "moe"]
+
+
+def test_missing_tags_gives_an_empty_list(tmp_path: Path):
+    path = write_post(tmp_path, "2026-01-15-example.md", public_frontmatter())
+
+    assert build_manifest(tmp_path, [path])[0]["tags"] == []
+
+
+@pytest.mark.parametrize(
+    ("tags", "message"),
+    [
+        ("good, bad tag", "invalid tag"),
+        ("one,two,three,four,five,six,seven", "between 1 and 6"),
+        ("one,,two", "empty item"),
+        ("one,two,", "empty item"),
+    ],
+)
+def test_invalid_tags_raise(tmp_path: Path, tags: str, message: str):
+    path = write_post(
+        tmp_path,
+        "2026-01-15-example.md",
+        public_frontmatter(tags=tags),
+    )
+
+    with pytest.raises(ValueError, match=message) as exc_info:
+        build_manifest(tmp_path, [path])
+
+    assert str(exc_info.value).startswith(path)
+
+
+def test_figure_is_inlined_from_its_exact_href(tmp_path: Path):
+    figure_path = write_figure(
+        tmp_path,
+        "example.svg",
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">\n'
+        '  <path d="M0 0L10 10" fill="none" stroke="currentColor"/>\n'
+        "</svg>\n",
+    )
+    path = write_post(
+        tmp_path,
+        "2026-01-15-example.md",
+        public_frontmatter(),
+        "![Exploded view](figures/example.svg)\n",
+    )
+
+    entry = build_manifest(tmp_path, [path], {figure_path})[0]
+
+    assert entry["figures"] == {
+        "figures/example.svg": (tmp_path / figure_path).read_text(encoding="utf-8")
+    }
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        ('<svg viewBox="0 0 10 10"><script/></svg>', "forbidden element"),
+        ('<svg viewBox="0 0 10 10" onclick="go()"/>', "forbidden attribute"),
+        ('<svg viewBox="0 0 10 10"><path href="other"/></svg>', "forbidden attribute"),
+    ],
+)
+def test_unsafe_figure_markup_is_rejected(tmp_path: Path, source: str, message: str):
+    figure_path = write_figure(tmp_path, "unsafe.svg", source)
+    path = write_post(
+        tmp_path,
+        "2026-01-15-example.md",
+        public_frontmatter(),
+        "![Unsafe](figures/unsafe.svg)\n",
+    )
+
+    with pytest.raises(ValueError, match=message) as exc_info:
+        build_manifest(tmp_path, [path], {figure_path})
+
+    assert path in str(exc_info.value)
+    assert figure_path in str(exc_info.value)
+
+
+def test_missing_figure_is_rejected(tmp_path: Path):
+    path = write_post(
+        tmp_path,
+        "2026-01-15-example.md",
+        public_frontmatter(),
+        "![Missing](figures/missing.svg)\n",
+    )
+
+    with pytest.raises(ValueError, match="must exist and be tracked"):
+        build_manifest(tmp_path, [path])
+
+
+def test_figure_parent_escape_is_rejected(tmp_path: Path):
+    path = write_post(
+        tmp_path,
+        "2026-01-15-example.md",
+        public_frontmatter(),
+        "![Escape](figures/../secret.svg)\n",
+    )
+
+    with pytest.raises(ValueError, match="may not escape"):
+        build_manifest(tmp_path, [path])
+
+
+def test_non_figure_images_are_ignored(tmp_path: Path):
+    path = write_post(
+        tmp_path,
+        "2026-01-15-example.md",
+        public_frontmatter(),
+        "![Photo](images/photo.png)\n![Other SVG](images/diagram.svg)\n",
+    )
+
+    assert "figures" not in build_manifest(tmp_path, [path])[0]
 
 
 def test_public_post_with_internal_marker_fails(tmp_path: Path):

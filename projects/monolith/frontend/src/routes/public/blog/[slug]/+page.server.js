@@ -18,7 +18,7 @@ export function load({ params, setHeaders }) {
   const { html } = renderDoc(entry, emptyPathIndex);
   setHeaders({
     ...cloudflareCacheHeaders(DOCS_CACHE_CONTROL),
-    etag: `"${version}-posts-${entry.slug}"`,
+    etag: `"${version}-blog-${entry.slug}"`,
   });
 
   return {
@@ -26,6 +26,7 @@ export function load({ params, setHeaders }) {
     title: entry.title,
     date: entry.date,
     summary: entry.summary,
+    tags: entry.tags,
     html,
   };
 }

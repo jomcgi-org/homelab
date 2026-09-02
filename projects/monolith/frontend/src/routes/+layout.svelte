@@ -23,6 +23,8 @@
   // purpose-built topbar (back-to-apex link, docs search, repository link), so the
   // global site nav would just stack a second sticky bar on top of it. Matches
   // /docs and /docs/* but not unrelated prefixes like /docstore.
+  // Blog pages use their own technical drawing chrome, matching the docs
+  // suppression for /blog and /blog/*.
   //
   // Error pages (notably the brutalist 404 in src/routes/+error.svelte) also
   // suppress the nav: a not-found page renders its own "back home" affordance
@@ -47,6 +49,7 @@
       /^\/private(?:\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?app\//.test($page.url.pathname) ||
       /^\/(public\/|private\/)?docs(\/|$)/.test($page.url.pathname) ||
+      /^\/(public\/|private\/)?blog(\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?artifact(\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?demos(\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?ember(\/|$)/.test($page.url.pathname) ||
