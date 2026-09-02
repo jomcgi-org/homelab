@@ -1858,6 +1858,80 @@ defmodule Embervm.StatefulManagerTest do
       :ok = StatefulManager.reconcile(ctx.mgr)
       assert :sys.get_state(ctx.mgr).destroying_alarmed[instance.instance_id] == 1_200
     end
+
+    test "activity cannot postpone escape from destroying past the state-entry budget" do
+      {:ok, manager_clock} = Agent.start_link(fn -> 1_000 end)
+
+      ctx =
+        start_stack(
+          node_confirmed_destroy: true,
+          clock: fn -> Agent.get(manager_clock, & &1) end,
+          destroying_escape_ms: 100,
+          stop_stateful_fun: fn _ch, _req -> {:ok, %{teardown_confirmed: false}} end
+        )
+
+      stateful_workload(ctx, "wl-a")
+      stateful_node(ctx, "node-4")
+      assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+      assert %{destroyed: 0, evicted: 0} = StatefulManager.destroy_instance(ctx.mgr, "wl-a")
+      assert [instance] = StatefulStore.list(ctx.store, "wl-a")
+      NodeCapacity.drop(ctx.cap_table, "node-4")
+
+      # Model the demo's connection cadence with injected Erlang process clocks.
+      # Every touch advances updated_at, but none may rewrite the FSM entry time.
+      Enum.each(1..6, fn _cycle ->
+        Agent.update(manager_clock, &(&1 + 15))
+        now = Agent.get(manager_clock, & &1)
+        assert {:ok, _} = StatefulStore.touch_active(ctx.store, instance.instance_id, now)
+        :ok = StatefulManager.reconcile(ctx.mgr)
+        assert {:ok, %{state: :destroying}} = StatefulStore.get(ctx.store, instance.instance_id)
+      end)
+
+      Agent.update(manager_clock, &(&1 + 10))
+      now = Agent.get(manager_clock, & &1)
+      assert {:ok, _} = StatefulStore.touch_active(ctx.store, instance.instance_id, now)
+      :ok = StatefulManager.reconcile(ctx.mgr)
+
+      assert {:ok, failed} = StatefulStore.get(ctx.store, instance.instance_id)
+      assert failed.state == :failed
+      assert failed.terminal_reason == "destroy_owner_absent_timeout"
+    end
+
+    test "activity cannot postpone the destroying alarm past the state-entry threshold" do
+      {:ok, manager_clock} = Agent.start_link(fn -> 1_000 end)
+
+      ctx =
+        start_stack(
+          node_confirmed_destroy: true,
+          clock: fn -> Agent.get(manager_clock, & &1) end,
+          destroying_alarm_ms: 100,
+          destroying_escape_ms: 10_000,
+          stop_stateful_fun: fn _ch, _req -> {:ok, %{teardown_confirmed: false}} end
+        )
+
+      stateful_workload(ctx, "wl-a")
+      stateful_node(ctx, "node-4")
+      assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+      assert %{destroyed: 0, evicted: 0} = StatefulManager.destroy_instance(ctx.mgr, "wl-a")
+      assert [instance] = StatefulStore.list(ctx.store, "wl-a")
+      NodeCapacity.drop(ctx.cap_table, "node-4")
+
+      Enum.each(1..6, fn _cycle ->
+        Agent.update(manager_clock, &(&1 + 15))
+        now = Agent.get(manager_clock, & &1)
+        assert {:ok, _} = StatefulStore.touch_active(ctx.store, instance.instance_id, now)
+        :ok = StatefulManager.reconcile(ctx.mgr)
+        refute :sys.get_state(ctx.mgr).destroying_alarmed[instance.instance_id]
+      end)
+
+      Agent.update(manager_clock, &(&1 + 10))
+      now = Agent.get(manager_clock, & &1)
+      assert {:ok, _} = StatefulStore.touch_active(ctx.store, instance.instance_id, now)
+      :ok = StatefulManager.reconcile(ctx.mgr)
+
+      assert :sys.get_state(ctx.mgr).destroying_alarmed[instance.instance_id] == 1_100
+      assert {:ok, %{state: :destroying}} = StatefulStore.get(ctx.store, instance.instance_id)
+    end
   end
 
   test "gate-off destroy records destroyed before an unconfirmed teardown" do
@@ -1934,7 +2008,28 @@ defmodule Embervm.StatefulManagerTest do
     assert StatefulStore.get_volume(ctx.store, "wl-a") == nil
   end
 
-  test "delete_volume reports failed nodes and retains the store record" do
+  test "delete_volume skips an anchor absent from capacity and reports it as unreachable" do
+    ctx =
+      start_stack(
+        channel_fun: fn _node_id -> {:error, :unknown_node} end
+      )
+
+    stateful_workload(ctx, "wl-a")
+
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{
+      node_id: "node-gone",
+      generation: 1,
+      size_bytes: 10,
+      allocated_bytes: 1
+    })
+
+    assert {:ok, %{deleted: true, unreachable: ["node-gone"]}} =
+             StatefulManager.delete_volume(ctx.mgr, "wl-a")
+
+    assert StatefulStore.get_volume(ctx.store, "wl-a") == nil
+  end
+
+  test "delete_volume retains the store record when a node present in capacity errors" do
     {:ok, deleted} = Agent.start_link(fn -> [] end)
 
     ctx =
@@ -1954,7 +2049,7 @@ defmodule Embervm.StatefulManagerTest do
     assert {:error, {:delete_incomplete, ["node-1"]}} =
              StatefulManager.delete_volume(ctx.mgr, "wl-a")
 
-    assert StatefulStore.get_volume(ctx.store, "wl-a")
+    assert %{node_id: "node-1", generation: 1} = StatefulStore.get_volume(ctx.store, "wl-a")
     assert length(Agent.get(deleted, & &1)) == 2
   end
 

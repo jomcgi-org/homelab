@@ -277,9 +277,13 @@ defmodule Embervm.StatefulManager do
   instance's bundle is paired to this volume's generation, so deleting the
   volume out from under it would silently orphan the bundle) so deletion is
   always an explicit, unambiguous act against a workload with nothing left
-  attached. Synchronous; returns `{:ok, %{deleted: true}}` or the refusal.
+  attached. Synchronous; returns `{:ok, %{deleted: true, unreachable: nodes}}`
+  or the refusal. `unreachable` names anchors absent from current capacity facts
+  and therefore deliberately skipped rather than treated as retryable RPC
+  failures.
   """
-  @spec delete_volume(GenServer.server(), String.t()) :: {:ok, %{deleted: true}} | {:error, term()}
+  @spec delete_volume(GenServer.server(), String.t()) ::
+          {:ok, %{deleted: true, unreachable: [String.t()]}} | {:error, term()}
   def delete_volume(server \\ __MODULE__, workload) do
     GenServer.call(server, {:delete_volume, workload}, :infinity)
   end
@@ -1869,7 +1873,16 @@ defmodule Embervm.StatefulManager do
         |> Enum.filter(&is_binary/1)
         |> Enum.uniq()
 
-      outcomes = Enum.map(node_ids, &{&1, safe_delete_volume(state, &1, workload)})
+      # Capacity facts are the dispatchability registry. An absent anchor cannot
+      # be dialed, and that absence is the manual recovery condition this delete
+      # resolves, not an RPC failure worth retrying forever. Keep it visible in
+      # the success result, while nodes still present in facts retain the strict
+      # current behavior: any daemon error leaves the durable row in place.
+      {reachable_node_ids, unreachable_node_ids} =
+        Enum.split_with(node_ids, &node_reporting?(state, &1))
+
+      unreachable_node_ids = Enum.sort(unreachable_node_ids)
+      outcomes = Enum.map(reachable_node_ids, &{&1, safe_delete_volume(state, &1, workload)})
       failed_node_ids =
         (for {node_id, :error} <- outcomes, do: node_id)
         |> Enum.sort()
@@ -1886,7 +1899,7 @@ defmodule Embervm.StatefulManager do
         case StatefulStore.delete_volume(state.store, workload) do
           :ok ->
             Logger.info("embervm stateful: volume deleted", workload: workload)
-            {{:ok, %{deleted: true}}, state}
+            {{:ok, %{deleted: true, unreachable: unreachable_node_ids}}, state}
 
           {:error, reason} ->
             Logger.error("embervm stateful: volume_deleted append failed", workload: workload, reason: inspect(reason))
@@ -2057,7 +2070,7 @@ defmodule Embervm.StatefulManager do
   # without flooding every reconcile tick.
   defp maybe_alarm_destroying(state, instance, now) do
     id = instance.instance_id
-    elapsed = now - instance.updated_at
+    elapsed = destroying_elapsed(instance, now)
     last_alarm = Map.get(state.destroying_alarmed, id)
 
     if elapsed >= state.destroying_alarm_ms and
@@ -2077,6 +2090,8 @@ defmodule Embervm.StatefulManager do
   end
 
   defp redrive_one_destroying(state, instance, live_vms, now) do
+    elapsed = destroying_elapsed(instance, now)
+
     cond do
       is_binary(instance.vm_id) and Map.has_key?(live_vms, instance.vm_id) ->
         if stop_stateful_destroy(state, instance) do
@@ -2088,12 +2103,22 @@ defmodule Embervm.StatefulManager do
       node_reporting?(state, instance.node_id) ->
         record_stateful_destroyed(state, instance)
 
-      now - instance.updated_at >= state.destroying_escape_ms ->
-        fail_unconfirmed_destroy(state, instance, now - instance.updated_at)
+      elapsed >= state.destroying_escape_ms ->
+        fail_unconfirmed_destroy(state, instance, elapsed)
 
       true ->
         state
     end
+  end
+
+  # Activity and health facts intentionally advance updated_at without an FSM
+  # transition. Destroying deadlines are lifecycle deadlines, so both alarm and
+  # escape read the timestamp captured at begin_destroy. The fallback preserves
+  # compatibility with legacy or test-double row maps; every row built or rebuilt
+  # by StatefulStore receives the explicit field.
+  defp destroying_elapsed(instance, now) do
+    entered_at = Map.get(instance, :destroying_entered_at) || instance.updated_at
+    now - entered_at
   end
 
   # A missing owner report is not teardown confirmation. Once the bounded

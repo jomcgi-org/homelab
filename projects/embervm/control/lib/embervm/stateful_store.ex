@@ -758,6 +758,12 @@ defmodule Embervm.StatefulStore do
       last_activator_park_ms: 0,
       last_activator_park_at_unix_ms: 0,
       last_activator_park_seq: 0,
+      # `updated_at` is also advanced by lossy health and activity facts, so it
+      # cannot measure how long a lifecycle has been destroying. A durable
+      # destroying row's projection timestamp is the begin_destroy timestamp;
+      # retain that separately in the hot view so later fact touches cannot move
+      # the manager's bounded alarm and escape deadlines.
+      destroying_entered_at: if(fsm_state == :destroying, do: row.updated_at),
       updated_at: row.updated_at,
       terminal_reason: row.terminal_reason
     }
@@ -1437,6 +1443,7 @@ defmodule Embervm.StatefulStore do
           snapshot_size_bytes: nil,
           created_at: ts,
           last_active_at: nil,
+          destroying_entered_at: nil,
           updated_at: ts,
           terminal_reason: nil
         }
@@ -1477,7 +1484,13 @@ defmodule Embervm.StatefulStore do
     with {:ok, instance} <- fetch(state, instance_id),
          {:ok, next} <- StatefulState.transition(instance.state, event) do
       ts = state.clock.()
-      updated = instance |> Map.merge(updates) |> Map.merge(%{state: next, updated_at: ts})
+
+      updated =
+        instance
+        |> Map.merge(updates)
+        |> Map.merge(%{state: next, updated_at: ts})
+        |> stamp_destroying_entry(next, ts)
+
       :ets.insert(state.instances, {instance_id, updated})
       state = bump_counts(state, instance.state, next, instance.workload)
       {:reply, {:ok, updated}, state}
@@ -1521,6 +1534,7 @@ defmodule Embervm.StatefulStore do
           instance
           |> Map.merge(updates)
           |> Map.merge(%{state: next_state, updated_at: ts, terminal_reason: terminal_reason})
+          |> stamp_destroying_entry(next_state, ts)
 
         updated = post_transition_endpoint(base, next_state, terminal?)
 
@@ -1543,6 +1557,15 @@ defmodule Embervm.StatefulStore do
         {:error, reason}
     end
   end
+
+  # begin_destroy can enter through either the durable transition path used by
+  # the manager or the ETS-only mark seam used by focused FSM tests. Stamp both
+  # at the edge itself. No ordinary fact update calls this helper, which is the
+  # property the destroying timeout requires.
+  defp stamp_destroying_entry(instance, :destroying, ts),
+    do: Map.put(instance, :destroying_entered_at, ts)
+
+  defp stamp_destroying_entry(instance, _next_state, _ts), do: instance
 
   # After a durable transition, reconcile the endpoint fact with the new state:
   #   * terminal -> no live endpoint (drop ip/port, healthy=false);
