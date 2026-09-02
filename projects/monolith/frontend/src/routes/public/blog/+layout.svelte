@@ -71,35 +71,44 @@
     aria-label={dark ? "Switch to day scheme" : "Switch to night scheme"}
     title={dark ? "Day" : "Night"}
   >
-    {#if dark}
-      <!-- sun -->
-      <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true">
-        <circle
-          cx="8"
-          cy="8"
-          r="3.2"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.25"
-        />
-        <g stroke="currentColor" stroke-width="1.25" stroke-linecap="round">
-          <path
-            d="M8 1v2M8 13v2M1 8h2M13 8h2M3.1 3.1l1.4 1.4M11.5 11.5l1.4 1.4M3.1 12.9l1.4-1.4M11.5 4.5l1.4-1.4"
-          />
-        </g>
-      </svg>
-    {:else}
-      <!-- moon -->
-      <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true">
+    <!-- sun -->
+    <svg
+      class="glyph sun"
+      viewBox="0 0 16 16"
+      width="18"
+      height="18"
+      aria-hidden="true"
+    >
+      <circle
+        cx="8"
+        cy="8"
+        r="3.2"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.25"
+      />
+      <g stroke="currentColor" stroke-width="1.25" stroke-linecap="round">
         <path
-          d="M10.5 2.2A6 6 0 1 0 13.8 9.5 5 5 0 0 1 10.5 2.2z"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.25"
-          stroke-linejoin="round"
+          d="M8 1v2M8 13v2M1 8h2M13 8h2M3.1 3.1l1.4 1.4M11.5 11.5l1.4 1.4M3.1 12.9l1.4-1.4M11.5 4.5l1.4-1.4"
         />
-      </svg>
-    {/if}
+      </g>
+    </svg>
+    <!-- moon -->
+    <svg
+      class="glyph moon"
+      viewBox="0 0 16 16"
+      width="18"
+      height="18"
+      aria-hidden="true"
+    >
+      <path
+        d="M10.5 2.2A6 6 0 1 0 13.8 9.5 5 5 0 0 1 10.5 2.2z"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.25"
+        stroke-linejoin="round"
+      />
+    </svg>
   </button>
 </div>
 
@@ -113,7 +122,7 @@
      in the flow at the top of the page and scrolls away with it. */
   .chrome {
     position: fixed;
-    top: 1.1rem;
+    top: 1.5rem;
     right: 1.2rem;
     z-index: 1000;
     display: flex;
@@ -145,8 +154,33 @@
     color: var(--accent-ink);
   }
 
-  .scheme svg {
+  /* Both glyphs are in the markup and the scheme picks one in CSS, so
+     the server-rendered icon is already right and nothing swaps after
+     hydration. Same three-way resolution as technical-drawing.css. */
+  .scheme .glyph {
+    display: none;
+  }
+
+  .scheme .moon {
     display: block;
+  }
+
+  :global(:root[data-theme="dark"]) .scheme .moon {
+    display: none;
+  }
+
+  :global(:root[data-theme="dark"]) .scheme .sun {
+    display: block;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-theme="light"])) .scheme .moon {
+      display: none;
+    }
+
+    :global(:root:not([data-theme="light"])) .scheme .sun {
+      display: block;
+    }
   }
 
   .scheme:focus-visible {
