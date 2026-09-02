@@ -726,6 +726,13 @@
   }
 
   @media (max-width: 760px) {
+    /* The chrome row sits at 1em; the page follows it from here down. */
+    .post-page {
+      padding-top: 1rem;
+      padding-right: 1em;
+      padding-left: 1em;
+    }
+
     .journal {
       display: block;
     }
@@ -770,14 +777,6 @@
 
     .toc a.active {
       border-bottom-color: var(--accent-ink);
-    }
-  }
-
-  @media (max-width: 600px) {
-    .post-page {
-      padding-top: 1rem;
-      padding-right: 1em;
-      padding-left: 1em;
     }
   }
 </style>
