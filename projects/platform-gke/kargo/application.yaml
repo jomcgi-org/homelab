@@ -1,0 +1,57 @@
+# Kargo, the promotion controller. It owns `targetRevision` at runtime for the
+# Applications named in its pipelines (ADR platform/009), replacing the hand
+# editing of projects/gke-apps/*/application.yaml that every deploy on this
+# cluster has needed since the cutover.
+#
+# SYNC WAVE 2, after the operators in wave 1. Kargo's controller needs the
+# ArgoCD Application CRD present to watch (controller.argocd.integrationEnabled
+# in values), and its own CRDs must establish before the Projects, Warehouses
+# and Stages the promotion template renders.
+#
+# The Applications it promotes need a matching ignoreDifferences entry on the
+# cluster root (projects/gke-cluster/root-application.yaml) plus
+# RespectIgnoreDifferences, or ArgoCD stamps every promotion straight back:
+# ignoreDifferences alone suppresses diffing, not applying. That entry is added
+# in the same change that arms a pipeline, never before, because the entry is
+# not free. See the root manifest for what it costs.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kargo
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    app.kubernetes.io/part-of: shared-infrastructure
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/platform/kargo
+    helm:
+      releaseName: kargo
+      valueFiles:
+        - values.yaml
+      ignoreMissingValueFiles: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kargo
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # The upstream Kargo CRDs exceed the annotation size limit that
+      # client-side apply imposes, the same reason cert-manager and kyverno
+      # carry this here.
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

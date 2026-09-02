@@ -73,10 +73,46 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
+  # One entry per Application whose targetRevision Kargo owns, added in the
+  # change that armed its pipeline. Kargo patches the live Application via
+  # argocd-update; without these, selfHeal reverts every promotion to the value
+  # committed in projects/gke-apps, which is the bootstrap floor and not a
+  # record of anything.
+  #
+  # jsonPointers into spec.sources, with the cost described at the top of this
+  # file: combined with RespectIgnoreDifferences this stops ArgoCD patching ANY
+  # field in that array for these three Applications, not only targetRevision.
+  # So a change to a valueFiles path, a chart name or a repoURL on any of them
+  # will NOT apply, and ArgoCD will keep reporting success. That is the trade
+  # for having promotions survive, and it is why
+  # bazel/tools/ci/check-application-drift.sh exists: run it after changing any
+  # source field on monolith, monolith-public or embervm.
+  ignoreDifferences:
+    - group: argoproj.io
+      kind: Application
+      name: monolith
+      jsonPointers:
+        - /spec/sources/0/targetRevision
+    - group: argoproj.io
+      kind: Application
+      name: monolith-public
+      jsonPointers:
+        - /spec/sources/0/targetRevision
+    - group: argoproj.io
+      kind: Application
+      name: embervm
+      jsonPointers:
+        - /spec/sources/0/targetRevision
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
+    syncOptions:
+      # REQUIRED alongside ignoreDifferences above. Without it ArgoCD still
+      # APPLIES the git value on the next real sync even though it stopped
+      # DIFFING on it, so promotions survive idle reconciliation and then
+      # vanish the moment anything triggers a full sync.
+      - RespectIgnoreDifferences=true
     retry:
       limit: 5
       backoff:

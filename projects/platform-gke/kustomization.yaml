@@ -13,3 +13,4 @@ resources:
   - ./tailscale # Tailscale operator and tailnet egress services
   - ./kyverno # Secret cloning into monolith-workflows (job pods were secretless on the hub)
   - ./priority-classes # Cluster-scoped tiers (embervm's disposable tier depends on homelab-disposable)
+  - ./kargo # Promotion controller; owns targetRevision for the apps in its pipelines
