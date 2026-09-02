@@ -7,14 +7,41 @@
 
   // The spine follows the reader: the topmost heading in the upper band of
   // the viewport is the active one, and the URL hash follows it so a copied
-  // link lands on the section being read.
+  // link lands on the section being read. Two cases the band cannot decide
+  // on its own: a clicked entry stays active while the page scrolls to it
+  // (the first and last sections never reach the band, there is no room
+  // above or below to absorb the scroll), and the last heading wins once
+  // the page is scrolled to its end.
+  let pinnedUntil = 0;
+
+  function pin(id) {
+    activeId = id;
+    pinnedUntil = Date.now() + 1000;
+  }
+
+  function onIndexClick(event) {
+    const link = event.target.closest("a[href^='#']");
+    if (!link) return;
+    pin(link.getAttribute("href").slice(1));
+  }
+
   $effect(() => {
     const headings = document.querySelectorAll(
       ".post-frame h2[id], .post-frame h3[id]",
     );
     if (!headings.length) return;
+    const last = headings[headings.length - 1].id;
+    if (location.hash.length > 1)
+      pin(decodeURIComponent(location.hash.slice(1)));
+
+    const atEnd = () =>
+      window.innerHeight + window.scrollY >=
+      document.documentElement.scrollHeight - 2;
+
     const observer = new IntersectionObserver(
       (observed) => {
+        if (Date.now() < pinnedUntil) return;
+        if (atEnd()) return;
         const visible = observed
           .filter((item) => item.isIntersecting)
           .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
@@ -27,7 +54,23 @@
       { rootMargin: "-10% 0px -70% 0px" },
     );
     headings.forEach((h) => observer.observe(h));
-    return () => observer.disconnect();
+
+    const onScroll = () => {
+      if (atEnd() && activeId !== last) {
+        activeId = last;
+        history.replaceState(null, "", `#${last}`);
+      }
+    };
+    const onScrollEnd = () => {
+      pinnedUntil = 0;
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("scrollend", onScrollEnd);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("scrollend", onScrollEnd);
+    };
   });
 </script>
 
@@ -43,7 +86,7 @@
     <div class="journal">
       <aside class="spine">
         {#if data.toc.length}
-          <nav class="toc" aria-label="Sections">
+          <nav class="toc" aria-label="Sections" onclick={onIndexClick}>
             <p class="sec-label">/ Index</p>
             <ol>
               {#each data.toc as section}
@@ -81,7 +124,6 @@
         <article class="edition">
           <p class="ed-head">
             <time datetime={data.date}>{formatDate(data.date)}</time>
-            <a href="/blog">Index</a>
           </p>
 
           <header class="ed-lead">
@@ -131,11 +173,13 @@
     gap: clamp(2em, 4vw, 4em);
   }
 
+  /* Sticks below the fixed chrome (its links sit at 1.1rem, about 2rem
+     tall) so the index label never slides under the back link. */
   .spine {
     position: sticky;
-    top: 1.5rem;
+    top: 3.6rem;
     align-self: start;
-    max-height: calc(100vh - 3rem);
+    max-height: calc(100vh - 5rem);
     padding-left: 0.4rem;
     overflow-y: auto;
     scrollbar-width: none;
@@ -208,17 +252,8 @@
     font-size: 0.72rem;
   }
 
-  .ed-head time,
-  .ed-head a {
+  .ed-head time {
     color: var(--ink-2);
-  }
-
-  .ed-head a {
-    text-decoration: none;
-  }
-
-  .ed-head a:hover {
-    color: var(--accent-ink);
   }
 
   .ed-lead {
