@@ -209,6 +209,14 @@ class Figure:
         (x1, y1), (x2, y2) = points[-2], points[-1]
         self.head(x2, y2, math.atan2(y2 - y1, x2 - x1))
 
+    def hline(self, x1: float, x2: float, y: float, *, tone: str | None = None) -> None:
+        """Horizontal partition inside an outline, edge to edge."""
+        self.line(x1, y, x2, y, weight=OUTLINE, tone=tone)
+
+    def vline(self, x: float, y1: float, y2: float, *, tone: str | None = None) -> None:
+        """Vertical partition inside an outline, edge to edge."""
+        self.line(x, y1, x, y2, weight=OUTLINE, tone=tone)
+
     def hatch(
         self, x: float, y: float, w: float, *, pitch: float = 8, depth: float = 7
     ) -> None:

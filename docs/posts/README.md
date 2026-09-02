@@ -32,7 +32,8 @@ stamps on each toned callout.
 
 Figures use the Haynes workshop-manual register: an exploded view or sectioned
 view of the mechanism, with parts separated along one axis and a dashed
-assembly line. Every part carries a numbered callout. The callout is a circle
+assembly line. A part is one outline partitioned by lines that run edge to
+edge (a title band, then columns), never a box drawn inside a box. Every part carries a numbered callout. The callout is a circle
 of radius 9 with a 1px stroke and a mono 11px number. Leader lines are 1px with
 a 2px dot at the part end. Labels use `var(--font-code)` at 11px. Outlines use
 `currentColor` at `stroke-width="1.25"`; leaders use `currentColor` at

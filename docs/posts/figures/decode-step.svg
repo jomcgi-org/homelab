@@ -5,12 +5,12 @@
   <text x="34" y="22" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">Route</text>
   <rect x="48" y="40" width="210" height="62" fill="none" stroke="var(--tone-gpu)" stroke-width="1.25"/>
   <text x="54" y="54" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-gpu)" text-anchor="start">GPU</text>
-  <rect x="54" y="60" width="74" height="34" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="58" y="80" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">slot cache</text>
-  <rect x="134" y="60" width="54" height="34" fill="none" stroke="var(--tone-hot)" stroke-width="1.25"/>
-  <text x="140" y="80" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-hot)" text-anchor="start">hot set</text>
-  <rect x="194" y="60" width="58" height="34" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="200" y="80" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">KV</text>
+  <line x1="48" y1="60" x2="258" y2="60" stroke="var(--tone-gpu)" stroke-width="1.25"/>
+  <line x1="128" y1="60" x2="128" y2="102" stroke="var(--tone-hot)" stroke-width="1.25"/>
+  <line x1="190" y1="60" x2="190" y2="102" stroke="var(--tone-hot)" stroke-width="1.25"/>
+  <text x="54" y="85" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">slot cache</text>
+  <text x="134" y="85" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-hot)" text-anchor="start">hot set</text>
+  <text x="198" y="85" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">KV</text>
   <rect x="272" y="118" width="56" height="40" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="278" y="134" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">CPU</text>
   <text x="278" y="148" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">exec</text>
@@ -51,12 +51,12 @@
   <text x="392" y="22" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">Sort by residency</text>
   <rect x="406" y="40" width="210" height="62" fill="none" stroke="var(--tone-gpu)" stroke-width="1.25"/>
   <text x="412" y="54" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-gpu)" text-anchor="start">GPU</text>
-  <rect x="412" y="60" width="74" height="34" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="416" y="80" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">slot cache</text>
-  <rect x="492" y="60" width="54" height="34" fill="none" stroke="var(--tone-hot)" stroke-width="1.25"/>
-  <text x="498" y="80" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-hot)" text-anchor="start">hot set</text>
-  <rect x="552" y="60" width="58" height="34" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="558" y="80" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">KV</text>
+  <line x1="406" y1="60" x2="616" y2="60" stroke="var(--tone-gpu)" stroke-width="1.25"/>
+  <line x1="486" y1="60" x2="486" y2="102" stroke="var(--tone-hot)" stroke-width="1.25"/>
+  <line x1="548" y1="60" x2="548" y2="102" stroke="var(--tone-hot)" stroke-width="1.25"/>
+  <text x="412" y="85" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">slot cache</text>
+  <text x="492" y="85" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-hot)" text-anchor="start">hot set</text>
+  <text x="556" y="85" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">KV</text>
   <rect x="630" y="118" width="56" height="40" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="636" y="134" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">CPU</text>
   <text x="636" y="148" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">exec</text>
@@ -77,12 +77,12 @@
   <text x="34" y="346" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">Move</text>
   <rect x="48" y="364" width="210" height="62" fill="none" stroke="var(--tone-gpu)" stroke-width="1.25"/>
   <text x="54" y="378" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-gpu)" text-anchor="start">GPU</text>
-  <rect x="54" y="384" width="74" height="34" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="58" y="404" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">slot cache</text>
-  <rect x="134" y="384" width="54" height="34" fill="none" stroke="var(--tone-hot)" stroke-width="1.25"/>
-  <text x="140" y="404" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-hot)" text-anchor="start">hot set</text>
-  <rect x="194" y="384" width="58" height="34" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="200" y="404" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">KV</text>
+  <line x1="48" y1="384" x2="258" y2="384" stroke="var(--tone-gpu)" stroke-width="1.25"/>
+  <line x1="128" y1="384" x2="128" y2="426" stroke="var(--tone-hot)" stroke-width="1.25"/>
+  <line x1="190" y1="384" x2="190" y2="426" stroke="var(--tone-hot)" stroke-width="1.25"/>
+  <text x="54" y="409" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">slot cache</text>
+  <text x="134" y="409" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-hot)" text-anchor="start">hot set</text>
+  <text x="198" y="409" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">KV</text>
   <rect x="272" y="442" width="56" height="40" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="278" y="458" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">CPU</text>
   <text x="278" y="472" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">exec</text>
@@ -103,12 +103,12 @@
   <text x="392" y="346" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">Compute and tally</text>
   <rect x="406" y="364" width="210" height="62" fill="none" stroke="var(--tone-gpu)" stroke-width="1.25"/>
   <text x="412" y="378" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-gpu)" text-anchor="start">GPU</text>
-  <rect x="412" y="384" width="74" height="34" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="416" y="404" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">slot cache</text>
-  <rect x="492" y="384" width="54" height="34" fill="none" stroke="var(--tone-hot)" stroke-width="1.25"/>
-  <text x="498" y="404" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-hot)" text-anchor="start">hot set</text>
-  <rect x="552" y="384" width="58" height="34" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="558" y="404" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">KV</text>
+  <line x1="406" y1="384" x2="616" y2="384" stroke="var(--tone-gpu)" stroke-width="1.25"/>
+  <line x1="486" y1="384" x2="486" y2="426" stroke="var(--tone-hot)" stroke-width="1.25"/>
+  <line x1="548" y1="384" x2="548" y2="426" stroke="var(--tone-hot)" stroke-width="1.25"/>
+  <text x="412" y="409" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">slot cache</text>
+  <text x="492" y="409" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-hot)" text-anchor="start">hot set</text>
+  <text x="556" y="409" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">KV</text>
   <rect x="630" y="442" width="56" height="40" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="636" y="458" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">CPU</text>
   <text x="636" y="472" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">exec</text>

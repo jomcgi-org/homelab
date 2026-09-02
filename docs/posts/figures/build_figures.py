@@ -8,6 +8,9 @@ Tones are fixed per memory tier across every figure: gpu, ram (pinned host
 memory), cache (page cache), disk (NVMe), hot (the hot expert set). A part
 takes its tier's tone on its outline, title, and callout; the parts inside it,
 the leaders, and every arrow stay ink so movement reads as movement.
+
+A part is one outline partitioned by lines that run edge to edge (a title
+band, then columns), never a box drawn inside a box.
 """
 
 from __future__ import annotations
@@ -30,12 +33,12 @@ def memory_tiers() -> Figure:
     # 1 GPU
     f.box(150, 28, 400, 100, tone="gpu")
     f.text(160, 46, "GPU: RTX 4090, 24 GB VRAM", tone="gpu")
-    f.box(160, 58, 110, 56)
-    f.lines(168, 76, ["dense layers", "attention, GDN"])
-    f.box(280, 58, 150, 56)
-    f.lines(288, 76, ["expert slot cache", "hot set stays", "resident here"])
-    f.box(440, 58, 100, 56)
-    f.text(448, 76, "KV cache")
+    f.hline(150, 550, 54, tone="gpu")
+    f.vline(270, 54, 128, tone="gpu")
+    f.vline(420, 54, 128, tone="gpu")
+    f.lines(160, 74, ["dense layers", "attention, GDN"])
+    f.lines(280, 74, ["expert slot cache", "hot set stays", "resident here"])
+    f.text(430, 74, "KV cache")
     f.keyed(40, 78, "1", 150, 78, tone="gpu")
 
     # 2 PCIe
@@ -47,10 +50,10 @@ def memory_tiers() -> Figure:
     f.hatch(150, 176, 400)
     f.box(150, 176, 400, 78, tone="ram")
     f.text(160, 194, "PINNED HOST MEMORY: part of the 64 GB DDR5", tone="ram")
-    f.box(160, 204, 240, 42)
-    f.lines(168, 221, ["expert banks, 40 GB", "30 whole layers"])
-    f.box(410, 204, 130, 42, tone="hot")
-    f.lines(418, 221, ["hot rows, 6 GiB", "18 disk layers"], tone="hot")
+    f.hline(150, 550, 202, tone="ram")
+    f.vline(410, 202, 254, tone="hot")
+    f.lines(160, 222, ["expert banks, 40 GB", "30 whole layers"])
+    f.lines(420, 222, ["hot rows, 6 GiB", "18 disk layers"], tone="hot")
     f.keyed(40, 215, "3", 150, 215, tone="ram")
 
     # 6 CPU executor, fed from the page cache
@@ -70,10 +73,10 @@ def memory_tiers() -> Figure:
     # 5 NVMe
     f.box(150, 366, 400, 76, tone="disk")
     f.text(160, 384, "NVMe: 1.9 TB", tone="disk")
-    f.box(160, 394, 230, 40)
-    f.lines(168, 411, ["expert banks, 72.7 GiB", "48 layers x 512 experts"])
-    f.box(400, 394, 140, 40)
-    f.lines(408, 411, ["lookup table, 27 GiB", "n-gram rows"])
+    f.hline(150, 550, 392, tone="disk")
+    f.vline(400, 392, 442, tone="disk")
+    f.lines(160, 412, ["expert banks, 72.7 GiB", "48 layers x 512 experts"])
+    f.lines(410, 412, ["lookup table, 27 GiB", "n-gram rows"])
     f.keyed(40, 404, "5", 150, 404, tone="disk")
     return f
 
@@ -85,12 +88,12 @@ def _decode_parts(f: Figure, px: float, py: float, *, letters: bool) -> None:
     # A GPU
     f.box(x(48), y(40), 210, 62, tone="gpu")
     f.text(x(54), y(54), "GPU", tone="gpu")
-    f.box(x(54), y(60), 74, 34)
-    f.text(x(58), y(80), "slot cache")
-    f.box(x(134), y(60), 54, 34, tone="hot")
-    f.text(x(140), y(80), "hot set", tone="hot")
-    f.box(x(194), y(60), 58, 34)
-    f.text(x(200), y(80), "KV")
+    f.hline(x(48), x(258), y(60), tone="gpu")
+    f.vline(x(128), y(60), y(102), tone="hot")
+    f.vline(x(190), y(60), y(102), tone="hot")
+    f.text(x(54), y(85), "slot cache")
+    f.text(x(134), y(85), "hot set", tone="hot")
+    f.text(x(198), y(85), "KV")
     # E CPU executor
     f.box(x(272), y(118), 56, 40)
     f.lines(x(278), y(134), ["CPU", "exec"])
@@ -200,8 +203,10 @@ def hot_set_swap() -> Figure:
     for i, (px, py) in enumerate(slots):
         f.box(px + 28, py + 40, 116, 48, tone="gpu")
         f.text(px + 34, py + 54, "GPU slot cache", tone="gpu")
-        f.box(px + 36, py + 60, 100, 22, tone="hot")
-        f.text(px + 42, py + 75, "hot slot", tone="hot")
+        f.hline(px + 28, px + 144, py + 60, tone="gpu")
+        f.vline(px + 56, py + 60, py + 88, tone="hot")
+        f.vline(px + 118, py + 60, py + 88, tone="hot")
+        f.text(px + 62, py + 78, "hot slot", tone="hot")
         f.box(px + 156, py + 60, 52, 22, tone="ram")
         f.text(px + 160, py + 75, "staging", tone="ram")
         f.box(px + 28, py + 196, 180, 34, tone="disk")
@@ -248,8 +253,8 @@ def prefill_chunk() -> Figure:
     for i, (px, py) in enumerate(slots):
         f.box(px + 28, py + 40, 116, 44, tone="gpu")
         f.text(px + 34, py + 54, "GPU", tone="gpu")
-        f.box(px + 36, py + 58, 100, 20)
-        f.text(px + 42, py + 72, "pinned bank")
+        f.hline(px + 28, px + 144, py + 60, tone="gpu")
+        f.text(px + 34, py + 76, "pinned bank")
         f.box(px + 156, py + 100, 52, 34)
         f.lines(px + 160, py + 116, ["CPU", "exec"])
         f.box(px + 28, py + 100, 116, 30, dashed=True, tone="cache")
