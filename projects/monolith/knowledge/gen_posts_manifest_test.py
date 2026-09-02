@@ -348,3 +348,85 @@ def test_draft_post_with_internal_marker_is_skipped(tmp_path: Path):
     )
 
     assert build_manifest(tmp_path, [path]) == []
+
+
+def test_style_element_is_rejected(tmp_path: Path):
+    figure_path = write_figure(
+        tmp_path,
+        "styled.svg",
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1">'
+        "<style>p{display:none}</style></svg>",
+    )
+    path = write_post(
+        tmp_path,
+        "2026-01-15-example.md",
+        public_frontmatter(),
+        "![Styled](figures/styled.svg)\n",
+    )
+
+    with pytest.raises(ValueError, match="forbidden element <style>"):
+        build_manifest(tmp_path, [path], {figure_path})
+
+
+def test_style_attribute_is_rejected(tmp_path: Path):
+    figure_path = write_figure(
+        tmp_path,
+        "styled.svg",
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1">'
+        '<rect style="fill:red"/></svg>',
+    )
+    path = write_post(
+        tmp_path,
+        "2026-01-15-example.md",
+        public_frontmatter(),
+        "![Styled](figures/styled.svg)\n",
+    )
+
+    with pytest.raises(ValueError, match="forbidden attribute style"):
+        build_manifest(tmp_path, [path], {figure_path})
+
+
+def test_root_width_is_rejected(tmp_path: Path):
+    figure_path = write_figure(
+        tmp_path,
+        "sized.svg",
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1" width="10"/>',
+    )
+    path = write_post(
+        tmp_path,
+        "2026-01-15-example.md",
+        public_frontmatter(),
+        "![Sized](figures/sized.svg)\n",
+    )
+
+    with pytest.raises(ValueError, match="not width or height"):
+        build_manifest(tmp_path, [path], {figure_path})
+
+
+def test_bracketed_figure_href_is_keyed_bare(tmp_path: Path):
+    figure_path = write_figure(
+        tmp_path,
+        "plain.svg",
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+    )
+    path = write_post(
+        tmp_path,
+        "2026-01-15-example.md",
+        public_frontmatter(),
+        "![Plain](<figures/plain.svg>)\n",
+    )
+
+    entry = build_manifest(tmp_path, [path], {figure_path})[0]
+    assert list(entry["figures"]) == ["figures/plain.svg"]
+
+
+def test_slug_charset_is_enforced(tmp_path: Path):
+    path = write_post(
+        tmp_path,
+        "2026-01-15-a&b.md",
+        public_frontmatter(),
+        "body\n",
+    )
+
+    with pytest.raises(ValueError, match="post slug may contain only"):
+        build_manifest(tmp_path, [path])

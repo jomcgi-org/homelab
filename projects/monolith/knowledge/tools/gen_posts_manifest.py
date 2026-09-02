@@ -37,6 +37,7 @@ _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _PUBLIC_KEY = re.compile(r"^[ \t]*public[ \t]*:")
 _PUBLIC_VALUES = {"public: true": True, "public: false": False}
 _TAG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)")
 _FIGURE_DENIED_ELEMENTS = {
     "script",
@@ -50,6 +51,8 @@ _FIGURE_DENIED_ELEMENTS = {
     "animate",
     "set",
     "animatetransform",
+    # An inlined SVG <style> is document-scoped, so it could restyle the page.
+    "style",
 }
 _FIGURE_MAX_BYTES = 200 * 1024
 
@@ -68,7 +71,12 @@ def make_slug(rel_path: str) -> str:
     match = _FILENAME.fullmatch(Path(rel_path).name)
     if not match:
         raise ValueError("post filename must match YYYY-MM-DD-<slug>.md")
-    return match.group(2)
+    slug = match.group(2)
+    if not _SLUG.fullmatch(slug):
+        raise ValueError(
+            "post slug may contain only lowercase letters, digits, and hyphens"
+        )
+    return slug
 
 
 def _frontmatter_lines(source: str) -> tuple[list[str], str]:
@@ -202,6 +210,8 @@ def _validate_figure(rel_path: str, figure_path: str, svg: str) -> None:
         raise ValueError(f"{prefix} root element must be svg")
     if "viewBox" not in root.attrib:
         raise ValueError(f"{prefix} SVG must declare a viewBox")
+    if "width" in root.attrib or "height" in root.attrib:
+        raise ValueError(f"{prefix} SVG root must size by viewBox, not width or height")
 
     for element in root.iter():
         element_name = _local_name(element.tag).lower()
@@ -209,10 +219,10 @@ def _validate_figure(rel_path: str, figure_path: str, svg: str) -> None:
             raise ValueError(f"{prefix} forbidden element <{element_name}>")
         for raw_name, value in element.attrib.items():
             attribute = _local_name(raw_name).lower()
-            if attribute.startswith("on") or attribute == "href":
+            # style is denied outright: CSS escapes (\75 rl) defeat a
+            # substring check for url(), and figures use presentation attributes.
+            if attribute.startswith("on") or attribute in {"href", "style"}:
                 raise ValueError(f"{prefix} forbidden attribute {attribute}")
-            if attribute == "style" and "url(" in value.lower():
-                raise ValueError(f"{prefix} CSS url() references are forbidden")
 
     try:
         check_public_content(figure_path, svg)
@@ -225,6 +235,10 @@ def _load_figures(
 ) -> dict[str, str]:
     figures: dict[str, str] = {}
     for href in _MARKDOWN_IMAGE.findall(body):
+        # CommonMark allows ![alt](<path>); marked strips the brackets before
+        # rendering, so key the figure by the bare path it will look up.
+        if href.startswith("<") and href.endswith(">"):
+            href = href[1:-1]
         if re.match(r"^[a-z][a-z0-9+.-]*:", href, re.IGNORECASE):
             continue
         if href.startswith("/") or not href.lower().endswith(".svg"):
