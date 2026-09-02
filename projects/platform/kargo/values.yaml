@@ -156,48 +156,50 @@ promotion:
       # receives literal backslashes. expr accepts either quote style, so using
       # single quotes here means nothing needs escaping.
       desiredRevisionExpr: "${{ chartFrom('oci://ghcr.io/jomcgi/homelab/charts/monolith').Version }}"
-      # Order is the pipeline. `upstream` is what makes it one rather than two
-      # independent subscribers: prod can only receive Freight that dev has already
-      # taken, so a chart reaches production having run somewhere first.
+      # ONE STAGE ON GKE, and that is a reduction from what this pipeline was
+      # designed to do. The home cluster ran dev then prod, where `upstream`
+      # made it a pipeline rather than two independent subscribers: prod could
+      # only receive Freight dev had already taken and held healthily for a
+      # soak. GKE has no dev Applications yet, so prod subscribes to the
+      # Warehouse directly and that pre-production exposure does not exist.
       #
-      # THE GATE IS argocd-wait PLUS SOAK, not Kargo `verification`. Kargo's
+      # What remains is still worth having and is the reason this is being
+      # deployed: promotion becomes automatic and health-verified. argocd-update
+      # applies the new chart version and WAITS for the Application to reach
+      # Synced and Healthy, and a Promotion that does not get there fails, so a
+      # chart that cannot come up stops rather than sitting half-rolled. That
+      # replaces hand-editing targetRevision in projects/gke-apps, which is what
+      # every deploy on this cluster has been since the cutover.
+      #
+      # Restoring the dev stage is the follow-up, and it is a prerequisite for
+      # calling this a gate rather than a deploy mechanism. The overlays already
+      # exist (projects/monolith/dev/deploy, projects/embervm/dev/deploy); what
+      # is missing is the Applications on this cluster.
+      #
+      # THE GATE IS argocd-wait, not Kargo `verification`. Kargo's
       # verification block needs Argo Rollouts AnalysisTemplates and Rollouts stays
       # off (see controller.rollouts above), so the assertions live in the
       # promotion steps instead. A Stage with no `verification` reports "Freight has
       # been verified" the moment its Promotion succeeds, so that status is not the
       # signal; the Promotion succeeding is.
       #
-      # What that buys, honestly: the promoted chart reached the environment, the
-      # sync finished, the workload came Healthy (readiness probe /healthz), and for
-      # prod it stayed that way for the soak. What it still does not buy: any
-      # functional assertion beyond the readiness probe, and no revision-aware
-      # health sample (see the residual race in monolith-promotion.yaml). #4745
+      # What that buys, honestly: the promoted chart reached production, the sync
+      # finished, and the workload came Healthy (readiness probe /healthz) at
+      # that moment. What it does not buy, and bought on the home cluster: a
+      # settling window in which a pod that comes up Healthy and then crashloops
+      # is caught before production sees it. argocd-wait is a point-in-time
+      # check, so that class now reaches prod. It also does not buy any
+      # functional assertion beyond the readiness probe, nor a revision-aware
+      # health sample (the residual race in monolith-promotion.yaml). #4745
       # tracks the rest.
       stages:
-        - name: dev
-          application: monolith-dev
-          # Subscribes to the Warehouse directly: nothing is upstream of dev.
-          upstream: []
-          autoPromotion: true
         - name: prod
           application: monolith
-          upstream:
-            - dev
-          # Dev must hold this Freight healthily for 2 minutes before prod may take
-          # it. Deliberately short, and a SETTLING window rather than a soak in the
-          # load-testing sense: it catches the pod that comes up Healthy and then
-          # crashloops, which argocd-wait's point-in-time check cannot see, and it
-          # costs every production deploy two minutes.
-          #
-          # Stated honestly so nobody reads more into it: it will NOT catch a
-          # slower-onset regression, and lengthening it trades release latency for
-          # exposure linearly. If a failure class shows up that this misses, raise
-          # it against a measured onset time rather than by feel.
-          #
-          # Dev has no soak: nothing is upstream of it, and a delay there would only
-          # postpone the environment that exists to find problems first.
-          # 2m0s, not 2m: the API server stores the normalized form. See waitTimeout.
-          requiredSoakTime: 2m0s
+          # Nothing upstream: with no dev environment on this cluster, prod
+          # subscribes to the Warehouse directly. No requiredSoakTime either,
+          # because a soak is a constraint on how long the UPSTREAM stage must
+          # hold Freight, and there is no upstream stage to hold it.
+          upstream: []
           autoPromotion: true
     - name: embervm
       warehouse: embervm-chart
@@ -265,82 +267,56 @@ promotion:
       # OutOfSync, re-syncing on every reconcile.
       waitTimeout: 1h30m0s
       stages:
-        - name: dev
-          application: embervm-dev
-          upstream: []
-          autoPromotion: true
-          # Functional gate (#5224): after argocd-wait, poll the conformance
-          # runner the embervm chart ships into dev until it reports a verdict
-          # for THIS chart version. The runner rolls with the chart, waits up
-          # to 15m for a ready brick, then runs a suite budgeted at about 4m
-          # (task cold boot, session create / bank / relight / destroy,
-          # create-after-destroy, control-plane invariants). 20m0s covered the
-          # runner's own wait plus that suite; a wedged brick rebuild already
-          # failed argocd-wait before this step runs.
-          #
-          # RAISED to 40m0s alongside the dev readyWait going to 30m for the
-          # 0.41.7 to 0.47.x jump (#5224). Both old numbers assumed a roll that
-          # does not rebuild guest bases. On that jump the dev brick bakes the
-          # same 13 changed digests the prod fleet does, so the runner's own
-          # wait has to outlast the bake or it writes an S0 FAIL for the new
-          # chart version, this poll reads that verdict through its failure
-          # expression, and the dev promotion fails. Prod autoPromotion fires on
-          # NEW Freight rather than on failure, so that Freight would then sit
-          # unverified with no poller on the next healthy cycle.
-          #
-          # This must stay strictly greater than conformance.readyWait plus the
-          # suite budget PLUS one full runInterval and a second suite, because
-          # since 2026-08-29 the failure expression needs TWO consecutive red
-          # cycles (post-roll settling transients red-ed the first cycle on
-          # three different runs while the next quiet cycle passed; see the
-          # promotion template). A lone red keeps the poll waiting for the
-          # next cycle instead of failing. The suite budget is 5m10s (s1 60s +
-          # s2 180s + s3 60s + s4 10s, summed as totalBudget in
-          # conformance/main.go) and runInterval is 30m, so the worst case is
-          # 30m readyWait + 5m10s + 30m + 5m10s, about 70m30s against this
-          # 75m0s: real margin, not slack.
-          verdictURL: http://embervm-dev-embervm-conformance.embervm-dev.svc.cluster.local:8080/verdict
-          verdictTimeout: 75m0s
+        # PROD ONLY, and this pipeline loses more than monolith's does by having
+        # no dev stage. The home cluster's dev stage ran a FUNCTIONAL gate
+        # (#5224): after argocd-wait it polled the conformance runner the
+        # embervm chart ships into dev until that runner reported a verdict for
+        # THAT chart version, covering task cold boot, session create / bank /
+        # relight / destroy, create-after-destroy, and control-plane invariants,
+        # and requiring two consecutive red cycles before failing so a settling
+        # transient did not fail a healthy roll.
+        #
+        # None of that runs here. On GKE a chart reaches production having
+        # proved only that its pods came up. For a component whose failure modes
+        # are relight, banking and guest lifecycle, none of which a readiness
+        # probe touches, that is a large gap and is the strongest argument for
+        # standing dev up on this cluster: see the note on the monolith pipeline
+        # above. The conformance runner still ships in the chart, so restoring
+        # the gate is a stage definition rather than new machinery.
         - name: prod
           application: embervm
-          upstream:
-            - dev
-          # Longer than monolith's 2m0s for the same reason the wait is longer:
-          # the settling window has to outlast the rollout it is settling after,
-          # or it expires while bricks are still coming up and proves nothing.
-          requiredSoakTime: 5m0s
-          # TRUE, matching monolith. This was false for one day and the
-          # reasoning behind that was wrong, so it is written down rather than
-          # quietly flipped.
-          #
-          # The argument was: an embervm prod roll rebuilds each brick's guest
-          # rootfs and spends ~2.8 GiB of each master's 35 GiB cap, reclaimed by
-          # nothing, so batching N merges into one manual promotion conserves a
-          # scarce resource.
-          #
-          # Both halves are wrong. A base is rebuilt when its SIGNATURE changes,
-          # not on every chart version: production went 0.12.9 -> 0.13.7, eight
-          # versions, and the base refs on every node were unchanged apart from
-          # the demo-postgres rebuild that the #4865 incident forced. node-2's
-          # scratch went DOWN across that roll. A publish that does not move a
-          # guest image digest costs approximately nothing.
-          #
-          # And batching does not avoid the cost of a digest change, it only
-          # defers it: that change deploys eventually and costs the same then.
-          # Batching only wins when several digest-changing rolls collapse into
-          # one, which the history says is rare.
-          #
-          # What is actually accumulating is orphaned bases the retention sweep
-          # cannot see (#4364): node-3 held demo-postgres__8dde24352f92 and
-          # demo-postgres__ba4ef0bad08b at once, the stale one belonging to
-          # neither vendor list, while the sweep reported `0 candidates`. Rate
-          # limiting deploys to compensate for a collector that does not collect
-          # costs release velocity and leaves the leak growing at the same rate.
-          #
-          # So: fix the collector, do not throttle the pipeline. If scratch ever
-          # becomes the binding constraint again, the lever is #4364, not this
-          # flag.
+          upstream: []
           autoPromotion: true
+    - name: monolith-public
+      warehouse: monolith-public-chart
+      project: kargo-monolith-public
+      chartRepo: oci://ghcr.io/jomcgi/homelab/charts/monolith-public
+      # Floor at the version deployed when this pipeline was written, so the
+      # first promotion is forward-only and cannot walk the public tier back
+      # onto an older chart.
+      semverConstraint: ">=0.401.29"
+      discoveryLimit: 20
+      appSourceRepo: ghcr.io/jomcgi/homelab/charts
+      appSourceChart: monolith-public
+      desiredRevisionExpr: "${{ chartFrom('oci://ghcr.io/jomcgi/homelab/charts/monolith-public').Version }}"
+      # UNMEASURED, unlike the other two, and deliberately generous rather than
+      # tight. The repo's own rule for this value is that undershooting fails a
+      # HEALTHY roll, which teaches the operator that red means nothing, while
+      # overshooting only delays the report of a roll that was never going to
+      # finish. ArgoCD's progressDeadlineSeconds remains the real detector.
+      # Replace this with a measured number once a few promotions have run;
+      # do not tighten it by feel.
+      waitTimeout: 10m0s
+      stages:
+        # Prod only, for the same reason as the pipelines above: no dev
+        # Application exists on this cluster. The public tier has never had a
+        # pipeline at all, so this is a straight improvement on a pin that has
+        # only ever moved by hand.
+        - name: prod
+          application: monolith-public
+          upstream: []
+          autoPromotion: true
+
 
 # Private-tier ingress: https://private.jomcgi.dev/app/kargo
 #
