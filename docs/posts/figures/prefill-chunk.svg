@@ -23,7 +23,7 @@
   <rect x="28" y="216" width="180" height="34" fill="none" stroke="var(--tone-disk)" stroke-width="1.25"/>
   <line x1="110" y1="216" x2="110" y2="250" stroke="var(--tone-disk)" stroke-width="1.25"/>
   <text x="34" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">table 27G</text>
-  <text x="116" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">banks 72.7G</text>
+  <text x="116" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">banks 63.5G</text>
   <circle cx="14" cy="62" r="9" fill="none" stroke="var(--tone-gpu)" stroke-width="1" data-key="A" data-tone="gpu"/>
   <text x="14" y="66" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-gpu)" text-anchor="middle">A</text>
   <line x1="23.0" y1="62.0" x2="28" y2="62" stroke="currentColor" stroke-width="1"/>
@@ -52,7 +52,7 @@
   <rect x="266" y="216" width="180" height="34" fill="none" stroke="var(--tone-disk)" stroke-width="1.25"/>
   <line x1="348" y1="216" x2="348" y2="250" stroke="var(--tone-disk)" stroke-width="1.25"/>
   <text x="272" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">table 27G</text>
-  <text x="354" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">banks 72.7G</text>
+  <text x="354" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">banks 63.5G</text>
   <rect x="504" y="40" width="116" height="44" fill="none" stroke="var(--tone-gpu)" stroke-width="1.25"/>
   <text x="510" y="54" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-gpu)" text-anchor="start">GPU</text>
   <line x1="504" y1="60" x2="620" y2="60" stroke="var(--tone-gpu)" stroke-width="1.25"/>
@@ -65,7 +65,7 @@
   <rect x="504" y="216" width="180" height="34" fill="none" stroke="var(--tone-disk)" stroke-width="1.25"/>
   <line x1="586" y1="216" x2="586" y2="250" stroke="var(--tone-disk)" stroke-width="1.25"/>
   <text x="510" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">table 27G</text>
-  <text x="592" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">banks 72.7G</text>
+  <text x="592" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">banks 63.5G</text>
   <rect x="34" y="146" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/>
   <rect x="46" y="146" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/>
   <rect x="58" y="146" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/>

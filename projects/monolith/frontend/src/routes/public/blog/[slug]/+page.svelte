@@ -313,6 +313,17 @@
     margin-top: -1px;
   }
 
+  /* A table or figure that opens a section docks to the band: the band's
+     bottom rule is the table's top rule. */
+  .post-body :global(h2 + table),
+  .post-body :global(h2 + figure.fig) {
+    margin-top: calc(-0.85rem - 1px);
+  }
+
+  .post-body :global(h2 + table th) {
+    border-top: 0;
+  }
+
   .post-body :global(tr:last-child td) {
     border-bottom: 1px solid var(--stroke);
   }

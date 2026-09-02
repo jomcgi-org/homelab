@@ -22,7 +22,7 @@
   <rect x="48" y="220" width="210" height="40" fill="none" stroke="var(--tone-disk)" stroke-width="1.25"/>
   <line x1="170" y1="220" x2="170" y2="260" stroke="var(--tone-disk)" stroke-width="1.25"/>
   <text x="54" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">expert banks</text>
-  <text x="54" y="250" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">72.7 GiB</text>
+  <text x="54" y="250" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">63.5 GiB</text>
   <text x="176" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">table</text>
   <text x="176" y="250" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">27 GiB</text>
   <circle cx="26" cy="71" r="9" fill="none" stroke="var(--tone-gpu)" stroke-width="1" data-key="A" data-tone="gpu"/>
@@ -68,7 +68,7 @@
   <rect x="406" y="220" width="210" height="40" fill="none" stroke="var(--tone-disk)" stroke-width="1.25"/>
   <line x1="528" y1="220" x2="528" y2="260" stroke="var(--tone-disk)" stroke-width="1.25"/>
   <text x="412" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">expert banks</text>
-  <text x="412" y="250" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">72.7 GiB</text>
+  <text x="412" y="250" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">63.5 GiB</text>
   <text x="534" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">table</text>
   <text x="534" y="250" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">27 GiB</text>
   <rect x="0" y="324" width="342" height="308" fill="none" stroke="currentColor" stroke-width="1.25"/>
@@ -94,7 +94,7 @@
   <rect x="48" y="544" width="210" height="40" fill="none" stroke="var(--tone-disk)" stroke-width="1.25"/>
   <line x1="170" y1="544" x2="170" y2="584" stroke="var(--tone-disk)" stroke-width="1.25"/>
   <text x="54" y="560" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">expert banks</text>
-  <text x="54" y="574" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">72.7 GiB</text>
+  <text x="54" y="574" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">63.5 GiB</text>
   <text x="176" y="560" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">table</text>
   <text x="176" y="574" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">27 GiB</text>
   <rect x="358" y="324" width="342" height="308" fill="none" stroke="currentColor" stroke-width="1.25"/>
@@ -120,7 +120,7 @@
   <rect x="406" y="544" width="210" height="40" fill="none" stroke="var(--tone-disk)" stroke-width="1.25"/>
   <line x1="528" y1="544" x2="528" y2="584" stroke="var(--tone-disk)" stroke-width="1.25"/>
   <text x="412" y="560" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">expert banks</text>
-  <text x="412" y="574" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">72.7 GiB</text>
+  <text x="412" y="574" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">63.5 GiB</text>
   <text x="534" y="560" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">table</text>
   <text x="534" y="574" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-disk)" text-anchor="start">27 GiB</text>
   <text x="54" y="112" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">n-gram ids for this token: already known</text>

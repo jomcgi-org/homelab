@@ -36,7 +36,7 @@ def memory_tiers() -> Figure:
     f.hline(150, 550, 54, tone="gpu")
     f.vline(270, 54, 128, tone="gpu")
     f.vline(420, 54, 128, tone="gpu")
-    f.lines(160, 74, ["dense layers", "attention, GDN"])
+    f.lines(160, 74, ["dense layers, 9.2 GiB", "attention, GDN"])
     f.lines(280, 74, ["expert slot cache", "hot set stays", "resident here"])
     f.text(430, 74, "KV cache")
     f.keyed(40, 78, "1", 150, 78, tone="gpu")
@@ -75,7 +75,7 @@ def memory_tiers() -> Figure:
     f.text(160, 384, "NVMe: 1.9 TB", tone="disk")
     f.hline(150, 550, 392, tone="disk")
     f.vline(400, 392, 442, tone="disk")
-    f.lines(160, 412, ["expert banks, 72.7 GiB", "48 layers x 512 experts"])
+    f.lines(160, 412, ["expert banks, 63.5 GiB", "48 layers x 512 experts"])
     f.lines(410, 412, ["lookup table, 27 GiB", "n-gram rows"])
     f.keyed(40, 404, "5", 150, 404, tone="disk")
     return f
@@ -106,7 +106,7 @@ def _decode_parts(f: Figure, px: float, py: float, *, letters: bool) -> None:
     # D NVMe
     f.box(x(48), y(220), 210, 40, tone="disk")
     f.line(x(170), y(220), x(170), y(260), weight=1.25, tone="disk")
-    f.lines(x(54), y(236), ["expert banks", "72.7 GiB"], tone="disk")
+    f.lines(x(54), y(236), ["expert banks", "63.5 GiB"], tone="disk")
     f.lines(x(176), y(236), ["table", "27 GiB"], tone="disk")
     if letters:
         f.keyed(x(26), y(71), "A", x(48), y(71), tone="gpu")
@@ -262,7 +262,7 @@ def prefill_chunk() -> Figure:
         f.box(px + 28, py + 216, 180, 34, tone="disk")
         f.line(px + 110, py + 216, px + 110, py + 250, weight=1.25, tone="disk")
         f.text(px + 34, py + 236, "table 27G", tone="disk")
-        f.text(px + 116, py + 236, "banks 72.7G", tone="disk")
+        f.text(px + 116, py + 236, "banks 63.5G", tone="disk")
         if i == 0:
             f.keyed(px + 14, py + 62, "A", px + 28, py + 62, tone="gpu")
             f.keyed(px + 14, py + 115, "C", px + 28, py + 115, tone="cache")
