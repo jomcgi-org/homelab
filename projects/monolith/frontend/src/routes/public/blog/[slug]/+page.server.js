@@ -15,7 +15,7 @@ export function load({ params, setHeaders }) {
   const entry = bySlug.get(params.slug);
   if (!entry) throw error(404, "Post not found");
 
-  const { html } = renderDoc(entry, emptyPathIndex);
+  const { html, toc } = renderDoc(entry, emptyPathIndex);
   // Each numbered section is its own panel on the page, so split the
   // rendered body at the h2 boundaries the renderer emits. The chunk before
   // the first h2 (if any) stays with the head panel.
@@ -36,5 +36,11 @@ export function load({ params, setHeaders }) {
     html,
     preamble,
     sections,
+    // Sections (depth 2) with their subsections nested, for the spine.
+    toc: toc.reduce((acc, h) => {
+      if (h.depth === 2) acc.push({ ...h, children: [] });
+      else if (acc.length) acc[acc.length - 1].children.push(h);
+      return acc;
+    }, []),
   };
 }
