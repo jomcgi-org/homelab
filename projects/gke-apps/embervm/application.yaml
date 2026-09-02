@@ -15,10 +15,9 @@ spec:
       # This pin is a deliberate bootstrap floor. Write-back does NOT maintain gke-apps pins.
       # Verify a fresh pin by pulling the tag and grepping the change: the registry
       # has served STALE pre-gate content under a fresh-looking tag before (#5507).
-      # 0.54.3 verified by pulling the chart: it carries the pressure-banking lane
-      # landed OFF (statefulSweeper.pressureBanking.enabled false) and a control
-      # image built from ecf7cb308, the merge that closed #5535.
-      targetRevision: 0.54.3
+      # 0.54.4 verified by pulling the chart: control image built from ce8af8add,
+      # the merge of #5542, which makes anchor-loss recovery reachable again.
+      targetRevision: 0.54.4
       helm:
         releaseName: embervm
         valueFiles:
