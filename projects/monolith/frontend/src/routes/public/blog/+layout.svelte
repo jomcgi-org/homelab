@@ -59,17 +59,20 @@
   </script>
 </svelte:head>
 
-<nav class="td chrome trail" aria-label="You are here">
-  <a class="crumb" href="/">jomcgi.dev</a>
-  <a class="crumb" href="/blog" aria-current={post ? undefined : "page"}>blog</a
-  >
-  {#if post}
-    <span class="crumb current" aria-current="page">{post}</span>
-  {/if}
-</nav>
-<div class="td chrome chrome-right">
+<div class="td chrome">
+  <nav class="trail" aria-label="You are here">
+    <div class="trail-row">
+      <a class="crumb" href="/">jomcgi.dev</a>
+      <a class="crumb" href="/blog" aria-current={post ? undefined : "page"}
+        >blog</a
+      >
+    </div>
+    {#if post}
+      <span class="crumb current" aria-current="page">{post}</span>
+    {/if}
+  </nav>
   <button
-    class="chrome-link scheme"
+    class="scheme"
     type="button"
     onclick={flip}
     aria-label={dark ? "Switch to day scheme" : "Switch to night scheme"}
@@ -77,7 +80,7 @@
   >
     {#if dark}
       <!-- sun -->
-      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true">
         <circle
           cx="8"
           cy="8"
@@ -94,7 +97,7 @@
       </svg>
     {:else}
       <!-- moon -->
-      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true">
         <path
           d="M10.5 2.2A6 6 0 1 0 13.8 9.5 5 5 0 0 1 10.5 2.2z"
           fill="none"
@@ -110,76 +113,109 @@
 {@render children()}
 
 <style>
+  /* On a wide screen the chrome floats over the page margins: the trail
+     top left, the scheme switch top right, neither reaching the content
+     (the trail is capped at the index column's width and the pages pad
+     their top to clear it). On a phone there is no margin to float in,
+     so the same row sits in the flow at the top of the page and scrolls
+     away with it. */
   .chrome {
     position: fixed;
     top: 1.1rem;
+    right: 1.2rem;
     left: 1.2rem;
     z-index: 1000;
     display: flex;
-    gap: 0.5rem;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    pointer-events: none;
   }
 
+  .trail,
+  .scheme {
+    pointer-events: auto;
+  }
+
+  /* Two rows: site and blog, then the post under a rule. */
   .trail {
-    gap: 0;
-    max-width: calc(100vw - 6rem);
+    display: flex;
+    flex-direction: column;
+    max-width: 16em;
     border: 1px solid var(--stroke);
     background: var(--sheet);
   }
 
-  .crumb,
-  .chrome-link {
-    padding: 4px 6px;
+  .trail-row {
+    display: flex;
+  }
+
+  .trail-row .crumb:first-child {
+    flex: 1;
+  }
+
+  .crumb {
+    padding: 5px 8px;
     color: var(--ink-2);
     font-family: var(--font-code);
-    font-size: 0.68rem;
+    font-size: 0.72rem;
     font-weight: 500;
     letter-spacing: 0.02em;
     text-decoration: none;
     white-space: nowrap;
   }
 
-  .crumb + .crumb {
+  .trail-row .crumb + .crumb {
     border-left: 1px solid var(--stroke);
   }
 
   .crumb.current {
-    overflow: hidden;
+    border-top: 1px solid var(--stroke);
     color: var(--ink);
-    text-overflow: ellipsis;
+    white-space: normal;
   }
 
-  .chrome-link {
-    border: 1px solid var(--stroke);
-    background: var(--sheet);
-    cursor: pointer;
-  }
-
-  a.crumb:hover,
-  .chrome-link:hover {
+  a.crumb:hover {
     color: var(--accent-ink);
   }
 
-  .crumb:focus-visible,
-  .chrome-link:focus-visible {
-    outline: 2px solid var(--accent-ink);
-    outline-offset: -2px;
-  }
-
-  .chrome-right {
-    left: auto;
-    right: 1.2rem;
-  }
-
-  button.chrome-link.scheme {
+  .scheme {
     display: inline-flex;
+    flex: none;
     align-items: center;
     justify-content: center;
-    width: 1.9em;
-    height: 1.9em;
+    width: 2.25rem;
+    height: 2.25rem;
     padding: 0;
+    border: 1px solid var(--stroke);
+    background: var(--sheet);
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+
+  .scheme:hover {
+    color: var(--accent-ink);
   }
 
   .scheme svg {
     display: block;
+  }
+
+  .crumb:focus-visible,
+  .scheme:focus-visible {
+    outline: 2px solid var(--accent-ink);
+    outline-offset: -2px;
+  }
+
+  @media (max-width: 760px) {
+    .chrome {
+      position: static;
+      padding: 1rem 1em 0;
+      background: var(--sheet);
+    }
+
+    .trail {
+      max-width: none;
+    }
   }
 </style>

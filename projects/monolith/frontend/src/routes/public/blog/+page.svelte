@@ -330,7 +330,7 @@
 
   @media (max-width: 760px) {
     .blog-page {
-      padding: 3rem 1.35em 4em;
+      padding: 1rem 1.35em 4em;
     }
 
     .journal {
