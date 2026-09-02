@@ -2568,14 +2568,23 @@ func (s *Server) workloadCapacities(primed map[string][]string) []*nodev1.Worklo
 // BuildBase/Prime/Assign calls are rejected. The control plane reads the deadline
 // off the WatchNode stream and force-banks every managed VM before it (R6). All
 // LIFECYCLE rpcs (Bank/Stop/Resolve/StopGroupMember) keep being served while
-// draining so that force-bank can run; only new-work verbs are refused. Called on
-// SIGTERM before the daemon holds shutdown for the bank pass.
-func (s *Server) SetDraining(deadline time.Time) {
+// draining so that force-bank can run; only new-work verbs are refused. The
+// earliest deadline always wins, so SIGTERM cannot extend a drain already begun
+// by a GCE preemption notice. It returns the effective published deadline.
+func (s *Server) SetDraining(deadline time.Time) time.Time {
 	s.drainingMu.Lock()
-	s.draining = true
-	s.drainDeadlineUnixMs = deadline.UnixMilli()
+	deadlineUnixMs := deadline.UnixMilli()
+	changed := !s.draining || deadlineUnixMs < s.drainDeadlineUnixMs
+	if changed {
+		s.draining = true
+		s.drainDeadlineUnixMs = deadlineUnixMs
+	}
+	effectiveDeadline := time.UnixMilli(s.drainDeadlineUnixMs)
 	s.drainingMu.Unlock()
-	s.signalChange()
+	if changed {
+		s.signalChange()
+	}
+	return effectiveDeadline
 }
 
 func (s *Server) isDraining() bool {

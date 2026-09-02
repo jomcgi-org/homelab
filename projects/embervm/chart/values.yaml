@@ -1357,18 +1357,24 @@ noded:
   # EMBERVM_NODE_IMAGE_IDENTITY env from the SAME `workloads` values. No
   # noded-side images value remains.)
 
-  # Graceful-drain budget (R6 bounded preemption, ADR embervm/009): on SIGTERM the
-  # daemon publishes a drain deadline (now + this) via NodeStatus and HOLDS the
-  # gRPC surface up so the control plane can force-bank every managed session/
-  # serving/stateful/group VM before the deadline; only then does it drain
-  # in-flight task Assigns and exit. terminationGracePeriodSeconds is set above it
-  # (grace = drain + 30s), so a rollout never SIGKILLs mid-bank and never drops a
-  # running task. 110s targets the 2m spot-instance preemption notice minus
-  # notification latency (ADR embervm/009 resolved-question 5); inside the budget,
-  # durable banks go first, serving banks second, in-flight builds finish-or-abort
-  # last.
+  # Graceful-drain budget (R6, ADR embervm/009): on SIGTERM the daemon publishes a
+  # drain deadline (now + this) via NodeStatus and HOLDS the gRPC surface up so the
+  # control plane can force-bank every managed session/serving/stateful/group VM
+  # before the deadline; only then does it drain in-flight task Assigns and exit.
+  # This 110s budget is for rollouts, upgrades, and scale-down. It is not a Spot
+  # preemption budget: GCE Spot provides only an approximately 30s best-effort
+  # shutdown period. terminationGracePeriodSeconds is graceful drain + 30s, so an
+  # ordinary rollout has 140s before Kubernetes sends SIGKILL.
   drain:
     timeoutSeconds: 110
+    # Watches GCE's instance/preempted metadata value with hanging GETs. Landed
+    # off so a deployment can verify the mechanism before arming it in values.
+    preemptionNoticeEnabled: false
+    # GCE's approximately 30s Spot shutdown period, less notice-observation
+    # latency and noded's final stop, leaves 20s to publish to the control plane.
+    # Re-derive this from the GCE contract if that contract changes. Do not tune
+    # it by feel.
+    preemptionTimeoutSeconds: 20
 
   # (Node-provisioning scratch-prep config moved to the TOP-LEVEL `scratchPrep`
   # block below. It must NOT live under `noded.*`: helm_images_values pins its

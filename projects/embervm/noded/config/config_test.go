@@ -328,7 +328,8 @@ func TestLoadDefaults(t *testing.T) {
 		"NODE_NAME", "EMBERVM_NODED_ARCH", "EMBERVM_NODED_CPU_VENDOR", "EMBERVM_NODED_BEARER_TOKEN",
 		"EMBERVM_NODED_MAX_LIVE_VMS", "EMBERVM_NODED_IMAGES", "EMBERVM_NODED_IMAGES_FILE",
 		"EMBERVM_NODED_BOOT_READY_TIMEOUT", "EMBERVM_NODED_RESTORE_READY_TIMEOUT",
-		"EMBERVM_NODED_DRAIN_TIMEOUT", "EMBERVM_NODED_DIFF_BANKING", "EMBERVM_NODED_DIFF_BANKING_WORKLOADS",
+		"EMBERVM_NODED_DRAIN_TIMEOUT", "EMBERVM_NODED_PREEMPTION_NOTICE_ENABLED",
+		"EMBERVM_NODED_PREEMPTION_DRAIN_TIMEOUT", "EMBERVM_NODED_DIFF_BANKING", "EMBERVM_NODED_DIFF_BANKING_WORKLOADS",
 		"EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL", "EMBERVM_NODED_WARMTH_STALE_AFTER",
 		"EMBERVM_NODED_REAP_UNCLAIMED_WARMTH",
 		"EMBERVM_NODED_JAILER_ENABLED", "EMBERVM_NODED_JAILER_BIN",
@@ -381,6 +382,15 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if c.RestoreReadyTimeout != 2*time.Second {
 		t.Errorf("RestoreReadyTimeout = %v, want 2s", c.RestoreReadyTimeout)
+	}
+	if c.DrainTimeout != 110*time.Second {
+		t.Errorf("DrainTimeout = %v, want 110s", c.DrainTimeout)
+	}
+	if c.PreemptionNoticeEnabled {
+		t.Error("PreemptionNoticeEnabled should default false")
+	}
+	if c.PreemptionDrainTimeout != 20*time.Second {
+		t.Errorf("PreemptionDrainTimeout = %v, want 20s", c.PreemptionDrainTimeout)
 	}
 	if c.Arch == "" {
 		t.Error("Arch should default to runtime.GOARCH, got empty")
@@ -442,6 +452,21 @@ func TestLoadDiffBankingOverride(t *testing.T) {
 	}
 	if got, want := strings.Join(c.DiffBankingWorkloads, ","), "sandbox-session,another-session"; got != want {
 		t.Errorf("DiffBankingWorkloads = %q, want %q", got, want)
+	}
+}
+
+func TestLoadPreemptionOverrides(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_PREEMPTION_NOTICE_ENABLED", "true")
+	t.Setenv("EMBERVM_NODED_PREEMPTION_DRAIN_TIMEOUT", "17s")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !c.PreemptionNoticeEnabled {
+		t.Error("PreemptionNoticeEnabled = false, want true")
+	}
+	if c.PreemptionDrainTimeout != 17*time.Second {
+		t.Errorf("PreemptionDrainTimeout = %v, want 17s", c.PreemptionDrainTimeout)
 	}
 }
 

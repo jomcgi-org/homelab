@@ -201,15 +201,28 @@ type Config struct {
 	// A restored guest is already warm; this short budget only covers WaitReady
 	// retrying past the Firecracker post-restore vsock RX-queue race. Default 2s.
 	RestoreReadyTimeout time.Duration
-	// DrainTimeout bounds graceful shutdown: on SIGTERM the daemon publishes a
-	// drain deadline (now + DrainTimeout) via NodeStatus and HOLDS the gRPC
-	// surface up, serving lifecycle RPCs, until every managed (session/serving/
-	// stateful/group) VM has left the registry (the control plane force-banks
-	// them, R6) or this budget elapses; only then does it drain in-flight Assigns
-	// and stop. The pod's terminationGracePeriodSeconds must exceed it (chart sets
-	// drain + 30s). Default 110s: the 2m spot-instance preemption notice minus
-	// notification latency (ADR embervm/009 resolved-question 5).
+	// DrainTimeout bounds graceful shutdown for rollouts, upgrades, and
+	// scale-down: on SIGTERM the daemon publishes a drain deadline (now +
+	// DrainTimeout) via NodeStatus and HOLDS the gRPC surface up, serving
+	// lifecycle RPCs, until every managed (session/serving/stateful/group) VM has
+	// left the registry (the control plane force-banks them, R6) or this budget
+	// elapses; only then does it drain in-flight Assigns and stop. The pod's
+	// terminationGracePeriodSeconds must exceed it (chart sets drain + 30s).
+	// Default 110s. This is not a preemption budget: GCE Spot provides only an
+	// approximately 30s best-effort shutdown period.
 	DrainTimeout time.Duration
+	// PreemptionNoticeEnabled watches GCE's instance/preempted metadata value and
+	// begins draining before kubelet delivers SIGTERM. Default false so the new
+	// mechanism can be verified live before a deployment values flip. Env
+	// EMBERVM_NODED_PREEMPTION_NOTICE_ENABLED.
+	PreemptionNoticeEnabled bool
+	// PreemptionDrainTimeout is the deadline published after the GCE preemption
+	// notice. Default 20s: GCE Spot provides an approximately 30s best-effort
+	// shutdown period, less notice-observation latency and the daemon's own final
+	// stop. This budget is derived from the GCE contract and must be re-derived,
+	// not adjusted by feel, if that contract changes. Env
+	// EMBERVM_NODED_PREEMPTION_DRAIN_TIMEOUT.
+	PreemptionDrainTimeout time.Duration
 
 	// EgressSidecarAddr is the pod-local egress-proxy sidecar TCP address that
 	// EgressEnabled forwards guest vsock egress to.
@@ -470,6 +483,8 @@ func Load() (Config, error) {
 		BootReadyTimeout:        60 * time.Second,
 		RestoreReadyTimeout:     2 * time.Second,
 		DrainTimeout:            110 * time.Second,
+		PreemptionNoticeEnabled: boolDefault("EMBERVM_NODED_PREEMPTION_NOTICE_ENABLED", false),
+		PreemptionDrainTimeout:  20 * time.Second,
 		EgressSidecarAddr:       getenvDefault("EMBERVM_NODED_EGRESS_SIDECAR_ADDR", "127.0.0.1:8888"),
 		EgressEnabled:           boolDefault("EMBERVM_NODED_EGRESS_ENABLED", false),
 		EgressWorkloads:         csvDefault("EMBERVM_NODED_EGRESS_WORKLOADS"),
@@ -592,6 +607,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if err := parseDuration("EMBERVM_NODED_DRAIN_TIMEOUT", &c.DrainTimeout); err != nil {
+		return Config{}, err
+	}
+	if err := parseDuration("EMBERVM_NODED_PREEMPTION_DRAIN_TIMEOUT", &c.PreemptionDrainTimeout); err != nil {
 		return Config{}, err
 	}
 	if err := parseDuration("EMBERVM_NODED_ARCHIVE_FETCH_TIMEOUT", &c.ArchiveFetchTimeout); err != nil {
