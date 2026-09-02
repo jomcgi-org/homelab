@@ -525,7 +525,7 @@
   .post-body :global(figure.fig + table td:first-child) {
     width: 3.5em;
     font-family: var(--font-code);
-    text-align: right;
+    text-align: center;
   }
 
   /* The key column carries the part's tier colour as the cell itself: the
