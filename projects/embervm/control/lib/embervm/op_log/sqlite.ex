@@ -1571,25 +1571,18 @@ defmodule Embervm.OpLog.SQLite do
   defp project(conn, %Op{kind: :volume_recovery_updated} = op, _seq) do
     payload = op.payload
     sql = """
-    INSERT INTO volumes (workload, node_id, generation, exported_generation, size_bytes, allocated_bytes, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(workload) DO UPDATE SET
-      node_id = excluded.node_id,
-      exported_generation = excluded.exported_generation,
-      updated_at = excluded.updated_at
+    UPDATE volumes
+    SET node_id = ?, exported_generation = ?, updated_at = ?
+    WHERE workload = ?
     """
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
          :ok <-
            Sqlite3.bind(stmt, [
-             op.workload,
              Map.get(payload, :node_id),
-             Map.get(payload, :generation, 0),
              Map.get(payload, :exported_generation, 0),
-             Map.get(payload, :size_bytes),
-             Map.get(payload, :allocated_bytes),
              op.ts,
-             op.ts
+             op.workload
            ]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
