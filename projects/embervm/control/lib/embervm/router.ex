@@ -189,8 +189,9 @@ defmodule Embervm.Router do
 
   # DELETE /v1/stateful/:name/volume (management auth): the ONLY destructive
   # data verb. REFUSED (409) while any non-terminal instance exists for the
-  # workload; a CR deletion never reaches this, deletion is always this
-  # explicit act.
+  # workload; a CR deletion never reaches this, deletion is always this explicit
+  # act. A successful manual recovery reports any capacity-absent anchor nodes
+  # skipped during local deletion in `unreachable`.
   delete "/v1/stateful/:name/volume" do
     handle_delete_stateful_volume(conn, name)
   end
@@ -1698,11 +1699,16 @@ defmodule Embervm.Router do
 
   # DELETE /v1/stateful/:name/volume handler (management auth): the ONLY
   # destructive data verb. 409 while any non-terminal instance exists (the
-  # manager's refusal reason); otherwise 200 with deleted: true.
+  # manager's refusal reason); otherwise 200 with deleted: true and an
+  # `unreachable` list naming capacity-absent nodes deliberately skipped.
   defp handle_delete_stateful_volume(conn, workload) do
     case stateful_manager().delete_volume(stateful_manager_server(), workload) do
-      {:ok, %{deleted: true}} ->
-        send_json(conn, 200, %{workload: workload, deleted: true})
+      {:ok, %{deleted: true} = result} ->
+        send_json(conn, 200, %{
+          workload: workload,
+          deleted: true,
+          unreachable: Map.get(result, :unreachable, [])
+        })
 
       {:error, :instance_exists} ->
         send_json(conn, 409, %{
