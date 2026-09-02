@@ -591,6 +591,8 @@
 
   .post-body :global(.fig figcaption::before) {
     content: "Fig. " counter(fig) "  ";
+    font-weight: 600;
+    letter-spacing: 0.08em;
   }
 
   .post-body :global(figure.fig + table) {
