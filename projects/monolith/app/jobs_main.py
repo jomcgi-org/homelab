@@ -23,6 +23,7 @@ import asyncio
 import importlib
 import logging
 import os
+import time
 
 import typer
 
@@ -72,6 +73,10 @@ def agent_drain_trigger() -> None:
     _post_internal("/internal/agent/drain", "agent-drain-trigger", timeout=90)
 
 
+_INTERNAL_POST_ATTEMPTS = 6
+_INTERNAL_POST_RETRY_SECONDS = 2.0
+
+
 def _post_internal(path: str, name: str, timeout: int = 180) -> None:
     import httpx
 
@@ -80,7 +85,26 @@ def _post_internal(path: str, name: str, timeout: int = 180) -> None:
     if not url:
         raise RuntimeError("MONOLITH_INTERNAL_URL is not set")
     logger.info("%s: POST %s%s", name, url, path)
-    resp = httpx.post(f"{url}{path}", timeout=timeout)
+    # The internal URL is the plain Service, so with two replicas about half
+    # the calls land on the follower, which answers 503 (DBOS is launched on
+    # the leader only). Each attempt is a fresh connection, so a retry lands
+    # on another backend; six attempts make a follower-only streak
+    # vanishingly rare (#5590).
+    resp = None
+    for attempt in range(_INTERNAL_POST_ATTEMPTS):
+        resp = httpx.post(f"{url}{path}", timeout=timeout)
+        if resp.status_code != 503:
+            break
+        logger.warning(
+            "%s: 503 from %s%s (attempt %d/%d), retrying",
+            name,
+            url,
+            path,
+            attempt + 1,
+            _INTERNAL_POST_ATTEMPTS,
+        )
+        time.sleep(_INTERNAL_POST_RETRY_SECONDS)
+    assert resp is not None
     resp.raise_for_status()
     logger.info("%s: %s", name, resp.json())
 

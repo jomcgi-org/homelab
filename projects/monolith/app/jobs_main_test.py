@@ -85,3 +85,55 @@ def test_no_args_lists_commands():
     result = runner.invoke(jobs_main.app, [])
     # no_args_is_help exits non-zero and prints the command list.
     assert "worldcup-sim" in result.output
+
+
+def test_post_internal_retries_follower_503(monkeypatch):
+    """A follower replica answers 503; the trigger retries on a fresh
+    connection until the leader answers (#5590)."""
+    import httpx
+
+    from app import jobs_main
+
+    monkeypatch.setenv("MONOLITH_INTERNAL_URL", "http://monolith")
+    monkeypatch.setattr(jobs_main, "_INTERNAL_POST_RETRY_SECONDS", 0)
+    responses = iter(
+        [
+            httpx.Response(503, request=httpx.Request("POST", "http://monolith/x")),
+            httpx.Response(503, request=httpx.Request("POST", "http://monolith/x")),
+            httpx.Response(
+                200,
+                json={"ok": True},
+                request=httpx.Request("POST", "http://monolith/x"),
+            ),
+        ]
+    )
+    calls = []
+
+    def fake_post(url, timeout):
+        calls.append(url)
+        return next(responses)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    jobs_main._post_internal("/internal/agent/drain", "agent-drain-trigger", timeout=1)
+    assert len(calls) == 3
+
+
+def test_post_internal_gives_up_after_attempts(monkeypatch):
+    import httpx
+    import pytest
+
+    from app import jobs_main
+
+    monkeypatch.setenv("MONOLITH_INTERNAL_URL", "http://monolith")
+    monkeypatch.setattr(jobs_main, "_INTERNAL_POST_RETRY_SECONDS", 0)
+    monkeypatch.setattr(
+        httpx,
+        "post",
+        lambda url, timeout: httpx.Response(
+            503, request=httpx.Request("POST", "http://monolith/x")
+        ),
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        jobs_main._post_internal(
+            "/internal/agent/drain", "agent-drain-trigger", timeout=1
+        )
