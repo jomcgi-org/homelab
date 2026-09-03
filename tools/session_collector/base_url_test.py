@@ -109,6 +109,7 @@ def test_missing_tailscale_falls_back_to_cloudflare(monkeypatch):
     monkeypatch.setattr(
         "tools.session_collector.base_url.shutil.which", lambda name: None
     )
+    monkeypatch.setattr("tools.session_collector.base_url.TAILSCALE_CLI_CANDIDATES", ())
     monkeypatch.setattr(
         "tools.session_collector.base_url.TAILSCALE_APP_BINARY",
         type("MissingPath", (), {"is_file": lambda self: False})(),
@@ -118,3 +119,18 @@ def test_missing_tailscale_falls_back_to_cloudflare(monkeypatch):
         lambda *args, **kwargs: pytest.fail("tailscale must not be called"),
     )
     assert resolve_base_url({}) == DEFAULT_BASE_URL
+
+
+def test_tailscale_binary_prefers_homebrew_cli_over_app_bundle(monkeypatch, tmp_path):
+    from tools.session_collector import base_url
+
+    homebrew = tmp_path / "tailscale"
+    homebrew.write_text("#!/bin/sh\n")
+    homebrew.chmod(0o755)
+    app = tmp_path / "Tailscale"
+    app.write_text("#!/bin/sh\n")
+    app.chmod(0o755)
+    monkeypatch.setattr(base_url.shutil, "which", lambda name: None)
+    monkeypatch.setattr(base_url, "TAILSCALE_CLI_CANDIDATES", (homebrew,))
+    monkeypatch.setattr(base_url, "TAILSCALE_APP_BINARY", app)
+    assert base_url._tailscale_binary() == str(homebrew)

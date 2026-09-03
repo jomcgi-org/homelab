@@ -14,12 +14,23 @@ DEFAULT_BASE_URL = "https://private.jomcgi.dev"
 TAILSCALE_APP_BINARY = Path("/Applications/Tailscale.app/Contents/MacOS/Tailscale")
 
 
+# Well-known CLI locations that launchd's minimal PATH does not include. The
+# app-bundle binary comes last: under launchd's environment it blocks for
+# longer than the status timeout (measured 2026-09-03), while the homebrew
+# CLI answers in milliseconds.
+TAILSCALE_CLI_CANDIDATES = (
+    Path("/opt/homebrew/bin/tailscale"),
+    Path("/usr/local/bin/tailscale"),
+)
+
+
 def _tailscale_binary() -> str | None:
     binary = shutil.which("tailscale")
     if binary:
         return binary
-    if TAILSCALE_APP_BINARY.is_file() and os.access(TAILSCALE_APP_BINARY, os.X_OK):
-        return str(TAILSCALE_APP_BINARY)
+    for candidate in (*TAILSCALE_CLI_CANDIDATES, TAILSCALE_APP_BINARY):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
     return None
 
 
