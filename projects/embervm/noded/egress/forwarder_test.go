@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -85,6 +86,53 @@ func TestServeEgressTunnelsBidirectionally(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("ServeEgress did not return after ctx cancel")
+	}
+}
+
+// TestServeEgressAcceptsGuestConnectionAtJailedTarget proves the connection
+// direction that differs under jailer. The host-facing suffixed path is a
+// symlink, while Firecracker connects to its target inside the chroot.
+func TestServeEgressAcceptsGuestConnectionAtJailedTarget(t *testing.T) {
+	sidecarAddr, stopSidecar := startEchoSidecar(t)
+	defer stopSidecar()
+
+	tmp := t.TempDir()
+	udsPath := filepath.Join(tmp, "host", "vsock.sock")
+	jailedPath := filepath.Join(tmp, "jail", "vsock.sock_"+itoa(int(vsockproto.EgressPort)))
+	if err := os.MkdirAll(filepath.Dir(udsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(jailedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(jailedPath, egressListenPath(udsPath)); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- ServeEgress(ctx, slog.Default(), udsPath, sidecarAddr)
+	}()
+
+	guest := dialWithRetry(t, jailedPath)
+	defer guest.Close()
+	want := []byte("guest to host")
+	if _, err := guest.Write(want); err != nil {
+		t.Fatalf("guest write: %v", err)
+	}
+	got := make([]byte, len(want))
+	if _, err := io.ReadFull(guest, got); err != nil {
+		t.Fatalf("guest read echo: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("echo mismatch: got %q want %q", got, want)
+	}
+
+	cancel()
+	if err := <-serveErr; err != nil {
+		t.Fatalf("ServeEgress: %v", err)
 	}
 }
 

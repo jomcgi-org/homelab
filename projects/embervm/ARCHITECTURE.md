@@ -654,8 +654,9 @@ its -10 expendable-pods cutoff) while remaining first-evicted; this
 reopens, and only partially answers, the mass-VM-death preemption concern
 ADR embervm/016 raised against below-default brick priority (scheduler
 preemption deletes rather than drains). The Firecracker jailer that backs
-the guest rung of the ladder is **Planned** (#5520; section 10 has the
-containment detail).
+the guest rung of the ladder is **Shipped-but-suspended** (#5520; section 10
+has the containment detail). It lands dark pending live verification on one
+brick, after which a values-only change can arm it.
 
 **Decided direction**: PriorityClass ranking of brick
 pools by lane with sacrificial balloon bricks for burst headroom, and
@@ -913,10 +914,11 @@ embervm/032).
 - **Accepted risk**: privileged noded with /dev/kvm; external-allow guest
   egress via the broker; taint optional; CPU side-channel between
   co-resident tenant guests on the same brick, unmapped (#5255).
-- **Decided direction** (ADR embervm/039, #5520): adopt the Firecracker
-  jailer for per-VM chroot, uid/gid drop, cgroup, and PID namespace
-  containment, closing the gap where noded execs firecracker directly as
-  root today with none of it.
+- **Shipped-but-suspended** (ADR embervm/039, #5520): the Firecracker jailer
+  provides per-VM chroot, uid/gid drop, and cgroup containment, closing the
+  direct-root-exec gap when enabled. The chart lands it dark pending live
+  verification on one brick. `--new-pid-ns` is deliberately omitted because
+  a PID namespace breaks `execProcess` `Wait` and `Pid` supervision semantics.
 - **Planned**: mTLS/SPIFFE as the noded transport-auth upgrade.
 
 EmberVM evaluates itself against the threat model published by

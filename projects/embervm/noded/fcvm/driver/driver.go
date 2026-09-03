@@ -31,6 +31,7 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/noded/fcvm/fcclient"
 	"github.com/jomcgi/homelab/projects/embervm/noded/sparse"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
+	"github.com/jomcgi/homelab/projects/embervm/noded/vsockproto"
 	"go.opentelemetry.io/otel"
 )
 
@@ -874,14 +875,14 @@ func (d *Driver) servingMetafile(ref string) string {
 // from the given snapfile + memfile (File backend, resume). Used by all restore
 // paths that do not need to rebind a snapshot drive.
 func (d *Driver) loadInto(ctx context.Context, threadID, snapPath, memPath, sockName string) (substrate.Handle, error) {
-	return d.loadPatchAndResumeWithDiff(ctx, threadID, snapPath, memPath, sockName, "", false, false)
+	return d.loadPatchAndResumeWithDiff(ctx, threadID, snapPath, memPath, sockName, "", false, false, false)
 }
 
 // loadTrackedInto enables dirty logging for a memory-banking workload restored
 // from its pristine base. It deliberately does not set a bank base, so the first
 // session bank remains a full.
 func (d *Driver) loadTrackedInto(ctx context.Context, threadID, snapPath, memPath, sockName string) (substrate.Handle, error) {
-	return d.loadPatchAndResumeWithDiff(ctx, threadID, snapPath, memPath, sockName, "", true, false)
+	return d.loadPatchAndResumeWithDiff(ctx, threadID, snapPath, memPath, sockName, "", false, true, false)
 }
 
 // loadBankingInto restores a committed session full and re-arms Firecracker's
@@ -889,14 +890,14 @@ func (d *Driver) loadTrackedInto(ctx context.Context, threadID, snapPath, memPat
 // be set on every relight whose next bank may be a diff.
 func (d *Driver) loadBankingInto(ctx context.Context, threadID, snapPath, memPath, sockName string, trackDirtyPages bool) (substrate.Handle, error) {
 	trackDirtyPages = d.diffBanking && trackDirtyPages
-	return d.loadPatchAndResumeWithDiff(ctx, threadID, snapPath, memPath, sockName, "", trackDirtyPages, trackDirtyPages)
+	return d.loadPatchAndResumeWithDiff(ctx, threadID, snapPath, memPath, sockName, "", false, trackDirtyPages, trackDirtyPages)
 }
 
 // loadPatchAndResumeWithDiff restores a snapshot, optionally repoints its volume
 // drive, and resumes it. Firecracker requires the drive patch while the loaded VM
 // is still paused. enableDiffSnapshots re-arms dirty tracking; bankBase marks a
 // restored session full as the base for the next sequential diff.
-func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, threadID, snapPath, memPath, sockName, volumeDiskPath string, enableDiffSnapshots, bankBase bool) (substrate.Handle, error) {
+func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, threadID, snapPath, memPath, sockName, volumeDiskPath string, patchVolume, enableDiffSnapshots, bankBase bool) (substrate.Handle, error) {
 	dir := d.threadDir(threadID)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: mkdir bundle: %w", err)
@@ -914,19 +915,41 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, threadID, snapP
 	d.removeStaleVsockUDS(threadID)
 	vmID := newID("vm")
 	memMib := snapshotMemMib(memPath, d.cfg.MemMib)
-	resources := readJailResources(filepath.Dir(snapPath))
-	if len(resources) == 0 {
+	resources, hasMetadata, err := readJailResources(filepath.Dir(snapPath))
+	if err != nil {
+		return substrate.Handle{}, fmt.Errorf("driver: read jail resources for %q: %w", snapPath, err)
+	}
+	directExec := false
+	if !hasMetadata {
 		resources = legacyJailResources(filepath.Dir(snapPath), volumeDiskPath)
+		if !hasResourceRole(resources, "rootfs") {
+			directExec = true
+			slog.Warn("driver: restoring legacy bundle without jail resource metadata via direct exec",
+				"snapshot", snapPath, "vm", vmID)
+		}
+	}
+	if volumeDiskPath != "" && !patchVolume && hasMetadata {
+		stagedVolume := false
+		for i := range resources {
+			if resources[i].Role == "volume" {
+				resources[i].HostPath = volumeDiskPath
+				resources[i].Writable = true
+				stagedVolume = true
+			}
+		}
+		if !stagedVolume {
+			return substrate.Handle{}, fmt.Errorf("driver: stateful jail metadata for %q has no embedded volume path", snapPath)
+		}
 	}
 	resources = append(resources,
 		JailResource{Role: "snapshot-state", HostPath: snapPath, JailPath: "/snapshot/snapfile"},
 		JailResource{Role: "snapshot-memory", HostPath: memPath, JailPath: "/snapshot/memfile"},
 	)
-	if volumeDiskPath != "" {
+	if patchVolume {
 		resources = append(resources, JailResource{Role: "volume-patch", HostPath: volumeDiskPath, JailPath: volumeDiskPath, Writable: true})
 	}
 
-	proc, err := d.launcher.Launch(ctx, LaunchSpec{VMID: vmID, SocketPath: sock, MemMib: memMib, Resources: resources})
+	proc, err := d.launcher.Launch(ctx, LaunchSpec{VMID: vmID, SocketPath: sock, MemMib: memMib, Resources: resources, DirectExec: directExec})
 	if err != nil {
 		return substrate.Handle{}, fmt.Errorf("driver: launch firecracker for restore: %w", err)
 	}
@@ -940,7 +963,7 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, threadID, snapP
 	if err := issueSerial(ctx, client, serialPath); err != nil {
 		return d.abortWithSerialDiag(proc, err, threadID)
 	}
-	resumeVM := volumeDiskPath == ""
+	resumeVM := !patchVolume
 	if err := client.LoadSnapshot(ctx, fcclient.SnapshotLoad{
 		SnapshotPath:        snapPath,
 		MemBackend:          &fcclient.MemBackend{BackendType: "File", BackendPath: memPath},
@@ -950,7 +973,7 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, threadID, snapP
 	}); err != nil {
 		return d.abortWithSerialDiag(proc, err, threadID)
 	}
-	if volumeDiskPath != "" {
+	if patchVolume {
 		if err := client.PatchDrive(ctx, "volume", fcclient.PatchedDrive{
 			DriveID:    "volume",
 			PathOnHost: volumeDiskPath,
@@ -1009,7 +1032,7 @@ func (d *Driver) Claim(ctx context.Context, spec substrate.ClaimSpec) (substrate
 			return substrate.Handle{}, fmt.Errorf("driver: base bundle missing for %q: %w", ref.ID, err)
 		}
 		if spec.VolumeDiskPath != "" {
-			return d.loadPatchAndResumeWithDiff(ctx, threadID, snap, d.baseMemfile(ref.ID), "api.sock", spec.VolumeDiskPath, trackDirtyPages, false)
+			return d.loadPatchAndResumeWithDiff(ctx, threadID, snap, d.baseMemfile(ref.ID), "api.sock", spec.VolumeDiskPath, true, trackDirtyPages, false)
 		}
 		if trackDirtyPages {
 			return d.loadTrackedInto(ctx, threadID, snap, d.baseMemfile(ref.ID), "api.sock")
@@ -1124,18 +1147,20 @@ func (d *Driver) coldBoot(ctx context.Context, threadID string, cb coldBootSpec)
 		}
 	}
 	volumePath := cb.volumeDiskPath
+	privatePlaceholder := false
 	if d.cfg.WarmRestoreWithVolume && volumePath == "" {
 		volumePath, err = d.ensurePlaceholderVolume()
 		if err != nil {
 			return substrate.Handle{}, err
 		}
+		privatePlaceholder = true
 	}
 	driveResources := []JailResource{{Role: "rootfs", HostPath: rootfsPath, JailPath: rootfsPath, Writable: !d.cfg.RootfsReadOnly}}
 	if cb.handlerDiskPath != "" {
 		driveResources = append(driveResources, JailResource{Role: "handler", HostPath: cb.handlerDiskPath, JailPath: cb.handlerDiskPath})
 	}
 	if volumePath != "" {
-		driveResources = append(driveResources, JailResource{Role: "volume", HostPath: volumePath, JailPath: volumePath, Writable: true})
+		driveResources = append(driveResources, JailResource{Role: "volume", HostPath: volumePath, JailPath: volumePath, Writable: true, PrivateCopy: privatePlaceholder})
 	}
 	launchResources := append([]JailResource{{Role: "kernel", HostPath: d.cfg.KernelImagePath, JailPath: "/kernel"}}, driveResources...)
 	proc, err := d.launcher.Launch(ctx, LaunchSpec{VMID: vmID, SocketPath: sock, MemMib: cb.memMib, Resources: launchResources})
@@ -2209,9 +2234,9 @@ func (d *Driver) GCStatefulCheckpoints() int {
 // RestoreStateful launches a fresh Firecracker process and loads a banked
 // STATEFUL bundle (stateful/<snapshotRef>), resuming it so the guest continues
 // exactly where it was banked, WITH the NIC it captured at bank time. It
-// mirrors RestoreServing. The snapshot is loaded paused, then its volume drive
-// is patched to the current host backing file before resume. This is required
-// for jail-relative paths and also makes an unchanged host path explicit.
+// mirrors RestoreServing. Stateful relight preserves Firecracker's original
+// load-and-resume behavior: the banked volume path is staged inside a jail, but
+// the drive is not patched because its embedded path already names that volume.
 func (d *Driver) RestoreStateful(ctx context.Context, snapshotRef, volumeDiskPath string) (substrate.Handle, error) {
 	if snapshotRef == "" {
 		return substrate.Handle{}, fmt.Errorf("driver: RestoreStateful requires a snapshot_ref")
@@ -2221,7 +2246,7 @@ func (d *Driver) RestoreStateful(ctx context.Context, snapshotRef, volumeDiskPat
 		return substrate.Handle{}, fmt.Errorf("driver: stateful bundle missing for %q: %w", snapshotRef, err)
 	}
 	threadID := newID("state")
-	return d.loadPatchAndResumeWithDiff(ctx, threadID, snapPath, d.statefulMemfile(snapshotRef), "restore.sock", volumeDiskPath, false, false)
+	return d.loadPatchAndResumeWithDiff(ctx, threadID, snapPath, d.statefulMemfile(snapshotRef), "restore.sock", volumeDiskPath, false, false, false)
 }
 
 // RemoveStatefulBundle deletes a banked stateful snapshot's on-disk bundle
@@ -2664,7 +2689,11 @@ func (d *Driver) bindJailedVsock(proc Process, threadID string) error {
 	if !ok || provider.Jail() == nil {
 		return nil
 	}
-	return provider.Jail().aliasSocket(d.VsockUDSPath(threadID), d.bootVsockPath(threadID))
+	jail := provider.Jail()
+	if err := jail.aliasSocket(d.VsockUDSPath(threadID), d.bootVsockPath(threadID)); err != nil {
+		return err
+	}
+	return jail.aliasSocketPort(d.VsockUDSPath(threadID), d.bootVsockPath(threadID), vsockproto.EgressPort)
 }
 
 func snapshotMemMib(memPath string, fallback int) int {
@@ -2691,6 +2720,15 @@ func legacyJailResources(snapshotDir, volumeDiskPath string) []JailResource {
 		resources = append(resources, JailResource{Role: "volume", HostPath: volumeDiskPath, JailPath: volumeDiskPath, Writable: true})
 	}
 	return resources
+}
+
+func hasResourceRole(resources []JailResource, role string) bool {
+	for _, resource := range resources {
+		if resource.Role == role {
+			return true
+		}
+	}
+	return false
 }
 
 func writeInstanceJailMetadata(inst *instance, dir string) error {

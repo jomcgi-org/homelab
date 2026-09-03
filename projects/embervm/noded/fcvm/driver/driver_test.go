@@ -30,6 +30,7 @@ type fakeLauncher struct {
 	snapshotCreates []map[string]any
 	snapshotLoads   []map[string]any
 	serialPuts      []map[string]any
+	launchSpecs     []LaunchSpec
 	failDiffCreate  bool
 	failPath        string // if set, return 500 for this API path
 	// serialOutput, when set, is what the fake guest "prints" to its UART: the
@@ -42,16 +43,19 @@ type fakeProcess struct {
 	srv    *http.Server
 	killed bool
 	pid    int
+	jail   *Jail
 }
 
 func (p *fakeProcess) Kill() error { p.killed = true; return p.srv.Close() }
 func (p *fakeProcess) Wait() error { return nil }
 func (p *fakeProcess) Pid() int    { return p.pid }
+func (p *fakeProcess) Jail() *Jail { return p.jail }
 
 func (l *fakeLauncher) Launch(_ context.Context, spec LaunchSpec) (Process, error) {
 	socketPath := spec.SocketPath
 	l.mu.Lock()
 	l.launched++
+	l.launchSpecs = append(l.launchSpecs, spec)
 	l.mu.Unlock()
 	_ = os.Remove(socketPath)
 	ln, err := net.Listen("unix", socketPath)
@@ -138,6 +142,12 @@ func (l *fakeLauncher) Launch(_ context.Context, spec LaunchSpec) (Process, erro
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
 	return &fakeProcess{srv: srv}, nil
+}
+
+func (l *fakeLauncher) specs() []LaunchSpec {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]LaunchSpec(nil), l.launchSpecs...)
 }
 
 func (l *fakeLauncher) requestPaths() []string {
@@ -958,6 +968,97 @@ func TestDriverSessionSnapshotRestoreRoundTrip(t *testing.T) {
 	// Idempotent evict: removing an already-gone bundle is not an error.
 	if err := d.RemoveSessionBundle("sref-abc123"); err != nil {
 		t.Fatalf("idempotent RemoveSessionBundle: %v", err)
+	}
+}
+
+func TestRestoreLegacyBundleWithoutJailResourcesUsesDirectExec(t *testing.T) {
+	ctx := context.Background()
+	launcher := &fakeLauncher{}
+	d := New(Config{
+		KernelImagePath: "/opt/kata/vmlinux",
+		RootfsPath:      "/dev/mapper/thread",
+		SnapshotRoot:    shortTempDir(t),
+		Node:            "node-4",
+		Arch:            "amd64",
+	}, launcher, nil)
+	bundle := d.sessionDir("legacy-bank")
+	if err := os.MkdirAll(bundle, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(d.sessionSnapfile("legacy-bank"), []byte("snap"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(d.sessionMemfile("legacy-bank"), []byte("mem"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h, err := d.RestoreSession(ctx, "legacy-bank", false)
+	if err != nil {
+		t.Fatalf("RestoreSession legacy bundle: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Release(ctx, h) })
+	specs := launcher.specs()
+	if len(specs) != 1 || !specs[0].DirectExec {
+		t.Fatalf("legacy restore launch specs = %+v, want one direct-exec launch", specs)
+	}
+}
+
+func TestRestoreStatefulStagesEmbeddedVolumeWithoutPatch(t *testing.T) {
+	ctx := context.Background()
+	launcher := &fakeLauncher{}
+	d := New(Config{
+		KernelImagePath: "/opt/kata/vmlinux",
+		SnapshotRoot:    shortTempDir(t),
+		Node:            "node-4",
+		Arch:            "amd64",
+	}, launcher, nil)
+	bundle := d.statefulDir("state-bank")
+	if err := os.MkdirAll(bundle, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rootfs := filepath.Join(bundle, "rootfs")
+	embeddedVolume := filepath.Join(bundle, "bank-time-volume")
+	volume := filepath.Join(d.warmthRoot(), "volumes", "current-volume")
+	if err := os.MkdirAll(filepath.Dir(volume), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for path, contents := range map[string]string{
+		d.statefulSnapfile("state-bank"): "snap",
+		d.statefulMemfile("state-bank"):  "mem",
+		rootfs:                           "rootfs",
+		volume:                           "volume",
+	} {
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writeJailResources(bundle, []JailResource{
+		{Role: "rootfs", HostPath: rootfs, JailPath: rootfs},
+		{Role: "volume", HostPath: embeddedVolume, JailPath: embeddedVolume, Writable: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h, err := d.RestoreStateful(ctx, "state-bank", volume)
+	if err != nil {
+		t.Fatalf("RestoreStateful: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Release(ctx, h) })
+	if got := launcher.requestPaths(); !slices.Equal(got, []string{"PUT /serial", "PUT /snapshot/load"}) {
+		t.Fatalf("stateful restore requests = %v, want load-and-resume without drive patch", got)
+	}
+	loads := launcher.snapshotLoadBodies()
+	if len(loads) != 1 || loads[0]["resume_vm"] != true {
+		t.Fatalf("stateful snapshot loads = %+v, want resume_vm=true", loads)
+	}
+	specs := launcher.specs()
+	if len(specs) != 1 || specs[0].DirectExec || !hasResourceRole(specs[0].Resources, "volume") {
+		t.Fatalf("stateful launch specs = %+v, want jailed launch with staged volume", specs)
+	}
+	for _, resource := range specs[0].Resources {
+		if resource.Role == "volume" && (resource.HostPath != volume || resource.JailPath != embeddedVolume) {
+			t.Fatalf("staged volume = %+v, want current host path at embedded jail path", resource)
+		}
 	}
 }
 

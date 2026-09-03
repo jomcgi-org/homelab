@@ -1332,9 +1332,9 @@ noded:
     kernelBootArgs: "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro"
 
   jailer:
-    # Default-on isolation. Set false only as an operational escape hatch back
-    # to the former direct Firecracker exec path.
-    enabled: true
+    # Shipped but suspended: land dark, then arm with a values-only change after
+    # live verification on one brick.
+    enabled: false
 
   # (Artifact-decoupling Phase 2: the node-side image identity table that USED to
   # be rendered into the daemon's EMBERVM_NODED_IMAGES env from `noded.images` +
