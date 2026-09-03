@@ -1,7 +1,7 @@
 {
   "system": "monolith",
   "system_dir": "projects/monolith",
-  "commit": "248acd648",
+  "commit": "ac81a1554",
   "nodes": [
     {
       "key": "console-caller",
@@ -211,6 +211,20 @@
       "label": "1Password operator",
       "view": "physical",
       "layer": "secrets",
+      "maturity": "built"
+    },
+    {
+      "key": "kg-feed",
+      "label": "Leader-owned Ember session to knowledge raw exporter",
+      "view": "logical",
+      "layer": "control_plane",
+      "maturity": "built"
+    },
+    {
+      "key": "kg-drainer",
+      "label": "DBOS-scheduled routine drainer (qwen-drain, kg-drain)",
+      "view": "logical",
+      "layer": "control_plane",
       "maturity": "built"
     }
   ],
@@ -439,6 +453,42 @@
       "to": "bot",
       "maturity": "built",
       "evidence": "projects/monolith/agent/mcp.py:338"
+    },
+    {
+      "key": "raws.create",
+      "label": "Generic raw-input capture (POST /api/knowledge/raws)",
+      "view": "logical",
+      "from": "console-caller",
+      "to": "pg-primary",
+      "maturity": "built",
+      "evidence": "projects/monolith/knowledge/router.py:283"
+    },
+    {
+      "key": "mcp.report-knowledge",
+      "label": "Agent-report/dispute/distress raw capture (report_knowledge, dispute_fact, report_distress)",
+      "view": "logical",
+      "from": "mcp-caller",
+      "to": "pg-primary",
+      "maturity": "built",
+      "evidence": "projects/monolith/knowledge/mcp.py:222"
+    },
+    {
+      "key": "kg-feed.export",
+      "label": "Export a finished Ember session as an ember-session raw",
+      "view": "logical",
+      "from": "kg-feed",
+      "to": "pg-primary",
+      "maturity": "built",
+      "evidence": "projects/monolith/agent_sessions/kg_feed.py:231"
+    },
+    {
+      "key": "kg-drainer.dispatch",
+      "label": "Claim a kg-drain job, run Luna extraction, apply the result",
+      "view": "logical",
+      "from": "kg-drainer",
+      "to": "agent-runner",
+      "maturity": "built",
+      "evidence": "projects/monolith/swarm/drainer.py:404"
     }
   ],
   "feedback": [
@@ -501,6 +551,12 @@
       "from": "cf-ingress",
       "to": "agent-runner",
       "signal": "X-Auth-Email identity header (attribution only, allowlisted senders, not cryptographically bound)"
+    },
+    {
+      "view": "logical",
+      "from": "postgres",
+      "to": "mcp-caller",
+      "signal": "disputed flag + verification_state on search/get_note results"
     }
   ]
 }

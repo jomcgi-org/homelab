@@ -1,9 +1,9 @@
 {
   "lens": "logic",
-  "commit": "248acd648",
+  "commit": "ac81a1554",
   "scope": {
     "summary": "A single Postgres-backed personal platform served as two composed binaries: a private read-write binary (full app capabilities, private.jomcgi.dev) and an isolated public binary (jomcgi.dev via the separate monolith-public chart). The public binary is read-only for public datasets with two constrained write/invocation paths, the private binary now also serves an agent-session console, a six-language code sandbox, a screenshot tool, and MCP over native streamable HTTP; safety is governed data access, bounded public capabilities, the secret boundary, and correct claim/lease ownership of queued agent work.",
-    "built": "framework/core.py composition and profiles, separate private/public module registries, Postgres leader-lease singletons (Discord bot, AIS ingest, outbox drain, message-lock sweep), the agent_sessions claim-lease turn engine (atomic per-message claiming across all replicas plus a leader-owned stale-claim sweep) backing both the Discord bot and the private /agents console HTTP API, goosecracker recipe/repo catalog, chat feature ACL with 30s grant cache, public_reader/public_writer roles with schema/view confinement, public/private HTTPRoutes, Turnstile secret isolation, public chat admission/concurrency limits, public FaaS identity gate, observability snapshot rollup, the shotter MCP domain (URL/host validation, EmberVM task dispatch, best-effort SeaweedFS PNG storage with a random per-call Idempotency-Key), the sandbox MCP domain (run_code, six per-language EmberVM task workloads, zero-egress except an optional scratch-Postgres credential), the native /mcp mount on stateless streamable HTTP with PrincipalMiddleware authenticating every message via cached JWKS, and the docs/posts manifest generators that publish an exact allowlist of committed repository documents to the public site.",
+    "built": "framework/core.py composition and profiles, separate private/public module registries, Postgres leader-lease singletons (Discord bot, AIS ingest, outbox drain, message-lock sweep), the agent_sessions claim-lease turn engine (atomic per-message claiming across all replicas plus a leader-owned stale-claim sweep) backing both the Discord bot and the private /agents console HTTP API, goosecracker recipe/repo catalog, chat feature ACL with 30s grant cache, public_reader/public_writer roles with schema/view confinement, public/private HTTPRoutes, Turnstile secret isolation, public chat admission/concurrency limits, public FaaS identity gate, observability snapshot rollup, the shotter MCP domain (URL/host validation, EmberVM task dispatch, best-effort SeaweedFS PNG storage with a random per-call Idempotency-Key), the sandbox MCP domain (run_code, six per-language EmberVM task workloads, zero-egress except an optional scratch-Postgres credential), the native /mcp mount on stateless streamable HTTP with PrincipalMiddleware authenticating every message via cached JWKS, and the docs/posts manifest generators that publish an exact allowlist of committed repository documents to the public site. The factory knowledge-graph evidence lanes (#5527, ADR agents/063) add a shared raw-input write boundary (knowledge/ingest_queue.py ingest_raw_with_status) reached by the generic POST /api/knowledge/raws endpoint, three MCP tools (report_knowledge, dispute_fact, report_distress), and a leader-owned Ember-session exporter (agent_sessions/kg_feed.py), a daily-capped DBOS drainer (swarm/drainer.py) that runs Luna extraction in an EmberVM guest and writes atoms with server-side provenance (knowledge/extraction.py, knowledge/atoms.py), and a live disputed/verification_state signal on search results (knowledge/store.py).",
     "designed": "Strict per-domain database isolation and the ADR 010 cross-domain contract remain architectural goals; the Module/build_app framework itself is built. ADR 059 (Draft) proposes removing Context Forge entirely as the MCP entry point and serving /mcp directly behind Cloudflare; only the first, independently-sequenced slice (the stateless-HTTP transport switch) has landed, Context Forge is still deployed and still in the request path. The Context Forge tool-visibility reconcile pass (#4569) that would scope which principal may call which tool is designed, not built, so per-tool authorization beyond bearer-token authentication does not exist for any MCP tool yet."
   },
   "losses": [
@@ -196,6 +196,35 @@
         "L.liveness-loss"
       ],
       "maturity": "built"
+    },
+    {
+      "key": "unredacted-transcript-raw",
+      "view": "logical",
+      "statement": "The only redaction pass (agent_sessions.redact.redact_text) runs inside the ember-session feed's own renderer; the shared ingest_raw_with_status boundary every EXTRACTABLE_SOURCES producer funnels through, including the generic POST /api/knowledge/raws endpoint and the not-yet-shipped claude-session/codex-session producers (#5568), applies no redaction of its own, so content posted under one of those source labels is extracted into durable, searchable graph facts verbatim",
+      "losses": [
+        "L.secret-exposure"
+      ],
+      "maturity": "built"
+    },
+    {
+      "key": "kg-enqueue-swallowed",
+      "view": "logical",
+      "statement": "ingest_raw_with_status catches any exception from enqueue_extraction and continues, citing a repair sweep that does not exist anywhere in the codebase; for the ember-session feed this combines with an unconditional watermark advance, so the affected turn range is never re-offered for extraction and no health signal distinguishes the raw from one that was never meant to be extracted",
+      "losses": [
+        "L.silent-incorrectness",
+        "L.provenance-loss"
+      ],
+      "maturity": "built"
+    },
+    {
+      "key": "kg-dead-letter-unreachable",
+      "view": "logical",
+      "statement": "A raw dead-lettered on its first malformed-output failure stops at retry_count=1 and its routine_jobs row is deleted immediately, but /api/knowledge/dead-letter and its replay action both require retry_count >= MAX_GARDENER_RETRIES (3), and even a successful replay only deletes the failed provenance row without re-creating the deleted job, so no operator path re-queues a KG-lane dead letter; a disputed note stuck in this state stays marked disputed indefinitely, since Dispute.state only ever leaves 'open' inside a successful apply_extraction",
+      "losses": [
+        "L.silent-incorrectness",
+        "L.provenance-loss"
+      ],
+      "maturity": "built"
     }
   ],
   "ucas": [
@@ -344,6 +373,42 @@
         "second-layer-validation-gap"
       ],
       "evidence": "projects/monolith/shotter/hosts.py:20"
+    },
+    {
+      "key": "raws.create.providing",
+      "view": "logical",
+      "control_action": "raws.create",
+      "guideword": "providing",
+      "condition": "The endpoint accepts up to 2 MiB of content under any EXTRACTABLE_SOURCES source label (e.g. ember-session, claude-session) with no redaction step of its own, so unredacted transcript content posted under one of those labels is enqueued for extraction and, once extracted, indexed as durable private-visibility knowledge notes indistinguishable from a properly-redacted one",
+      "severity": "high",
+      "hazards": [
+        "unredacted-transcript-raw"
+      ],
+      "evidence": "projects/monolith/knowledge/router.py:283"
+    },
+    {
+      "key": "kg-feed.export.not-providing",
+      "view": "logical",
+      "control_action": "kg-feed.export",
+      "guideword": "not-providing",
+      "condition": "enqueue_extraction can silently fail inside ingest_raw_with_status (swallowed, citing a nonexistent repair sweep) for a raw that ingest still reports as created; feed_once then unconditionally advances kg_extracted_turn_seq past that turn range regardless of enqueue outcome, so the extraction job for those turns is never registered and never re-offered",
+      "severity": "high",
+      "hazards": [
+        "kg-enqueue-swallowed"
+      ],
+      "evidence": "projects/monolith/agent_sessions/kg_feed.py:258"
+    },
+    {
+      "key": "kg-drainer.dispatch.not-providing",
+      "view": "logical",
+      "control_action": "kg-drainer.dispatch",
+      "guideword": "not-providing",
+      "condition": "ExtractionOutputInvalid (malformed LLM JSON, the same shape a truncated turn produces) is caught separately from generic exceptions and dead-letters the job after exactly one attempt, while every other failure gets up to MAX_GARDENER_RETRIES bounded retries first; a transient LLM formatting miss on a dispute or report never gets the retry a comparable infra hiccup would, and the resulting dead letter is unrecoverable per kg-dead-letter-unreachable",
+      "severity": "medium",
+      "hazards": [
+        "kg-dead-letter-unreachable"
+      ],
+      "evidence": "projects/monolith/swarm/drainer.py:483"
     }
   ],
   "unsafe_feedback": [
@@ -458,6 +523,20 @@
         "header-authz-drift"
       ],
       "evidence": "projects/monolith/agent_sessions/router.py:546"
+    },
+    {
+      "key": "disputed-flag.stale",
+      "view": "logical",
+      "from": "postgres",
+      "to": "mcp-caller",
+      "signal": "disputed flag + verification_state on search/get_note results",
+      "guideword": "stale",
+      "condition": "disputed is derived live from open Dispute rows, so it correctly clears on a successful extraction, but a dead-lettered dispute raw (kg-dead-letter-unreachable) leaves its Dispute.state at 'open' forever with no other code path that ever updates it, so a caller relying on the flag to judge whether a fact is trustworthy sees it marked disputed indefinitely with no way to tell a stuck dispute from a live one",
+      "severity": "medium",
+      "hazards": [
+        "kg-dead-letter-unreachable"
+      ],
+      "evidence": "projects/monolith/knowledge/store.py:523"
     }
   ],
   "non_ucas": [
@@ -500,6 +579,22 @@
     {
       "item": "two replicas racing to claim the same pending message",
       "reason": "claim_pending_message_for_session_sync is a single atomic UPDATE ... WHERE claimed_by_replica IS NULL, so only one of two concurrent claimants can succeed (projects/monolith/agent_sessions/store.py:634)"
+    },
+    {
+      "item": "apply_extraction re-running on a raw that already extracted successfully",
+      "reason": "Guarded by an early replayed-check keyed on (raw_fk, gardener_version, non-failed provenance) that returns before writing any atom (projects/monolith/knowledge/extraction.py:326)"
+    },
+    {
+      "item": "the kg daily-cap deferral calling both finish_drainer_job and defer_drainer_job for the same one-shot job",
+      "reason": "complete_job's NULL next_run_at write for a one-shot row (interval_secs IS NULL) is immediately overwritten by defer_job's later write in the same call sequence, so the job still re-arms at +3600s despite the double write (projects/monolith/swarm/drainer.py:407)"
+    },
+    {
+      "item": "report_distress's Discord notification failing without the reporting agent knowing",
+      "reason": "notify() failure is caught and reflected honestly in the returned status (recorded vs notified), and the underlying enqueue reuses the durable at-least-once outbox row already covered by the existing outbox non_uca (projects/monolith/knowledge/mcp.py:446)"
+    },
+    {
+      "item": "Luna claiming verification_state=verified with no evidence array",
+      "reason": "apply_extraction force-downgrades to unverified server-side whenever assertion.evidence is empty, regardless of what the model claimed (projects/monolith/knowledge/extraction.py:364)"
     }
   ],
   "open_questions": [
@@ -512,7 +607,10 @@
     "The framework is now built, but strict per-domain schema isolation and the cross-domain contract are still conventions. Re-run this analysis when those controls become enforceable rather than merely compositional.",
     "The private chart enables HPA from 1 to 3 replicas; verify claim-lease behavior under real scale-out and termination, especially whether a terminating pod's in-flight claims are released promptly enough for the 30s lease to matter in practice.",
     "The public backend has a deliberate primary write path and public FaaS invocation path. Confirm production Cilium/EmberVM policy matches the chart claims: public_writer must remain limited to chat_public, and the public service account must remain identity-only with no Kubernetes RBAC.",
-    "When the scratch-Postgres feature is re-enabled (embervm side), should run_code's docstring be corrected to stop claiming zero network for python, or should the DSN injection move behind a separate, explicitly-network-capable tool so the isolation claim stays true for the tool most callers reach for?"
+    "When the scratch-Postgres feature is re-enabled (embervm side), should run_code's docstring be corrected to stop claiming zero network for python, or should the DSN injection move behind a separate, explicitly-network-capable tool so the isolation claim stays true for the tool most callers reach for?",
+    "#5568's claude-session/codex-session producers are not yet shipped, but EXTRACTABLE_SOURCES already accepts those source labels via the generic POST /api/knowledge/raws endpoint today; will that producer route through the same unredacted shared boundary, or call agent_sessions.redact.redact_text itself the way kg_feed.py does?",
+    "Should an enqueue_extraction failure inside ingest_raw_with_status roll back the whole raw write instead of being swallowed, now that no sweep exists anywhere to repair a missed enqueue?",
+    "Is there an intended path to make a KG-lane dead letter recoverable (re-create the routine_jobs row on replay, or align the ExtractionOutputInvalid retry policy with MAX_GARDENER_RETRIES), or is a stuck-open dispute meant to be resolved by hand in Postgres today?"
   ],
   "system_dir": "projects/monolith"
 }

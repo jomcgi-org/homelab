@@ -1,6 +1,6 @@
 # STPA Control Analysis: monolith
 
-_logic @ 248acd648 · security @ 34d4f1816_
+_logic @ ac81a1554 · security @ 34d4f1816_
 
 _Auto-generated STPA safety model: unsafe states this system can reach and control actions that get it there. Single or multiple lenses: logic (mission failure), security (deliberate attack), governance (data safety)._
 
@@ -30,6 +30,8 @@ flowchart TD
   subgraph control_plane["control_plane"]
     agent-runner["Agent session runner (claim-lease over all replicas)"]
     bot["Discord bot (leader singleton)"]
+    kg-drainer["DBOS-scheduled routine drainer (qwen-drain, kg-drain)"]
+    kg-feed["Leader-owned Ember session to knowledge raw exporter"]
     leader-elector["Leader elector"]
     outbox["Discord outbox drain"]
     scheduler-api["Scheduler read/trigger API"]
@@ -56,13 +58,17 @@ flowchart TD
   bot -- "agent.submit" --> agent-runner
   console-caller -- "console.submit" --> agent-runner
   docs-manifest-gen -- "docs.publish" --> public-frontend
+  kg-drainer -- "kg-drainer.dispatch" --> agent-runner
+  kg-feed -- "kg-feed.export" --> pg-primary
   leader-elector -- "leader.acquire" --> postgres
   bot -- "lock.reclaim" --> postgres
   mcp-caller -- "mcp.agent-session" --> agent-runner
   mcp-caller -- "mcp.authorize" --> principal-mw
   mcp-caller -- "mcp.chat-pardon" --> bot
+  mcp-caller -- "mcp.report-knowledge" --> pg-primary
   outbox -- "outbox.post" --> bot
   public-api -- "public.health" --> postgres
+  console-caller -- "raws.create" --> pg-primary
   mcp-caller -- "sandbox.run" --> sandbox-tool
   scheduler-api -- "scheduler.trigger" --> postgres
   mcp-caller -- "shotter.capture" --> shotter-tool
@@ -74,6 +80,7 @@ flowchart TD
   postgres -. "feature grant rows (30s cached)" .-> acl
   postgres -. "claimed_by_replica + claimed_at lease row" .-> agent-runner
   postgres -. "lease heartbeat freshness" .-> leader-elector
+  postgres -. "disputed flag + verification_state on search/get_note results" .-> mcp-caller
   postgres -. "observability topology/stats snapshots" .-> public-api
   public-frontend -. "SSR/API proxy" .-> public-api
   shotter-tool -. "stored URL + stored flag (_meta) for the captured PNG" .-> mcp-caller
@@ -128,13 +135,17 @@ flowchart TD
 | `frontend.proxy` | physical | Proxy SSR/API calls from the frontend to the public backend, in-cluster only | `frontend-ssr` → `public-binary` | built | projects/monolith-public/chart/templates/httproute-public.yaml:33 |
 | `grant.public-reader` | physical | Grant public_reader SELECT on a schema/view | `migrations` → `pg-replica` | built | projects/monolith/chart/migrations/20260617000000_public_reader_role.sql:24 |
 | `k8s.mutate` | physical | Mutate cluster state via private MCP (ArgoCD sync) | `private-binary` → `k8s-api` | built | projects/monolith/cluster/mcp.py:163 |
+| `kg-drainer.dispatch` | logical | Claim a kg-drain job, run Luna extraction, apply the result | `kg-drainer` → `agent-runner` | built | projects/monolith/swarm/drainer.py:404 |
+| `kg-feed.export` | logical | Export a finished Ember session as an ember-session raw | `kg-feed` → `pg-primary` | built | projects/monolith/agent_sessions/kg_feed.py:231 |
 | `leader.acquire` | logical | Acquire/renew/steal the singleton lease | `leader-elector` → `postgres` | built | projects/monolith/core/leadership.py:56 |
 | `lock.reclaim` | logical | Reclaim an expired message-processing lock | `bot` → `postgres` | built | projects/monolith/chat/leader.py:109 |
 | `mcp.agent-session` | logical | Start or drive an agent session via MCP | `mcp-caller` → `agent-runner` | built | projects/monolith/agent_sessions/mcp.py:660 |
 | `mcp.authorize` | logical | Verify the bearer token on every MCP message (stateless streamable HTTP) | `mcp-caller` → `principal-mw` | built | projects/monolith/framework/core.py:543 |
 | `mcp.chat-pardon` | logical | Reset a Discord user trust score via MCP | `mcp-caller` → `bot` | built | projects/monolith/agent/mcp.py:338 |
+| `mcp.report-knowledge` | logical | Agent-report/dispute/distress raw capture (report_knowledge, dispute_fact, report_distress) | `mcp-caller` → `pg-primary` | built | projects/monolith/knowledge/mcp.py:222 |
 | `outbox.post` | logical | Drain and post a queued Discord message/edit/reaction | `outbox` → `bot` | built | projects/monolith/chat/outbox.py:146 |
 | `public.health` | logical | Probe the public database as public_reader (SELECT 1) | `public-api` → `postgres` | built | projects/monolith/framework/core.py:322 |
+| `raws.create` | logical | Generic raw-input capture (POST /api/knowledge/raws) | `console-caller` → `pg-primary` | built | projects/monolith/knowledge/router.py:283 |
 | `route.public` | physical | Route the public hostname to the frontend SSR (no direct backend route) | `cf-ingress` → `frontend-ssr` | built | projects/monolith-public/chart/templates/httproute-public.yaml:13 |
 | `sandbox.run` | logical | Run short code in a per-language zero-egress guest | `mcp-caller` → `sandbox-tool` | built | projects/monolith/sandbox/mcp.py:14 |
 | `scheduler.trigger` | logical | Mark a job for immediate run | `scheduler-api` → `postgres` | built | projects/monolith/scheduler/service.py:35 |
@@ -152,7 +163,7 @@ flowchart TD
 <details>
 <summary>Maturity detail</summary>
 
-- **Built:** framework/core.py composition and profiles, separate private/public module registries, Postgres leader-lease singletons (Discord bot, AIS ingest, outbox drain, message-lock sweep), the agent_sessions claim-lease turn engine (atomic per-message claiming across all replicas plus a leader-owned stale-claim sweep) backing both the Discord bot and the private /agents console HTTP API, goosecracker recipe/repo catalog, chat feature ACL with 30s grant cache, public_reader/public_writer roles with schema/view confinement, public/private HTTPRoutes, Turnstile secret isolation, public chat admission/concurrency limits, public FaaS identity gate, observability snapshot rollup, the shotter MCP domain (URL/host validation, EmberVM task dispatch, best-effort SeaweedFS PNG storage with a random per-call Idempotency-Key), the sandbox MCP domain (run_code, six per-language EmberVM task workloads, zero-egress except an optional scratch-Postgres credential), the native /mcp mount on stateless streamable HTTP with PrincipalMiddleware authenticating every message via cached JWKS, and the docs/posts manifest generators that publish an exact allowlist of committed repository documents to the public site.
+- **Built:** framework/core.py composition and profiles, separate private/public module registries, Postgres leader-lease singletons (Discord bot, AIS ingest, outbox drain, message-lock sweep), the agent_sessions claim-lease turn engine (atomic per-message claiming across all replicas plus a leader-owned stale-claim sweep) backing both the Discord bot and the private /agents console HTTP API, goosecracker recipe/repo catalog, chat feature ACL with 30s grant cache, public_reader/public_writer roles with schema/view confinement, public/private HTTPRoutes, Turnstile secret isolation, public chat admission/concurrency limits, public FaaS identity gate, observability snapshot rollup, the shotter MCP domain (URL/host validation, EmberVM task dispatch, best-effort SeaweedFS PNG storage with a random per-call Idempotency-Key), the sandbox MCP domain (run_code, six per-language EmberVM task workloads, zero-egress except an optional scratch-Postgres credential), the native /mcp mount on stateless streamable HTTP with PrincipalMiddleware authenticating every message via cached JWKS, and the docs/posts manifest generators that publish an exact allowlist of committed repository documents to the public site. The factory knowledge-graph evidence lanes (#5527, ADR agents/063) add a shared raw-input write boundary (knowledge/ingest_queue.py ingest_raw_with_status) reached by the generic POST /api/knowledge/raws endpoint, three MCP tools (report_knowledge, dispute_fact, report_distress), and a leader-owned Ember-session exporter (agent_sessions/kg_feed.py), a daily-capped DBOS drainer (swarm/drainer.py) that runs Luna extraction in an EmberVM guest and writes atoms with server-side provenance (knowledge/extraction.py, knowledge/atoms.py), and a live disputed/verification_state signal on search results (knowledge/store.py).
 - **Designed-only:** Strict per-domain database isolation and the ADR 010 cross-domain contract remain architectural goals; the Module/build_app framework itself is built. ADR 059 (Draft) proposes removing Context Forge entirely as the MCP entry point and serving /mcp directly behind Cloudflare; only the first, independently-sequenced slice (the stateless-HTTP transport switch) has landed, Context Forge is still deployed and still in the request path. The Context Forge tool-visibility reconcile pass (#4569) that would scope which principal may call which tool is designed, not built, so per-tool authorization beyond bearer-token authentication does not exist for any MCP tool yet.
 </details>
 
@@ -173,6 +184,8 @@ flowchart TD
 |----|----|----|----|----|
 | `duplicate-agent-run` | logical | An agent turn runs twice: a stale-claim sweep reclaims a lease still held by an actively-executing replica, or a manual resubmission overlaps a guest-side invoke the monolith timed out on without confirming it stopped | L.integrity-loss | built |
 | `header-authz-drift` | physical | X-Auth-Email is forwarded by several allowlisted in-cluster senders (gateway, MCP gateway, Argo job pods, the WhatsApp gateway, the EmberVM progress-ingest sidecar) that do not all cryptographically bind the claim to a verified caller; today it is read only for attribution (agent_sessions triggered_by), but nothing stops a future authorization decision from keying on it without also verifying the caller's JWT | L.unauthorized-access | built |
+| `kg-dead-letter-unreachable` | logical | A raw dead-lettered on its first malformed-output failure stops at retry_count=1 and its routine_jobs row is deleted immediately, but /api/knowledge/dead-letter and its replay action both require retry_count >= MAX_GARDENER_RETRIES (3), and even a successful replay only deletes the failed provenance row without re-creating the deleted job, so no operator path re-queues a KG-lane dead letter; a disputed note stuck in this state stays marked disputed indefinitely, since Dispute.state only ever leaves 'open' inside a successful apply_extraction | L.silent-incorrectness, L.provenance-loss | built |
+| `kg-enqueue-swallowed` | logical | ingest_raw_with_status catches any exception from enqueue_extraction and continues, citing a repair sweep that does not exist anywhere in the codebase; for the ember-session feed this combines with an unconditional watermark advance, so the affected turn range is never re-offered for extraction and no health signal distinguishes the raw from one that was never meant to be extracted | L.silent-incorrectness, L.provenance-loss | built |
 | `over-broad-public-grant` | physical | public_reader is granted on a schema or view that includes non-public rows | L.unauthorized-access, L.secret-exposure | built |
 | `phantom-stored-artifact` | logical | A caller treats the returned content-addressed URL as a durable reference when the SeaweedFS write actually failed, because the URL is computed from the content hash before the upload is attempted and is returned either way | L.silent-incorrectness | built |
 | `private-capture-retained` | physical | A captured screenshot, including of the private tier, is written to SeaweedFS with no expiry policy and persists indefinitely at a stable content-addressed URL after the request that produced it | L.unauthorized-access | built |
@@ -187,6 +200,7 @@ flowchart TD
 | `stale-sandbox-result` | logical | A caller re-invoking run_code with the same code but different input files receives a cached result computed against a prior submission's files instead of a fresh run | L.silent-incorrectness | built |
 | `unbounded-capture-queueing` | logical | No rate limit gates shotter.capture or sandbox.run, so a caller can queue captures/runs faster than the workload's own cap admits, consuming brick memMib capacity shared with other task-class workloads | L.liveness-loss | built |
 | `unredacted-public-doc` | logical | The docs/posts manifest generators copy an allowlisted document's full body into the public site verbatim, gating only on which path may be published, never on what the content contains, so an internal-only identifier (a cluster-internal hostname, a secret env var name) left in a published project's README/ARCHITECTURE/STPA reaches the public docs route | L.secret-exposure | built |
+| `unredacted-transcript-raw` | logical | The only redaction pass (agent_sessions.redact.redact_text) runs inside the ember-session feed's own renderer; the shared ingest_raw_with_status boundary every EXTRACTABLE_SOURCES producer funnels through, including the generic POST /api/knowledge/raws endpoint and the not-yet-shipped claude-session/codex-session producers (#5568), applies no redaction of its own, so content posted under one of those source labels is extracted into durable, searchable graph facts verbatim | L.secret-exposure | built |
 | `unrestricted-tool-visibility` | logical | PrincipalMiddleware authenticates every MCP message (a valid authentik bearer token is required), but no monolith tool authorizes on the resulting Principal: the Context Forge tool-visibility reconcile pass that would scope who may call a given tool is still designed, not built (#4569), so any authenticated caller, not only ones entitled to the private tier, can invoke shotter.capture, sandbox.run, or k8s_sync_argocd_app | L.unauthorized-access | built |
 | `wedged-turn` | logical | A queued agent turn never progresses because no replica ever holds leadership to run the stale-claim sweep, and the replica that would have executed it directly crashed or restarted before claiming it | L.liveness-loss | built |
 
@@ -199,7 +213,10 @@ flowchart TD
 | `docs.publish.providing` | logical | `docs.publish` | providing | The generator's only gate is an exact repo-path allowlist; it checks documents for certain markers (in-cluster hostnames, 1Password refs, private IPs, node/brick names, S3 URIs, .internal domains, secret env assignments) but internal identifiers not matching these patterns pass through unreviewed | medium | unredacted-public-doc | projects/monolith/knowledge/tools/gen_docs_manifest.py:128 |
 | `grant.public-reader.providing` | physical | `grant.public-reader` | providing | A grant on ALL TABLES or a view lacking the visibility filter exposes private rows to the anonymous tier | high | over-broad-public-grant | projects/monolith/chart/migrations/20260617000000_public_reader_role.sql:24 |
 | `k8s.mutate.providing` | physical | `k8s.mutate` | providing | An MCP caller with a valid bearer token issues an ArgoCD sync or resource mutation with no additional per-tool authorization of which Principal may trigger it; the delegation seam (#4940) exists but this tool does not consume it | medium | unrestricted-tool-visibility, secret-in-wrong-tier | projects/monolith/cluster/mcp.py:163 |
+| `kg-drainer.dispatch.not-providing` | logical | `kg-drainer.dispatch` | not-providing | ExtractionOutputInvalid (malformed LLM JSON, the same shape a truncated turn produces) is caught separately from generic exceptions and dead-letters the job after exactly one attempt, while every other failure gets up to MAX_GARDENER_RETRIES bounded retries first; a transient LLM formatting miss on a dispute or report never gets the retry a comparable infra hiccup would, and the resulting dead letter is unrecoverable per kg-dead-letter-unreachable | medium | kg-dead-letter-unreachable | projects/monolith/swarm/drainer.py:483 |
+| `kg-feed.export.not-providing` | logical | `kg-feed.export` | not-providing | enqueue_extraction can silently fail inside ingest_raw_with_status (swallowed, citing a nonexistent repair sweep) for a raw that ingest still reports as created; feed_once then unconditionally advances kg_extracted_turn_seq past that turn range regardless of enqueue outcome, so the extraction job for those turns is never registered and never re-offered | high | kg-enqueue-swallowed | projects/monolith/agent_sessions/kg_feed.py:258 |
 | `lock.reclaim.wrong-timing` | logical | `lock.reclaim` | wrong-timing | A slow handler still processing past the 30s TTL is reclaimed and the message is reprocessed concurrently | medium | duplicate-agent-run | projects/monolith/chat/leader.py:109 |
+| `raws.create.providing` | logical | `raws.create` | providing | The endpoint accepts up to 2 MiB of content under any EXTRACTABLE_SOURCES source label (e.g. ember-session, claude-session) with no redaction step of its own, so unredacted transcript content posted under one of those labels is enqueued for extraction and, once extracted, indexed as durable private-visibility knowledge notes indistinguishable from a properly-redacted one | high | unredacted-transcript-raw | projects/monolith/knowledge/router.py:283 |
 | `route.public.providing` | physical | `route.public` | providing | A public HTTPRoute sends an unapproved backend path to the internet, or the frontend SSR proxy exposes a private-only route | high | public-route-exposes-private-path | projects/monolith-public/chart/templates/httproute-public.yaml:20 |
 | `sandbox.run.providing` | logical | `sandbox.run` | providing | When the scratch-Postgres feature is enabled, run_code's own docstring still advertises 'there is no network at all' for every language while the Python path silently gains a credentialed connection string to an in-cluster datastore, so a caller relies on an isolation guarantee the tool does not actually provide for that one language | medium | sandbox-credential-egress | projects/monolith/sandbox/client.py:40 |
 | `secret.deliver-public.providing` | physical | `secret.deliver-public` | providing | A private credential, Kubernetes API-capable token, or Turnstile secret is wired into the public frontend or public backend beyond its explicitly constrained use | high | secret-in-wrong-tier | projects/monolith/public_turnstile_secret_isolation_test.py:76 |
@@ -214,6 +231,7 @@ flowchart TD
 | ID | View | Channel | Guideword | Unsafe condition | Severity | → Hazards | Evidence |
 |----|----|----|----|----|----|----|----|
 | `claim-lease.stale` | logical | `postgres` → `agent-runner`: claimed_by_replica + claimed_at lease row | stale | A pod's own clock running ahead of the database's is the dangerous skew direction named in the reclaim function's own docstring: it sees a live claim as older than it is and reclaims a turn that is still being actively executed by its true owner. NTP keeps this far inside the 30s lease in practice, but the failure is explicitly documented as silent | medium | duplicate-agent-run | projects/monolith/agent_sessions/store.py:794 |
+| `disputed-flag.stale` | logical | `postgres` → `mcp-caller`: disputed flag + verification_state on search/get_note results | stale | disputed is derived live from open Dispute rows, so it correctly clears on a successful extraction, but a dead-lettered dispute raw (kg-dead-letter-unreachable) leaves its Dispute.state at 'open' forever with no other code path that ever updates it, so a caller relying on the flag to judge whether a fact is trustworthy sees it marked disputed indefinitely with no way to tell a stuck dispute from a live one | medium | kg-dead-letter-unreachable | projects/monolith/knowledge/store.py:523 |
 | `grants-cache.stale` | logical | `postgres` → `acl`: feature grant rows for guild+subject+scope | stale | A revoked or newly added grant is not seen for up to the 30s cache TTL, so the ACL authorizes on old policy | medium | stale-authz | projects/monolith/chat/acl.py:59 |
 | `lease-heartbeat.stale` | logical | `postgres` → `leader-elector`: leader_lease.heartbeat_at freshness | stale | A leader whose event loop stalls past the 5s TTL (e.g. a sync Session call in async) is stolen from while still holding live singletons, so two replicas run them | high | split-brain-singletons | projects/monolith/core/leadership.py:31 |
 | `obs-snapshot.stale` | logical | `postgres` → `public-api`: observability topology/stats snapshot rows | stale | If the Argo rollup stops, the public stats endpoint can serve an old snapshot without an age field or freshness error | medium | stale-public-snapshot | projects/monolith/home/observability/router.py:24 |
@@ -223,28 +241,35 @@ flowchart TD
 | `triggered-by-header.unauthorized-source` | physical | `cf-ingress` → `agent-runner`: X-Auth-Email identity header | unauthorized-source | The header is forwarded by several allowlisted in-cluster senders behind a default-deny ingress NetworkPolicy, but the policy narrows WHO can reach the pod, not whether the value each of those senders sends is itself verified; the only current consumer records it as attribution with no authorization decision resting on it, so the gap is dormant rather than exploitable today, but nothing in the code enforces that boundary if a future authorization check starts keying on the header directly instead of verifying the underlying JWT | low | header-authz-drift | projects/monolith/agent_sessions/router.py:546 |
 
 <details>
-<summary><b>Not UCAs</b>: 10 examined and rejected</summary>
+<summary><b>Not UCAs</b>: 14 examined and rejected</summary>
 
+- **Luna claiming verification_state=verified with no evidence array**: apply_extraction force-downgrades to unverified server-side whenever assertion.evidence is empty, regardless of what the model claimed (projects/monolith/knowledge/extraction.py:364)
 - **a rendered public doc linking out to a non-public repository document**: buildPathIndex only maps allowlisted manifest paths to slugs; a link to anything else is stripped to plain text rather than left live (projects/monolith/frontend/src/lib/server/docs.js:9)
 - **a repeat POST of the same shotter.capture request colliding across two unrelated captures**: Fixed: the Idempotency-Key is now a random per-call nonce, so it only buys transport-retry safety within one call and cannot collapse two distinct captures of the same URL onto one cached result (projects/monolith/shotter/client.py:82)
 - **a repo doc outside the seven PUBLIC_PROJECTS directories reaching the docs manifest**: The generator indexes only exact path matches built from a fixed PUBLIC_PROJECTS x DOC_KINDS product, not a directory walk, so nothing else in the repo, including ADRs and nested READMEs, is reachable through this generator regardless of what git ls-files returns (projects/monolith/knowledge/tools/gen_docs_manifest.py:49)
 - **a single missed leadership heartbeat**: Bounded by 2s renew inside the 5s TTL, and any error resolves to follower fail-safe (projects/monolith/core/leadership.py:29)
 - **an ungated docs/posts draft (no public key, or public: false) reaching the public site**: Fails closed: _declared_public_value returns None for an ungated file and it is skipped, and a strict literal-match check on the public key raises rather than guessing (projects/monolith/knowledge/tools/gen_posts_manifest.py:64)
+- **apply_extraction re-running on a raw that already extracted successfully**: Guarded by an early replayed-check keyed on (raw_fk, gardener_version, non-failed provenance) that returns before writing any atom (projects/monolith/knowledge/extraction.py:326)
 - **outbox at-least-once duplicate on crash between post and mark**: Bounded and mostly idempotent: reactions/edits resolve missing targets, a duplicate notify is a rare nuisance (projects/monolith/chat/outbox.py:135)
 - **public_reader denied on a private schema**: Not a hazard but the enforced control: DB permission denies the read; asserted by projects/monolith/public_reader_grants_test.py:44
+- **report_distress's Discord notification failing without the reporting agent knowing**: notify() failure is caught and reflected honestly in the returned status (recorded vs notified), and the underlying enqueue reuses the durable at-least-once outbox row already covered by the existing outbox non_uca (projects/monolith/knowledge/mcp.py:446)
 - **scheduler.trigger marks a job that never dispatches**: Inert, not unsafe for currently Argo-owned jobs: ARGO_JOBS prevents duplicate in-process registration and active CronWorkflows own execution (projects/monolith/scheduler/api.py:23)
 - **shotter.capture exceeding its render budget**: Bounded by the nested timeout chain (Context Forge 60s > client read 55s > workload 50s > guest handler 45s > CDP navigate), converted into a ToolTimeout rather than an indefinite hold (projects/monolith/shotter/client.py:96)
+- **the kg daily-cap deferral calling both finish_drainer_job and defer_drainer_job for the same one-shot job**: complete_job's NULL next_run_at write for a one-shot row (interval_secs IS NULL) is immediately overwritten by defer_job's later write in the same call sequence, so the job still re-arms at +3600s despite the double write (projects/monolith/swarm/drainer.py:407)
 - **two replicas racing to claim the same pending message**: claim_pending_message_for_session_sync is a single atomic UPDATE ... WHERE claimed_by_replica IS NULL, so only one of two concurrent claimants can succeed (projects/monolith/agent_sessions/store.py:634)
 </details>
 
 ### Open questions
 
+- #5568's claude-session/codex-session producers are not yet shipped, but EXTRACTABLE_SOURCES already accepts those source labels via the generic POST /api/knowledge/raws endpoint today; will that producer route through the same unredacted shared boundary, or call agent_sessions.redact.redact_text itself the way kg_feed.py does?
 - ADR 059 is still Draft: does the full Context Forge removal change anything about the ingestion allowlist in cilium-ingress-policy.yaml (the mcp entry), or does the direct-mount path simply add a second ingress source alongside it?
 - Does any workload other than shotter and the six sandbox languages share the same EmberVM Idempotency-Key-from-request-parameters pattern, and if so does its key cover every parameter that affects the result?
 - In production, can a chat message handler (LLM summarizer) exceed the 30s message-lock TTL under load and trip lock.reclaim.wrong-timing, or is processing reliably shorter?
 - Is the X-Auth-Email header ever going to gate an authorization decision, or does #4940's delegation model deliberately avoid keying on inbound headers at all? If the latter, header-authz-drift can be downgraded once that is documented somewhere durable.
 - Is the shotter SeaweedFS bucket's read path gated the way artifact's is (proxied through a monolith-mediated read), or does anything with in-cluster network reach get an anonymous GET against the S3 endpoint once it has or guesses a content hash?
+- Is there an intended path to make a KG-lane dead letter recoverable (re-create the routine_jobs row on replay, or align the ExtractionOutputInvalid retry policy with MAX_GARDENER_RETRIES), or is a stuck-open dispute meant to be resolved by hand in Postgres today?
 - Now that PrincipalMiddleware authenticates every MCP message, when does #4569's tool-visibility reconcile pass land, and will it gate shotter.capture, sandbox.run, and k8s_sync_argocd_app by Principal scope, or only by the coarser tool-granular ACL ADR 059 compares Context Forge against?
+- Should an enqueue_extraction failure inside ingest_raw_with_status roll back the whole raw write instead of being swallowed, now that no sweep exists anywhere to repair a missed enqueue?
 - The framework is now built, but strict per-domain schema isolation and the cross-domain contract are still conventions. Re-run this analysis when those controls become enforceable rather than merely compositional.
 - The private chart enables HPA from 1 to 3 replicas; verify claim-lease behavior under real scale-out and termination, especially whether a terminating pod's in-flight claims are released promptly enough for the 30s lease to matter in practice.
 - The public backend has a deliberate primary write path and public FaaS invocation path. Confirm production Cilium/EmberVM policy matches the chart claims: public_writer must remain limited to chat_public, and the public service account must remain identity-only with no Kubernetes RBAC.
