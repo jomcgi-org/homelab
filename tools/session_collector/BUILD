@@ -132,4 +132,11 @@ py_venv_binary(
     srcs = ["__main__.py"],
     main = "__main__.py",
     visibility = ["//:__subpackages__"],
+    deps = [":session_collector"],
+)
+
+semgrep_target_test(
+    name = "session_collector_bin_semgrep_test",
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    target = ":session_collector_bin",
 )
