@@ -20,9 +20,10 @@ spec:
       # This pin is a deliberate bootstrap floor. Write-back does NOT maintain gke-apps pins.
       # Verify a fresh pin by pulling the tag and grepping the change: the registry
       # has served STALE pre-gate content under a fresh-looking tag before (#5507).
-      # 0.54.4 verified by pulling the chart: control image built from ce8af8add,
-      # the merge of #5542, which makes anchor-loss recovery reachable again.
-      targetRevision: 0.55.1
+      # 0.55.4 verified by pulling the chart (digest 10a7ca50, matching the deploy
+      # log's push): carries the meta-spark egress credential template, closing the
+      # values-ahead-of-chart gap opened when the muse spark values landed at HEAD.
+      targetRevision: 0.55.4
       helm:
         releaseName: embervm
         valueFiles:
