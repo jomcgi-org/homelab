@@ -51,6 +51,9 @@ router = APIRouter(prefix="/api/agents", tags=["agents"])
 _DEFAULT_BRANCH_CACHE: dict[str, tuple[float, str | None]] = {}
 _REPO_CACHE_TTL = 300.0
 _REPO_CACHE_FAILURE_TTL = 30.0
+_BRANCH_LIST_CACHE: dict[str, tuple[float, dict | None, str | None]] = {}
+_BRANCH_LIST_CACHE_TTL = 60.0
+_BRANCH_LIST_CACHE_FAILURE_TTL = 10.0
 _PREWARM_TTL = 10.0
 _prewarm_timestamps: dict[int, float] = {}
 
@@ -726,6 +729,84 @@ def get_session_detail(
 async def start_session(request: Request, start_request: StartRequest) -> dict:
     triggered_by = request.headers.get("x-auth-email")
     triggered_by = triggered_by.strip().lower() or None if triggered_by else None
+    return await _start_session(start_request, triggered_by)
+
+
+def _persist_task_session_start(
+    task_id: str,
+    start_request: StartRequest,
+    selected_model: str,
+    triggered_by: str | None,
+) -> tuple[int, int]:
+    """Create or recover the deterministic session for one launcher task."""
+    from core.db import get_engine
+    from sqlalchemy.exc import IntegrityError
+
+    local_session_id = f"swarm-task:{task_id}"
+    with Session(get_engine()) as db_session:
+        row = store.get_session_by_local_id(db_session, local_session_id)
+        if row is None:
+            try:
+                row = store.create_session(
+                    db_session,
+                    local_session_id,
+                    start_request.workspace,
+                    start_request.branch,
+                    selected_model,
+                    start_request.repo,
+                    system_prompt=_append_rationale_trailer(None, start_request.repo),
+                    reasoning=_resolve_reasoning(start_request),
+                    triggered_by=triggered_by,
+                )
+            except IntegrityError:
+                db_session.rollback()
+                row = store.get_session_by_local_id(db_session, local_session_id)
+                if row is None:
+                    raise
+        row = db_session.exec(
+            select(AgentSession)
+            .where(AgentSession.local_session_id == local_session_id)
+            .with_for_update()
+        ).one()
+        pending = db_session.exec(
+            select(PendingMessage)
+            .where(PendingMessage.session_id == row.id)
+            .order_by(PendingMessage.seq)
+        ).first()
+        if pending is not None:
+            return row.id, pending.seq
+        completed = db_session.exec(
+            select(AgentTurn)
+            .where(AgentTurn.session_id == row.id)
+            .order_by(AgentTurn.seq)
+        ).first()
+        if completed is not None:
+            return row.id, completed.seq
+        message = store.create_pending_message(
+            db_session, row.id, start_request.prompt, selected_model
+        )
+        return row.id, message.seq
+
+
+async def start_session_for_task(
+    triggered_by: str | None,
+    task_id: str,
+    start_request: StartRequest,
+) -> dict:
+    """Start the UI session for a persisted swarm task idempotently."""
+    return await _start_session(
+        start_request,
+        triggered_by,
+        task_id=task_id,
+    )
+
+
+async def _start_session(
+    start_request: StartRequest,
+    triggered_by: str | None,
+    *,
+    task_id: str | None = None,
+) -> dict:
     if start_request.repo is not None and start_request.repo not in REPO_CATALOG:
         return {
             "accepted": False,
@@ -738,34 +819,44 @@ async def start_session(request: Request, start_request: StartRequest) -> dict:
         model_family(selected_model)
     except ValueError as exc:
         return {"accepted": False, "error": str(exc)}
-    row = await asyncio.to_thread(
-        _persist_session,
-        str(uuid4()),
-        start_request.workspace,
-        start_request.branch,
-        selected_model,
-        start_request.repo,
-        system_prompt=_append_rationale_trailer(None, start_request.repo),
-        reasoning=_resolve_reasoning(start_request),
-        triggered_by=triggered_by,
-    )
-    turn = await asyncio.to_thread(
-        _persist_pending_message, row.id, start_request.prompt, selected_model
-    )
+    if task_id is None:
+        row = await asyncio.to_thread(
+            _persist_session,
+            str(uuid4()),
+            start_request.workspace,
+            start_request.branch,
+            selected_model,
+            start_request.repo,
+            system_prompt=_append_rationale_trailer(None, start_request.repo),
+            reasoning=_resolve_reasoning(start_request),
+            triggered_by=triggered_by,
+        )
+        session_id = row.id
+        turn = await asyncio.to_thread(
+            _persist_pending_message, session_id, start_request.prompt, selected_model
+        )
+    else:
+        session_id, turn = await asyncio.to_thread(
+            _persist_task_session_start,
+            task_id,
+            start_request,
+            selected_model,
+            triggered_by,
+        )
     # Queued from the UI, so its result does not get echoed to Discord.
-    _mark_ui_originated(row.id, turn)
+    _mark_ui_originated(session_id, turn)
     login = await codex_login_gate(selected_model)
     if login is not None:
-        await asyncio.to_thread(_set_session_status, row.id, "awaiting_login")
+        await asyncio.to_thread(_set_session_status, session_id, "awaiting_login")
 
         async def resume() -> None:
-            await asyncio.to_thread(_set_session_status, row.id, "running")
-            _schedule_next_message(row.id)
+            await asyncio.to_thread(_set_session_status, session_id, "running")
+            _schedule_next_message(session_id)
 
         watch_for_login(login.get("grant", "codex-cluster"), resume)
-        return {"accepted": False, **login, "session_id": row.id, "turn": turn}
-    _schedule_next_message(row.id)
-    return {"accepted": True, "session_id": row.id, "turn": turn}
+        return {"accepted": False, **login, "session_id": session_id, "turn": turn}
+    _schedule_next_message(session_id)
+    return {"accepted": True, "session_id": session_id, "turn": turn}
 
 
 async def _github_get(url: str) -> httpx.Response:
@@ -831,6 +922,13 @@ async def list_repo_branches(owner: str, repo: str) -> dict:
             status_code=503,
             detail="GITHUB_API_TOKEN is not set",
         )
+    cached = _BRANCH_LIST_CACHE.get(repo_id)
+    now = time.monotonic()
+    if cached is not None and cached[0] > now:
+        if cached[2] is not None:
+            raise HTTPException(status_code=502, detail=cached[2])
+        assert cached[1] is not None
+        return cached[1]
     try:
         repo_response = await _github_get(f"https://api.github.com/repos/{repo_id}")
         default_branch = repo_response.json().get("default_branch")
@@ -854,12 +952,26 @@ async def list_repo_branches(owner: str, repo: str) -> dict:
             if not next_link:
                 break
             branches_url = next_link["url"]
-    except (httpx.HTTPError, ValueError, TypeError) as exc:
-        raise HTTPException(
-            status_code=502, detail=f"GitHub API request failed: {exc}"
-        ) from exc
+    except (httpx.HTTPError, ValueError, TypeError, HTTPException) as exc:
+        detail = (
+            str(exc.detail)
+            if isinstance(exc, HTTPException)
+            else f"GitHub API request failed: {exc}"
+        )
+        _BRANCH_LIST_CACHE[repo_id] = (
+            time.monotonic() + _BRANCH_LIST_CACHE_FAILURE_TTL,
+            None,
+            detail,
+        )
+        raise HTTPException(status_code=502, detail=detail) from exc
     branches.sort(key=lambda branch: (branch["name"] != default_branch, branch["name"]))
-    return {"branches": branches, "default_branch": default_branch}
+    result = {"branches": branches, "default_branch": default_branch}
+    _BRANCH_LIST_CACHE[repo_id] = (
+        time.monotonic() + _BRANCH_LIST_CACHE_TTL,
+        result,
+        None,
+    )
+    return result
 
 
 @router.post("/sessions/{session_id}/messages")

@@ -60,6 +60,11 @@
   } from "./session-view.js";
   import { periodForHour } from "$lib/private/period.js";
   import { modelEntries, modelLabel, modelName } from "./model-list.js";
+  import {
+    advanceStartPoll,
+    initialStartPoll,
+    startPollDelay,
+  } from "./start-poll.js";
 
   const MOBILE_MEDIA_QUERY = "(max-width: 760px)";
   const VOICE_POLL_MS = 2000;
@@ -88,18 +93,22 @@
 
   const selectedId = $derived($page.url.searchParams.get("session"));
   const selectedRunId = $derived($page.url.searchParams.get("run"));
+  const startingTaskId = $derived($page.url.searchParams.get("starting"));
   const voiceMode = $derived($page.url.searchParams.get("mode") === "voice");
   const mobileTranscript = $derived(
     isMobileViewport() &&
-      (voiceMode || selectedId != null || selectedRunId != null),
+      (voiceMode ||
+        selectedId != null ||
+        selectedRunId != null ||
+        startingTaskId != null),
   );
   let manualRail = $state(null);
   const voiceFold = $derived(voiceMode);
   let searchOpensRail = $state(false);
   // True only after /agents/runs has succeeded at least once. A deep-link
-  // (session or run query param) starts folded because the user is already
-  // looking at their target; the rail resolves after the first poll based on
-  // inbox activity.
+  // (session, run, or starting task query param) starts folded because the
+  // user is already looking at their target; the rail resolves after the
+  // first poll based on inbox activity.
   let runsLoaded = $state(Boolean(fixture));
   if (typeof window !== "undefined") {
     try {
@@ -146,6 +155,8 @@
   let creating = $state(false);
   let needsInputState = $state(false);
   let pendingTaskId = $state(null);
+  let pendingStart = $state(null);
+  let startPollGeneration = 0;
   let showNewPanel = $state(false);
   let newButtonEl = $state(null);
   let newPromptEl = $state(null);
@@ -560,10 +571,24 @@
   // noScroll keeps the transcript where it was, keepFocus is load-bearing
   // for the mobile drill below, which hand-manages focus after selection.
   function navigateTo(search) {
-    goto(withSearch($page.url.pathname, search), {
+    return goto(withSearch($page.url.pathname, search), {
       noScroll: true,
       keepFocus: true,
     });
+  }
+
+  function startingTransition(value, taskId) {
+    const search = new URLSearchParams(value);
+    search.delete("session");
+    search.delete("run");
+    search.set("starting", String(taskId));
+    return search;
+  }
+
+  function clearStarting(value) {
+    const search = new URLSearchParams(value);
+    search.delete("starting");
+    return search;
   }
 
   function openVoiceMode() {
@@ -593,7 +618,7 @@
   function selectRun(runOrId) {
     const id = typeof runOrId === "object" ? runOrId?.workflow_id : runOrId;
     if (id == null) return;
-    navigateTo(runSearchTransition($page.url.searchParams, id));
+    navigateTo(runSearchTransition(clearStarting($page.url.searchParams), id));
   }
 
   function selectRuns() {
@@ -686,14 +711,19 @@
   function selectSession(sessionOrId) {
     const id = typeof sessionOrId === "object" ? sessionOrId?.id : sessionOrId;
     if (id == null) return;
-    navigateTo(sessionTransition($page.url.searchParams, id));
+    navigateTo(sessionTransition(clearStarting($page.url.searchParams), id));
   }
 
   // An inbox session is standalone: drop any selected run so the crumbs do
   // not claim it belongs to that run. RunView's callback keeps selectSession.
   function selectInboxSession(id) {
     if (id == null) return;
-    navigateTo(sessionTransition(clearSelection($page.url.searchParams), id));
+    navigateTo(
+      sessionTransition(
+        clearSelection(clearStarting($page.url.searchParams)),
+        id,
+      ),
+    );
   }
 
   function isMobileViewport() {
@@ -705,7 +735,11 @@
 
   function returnToSessionList() {
     focusSessionId = selectedId;
-    navigateTo(clearSelection($page.url.searchParams));
+    if (startingTaskId) {
+      startPollGeneration += 1;
+      pendingStart = null;
+    }
+    navigateTo(clearSelection(clearStarting($page.url.searchParams)));
   }
 
   function returnToRun() {
@@ -967,6 +1001,85 @@
     }
   }
 
+  function restoreStartComposer(start) {
+    if (!start?.composed) return;
+    newSession = { ...start.composed.session };
+    showNewPanel = start.composed.showNewPanel;
+    if (newSession.repo) loadBranches(newSession.repo);
+  }
+
+  async function applyStartResult(result, start) {
+    if (result.kind === "run" && (result.run_id || result.workflow_id)) {
+      pendingStart = null;
+      selectRun(result.run_id || result.workflow_id);
+      return;
+    }
+    if (result.kind === "session" && result.session_id) {
+      pendingStart = null;
+      if (result.login_required) {
+        codexLoginHint = {
+          sessionId: result.session_id,
+          verificationUrl: result.verification_url ?? null,
+          userCode: result.user_code ?? null,
+          grant: result.grant ?? null,
+        };
+        await loadSessions();
+      }
+      selectSession(result.session_id);
+      if (result.login_required) {
+        errorMessage = result.login_message || P.labels.codexLoginRequired;
+      }
+      return;
+    }
+
+    restoreStartComposer(start);
+    navigateTo(clearSelection(clearStarting($page.url.searchParams)));
+    pendingStart = null;
+    if (result.kind === "needs_input" && result.needs_input) {
+      needsInputState = true;
+      pendingTaskId = start.taskId;
+      showNewPanel = true;
+      await tick();
+      repoControlEl?.focus({ preventScroll: true });
+      return;
+    }
+    errorMessage =
+      result.message ||
+      (result.kind === "refused"
+        ? "This task was refused"
+        : P.labels.taskCreateFailed);
+  }
+
+  async function pollTaskStart(start, generation) {
+    let state = start;
+    while (generation === startPollGeneration && !state.terminal) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, startPollDelay(state.polls)),
+      );
+      if (generation !== startPollGeneration) return;
+      let result;
+      try {
+        const response = await fetch(
+          `/api/swarm/tasks/${encodeURIComponent(state.taskId)}/start-status`,
+        );
+        result = await response.json();
+        if (!response.ok) {
+          result = {
+            kind: "error",
+            message: result.detail || P.labels.taskCreateFailed,
+          };
+        }
+      } catch {
+        result = { kind: "classifying" };
+      }
+      state = advanceStartPoll(state, result);
+      pendingStart = state;
+    }
+    if (generation === startPollGeneration && state.terminal) {
+      await applyStartResult(state.result, state);
+    }
+  }
+
   async function decideVoiceRun({ workflowId, nodeKey, decision, note = "" }) {
     errorMessage = null;
     try {
@@ -1005,6 +1118,10 @@
     creating = true;
     errorMessage = null;
     try {
+      const composed = {
+        session: { ...$state.snapshot(newSession) },
+        showNewPanel,
+      };
       const requestBody = {
         task: newSession.prompt.trim(),
         ...(pendingTaskId ? { task_id: pendingTaskId } : {}),
@@ -1020,13 +1137,20 @@
       const body = await response.json();
       if (!response.ok)
         throw new Error(body.detail || P.labels.taskCreateFailed);
-      if (body.kind === "needs_input" && body.needs_input) {
-        needsInputState = true;
-        pendingTaskId = body.task_id;
+      if (body.kind === "classifying") {
+        const state = initialStartPoll(body.task_id, composed);
+        pendingStart = state;
+        startPollGeneration += 1;
+        showNewPanel = false;
+        newSession = { prompt: "", model: "", repo: "", branch: "" };
+        branches = [];
+        needsInputState = false;
+        pendingTaskId = null;
+        await navigateTo(
+          startingTransition($page.url.searchParams, body.task_id),
+        );
         creating = false;
-        if (!showNewPanel) showNewPanel = true;
-        await tick();
-        repoControlEl?.focus({ preventScroll: true });
+        pollTaskStart(state, startPollGeneration);
         return;
       }
       if (showNewPanel) closeNewPanel();
@@ -1034,22 +1158,7 @@
       branches = [];
       needsInputState = false;
       pendingTaskId = null;
-      if (body.kind === "run" && body.workflow_id) selectRun(body.workflow_id);
-      else if (body.session_id) {
-        if (body.login_required) {
-          codexLoginHint = {
-            sessionId: body.session_id,
-            verificationUrl: body.verification_url ?? null,
-            userCode: body.user_code ?? null,
-            grant: body.grant ?? null,
-          };
-          await loadSessions();
-        }
-        selectSession(body.session_id);
-        if (body.login_required) {
-          errorMessage = body.login_message || P.labels.codexLoginRequired;
-        }
-      }
+      await applyStartResult(body, { taskId: body.task_id, composed });
       // Released only after navigation, not before it. Clearing this on the
       // line after the fetch resolved re-enabled the button while the panel
       // was still on screen, which is a wide enough window on a phone to
@@ -1098,11 +1207,18 @@
 
   onMount(() => {
     loadDrainLane();
+    if (startingTaskId) {
+      const state = initialStartPoll(startingTaskId);
+      pendingStart = state;
+      startPollGeneration += 1;
+      pollTaskStart(state, startPollGeneration);
+    }
     loadRuns().then(() => {
       if (
         fixture ||
         $page.url.searchParams.has("run") ||
         $page.url.searchParams.has("session") ||
+        $page.url.searchParams.has("starting") ||
         $page.url.searchParams.get("mode") === "voice"
       ) {
         return;
@@ -1129,6 +1245,7 @@
       MOBILE_MEDIA_QUERY,
     );
     return () => {
+      startPollGeneration += 1;
       teardownViewport();
     };
   });
@@ -1244,7 +1361,7 @@
   $effect(() => {
     if (
       !fixture &&
-      ((!selectedId && !selectedRunId) || showNewPanel) &&
+      ((!selectedId && !selectedRunId && !startingTaskId) || showNewPanel) &&
       !reposLoaded &&
       !repoLoading
     ) {
@@ -1809,7 +1926,7 @@
         </div>
 
         <div class="inbox-body">
-          {#if (!fixture || fixture.home) && !selectedId && !selectedRunId && inboxEmpty && searchResults === null}
+          {#if (!fixture || fixture.home) && !selectedId && !selectedRunId && !startingTaskId && inboxEmpty && searchResults === null}
             <!-- The launcher stays in both responsive panes because CSS cannot
                  move one component across the detail and inbox scroll roots. -->
             <div class="mobile-home">
@@ -2207,6 +2324,11 @@
             </div>
           </form>
           <ComposerPrewarm sessionId={selectedSession.id} />
+        {:else if startingTaskId}
+          <div class="loading-session">
+            <PaneHeader kind={P.labels.session} />
+            <div class="empty blank-state">{P.labels.startingRun}</div>
+          </div>
         {:else if selectedId}
           <!-- ?session= for a row absent from the server-rendered list. Without
            this branch the pane falls through to the launcher and swaps

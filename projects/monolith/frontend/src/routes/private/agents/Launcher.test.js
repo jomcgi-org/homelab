@@ -142,7 +142,7 @@ describe("launcher submit path", () => {
       "errorMessage = body.message || P.labels.codexLoginRequired;",
     );
     expect(pageSource).toContain(
-      "errorMessage = body.login_message || P.labels.codexLoginRequired;",
+      "errorMessage = result.login_message || P.labels.codexLoginRequired;",
     );
     expect(pageSource).toContain(
       'statusClass(selectedSession) === "awaiting_login"',

@@ -75,7 +75,9 @@ describe("run lexicon", () => {
     const page = surface("+page.svelte");
     expect(page).toContain("let needsInputState = $state(false)");
     expect(page).toContain("pendingTaskId ? { task_id: pendingTaskId } : {}");
-    expect(page).toContain('body.kind === "needs_input"');
+    expect(page).toContain(
+      'result.kind === "needs_input" && result.needs_input',
+    );
     expect(page).toContain("repoControlEl?.focus");
     expect(page).toContain("P.labels.plannedNeedsRepoBranch");
     expect(page).toContain("class:needs-input={needsInputState}");

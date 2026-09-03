@@ -77,8 +77,8 @@ spec:
     # (/api/swarm/compare/...), all of which shipped green because nothing in
     # CI exercises a browser-originated path against the real ingress.
     #
-    # The timeout matches the other model-calling rules: classify-and-start
-    # runs the Qwen classifier inline before it returns.
+    # The timeout matches the other model-calling rules and leaves room for
+    # polling the asynchronous classify-and-start result.
     - matches:
         - path:
             type: PathPrefix

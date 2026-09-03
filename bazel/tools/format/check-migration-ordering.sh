@@ -28,21 +28,21 @@ _versions() { sed -n 's#.*/\([0-9]\{14\}\)_[^/]*\.sql$#\1#p'; }
 
 # Directories to check: the parents of any migration args (pre-commit passes the
 # changed files), or every migrations/ dir in the tree when run with no args.
-declare -A DIRS=()
+# A sorted-unique newline list rather than an associative array: macOS ships
+# bash 3.2 as /bin/bash, where `declare -A` is a hard error, and this hook
+# must run on developer Macs as well as CI's Linux bash.
 if [ "$#" -gt 0 ]; then
-	for f in "$@"; do
-		case "$f" in */migrations/*.sql) DIRS["${f%/*}"]=1 ;; esac
-	done
+	DIRS="$(printf '%s\n' "$@" | grep '/migrations/[^/]*\.sql$' | sed 's#/[^/]*$##' | sort -u || true)"
 else
-	while IFS= read -r f; do DIRS["${f%/*}"]=1; done < <(git ls-files '*migrations/*.sql')
+	DIRS="$(git ls-files '*migrations/*.sql' | sed 's#/[^/]*$##' | sort -u)"
 fi
-if [ "${#DIRS[@]}" -eq 0 ]; then
+if [ -z "$DIRS" ]; then
 	echo "no migration directories to check"
 	exit 0
 fi
 
 rc=0
-for dir in "${!DIRS[@]}"; do
+while IFS= read -r dir; do
 	wt="$(find "$dir" -maxdepth 1 -name '*.sql' | _versions | sort || true)"
 	[ -z "$wt" ] && continue
 
@@ -82,7 +82,7 @@ for dir in "${!DIRS[@]}"; do
 			fi
 		done <<<"$wt"
 	fi
-done
+done <<<"$DIRS"
 
 if [ "$rc" -eq 0 ]; then
 	echo "PASS: migration versions are unique and ordered after $BASE_REF."
