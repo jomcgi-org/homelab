@@ -142,6 +142,15 @@ async def _invoke_with_retryable_backoff(
         except httpx.HTTPStatusError as exc:
             if attempt == max_attempts - 1 or not _retryable_from_response(exc):
                 raise
+            # Each swallowed attempt logs the shim's body, not just the status:
+            # the 2026-09-03 spark synthetic 422s were invisible for a whole day
+            # because only the FINAL raise carried _status_error_detail.
+            logger.warning(
+                "invoke attempt %d/%d retrying after %s",
+                attempt + 1,
+                max_attempts,
+                _status_error_detail(exc),
+            )
             await asyncio.sleep(backoff_seconds[attempt])
     raise AssertionError("retry loop did not return or raise")
 
