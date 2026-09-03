@@ -162,6 +162,8 @@ spec:
             # legacy persisted value and does not name the execution model.
             - name: DRAINER_ENABLED
               value: {{ .enabled | quote }}
+            - name: DRAINER_NOTIFY_FAILURES
+              value: {{ .notifyFailures | quote }}
             - name: DRAINER_MAX_JOBS_PER_CYCLE
               value: {{ .maxJobsPerCycle | quote }}
             - name: DRAINER_TURN_TIMEOUT_SECONDS
@@ -424,12 +426,14 @@ spec:
             - name: MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID
               value: {{ .Values.agent.discord.defaultChannelId | quote }}
             {{- with .Values.agent.discord.agentSessionsChannelId }}
-            # Agent-session turn notifications only. Sessions notify on EVERY
-            # terminal turn by design, so validating the lane would otherwise page
-            # the same channel as real alerts. Unset falls back to the default.
+            # Agent-session turn notifications only. Thread-less sessions use
+            # AGENT_SESSIONS_CHANNEL_NOTIFY to select actionable or routine turns.
+            # An unset channel falls back to the default.
             - name: MONOLITH_AGENT_DISCORD_AGENT_SESSIONS_CHANNEL_ID
               value: {{ . | quote }}
             {{- end }}
+            - name: AGENT_SESSIONS_CHANNEL_NOTIFY
+              value: {{ .Values.agents.sessions.channelNotify | quote }}
             # Owner allowlist for /goosecracker (ADR 024 Task 4). Synced from the
             # discord-bot 1Password item into monolith-chat-secrets (alongside the
             # bot token); the gate fails closed if absent. Sourced from the secret

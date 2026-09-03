@@ -29,6 +29,7 @@ SETTINGS = {
     "repo": "jomcgi-org/homelab",
     "branch": "main",
     "reasoning": True,
+    "notify_failures": True,
 }
 
 
@@ -47,7 +48,7 @@ def _spans_named(name: str):
     return [s for s in _EXPORTER.get_finished_spans() if s.name == name]
 
 
-def _run(monkeypatch, jobs, await_turn=None, start_session=None):
+def _run(monkeypatch, jobs, await_turn=None, start_session=None, settings=None):
     claims = []
     starts = []
     completions = []
@@ -55,7 +56,10 @@ def _run(monkeypatch, jobs, await_turn=None, start_session=None):
     destroys = []
     queued = iter([{"routine_kind": "qwen-drain", **job} for job in jobs] + [None])
 
-    monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: SETTINGS.copy())
+    configured_settings = SETTINGS if settings is None else settings
+    monkeypatch.setattr(
+        drainer, "pin_drainer_settings", lambda: configured_settings.copy()
+    )
     monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
 
     def claim(ttl_secs, kinds):
@@ -526,7 +530,7 @@ def test_malformed_payload_completes_error_without_notification(
     assert destroys == []
 
 
-def test_failure_notifies_once_and_destroys_session(monkeypatch):
+def test_failure_notifies_when_notifications_enabled_and_destroys_session(monkeypatch):
     job = {"name": "fails", "payload": {"prompt": "break"}}
 
     def fail_await(*_args):
@@ -540,6 +544,26 @@ def test_failure_notifies_once_and_destroys_session(monkeypatch):
     assert completions == [("fails", "error", "turn failed")]
     assert notifications == [("fails", "turn failed")]
     assert destroys == [(101, "workflow-1:qwen-drain:fails")]
+
+
+def test_failure_logs_without_notification_when_notifications_disabled(
+    monkeypatch, caplog
+):
+    job = {"name": "fails-quietly", "payload": {"prompt": "break"}}
+
+    def fail_await(*_args):
+        raise RuntimeError("turn failed")
+
+    with caplog.at_level("WARNING", logger="swarm.drainer"):
+        _, _, _, _, notifications, _ = _run(
+            monkeypatch,
+            [job],
+            await_turn=fail_await,
+            settings=SETTINGS | {"notify_failures": False},
+        )
+
+    assert notifications == []
+    assert "Luna drainer job fails-quietly failed: turn failed" in caplog.messages
 
 
 def test_start_failure_cleans_up_by_stable_session_key(monkeypatch):

@@ -55,7 +55,15 @@ Cloudflare Pages frontends were decommissioned (ADR docs/002).
 The monolith drainer claims `kg-drain` routine jobs alongside `qwen-drain`
 jobs. Each `kg-drain` payload carries a `raw_id` for the selected knowledge raw
 input. After Luna completes the extraction turn, the monolith validates the
-result and writes the resulting atoms itself.
+result and writes the resulting atoms itself. Drainer failures surface through
+the `drainer` and `kg` health advisories and warning logs. Per-job Discord
+failure notifications are off by default and can be enabled with
+`agents.drainer.notifyFailures`.
+
+Agent sessions bound to Discord threads always post turn output back to their
+thread. Thread-less sessions post only turns needing human input to the
+agent-session channel by default. `agents.sessions.channelNotify` can select
+`needs-input`, `all`, or `none`.
 
 For detailed information about specific services, see the README in each project directory:
 

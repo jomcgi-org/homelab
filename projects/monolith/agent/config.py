@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Literal, cast
 
 from core.github import GITHUB_REPO
 
@@ -32,6 +33,11 @@ class DrainerSettings:
     repo: str
     branch: str
     reasoning: bool
+    notify_failures: bool = False
+
+
+AgentSessionsChannelNotify = Literal["needs-input", "all", "none"]
+_AGENT_SESSIONS_CHANNEL_NOTIFY_VALUES = {"needs-input", "all", "none"}
 
 
 def load_settings() -> AgentSettings:
@@ -47,6 +53,16 @@ def load_settings() -> AgentSettings:
 
 def drainer_enabled() -> bool:
     return os.environ.get("DRAINER_ENABLED", "false").lower() == "true"
+
+
+def _bool_setting(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized not in {"true", "false"}:
+        raise ValueError(f"{name} must be true or false, got {value!r}")
+    return normalized == "true"
 
 
 def load_drainer_settings() -> DrainerSettings:
@@ -74,6 +90,7 @@ def load_drainer_settings() -> DrainerSettings:
         # Drain jobs are usually multi-step repo audits, so Luna uses high
         # reasoning by default while each job can still opt out in its payload.
         reasoning=os.environ.get("DRAINER_REASONING", "true").lower() == "true",
+        notify_failures=_bool_setting("DRAINER_NOTIFY_FAILURES", False),
     )
 
 
@@ -82,8 +99,20 @@ def agent_sessions_channel_id() -> str | None:
 
     Read on its own rather than through AgentSettings: notifying a turn must not
     depend on the unrelated required Discord settings, and a session that cannot
-    resolve an optional channel should fall back, never fail. Sessions notify on
-    EVERY terminal turn by design (they are voice-driven), so routing them apart
-    keeps validation noise off the channel real alerts use.
+    resolve an optional channel should fall back, never fail. By default,
+    sessions notify only when they need human input, so routing them apart keeps
+    actionable requests off the channel used for unrelated alerts.
     """
     return os.environ.get("MONOLITH_AGENT_DISCORD_AGENT_SESSIONS_CHANNEL_ID") or None
+
+
+def agent_sessions_channel_notify() -> AgentSessionsChannelNotify:
+    """Policy for thread-less agent-session notifications."""
+    value = os.environ.get("AGENT_SESSIONS_CHANNEL_NOTIFY", "needs-input")
+    normalized = value.strip().lower()
+    if normalized not in _AGENT_SESSIONS_CHANNEL_NOTIFY_VALUES:
+        allowed = ", ".join(sorted(_AGENT_SESSIONS_CHANNEL_NOTIFY_VALUES))
+        raise ValueError(
+            f"AGENT_SESSIONS_CHANNEL_NOTIFY must be one of {allowed}, got {value!r}"
+        )
+    return cast(AgentSessionsChannelNotify, normalized)

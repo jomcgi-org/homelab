@@ -1257,6 +1257,7 @@ def test_notify_terminal_with_no_terminal_reason_warns(monkeypatch):
     from agent_sessions.transport import Turn
 
     notify_calls = []
+    monkeypatch.setenv("AGENT_SESSIONS_CHANNEL_NOTIFY", "all")
 
     async def mock_notify(summary, level, channel=None):
         notify_calls.append((summary, level, channel))
@@ -1509,6 +1510,7 @@ def test_broker_login_rejects_bad_grant_and_unset_url(monkeypatch):
 
 def _run_turn_capturing_notifies(monkeypatch, session, *, mark_ui: bool) -> list:
     """Drive one turn through the executor and return its Discord notify calls."""
+    monkeypatch.setenv("AGENT_SESSIONS_CHANNEL_NOTIFY", "all")
     row = store.create_session(session, "sid-ui-notify", "/workspace", "main")
     pending = store.create_pending_message(session, row.id, "hello")
     notify_calls = []
@@ -1645,6 +1647,7 @@ def test_session_start_rejects_a_repo_outside_the_catalog(monkeypatch, session):
 
 def test_terminal_notification_uses_the_agent_sessions_channel(monkeypatch):
     """Session turn notifications must not ring the default alert channel."""
+    monkeypatch.setenv("AGENT_SESSIONS_CHANNEL_NOTIFY", "all")
     monkeypatch.setenv(
         "MONOLITH_AGENT_DISCORD_AGENT_SESSIONS_CHANNEL_ID", "sessions-chan"
     )
@@ -1659,6 +1662,64 @@ def test_terminal_notification_uses_the_agent_sessions_channel(monkeypatch):
     monkeypatch.setattr(mcp.agent_api, "notify", fake_notify)
     asyncio.run(mcp._notify_terminal(_completed_turn("hi"), "summary", "completed"))
     assert seen["channel"] == "sessions-chan"
+
+
+@pytest.mark.parametrize(
+    ("policy", "status", "expected_messages"),
+    [
+        ("needs-input", "completed", []),
+        ("needs-input", "needs_input", ["Needs input: summary"]),
+        ("all", "completed", ["summary"]),
+        ("all", "needs_input", ["Needs input: summary"]),
+        ("none", "completed", []),
+        ("none", "needs_input", []),
+    ],
+)
+def test_threadless_terminal_notification_policy(
+    monkeypatch, policy, status, expected_messages
+):
+    monkeypatch.setenv("AGENT_SESSIONS_CHANNEL_NOTIFY", policy)
+    notifications = []
+
+    async def fake_notify(message, level="info", channel=None):
+        notifications.append(message)
+        return {"ok": True}
+
+    monkeypatch.setattr(mcp.agent_api, "notify", fake_notify)
+    row = AgentSession(
+        local_session_id="threadless-session",
+        workspace="<guest>",
+        branch="main",
+    )
+
+    asyncio.run(mcp._notify_terminal(_completed_turn("hi"), "summary", status, row))
+
+    assert notifications == expected_messages
+
+
+def test_thread_bound_terminal_notification_ignores_threadless_policy(monkeypatch):
+    monkeypatch.setenv("AGENT_SESSIONS_CHANNEL_NOTIFY", "none")
+    notifications = []
+
+    async def fake_notify(message, level="info", channel=None):
+        notifications.append((message, channel))
+        return {"ok": True}
+
+    monkeypatch.setattr(mcp.agent_api, "notify", fake_notify)
+    row = AgentSession(
+        local_session_id="thread-session",
+        workspace="<guest>",
+        branch="main",
+        discord_thread="thread-1",
+    )
+
+    asyncio.run(
+        mcp._notify_terminal(
+            _completed_turn("thread output"), "summary", "completed", row
+        )
+    )
+
+    assert notifications == [("Done: thread output", "thread-1")]
 
 
 def test_drainer_session_suppresses_generic_terminal_notification(monkeypatch):
