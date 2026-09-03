@@ -75,6 +75,15 @@ class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
             "visibility IS NULL OR visibility IN ('public', 'private')",
             name="notes_visibility_chk",
         ),
+        CheckConstraint(
+            "verification_state IN "
+            "('legacy', 'unverified', 'verified', 'disputed', 'invalidated')",
+            name="notes_verification_state_chk",
+        ),
+        CheckConstraint(
+            "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)",
+            name="notes_confidence_chk",
+        ),
         {"schema": "knowledge", "extend_existing": True},
     )
 
@@ -102,6 +111,21 @@ class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
         sa_column=Column(Boolean, nullable=False, server_default="false"),
     )
     source: str | None = None
+    scope: str | None = None
+    verification_state: str = Field(
+        default="legacy",
+        sa_column=Column(String, nullable=False, server_default="legacy"),
+    )
+    confidence: float | None = None
+    valid_from: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    valid_until: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    observed_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
     tags: list[str] = Field(default_factory=list, sa_column=Column(_STRING_ARRAY))
     aliases: list[str] = Field(default_factory=list, sa_column=Column(_STRING_ARRAY))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -274,6 +298,40 @@ class AtomRawProvenance(SQLModel, table=True):
                 "AtomRawProvenance requires at least one of atom_fk or raw_fk"
             )
         super().__init__(**data)
+
+
+class Dispute(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+    __tablename__ = "disputes"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('open', 'confirmed', 'narrowed', 'superseded', "
+            "'invalidated', 'rejected')",
+            name="disputes_state_chk",
+        ),
+        {"schema": "knowledge", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    note_id: str = Field(sa_column=Column(String, nullable=False))
+    raw_id: str | None = None
+    reason: str = Field(sa_column=Column(String, nullable=False))
+    evidence: list[dict[str, Any]] = Field(
+        default_factory=list, sa_column=Column(_JSONB, nullable=False)
+    )
+    reporter_subject: str | None = None
+    reporter_authority: str | None = None
+    reporter_session: str | None = None
+    state: str = Field(
+        default="open", sa_column=Column(String, nullable=False, server_default="open")
+    )
+    resolution: str | None = None
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    resolved_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
 
 
 class Gap(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory

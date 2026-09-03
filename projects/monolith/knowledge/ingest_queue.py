@@ -152,10 +152,29 @@ def ingest_raw(
     ``s3://knowledge/raws/<raw_id>.md``; the row's ``path`` is a synthetic
     stable value (no real file) since the model requires it non-null + unique.
     """
+    raw, _ = ingest_raw_with_status(
+        session,
+        content=content,
+        source=source,
+        original_url=original_url,
+        extra=extra,
+    )
+    return raw
+
+
+def ingest_raw_with_status(
+    session: Session,
+    *,
+    content: str,
+    source: str,
+    original_url: str | None = None,
+    extra: dict | None = None,
+) -> tuple[RawInput, bool]:
+    """Persist raw content and report whether a new row was created."""
     raw_id = compute_raw_id(content)
     existing = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
     if existing is not None:
-        return existing
+        return existing, False
 
     upload_raw(raw_id, content)
     raw = RawInput(
@@ -169,7 +188,7 @@ def ingest_raw(
     session.add(raw)
     session.commit()
     logger.info("ingest_queue: ingested raw %s (source=%s)", raw_id, source)
-    return raw
+    return raw, True
 
 
 async def ingest_handler(session: Session) -> datetime | None:

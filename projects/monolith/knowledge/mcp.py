@@ -512,6 +512,12 @@ async def _index_atom(
     size: str | None = None,
     due: str | None = None,
     blocked_by: list[str] | None = None,
+    scope: str | None = None,
+    verification_state: str | None = None,
+    confidence: float | None = None,
+    valid_from: str | None = None,
+    valid_until: str | None = None,
+    observed_at: str | None = None,
 ) -> str:
     """Build and index a fileless atom into Postgres, returning its note_id.
 
@@ -546,6 +552,18 @@ async def _index_atom(
         fm_dict["source_tier"] = source_tier
     if derived_from_raw is not None:
         fm_dict["derived_from_raw"] = derived_from_raw
+    if scope is not None:
+        fm_dict["scope"] = scope
+    if verification_state is not None:
+        fm_dict["verification_state"] = verification_state
+    if confidence is not None:
+        fm_dict["confidence"] = confidence
+    if valid_from is not None:
+        fm_dict["valid_from"] = valid_from
+    if valid_until is not None:
+        fm_dict["valid_until"] = valid_until
+    if observed_at is not None:
+        fm_dict["observed_at"] = observed_at
     if tags:
         fm_dict["tags"] = list(tags)
     if aliases:
@@ -587,6 +605,12 @@ async def create_atom(
     size: str | None = None,
     due: str | None = None,
     blocked_by: list[str] | None = None,
+    scope: str | None = None,
+    verification_state: str | None = None,
+    confidence: float | None = None,
+    valid_from: str | None = None,
+    valid_until: str | None = None,
+    observed_at: str | None = None,
 ) -> dict:
     """Create a new knowledge atom, fileless, indexed straight into Postgres.
 
@@ -610,6 +634,13 @@ async def create_atom(
         size: Required for type active. One of small, medium, large, unknown.
         due: Optional ISO due date (active notes only).
         blocked_by: Optional list of blocking note_ids (active notes only).
+        scope: Optional scope. Use personal:<principal>, org:<org>,
+            repo:<owner>/<repo>, environment:<cluster>, or session:<id>.
+        verification_state: Optional assertion verification state.
+        confidence: Optional confidence from 0 through 1.
+        valid_from: Optional ISO timestamp when the assertion becomes valid.
+        valid_until: Optional ISO timestamp when the assertion stops being valid.
+        observed_at: Optional ISO timestamp when the assertion was observed.
     """
     if type not in _ATOM_TYPES:
         return {"error": f"type must be one of atom, fact, active, got {type!r}"}
@@ -653,6 +684,12 @@ async def create_atom(
             size=size,
             due=due,
             blocked_by=blocked_by,
+            scope=scope,
+            verification_state=verification_state,
+            confidence=confidence,
+            valid_from=valid_from,
+            valid_until=valid_until,
+            observed_at=observed_at,
         )
 
         # Close any open gap whose term this atom now defines (research

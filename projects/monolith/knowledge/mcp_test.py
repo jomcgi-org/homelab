@@ -831,6 +831,41 @@ class TestCreateAtom:
         assert "The body." in kwargs["raw"]
 
     @pytest.mark.asyncio
+    async def test_scoped_assertion_fields_are_emitted(self):
+        mock_session = MagicMock()
+        mock_session.__enter__.return_value = mock_session
+        index = AsyncMock()
+        with (
+            patch("knowledge.mcp.Session", return_value=mock_session),
+            patch("knowledge.mcp.get_engine"),
+            patch("knowledge.mcp.EmbeddingClient", return_value=AsyncMock()),
+            patch("knowledge.mcp.index_note_from_raw", index),
+            patch("knowledge.mcp.KnowledgeStore") as MockStore,
+        ):
+            MockStore.return_value.get_note_by_id.return_value = None
+            result = await create_atom(
+                title="Scoped Atom",
+                body="The body.",
+                type="fact",
+                visibility="private",
+                scope="session:abc",
+                verification_state="verified",
+                confidence=0.85,
+                valid_from="2026-09-01T00:00:00Z",
+                valid_until="2026-10-01T00:00:00Z",
+                observed_at="2026-09-02T00:00:00Z",
+            )
+
+        assert result == {"note_id": "scoped-atom"}
+        raw = index.call_args.kwargs["raw"]
+        assert "scope: session:abc" in raw
+        assert "verification_state: verified" in raw
+        assert "confidence: 0.85" in raw
+        assert "valid_from: '2026-09-01T00:00:00Z'" in raw
+        assert "valid_until: '2026-10-01T00:00:00Z'" in raw
+        assert "observed_at: '2026-09-02T00:00:00Z'" in raw
+
+    @pytest.mark.asyncio
     async def test_rejects_bad_type(self):
         index = AsyncMock()
         with patch("knowledge.mcp.index_note_from_raw", index):

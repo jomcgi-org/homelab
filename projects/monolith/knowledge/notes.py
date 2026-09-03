@@ -139,6 +139,18 @@ def _serialize_frontmatter(parsed: frontmatter.ParsedFrontmatter, body: str) -> 
         fm_dict["visibility"] = parsed.visibility
     if parsed.source is not None:
         fm_dict["source"] = parsed.source
+    if parsed.scope is not None:
+        fm_dict["scope"] = parsed.scope
+    if parsed.verification_state is not None:
+        fm_dict["verification_state"] = parsed.verification_state
+    if parsed.confidence is not None:
+        fm_dict["confidence"] = parsed.confidence
+    if parsed.valid_from is not None:
+        fm_dict["valid_from"] = parsed.valid_from.isoformat()
+    if parsed.valid_until is not None:
+        fm_dict["valid_until"] = parsed.valid_until.isoformat()
+    if parsed.observed_at is not None:
+        fm_dict["observed_at"] = parsed.observed_at.isoformat()
     if parsed.tags:
         fm_dict["tags"] = parsed.tags
     if parsed.aliases:

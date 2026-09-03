@@ -190,6 +190,18 @@ async def reindex_note_with_edits(
         fm_dict["visibility"] = new_visibility
     if row.source:
         fm_dict["source"] = row.source
+    if row.scope is not None:
+        fm_dict["scope"] = row.scope
+    if row.verification_state is not None:
+        fm_dict["verification_state"] = row.verification_state
+    if row.confidence is not None:
+        fm_dict["confidence"] = row.confidence
+    if row.valid_from is not None:
+        fm_dict["valid_from"] = row.valid_from.isoformat()
+    if row.valid_until is not None:
+        fm_dict["valid_until"] = row.valid_until.isoformat()
+    if row.observed_at is not None:
+        fm_dict["observed_at"] = row.observed_at.isoformat()
     if new_tags:
         fm_dict["tags"] = new_tags
     if row.aliases:

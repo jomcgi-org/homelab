@@ -4629,6 +4629,16 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_frontmatter_scoped_test",
+    srcs = ["knowledge/frontmatter_scoped_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "knowledge_layout_test",
     srcs = ["knowledge/layout_test.py"],
     imports = ["."],
@@ -4679,6 +4689,18 @@ py_test(
         "@pip//pydantic",
         "@pip//pytest",
         "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "knowledge_store_scoped_test",
+    srcs = ["knowledge/store_scoped_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
         "@pip//sqlmodel",
     ],
 )
@@ -6199,6 +6221,21 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_router_raws_test",
+    srcs = ["knowledge/router_raws_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        ":pkg_core",
+        ":pkg_framework",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "knowledge_notes_crud_test",
     srcs = ["knowledge/notes_crud_test.py"],
     imports = ["."],
@@ -6923,6 +6960,7 @@ bdd_test(
     srcs = [
         "knowledge/tests/__init__.py",
         "knowledge/tests/bdd_api_test.py",
+        "knowledge/tests/bdd_raws_test.py",
         "knowledge/tests/conftest.py",
     ],
 )

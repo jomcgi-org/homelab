@@ -25,6 +25,7 @@ __all__ = [
     "search_public_chunks",
     "get_embedding_client",
     "ingest_raw",
+    "ingest_raw_with_status",
     "count_notes_review_queue",
     "count_gaps_review_queue",
     "list_tasks_daily",
@@ -54,6 +55,26 @@ def ingest_raw(
     from knowledge.ingest_queue import ingest_raw as _ingest_raw
 
     return _ingest_raw(
+        session,
+        content=content,
+        source=source,
+        original_url=original_url,
+        extra=extra,
+    )
+
+
+def ingest_raw_with_status(
+    session: "Session",
+    *,
+    content: str,
+    source: str,
+    original_url: str | None = None,
+    extra: dict | None = None,
+):
+    """Persist raw content and return its row plus a created flag."""
+    from knowledge.ingest_queue import ingest_raw_with_status as _ingest_with_status
+
+    return _ingest_with_status(
         session,
         content=content,
         source=source,

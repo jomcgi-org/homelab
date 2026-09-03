@@ -14,12 +14,14 @@ can override it with a deterministic fake via ``app.dependency_overrides``.
 from __future__ import annotations
 
 import logging
+import re
 from email.utils import format_datetime
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
 from sqlmodel import Session, select
 
 from core.db import get_session
@@ -37,7 +39,7 @@ from knowledge.gaps import (
 from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.http_cache import _as_utc, _graph_etag, _GRAPH_CACHE_CONTROL
 from knowledge.indexing import reindex_note_with_edits
-from knowledge.ingest_queue import IngestQueueItem, ingest_raw
+from knowledge.ingest_queue import IngestQueueItem, ingest_raw, ingest_raw_with_status
 from knowledge.models import AtomRawProvenance, RawInput
 from knowledge.notes import (
     _note_to_review_dict,
@@ -237,6 +239,55 @@ async def edit_note(
 class IngestRequest(BaseModel):
     url: str
     source_type: Literal["youtube", "webpage"]
+
+
+_RAW_SOURCE_RE = re.compile(r"^[a-z][a-z0-9-]{1,40}$")
+_MAX_RAW_BYTES = 2 * 1024 * 1024
+
+
+class CreateRawRequest(BaseModel):
+    content: str
+    source: str
+    original_url: str | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("content")
+    @classmethod
+    def _content_not_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("content must not be empty")
+        return value
+
+    @field_validator("source")
+    @classmethod
+    def _source_is_valid(cls, value: str) -> str:
+        if _RAW_SOURCE_RE.fullmatch(value) is None:
+            raise ValueError("source must match ^[a-z][a-z0-9-]{1,40}$")
+        return value
+
+
+@router.post("/raws", status_code=201)
+def create_raw(
+    data: CreateRawRequest,
+    session: Session = Depends(get_session),
+) -> JSONResponse:
+    content_bytes = len(data.content.encode("utf-8"))
+    if content_bytes > _MAX_RAW_BYTES:
+        return JSONResponse(
+            status_code=413,
+            content={"error": "content exceeds the 2 MiB limit"},
+        )
+    raw, created = ingest_raw_with_status(
+        session,
+        content=data.content,
+        source=data.source,
+        original_url=data.original_url,
+        extra=data.extra,
+    )
+    return JSONResponse(
+        status_code=201,
+        content={"raw_id": raw.raw_id, "created": created},
+    )
 
 
 @router.post("/ingest", status_code=201)
