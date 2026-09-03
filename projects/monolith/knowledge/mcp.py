@@ -9,28 +9,99 @@ Tools call KnowledgeStore directly (no HTTP round-trip).
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+from datetime import datetime, timezone
+from typing import Any
 
 import yaml
 from sqlmodel import Session, select
 
+from auth.api import current_principal
 from core.db import get_engine
 from core.mcp_app import mcp
 from knowledge import frontmatter
 from knowledge import notes as notes_module
+from knowledge.api import ingest_raw_with_status
+from knowledge.atoms import index_atom
 from knowledge.gaps import answer_gap as _answer_gap
 from knowledge.gaps import list_review_queue, resolve_gaps_for_note, split_csv
 from knowledge.gaps import set_gap_class as _set_gap_class
-from knowledge.atoms import index_atom
 from knowledge.gardener import GARDENER_VERSION, _slugify
 from knowledge.indexing import index_note_from_raw, reindex_note_with_edits
-from knowledge.models import AtomRawProvenance, RawInput
+from knowledge.models import AtomRawProvenance, Dispute, RawInput
 from knowledge.notes import resolve_note_body
 from knowledge.raw_store import fetch_raw
 from knowledge.store import KnowledgeStore
 from shared.embedding import EmbeddingClient
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_REPO_SCOPE = os.getenv(
+    "KNOWLEDGE_DEFAULT_REPO_SCOPE", "repo:jomcgi-org/homelab"
+)
+_PROPOSED_SCOPES = frozenset({"repo", "org", "environment", "personal", "session"})
+_ASSERTION_CAP = 20_000
+_DETAILS_CAP = 8_000
+_EVIDENCE_ITEM_CAP = 500
+_EVIDENCE_ITEMS_CAP = 20
+_EVIDENCE_JOINED_CAP = 10_000
+_REASON_CAP = 4_000
+_VALIDITY_HINT_CAP = 200
+_DISPUTED_NOTE_BODY_CAP = 8 * 1024
+_NOTIFY_SUMMARY_CAP = 300
+_NOTIFY_INTERVENTION_CAP = 400
+_NOTIFY_MESSAGE_CAP = 1_800
+
+
+def _reporter_extra(principal: Any) -> dict[str, str]:
+    return {
+        "reporter_subject": principal.subject,
+        "reporter_authority": str(principal.authority),
+        "reporter_kind": str(principal.kind),
+    }
+
+
+def _markdown_raw(frontmatter_values: dict[str, object], body: str) -> str:
+    header = yaml.safe_dump(frontmatter_values, sort_keys=False).rstrip()
+    return f"---\n{header}\n---\n\n{body.rstrip()}\n"
+
+
+def _evidence_markdown(evidence: list[str] | None) -> str:
+    return "\n".join(f"- {item}" for item in evidence or [])
+
+
+def _evidence_error(evidence: list[str] | None) -> str | None:
+    if evidence is None:
+        return None
+    if len(evidence) > _EVIDENCE_ITEMS_CAP:
+        return f"evidence must contain at most {_EVIDENCE_ITEMS_CAP} items"
+    if any(len(item) > _EVIDENCE_ITEM_CAP for item in evidence):
+        return f"evidence items must not exceed {_EVIDENCE_ITEM_CAP} characters"
+    if len("\n".join(evidence)) > _EVIDENCE_JOINED_CAP:
+        return f"evidence must not exceed {_EVIDENCE_JOINED_CAP} joined characters"
+    return None
+
+
+def _resolved_scope(proposed_scope: str, subject: str) -> str:
+    if proposed_scope == "repo":
+        return DEFAULT_REPO_SCOPE
+    if proposed_scope == "org":
+        return "org:jomcgi-org"
+    if proposed_scope == "environment":
+        return "environment:homelab"
+    if proposed_scope == "session":
+        utc_date = datetime.now(timezone.utc).date().isoformat()
+        return f"session:{subject}:{utc_date}"
+    return f"{proposed_scope}:{subject}"
+
+
+async def notify(message: str, level: str) -> dict:
+    """Load the agent notification boundary only when distress is reported."""
+    from agent.api import notify as agent_notify
+
+    return await agent_notify(message, level)
 
 
 async def _index_atom(session: Session, **kwargs) -> str:
@@ -104,6 +175,285 @@ async def get_note(note_id: str) -> dict:
 
         edges = store.get_note_links(note_id)
         return {**note, "content": body, "edges": edges}
+
+
+def _report_knowledge_sync(
+    assertion: str,
+    proposed_scope: str,
+    evidence: list[str] | None,
+    validity_hint: str | None,
+    reporter: dict[str, str],
+) -> dict:
+    assertion = assertion.strip()
+    if not assertion:
+        return {"error": "assertion must not be empty"}
+    if len(assertion) > _ASSERTION_CAP:
+        return {"error": f"assertion must not exceed {_ASSERTION_CAP} characters"}
+    if proposed_scope not in _PROPOSED_SCOPES:
+        valid = ", ".join(sorted(_PROPOSED_SCOPES))
+        return {"error": f"proposed_scope must be one of {valid}"}
+    evidence_error = _evidence_error(evidence)
+    if evidence_error is not None:
+        return {"error": evidence_error}
+    if validity_hint is not None and len(validity_hint) > _VALIDITY_HINT_CAP:
+        return {
+            "error": (f"validity_hint must not exceed {_VALIDITY_HINT_CAP} characters")
+        }
+
+    scope = _resolved_scope(proposed_scope, reporter["reporter_subject"])
+    content = _markdown_raw(
+        {
+            "title": assertion[:80],
+            "proposed_scope": proposed_scope,
+            "scope": scope,
+            "validity_hint": validity_hint,
+            "reporter": reporter["reporter_subject"],
+        },
+        f"{assertion}\n\n## Evidence\n\n{_evidence_markdown(evidence)}",
+    )
+    extra = {
+        **reporter,
+        "proposed_scope": proposed_scope,
+        "scope": scope,
+        "validity_hint": validity_hint,
+    }
+
+    with Session(get_engine()) as session:
+        raw, created = ingest_raw_with_status(
+            session,
+            content=content,
+            source="agent-report",
+            original_url=None,
+            extra=extra,
+        )
+        return {
+            "raw_id": raw.raw_id,
+            "created": created,
+            "status": "queued" if created else "duplicate",
+            "scope": scope,
+        }
+
+
+@mcp.tool
+async def report_knowledge(
+    assertion: str,
+    proposed_scope: str = "repo",
+    evidence: list[str] | None = None,
+    validity_hint: str | None = None,
+) -> dict:
+    """Report an unverified assertion for grounded knowledge extraction.
+
+    Reports are unverified evidence. They never become facts without the
+    extraction process checking and classifying them. Session scope currently
+    resolves to ``session:<subject>:<UTC YYYY-MM-DD>``. A per-session ID arrives
+    with #5569.
+
+    Args:
+        assertion: The claim to report, limited to 20,000 characters.
+        proposed_scope: One of repo, org, environment, personal, or session.
+        evidence: Optional references or observations supporting the claim.
+        validity_hint: Optional description of when the claim is valid.
+    """
+    reporter = _reporter_extra(current_principal())
+    return await asyncio.to_thread(
+        _report_knowledge_sync,
+        assertion,
+        proposed_scope,
+        evidence,
+        validity_hint,
+        reporter,
+    )
+
+
+def _dispute_fact_sync(
+    fact_id: str,
+    reason: str,
+    evidence: list[str] | None,
+    reporter: dict[str, str],
+) -> dict:
+    reason = reason.strip()
+    if not reason:
+        return {"error": "reason must not be empty"}
+    reason = reason[:_REASON_CAP]
+    evidence_error = _evidence_error(evidence)
+    if evidence_error is not None:
+        return {"error": evidence_error}
+
+    with Session(get_engine()) as session:
+        note = KnowledgeStore(session).get_note_by_id(fact_id)
+        if note is None:
+            return {"error": "unknown fact"}
+
+        quoted_title = "\n".join(
+            f"> {line}" for line in str(note.get("title") or fact_id).splitlines()
+        )
+        note_body = str(note.get("content") or "")[:_DISPUTED_NOTE_BODY_CAP]
+        quoted_body = "\n".join(f"> {line}" for line in note_body.splitlines())
+        content = _markdown_raw(
+            {
+                "title": f"Dispute: {str(note.get('title') or fact_id)[:80]}",
+                "note_id": fact_id,
+                "reporter": reporter["reporter_subject"],
+            },
+            (
+                "## Current fact\n\n"
+                f"{quoted_title}\n\n{quoted_body}\n\n"
+                f"## Reason\n\n{reason}\n\n"
+                f"## Evidence\n\n{_evidence_markdown(evidence)}"
+            ),
+        )
+        try:
+            raw, _ = ingest_raw_with_status(
+                session,
+                content=content,
+                source="dispute",
+                original_url=None,
+                extra={"note_id": fact_id, **reporter},
+                commit=False,
+            )
+            raw_id = raw.raw_id
+            dispute = Dispute(
+                note_id=fact_id,
+                raw_id=raw_id,
+                reason=reason,
+                evidence=evidence or [],
+                reporter_subject=reporter["reporter_subject"],
+                reporter_authority=reporter["reporter_authority"],
+                state="open",
+            )
+            session.add(dispute)
+            session.flush()
+            dispute_id = dispute.id
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+
+        return {
+            "dispute_id": dispute_id,
+            "note_id": fact_id,
+            "status": "disputed",
+            "raw_id": raw_id,
+        }
+
+
+@mcp.tool
+async def dispute_fact(
+    fact_id: str,
+    reason: str,
+    evidence: list[str] | None = None,
+) -> dict:
+    """Dispute a live fact without deleting or editing the note.
+
+    The open dispute is visible immediately in knowledge search. Its raw
+    evidence is queued for extraction to confirm, narrow, or reject the claim.
+
+    Args:
+        fact_id: Stable ID of the live knowledge note being disputed.
+        reason: Explanation of why the current fact may be wrong.
+        evidence: Optional references or observations supporting the dispute.
+    """
+    reporter = _reporter_extra(current_principal())
+    return await asyncio.to_thread(
+        _dispute_fact_sync, fact_id, reason, evidence, reporter
+    )
+
+
+def _report_distress_sync(
+    summary: str,
+    severity: str,
+    details: str,
+    requested_intervention: str,
+    reporter: dict[str, str],
+) -> tuple[dict, str | None, str | None]:
+    if severity not in {"blocked", "degraded", "urgent"}:
+        return (
+            {"error": "severity must be one of blocked, degraded, urgent"},
+            None,
+            None,
+        )
+    if len(details) > _DETAILS_CAP:
+        return (
+            {"error": f"details must not exceed {_DETAILS_CAP} characters"},
+            None,
+            None,
+        )
+
+    content = _markdown_raw(
+        {
+            "title": f"Distress: {summary[:80]}",
+            "severity": severity,
+            "reporter": reporter["reporter_subject"],
+        },
+        (
+            f"## Summary\n\n{summary}\n\n"
+            f"## Severity\n\n{severity}\n\n"
+            f"## Details\n\n{details}\n\n"
+            "## Requested intervention\n\n"
+            f"{requested_intervention}"
+        ),
+    )
+    with Session(get_engine()) as session:
+        raw, _ = ingest_raw_with_status(
+            session,
+            content=content,
+            source="distress",
+            original_url=None,
+            extra={
+                "severity": severity,
+                "requested_intervention": requested_intervention,
+                **reporter,
+            },
+        )
+        raw_id = raw.raw_id
+
+    notify_summary = summary[:_NOTIFY_SUMMARY_CAP]
+    notify_intervention = requested_intervention[:_NOTIFY_INTERVENTION_CAP]
+    message = (
+        f"raw {raw_id} | distress({severity}) from "
+        f"{reporter['reporter_subject']}: {notify_summary}"
+        f" | wants: {notify_intervention}"
+    )[:_NOTIFY_MESSAGE_CAP]
+    level = "error" if severity == "urgent" else "warn"
+    return ({"intervention_id": raw_id}, message, level)
+
+
+@mcp.tool
+async def report_distress(
+    summary: str,
+    severity: str,
+    details: str = "",
+    requested_intervention: str = "",
+) -> dict:
+    """Record distress evidence and request a human intervention.
+
+    This tool is for intervention, not routine logging. The retained raw is not
+    sent through knowledge extraction.
+
+    Args:
+        summary: Short description of the problem.
+        severity: One of blocked, degraded, or urgent.
+        details: Optional context that may help the responder.
+        requested_intervention: Optional action requested from the responder.
+    """
+    reporter = _reporter_extra(current_principal())
+    result, message, level = await asyncio.to_thread(
+        _report_distress_sync,
+        summary,
+        severity,
+        details,
+        requested_intervention,
+        reporter,
+    )
+    if message is None or level is None:
+        return result
+    raw_id = result["intervention_id"]
+    try:
+        await notify(message, level)
+    except Exception:
+        logger.exception("knowledge mcp: distress notification failed for %s", raw_id)
+        return {"intervention_id": raw_id, "status": "recorded"}
+    return {"intervention_id": raw_id, "status": "notified"}
 
 
 @mcp.tool

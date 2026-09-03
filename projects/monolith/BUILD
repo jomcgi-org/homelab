@@ -6292,6 +6292,22 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_mcp_reports_test",
+    srcs = ["knowledge/mcp_reports_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_cyclegroup",
+        ":pkg_knowledge",
+        "@pip//fastmcp",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "knowledge_gap_api_test",
     srcs = ["knowledge/gap_api_test.py"],
     imports = ["."],
@@ -6986,6 +7002,7 @@ bdd_test(
         "knowledge/tests/bdd_api_test.py",
         "knowledge/tests/bdd_health_kg_test.py",
         "knowledge/tests/bdd_raws_test.py",
+        "knowledge/tests/bdd_reports_test.py",
         "knowledge/tests/conftest.py",
     ],
 )

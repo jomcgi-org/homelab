@@ -30,6 +30,7 @@ EXTRACTABLE_SOURCES = {
     "agent-report",
     "dispute",
 }
+LANE_OWNED_SOURCES = EXTRACTABLE_SOURCES | {"distress"}
 RAW_BODY_CAP = 60_000
 RELATED_NOTES = 8
 

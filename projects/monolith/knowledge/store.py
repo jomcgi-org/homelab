@@ -11,6 +11,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import Session, delete, select
 
 from knowledge.frontmatter import ParsedFrontmatter
+from knowledge.extraction import LANE_OWNED_SOURCES
 from knowledge.gardener import GARDENER_VERSION, MAX_GARDENER_RETRIES, _slugify
 from knowledge.links import Link
 from knowledge.models import (
@@ -1033,6 +1034,7 @@ class KnowledgeStore:
         # Tier 1: fresh raws, not handled AND not failed.
         fresh_stmt = (
             select(RawInput)
+            .where(RawInput.source.notin_(LANE_OWNED_SOURCES))
             .where(not_(RawInput.id.in_(select(handled_subq.c.raw_fk))))
             .where(not_(RawInput.id.in_(select(failed_subq.c.raw_fk))))
             .order_by(RawInput.created_at.asc().nullslast(), RawInput.id.asc())
@@ -1050,6 +1052,7 @@ class KnowledgeStore:
         )
         retriable_stmt = (
             select(RawInput)
+            .where(RawInput.source.notin_(LANE_OWNED_SOURCES))
             .where(RawInput.id.in_(select(retriable_subq.c.raw_fk)))
             .where(not_(RawInput.id.in_(select(handled_subq.c.raw_fk))))
             .order_by(RawInput.created_at.asc().nullslast(), RawInput.id.asc())

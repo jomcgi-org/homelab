@@ -148,6 +148,14 @@ rebase.
 Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 `crane`, `kind`, `go`, `python`, `pnpm`, `node`, `bb`, and the formatters on PATH.
 
+## Knowledge reporting
+
+- Use `report_knowledge` for reusable assertions and cite supporting evidence.
+- Reports are unverified until extraction checks and classifies them.
+- Use `dispute_fact` to mark a fact disputed immediately without deleting it.
+- Use `report_distress` to request intervention, not for routine logging.
+- Search results include `scope`, `verification_state`, `disputed`, and `provenance`.
+
 ## Gotchas
 
 - **Deploys are triggered by chart version, not by image tags, and the version

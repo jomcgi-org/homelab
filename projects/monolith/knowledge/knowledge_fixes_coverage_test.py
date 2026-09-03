@@ -402,6 +402,27 @@ class TestGrandfatherAtoms:
 # ---------------------------------------------------------------------------
 
 
+def test_raws_needing_decomposition_excludes_lane_owned_sources(session):
+    from knowledge.store import KnowledgeStore
+
+    raws = [
+        RawInput(
+            raw_id=f"source-{source}",
+            path=f"_raw/source-{source}.md",
+            source=source,
+            content="body",
+            content_hash=f"hash-{source}",
+        )
+        for source in ("distress", "agent-report", "capture")
+    ]
+    session.add_all(raws)
+    session.commit()
+
+    result = KnowledgeStore(session).raws_needing_decomposition()
+
+    assert [raw.source for raw in result] == ["capture"]
+
+
 class TestRawsNeedingDecompositionExhaustedRetries:
     """A raw with retry_count >= MAX_GARDENER_RETRIES must NOT appear in
     raws_needing_decomposition() — it belongs in the dead letter queue."""

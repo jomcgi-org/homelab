@@ -1069,6 +1069,8 @@ onepassword:
 
 knowledge:
   enabled: false
+  # Scope assigned to repository knowledge reports when callers propose repo.
+  defaultRepoScope: "repo:jomcgi-org/homelab"
   gaps:
     # When true, the gardener rewrites [[X]] -> bare text in source notes
     # whose stub is marked `triaged: discardable`, then tombstones the gap
