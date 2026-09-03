@@ -78,26 +78,50 @@ def open_dispute_note_ids(session: Session, note_ids: Iterable[str]) -> set[str]
 
 
 def provenance_for_notes(
-    session: Session, note_fks: Iterable[int]
-) -> dict[int, list[dict]]:
-    """Return raw provenance grouped by note foreign key in one query."""
-    ids = list(note_fks)
+    session: Session, note_ids: list[str]
+) -> dict[str, list[dict]]:
+    """Return raw provenance grouped by stable note id in one query."""
+    ids = list(note_ids)
     if not ids:
         return {}
-    rows = session.execute(
+
+    sentinel_ids = ("no-new-notes", "failed")
+    current = (
         select(
-            AtomRawProvenance.atom_fk,
+            AtomRawProvenance.derived_note_id.label("note_id"),
             RawInput.raw_id,
             RawInput.source,
             AtomRawProvenance.gardener_version,
+            AtomRawProvenance.id.label("provenance_id"),
         )
-        .join(RawInput, RawInput.id == AtomRawProvenance.raw_fk)
-        .where(AtomRawProvenance.atom_fk.in_(ids))
-        .order_by(AtomRawProvenance.id)
-    ).all()
-    grouped: dict[int, list[dict]] = {}
+        .outerjoin(RawInput, RawInput.id == AtomRawProvenance.raw_fk)
+        .where(
+            AtomRawProvenance.derived_note_id.in_(ids),
+            AtomRawProvenance.derived_note_id.notin_(sentinel_ids),
+        )
+    )
+    legacy = (
+        select(
+            Note.note_id.label("note_id"),
+            RawInput.raw_id,
+            RawInput.source,
+            AtomRawProvenance.gardener_version,
+            AtomRawProvenance.id.label("provenance_id"),
+        )
+        .join(AtomRawProvenance, AtomRawProvenance.atom_fk == Note.id)
+        .outerjoin(RawInput, RawInput.id == AtomRawProvenance.raw_fk)
+        .where(
+            Note.note_id.in_(ids),
+            or_(
+                AtomRawProvenance.derived_note_id.is_(None),
+                AtomRawProvenance.derived_note_id.notin_(sentinel_ids),
+            ),
+        )
+    )
+    rows = session.execute(current.union(legacy).order_by("provenance_id")).all()
+    grouped: dict[str, list[dict]] = {}
     for row in rows:
-        grouped.setdefault(row.atom_fk, []).append(
+        grouped.setdefault(row.note_id, []).append(
             {
                 "raw_id": row.raw_id,
                 "source": row.source,
@@ -105,6 +129,55 @@ def provenance_for_notes(
             }
         )
     return grouped
+
+
+def _rank_search_chunks(
+    session: Session,
+    query_embedding: list[float],
+    limit: int,
+    type_filter: str | None,
+) -> list[tuple[int, int, float]]:
+    """Return ranked ``(note_fk, chunk_fk, score)`` tuples using pgvector."""
+    distance = Chunk.embedding.cosine_distance(query_embedding)
+    len_penalty = func.least(
+        1.0,
+        func.length(Chunk.chunk_text) / float(_CHUNK_LEN_RAMP),
+    )
+    adjusted = (1 - distance) * len_penalty
+    best_score = func.max(adjusted).label("score")
+
+    notes_stmt = (
+        select(Note.id, best_score)
+        .join(Chunk, Chunk.note_fk == Note.id)
+        .where(Note.deleted_at.is_(None))
+        .group_by(Note.id)
+        .having(func.max(adjusted) >= MIN_SEARCH_SCORE)
+        .order_by(best_score.desc())
+        .limit(limit)
+    )
+    if type_filter is not None:
+        notes_stmt = notes_stmt.where(Note.type == type_filter)
+
+    note_rows = session.execute(notes_stmt).all()
+    if not note_rows:
+        return []
+
+    top_ids = [row.id for row in note_rows]
+    chunk_adjusted = (
+        1 - Chunk.embedding.cosine_distance(query_embedding)
+    ) * func.least(1.0, func.length(Chunk.chunk_text) / float(_CHUNK_LEN_RAMP))
+    chunk_rows = session.execute(
+        select(Chunk.note_fk, Chunk.id)
+        .where(Chunk.note_fk.in_(top_ids))
+        .order_by(Chunk.note_fk, chunk_adjusted.desc())
+        .distinct(Chunk.note_fk)
+    ).all()
+    chunk_id_by_note = {row.note_fk: row.id for row in chunk_rows}
+    return [
+        (row.id, chunk_id_by_note[row.id], float(row.score))
+        for row in note_rows
+        if row.id in chunk_id_by_note
+    ]
 
 
 def _iso_or_none(value: datetime | None) -> str | None:
@@ -348,76 +421,45 @@ class KnowledgeStore:
     ) -> list[dict]:
         """Semantic search returning type, tags, best chunk section + snippet.
 
-        Powers the knowledge search overlay (ADR 003). Runs two SQL
-        round-trips:
+        Powers the knowledge search overlay (ADR 003). Vector ranking uses two
+        SQL queries:
 
         1. Top-N notes ranked by ``best_score = 1 - min(cosine_distance)``
            across their chunks, with optional ``Note.type`` filter.
         2. A single batched ``SELECT DISTINCT ON (note_fk)`` to pick the
-           best-matching chunk per top-N note — no N+1.
+           best-matching chunk per top-N note, with no N+1.
 
         Results are stitched in Python into dicts with keys:
         ``note_id, title, path, type, tags, score, section, snippet``.
         """
-        distance = Chunk.embedding.cosine_distance(query_embedding)
-        len_penalty = func.least(
-            1.0,
-            func.length(Chunk.chunk_text) / float(_CHUNK_LEN_RAMP),
-        )
-        adjusted = (1 - distance) * len_penalty
-        best_score = func.max(adjusted).label("score")
-
-        notes_stmt = (
-            select(
-                Note.id,
-                Note.note_id,
-                Note.title,
-                Note.path,
-                Note.type,
-                Note.tags,
-                best_score,
-                Note.scope,
-                Note.verification_state,
-                Note.confidence,
-                Note.valid_from,
-                Note.valid_until,
-                Note.observed_at,
-            )
-            .join(Chunk, Chunk.note_fk == Note.id)
-            .where(Note.deleted_at.is_(None))
-            .group_by(Note.id)
-            .having(func.max(adjusted) >= MIN_SEARCH_SCORE)
-            .order_by(best_score.desc())
-            .limit(limit)
-        )
-        if type_filter is not None:
-            notes_stmt = notes_stmt.where(Note.type == type_filter)
-
-        note_rows = self.session.execute(notes_stmt).all()
-        if not note_rows:
+        ranked = _rank_search_chunks(self.session, query_embedding, limit, type_filter)
+        if not ranked:
             return []
 
-        top_ids = [row.id for row in note_rows]
-        top_note_ids = [row.note_id for row in note_rows]
-
-        chunk_adj = (1 - Chunk.embedding.cosine_distance(query_embedding)) * func.least(
-            1.0, func.length(Chunk.chunk_text) / float(_CHUNK_LEN_RAMP)
-        )
-        chunks_stmt = (
-            select(
-                Chunk.note_fk,
-                Chunk.section_header,
-                Chunk.chunk_text,
-            )
-            .where(Chunk.note_fk.in_(top_ids))
-            .order_by(Chunk.note_fk, chunk_adj.desc())
-            .distinct(Chunk.note_fk)
-        )
-
-        chunk_rows = self.session.execute(chunks_stmt).all()
-        best_chunk_by_note = {
-            row.note_fk: (row.section_header, row.chunk_text) for row in chunk_rows
+        top_ids = [note_fk for note_fk, _, _ in ranked]
+        top_chunk_ids = [chunk_fk for _, chunk_fk, _ in ranked]
+        score_by_note = {note_fk: score for note_fk, _, score in ranked}
+        note_by_id = {
+            note.id: note
+            for note in self.session.exec(
+                select(Note).where(Note.id.in_(top_ids))
+            ).all()
         }
+        chunk_by_id = {
+            chunk.id: chunk
+            for chunk in self.session.exec(
+                select(Chunk).where(Chunk.id.in_(top_chunk_ids))
+            ).all()
+        }
+        best_chunk_by_note = {
+            note_fk: chunk_by_id[chunk_fk]
+            for note_fk, chunk_fk, _ in ranked
+            if chunk_fk in chunk_by_id
+        }
+        note_rows = [
+            note_by_id[note_fk] for note_fk, _, _ in ranked if note_fk in note_by_id
+        ]
+        top_note_ids = [row.note_id for row in note_rows]
 
         # 3. Batch-fetch edges for top-N notes.
         edge_rows = self.session.execute(
@@ -435,25 +477,27 @@ class KnowledgeStore:
         resolved = _resolve_edge_targets(self.session, edge_rows)
 
         edges_by_note: dict[int, list[dict]] = {}
-        for row in edge_rows:
+        for edge_row in edge_rows:
             edge: dict = {
-                "target_id": row.target_id,
-                "target_title": row.target_title,
-                "kind": row.kind,
-                "edge_type": row.edge_type,
+                "target_id": edge_row.target_id,
+                "target_title": edge_row.target_title,
+                "kind": edge_row.kind,
+                "edge_type": edge_row.edge_type,
             }
-            if row.kind == "edge":
+            if edge_row.kind == "edge":
                 edge["resolved_note_id"] = (
-                    row.target_id if row.target_id in resolved else None
+                    edge_row.target_id if edge_row.target_id in resolved else None
                 )
-            edges_by_note.setdefault(row.src_note_fk, []).append(edge)
+            edges_by_note.setdefault(edge_row.src_note_fk, []).append(edge)
 
         disputed_note_ids = open_dispute_note_ids(self.session, top_note_ids)
-        provenance_by_note = provenance_for_notes(self.session, top_ids)
+        provenance_by_note = provenance_for_notes(self.session, top_note_ids)
 
         results: list[dict] = []
         for row in note_rows:
-            section, chunk_text = best_chunk_by_note.get(row.id, ("", ""))
+            chunk = best_chunk_by_note.get(row.id)
+            section = chunk.section_header if chunk is not None else ""
+            chunk_text = chunk.chunk_text if chunk is not None else ""
             results.append(
                 {
                     "note_id": row.note_id,
@@ -461,7 +505,7 @@ class KnowledgeStore:
                     "path": row.path,
                     "type": row.type,
                     "tags": list(row.tags or []),
-                    "score": float(row.score),
+                    "score": score_by_note[row.id],
                     "section": section,
                     "snippet": (chunk_text or "")[:240],
                     "edges": edges_by_note.get(row.id, []),
@@ -475,7 +519,7 @@ class KnowledgeStore:
                         row.note_id in disputed_note_ids
                         or row.verification_state == "disputed"
                     ),
-                    "provenance": provenance_by_note.get(row.id, []),
+                    "provenance": provenance_by_note.get(row.note_id, []),
                 }
             )
         return results
@@ -512,7 +556,7 @@ class KnowledgeStore:
         if row is None:
             return None
         disputed_note_ids = open_dispute_note_ids(self.session, [row.note_id])
-        provenance_by_note = provenance_for_notes(self.session, [row.id])
+        provenance_by_note = provenance_for_notes(self.session, [row.note_id])
         return {
             "note_id": row.note_id,
             "title": row.title,
@@ -529,7 +573,7 @@ class KnowledgeStore:
             "disputed": (
                 row.note_id in disputed_note_ids or row.verification_state == "disputed"
             ),
-            "provenance": provenance_by_note.get(row.id, []),
+            "provenance": provenance_by_note.get(row.note_id, []),
         }
 
     def get_graph(self) -> dict:

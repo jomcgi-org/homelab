@@ -888,6 +888,37 @@ class TestCreateAtom:
         index.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_rejects_bad_verification_state(self):
+        index = AsyncMock()
+        with patch("knowledge.mcp.index_note_from_raw", index):
+            result = await create_atom(
+                title="x",
+                body="y",
+                type="atom",
+                visibility="public",
+                verification_state="trusted",
+            )
+
+        assert "verification_state must be one of" in result["error"]
+        index.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("confidence", [-0.01, 1.01])
+    async def test_rejects_out_of_range_confidence(self, confidence):
+        index = AsyncMock()
+        with patch("knowledge.mcp.index_note_from_raw", index):
+            result = await create_atom(
+                title="x",
+                body="y",
+                type="atom",
+                visibility="public",
+                confidence=confidence,
+            )
+
+        assert "confidence must be between 0 and 1" in result["error"]
+        index.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_active_requires_status_and_size(self):
         index = AsyncMock()
         with patch("knowledge.mcp.index_note_from_raw", index):

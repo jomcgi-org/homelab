@@ -1,15 +1,14 @@
 """Tests for scoped assertions, disputes, and provenance in the store."""
 
 from datetime import datetime, timezone
-from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.indexing import index_note_from_raw
-from knowledge.models import AtomRawProvenance, Dispute, Note, RawInput
+from knowledge.models import AtomRawProvenance, Chunk, Dispute, Note, RawInput
 from knowledge.store import (
     KnowledgeStore,
     open_dispute_note_ids,
@@ -131,9 +130,23 @@ def test_disputes_and_provenance_are_batched_by_note(session):
     session.refresh(raw)
     session.add(
         AtomRawProvenance(
+            raw_fk=raw.id,
+            derived_note_id="scoped",
+            gardener_version="current-version",
+        )
+    )
+    session.add(
+        AtomRawProvenance(
+            atom_fk=note.id,
+            gardener_version="legacy-version",
+        )
+    )
+    session.add(
+        AtomRawProvenance(
             atom_fk=note.id,
             raw_fk=raw.id,
-            gardener_version="test-version",
+            derived_note_id="failed",
+            gardener_version="sentinel-version",
         )
     )
     session.add(Dispute(note_id="scoped", reason="contradictory evidence"))
@@ -141,79 +154,80 @@ def test_disputes_and_provenance_are_batched_by_note(session):
     session.commit()
 
     assert open_dispute_note_ids(session, ["scoped", "closed", "missing"]) == {"scoped"}
-    assert provenance_for_notes(session, [note.id]) == {
-        note.id: [
+    assert provenance_for_notes(session, ["scoped"]) == {
+        "scoped": [
             {
                 "raw_id": "raw-1",
                 "source": "collector",
-                "gardener_version": "test-version",
-            }
+                "gardener_version": "current-version",
+            },
+            {
+                "raw_id": None,
+                "source": None,
+                "gardener_version": "legacy-version",
+            },
         ]
     }
 
 
-class _Rows:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def all(self):
-        return self._rows
-
-    def scalars(self):
-        return self
-
-
-@pytest.mark.parametrize(
-    ("open_dispute_ids", "expected_disputed"),
-    [([], False), (["scoped"], True)],
-)
-def test_search_results_include_scoped_fields_dispute_and_provenance(
-    open_dispute_ids, expected_disputed
-):
-    valid_from = datetime(2026, 9, 1, tzinfo=timezone.utc)
-    note_row = SimpleNamespace(
-        id=11,
+def test_search_and_get_note_project_scoped_fields_with_real_session(session):
+    note = Note(
         note_id="scoped",
-        title="Scoped",
         path="scoped.md",
+        title="Scoped",
+        content_hash="hash",
+        content="supported claim",
         type="fact",
         tags=["test"],
-        score=0.9,
         scope="repo:owner/repo",
         verification_state="verified",
         confidence=0.7,
-        valid_from=valid_from,
-        valid_until=None,
-        observed_at=None,
+        valid_from=datetime(2026, 9, 1, tzinfo=timezone.utc),
     )
-    chunk_row = SimpleNamespace(
-        note_fk=11, section_header="## Evidence", chunk_text="supported claim"
-    )
-    provenance_row = SimpleNamespace(
-        atom_fk=11,
+    raw = RawInput(
         raw_id="raw-1",
+        path="raws/raw-1.md",
         source="collector",
-        gardener_version="v1",
+        content_hash="raw-1",
     )
-    session = MagicMock()
-    session.execute.side_effect = [
-        _Rows([note_row]),
-        _Rows([chunk_row]),
-        _Rows([]),
-        _Rows(open_dispute_ids),
-        _Rows([provenance_row]),
-    ]
+    session.add(note)
+    session.add(raw)
+    session.commit()
+    session.refresh(note)
+    session.refresh(raw)
+    chunk = Chunk(
+        note_fk=note.id,
+        chunk_index=0,
+        section_header="## Evidence",
+        chunk_text="supported claim",
+        embedding=[0.0] * 1024,
+    )
+    session.add(chunk)
+    session.add(
+        AtomRawProvenance(
+            raw_fk=raw.id,
+            derived_note_id="scoped",
+            gardener_version="v1",
+        )
+    )
+    session.add(Dispute(note_id="scoped", reason="contradictory evidence"))
+    session.commit()
+    session.refresh(chunk)
 
-    results = KnowledgeStore(session).search_notes_with_context([0.0] * 1024)
+    embedding = [0.0] * 1024
+    with patch(
+        "knowledge.store._rank_search_chunks",
+        return_value=[(note.id, chunk.id, 0.9)],
+    ) as rank:
+        results = KnowledgeStore(session).search_notes_with_context(embedding)
 
-    assert session.execute.call_count == 5
-    assert results[0]["scope"] == "repo:owner/repo"
-    assert results[0]["verification_state"] == "verified"
-    assert results[0]["confidence"] == 0.7
-    assert results[0]["valid_from"] == "2026-09-01T00:00:00+00:00"
-    assert results[0]["valid_until"] is None
-    assert results[0]["observed_at"] is None
-    assert results[0]["disputed"] is expected_disputed
-    assert results[0]["provenance"] == [
-        {"raw_id": "raw-1", "source": "collector", "gardener_version": "v1"}
-    ]
+    rank.assert_called_once_with(session, embedding, 20, None)
+    detail = KnowledgeStore(session).get_note_by_id("scoped")
+    assert detail is not None
+    for result in (results[0], detail):
+        assert result["scope"] == "repo:owner/repo"
+        assert result["verification_state"] == "verified"
+        assert result["disputed"] is True
+        assert result["provenance"] == [
+            {"raw_id": "raw-1", "source": "collector", "gardener_version": "v1"}
+        ]

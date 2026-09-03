@@ -646,6 +646,18 @@ async def create_atom(
         return {"error": f"type must be one of atom, fact, active, got {type!r}"}
     if visibility not in _VISIBILITIES:
         return {"error": f"visibility must be public or private, got {visibility!r}"}
+    if (
+        verification_state is not None
+        and verification_state not in frontmatter.VERIFICATION_STATES
+    ):
+        valid = ", ".join(sorted(frontmatter.VERIFICATION_STATES))
+        return {
+            "error": (
+                f"verification_state must be one of {valid}, got {verification_state!r}"
+            )
+        }
+    if confidence is not None and not 0 <= confidence <= 1:
+        return {"error": f"confidence must be between 0 and 1, got {confidence!r}"}
     if type == "active":
         if status not in _ACTIVE_STATUSES:
             return {

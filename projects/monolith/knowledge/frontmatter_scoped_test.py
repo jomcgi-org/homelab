@@ -81,3 +81,11 @@ def test_scoped_fields_round_trip_through_serializer():
     assert reparsed.valid_until == metadata.valid_until
     assert reparsed.observed_at == metadata.observed_at
     assert body.strip() == "Body"
+
+
+def test_serializer_omits_legacy_verification_state():
+    serialized = _serialize_frontmatter(
+        ParsedFrontmatter(note_id="legacy", verification_state="legacy"), "Body"
+    )
+
+    assert "verification_state" not in serialized

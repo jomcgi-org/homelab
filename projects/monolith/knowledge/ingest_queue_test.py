@@ -3,6 +3,7 @@
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
@@ -12,6 +13,7 @@ from knowledge.ingest_queue import (
     fetch_webpage,
     ingest_handler,
     ingest_raw,
+    ingest_raw_with_status,
 )
 from knowledge.models import RawInput
 from knowledge.raw_paths import compute_raw_id
@@ -144,6 +146,35 @@ class TestIngestRaw:
         assert mock_upload.call_count == 1
         rows = db_session.exec(select(RawInput)).all()
         assert len(rows) == 1
+
+    def test_concurrent_duplicate_insert_returns_existing(self):
+        existing = RawInput(
+            id=7,
+            raw_id=compute_raw_id("same content"),
+            path="raws/existing.md",
+            source="capture",
+            content_hash=compute_raw_id("same content"),
+        )
+        missing_result = MagicMock()
+        missing_result.first.return_value = None
+        existing_result = MagicMock()
+        existing_result.first.return_value = existing
+        session = MagicMock()
+        session.exec.side_effect = [missing_result, existing_result]
+        savepoint = session.begin_nested.return_value
+        session.flush.side_effect = IntegrityError(
+            "INSERT INTO knowledge.raw_inputs", {}, Exception("duplicate")
+        )
+
+        with patch("knowledge.ingest_queue.upload_raw"):
+            raw, created = ingest_raw_with_status(
+                session, content="same content", source="capture"
+            )
+
+        assert raw is existing
+        assert created is False
+        savepoint.rollback.assert_called_once_with()
+        session.commit.assert_not_called()
 
 
 @pytest.mark.asyncio

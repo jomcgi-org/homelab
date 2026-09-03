@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 import trafilatura
 from sqlalchemy import Column, String, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Field, Session, SQLModel, select
 from youtube_transcript_api import YouTubeTranscriptApi
 
@@ -185,8 +186,21 @@ def ingest_raw_with_status(
         original_path=original_url,
         extra=extra or {},
     )
-    session.add(raw)
-    session.commit()
+    savepoint = session.begin_nested()
+    try:
+        session.add(raw)
+        session.flush()
+    except IntegrityError:
+        savepoint.rollback()
+        existing = session.exec(
+            select(RawInput).where(RawInput.raw_id == raw_id)
+        ).first()
+        if existing is None:
+            raise
+        return existing, False
+    else:
+        savepoint.commit()
+        session.commit()
     logger.info("ingest_queue: ingested raw %s (source=%s)", raw_id, source)
     return raw, True
 

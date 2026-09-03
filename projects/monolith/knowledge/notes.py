@@ -141,7 +141,7 @@ def _serialize_frontmatter(parsed: frontmatter.ParsedFrontmatter, body: str) -> 
         fm_dict["source"] = parsed.source
     if parsed.scope is not None:
         fm_dict["scope"] = parsed.scope
-    if parsed.verification_state is not None:
+    if parsed.verification_state and parsed.verification_state != "legacy":
         fm_dict["verification_state"] = parsed.verification_state
     if parsed.confidence is not None:
         fm_dict["confidence"] = parsed.confidence
