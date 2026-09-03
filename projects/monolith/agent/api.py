@@ -18,11 +18,20 @@ def load_drainer_settings():
 
 
 def list_jobs(
-    *, kind: str | None = None, kinds: tuple[str, ...] | list[str] | None = None
+    *,
+    kind: str | None = None,
+    kinds: tuple[str, ...] | list[str] | None = None,
+    limit: int | None = None,
+    newest_first: bool = False,
 ) -> list[dict]:
+    options = {}
+    if limit is not None:
+        options["limit"] = limit
+    if newest_first:
+        options["newest_first"] = True
     if kinds is not None:
-        return _routine_jobs.list_jobs(kinds=kinds)
-    return _routine_jobs.list_jobs(kind=kind)
+        return _routine_jobs.list_jobs(kinds=kinds, **options)
+    return _routine_jobs.list_jobs(kind=kind, **options)
 
 
 __all__ = [

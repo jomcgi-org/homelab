@@ -55,8 +55,6 @@ def load_drainer_settings() -> DrainerSettings:
         job_kinds = tuple(
             kind.strip() for kind in configured_kinds.split(",") if kind.strip()
         )
-        if not job_kinds:
-            job_kinds = ("qwen-drain", "kg-drain")
     else:
         legacy_kind = os.environ.get("DRAINER_JOB_KIND", "").strip()
         job_kinds = (legacy_kind,) if legacy_kind else ("qwen-drain", "kg-drain")

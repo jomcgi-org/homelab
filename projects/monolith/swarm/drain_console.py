@@ -39,6 +39,7 @@ _SESSION_KEY_MARKERS = (f":{DRAINER_NODE_KEY}:", f":{KG_NODE_KEY}:")
 
 PROMPT_HEAD_CHARS = 160
 SUMMARY_HEAD_CHARS = 200
+JOB_LIST_LIMIT = 500
 
 _PR_URL_RE = re.compile(
     r"(?<![\w.-])(?P<url>https://github\.com/"

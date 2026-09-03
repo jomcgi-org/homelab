@@ -5,7 +5,9 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from knowledge.extraction import GARDENER_VERSION
+# Version stamp recorded on every provenance row the gardener produces.
+# Bump this when the prompt or model changes to trigger a manual reprocess.
+GARDENER_VERSION = "claude-sonnet-4-6@v1"
 
 MAX_GARDENER_RETRIES = 3
 

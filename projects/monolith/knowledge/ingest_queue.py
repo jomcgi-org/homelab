@@ -200,11 +200,18 @@ def ingest_raw_with_status(
         return existing, False
     else:
         savepoint.commit()
-        session.commit()
     from knowledge.extraction import EXTRACTABLE_SOURCES, enqueue_extraction
 
     if source in EXTRACTABLE_SOURCES:
-        enqueue_extraction(session, raw_id)
+        enqueue_savepoint = session.begin_nested()
+        try:
+            enqueue_extraction(session, raw_id, commit=False)
+        except Exception:  # noqa: BLE001 - the later sweep repairs missed jobs
+            enqueue_savepoint.rollback()
+            logger.exception("ingest_queue: failed to enqueue raw %s", raw_id)
+        else:
+            enqueue_savepoint.commit()
+    session.commit()
     logger.info("ingest_queue: ingested raw %s (source=%s)", raw_id, source)
     return raw, True
 

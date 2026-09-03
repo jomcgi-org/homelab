@@ -11,7 +11,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from knowledge.extraction import ExtractionOutputInvalid, KG_JOB_KIND
+from knowledge.extraction import (
+    EXTRACTION_VERSION,
+    ExtractionOutputInvalid,
+    KG_JOB_KIND,
+)
 from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.store import KnowledgeStore  # re-exported for cross-domain typing
 
@@ -22,6 +26,7 @@ __all__ = [
     "KnowledgeStore",
     "MAX_GARDENER_RETRIES",
     "ExtractionOutputInvalid",
+    "EXTRACTION_VERSION",
     "KG_JOB_KIND",
     "get_store",
     "search_notes",
@@ -32,6 +37,7 @@ __all__ = [
     "enqueue_extraction",
     "apply_extraction",
     "build_extraction_prompt",
+    "record_extraction_failure",
     "kg_health",
     "count_notes_review_queue",
     "count_gaps_review_queue",
@@ -106,6 +112,12 @@ def build_extraction_prompt(session: "Session", raw) -> str:
     from knowledge.extraction import build_extraction_prompt as _build_prompt
 
     return _build_prompt(session, raw)
+
+
+def record_extraction_failure(session: "Session", raw_id: str, error: str) -> None:
+    from knowledge.extraction import record_extraction_failure as _record_failure
+
+    _record_failure(session, raw_id, error)
 
 
 async def kg_health() -> dict:

@@ -9,7 +9,7 @@ import os
 from sqlalchemy import text
 from sqlmodel import Session
 
-from knowledge.extraction import GARDENER_VERSION, KG_JOB_KIND, KG_NODE_KEY
+from knowledge.extraction import EXTRACTION_VERSION, KG_JOB_KIND, KG_NODE_KEY
 
 _STALE_SECONDS = 6 * 60 * 60
 
@@ -46,13 +46,13 @@ def _kg_health_core(session: Session, cap: int) -> dict:
                          AND created_at >= now() - interval '24 hours'
                    ) AS atoms_24h,
                    max(created_at) FILTER (
-                       WHERE derived_note_id <> 'failed'
+                       WHERE derived_note_id IS DISTINCT FROM 'failed'
                    ) AS last_success_at
               FROM knowledge.atom_raw_provenance
              WHERE gardener_version = :version
             """
         ),
-        {"version": GARDENER_VERSION},
+        {"version": EXTRACTION_VERSION},
     ).one()
     jobs_today = session.execute(
         text(
@@ -66,12 +66,14 @@ def _kg_health_core(session: Session, cap: int) -> dict:
         {"node_key": KG_NODE_KEY},
     ).scalar_one()
     oldest = max(0.0, float(queue.oldest_seconds or 0.0))
+    failed_24h = int(provenance.failed_24h)
+    atoms_24h = int(provenance.atoms_24h)
     return {
-        "ok": oldest <= _STALE_SECONDS,
+        "ok": oldest <= _STALE_SECONDS and not (failed_24h > 0 and atoms_24h == 0),
         "queued": int(queue.queued),
         "oldest_queued_seconds": oldest,
-        "failed_24h": int(provenance.failed_24h),
-        "atoms_24h": int(provenance.atoms_24h),
+        "failed_24h": failed_24h,
+        "atoms_24h": atoms_24h,
         "last_success_at": _iso(provenance.last_success_at),
         "jobs_today": int(jobs_today),
         "cap": cap,

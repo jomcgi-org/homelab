@@ -333,3 +333,18 @@ def test_errored_one_shot_finishes_once_and_stays_not_due(
         row["name"] == "drainer-one-shot-error"
         for row in routine_jobs.list_jobs(due_only=True)
     )
+
+
+def test_terminal_kg_job_is_deregistered(agent_db: Session):
+    name = "kg:terminal-cleanup"
+    routine_jobs.register_job(
+        name=name,
+        kind="kg-drain",
+        payload={"raw_id": "terminal-cleanup"},
+        next_run_at=datetime.now(timezone.utc),
+    )
+
+    assert drainer.finish_drainer_job.__wrapped__(
+        name, "ok", "atoms=1 dispute=None", True
+    )
+    assert not any(row["name"] == name for row in routine_jobs.list_jobs())

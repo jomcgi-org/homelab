@@ -33,7 +33,7 @@ from sqlmodel import Session
 from agent.api import list_jobs, load_drainer_settings
 from agent_sessions.constants import DRAINER_NODE_KEY, KG_NODE_KEY
 from core.db import get_engine
-from core.github import GITHUB_API, GITHUB_REPO
+from core.github import GITHUB_API
 from swarm import drain_console
 
 router = APIRouter(prefix="/api/agents/drain", tags=["agents"])
@@ -336,7 +336,11 @@ def _capped_activities(usage_json: str | None) -> tuple[list, int]:
 @router.get("/console")
 def drain_console_view() -> dict:
     settings = asdict(load_drainer_settings())
-    jobs = list_jobs(kinds=settings["job_kinds"])
+    jobs = list_jobs(
+        kinds=settings["job_kinds"],
+        limit=drain_console.JOB_LIST_LIMIT,
+        newest_first=True,
+    )
     now = datetime.now(timezone.utc)
 
     sessions = _load_drainer_sessions()
@@ -389,7 +393,11 @@ def drain_console_view() -> dict:
 @router.get("/jobs/{name}")
 def drain_job_detail(name: str) -> dict:
     settings = asdict(load_drainer_settings())
-    jobs = list_jobs(kinds=settings["job_kinds"])
+    jobs = list_jobs(
+        kinds=settings["job_kinds"],
+        limit=drain_console.JOB_LIST_LIMIT,
+        newest_first=True,
+    )
     job = next((j for j in jobs if j["name"] == name), None)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown drain job")
@@ -489,7 +497,11 @@ def requeue_drain_job(name: str) -> dict:
     from agent import routine_jobs
 
     settings = asdict(load_drainer_settings())
-    jobs = list_jobs(kinds=settings["job_kinds"])
+    jobs = list_jobs(
+        kinds=settings["job_kinds"],
+        limit=drain_console.JOB_LIST_LIMIT,
+        newest_first=True,
+    )
     job = next((j for j in jobs if j["name"] == name), None)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown drain job")

@@ -170,8 +170,6 @@ spec:
               value: {{ .stallThresholdSeconds | quote }}
             - name: DRAINER_JOB_KINDS
               value: {{ join "," .jobKinds | quote }}
-            - name: DRAINER_JOB_KIND
-              value: {{ first .jobKinds | quote }}
             - name: DRAINER_KG_MAX_JOBS_PER_DAY
               value: {{ .kgMaxJobsPerDay | quote }}
             - name: DRAINER_REPO

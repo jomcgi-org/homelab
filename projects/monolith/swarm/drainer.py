@@ -14,7 +14,7 @@ from agent_sessions.constants import (
     DRAINER_NODE_KEY,
     KG_NODE_KEY,
 )
-from knowledge.api import ExtractionOutputInvalid, KG_JOB_KIND
+from knowledge.api import ExtractionOutputInvalid, KG_JOB_KIND, MAX_GARDENER_RETRIES
 from swarm.steps import start_agent_session
 from swarm.tracing import set_attributes, tracer
 
@@ -96,6 +96,13 @@ def defer_drainer_job(name: str, seconds: int) -> bool:
 
 
 @DBOS.step()
+def update_drainer_job_payload(name: str, payload: dict) -> bool:
+    from agent.routine_jobs import update_job_payload
+
+    return update_job_payload(name, payload)
+
+
+@DBOS.step()
 def build_kg_prompt(raw_id: str) -> str:
     from core.db import get_engine
     from knowledge.api import build_extraction_prompt
@@ -120,13 +127,27 @@ def apply_kg_extraction(raw_id: str, result_text: str) -> dict:
 
 
 @DBOS.step()
-def finish_drainer_job(name: str, status: str, summary: str) -> bool:
-    from agent.routine_jobs import complete_job
+def record_kg_failure(raw_id: str, error: str) -> None:
+    from core.db import get_engine
+    from knowledge.api import record_extraction_failure
+    from sqlmodel import Session
+
+    with Session(get_engine()) as session:
+        record_extraction_failure(session, raw_id, error)
+
+
+@DBOS.step()
+def finish_drainer_job(
+    name: str, status: str, summary: str, deregister: bool = False
+) -> bool:
+    from agent.routine_jobs import complete_job, deregister_job
 
     # This span is the countable per-job outcome event. The outcome belongs on
     # finish_job, not on the replayable job span.
     with tracer.start_as_current_span("drain.finish_job") as span:
         completed = complete_job(name, status=status, summary=summary)
+        if deregister:
+            deregister_job(name)
         summary_lines = summary.splitlines()
         first_line = summary_lines[0] if summary_lines else ""
         set_attributes(
@@ -292,10 +313,21 @@ def _kg_raw_id(payload: object) -> str:
 
 
 def _job_kinds(settings: dict) -> tuple[str, ...]:
-    kinds = settings.get("job_kinds")
-    if kinds:
-        return tuple(kinds)
+    if "job_kinds" in settings:
+        return tuple(settings["job_kinds"])
     return (settings.get("job_kind", "qwen-drain"),)
+
+
+def _incremented_kg_payload(payload: object) -> tuple[dict, int]:
+    if not isinstance(payload, dict):
+        raise MalformedPayload("missing raw_id in payload")
+    previous = payload.get("attempts", 0)
+    if not isinstance(previous, int) or isinstance(previous, bool) or previous < 0:
+        previous = 0
+    attempt = previous + 1
+    updated = dict(payload)
+    updated["attempts"] = attempt
+    return updated, attempt
 
 
 def _summary(value: object) -> str:
@@ -354,9 +386,12 @@ def drain_cycle() -> dict:
         processed = 0
         succeeded = 0
         ttl_secs = settings["turn_timeout_seconds"] + CLAIM_TTL_MARGIN_SECONDS
+        claim_kinds = list(_job_kinds(settings))
 
         for _ in range(settings["max_jobs_per_cycle"]):
-            job = claim_drainer_job(ttl_secs, _job_kinds(settings))
+            if not claim_kinds:
+                break
+            job = claim_drainer_job(ttl_secs, tuple(claim_kinds))
             if job is None:
                 break
             with tracer.start_as_current_span("drain.job") as job_span:
@@ -371,6 +406,7 @@ def drain_cycle() -> dict:
                 ):
                     finish_drainer_job(name, "deferred", "kg daily cap reached")
                     defer_drainer_job(name, 3600)
+                    claim_kinds = [kind for kind in claim_kinds if kind != KG_JOB_KIND]
                     continue
 
                 processed += 1
@@ -433,17 +469,32 @@ def drain_cycle() -> dict:
                         )
                     else:
                         summary = output
-                    finish_drainer_job(name, "ok", summary)
+                    if job_kind == KG_JOB_KIND:
+                        finish_drainer_job(name, "ok", summary, True)
+                    else:
+                        finish_drainer_job(name, "ok", summary)
                     succeeded += 1
                 except MalformedPayload as exc:
                     error = _summary(exc)
-                    finish_drainer_job(name, "error", error)
+                    if job_kind == KG_JOB_KIND:
+                        finish_drainer_job(name, "error", error, True)
+                    else:
+                        finish_drainer_job(name, "error", error)
                 except ExtractionOutputInvalid as exc:
                     error = _summary(exc)
-                    finish_drainer_job(name, "error", error)
+                    finish_drainer_job(name, "error", error, True)
                 except Exception as exc:  # noqa: BLE001 - one job must not stop the cycle
                     error = _summary(exc)
-                    finish_drainer_job(name, "error", error)
+                    if job_kind == KG_JOB_KIND:
+                        payload, attempt = _incremented_kg_payload(job.get("payload"))
+                        update_drainer_job_payload(name, payload)
+                        if attempt <= MAX_GARDENER_RETRIES:
+                            defer_drainer_job(name, 900 * attempt)
+                        else:
+                            record_kg_failure(raw_id, error)
+                            finish_drainer_job(name, "error", error, True)
+                    else:
+                        finish_drainer_job(name, "error", error)
                     try:
                         notify_drainer_failure(name, error)
                     except Exception:  # noqa: BLE001 - notification is best effort

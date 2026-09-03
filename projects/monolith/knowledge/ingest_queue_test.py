@@ -176,6 +176,27 @@ class TestIngestRaw:
         savepoint.rollback.assert_called_once_with()
         session.commit.assert_not_called()
 
+    def test_failing_extraction_enqueue_still_commits_raw(self, db_session, caplog):
+        content = "agent report that must survive"
+        with (
+            patch("knowledge.ingest_queue.upload_raw"),
+            patch(
+                "knowledge.extraction.enqueue_extraction",
+                side_effect=RuntimeError("queue unavailable"),
+            ),
+        ):
+            raw, created = ingest_raw_with_status(
+                db_session, content=content, source="agent-report"
+            )
+
+        assert created is True
+        db_session.expire_all()
+        stored = db_session.exec(
+            select(RawInput).where(RawInput.raw_id == raw.raw_id)
+        ).one()
+        assert stored.raw_id == compute_raw_id(content)
+        assert "failed to enqueue raw" in caplog.text
+
 
 @pytest.mark.asyncio
 async def test_ingest_handler_calls_ingest_raw_with_built_content():
