@@ -197,6 +197,26 @@ class TestIngestRaw:
         assert stored.raw_id == compute_raw_id(content)
         assert "failed to enqueue raw" in caplog.text
 
+    def test_lane_owned_source_redacts_nested_extra_strings(self, db_session):
+        secret = "ghp_abcdefghijklmnopqrstuvwxyz123456"
+        with patch("knowledge.ingest_queue.upload_raw") as mock_upload:
+            raw, created = ingest_raw_with_status(
+                db_session,
+                content=f"body {secret}",
+                source="distress",
+                extra={
+                    "plain": secret,
+                    "nested": {"items": [secret, 7, {"value": secret}]},
+                },
+            )
+
+        assert created is True
+        uploaded = mock_upload.call_args.args[1]
+        assert secret not in uploaded
+        assert secret not in str(raw.extra)
+        assert raw.extra["nested"]["items"][1] == 7
+        assert raw.extra["server_redactions"] == {"github_token": 4}
+
 
 @pytest.mark.asyncio
 async def test_ingest_handler_calls_ingest_raw_with_built_content():

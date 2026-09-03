@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 import logging
 import re
 from datetime import datetime, timezone
@@ -18,6 +19,7 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from knowledge.models import RawInput
 from knowledge.raw_paths import compute_raw_id
 from knowledge.raw_store import upload_raw
+from knowledge.redact import redact_text_counts
 
 logger = logging.getLogger("monolith.knowledge.ingest_queue")
 
@@ -27,6 +29,23 @@ _YT_PATTERNS = re.compile(
     r"(?:youtube\.com/watch\?.*v=|youtu\.be/|youtube\.com/embed/)"
     r"([a-zA-Z0-9_-]{11})"
 )
+
+
+def _redact_extra_strings(value: object, counts: Counter[str]) -> object:
+    """Copy an extra value while redacting only its nested string values."""
+    if isinstance(value, str):
+        redacted, value_counts = redact_text_counts(value)
+        counts.update(value_counts)
+        return redacted
+    if isinstance(value, dict):
+        return {
+            key: _redact_extra_strings(nested, counts) for key, nested in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_extra_strings(nested, counts) for nested in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_extra_strings(nested, counts) for nested in value)
+    return value
 
 
 class IngestQueueItem(  # nosemgrep: sqlmodel-datetime-without-factory
@@ -173,6 +192,18 @@ def ingest_raw_with_status(
     commit: bool = True,
 ) -> tuple[RawInput, bool]:
     """Persist raw content and report whether a new row was created."""
+    from knowledge.extraction import (
+        EXTRACTABLE_SOURCES,
+        LANE_OWNED_SOURCES,
+        enqueue_extraction,
+    )
+
+    stored_extra = dict(extra or {})
+    if source in LANE_OWNED_SOURCES:
+        content, content_redactions = redact_text_counts(content)
+        server_redactions: Counter[str] = Counter(content_redactions)
+        stored_extra = _redact_extra_strings(stored_extra, server_redactions)
+        stored_extra["server_redactions"] = dict(server_redactions)
     raw_id = compute_raw_id(content)
     existing = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
     if existing is not None:
@@ -185,7 +216,7 @@ def ingest_raw_with_status(
         source=source,
         content_hash=raw_id,
         original_path=original_url,
-        extra=extra or {},
+        extra=stored_extra,
     )
     savepoint = session.begin_nested()
     try:
@@ -201,13 +232,11 @@ def ingest_raw_with_status(
         return existing, False
     else:
         savepoint.commit()
-    from knowledge.extraction import EXTRACTABLE_SOURCES, enqueue_extraction
-
     if source in EXTRACTABLE_SOURCES:
         enqueue_savepoint = session.begin_nested()
         try:
             enqueue_extraction(session, raw_id, commit=False)
-        except Exception:  # noqa: BLE001 - the later sweep repairs missed jobs
+        except Exception:  # noqa: BLE001 - sweep_unqueued_raws repairs missed jobs
             enqueue_savepoint.rollback()
             logger.exception("ingest_queue: failed to enqueue raw %s", raw_id)
         else:

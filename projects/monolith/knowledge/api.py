@@ -35,6 +35,7 @@ __all__ = [
     "ingest_raw",
     "ingest_raw_with_status",
     "enqueue_extraction",
+    "sweep_unqueued_raws",
     "apply_extraction",
     "build_extraction_prompt",
     "record_extraction_failure",
@@ -98,10 +99,16 @@ def ingest_raw_with_status(
     )
 
 
-def enqueue_extraction(session: "Session", raw_id: str) -> bool:
+def redact_text(text: str) -> tuple[str, int]:
+    from knowledge.redact import redact_text as _redact_text
+
+    return _redact_text(text)
+
+
+def enqueue_extraction(session: "Session", raw_id: str, *, commit: bool = True) -> bool:
     from knowledge.extraction import enqueue_extraction as _enqueue_extraction
 
-    return _enqueue_extraction(session, raw_id)
+    return _enqueue_extraction(session, raw_id, commit=commit)
 
 
 def apply_extraction(session: "Session", raw_id: str, result_text: str) -> dict:
@@ -116,10 +123,24 @@ def build_extraction_prompt(session: "Session", raw) -> str:
     return _build_prompt(session, raw)
 
 
-def record_extraction_failure(session: "Session", raw_id: str, error: str) -> None:
+def sweep_unqueued_raws(session: "Session", limit: int = 50) -> int:
+    from knowledge.extraction import sweep_unqueued_raws as _sweep_unqueued_raws
+
+    return _sweep_unqueued_raws(session, limit)
+
+
+def set_kg_swept_last_cycle(count: int) -> None:
+    from knowledge.health import set_swept_last_cycle
+
+    set_swept_last_cycle(count)
+
+
+def record_extraction_failure(
+    session: "Session", raw_id: str, error: str, attempt: int
+) -> None:
     from knowledge.extraction import record_extraction_failure as _record_failure
 
-    _record_failure(session, raw_id, error)
+    _record_failure(session, raw_id, error, attempt)
 
 
 async def kg_health() -> dict:

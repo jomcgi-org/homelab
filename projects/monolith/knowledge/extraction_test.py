@@ -18,6 +18,8 @@ from knowledge.extraction import (
     apply_extraction,
     build_extraction_prompt,
     enqueue_extraction,
+    record_extraction_failure,
+    sweep_unqueued_raws,
 )
 from knowledge.models import AtomRawProvenance, Dispute, Note, RawInput
 
@@ -88,6 +90,67 @@ def test_enqueue_is_one_shot_and_idempotent(session):
     assert row.interval_secs is None
     assert json.loads(row.payload) == {"raw_id": "raw-1"}
     assert row.created_by == "knowledge.extraction"
+
+
+def _create_routine_jobs(session: Session) -> None:
+    session.execute(
+        text(
+            """
+            CREATE TABLE routine_jobs (
+                name TEXT PRIMARY KEY,
+                routine_kind TEXT NOT NULL,
+                interval_secs INTEGER,
+                next_run_at TIMESTAMP,
+                payload TEXT,
+                created_by TEXT
+            )
+            """
+        )
+    )
+    session.commit()
+
+
+def test_sweep_queues_raw_missed_by_ingest(session):
+    _create_routine_jobs(session)
+    raw = _raw(session, "agent-report")
+
+    assert sweep_unqueued_raws(session) == 1
+
+    job = session.execute(text("SELECT * FROM routine_jobs")).one()
+    assert job.name == f"kg:{raw.raw_id}"
+
+
+def test_sweep_skips_raw_at_retry_ceiling(session):
+    _create_routine_jobs(session)
+    raw = _raw(session, "agent-report")
+    session.add(
+        AtomRawProvenance(
+            raw_fk=raw.id,
+            derived_note_id="failed",
+            gardener_version=EXTRACTION_VERSION,
+            retry_count=3,
+        )
+    )
+    session.commit()
+
+    assert sweep_unqueued_raws(session) == 0
+    assert session.execute(text("SELECT * FROM routine_jobs")).all() == []
+
+
+def test_sweep_skips_no_new_notes_sentinel(session):
+    _create_routine_jobs(session)
+    raw = _raw(session, "agent-report")
+    session.add(
+        AtomRawProvenance(
+            raw_fk=raw.id,
+            derived_note_id="no-new-notes",
+            gardener_version=EXTRACTION_VERSION,
+        )
+    )
+    session.commit()
+
+    assert sweep_unqueued_raws(session) == 0
+    assert session.execute(text("SELECT * FROM routine_jobs")).all() == []
 
 
 def _patch_prompt(monkeypatch, body: str, related=None):
@@ -429,18 +492,74 @@ def test_dispute_resolution_updates_open_rows_and_note(
     assert note.verification_state == note_state
 
 
-def test_invalid_output_writes_incrementing_dead_letter(session):
+def test_dispute_resolution_updates_only_dispute_linked_to_raw(session):
+    note = Note(
+        note_id="multiply-disputed-note",
+        path="multiply-disputed.md",
+        title="Multiply disputed",
+        content_hash="multiply-disputed-hash",
+        content="body",
+        verification_state="unverified",
+    )
+    session.add(note)
+    session.commit()
+    first_raw = _raw(session, "dispute", extra={"note_id": note.note_id})
+    second_raw = _raw(session, "dispute", extra={"note_id": note.note_id})
+    first = Dispute(note_id=note.note_id, raw_id=first_raw.raw_id, reason="first")
+    second = Dispute(note_id=note.note_id, raw_id=second_raw.raw_id, reason="second")
+    session.add(first)
+    session.add(second)
+    session.commit()
+
+    apply_extraction(
+        session,
+        first_raw.raw_id,
+        _result([], {"state": "rejected", "rationale": "first checked"}),
+    )
+
+    session.refresh(first)
+    session.refresh(second)
+    assert first.state == "rejected"
+    assert first.resolution == "first checked"
+    assert first.resolved_at is not None
+    assert second.state == "open"
+    assert second.resolution is None
+    assert second.resolved_at is None
+
+
+def test_invalid_output_does_not_write_dead_letter_before_drainer_ceiling(session):
     raw = _raw(session, "agent-report")
 
-    for expected in (1, 2):
-        with pytest.raises(ExtractionOutputInvalid):
-            apply_extraction(session, raw.raw_id, "not json")
-        row = session.exec(
-            select(AtomRawProvenance).where(
-                AtomRawProvenance.raw_fk == raw.id,
-                AtomRawProvenance.derived_note_id == "failed",
-            )
-        ).one()
-        assert row.retry_count == expected
-        assert row.error == "missing valid JSON object"
-        assert row.gardener_version == EXTRACTION_VERSION
+    with pytest.raises(ExtractionOutputInvalid):
+        apply_extraction(session, raw.raw_id, "not json")
+
+    rows = session.exec(
+        select(AtomRawProvenance).where(AtomRawProvenance.raw_fk == raw.id)
+    ).all()
+    assert rows == []
+
+
+def test_final_failure_records_ceiling_and_keeps_dispute_open(session):
+    raw = _raw(session, "dispute", extra={"note_id": "disputed-note"})
+    dispute = Dispute(
+        note_id="disputed-note",
+        raw_id=raw.raw_id,
+        reason="wrong",
+        resolution="manual context",
+    )
+    session.add(dispute)
+    session.commit()
+
+    record_extraction_failure(session, raw.raw_id, "invalid output", 3)
+
+    failed = session.exec(
+        select(AtomRawProvenance).where(
+            AtomRawProvenance.raw_fk == raw.id,
+            AtomRawProvenance.derived_note_id == "failed",
+        )
+    ).one()
+    session.refresh(dispute)
+    assert failed.retry_count == 3
+    assert failed.error == "invalid output"
+    assert dispute.state == "open"
+    assert dispute.resolution == ("manual context\nextraction failed after 3 attempts")

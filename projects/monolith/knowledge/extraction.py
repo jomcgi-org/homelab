@@ -10,10 +10,11 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import text, update
+from sqlalchemy import bindparam, text, update
 from sqlmodel import Session, select
 
 from knowledge import raw_store
+from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.models import AtomRawProvenance, Dispute, Note, RawInput
 from shared.embedding import EmbeddingClient
 
@@ -143,6 +144,61 @@ def enqueue_extraction(session: Session, raw_id: str, *, commit: bool = True) ->
     return result.rowcount > 0
 
 
+def sweep_unqueued_raws(session: Session, limit: int = 50) -> int:
+    """Register extraction jobs missed by ingest or eligible after a failure."""
+    dialect = session.get_bind().dialect.name
+    raw_table = "raw_inputs" if dialect == "sqlite" else "knowledge.raw_inputs"
+    provenance_table = (
+        "atom_raw_provenance"
+        if dialect == "sqlite"
+        else "knowledge.atom_raw_provenance"
+    )
+    jobs_table = "routine_jobs" if dialect == "sqlite" else "claude_agent.routine_jobs"
+    candidates = session.execute(
+        text(
+            f"""
+            SELECT raw.raw_id
+              FROM {raw_table} AS raw
+             WHERE raw.source IN :sources
+               AND NOT EXISTS (
+                    SELECT 1
+                      FROM {provenance_table} AS handled
+                     WHERE handled.raw_fk = raw.id
+                       AND handled.gardener_version = :version
+                       AND (handled.derived_note_id IS NULL
+                            OR handled.derived_note_id <> 'failed')
+               )
+               AND NOT EXISTS (
+                    SELECT 1
+                      FROM {provenance_table} AS exhausted
+                     WHERE exhausted.raw_fk = raw.id
+                       AND exhausted.gardener_version = :version
+                       AND exhausted.derived_note_id = 'failed'
+                       AND exhausted.retry_count >= :max_retries
+               )
+               AND NOT EXISTS (
+                    SELECT 1
+                      FROM {jobs_table} AS job
+                     WHERE job.name = 'kg:' || raw.raw_id
+               )
+             ORDER BY raw.created_at ASC, raw.id ASC
+             LIMIT :limit
+            """
+        ).bindparams(bindparam("sources", expanding=True)),
+        {
+            "sources": sorted(EXTRACTABLE_SOURCES),
+            "version": EXTRACTION_VERSION,
+            "max_retries": MAX_GARDENER_RETRIES,
+            "limit": limit,
+        },
+    ).all()
+    registered = sum(
+        enqueue_extraction(session, row.raw_id, commit=False) for row in candidates
+    )
+    session.commit()
+    return registered
+
+
 def _capped_body(body: str) -> str:
     if len(body) <= RAW_BODY_CAP:
         return body
@@ -232,7 +288,7 @@ def build_extraction_prompt(session: Session, raw: RawInput) -> str:
     )
 
 
-def _record_failure(session: Session, raw: RawInput, error: str) -> None:
+def _record_failure(session: Session, raw: RawInput, error: str, attempt: int) -> None:
     existing = session.exec(
         select(AtomRawProvenance).where(
             AtomRawProvenance.raw_fk == raw.id,
@@ -247,23 +303,39 @@ def _record_failure(session: Session, raw: RawInput, error: str) -> None:
                 derived_note_id="failed",
                 gardener_version=EXTRACTION_VERSION,
                 error=error[:500],
-                retry_count=1,
+                retry_count=attempt,
             )
         )
     else:
-        existing.retry_count += 1
+        existing.retry_count = max(existing.retry_count + 1, attempt)
         existing.error = error[:500]
         existing.gardener_version = EXTRACTION_VERSION
         session.add(existing)
+    if raw.source == "dispute" and attempt >= MAX_GARDENER_RETRIES:
+        reason = f"extraction failed after {attempt} attempts"
+        disputes = session.exec(
+            select(Dispute).where(
+                Dispute.raw_id == raw.raw_id,
+                Dispute.state == "open",
+            )
+        ).all()
+        for dispute in disputes:
+            if not dispute.resolution:
+                dispute.resolution = reason
+            elif reason not in dispute.resolution:
+                dispute.resolution = f"{dispute.resolution}\n{reason}"
+            session.add(dispute)
     session.commit()
 
 
-def record_extraction_failure(session: Session, raw_id: str, error: str) -> None:
+def record_extraction_failure(
+    session: Session, raw_id: str, error: str, attempt: int
+) -> None:
     """Write a lane-version dead letter for a raw that exhausted retries."""
     raw = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
     if raw is None:
         raise ExtractionInputMissing(f"raw not found: {raw_id}")
-    _record_failure(session, raw, error)
+    _record_failure(session, raw, error, attempt)
 
 
 def _parse_result(result_text: str) -> _ExtractionResult:
@@ -346,11 +418,7 @@ def apply_extraction(session: Session, raw_id: str, result_text: str) -> dict:
     raw = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
     if raw is None:
         raise ExtractionInputMissing(f"raw not found: {raw_id}")
-    try:
-        parsed = _parse_result(result_text)
-    except ExtractionOutputInvalid as exc:
-        _record_failure(session, raw, str(exc))
-        raise
+    parsed = _parse_result(result_text)
 
     from knowledge.atoms import index_atom
 
@@ -414,9 +482,22 @@ def apply_extraction(session: Session, raw_id: str, result_text: str) -> dict:
         if resolution is not None and isinstance(disputed_note_id, str):
             dispute_state = resolution.state
             now = datetime.now(timezone.utc)
+            dispute_filters = [
+                Dispute.note_id == disputed_note_id,
+                Dispute.state == "open",
+                Dispute.raw_id == raw_id,
+            ]
+            linked_dispute = session.exec(
+                select(Dispute.id).where(Dispute.raw_id == raw_id)
+            ).first()
+            if (raw.extra or {}).get("dispute_id") is None and linked_dispute is None:
+                dispute_filters = [
+                    Dispute.note_id == disputed_note_id,
+                    Dispute.state == "open",
+                ]
             session.exec(
                 update(Dispute)
-                .where(Dispute.note_id == disputed_note_id, Dispute.state == "open")
+                .where(*dispute_filters)
                 .values(
                     state=resolution.state,
                     resolution=resolution.rationale,

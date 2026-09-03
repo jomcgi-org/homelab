@@ -236,6 +236,7 @@ async def test_dispute_fact_writes_row_raw_and_marks_search_result(db, principal
         assert note.content == "Current body"
         assert note.verification_state == "verified"
         assert len(jobs) == 1
+        assert "dispute_nonce:" in db.uploads[raw.raw_id]
         assert "> Existing fact" in db.uploads[raw.raw_id]
         assert "> Current body" in db.uploads[raw.raw_id]
 
@@ -245,6 +246,74 @@ async def test_dispute_fact_writes_row_raw_and_marks_search_result(db, principal
         ):
             results = KnowledgeStore(session).search_notes_with_context([0.0] * 1024)
         assert results[0]["disputed"] is True
+
+
+@pytest.mark.asyncio
+async def test_dispute_fact_returns_matching_open_dispute(db, principal):
+    with Session(db.engine) as session:
+        session.add(
+            Note(
+                note_id="already-disputed-fact",
+                path="already-disputed-fact.md",
+                title="Already disputed fact",
+                content_hash="already-disputed-hash",
+                content="Current body",
+                type="fact",
+            )
+        )
+        session.commit()
+
+    with (
+        patch("knowledge.mcp.get_engine", return_value=db.engine),
+        patch("knowledge.mcp.current_principal", return_value=principal),
+    ):
+        first = await dispute_fact("already-disputed-fact", "same reason")
+        second = await dispute_fact("already-disputed-fact", "same reason")
+
+    assert second == {
+        "dispute_id": first["dispute_id"],
+        "note_id": "already-disputed-fact",
+        "status": "already-disputed",
+        "raw_id": first["raw_id"],
+    }
+    with Session(db.engine) as session:
+        assert len(session.exec(select(Dispute)).all()) == 1
+        assert len(session.exec(select(RawInput)).all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_dispute_fact_nonce_creates_distinct_raw_after_resolution(db, principal):
+    with Session(db.engine) as session:
+        session.add(
+            Note(
+                note_id="repeated-dispute-fact",
+                path="repeated-dispute-fact.md",
+                title="Repeated dispute fact",
+                content_hash="repeated-dispute-hash",
+                content="Current body",
+                type="fact",
+            )
+        )
+        session.commit()
+
+    with (
+        patch("knowledge.mcp.get_engine", return_value=db.engine),
+        patch("knowledge.mcp.current_principal", return_value=principal),
+    ):
+        first = await dispute_fact("repeated-dispute-fact", "same reason")
+        with Session(db.engine) as session:
+            dispute = session.get(Dispute, first["dispute_id"])
+            assert dispute is not None
+            dispute.state = "rejected"
+            session.add(dispute)
+            session.commit()
+        second = await dispute_fact("repeated-dispute-fact", "same reason")
+
+    assert second["status"] == "disputed"
+    assert second["raw_id"] != first["raw_id"]
+    with Session(db.engine) as session:
+        assert len(session.exec(select(Dispute)).all()) == 2
+        assert len(session.exec(select(RawInput)).all()) == 2
 
 
 @pytest.mark.asyncio
@@ -355,6 +424,34 @@ async def test_distress_writes_raw_without_enqueue_and_notifies(
         "agent:reviewer: Cannot continue | wants: restore access"
     )
     assert notify.await_args.args[1] == expected_level
+
+
+@pytest.mark.asyncio
+async def test_distress_redacts_secret_from_body_extra_and_notification(db, principal):
+    secret = "ghp_abcdefghijklmnopqrstuvwxyz123456"
+    notify = AsyncMock(return_value={"ok": True})
+    with (
+        patch("knowledge.mcp.get_engine", return_value=db.engine),
+        patch("knowledge.mcp.current_principal", return_value=principal),
+        patch("knowledge.mcp.notify", notify),
+    ):
+        result = await report_distress(
+            f"Cannot continue with {secret}",
+            "urgent",
+            details=f"details include {secret}",
+            requested_intervention=f"rotate {secret}",
+        )
+
+    with Session(db.engine) as session:
+        raw = session.exec(
+            select(RawInput).where(RawInput.raw_id == result["intervention_id"])
+        ).one()
+        assert secret not in db.uploads[raw.raw_id]
+        assert secret not in str(raw.extra)
+        assert raw.extra["server_redactions"] == {"github_token": 5}
+    message = notify.await_args.args[0]
+    assert secret not in message
+    assert "[REDACTED:github_token]" in message
 
 
 @pytest.mark.asyncio

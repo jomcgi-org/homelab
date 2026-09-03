@@ -14,7 +14,12 @@ from agent_sessions.constants import (
     DRAINER_NODE_KEY,
     KG_NODE_KEY,
 )
-from knowledge.api import ExtractionOutputInvalid, KG_JOB_KIND, MAX_GARDENER_RETRIES
+from knowledge.api import (
+    ExtractionOutputInvalid,
+    KG_JOB_KIND,
+    MAX_GARDENER_RETRIES,
+    set_kg_swept_last_cycle,
+)
 from swarm.steps import start_agent_session
 from swarm.tracing import set_attributes, tracer
 
@@ -89,6 +94,16 @@ def kg_jobs_today() -> int:
 
 
 @DBOS.step()
+def sweep_kg_raws(limit: int = 50) -> int:
+    from core.db import get_engine
+    from knowledge.api import sweep_unqueued_raws
+    from sqlmodel import Session
+
+    with Session(get_engine()) as session:
+        return sweep_unqueued_raws(session, limit)
+
+
+@DBOS.step()
 def defer_drainer_job(name: str, seconds: int) -> bool:
     from agent.routine_jobs import defer_job
 
@@ -127,13 +142,13 @@ def apply_kg_extraction(raw_id: str, result_text: str) -> dict:
 
 
 @DBOS.step()
-def record_kg_failure(raw_id: str, error: str) -> None:
+def record_kg_failure(raw_id: str, error: str, attempt: int) -> None:
     from core.db import get_engine
     from knowledge.api import record_extraction_failure
     from sqlmodel import Session
 
     with Session(get_engine()) as session:
-        record_extraction_failure(session, raw_id, error)
+        record_extraction_failure(session, raw_id, error, attempt)
 
 
 @DBOS.step()
@@ -334,6 +349,18 @@ def _summary(value: object) -> str:
     return str(value or "")[:SUMMARY_MAX_CHARS]
 
 
+def _retry_or_dead_letter_kg(
+    name: str, raw_id: str, job_payload: object, error: str
+) -> None:
+    payload, attempt = _incremented_kg_payload(job_payload)
+    update_drainer_job_payload(name, payload)
+    if attempt < MAX_GARDENER_RETRIES:
+        defer_drainer_job(name, 900 * attempt)
+    else:
+        record_kg_failure(raw_id, error, attempt)
+        finish_drainer_job(name, "error", error, True)
+
+
 def _completed_output(turn: dict) -> str:
     output = _summary(turn.get("result_text"))
     terminal_reason = turn.get("terminal_reason")
@@ -374,19 +401,23 @@ def drain_cycle() -> dict:
             )
             return {"status": "disabled", "processed": 0}
 
+        enabled_kinds = _job_kinds(settings)
+        if KG_JOB_KIND in enabled_kinds:
+            set_kg_swept_last_cycle(sweep_kg_raws())
+
         workflow_id = _workflow_id()
         set_attributes(
             span,
             {
                 "drain.workflow_id": workflow_id,
-                "drain.job_kinds": ",".join(_job_kinds(settings)),
+                "drain.job_kinds": ",".join(enabled_kinds),
                 "drain.max_jobs_per_cycle": settings["max_jobs_per_cycle"],
             },
         )
         processed = 0
         succeeded = 0
         ttl_secs = settings["turn_timeout_seconds"] + CLAIM_TTL_MARGIN_SECONDS
-        claim_kinds = list(_job_kinds(settings))
+        claim_kinds = list(enabled_kinds)
 
         for _ in range(settings["max_jobs_per_cycle"]):
             if not claim_kinds:
@@ -482,17 +513,21 @@ def drain_cycle() -> dict:
                         finish_drainer_job(name, "error", error)
                 except ExtractionOutputInvalid as exc:
                     error = _summary(exc)
-                    finish_drainer_job(name, "error", error, True)
+                    _retry_or_dead_letter_kg(name, raw_id, job.get("payload"), error)
+                    try:
+                        notify_drainer_failure(name, error)
+                    except Exception:  # noqa: BLE001 - notification is best effort
+                        logger.warning(
+                            "Luna drainer failure notification failed for job %s",
+                            name,
+                            exc_info=True,
+                        )
                 except Exception as exc:  # noqa: BLE001 - one job must not stop the cycle
                     error = _summary(exc)
                     if job_kind == KG_JOB_KIND:
-                        payload, attempt = _incremented_kg_payload(job.get("payload"))
-                        update_drainer_job_payload(name, payload)
-                        if attempt <= MAX_GARDENER_RETRIES:
-                            defer_drainer_job(name, 900 * attempt)
-                        else:
-                            record_kg_failure(raw_id, error)
-                            finish_drainer_job(name, "error", error, True)
+                        _retry_or_dead_letter_kg(
+                            name, raw_id, job.get("payload"), error
+                        )
                     else:
                         finish_drainer_job(name, "error", error)
                     try:

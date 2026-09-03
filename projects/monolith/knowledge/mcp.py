@@ -14,6 +14,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 import yaml
 from sqlmodel import Session, select
@@ -33,6 +34,7 @@ from knowledge.indexing import index_note_from_raw, reindex_note_with_edits
 from knowledge.models import AtomRawProvenance, Dispute, RawInput
 from knowledge.notes import resolve_note_body
 from knowledge.raw_store import fetch_raw
+from knowledge.redact import redact_text
 from knowledge.store import KnowledgeStore
 from shared.embedding import EmbeddingClient
 
@@ -284,6 +286,22 @@ def _dispute_fact_sync(
         if note is None:
             return {"error": "unknown fact"}
 
+        existing_dispute = session.exec(
+            select(Dispute).where(
+                Dispute.note_id == fact_id,
+                Dispute.reporter_subject == reporter["reporter_subject"],
+                Dispute.reason == reason,
+                Dispute.state == "open",
+            )
+        ).first()
+        if existing_dispute is not None:
+            return {
+                "dispute_id": existing_dispute.id,
+                "note_id": fact_id,
+                "status": "already-disputed",
+                "raw_id": existing_dispute.raw_id,
+            }
+
         quoted_title = "\n".join(
             f"> {line}" for line in str(note.get("title") or fact_id).splitlines()
         )
@@ -294,6 +312,7 @@ def _dispute_fact_sync(
                 "title": f"Dispute: {str(note.get('title') or fact_id)[:80]}",
                 "note_id": fact_id,
                 "reporter": reporter["reporter_subject"],
+                "dispute_nonce": str(uuid4()),
             },
             (
                 "## Current fact\n\n"
@@ -407,13 +426,17 @@ def _report_distress_sync(
         )
         raw_id = raw.raw_id
 
-    notify_summary = summary[:_NOTIFY_SUMMARY_CAP]
-    notify_intervention = requested_intervention[:_NOTIFY_INTERVENTION_CAP]
+    notify_summary, _ = redact_text(summary)
+    notify_summary = notify_summary[:_NOTIFY_SUMMARY_CAP]
+    notify_intervention, _ = redact_text(requested_intervention)
+    notify_intervention = notify_intervention[:_NOTIFY_INTERVENTION_CAP]
     message = (
         f"raw {raw_id} | distress({severity}) from "
         f"{reporter['reporter_subject']}: {notify_summary}"
         f" | wants: {notify_intervention}"
-    )[:_NOTIFY_MESSAGE_CAP]
+    )
+    message, _ = redact_text(message)
+    message = message[:_NOTIFY_MESSAGE_CAP]
     level = "error" if severity == "urgent" else "warn"
     return ({"intervention_id": raw_id}, message, level)
 
