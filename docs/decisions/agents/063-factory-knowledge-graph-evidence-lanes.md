@@ -252,6 +252,16 @@ same cloudflared user token `tools/cli` already replays as
 
 The Tailscale operator already runs in the GKE cluster, so the collector's
 default transport is now the monolith tailnet Service, enabled by
-`tailnet.enabled`, with no Cloudflare cookie. The cached cloudflared token path
-remains the fallback when the tailnet is unavailable. Tailnet membership is
-network admission only; per-caller identity remains tracked by #4944.
+`tailnet.enabled`, with no Cloudflare cookie. Each run uses the tailnet URL only
+when Tailscale reports `BackendState == "Running"`; otherwise it uses the
+Cloudflare URL with the cached token, and logs a skip if that token is not
+available. Tailnet membership is network admission only; per-caller identity
+remains tracked by #4944.
+
+The tailnet Service exposes the whole API port at L4, not only the raws
+endpoint. Tailnet HTTPS certificates are not enabled because the Service has no
+`CertDomains`, and path-scoped Tailscale Ingress requires HTTPS. The
+`X-Auth-Email` header is not stripped on this path, so tailnet callers can set
+attribution headers. That header is attribution only and never authorization on
+the private tier. Narrowing access is an ACL rule for `tag:k8s:80` to the
+laptop, or a path-scoped Ingress once HTTPS is enabled, tracked with #4944.

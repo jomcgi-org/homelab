@@ -7,7 +7,11 @@ from pathlib import Path
 import yaml
 
 
-def _render(enabled: bool) -> list[dict]:
+def _render(
+    tailnet_enabled: bool,
+    *,
+    gke: bool = False,
+) -> list[dict]:
     chart_dir = Path(__file__).resolve().parent
     deploy_values = os.environ.get(
         "DEPLOY_VALUES", str(chart_dir.parent / "deploy" / "values.yaml")
@@ -20,7 +24,12 @@ def _render(enabled: bool) -> list[dict]:
         "-f",
         deploy_values,
     ]
-    if enabled:
+    if gke:
+        gke_values = os.environ.get(
+            "GKE_VALUES", str(chart_dir.parent / "deploy" / "values-gke.yaml")
+        )
+        command.extend(["-f", gke_values])
+    if tailnet_enabled:
         command.extend(["--set", "tailnet.enabled=true"])
     result = subprocess.run(command, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
@@ -46,6 +55,16 @@ def _api_ingress_policy(documents: list[dict]) -> dict:
     ]
     assert len(policies) == 1
     return policies[0]
+
+
+def _tailnet_network_policies(documents: list[dict]) -> list[dict]:
+    return [
+        document
+        for document in documents
+        if document.get("apiVersion") == "networking.k8s.io/v1"
+        and document.get("kind") == "NetworkPolicy"
+        and document.get("metadata", {}).get("name") == "kg-tailnet"
+    ]
 
 
 def test_tailnet_service_is_disabled_by_default():
@@ -87,3 +106,12 @@ def test_tailnet_service_exposes_only_api_port():
     assert proxy_rules[0]["toPorts"] == [
         {"ports": [{"port": "8000", "protocol": "TCP"}]}
     ]
+    assert _tailnet_network_policies(documents) == []
+
+
+def test_gke_tailnet_service_does_not_render_cilium_policy():
+    documents = _render(True, gke=True)
+    assert len(_tailnet_services(documents)) == 1
+    assert not any(
+        document.get("kind") == "CiliumNetworkPolicy" for document in documents
+    )

@@ -54,7 +54,9 @@ Provenance of each allowlist entry:
     Service: the proxy runs in the tailscale namespace and forwards tailnet
     traffic to the API targetPort. The operator propagates its managed,
     parent-resource-type, parent-resource, and parent-resource-ns labels to
-    the proxy pod. This grant is rendered only with the tailnet Service.
+    the proxy pod. This grant is rendered only with the tailnet Service and
+    applies to the k3s cluster only. GKE uses networkpolicy-tailnet.yaml because
+    it has no CiliumNetworkPolicy CRD.
   - jobs.workflowNamespace to 8000, RESTRICTED to this chart's own job pods:
     Argo Workflows POST to MONOLITH_INTERNAL_URL
     (http://monolith.monolith.svc.cluster.local:8000), set in chart/values.yaml.

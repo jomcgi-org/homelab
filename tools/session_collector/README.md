@@ -30,15 +30,16 @@ python3 -m venv .venv
 tools/session_collector/install.sh
 ```
 
-By default, the collector reads the local Tailscale status and sends directly
-to `http://monolith.<tailnet>.ts.net` without a cookie. The installer resolves
-that URL once and writes `--base-url <url>` into the launch agent, so launchd
-does not need Tailscale on its `PATH`. Set `SESSION_COLLECTOR_BASE_URL` while
-installing to override the discovered URL.
+On every run, the collector reads the local Tailscale status. When Tailscale
+reports `BackendState` as `Running`, it sends directly to
+`http://monolith.<tailnet>.ts.net` without a cookie. The resolver finds the
+Tailscale app binary at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`,
+so launchd does not need it on `PATH`.
 
-When Tailscale is unavailable, the collector falls back to
-`https://private.jomcgi.dev` with Cloudflare authentication. Only this fallback
-requires a cached token:
+When Tailscale is not running or its status cannot be read, the same run falls
+back to `https://private.jomcgi.dev` with the cached Cloudflare token. If that
+token is unavailable or expired, the collector logs the login command and
+skips the run. Populate the cache with:
 
 ```sh
 cloudflared access login https://private.jomcgi.dev
@@ -46,7 +47,9 @@ cloudflared access login https://private.jomcgi.dev
 
 `--auth auto` is the default. It selects `none` for `.ts.net` hosts and
 `cloudflare` for other hosts. Pass `--auth none` or `--auth cloudflare` to
-override that selection.
+override that selection. `SESSION_COLLECTOR_BASE_URL` and `--base-url` remain
+runtime overrides; the installer does not bake either endpoint into the launch
+agent.
 
 The launch agent runs `.venv/bin/python3`. Its output is written to
 `~/Library/Logs/session-collector.log`; this log is not rotated automatically.

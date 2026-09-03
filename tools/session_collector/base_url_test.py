@@ -1,4 +1,5 @@
 import json
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -28,7 +29,9 @@ def test_tailscale_status_supplies_magic_dns_suffix(monkeypatch):
         calls.append((command, kwargs))
         return SimpleNamespace(
             returncode=0,
-            stdout=json.dumps({"MagicDNSSuffix": "example.ts.net"}),
+            stdout=json.dumps(
+                {"BackendState": "Running", "MagicDNSSuffix": "example.ts.net"}
+            ),
         )
 
     monkeypatch.setattr(
@@ -38,6 +41,57 @@ def test_tailscale_status_supplies_magic_dns_suffix(monkeypatch):
 
     assert resolve_base_url({}) == "http://monolith.example.ts.net"
     assert calls[0][0] == ["/bin/tailscale", "status", "--json"]
+    assert calls[0][1]["timeout"] == 5
+
+
+def test_tailscale_backend_must_be_running(monkeypatch):
+    monkeypatch.setattr(
+        "tools.session_collector.base_url.shutil.which", lambda name: "/bin/tailscale"
+    )
+    monkeypatch.setattr(
+        "tools.session_collector.base_url.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {"BackendState": "Stopped", "MagicDNSSuffix": "example.ts.net"}
+            ),
+        ),
+    )
+    assert resolve_base_url({}) == DEFAULT_BASE_URL
+
+
+def test_tailscale_nonzero_exit_falls_back_to_cloudflare(monkeypatch):
+    monkeypatch.setattr(
+        "tools.session_collector.base_url.shutil.which", lambda name: "/bin/tailscale"
+    )
+    monkeypatch.setattr(
+        "tools.session_collector.base_url.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout=""),
+    )
+    assert resolve_base_url({}) == DEFAULT_BASE_URL
+
+
+def test_tailscale_timeout_falls_back_to_cloudflare(monkeypatch):
+    monkeypatch.setattr(
+        "tools.session_collector.base_url.shutil.which", lambda name: "/bin/tailscale"
+    )
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired("tailscale", 5)
+
+    monkeypatch.setattr("tools.session_collector.base_url.subprocess.run", timeout)
+    assert resolve_base_url({}) == DEFAULT_BASE_URL
+
+
+def test_malformed_tailscale_json_falls_back_to_cloudflare(monkeypatch):
+    monkeypatch.setattr(
+        "tools.session_collector.base_url.shutil.which", lambda name: "/bin/tailscale"
+    )
+    monkeypatch.setattr(
+        "tools.session_collector.base_url.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="not json"),
+    )
+    assert resolve_base_url({}) == DEFAULT_BASE_URL
 
 
 def test_environment_override_wins_without_tailscale_probe(monkeypatch):
@@ -58,5 +112,9 @@ def test_missing_tailscale_falls_back_to_cloudflare(monkeypatch):
     monkeypatch.setattr(
         "tools.session_collector.base_url.TAILSCALE_APP_BINARY",
         type("MissingPath", (), {"is_file": lambda self: False})(),
+    )
+    monkeypatch.setattr(
+        "tools.session_collector.base_url.subprocess.run",
+        lambda *args, **kwargs: pytest.fail("tailscale must not be called"),
     )
     assert resolve_base_url({}) == DEFAULT_BASE_URL

@@ -142,24 +142,42 @@ def test_none_auth_marks_unauthorized_as_failed(tmp_path, status_code):
     assert entry["reason"] == "unauthorized"
 
 
-def test_none_auth_marks_unreachable_and_continues(tmp_path):
+@pytest.mark.parametrize(
+    "error_type",
+    [httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError],
+)
+def test_none_auth_unreachable_stops_without_state_and_retries(
+    tmp_path, capsys, error_type
+):
     calls = 0
 
     def transport(request):
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise httpx.ConnectError("tailnet down", request=request)
-        return httpx.Response(201, json={"raw_id": "raw-two", "created": True})
+            raise error_type("tailnet down", request=request)
+        return httpx.Response(201, json={"raw_id": "raw", "created": True})
 
-    claude_dir, options = _run(tmp_path, transport, auth="none")
+    claude_dir, options = _run(
+        tmp_path,
+        transport,
+        auth="none",
+        base_url="http://monolith.example.ts.net",
+    )
     one = _session(claude_dir, "one", str(tmp_path / "homelab"))
     two = _session(claude_dir, "two", str(tmp_path / "homelab"))
     assert run_collection(**options) == 0
+    assert calls == 1
+    assert load(options["state_file"]) == {}
+    assert not options["state_file"].exists()
+    assert capsys.readouterr().err == "tailnet unreachable: monolith.example.ts.net\n"
+
+    assert run_collection(**options) == 0
     state = load(options["state_file"])
-    assert state[str(one.resolve())]["status"] == "failed"
-    assert state[str(one.resolve())]["reason"] == "unreachable"
+    assert state[str(one.resolve())]["status"] == "uploaded"
+    assert state[str(one.resolve())]["failures"] == 0
     assert state[str(two.resolve())]["status"] == "uploaded"
+    assert state[str(two.resolve())]["failures"] == 0
 
 
 def test_500_marks_failed_and_continues(tmp_path):
