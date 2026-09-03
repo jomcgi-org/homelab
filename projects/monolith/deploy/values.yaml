@@ -161,6 +161,10 @@ knowledge:
       # Dark feed verified in the 0.412 templates (#5527); no backfill because
       # since is empty, so only sessions after the pod start are exported.
       enabled: true
+      # Pinned floor: the default floor is the pod's process start, which every
+      # chart roll resets, so sessions that finish across a roll were never
+      # exported. Persisting the floor is tracked in #5587.
+      since: "2026-09-03T17:00:00Z"
 
 chat:
   enabled: true
