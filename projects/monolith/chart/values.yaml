@@ -936,7 +936,11 @@ jobs:
       args: ["ember-spark-synthetic-trigger"]
       schedule: "2 * * * *"
       concurrencyPolicy: Forbid
-      activeDeadlineSeconds: 300
+      # Must exceed the trigger's 420s client timeout: the probe runs a whole
+      # Spark session turn and the interim contributor tier answers at ~14s per
+      # completion, so Argo killing the pod at 300s was the ceiling under the
+      # ceiling (exit 143 at 21:07Z on 2026-09-03).
+      activeDeadlineSeconds: 480
       suspend: false
       internalApi: true
       resources:
