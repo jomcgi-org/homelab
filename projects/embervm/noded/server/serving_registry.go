@@ -388,6 +388,12 @@ func (r *servingSnapshotRegistry) remove(ref string) {
 	delete(r.snaps, ref)
 }
 
+func (r *servingSnapshotRegistry) reset() {
+	r.mu.Lock()
+	r.snaps = make(map[string]*servingSnapshotEntry)
+	r.mu.Unlock()
+}
+
 // snapshot returns a copy of every banked serving snapshot entry, for NodeStatus.
 func (r *servingSnapshotRegistry) snapshot() []servingSnapshotEntry {
 	r.mu.Lock()

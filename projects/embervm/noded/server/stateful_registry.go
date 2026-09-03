@@ -440,6 +440,12 @@ func (r *statefulBundleRegistry) remove(ref string) {
 	delete(r.snaps, ref)
 }
 
+func (r *statefulBundleRegistry) reset() {
+	r.mu.Lock()
+	r.snaps = make(map[string]*statefulBundleEntry)
+	r.mu.Unlock()
+}
+
 // snapshot returns a copy of every banked stateful bundle entry, for NodeStatus.
 func (r *statefulBundleRegistry) snapshot() []statefulBundleEntry {
 	r.mu.Lock()

@@ -832,10 +832,9 @@ defmodule Embervm.Application do
   # noded.store values, one source of truth); an empty endpoint leaves the GC
   # inert. The destructive gate parses exactly like the other retention gates.
   # Caps/cadence/freshness are values-overridable; the module carries the
-  # supervised-first-run defaults. expected_nodes is the fleet contract the
-  # fleet-freshness abort checks against: EMPTY (the chart default) means the
-  # sweep always aborts, so even the dry-run plan requires an operator to have
-  # named the fleet.
+  # supervised-first-run defaults. Fleet membership comes from NodeRegistry at
+  # check time, so brick registration and expiry cannot leave a stale static
+  # contract behind.
   defp s3_warmth_gc_opts do
     [
       enabled: warmth_s3_gc_enabled(),
@@ -843,7 +842,6 @@ defmodule Embervm.Application do
       bucket: store_bucket(),
       access_key_id: trimmed_env("EMBERVM_STORE_ACCESS_KEY_ID"),
       secret_access_key: trimmed_env("EMBERVM_STORE_SECRET_ACCESS_KEY"),
-      expected_nodes: warmth_s3_gc_expected_nodes(),
       allow_empty_kinds: warmth_s3_gc_allow_empty_kinds(),
       max_prefixes: int_env_or_nil("EMBERVM_WARMTH_S3_GC_MAX_PREFIXES"),
       max_bytes: int_env_or_nil("EMBERVM_WARMTH_S3_GC_MAX_BYTES"),
@@ -916,8 +914,8 @@ defmodule Embervm.Application do
     end
   end
 
-  # Comma-separated fleet contract (EMBERVM_DURABILITY_EXPECTED_NODES), parsed
-  # exactly like the GC's EMBERVM_WARMTH_S3_GC_EXPECTED_NODES.
+  # Comma-separated fleet contract for the durability detector. The S3 warmth
+  # GC independently derives its fleet from NodeRegistry at check time.
   @doc false
   def durability_expected_nodes do
     trimmed_env("EMBERVM_DURABILITY_EXPECTED_NODES")
@@ -960,16 +958,6 @@ defmodule Embervm.Application do
       v when v in ["1", "true", "TRUE", "True"] -> true
       _ -> false
     end
-  end
-
-  # The comma-separated fleet contract (EMBERVM_WARMTH_S3_GC_EXPECTED_NODES,
-  # e.g. "node-1,node-2,node-3,node-4"): every named node must be present AND
-  # fresh in NodeCapacity or the sweep aborts. Empty = always abort.
-  defp warmth_s3_gc_expected_nodes do
-    trimmed_env("EMBERVM_WARMTH_S3_GC_EXPECTED_NODES")
-    |> String.split(",", trim: true)
-    |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(&1 == ""))
   end
 
   defp warmth_s3_gc_allow_empty_kinds do

@@ -86,52 +86,67 @@ spec:
               # file ("failed to setup loop device").
               IMG=/host/scratch.img
               HOST_IMG=/var/lib/embervm/scratch.img
+              MARKER={{ printf "%s/.scratch-generation" .Values.noded.firecracker.nvmeRoot | quote }}
               SIZE_GI="${SCRATCH_SIZE_GI:?scratchSizeGi unset}"
 
               # THE GUARD. A bind mount (node-4's dedicated-NVMe fstab bind) and a
               # loop mount both register as mountpoints, so this is true whenever
-              # scratch is already backed by a real mount. If so, do NOTHING: this
-              # is what protects node-4's live scratch from ever being touched.
+              # scratch is already backed by a real mount. If so, leave the mount
+              # and its contents intact; only the generation marker below is ensured.
               if nsenter -t 1 -m -- mountpoint -q "$SCRATCH"; then
                 echo "scratch-prep: $SCRATCH already mounted on $NODE_NAME, skipping cap (node with a real/bind mount, e.g. node-4, is left untouched)"
-                exec sleep infinity
+              else
+                # Not a mountpoint: provision the uniform size-capped loop scratch.
+                # Every step is guarded so a re-run (or a restarted pod) is a no-op.
+                nsenter -t 1 -m -- mkdir -p "$SCRATCH"
+
+                # 1) Backing file. Create it ONLY if absent, so a re-run never
+                #    fallocates over (and thus never truncates) an existing image.
+                if [ ! -f "$IMG" ]; then
+                  echo "scratch-prep: creating + formatting ${SIZE_GI}Gi backing file at $IMG on $NODE_NAME"
+                  fallocate -l "${SIZE_GI}G" "$IMG"
+                  # mkfs.ext4 formats the REGULAR FILE directly (no loop device
+                  # needed in-container), so this image ships no losetup. Only on
+                  # first creation, so a re-run never reformats a data-bearing image.
+                  mkfs.ext4 -q -F "$IMG"
+                fi
+
+                # 2) Mount in the HOST mount namespace so the kubelet's hostPath
+                #    resolution sees it. `-o loop` makes the HOST attach the loop
+                #    device using its own losetup + loop module: this image ships no
+                #    losetup, and a privileged container cannot reliably modprobe loop,
+                #    so loop setup belongs on the host. Guarded by the mountpoint
+                #    check; the earlier guard already proved it is unmounted, this only
+                #    guards a mid-script re-entry.
+                if ! nsenter -t 1 -m -- mountpoint -q "$SCRATCH"; then
+                  nsenter -t 1 -m -- mount -o loop "$HOST_IMG" "$SCRATCH"
+                fi
+
+                # 3) Persist across reboots. The fstab entry is keyed on the backing
+                #    FILE with the loop option, so the host re-derives the loop device
+                #    on boot. Idempotent: appended only if absent.
+                FSTAB_LINE="$HOST_IMG $SCRATCH ext4 loop,defaults 0 0"
+                if ! nsenter -t 1 -m -- grep -qF "$FSTAB_LINE" /etc/fstab 2>/dev/null; then
+                  nsenter -t 1 -m -- sh -c "echo '$FSTAB_LINE' >> /etc/fstab"
+                fi
+
+                echo "scratch-prep: ${SIZE_GI}Gi capped loop scratch mounted at $SCRATCH on $NODE_NAME"
               fi
 
-              # Not a mountpoint: provision the uniform size-capped loop scratch.
-              # Every step is guarded so a re-run (or a restarted pod) is a no-op.
-              nsenter -t 1 -m -- mkdir -p "$SCRATCH"
-
-              # 1) Backing file. Create it ONLY if absent, so a re-run never
-              #    fallocates over (and thus never truncates) an existing image.
-              if [ ! -f "$IMG" ]; then
-                echo "scratch-prep: creating + formatting ${SIZE_GI}Gi backing file at $IMG on $NODE_NAME"
-                fallocate -l "${SIZE_GI}G" "$IMG"
-                # mkfs.ext4 formats the REGULAR FILE directly (no loop device
-                # needed in-container), so this image ships no losetup. Only on
-                # first creation, so a re-run never reformats a data-bearing image.
-                mkfs.ext4 -q -F "$IMG"
-              fi
-
-              # 2) Mount in the HOST mount namespace so the kubelet's hostPath
-              #    resolution sees it. `-o loop` makes the HOST attach the loop
-              #    device using its own losetup + loop module: this image ships no
-              #    losetup, and a privileged container cannot reliably modprobe loop,
-              #    so loop setup belongs on the host. Guarded by the mountpoint
-              #    check; the earlier guard already proved it is unmounted, this only
-              #    guards a mid-script re-entry.
-              if ! nsenter -t 1 -m -- mountpoint -q "$SCRATCH"; then
-                nsenter -t 1 -m -- mount -o loop "$HOST_IMG" "$SCRATCH"
-              fi
-
-              # 3) Persist across reboots. The fstab entry is keyed on the backing
-              #    FILE with the loop option, so the host re-derives the loop device
-              #    on boot. Idempotent: appended only if absent.
-              FSTAB_LINE="$HOST_IMG $SCRATCH ext4 loop,defaults 0 0"
-              if ! nsenter -t 1 -m -- grep -qF "$FSTAB_LINE" /etc/fstab 2>/dev/null; then
-                nsenter -t 1 -m -- sh -c "echo '$FSTAB_LINE' >> /etc/fstab"
-              fi
-
-              echo "scratch-prep: ${SIZE_GI}Gi capped loop scratch mounted at $SCRATCH on $NODE_NAME"
+              # The marker is the final provisioning step. It is created once on
+              # the mounted filesystem, so pod restarts preserve the generation
+              # while a reformatted or replaced scratch filesystem gets a new one.
+              GENERATION="${NODE_NAME}-$(cat /proc/sys/kernel/random/uuid)"
+              nsenter -t 1 -m -- sh -c '
+                set -eu
+                marker=$1
+                generation=$2
+                if [ ! -s "$marker" ]; then
+                  printf "%s\n" "$generation" > "${marker}.tmp"
+                  mv "${marker}.tmp" "$marker"
+                fi
+              ' sh "$MARKER" "$GENERATION"
+              echo "scratch-prep: generation marker ready at $MARKER on $NODE_NAME"
               exec sleep infinity
           # Readiness IS the contract's liveness signal: only Ready once scratch is
           # a mountpoint in the host namespace (whether this DaemonSet's loop cap or
@@ -141,14 +156,9 @@ spec:
           readinessProbe:
             exec:
               command:
-                - nsenter
-                - -t
-                - "1"
-                - -m
-                - --
-                - mountpoint
-                - -q
-                - /var/lib/embervm/scratch
+                - /bin/sh
+                - -c
+                - nsenter -t 1 -m -- sh -c 'mountpoint -q /var/lib/embervm/scratch && test -s {{ printf "%s/.scratch-generation" .Values.noded.firecracker.nvmeRoot | quote }}'
             initialDelaySeconds: 2
             periodSeconds: 10
           resources:

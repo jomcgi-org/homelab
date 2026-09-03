@@ -298,6 +298,9 @@ func (s *Server) coldBootStateful(ctx context.Context, req *nodev1.StartStateful
 	if bootImageRef == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: boot_image_ref required")
 	}
+	if _, err := s.refreshScratchGeneration(); err != nil {
+		return nil, status.Errorf(codes.Unavailable, "noded: scratch generation unavailable: %v", err)
+	}
 	// boot_image_ref names a built base SNAPSHOT key. A stateful workload is an
 	// image-lane, opaque-L4 guest (e.g. Postgres): its base is NOT a serving
 	// handler-artifact base (that is a zip-serving-only mechanism, D-R3.11.2), so

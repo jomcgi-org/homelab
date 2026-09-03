@@ -43,9 +43,13 @@ go_test(
 
 go_test(
     name = "cmd_test",
-    srcs = ["auth_test.go"],
+    srcs = [
+        "auth_test.go",
+        "main_test.go",
+    ],
     embed = [":cmd_lib"],
     deps = [
+        "//projects/embervm/noded/server",
         "@org_golang_google_grpc//:grpc",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//metadata",

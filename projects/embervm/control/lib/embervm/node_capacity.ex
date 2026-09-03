@@ -48,10 +48,18 @@ defmodule Embervm.NodeCapacity do
   (looked up by atom name, not PID), `read_concurrency: true` (writes happen only
   on a status change or a health transition; reads happen on every dispatch
   decision).
+
+  Idempotent: a caller that pre-created the table (the S3 warmth GC fixtures
+  seed capacity facts before the registry boots) shares it rather than
+  crashing NodeRegistry.init on `:ets.new` name collision. Ownership stays
+  with whichever process created it first.
   """
   @spec create(atom()) :: atom()
   def create(table \\ @table) do
-    :ets.new(table, [:set, :public, :named_table, read_concurrency: true])
+    case :ets.whereis(table) do
+      :undefined -> :ets.new(table, [:set, :public, :named_table, read_concurrency: true])
+      _ -> table
+    end
   end
 
   @doc """

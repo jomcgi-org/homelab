@@ -155,6 +155,20 @@ defmodule Embervm.WorkloadWatcher do
   end
 
   @doc """
+  Requests the same LIST and full reconcile used at control-plane boot. Node
+  registration uses this non-blocking path when a new instance arrives or its
+  scratch generation changes, so every workload is re-driven against fresh
+  node-local disk truth without delaying the registration response.
+  """
+  @spec redrive(GenServer.server()) :: :ok
+  def redrive(server \\ __MODULE__) do
+    case GenServer.whereis(server) do
+      nil -> :ok
+      _pid -> GenServer.cast(server, :redrive)
+    end
+  end
+
+  @doc """
   Forces one periodic BaseBuilder resync pass synchronously (see this module's
   @moduledoc, "periodic catalog resync to the BaseBuilder"): re-casts every
   currently-cataloged Workload's build descriptor to `base_reconcile_fun`, the
@@ -347,15 +361,14 @@ defmodule Embervm.WorkloadWatcher do
   end
 
   @impl true
-  def handle_call(:reconcile_now, _from, state) do
-    # Fail-open on a LIST error: keep the last-known-good catalog either way.
-    state =
-      case do_list_reconcile(state) do
-        {:ok, s} -> s
-        {:error, s} -> s
-      end
+  def handle_cast(:redrive, state) do
+    state = reconcile_now_state(state)
+    {:noreply, state}
+  end
 
-    {:reply, :ok, state}
+  @impl true
+  def handle_call(:reconcile_now, _from, state) do
+    {:reply, :ok, reconcile_now_state(state)}
   end
 
   def handle_call(:resync_bases_now, _from, state) do
@@ -376,6 +389,15 @@ defmodule Embervm.WorkloadWatcher do
   def terminate(_reason, _state), do: :ok
 
   # -- informer state machine --------------------------------------------------
+
+  # Fail open on a LIST error: keep the last-known-good catalog either way.
+  # Shared by the synchronous operator/test seam and node-registration redrive.
+  defp reconcile_now_state(state) do
+    case do_list_reconcile(state) do
+      {:ok, next} -> next
+      {:error, next} -> next
+    end
+  end
 
   # LIST + full reconcile, then (on success) open a watch from the resulting
   # RV. On a LIST failure, keep the prior catalog (fail-open) and retry with

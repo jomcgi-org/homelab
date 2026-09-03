@@ -242,7 +242,7 @@ def test_control_plane_runtime_envs_render(renders):
 
     assert "EMBERVM_BRICK_AUTOSCALE_MODE" in prod_env
     assert dev_env.get("EMBERVM_BRICK_AUTOSCALE_MODE") == "observe"
-    assert dev_env.get("EMBERVM_WARMTH_S3_GC_EXPECTED_NODES") == "node-4"
+    assert "EMBERVM_WARMTH_S3_GC_EXPECTED_NODES" not in dev_env
     assert prod_env.get("EMBERVM_ENVELOPE_REWRAP_ENABLED") == "0"
     assert dev_env.get("EMBERVM_ENVELOPE_REWRAP_ENABLED") == "0"
     assert prod_env.get("EMBERVM_ENVELOPE_REWRAP_MAX_ARTIFACTS") == "100"

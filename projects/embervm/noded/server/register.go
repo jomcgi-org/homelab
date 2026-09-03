@@ -15,7 +15,8 @@ import (
 // Dial-home registration (R0 PR-2, ADR embervm/005). The daemon ACTIVELY
 // advertises its identity to the control plane instead of being discovered:
 // the control plane never lists-and-watches noded pods. On start and on a
-// jittered interval the daemon POSTs {node, pod_uid, address, boot_id} to
+// jittered interval the daemon POSTs
+// {node, pod_uid, address, boot_id, scratch_generation} to
 // <ControlPlaneURL>/v1/nodes/register; the control plane upserts the instance
 // keyed by (node, pod_uid), dials the advertised address for WatchNode, and
 // ages a down instance out when its registration lapses or it remains down
@@ -48,6 +49,10 @@ type registration struct {
 	// the same one, and observe a restart-in-place even when node+pod_uid are
 	// unchanged.
 	BootID string `json:"boot_id"`
+	// ScratchGeneration identifies the mounted scratch filesystem whose base
+	// inventory this process adopted. The control plane uses changes to re-drive
+	// workload reconciliation after a node-local wipe.
+	ScratchGeneration string `json:"scratch_generation"`
 }
 
 // httpDoer is the subset of *http.Client used by dial-home requests, seamed so
@@ -170,11 +175,16 @@ func (s *Server) runRegisterLoop(ctx context.Context, doer httpDoer, bootID stri
 // restart) and returns a non-nil error on any transport failure or non-2xx
 // status, which the loop treats as retryable.
 func (s *Server) register(ctx context.Context, doer httpDoer, bootID string) error {
+	scratchGeneration, err := s.refreshScratchGeneration()
+	if err != nil {
+		return fmt.Errorf("read scratch generation: %w", err)
+	}
 	body, err := json.Marshal(registration{
-		Node:    s.cfg.Node,
-		PodUID:  s.cfg.PodUID,
-		Address: s.advertisedAddress(),
-		BootID:  bootID,
+		Node:              s.cfg.Node,
+		PodUID:            s.cfg.PodUID,
+		Address:           s.advertisedAddress(),
+		BootID:            bootID,
+		ScratchGeneration: scratchGeneration,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal registration: %w", err)

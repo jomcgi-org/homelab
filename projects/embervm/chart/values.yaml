@@ -55,6 +55,8 @@ hypervisorEpoch: "fc-v1.16.1-r2"
 # all-zeros digest (the ImagePullBackOff that disabled the earlier roll). On EKS
 # this is disabled (Karpenter userData mounts instance-store NVMe at bootstrap);
 # the two are mutually exclusive actuators of the same contract, never both.
+# The brick generation-marker gate and noded adoption guard are active when this
+# actuator is enabled. Disabled environments trust their external boot actuator.
 scratchPrep:
   enabled: true
   image:
@@ -1094,11 +1096,9 @@ envelopeRewrap:
 # and persists a dry-run manifest (gc-manifests/<ts>.json); enabled "1" arms
 # the DESTRUCTIVE, capped delete arm (irreversible S3 deletion; flip only for
 # the supervised drain, and flipping back to "" is the entire rollback lever).
-# expectedNodes is the fleet-freshness contract: EVERY listed node must be
-# present and fresh in the CP's capacity facts or the sweep aborts (a down
-# node's unreported disk bundles must never look orphaned). Empty (the
-# default) means the sweep ALWAYS aborts: a deployment must name its real
-# fleet to get even the dry-run plan. maxPrefixes/maxBytes bound one sweep
+# Fleet membership is derived from the live NodeRegistry on every check. Every
+# registered instance must have fresh capacity facts, and an empty registry
+# aborts. maxPrefixes/maxBytes bound one sweep
 # (module defaults 10 / 20GiB, the supervised-first-run caps); intervalMs
 # defaults hourly. The CP's store endpoint/bucket are rendered from
 # noded.store above (one source of truth).
@@ -1110,7 +1110,6 @@ envelopeRewrap:
 warmthS3Gc:
   allowEmptyKinds: ""
   enabled: ""
-  expectedNodes: []
   maxPrefixes: ""
   maxBytes: ""
   statefulTtlMs: ""

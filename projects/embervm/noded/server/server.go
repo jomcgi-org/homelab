@@ -190,6 +190,12 @@ type Server struct {
 
 	vms   *vmRegistry
 	bases *baseRegistry
+	// scratchGeneration is the marker value whose on-disk base inventory was
+	// adopted into bases. scratchReconcileMu serializes generation checks with
+	// registry reset and disk rescan operations.
+	scratchReconcileMu      sync.Mutex
+	scratchGeneration       string
+	scratchReconcilePending bool
 	// registry is the control-plane-pushed workload table (artifact-decoupling
 	// Phase 2). The daemon boots with it empty (or a STALE boot-cache load) and
 	// admits no new work until the control plane replays it over SyncRegistry
@@ -674,6 +680,9 @@ func (s *Server) BuildBase(ctx context.Context, req *nodev1.BuildBaseRequest) (*
 	if err := s.refuseIfStale("BuildBase"); err != nil {
 		return nil, err
 	}
+	if _, err := s.refreshScratchGeneration(); err != nil {
+		return nil, status.Errorf(codes.Unavailable, "noded: scratch generation unavailable: %v", err)
+	}
 	if s.newBuildDriver == nil {
 		return nil, status.Error(codes.Unimplemented, "noded: base building not configured")
 	}
@@ -1085,6 +1094,9 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	ref := req.GetSnapshotRef()
 	if ref == "" {
 		return nil, status.Error(codes.InvalidArgument, "noded: snapshot_ref required")
+	}
+	if _, err := s.refreshScratchGeneration(); err != nil {
+		return nil, status.Errorf(codes.Unavailable, "noded: scratch generation unavailable: %v", err)
 	}
 	base, ok := s.bases.get(ref)
 	if !ok {
@@ -1944,6 +1956,10 @@ func (s *Server) WatchNode(req *nodev1.WatchNodeRequest, stream grpc.ServerStrea
 
 // nodeStatus assembles the current capacity fact set.
 func (s *Server) nodeStatus() *nodev1.NodeStatus {
+	// WatchNode's liveness tick doubles as the lazy generation check. Ignore the
+	// error here: a missing marker has already cleared stale base facts, and the
+	// registration loop withholds an invalid generation until scratch-prep returns.
+	scratchGeneration, _ := s.refreshScratchGeneration()
 	primed, taskLive := s.vms.capacity()
 	caps := s.workloadCapacities(primed)
 	maxLive := s.SlotCeiling()
@@ -2004,6 +2020,7 @@ func (s *Server) nodeStatus() *nodev1.NodeStatus {
 		CpuBudgetMillicores:   s.cpuBudget(),
 		CpuSku:                s.cpuSku(),
 		LocalBases:            s.localBasesStatus(),
+		ScratchGeneration:     scratchGeneration,
 	}
 	s.activatorMu.RLock()
 	activatorEnabled := s.activatorEnabled
@@ -2828,21 +2845,66 @@ func (s *Server) snapshotSessionsDir() string {
 
 // ---- startup base reconciliation -------------------------------------------
 
+// ErrScratchGenerationUnavailable identifies the expected startup condition in
+// which scratch-prep has not produced a readable, non-empty marker yet.
+var ErrScratchGenerationUnavailable = errors.New("scratch generation unavailable")
+
 // ReconcileBasesFromDisk scans SnapshotRoot/bases for base bundles left by a
 // prior daemon incarnation and registers them READY, so the control plane
 // reconciles against existing snapshots instead of rebuilding. A base dir name is
 // the baseKey "<workload>__<sig>"; the workload prefix is recovered for the
-// capacity report. Missing dir or unreadable entries are ignored (fresh node).
-func (s *Server) ReconcileBasesFromDisk() {
+// capacity report. A missing dir is a fresh node; any other scan error is
+// returned so startup logs the real failure class and retries.
+func (s *Server) ReconcileBasesFromDisk() error {
+	s.scratchReconcileMu.Lock()
+	defer s.scratchReconcileMu.Unlock()
+
+	generation, err := s.readScratchGeneration()
+	if err != nil {
+		if s.scratchGeneration != "" {
+			s.bases.reset()
+			s.invalidateScratchInventories()
+			s.scratchGeneration = ""
+			s.signalChange()
+		}
+		s.scratchReconcilePending = true
+		s.logger.Warn("noded: refusing base adoption without scratch generation marker",
+			"path", s.cfg.ScratchGenerationPath, "err", err)
+		return err
+	}
+	generationChanged := s.scratchReconcilePending ||
+		(s.scratchGeneration != "" && generation != s.scratchGeneration)
+	if generationChanged {
+		s.logger.Warn("noded: scratch generation changed, dropping base registry",
+			"oldGeneration", s.scratchGeneration, "newGeneration", generation)
+		s.bases.reset()
+		s.invalidateScratchInventories()
+	}
+	s.scratchGeneration = generation
+
 	root := filepath.Join(s.cfg.SnapshotRoot, "bases")
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			s.logger.Warn("noded: scan base bundles", "root", root, "err", err)
+			// Leave generation unset so registration and the liveness tick retry
+			// the adoption instead of accepting an unreadable inventory as empty.
+			s.bases.reset()
+			s.invalidateScratchInventories()
+			s.scratchGeneration = ""
+			s.scratchReconcilePending = true
+			s.signalChange()
+			return fmt.Errorf("scan base bundles: %w", err)
 		}
-		return
+		if generationChanged {
+			s.reconcileScratchInventoriesFromDisk()
+			s.scratchReconcilePending = false
+			s.signalChange()
+		}
+		return nil
 	}
-	n, gc := 0, 0
+	adopted := make([]baseEntry, 0, len(entries))
+	gc := 0
 	for _, ent := range entries {
 		if !ent.IsDir() {
 			continue
@@ -2919,7 +2981,7 @@ func (s *Server) ReconcileBasesFromDisk() {
 		if mfi, err := os.Stat(memfile); err == nil {
 			size += mfi.Size()
 		}
-		s.bases.register(baseEntry{
+		adopted = append(adopted, baseEntry{
 			snapshotRef:     baseKey,
 			workload:        workloadFromBaseKey(baseKey),
 			imageDigest:     imageRef,
@@ -2930,12 +2992,92 @@ func (s *Server) ReconcileBasesFromDisk() {
 			state:           state,
 			buildErr:        buildErr,
 		})
-		n++
 	}
-	if n > 0 || gc > 0 {
+	if generationChanged {
+		s.bases.replace(adopted)
+		s.reconcileScratchInventoriesFromDisk()
+		s.scratchReconcilePending = false
+	} else {
+		for _, entry := range adopted {
+			s.bases.register(entry)
+		}
+	}
+	n := len(adopted)
+	if generationChanged || n > 0 || gc > 0 {
 		s.logger.Info("noded: reconciled base snapshots", "adopted", n, "gc_superseded", gc)
 		s.signalChange()
 	}
+	return nil
+}
+
+// invalidateScratchInventories drops every disk-derived fact before a live
+// generation rescan. The task VM registry is residual process-lifecycle state,
+// not a disk inventory, and has no safe rescan seam yet.
+func (s *Server) invalidateScratchInventories() {
+	s.sessionSnap.reset()
+	s.servingSnap.reset()
+	s.statefulBundles.reset()
+	s.groupBundles.reset()
+	if s.groupNet != nil {
+		for _, network := range s.groupNet.List() {
+			if err := s.groupNet.DeleteGroupNetwork(context.Background(), network.GroupInstanceID); err != nil {
+				s.logger.Warn("noded: invalidate group network after scratch generation change",
+					"group", network.GroupInstanceID, "err", err)
+			}
+		}
+	}
+}
+
+// reconcileScratchInventoriesFromDisk repeats the startup adoption scans while
+// scratchReconcileMu is held, so no status can pair the new generation with
+// inventories retained from the replaced filesystem.
+func (s *Server) reconcileScratchInventoriesFromDisk() {
+	s.ReconcileSessionsFromDisk()
+	s.ReconcileServingFromDisk()
+	s.ReconcileStatefulFromDisk()
+	s.ReconcileGroupNetworksFromDisk()
+	s.ReconcileGroupBundlesFromDisk()
+}
+
+// readScratchGeneration returns the scratch-prep marker. An empty configured
+// path disables the production guard for direct tests and out-of-cluster users.
+func (s *Server) readScratchGeneration() (string, error) {
+	if strings.TrimSpace(s.cfg.ScratchGenerationPath) == "" {
+		return "", nil
+	}
+	raw, err := os.ReadFile(s.cfg.ScratchGenerationPath)
+	if err != nil {
+		return "", fmt.Errorf("%w: read %s: %v", ErrScratchGenerationUnavailable, s.cfg.ScratchGenerationPath, err)
+	}
+	generation := strings.TrimSpace(string(raw))
+	if generation == "" {
+		return "", fmt.Errorf("%w: marker %s is empty", ErrScratchGenerationUnavailable, s.cfg.ScratchGenerationPath)
+	}
+	return generation, nil
+}
+
+// refreshScratchGeneration is the cheap live backstop used by registration and
+// base-dependent RPCs. A changed marker clears stale memory, re-adopts the new
+// filesystem, and signals WatchNode so the control plane observes any loss.
+func (s *Server) refreshScratchGeneration() (string, error) {
+	generation, err := s.readScratchGeneration()
+	if err != nil {
+		// Reconcile performs the runtime invalidation under its serialization lock.
+		_ = s.ReconcileBasesFromDisk()
+		return "", err
+	}
+	s.scratchReconcileMu.Lock()
+	sameGeneration := generation == s.scratchGeneration
+	s.scratchReconcileMu.Unlock()
+	if !sameGeneration {
+		if err := s.ReconcileBasesFromDisk(); err != nil {
+			return "", err
+		}
+		s.scratchReconcileMu.Lock()
+		generation = s.scratchGeneration
+		s.scratchReconcileMu.Unlock()
+	}
+	return generation, nil
 }
 
 // CleanupStagingDirs removes abandoned .building/ staging directories.

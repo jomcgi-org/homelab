@@ -255,6 +255,26 @@ defmodule Embervm.BaseBuilder do
   end
 
   @doc """
+  Rechecks every workload against one instance after NodeRegistry observes a new
+  scratch generation. The check tracks a parked instance while it waits for a
+  fresh capacity fact, then queues a repair only for bases the instance no
+  longer reports READY.
+  """
+  @spec scratch_generation_changed(GenServer.server(), String.t()) :: :ok
+  def scratch_generation_changed(server \\ __MODULE__, instance_id) do
+    cast_if_alive(server, {:scratch_generation_changed, instance_id})
+  end
+
+  @doc """
+  Notifies the builder that an instance has published a capacity fact. If a
+  scratch-generation check is parked for that instance, it is retried now.
+  """
+  @spec capacity_fact_updated(GenServer.server(), String.t()) :: :ok
+  def capacity_fact_updated(server \\ __MODULE__, instance_id) do
+    cast_if_alive(server, {:capacity_fact_updated, instance_id})
+  end
+
+  @doc """
   Report current refcounts against a superseded base snapshot ref for a
   workload, so the BaseBuilder can decide when it is safe to evict (R2 base
   refcounting, ADR embervm/001 standing decision 5). Callers report the counts
@@ -473,6 +493,10 @@ defmodule Embervm.BaseBuilder do
       nodes: node_runtime,
       workloads: %{},
       workload_sync_done: false,
+      # Instance ids awaiting a fresh NodeStatus after registration reported a
+      # new scratch generation. NodeRegistry's capacity projection notification
+      # retries the parked check and queues missing local bases.
+      scratch_checks: MapSet.new(),
       # pid -> %{node_id, name, signature, cpu_vendor} for the CURRENT build
       # worker, so a result from a superseded worker (or for a since-changed spec)
       # is dropped and an accepted result is attributed to its build vendor.
@@ -633,6 +657,21 @@ defmodule Embervm.BaseBuilder do
 
   def handle_cast({:remove_node, node_id}, state) do
     {:noreply, remove_node_from_state(state, node_id)}
+  end
+
+  def handle_cast({:scratch_generation_changed, instance_id}, state) do
+    {:noreply, reconcile_scratch_generation(state, instance_id)}
+  end
+
+  def handle_cast({:capacity_fact_updated, instance_id}, state) do
+    state =
+      if MapSet.member?(state.scratch_checks, instance_id) do
+        reconcile_scratch_generation(state, instance_id)
+      else
+        state
+      end
+
+    {:noreply, state}
   end
 
   @impl true
@@ -980,12 +1019,10 @@ defmodule Embervm.BaseBuilder do
                     "everywhere and not fetchable from the store; forcing a rebuild"
                 )
 
-                GenServer.cast(
-                  self(),
-                  {:reconcile_force_rebuild, workload, signature(w), node_id}
-                )
-
-                state
+                # Run inline inside the hydrating dedupe branch. Clearing
+                # snapshot_ref makes a repeated post-status check a no-op instead
+                # of queueing a second multi-GB rebuild.
+                force_rebuild(state, w, workload, signature(w), node_id)
             end
         end
     end
@@ -1440,6 +1477,35 @@ defmodule Embervm.BaseBuilder do
 
   # -- node set updates (discovery) --------------------------------------------
 
+  defp reconcile_scratch_generation(state, instance_id) do
+    case find_capacity_fact(state.capacity_table, instance_id) do
+      :error ->
+        update_in(state.scratch_checks, &MapSet.put(&1, instance_id))
+
+      {:ok, fact} ->
+        state = update_in(state.scratch_checks, &MapSet.delete(&1, instance_id))
+        node_id = Map.get(fact, :node_id, node_name(instance_id))
+
+        Enum.reduce(state.workloads, state, fn {name, _w}, acc ->
+          if match?(
+               {:ok, %{base_state: :BASE_BUILD_STATE_READY}},
+               node_base_fact(acc, instance_id, name)
+             ) do
+            acc
+          else
+            Logger.warning(
+              "embervm base builder: scratch generation changed on #{instance_id}; re-driving missing base #{name}"
+            )
+
+            # Reuse the established wake-time base-missing path. It restores a
+            # fetchable current base first and rebuilds only when no local or
+            # store copy survives.
+            hydrate_for_anchor(acc, name, node_id)
+          end
+        end)
+    end
+  end
+
   # Add or refresh a node in the placement set, then re-drive every workload that
   # was held with no node so its base finally builds. Idempotent: a known node id
   # keeps its queue/worker and only its address is refreshed.
@@ -1514,6 +1580,7 @@ defmodule Embervm.BaseBuilder do
       state
       |> update_in([:node_ids], &List.delete(&1, node_id))
       |> update_in([:node_addr], &Map.delete(&1, node_id))
+      |> update_in([:scratch_checks], &MapSet.delete(&1, node_id))
 
     state =
       case Map.get(state.nodes, node_id) do

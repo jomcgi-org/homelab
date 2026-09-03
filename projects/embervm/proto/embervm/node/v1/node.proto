@@ -2201,4 +2201,9 @@ message NodeStatus {
   // vm_overhead_mib is the configured per-VM host overhead charged by the
   // reserved admission model. It is additive and may be 0.
   uint64 vm_overhead_mib = 37;
+
+  // scratch_generation identifies the mounted scratch filesystem whose disk
+  // inventories this status reports. The control plane matches it against the
+  // independently transported registration before consuming wipe repair state.
+  string scratch_generation = 39;
 }

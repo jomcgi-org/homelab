@@ -66,10 +66,12 @@ bricks:
       4gi: 2
       8gi: 2
       16gi: 0
-# GKE node names are not known before provisioning. An empty list keeps the
-# fleet-freshness guard closed.
+
+# THIS DISARM is the load-bearing GKE safety piece. Base values arm destructive
+# deletion, while in-memory node tombstones do not survive a CP restart and are
+# defense in depth rather than the guarantee.
 warmthS3Gc:
-  expectedNodes: []
+  enabled: ""
 
 # Only services reachable from the hub belong on the internal lane. Meta Spark
 # uses the external credentialed egress catalog instead.

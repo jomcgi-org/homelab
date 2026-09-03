@@ -56,7 +56,8 @@ defmodule Embervm.NodeRegistry do
   ## dial-home registration, keyed by INSTANCE (R0 PR-2)
 
   The control plane no longer DISCOVERS daemons (the retired EndpointSlice poll):
-  each noded instance DIALS HOME, POSTing `{node, pod_uid, address, boot_id}` to
+  each noded instance DIALS HOME, POSTing
+  `{node, pod_uid, address, boot_id, scratch_generation}` to
   the control plane's `/v1/nodes/register` route, which forwards it here as
   `register/2`. Registration upserts an instance keyed by `{node, pod_uid}`
   (a new instance opens a streamer and joins the NodeChannel/BaseBuilder fleet; a
@@ -133,6 +134,13 @@ defmodule Embervm.NodeRegistry do
   # dial-back path is dead even while the pod's HTTP register loop lives.
   @down_expire_after_ms 90_000
 
+  # Keep expired instance identities in the destructive GC's expected fleet for
+  # as long as the shortest warmth TTL. A tombstone has no capacity fact, so it
+  # deliberately holds the fleet-freshness gate closed after a node loss. This
+  # is defense in depth only: the GKE values keep the delete arm disarmed because
+  # these in-memory tombstones do not survive a control-plane restart.
+  @tombstone_grace_ms 8 * 60 * 60 * 1000
+
   # How often the control plane re-pushes the authoritative workload registry to
   # every CONNECTED daemon (SyncRegistry). The per-connection push in
   # start_streamer fires ONCE per (re)connect, so a CATALOG CHANGE to an
@@ -204,6 +212,16 @@ defmodule Embervm.NodeRegistry do
   end
 
   @doc """
+  Return the instance identities the destructive warmth GC must require fresh
+  capacity for. Recently expired instances remain present as tombstones until
+  the configured grace window elapses.
+  """
+  @spec expected_instances(GenServer.server()) :: %{String.t() => map()}
+  def expected_instances(server \\ __MODULE__) do
+    GenServer.call(server, :expected_instances)
+  end
+
+  @doc """
   Applies one `NodeStatus` as if it arrived from the given node's current stream.
   Test/operational seam: production status flows in from the streamer process,
   but this lets a test drive the projection + fail-closed logic synchronously
@@ -227,7 +245,8 @@ defmodule Embervm.NodeRegistry do
   @doc """
   Applies one dial-home registration from a noded instance. The map carries
   `node` (K8s node name), `pod_uid` (the pod UID, the instance identity),
-  `address` (`"pod_ip:grpc_port"`), and optionally `boot_id`. Upserts the
+  `address` (`"pod_ip:grpc_port"`), `scratch_generation`, and optionally
+  `boot_id`. Upserts the
   instance keyed by `{node, pod_uid}`: a new instance seeds runtime + opens a
   streamer + joins the NodeChannel/BaseBuilder fleet; a changed address re-points;
   an unchanged one just refreshes the registration timestamp. Called by the
@@ -293,6 +312,7 @@ defmodule Embervm.NodeRegistry do
     # registration is LAPSED; expiry additionally requires a dead stream.
     expire_after = Keyword.get(opts, :expire_after_ms, @expire_after_ms)
     down_expire_after = Keyword.get(opts, :down_expire_after_ms, @down_expire_after_ms)
+    tombstone_grace = Keyword.get(opts, :tombstone_grace_ms, @tombstone_grace_ms)
     # How a (re)registered instance's NEW address is propagated to the Prime/Assign
     # hot-path channel holder (Embervm.NodeChannel), whose node_addr map would
     # otherwise keep dialing a rolled pod's dead IP. Keyed by INSTANCE id. Default
@@ -316,6 +336,12 @@ defmodule Embervm.NodeRegistry do
     # Default calls the singleton BaseBuilder; tests inject a fake.
     base_builder_updater_fun =
       Keyword.get(opts, :base_builder_updater_fun, &default_base_builder_update/1)
+
+    # A changed scratch generation must re-run the Workload watcher's boot LIST
+    # so BaseBuilder and floor reconciliation are driven from the new disk truth.
+    # The default cast is non-blocking; tests inject a counter.
+    workload_redrive_fun =
+      Keyword.get(opts, :workload_redrive_fun, &default_workload_redrive/0)
 
     # How expiry withdraws live endpoint facts for VMs whose owning brick is being
     # forgotten. The function is injected for the same reason as the channel and
@@ -354,14 +380,17 @@ defmodule Embervm.NodeRegistry do
       min_watch_ms: min_watch,
       expire_after_ms: expire_after,
       down_expire_after_ms: down_expire_after,
+      tombstone_grace_ms: tombstone_grace,
       channel_updater_fun: channel_updater_fun,
       channel_remover_fun: channel_remover_fun,
       base_builder_updater_fun: base_builder_updater_fun,
+      workload_redrive_fun: workload_redrive_fun,
       resident_health_fun: resident_health_fun,
       stateful_store: Keyword.get(opts, :stateful_store, Embervm.StatefulStore),
       serving_store: Keyword.get(opts, :serving_store, Embervm.ServingStore),
       registry_resync_ms: registry_resync_ms,
       node_runtime: node_runtime,
+      instance_tombstones: %{},
       # The process notified once per drain rising edge with {:node_draining,
       # node_id, pod_uid, deadline_ms} so it can force-bank the instance's live VMs
       # before the pod exits (R6, ADR embervm/009). A registered name or pid; default the
@@ -544,6 +573,7 @@ defmodule Embervm.NodeRegistry do
            pod_uid: rt.pod_uid,
            instance_id: rt.instance_id,
            address: rt.address,
+           scratch_generation: rt.scratch_generation,
            health: rt.health,
            draining: rt.draining,
            dispatchable: not is_nil(facts),
@@ -555,6 +585,22 @@ defmodule Embervm.NodeRegistry do
     {:reply, snapshot, state}
   end
 
+  def handle_call(:expected_instances, _from, state) do
+    state = prune_instance_tombstones(state, state.clock.())
+
+    active =
+      for {instance_id, rt} <- state.node_runtime, into: %{} do
+        {instance_id,
+         %{
+           configured_id: rt.configured_id,
+           pod_uid: rt.pod_uid,
+           instance_id: rt.instance_id
+         }}
+      end
+
+    {:reply, Map.merge(state.instance_tombstones, active), state}
+  end
+
   def handle_call({:inject_status, instance_id, status}, _from, state) do
     if Map.has_key?(state.node_runtime, instance_id) do
       {:reply, :ok, apply_status(state, instance_id, status)}
@@ -564,7 +610,14 @@ defmodule Embervm.NodeRegistry do
   end
 
   def handle_call(:tick, _from, state) do
-    {:reply, :ok, evaluate_ages(state)}
+    now = state.clock.()
+
+    state =
+      state
+      |> evaluate_ages()
+      |> prune_instance_tombstones(now)
+
+    {:reply, :ok, state}
   end
 
   def handle_call({:register, reg}, _from, state) do
@@ -621,7 +674,30 @@ defmodule Embervm.NodeRegistry do
       "health" => rt.health
     })
     notify_drain_edge(state, rt, prev, status)
-    refresh_capacity(state, instance_id, status)
+    state = refresh_capacity(state, instance_id, status)
+
+    # Registration can race the final status from the old generation. Consume
+    # the repair only when the projection identifies the generation that was
+    # registered, so a pre-wipe status cannot clear it against old READY facts.
+    generation_matches? = status.scratch_generation == rt.scratch_generation
+
+    state =
+      if prev.scratch_repair_pending and generation_matches? do
+        state = put_in(state.node_runtime[instance_id].scratch_repair_pending, false)
+        safe_base_builder_update(state.base_builder_updater_fun, {:scratch_generation, instance_id})
+        state
+      else
+        state
+      end
+
+    # A capacity projection is the retry edge for a scratch check that parked
+    # while this instance had no fact. Do not expose a mismatched pre-wipe status
+    # to that retry path while a generation repair is pending.
+    if not prev.scratch_repair_pending or generation_matches? do
+      safe_base_builder_update(state.base_builder_updater_fun, {:capacity, instance_id})
+    end
+
+    state
   end
 
   defp primed_vm_ids(%NodeStatus{workloads: workloads}) do
@@ -1374,7 +1450,8 @@ defmodule Embervm.NodeRegistry do
   # -- dial-home registration -------------------------------------------------
 
   # Normalize an incoming registration body into %{node, pod_uid, address,
-  # boot_id, instance_id}. Accepts string or atom keys (the router decodes JSON to
+  # boot_id, scratch_generation, instance_id}. Accepts string or atom keys (the
+  # router decodes JSON to
   # string keys; a test may pass atoms). A blank node OR address is rejected; a
   # blank pod_uid collapses to a node-scoped instance (instance_id == node name),
   # so a pre-Downward-API daemon still registers under a stable key.
@@ -1383,6 +1460,7 @@ defmodule Embervm.NodeRegistry do
     pod_uid = reg_field(reg, "pod_uid") |> to_trimmed()
     address = reg_field(reg, "address") |> to_trimmed()
     boot_id = reg_field(reg, "boot_id") |> to_trimmed()
+    scratch_generation = reg_field(reg, "scratch_generation") |> to_trimmed()
 
     if node == "" or address == "" do
       :error
@@ -1393,6 +1471,7 @@ defmodule Embervm.NodeRegistry do
          pod_uid: pod_uid,
          address: address,
          boot_id: boot_id,
+         scratch_generation: scratch_generation,
          instance_id: instance_id_of(node, pod_uid)
        }}
     end
@@ -1427,16 +1506,18 @@ defmodule Embervm.NodeRegistry do
     [rt.instance_id]
   end
 
-  # Apply one registration: upsert the instance keyed by {node, pod_uid}. Three
+  # Apply one registration: upsert the instance keyed by {node, pod_uid}. Four
   # cases, all event-driven (no polling): a NEW instance seeds its runtime, joins
   # the NodeChannel/BaseBuilder fleet and opens a streamer; a KNOWN instance whose
   # advertised address CHANGED (a re-scheduled pod keeping the same UID, rare, or a
   # test) re-points its channel + streamer to the new address; a KNOWN instance at
-  # the same address just refreshes last_registered_at (the liveness half of the
-  # two-signal expiry). Registration never touches capacity facts directly; those
-  # flow from the WatchNode stream the streamer consumes.
+  # the same address with a changed scratch generation re-drives disk truth; an
+  # unchanged registration just refreshes last_registered_at (the liveness half
+  # of the two-signal expiry). Registration never touches capacity facts directly;
+  # those flow from the WatchNode stream the streamer consumes.
   defp apply_registration(state, %{instance_id: instance_id} = norm) do
     now = state.clock.()
+    state = update_in(state.instance_tombstones, &Map.delete(&1, instance_id))
 
     case state.node_runtime[instance_id] do
       nil ->
@@ -1450,6 +1531,21 @@ defmodule Embervm.NodeRegistry do
         state
         |> expire_instance(instance_id)
         |> add_instance(norm, now)
+
+      %{scratch_generation: generation} when generation != norm.scratch_generation ->
+        Logger.warning(
+          "embervm node registry: instance #{instance_id} scratch generation changed from #{inspect(generation)} to #{inspect(norm.scratch_generation)}"
+        )
+
+        state =
+          state
+          |> put_in([:node_runtime, instance_id, :last_registered_at], now)
+          |> put_in([:node_runtime, instance_id, :scratch_generation], norm.scratch_generation)
+          |> put_in([:node_runtime, instance_id, :scratch_repair_pending], true)
+
+        safe_workload_redrive(state.workload_redrive_fun)
+        safe_base_builder_update(state.base_builder_updater_fun, {:scratch_generation, instance_id})
+        state
 
       _rt ->
         put_in(state, [:node_runtime, instance_id, :last_registered_at], now)
@@ -1479,7 +1575,12 @@ defmodule Embervm.NodeRegistry do
         now
       )
 
-    rt = %{rt | last_registered_at: now}
+    rt = %{
+      rt
+      | last_registered_at: now,
+        scratch_generation: norm.scratch_generation,
+        scratch_repair_pending: false
+    }
 
     # A new instance for the same configured node proves the old pod is being
     # replaced. A :down sibling is already reassigned and capacity-retracted, so
@@ -1509,9 +1610,12 @@ defmodule Embervm.NodeRegistry do
 
     safe_base_builder_update(state.base_builder_updater_fun, {:add, rt.instance_id, norm.address})
 
+    state =
+      state
+      |> put_in([:node_runtime, rt.instance_id], rt)
+      |> start_streamer(rt.instance_id)
+
     state
-    |> put_in([:node_runtime, rt.instance_id], rt)
-    |> start_streamer(rt.instance_id)
   end
 
   # Seed one instance runtime entry from a node spec (%{id, address} plus optional
@@ -1543,6 +1647,8 @@ defmodule Embervm.NodeRegistry do
       # instance (which never registers and so is never expired). One half of the
       # two-signal expiry (the other is a dead stream).
       last_registered_at: nil,
+      scratch_generation: Map.get(spec, :scratch_generation, "") |> to_trimmed(),
+      scratch_repair_pending: false,
       health: :starting,
       draining: false,
       # The last inventory reported by this exact brick instance. Store rows carry
@@ -1559,7 +1665,9 @@ defmodule Embervm.NodeRegistry do
   # tell the BaseBuilder to drop it, withdraw the endpoint health of resident
   # stateful and serving VMs, kill its streamer if any (forgetting the pid first so
   # the ensuing DOWN is ignored), and drop its runtime so no reconnect resurrects
-  # it. Used both by two-signal expiry and by a re-registration re-point.
+  # it. Its identity remains in the GC expected-fleet tombstones until the grace
+  # window elapses. Used both by two-signal expiry and by a re-registration
+  # re-point.
   #
   # NodeChannel removal (single-key, post instance-key migration): add_instance
   # registered this instance's address under its instance_id alone, and expiry removes
@@ -1615,7 +1723,28 @@ defmodule Embervm.NodeRegistry do
           state
       end
 
-    %{state | node_runtime: Map.delete(state.node_runtime, instance_id)}
+    state = %{state | node_runtime: Map.delete(state.node_runtime, instance_id)}
+
+    if rt do
+      tombstone = %{
+        configured_id: rt.configured_id,
+        pod_uid: rt.pod_uid,
+        instance_id: rt.instance_id,
+        expired_at: state.clock.()
+      }
+
+      put_in(state.instance_tombstones[instance_id], tombstone)
+    else
+      state
+    end
+  end
+
+  defp prune_instance_tombstones(state, now) do
+    update_in(state.instance_tombstones, fn tombstones ->
+      Map.reject(tombstones, fn {_instance_id, tombstone} ->
+        now - tombstone.expired_at >= state.tombstone_grace_ms
+      end)
+    end)
   end
 
   # Propagate an instance's address to the Prime/Assign channel holder, swallowing any
@@ -1715,6 +1844,21 @@ defmodule Embervm.NodeRegistry do
       :ok
   end
 
+  defp safe_workload_redrive(nil), do: :ok
+
+  defp safe_workload_redrive(redrive) do
+    redrive.()
+    :ok
+  rescue
+    e ->
+      Logger.warning("embervm node registry: workload redrive failed: #{inspect(e)}")
+      :ok
+  catch
+    kind, reason ->
+      Logger.warning("embervm node registry: workload redrive exited: #{inspect({kind, reason})}")
+      :ok
+  end
+
   # Withdraw endpoint health through the lifecycle store's lossy node-fact API.
   # Match both configured node and vm_id: store rows intentionally carry the node
   # name while the registry distinguishes co-located bricks by pod_uid, and the
@@ -1770,6 +1914,20 @@ defmodule Embervm.NodeRegistry do
   defp default_base_builder_update({:remove, instance_id}) do
     Embervm.BaseBuilder.remove_node(instance_id)
     :ok
+  end
+
+  defp default_base_builder_update({:scratch_generation, instance_id}) do
+    Embervm.BaseBuilder.scratch_generation_changed(instance_id)
+    :ok
+  end
+
+  defp default_base_builder_update({:capacity, instance_id}) do
+    Embervm.BaseBuilder.capacity_fact_updated(instance_id)
+    :ok
+  end
+
+  defp default_workload_redrive do
+    Embervm.WorkloadWatcher.redrive()
   end
 
   # -- default (production) seams --------------------------------------------

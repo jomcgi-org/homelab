@@ -533,6 +533,17 @@ func TestLoadRegistryCacheDerivedFromNvmeRoot(t *testing.T) {
 	}
 }
 
+func TestLoadScratchGenerationPath(t *testing.T) {
+	t.Setenv("EMBERVM_NODED_SCRATCH_GENERATION_PATH", "/scratch/.scratch-generation")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.ScratchGenerationPath != "/scratch/.scratch-generation" {
+		t.Fatalf("ScratchGenerationPath = %q", c.ScratchGenerationPath)
+	}
+}
+
 // TestLoadRegistryCacheOverride proves EMBERVM_NODED_REGISTRY_CACHE wins over the
 // derived path (the test/out-of-tree override).
 func TestLoadRegistryCacheOverride(t *testing.T) {

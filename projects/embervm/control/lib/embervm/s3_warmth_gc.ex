@@ -28,10 +28,12 @@ defmodule Embervm.S3WarmthGc do
       other retention gate).
     * ANY list/pagination error aborts the whole sweep: a partial listing is
       indistinguishable from absence, and absence is what we delete on.
-    * Fleet-freshness precondition: EVERY expected node (values-configured;
-      empty = never sweep) must be present in NodeCapacity with a fresh
-      `updated_at`. NodeCapacity DROPS a non-dispatchable node's row, so a down
-      node's unreported disk bundles would otherwise look orphaned.
+    * Fleet-freshness precondition: EVERY live or recently expired instance held
+      by NodeRegistry must be present in NodeCapacity with a fresh `updated_at`.
+      NodeCapacity DROPS a non-dispatchable node's row, so a down node's
+      unreported disk bundles would otherwise look orphaned. Expiry tombstones
+      keep this gate closed for the stateful TTL grace window. An empty registry
+      aborts while brick capacity is expected.
     * Empty-CP-state guard: candidates in S3 while the corresponding store
       tracks NOTHING aborts (a sweep firing mid-rebuild after a CP restart must
       never read "empty desired set" as "everything is orphaned"). A minimum CP
@@ -80,7 +82,7 @@ defmodule Embervm.S3WarmthGc do
   use GenServer
   require Logger
 
-  alias Embervm.{GroupState, GroupStore, NodeCapacity, S3Client, SessionState, SessionStore, ServingState, ServingStore, StatefulState, StatefulStore}
+  alias Embervm.{GroupState, GroupStore, NodeCapacity, NodeRegistry, S3Client, SessionState, SessionStore, ServingState, ServingStore, StatefulState, StatefulStore}
 
   # Slow-moving reconcile: an S3 orphan is born rarely (a binding lost across a
   # restart), so hourly dry-run visibility is ample and keeps manifest churn low.
@@ -201,7 +203,9 @@ defmodule Embervm.S3WarmthGc do
       # The volume-ledger read for the Tier-1 dead-workload check; injectable so
       # tests do not need a real StatefulStore volume projection.
       volume_fun: Keyword.get(opts, :volume_fun, fn workload -> StatefulStore.get_volume(stateful_store, workload) end),
-      expected_nodes: Keyword.get(opts, :expected_nodes, []),
+      # Read the expected fleet and its expiry tombstones on every sweep. A
+      # static boot option goes stale as bricks register, expire, and are replaced.
+      node_registry_fun: Keyword.get(opts, :node_registry_fun, fn -> NodeRegistry.expected_instances() end),
       freshness_window_ms: Keyword.get(opts, :freshness_window_ms, @freshness_window_ms),
       min_uptime_ms: Keyword.get(opts, :min_uptime_ms, @min_uptime_ms),
       ttls: Map.merge(@default_ttls, Keyword.get(opts, :ttls, %{})),
@@ -299,29 +303,58 @@ defmodule Embervm.S3WarmthGc do
   # each NodeStatus projection), and the registry DROPS a node's row the moment
   # it stops being dispatchable. So "this node's disk inventory is represented
   # in the facts we exclude against" requires BOTH presence and freshness for
-  # EVERY expected node; a down/stale node's unreported bundles must never look
-  # orphaned. An EMPTY expected-node list aborts too: no fleet contract
-  # configured means no basis to claim the facts are complete.
-  defp check_fleet_fresh(%{expected_nodes: []}) do
-    abort(:no_expected_nodes, "expectedNodes is empty; cannot prove node-reported inventory is complete")
-  end
-
+  # EVERY live or tombstoned registry instance; a down/stale instance's
+  # unreported bundles must never look orphaned. An empty registry aborts because
+  # brick capacity is expected and there is no basis to claim the inventory is
+  # complete.
   defp check_fleet_fresh(state) do
     now = state.clock.()
+    expected_instances = expected_instances(state)
 
-    stale =
-      Enum.filter(state.expected_nodes, fn node ->
-        case NodeCapacity.fetch(state.capacity_table, node) do
-          {:ok, facts} -> now - Map.get(facts, :updated_at, now - state.freshness_window_ms - 1) > state.freshness_window_ms
-          :error -> true
-        end
-      end)
-
-    if stale == [] do
-      :ok
+    if expected_instances == [] do
+      abort(:no_expected_nodes, "node registry is empty while brick capacity is expected")
     else
-      abort(:fleet_stale, "nodes missing or stale in NodeCapacity: #{inspect(stale)}")
+      stale =
+        Enum.filter(expected_instances, fn instance ->
+          case NodeCapacity.fetch(state.capacity_table, {instance.node_id, instance.pod_uid}) do
+            {:ok, facts} ->
+              now - Map.get(facts, :updated_at, now - state.freshness_window_ms - 1) >
+                state.freshness_window_ms
+
+            :error ->
+              true
+          end
+        end)
+
+      if stale == [] do
+        :ok
+      else
+        abort(
+          :fleet_stale,
+          "instances missing or stale in NodeCapacity: #{inspect(Enum.map(stale, & &1.instance_id))}"
+        )
+      end
     end
+  end
+
+  defp expected_instances(state) do
+    case state.node_registry_fun.() do
+      registry when is_map(registry) ->
+        Enum.map(registry, fn {instance_id, facts} ->
+          %{
+            instance_id: instance_id,
+            node_id: Map.get(facts, :configured_id, ""),
+            pod_uid: Map.get(facts, :pod_uid, "")
+          }
+        end)
+
+      _ ->
+        []
+    end
+  rescue
+    _ -> []
+  catch
+    _, _ -> []
   end
 
   defp list_or_abort(state, prefix) do

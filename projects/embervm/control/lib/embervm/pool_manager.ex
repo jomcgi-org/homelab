@@ -434,18 +434,23 @@ defmodule Embervm.PoolManager do
 
   # -- primedFloorSatisfied status -------------------------------------------
 
-  defp update_floor_status(state, instances, fleet_totals) do
-    workloads = instances |> Enum.flat_map(&Map.keys(&1.workloads)) |> Enum.uniq()
+  defp update_floor_status(state, _instances, fleet_totals) do
+    # Iterate catalog truth so a workload with zero instances still flips false.
+    WorkloadCatalog.all_names(state.catalog_table)
+    |> Enum.reduce(state, fn wl, acc ->
+      case WorkloadCatalog.fetch(state.catalog_table, wl) do
+        {:ok, w} ->
+          satisfied = Map.get(fleet_totals, wl, 0) >= w.floor
 
-    Enum.reduce(workloads, state, fn wl, acc ->
-      w = Enum.find_value(instances, fn i -> Map.get(i.workloads, wl) end)
-      satisfied = Map.get(fleet_totals, wl, 0) >= w.floor
+          if Map.get(acc.floor_satisfied, wl) == satisfied do
+            acc
+          else
+            _ = safe(fn -> write_floor_status(acc, w.namespace, wl, satisfied) end)
+            %{acc | floor_satisfied: Map.put(acc.floor_satisfied, wl, satisfied)}
+          end
 
-      if Map.get(acc.floor_satisfied, wl) == satisfied do
-        acc
-      else
-        _ = safe(fn -> write_floor_status(acc, w.namespace, wl, satisfied) end)
-        %{acc | floor_satisfied: Map.put(acc.floor_satisfied, wl, satisfied)}
+        :error ->
+          acc
       end
     end)
   end
