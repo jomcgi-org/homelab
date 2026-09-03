@@ -532,6 +532,7 @@ async def test_unbound_agent_thread_reply_falls_through(monkeypatch, engine):
 @pytest.mark.asyncio
 async def test_terminal_notification_routes_to_thread_or_default_channel(monkeypatch):
     calls = []
+    monkeypatch.setenv("AGENT_SESSIONS_CHANNEL_NOTIFY", "all")
 
     async def notify(*args, **kwargs):
         calls.append((args, kwargs))
@@ -561,6 +562,7 @@ async def test_thread_delivery_posts_the_verbatim_result_not_the_voice_summary(
     multi-paragraph answer into one sentence and silently dropped the rest.
     """
     calls = []
+    monkeypatch.setenv("AGENT_SESSIONS_CHANNEL_NOTIFY", "all")
 
     async def notify(*args, **kwargs):
         calls.append((args, kwargs))

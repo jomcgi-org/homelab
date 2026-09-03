@@ -280,9 +280,14 @@ async def _notify_terminal(
             await agent_api.notify(chunk, level=level, channel=thread)
         return
 
-    # No thread bound (MCP or /agents UI): the short voice summary goes to the
-    # agent-session notification channel when configured. Unset falls back to
-    # notify()'s default channel.
+    # No thread bound (MCP or /agents UI): only turns selected by the configured
+    # policy send their short voice summary to Discord. Unset channels still
+    # fall back to notify()'s default channel.
+    notify_policy = agent_api.agent_sessions_channel_notify()
+    if notify_policy == "none" or (
+        notify_policy == "needs-input" and status != "needs_input"
+    ):
+        return
     if row is not None and status == "needs_input":
         summary = f"Needs input: {summary}"
     elif row is not None and status == "warn":

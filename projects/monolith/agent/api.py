@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from agent import config as _config
 from agent import routine_jobs as _routine_jobs
-from agent.config import agent_sessions_channel_id  # re-exported
+from agent.config import agent_sessions_channel_id, agent_sessions_channel_notify
 from agent.notify import notify  # re-exported
 
 
@@ -37,6 +37,7 @@ def list_jobs(
 __all__ = [
     "notify",
     "agent_sessions_channel_id",
+    "agent_sessions_channel_notify",
     "load_drainer_settings",
     "list_jobs",
 ]

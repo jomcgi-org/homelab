@@ -188,6 +188,22 @@ def notify_drainer_failure(name: str, error: str) -> None:
         asyncio.run(notify(f"Luna drainer job {name} failed: {error}", level="warn"))
 
 
+def _report_drainer_failure(settings: dict, name: str, error: str) -> None:
+    # settings.get keeps recovery compatible with workflows pinned before this
+    # setting existed. The new default is quiet Discord plus a warning log.
+    if not settings.get("notify_failures", False):
+        logger.warning("Luna drainer job %s failed: %s", name, error)
+        return
+    try:
+        notify_drainer_failure(name, error)
+    except Exception:  # noqa: BLE001 - notification is best effort
+        logger.warning(
+            "Luna drainer failure notification failed for job %s",
+            name,
+            exc_info=True,
+        )
+
+
 @DBOS.step()
 def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bool:
     from agent_sessions import store
@@ -514,14 +530,7 @@ def drain_cycle() -> dict:
                 except ExtractionOutputInvalid as exc:
                     error = _summary(exc)
                     _retry_or_dead_letter_kg(name, raw_id, job.get("payload"), error)
-                    try:
-                        notify_drainer_failure(name, error)
-                    except Exception:  # noqa: BLE001 - notification is best effort
-                        logger.warning(
-                            "Luna drainer failure notification failed for job %s",
-                            name,
-                            exc_info=True,
-                        )
+                    _report_drainer_failure(settings, name, error)
                 except Exception as exc:  # noqa: BLE001 - one job must not stop the cycle
                     error = _summary(exc)
                     if job_kind == KG_JOB_KIND:
@@ -530,14 +539,7 @@ def drain_cycle() -> dict:
                         )
                     else:
                         finish_drainer_job(name, "error", error)
-                    try:
-                        notify_drainer_failure(name, error)
-                    except Exception:  # noqa: BLE001 - notification is best effort
-                        logger.warning(
-                            "Luna drainer failure notification failed for job %s",
-                            name,
-                            exc_info=True,
-                        )
+                    _report_drainer_failure(settings, name, error)
                 finally:
                     if start_attempted:
                         destroy_drainer_session(session_id, local_session_id)

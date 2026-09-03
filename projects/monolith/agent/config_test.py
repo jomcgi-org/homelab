@@ -1,7 +1,11 @@
 # projects/monolith/agent/config_test.py
 import pytest
 
-from agent.config import load_drainer_settings, load_settings
+from agent.config import (
+    agent_sessions_channel_notify,
+    load_drainer_settings,
+    load_settings,
+)
 from core.github import GITHUB_REPO
 from goosecracker.api import REPO_CATALOG
 
@@ -40,6 +44,7 @@ def test_drainer_defaults(monkeypatch):
         "DRAINER_REPO",
         "DRAINER_BRANCH",
         "DRAINER_REASONING",
+        "DRAINER_NOTIFY_FAILURES",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -57,6 +62,7 @@ def test_drainer_defaults(monkeypatch):
     # Luna drain jobs are usually multi-step repo audits, so high reasoning is
     # the lane default while payloads can still opt out.
     assert settings.reasoning is True
+    assert settings.notify_failures is False
 
 
 def test_drainer_environment_overrides(monkeypatch):
@@ -70,6 +76,7 @@ def test_drainer_environment_overrides(monkeypatch):
     monkeypatch.setenv("DRAINER_REPO", "weave-hand/loom")
     monkeypatch.setenv("DRAINER_BRANCH", "work")
     monkeypatch.setenv("DRAINER_REASONING", "false")
+    monkeypatch.setenv("DRAINER_NOTIFY_FAILURES", "true")
 
     settings = load_drainer_settings()
 
@@ -83,6 +90,41 @@ def test_drainer_environment_overrides(monkeypatch):
     assert settings.kg_max_jobs_per_day == 12
     assert settings.repo == "weave-hand/loom"
     assert settings.branch == "work"
+    assert settings.notify_failures is True
+
+
+def test_agent_sessions_channel_notify_defaults_to_needs_input(monkeypatch):
+    monkeypatch.delenv("AGENT_SESSIONS_CHANNEL_NOTIFY", raising=False)
+
+    assert agent_sessions_channel_notify() == "needs-input"
+
+
+@pytest.mark.parametrize("value", ["needs-input", "all", "none"])
+def test_agent_sessions_channel_notify_parses_supported_values(monkeypatch, value):
+    monkeypatch.setenv("AGENT_SESSIONS_CHANNEL_NOTIFY", value.upper())
+
+    assert agent_sessions_channel_notify() == value
+
+
+def test_agent_sessions_channel_notify_rejects_invalid_value(monkeypatch):
+    monkeypatch.setenv("AGENT_SESSIONS_CHANNEL_NOTIFY", "warnings")
+
+    with pytest.raises(ValueError, match="must be one of"):
+        agent_sessions_channel_notify()
+
+
+def test_drainer_notify_failures_rejects_invalid_boolean(monkeypatch):
+    monkeypatch.setenv("DRAINER_NOTIFY_FAILURES", "sometimes")
+
+    with pytest.raises(ValueError, match="must be true or false"):
+        load_drainer_settings()
+
+
+@pytest.mark.parametrize(("value", "expected"), [("true", True), ("false", False)])
+def test_drainer_notify_failures_parses_boolean(monkeypatch, value, expected):
+    monkeypatch.setenv("DRAINER_NOTIFY_FAILURES", value)
+
+    assert load_drainer_settings().notify_failures is expected
 
 
 def test_drainer_legacy_kind_fallback(monkeypatch):
