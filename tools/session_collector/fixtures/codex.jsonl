@@ -1,0 +1,11 @@
+{"timestamp":"2026-01-02T00:00:00Z","type":"session_meta","payload":{"id":"codex-fixture","cwd":"/tmp/homelab/demo","originator":"codex_cli","cli_version":"1.0","model_provider":"openai","base_instructions":"must disappear"}}
+{"timestamp":"2026-01-02T00:00:01Z","type":"turn_context","payload":{"model":"gpt-test"}}
+{"timestamp":"2026-01-02T00:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Check the environment safely"}]}}
+{"timestamp":"2026-01-02T00:00:03Z","type":"response_item","payload":{"type":"reasoning","summary":[],"content":"must disappear"}}
+{"timestamp":"2026-01-02T00:00:04Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec_command","input":"{\"cmd\":\"env\"}"}}
+{"timestamp":"2026-01-02T00:00:05Z","type":"response_item","payload":{"type":"custom_tool_call_output","output":"PATH=/bin\nHOME=/tmp\nSHELL=/bin/zsh\nSECRET_VALUE=not-for-output"}}
+{"timestamp":"2026-01-02T00:00:06Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The result was sanitized. AKIA1234567890ABCDEF aws_secret_access_key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA ghp_abcdefghijklmnopqrstuvwxyz sk-openai_key_abcdefghijklmnopqrstu sk-ant-abcdefghijklmnopqrstuvwxyz xoxb-1234567890-abcdefghij eyJabcdefghijkl.abcdefghijkl.abcdefghijkl Bearer abcdefghijklmnopqrstuvwxyz https://user:password123@example.test password=supersecretvalue CF_Authorization=abcdefghijklmnopqrstuvwxyz123456 ops_abcdefghijklmnopqrstuvwxyz -----BEGIN PRIVATE KEY-----\nZmFrZS1wcml2YXRlLWtleQ==\n-----END PRIVATE KEY-----"}]}}
+{"timestamp":"2026-01-02T00:00:07Z","type":"event_msg","payload":{"type":"token_count","secret":"must disappear"}}
+{"timestamp":"2026-01-02T00:00:08Z","type":"world_state","payload":{"private":"must disappear"}}
+{"timestamp":"2026-01-02T00:00:09Z","type":"response_item","payload":{"type":"unknown_future_item","content":"DROP_UNKNOWN_ITEM"}}
+{"timestamp":"2026-01-02T00:00:10Z","type":"unknown_future_record","payload":{"content":"DROP_UNKNOWN_RECORD"}}

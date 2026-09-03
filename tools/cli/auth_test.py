@@ -5,7 +5,21 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.cli.auth import _read_token, clear_cf_token, get_cf_token
+from tools.cli.auth import (
+    _read_token,
+    clear_cf_token,
+    get_cf_token,
+    read_cached_cf_token,
+)
+
+
+def test_read_cached_cf_token_never_starts_login(tmp_path):
+    with (
+        patch("tools.cli.auth.CF_TOKEN_DIR", tmp_path),
+        patch("tools.cli.auth.subprocess.run") as run,
+    ):
+        assert read_cached_cf_token() is None
+    run.assert_not_called()
 
 
 class TestGetCfToken:

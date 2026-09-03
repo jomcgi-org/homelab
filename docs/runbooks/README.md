@@ -34,6 +34,7 @@ description matching. Open only when:
 | [knowledge/research.md](knowledge/research.md) | Gap research routine |
 | [knowledge/distill.md](knowledge/distill.md) | Distill completed tasks |
 | [knowledge/consolidate.md](knowledge/consolidate.md) | Daily/weekly rollups |
+| [Session collector](../../tools/session_collector/README.md) | Install and operate local Claude Code and Codex session collection |
 
 ### Improve loops (explicit)
 
