@@ -50,6 +50,11 @@ Provenance of each allowlist entry:
     registration lives in CF's Postgres, projects/mcp/ARCHITECTURE.md). The
     rest of the namespace (CF's redis, its postgres, the cron jobs) has no
     reason to dial this pod and now gets nothing.
+  - tailscale to 8000, NARROWED to the operator-managed proxy for this
+    Service: the proxy runs in the tailscale namespace and forwards tailnet
+    traffic to the API targetPort. The operator propagates its managed,
+    parent-resource-type, parent-resource, and parent-resource-ns labels to
+    the proxy pod. This grant is rendered only with the tailnet Service.
   - jobs.workflowNamespace to 8000, RESTRICTED to this chart's own job pods:
     Argo Workflows POST to MONOLITH_INTERNAL_URL
     (http://monolith.monolith.svc.cluster.local:8000), set in chart/values.yaml.
@@ -148,6 +153,22 @@ spec:
         - ports:
             - port: "8000"
               protocol: TCP
+    {{- if .Values.tailnet.enabled }}
+    # The Tailscale operator propagates these ownership labels to the proxy
+    # pod. Match the exact Service proxy rather than opening the operator
+    # namespace, whose other proxies do not need the monolith API.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: tailscale
+            tailscale.com/managed: "true"
+            tailscale.com/parent-resource-type: svc
+            tailscale.com/parent-resource: {{ include "monolith.fullname" . }}-tailnet
+            tailscale.com/parent-resource-ns: {{ .Release.Namespace }}
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP
+    {{- end }}
     - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ .Values.jobs.workflowNamespace }}

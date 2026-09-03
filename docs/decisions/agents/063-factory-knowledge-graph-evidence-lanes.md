@@ -245,3 +245,13 @@ same cloudflared user token `tools/cli` already replays as
 | `projects/monolith/knowledge/models.py:238-277` | `RawInput` and `AtomRawProvenance` as they exist today, incl. `gardener_version` |
 | `projects/inference/deploy/templates/httproute-private.yaml` | Private-tier `SecurityPolicy`, why Access service tokens don't reach the monolith |
 | `#4913` | Sol trial; `kg-drain`'s daily job cap is judged on the same OpenAI-quota axis |
+
+---
+
+## Amendment 2026-09-03
+
+The Tailscale operator already runs in the GKE cluster, so the collector's
+default transport is now the monolith tailnet Service, enabled by
+`tailnet.enabled`, with no Cloudflare cookie. The cached cloudflared token path
+remains the fallback when the tailnet is unavailable. Tailnet membership is
+network admission only; per-caller identity remains tracked by #4944.

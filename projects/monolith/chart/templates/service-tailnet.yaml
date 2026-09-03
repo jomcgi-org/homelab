@@ -1,0 +1,21 @@
+{{- if .Values.tailnet.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "monolith.fullname" . }}-tailnet
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+  annotations:
+    tailscale.com/expose: "true"
+    tailscale.com/hostname: {{ .Values.tailnet.hostname | quote }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: api
+      port: 80
+      targetPort: api
+      protocol: TCP
+  selector:
+    {{- include "monolith.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: app
+{{- end }}

@@ -22,14 +22,31 @@ Inspect a redacted transcript before enabling uploads:
 python3 -m tools.session_collector render ~/.claude/projects/project/session.jsonl
 ```
 
-Authenticate once, then install the launch agent:
+Install the launch agent:
 
 ```sh
 python3 -m venv .venv
 .venv/bin/pip install httpx
-cloudflared access login https://private.jomcgi.dev
 tools/session_collector/install.sh
 ```
+
+By default, the collector reads the local Tailscale status and sends directly
+to `http://monolith.<tailnet>.ts.net` without a cookie. The installer resolves
+that URL once and writes `--base-url <url>` into the launch agent, so launchd
+does not need Tailscale on its `PATH`. Set `SESSION_COLLECTOR_BASE_URL` while
+installing to override the discovered URL.
+
+When Tailscale is unavailable, the collector falls back to
+`https://private.jomcgi.dev` with Cloudflare authentication. Only this fallback
+requires a cached token:
+
+```sh
+cloudflared access login https://private.jomcgi.dev
+```
+
+`--auth auto` is the default. It selects `none` for `.ts.net` hosts and
+`cloudflare` for other hosts. Pass `--auth none` or `--auth cloudflare` to
+override that selection.
 
 The launch agent runs `.venv/bin/python3`. Its output is written to
 `~/Library/Logs/session-collector.log`; this log is not rotated automatically.

@@ -7,6 +7,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from .base_url import resolve_base_url
 from .collector import parse_session, run_collection
 from .render import render
 from .scope import discover_repo, parse_allowlist, parse_path_allowlist
@@ -25,7 +26,12 @@ def _run_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--quiet-minutes", type=float, default=30)
     parser.add_argument("--max-uploads", type=int, default=20)
-    parser.add_argument("--base-url", default="https://private.jomcgi.dev")
+    parser.add_argument("--base-url")
+    parser.add_argument(
+        "--auth",
+        choices=("auto", "cloudflare", "none"),
+        default="auto",
+    )
     parser.add_argument("--allow", action="append")
     parser.add_argument("--allow-path", action="append")
     parser.add_argument("--claude-dir", type=Path, default=DEFAULT_CLAUDE)
@@ -79,7 +85,8 @@ def main(argv: list[str] | None = None) -> int:
             path_allowlist=path_allowlist,
             quiet_minutes=args.quiet_minutes,
             max_uploads=args.max_uploads,
-            base_url=args.base_url,
+            base_url=args.base_url or resolve_base_url(),
+            auth=args.auth,
             dry_run=args.dry_run,
         )
     if args.command == "status":

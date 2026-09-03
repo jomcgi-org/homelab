@@ -1051,6 +1051,13 @@ service:
   port: 3000
   apiPort: 8000
 
+tailnet:
+  # Expose the API (port 8000 only) on the tailnet through the Tailscale
+  # operator, as <hostname>.<tailnet>. Tailnet membership is network
+  # admission only (ADR agents/063); per-caller identity is #4944.
+  enabled: false
+  hostname: monolith
+
 podSecurityContext:
   seccompProfile:
     type: RuntimeDefault
