@@ -1,4 +1,4 @@
-"""PydanticAI agent -- assembles context and runs Qwen with tool calling."""
+"""PydanticAI agent that assembles context and runs chat with tool calling."""
 
 import asyncio
 import base64
@@ -22,12 +22,8 @@ from chat.web_search import search_web
 
 LLAMA_CPP_URL = os.environ.get("LLAMA_CPP_URL", "")
 
-# The served inference model's knowledge cutoff. Qwen did not publish a cutoff
-# for Qwen3.8-27B (released August 2026) either, so we keep anchoring to the
-# release month as a conservative bound: the true cutoff is at or before it, so
-# telling the model its knowledge ends here never overstates what it knows, and
-# correctly frames anything more recent as beyond its training. Update when the
-# served model changes.
+# Conservative knowledge boundary supplied to the configured chat model. It
+# keeps current-fact claims on the web-search path rather than model memory.
 MODEL_KNOWLEDGE_CUTOFF = "August 2026"
 
 logger = logging.getLogger(__name__)
@@ -272,17 +268,16 @@ def build_system_prompt(channel: str = "discord") -> str:
         "natural. But people also come here to get real help, and helping "
         "them well matters as much as good banter.\n\n"
         "WHO YOU ARE:\n"
-        "- Your name in this server is Bosun, a large language model "
-        "running locally on hardware in this community, often someone's own "
-        "GPU, not a hosted API service.\n"
+        "- Your name in this server is Bosun. You are Muse Spark 1.3 "
+        "Contributor, served through Meta's hosted API.\n"
         '- When people @-mention you, reply to you, talk about "Bosun", '
-        '"Qwen", or "the bot", or comment on how you\'re running ("my 4090 is running '
+        '"Muse Spark", or "the bot", or comment on how you\'re running ("Meta is running '
         'you", "you\'re kinda dumb"), they mean YOU. Own it.\n'
         '- A "<@" followed by a long number is a Discord user mention. When '
         "the number is your own user ID, that's someone addressing YOU — "
         "don't treat it as a stranger's account or try to figure out who the "
         "ID belongs to.\n"
-        '- Don\'t give detached third-party advice about "local models" as if '
+        '- Don\'t give detached third-party advice about "language models" as if '
         "you weren't one. If someone says you're dumb or slow, take it as "
         "being about you and roll with it in good humor.\n\n"
         "READ THE ROOM (this is the most important thing):\n"
@@ -345,8 +340,8 @@ def build_system_prompt(channel: str = "discord") -> str:
         "it yourself inline.\n\n"
         "HOW YOU ACTUALLY WORK (so you can answer questions about yourself "
         "accurately instead of guessing):\n"
-        "- You are a Qwen language model running locally via llama.cpp on "
-        "community hardware, not a hosted API.\n"
+        "- You are Muse Spark 1.3 Contributor, reached through Meta's hosted "
+        "OpenAI-compatible API.\n"
         "- Each time you reply you are given: the last ~20 messages of THIS "
         "channel, a short rolling summary of the channel and of the regulars "
         "in it (refreshed periodically from activity, not live), and whatever "
@@ -472,22 +467,23 @@ def create_agent(
 ) -> Agent[ChatDeps]:
     """Create a PydanticAI agent (same tools and prompts for every tier).
 
-    Defaults to in-cluster Qwen via llama.cpp. Pass ``provider_base_url`` +
+    Defaults to the LLAMA_CPP_URL OpenAI-compatible endpoint. Pass ``provider_base_url`` +
     ``api_key`` + ``model_name`` to back it with a hosted OpenAI-compatible model
     instead (the household/WhatsApp tier -> DeepSeek V4 Flash on OpenRouter); the
-    Qwen path is untouched when those are absent. ``provider_base_url`` is used
+    default path is untouched when those are absent. ``provider_base_url`` is used
     verbatim (it already includes the API path, e.g. ``.../api/v1``), unlike the
     llama.cpp ``base_url`` which gets ``/v1`` appended.
     """
     if provider_base_url:
         prov_url = provider_base_url
         key = api_key or ""
-        name = model_name or "qwen3.6-27b"
+        name = model_name or shared.inference.META_SPARK_MODEL
     else:
         url = base_url or LLAMA_CPP_URL
         prov_url = f"{url}/v1"
-        key = api_key or "not-needed"
-        name = model_name or "qwen3.6-27b"
+        authorization = shared.inference.auth_headers(url).get("Authorization", "")
+        key = api_key or authorization.removeprefix("Bearer ") or "not-needed"
+        name = model_name or shared.inference.META_SPARK_MODEL
 
     model = OpenAIChatModel(
         name,
@@ -515,11 +511,7 @@ def create_agent(
         or ModelSettings(
             temperature=1.0,
             top_p=0.95,
-            extra_body={
-                "top_k": 20,
-                "presence_penalty": 1.5,
-                **shared.inference.reasoning_effort("low"),
-            },
+            presence_penalty=1.5,
         ),
         prepare_tools=inject_signposts,
     )
@@ -1028,9 +1020,9 @@ def create_household_agent() -> Agent[ChatDeps]:
     """The WhatsApp/household chat agent (ADR 039, amended).
 
     Same tools, system prompt, and signposts as the default concierge, but backed
-    by DeepSeek V4 Flash on OpenRouter (strong but cheap) rather than in-cluster
-    Qwen: every generated reply on the WhatsApp channel is authored by the hosted
-    model, while Qwen is reserved for the activation classifier. Runs in the
+    by DeepSeek V4 Flash on OpenRouter (strong but cheap) rather than Meta Spark:
+    every generated reply on the WhatsApp channel is authored by that model,
+    while Meta Spark is reserved for the activation classifier. Runs in the
     monolith, which already holds ``OPENROUTER_API_KEY``, so it reaches
     openrouter.ai directly (no egress swap; that is only for the goose guest). The
     model id is pinned via ``household_model()`` (HOUSEHOLD_LLM_MODEL from values).
@@ -1042,8 +1034,8 @@ def create_household_agent() -> Agent[ChatDeps]:
         provider_base_url=_OPENROUTER_BASE_URL,
         api_key=os.environ.get("OPENROUTER_API_KEY", ""),
         model_name=household_model(),
-        # DeepSeek does not take the Qwen-specific top_k / presence_penalty
-        # extra_body; keep sampling simple and let the model apply its defaults.
+        # Keep hosted-provider sampling simple and let the model apply its
+        # defaults.
         model_settings=ModelSettings(temperature=0.7, top_p=0.95),
     )
 
@@ -1051,16 +1043,17 @@ def create_household_agent() -> Agent[ChatDeps]:
 def create_fact_check_agent(base_url: str | None = None) -> "Agent[None]":
     """Create a lightweight agent for fact-checking a bot response via web search.
 
-    Uses the same Qwen model and Bosun persona but no chat deps -- just a
+    Uses the same Meta Spark model and Bosun persona but no chat deps, just a
     web_search tool so it can verify claims against SearXNG.
     """
     url = base_url or LLAMA_CPP_URL
+    authorization = shared.inference.auth_headers(url).get("Authorization", "")
 
     model = OpenAIChatModel(
-        "qwen3.6-27b",
+        shared.inference.META_SPARK_MODEL,
         provider=OpenAIProvider(
             base_url=f"{url}/v1",
-            api_key="not-needed",
+            api_key=authorization.removeprefix("Bearer ") or "not-needed",
         ),
     )
 
@@ -1082,11 +1075,7 @@ def create_fact_check_agent(base_url: str | None = None) -> "Agent[None]":
         model_settings=ModelSettings(
             temperature=1.0,
             top_p=0.95,
-            extra_body={
-                "top_k": 20,
-                "presence_penalty": 1.5,
-                **shared.inference.reasoning_effort("low"),
-            },
+            presence_penalty=1.5,
         ),
     )
 

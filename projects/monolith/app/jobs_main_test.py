@@ -31,6 +31,21 @@ def test_agent_drain_trigger_posts_internal_endpoint(monkeypatch):
     response.raise_for_status.assert_called_once_with()
 
 
+def test_ember_spark_trigger_posts_internal_endpoint(monkeypatch):
+    response = mock.Mock()
+    response.json.return_value = {"spark": {"ok": True}}
+    monkeypatch.setenv("MONOLITH_INTERNAL_URL", "http://monolith:8000")
+
+    with mock.patch("httpx.post", return_value=response) as post:
+        result = runner.invoke(jobs_main.app, ["ember-spark-synthetic-trigger"])
+
+    assert result.exit_code == 0, result.output
+    post.assert_called_once_with(
+        "http://monolith:8000/internal/ember/spark-session-probe", timeout=180
+    )
+    response.raise_for_status.assert_called_once_with()
+
+
 def test_worldcup_sim_dispatches_to_refresh_handler():
     handler = mock.AsyncMock(return_value=None)
     with (

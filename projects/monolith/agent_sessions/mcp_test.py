@@ -23,6 +23,7 @@ from faas.embervm_client import EmberVMTransportError
         ("luna", "codex"),
         ("terra", "codex"),
         ("sol", "codex"),
+        ("spark", "pi"),
         ("qwen", "pi"),
     ],
 )
@@ -37,14 +38,33 @@ def test_unknown_model_is_rejected_without_creating_session(session):
     assert session.exec(select(AgentSession)).first() is None
 
 
-@pytest.mark.parametrize("model", [None, "opus", "luna", "qwen"])
-def test_session_start_stores_model_on_session_and_pending(monkeypatch, session, model):
+@pytest.mark.parametrize(
+    ("model", "stored_model"),
+    [(None, None), ("opus", "opus"), ("luna", "luna"), ("spark", "spark")],
+)
+def test_session_start_stores_model_on_session_and_pending(
+    monkeypatch, session, model, stored_model
+):
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
     result = asyncio.run(mcp.monolith_agent_session_start("hello", model=model))
     row = store.get_session(session, result["session_id"])
     pending = store.get_pending_message(session, row.id, result["turn"])
-    assert row.model == model
-    assert pending.model == model
+    assert row.model == stored_model
+    assert pending.model == stored_model
+
+
+def test_session_start_normalizes_qwen_alias_and_logs_deprecation(
+    monkeypatch, session, caplog
+):
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+
+    result = asyncio.run(mcp.monolith_agent_session_start("hello", model="qwen"))
+
+    row = store.get_session(session, result["session_id"])
+    pending = store.get_pending_message(session, row.id, result["turn"])
+    assert row.model == "spark"
+    assert pending.model == "spark"
+    assert "model alias 'qwen' is deprecated; use 'spark'" in caplog.text
 
 
 def test_session_start_stores_voice_system_prompt(monkeypatch, session):
@@ -200,6 +220,42 @@ def test_send_persists_and_returns_immediately(session):
     pending = store.get_pending_message(session, row.id, result["turn"])
     assert pending.message_text == "hello"
     assert pending.seq == result["turn"]
+
+
+def test_send_normalizes_qwen_alias_and_logs_deprecation(monkeypatch, session, caplog):
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+    row = store.create_session(
+        session, "legacy-qwen", "/workspace", "main", model="qwen"
+    )
+
+    result = asyncio.run(mcp.monolith_agent_session_send(row.id, "hello", model="qwen"))
+
+    pending = store.get_pending_message(session, row.id, result["turn"])
+    assert result["accepted"] is True
+    assert pending.model == "spark"
+    assert "model alias 'qwen' is deprecated; use 'spark'" in caplog.text
+
+
+def test_queued_qwen_message_is_delivered_as_spark(monkeypatch, session):
+    delivered_models = []
+
+    async def mock_deliver(*args, **kwargs):
+        delivered_models.append(args[3])
+        return _completed_delivery(args[2])
+
+    async def mock_notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mcp._transport, "deliver", mock_deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", mock_notify)
+    row = store.create_session(
+        session, "legacy-qwen-queued", "/workspace", "main", model="qwen"
+    )
+    store.create_pending_message(session, row.id, "hello", model="qwen")
+
+    asyncio.run(mcp._execute_pending_message(row.id))
+
+    assert delivered_models == ["spark"]
 
 
 def test_cross_family_send_is_rejected_without_pending_row(session):
@@ -429,7 +485,7 @@ def _completed_turn(message: str) -> Turn:
     [
         ("completed", "completed"),  # claude lane
         ("end_turn", "completed"),  # claude lane, raw stream value
-        ("stop", "completed"),  # pi lane passes qwen's stopReason through
+        ("stop", "completed"),  # pi lane passes Spark's stopReason through
         ("error", "warn"),
         (None, "warn"),  # transport died mid-turn
         ("max_tokens", "warn"),  # truncated turn deserves attention

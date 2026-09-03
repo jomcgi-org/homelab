@@ -44,8 +44,8 @@
 #   web       Postgres RO and RW via DATABASE_URL / PUBLIC_WRITER_DATABASE_URL:
 #             both Services select the CNPG instance pods directly (label
 #             cnpg.io/cluster), there is no pooler. vLLM inference via
-#             CHAT_PUBLIC_INFERENCE_URL, embeddings via EMBEDDING_URL (both in
-#             the inference namespace), SeaweedFS S3 via SEAWEEDFS_S3_ENDPOINT
+#             CHAT_PUBLIC_INFERENCE_URL, embeddings via EMBEDDING_URL, SeaweedFS
+#             S3 via SEAWEEDFS_S3_ENDPOINT
 #             (stars/trips/artifact/knowledge reads), the EmberVM control plane
 #             via EMBERVM_URL (the public /functions router plus demo-postgres
 #             status/reset), and the EmberVM SERVING Envoy DaemonSet via

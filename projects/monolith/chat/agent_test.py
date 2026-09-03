@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from chat.agent import build_system_prompt, create_agent, format_context_messages
+from chat.agent import build_system_prompt, format_context_messages
 from chat.models import Attachment, Blob, Message
 
 
@@ -28,10 +28,10 @@ class TestBuildSystemPrompt:
         assert "mention" in prompt.lower()
         assert "they mean YOU" in prompt
 
-    def test_warns_against_third_party_local_model_advice(self):
-        """System prompt tells the model not to disown being a local model."""
+    def test_warns_against_third_party_language_model_advice(self):
+        """System prompt tells the model not to disown being a language model."""
         prompt = build_system_prompt()
-        assert "local models" in prompt
+        assert "language models" in prompt
 
 
 class TestFormatContextMessages:

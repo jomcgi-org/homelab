@@ -1,4 +1,4 @@
-"""Vision client -- calls Qwen 3 via llama.cpp /v1/chat/completions for image description."""
+"""Vision client for image description through OpenAI-compatible inference."""
 
 import asyncio
 import base64
@@ -47,7 +47,7 @@ class VisionClient:
         self.base_url = base_url or LLAMA_CPP_URL
 
     async def describe(self, image_bytes: bytes, content_type: str) -> str:
-        """Describe an image using Qwen 3 vision, returning a text summary.
+        """Describe an image using Meta Spark, returning a text summary.
 
         Retries with exponential backoff on transient errors (connection
         failures, timeouts, 5xx) for up to 5 minutes so the bot can survive
@@ -57,7 +57,7 @@ class VisionClient:
         data_uri = f"data:{content_type};base64,{b64}"
 
         payload = {
-            "model": "qwen3.6-27b",
+            "model": shared.inference.META_SPARK_MODEL,
             "messages": [
                 {"role": "system", "content": VISION_SYSTEM_PROMPT},
                 {
@@ -69,9 +69,6 @@ class VisionClient:
                 },
             ],
             "max_tokens": VISION_MAX_TOKENS,
-            # Disable thinking so tokens are used for the description, not
-            # <think> reasoning that fills the entire max_tokens budget.
-            **shared.inference.thinking_off(),
         }
 
         timeout = httpx.Timeout(VISION_READ_TIMEOUT, connect=VISION_CONNECT_TIMEOUT)
@@ -83,6 +80,7 @@ class VisionClient:
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     resp = await client.post(
                         f"{self.base_url}/v1/chat/completions",
+                        headers=shared.inference.auth_headers(self.base_url),
                         json=payload,
                     )
                     resp.raise_for_status()

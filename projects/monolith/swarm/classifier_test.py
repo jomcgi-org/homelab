@@ -8,7 +8,7 @@ class FakeResponse:
     def __init__(self, content):
         self.content = content
 
-    async def raise_for_status(self):
+    def raise_for_status(self):
         return None
 
     def json(self):
@@ -121,16 +121,8 @@ async def test_error_fails_closed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_request_leaves_room_for_a_reasoning_model(monkeypatch):
-    """The request must not budget for a one-line answer alone.
-
-    The alias resolves to a reasoning model, whose reasoning tokens count
-    against max_tokens even when the server routes them into a separate
-    field. A 64 token budget was spent thinking, `content` came back empty,
-    and the classifier failed closed to one_shot for every task, so no run
-    could ever start. Assert both halves of the fix: thinking is disabled,
-    and the budget is large enough to survive a server that ignores that.
-    """
+async def test_request_has_bounded_budget_without_vendor_params(monkeypatch):
+    """The classifier keeps its budget without sending Qwen-only parameters."""
     captured = {}
 
     class FakeAsyncClient:
@@ -152,6 +144,6 @@ async def test_request_leaves_room_for_a_reasoning_model(monkeypatch):
 
     assert classification == "planned"
     assert outcome == "success"
-    assert captured["json"]["chat_template_kwargs"]["enable_thinking"] is False
+    assert "chat_template_kwargs" not in captured["json"]
     assert captured["json"]["max_tokens"] >= 256
     assert captured["timeout"] >= 10

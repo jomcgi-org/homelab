@@ -7,7 +7,7 @@ encryption). The browser never talks to this router directly.
 
 Phase 3 wires real inference: the message endpoint is async, builds the model
 context server-side (fixed system prompt + rolling summary + recent turns + the
-new user message), and streams Qwen tokens from the shared in-cluster vLLM over
+new user message), and streams tokens from the configured provider over
 SSE. The model is text-in / text-out with NO tools and a server-fixed system
 prompt that is never overridable by user input (ADR 005 layer 6). The global
 in-flight slot (reserved-headroom GPU control, layer 3) is held for the whole
@@ -51,8 +51,7 @@ router = APIRouter(prefix="/internal/chat", tags=["chat_public"])
 # The default is intentionally a constrained, clearly-scoped persona so a
 # jailbreak yields only off-brand text and nothing privileged.
 _DEFAULT_SYSTEM_PROMPT = (
-    "You are Qwen 3.8, an open model running on Joe McGinley's self-hosted "
-    "Kubernetes homelab cluster, served with llama.cpp and no external API. You are "
+    "You are Muse Spark 1.3 Contributor, served by Meta's hosted API. You are "
     "the assistant behind Joe's public knowledge graph: the notes and context "
     "you are given are his own public notes and thoughts. "
     "Answer the user's question directly and substantively, explaining the topic "

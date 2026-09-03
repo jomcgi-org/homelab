@@ -1,17 +1,9 @@
-"""Fatal inference health for the public monolith tier.
+"""Fatal OpenAI-compatible inference health for the public monolith tier.
 
-This component is FATAL, not advisory: public product features depend on the
-in-cluster inference lane, so an unavailable model makes ``/api/health`` fail.
-It lives in ``chat_public`` because that domain already has reachability to
-in-cluster inference for those features, which adds no new network privilege.
-That differs from the advisory, externally focused ``cluster.cd_health``
-pattern.
-
-The component probes the inference server's ``/health`` path, matching the
-kubelet readiness probe in ``projects/inference/deploy/values.yaml``. Because
-inference uses a Recreate deployment strategy, loading the 27B model during a
-deploy will make public health report down. That is an intentional tradeoff for
-an honest dependency signal.
+Public product features depend on the configured chat provider, so an
+unavailable model makes ``/api/health`` fail. The component probes the standard
+models endpoint with the same optional Meta Spark bearer header as chat calls.
+Local OpenAI-compatible servers remain usable without a key.
 """
 
 from __future__ import annotations
@@ -21,6 +13,8 @@ import os
 import time
 
 import httpx
+
+from shared.inference import auth_headers
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +41,7 @@ def _client(timeout: httpx.Timeout) -> httpx.AsyncClient:
 
 
 async def inference_health() -> dict:
-    """Probe the in-cluster inference readiness endpoint without caching."""
+    """Probe the configured inference provider without caching."""
     base_url = os.environ.get(INFERENCE_URL_ENV, "")
     if not base_url:
         logger.warning(
@@ -62,7 +56,10 @@ async def inference_health() -> dict:
     started = time.monotonic()
     try:
         async with _client(timeout) as http:
-            response = await http.get(f"{base_url.rstrip('/')}/health")
+            response = await http.get(
+                f"{base_url.rstrip('/')}/v1/models",
+                headers=auth_headers(base_url),
+            )
     except httpx.HTTPError as exc:
         return {
             "ok": False,

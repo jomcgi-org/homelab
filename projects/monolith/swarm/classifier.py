@@ -1,4 +1,4 @@
-"""Fail-closed task classification through the local Qwen service."""
+"""Fail-closed task classification through chat inference."""
 
 from __future__ import annotations
 
@@ -9,26 +9,17 @@ import time
 import httpx
 
 from chat.vision import LLAMA_CPP_URL
+import shared.inference
 
 _CLASSIFICATION_PATTERN = re.compile(
     r"CLASSIFICATION:\s*(one_shot|planned)", re.IGNORECASE
 )
 _TAIL_LINES = 3
-# The alias resolves to a REASONING model since the llama.cpp switch
-# (9697abc47). Reasoning tokens count against the generation budget even
-# though --reasoning-format deepseek routes them into `reasoning_content`,
-# so a budget sized for a one-line answer is spent thinking and `content`
-# comes back empty. That parses to None, which fails closed to one_shot, so
-# EVERY task became a session and no run could ever start.
-#
-# Two changes rather than one, deliberately. `enable_thinking: false` is the
-# real fix (a binary classification does not need deliberation, and skipping
-# it also makes the call fast), and the wider budget is the belt: if a future
-# model or template ignores the flag, the answer still fits instead of
-# silently reverting the entrypoint to sessions-only.
+# Keep enough output room for providers that include a short explanation before
+# the final classification line. Parsing remains fail closed.
 _TIMEOUT_SECONDS = 20.0
 _MAX_TOKENS = 512
-_MODEL = "qwen3.6-27b"
+_MODEL = shared.inference.META_SPARK_MODEL
 
 
 def _parse_classification(text: str | None) -> str | None:
@@ -61,6 +52,7 @@ async def classify_task_with_outcome(text: str) -> tuple[str, int, str, str | No
         async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
             response = await client.post(
                 f"{url}/v1/chat/completions",
+                headers=shared.inference.auth_headers(url),
                 json={
                     "model": _MODEL,
                     "messages": [
@@ -76,11 +68,6 @@ async def classify_task_with_outcome(text: str) -> tuple[str, int, str, str | No
                     ],
                     "temperature": 0,
                     "max_tokens": _MAX_TOKENS,
-                    # Skip deliberation for a binary label. Qwen reads this
-                    # through the jinja chat template; a server that does not
-                    # understand it ignores it, which is why _MAX_TOKENS still
-                    # has to be large enough to hold reasoning plus answer.
-                    "chat_template_kwargs": {"enable_thinking": False},
                 },
             )
         response.raise_for_status()

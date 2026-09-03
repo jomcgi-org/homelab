@@ -14,8 +14,8 @@ proxies turns here in-cluster over the Cilium datapath (WireGuard node
 encryption). The browser never talks to this
 router directly. The message endpoint is async, builds the model context
 server-side (fixed system prompt + rolling summary + retrieved corpus + recent
-turns + the new user message), and streams Qwen tokens from the shared in-cluster
-vLLM over SSE. The model is text-in / text-out with NO tools and a server-fixed
+turns + the new user message), and streams tokens from the configured provider
+over SSE. The model is text-in / text-out with NO tools and a server-fixed
 system prompt that is never overridable by user input (ADR 005 layer 6). The
 global in-flight slot (reserved-headroom GPU control, layer 3) is held for the
 whole stream and released in a finally.

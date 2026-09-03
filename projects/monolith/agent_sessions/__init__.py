@@ -1,11 +1,14 @@
-"""Voice-drivable Claude Code agent sessions."""
+"""Voice-drivable coding agent sessions."""
 
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 # Every model the user-facing picker may offer, ordered by family. This is the
 # single source for selectable models: the Discord /agent choice list and GET
-# /api/agents/models are built from it. The runtime still recognizes qwen for
-# persisted sessions and explicit compatibility calls, but it is not offered.
+# /api/agents/models are built from it. The runtime still recognizes qwen as a
+# deprecated alias for persisted sessions and compatibility calls.
 #
 # Deliberately no FIRST-PARTY imports in this module. chat.bot reads
 # SUPPORTED_MODELS at import time to build its slash-command choices, and any
@@ -13,7 +16,8 @@ import os
 # dep onto every target that imports chat.bot without one (see the drift test
 # in chat/bot_on_message_test.py). The stdlib os import below is safe: it ships
 # with every interpreter.
-SUPPORTED_MODELS = ("luna", "terra", "sol", "opus", "sonnet", "fable")
+SUPPORTED_MODELS = ("luna", "terra", "sol", "opus", "sonnet", "fable", "spark")
+LEGACY_MODEL_ALIASES = {"qwen": "spark"}
 
 # Per-env allowlist narrowing what the console picker and the Discord /agent
 # command OFFER (issue #4859). Comma-separated names; empty or unset means
@@ -38,16 +42,25 @@ def offered_models(configured: str | None = None) -> tuple[str, ...]:
     return tuple(model for model in SUPPORTED_MODELS if model in allowed)
 
 
+def normalize_model(model: str | None) -> str | None:
+    """Return the canonical model name, warning when a legacy alias is used."""
+    canonical = LEGACY_MODEL_ALIASES.get(model, model)
+    if canonical != model:
+        logger.warning("model alias %r is deprecated; use %r", model, canonical)
+    return canonical
+
+
 def model_family(model: str | None) -> str:
     """Return the adapter family for a supported model name."""
-    if model == "qwen":
+    model = normalize_model(model)
+    if model == "spark":
         return "pi"
     if model in {"luna", "terra", "sol"}:
         return "codex"
     if model in {None, "opus", "sonnet", "fable"}:
         return "claude"
     raise ValueError(
-        f"Unknown model {model!r}; valid models: opus, sonnet, fable, luna, terra, sol, qwen"
+        f"Unknown model {model!r}; valid models: opus, sonnet, fable, luna, terra, sol, spark"
     )
 
 
@@ -61,8 +74,8 @@ def model_family(model: str | None) -> str:
 # armed.
 #
 # The other half of the same contract: the pi workload must stay enabled while
-# persisted or explicitly requested qwen sessions remain supported. Production
-# no longer offers qwen in its model catalogue, and background work uses Luna.
+# persisted qwen sessions remain supported through the spark alias. Background
+# work still uses Luna and retains its database-backed legacy queue kind.
 #
 # There is deliberately no workload_for_family() helper here. The live decision
 # is transport._workload_for, which consults the env-resolved

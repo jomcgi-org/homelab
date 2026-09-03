@@ -9,6 +9,7 @@ import ember_public as _domain
 from ember_public.durability import build_durability_health
 from ember_public.health import (
     EMBER_CODEX_STALENESS_S,
+    EMBER_SPARK_STALENESS_S,
     EMBER_SYNTHETIC_STALENESS_S,
     synthetic_probe_health,
 )
@@ -36,6 +37,7 @@ MODULE = _Module(
             "postgres", EMBER_SYNTHETIC_STALENESS_S
         ),
         "ember_codex": synthetic_probe_health("codex", EMBER_CODEX_STALENESS_S),
+        "ember_spark": synthetic_probe_health("spark", EMBER_SPARK_STALENESS_S),
         **({"ember-durability": _DURABILITY_CHECK} if _DURABILITY_CHECK else {}),
     },
 )

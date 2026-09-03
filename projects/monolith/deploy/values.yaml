@@ -237,6 +237,10 @@ goosecracker:
   onepassword:
     itemPath: "vaults/k8s-homelab/items/embervm-agent-secrets"
 
+metaSpark:
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/meta-spark"
+
 # Graph layer (ADR agents/038): the first working example of composing agent
 # sessions into a durable DBOS workflow (implement, then review, across two
 # sessions). Enabled here because the chart default is false and a chart default
@@ -301,8 +305,8 @@ grimoire:
 # ORCHESTRATOR_API_KEY sourced from the NVIDIA_API_KEY field of the existing
 # "goosecracker" Secret). NVIDIA's free tier is ~40 RPM per key, so on a rate
 # limit or error the ordered chain degrades to DeepSeek on OpenRouter (the proven
-# forced-tool-call path), then to always-available in-cluster Qwen, before failing
-# open to direct submit. All keys reuse the same "goosecracker" Secret. The
+# forced-tool-call path), then to Meta Spark, before failing open to direct
+# submit. The Meta key comes from the dedicated meta-spark item. The
 # orchestrator only runs on channels with the ADR 029 "orchestrator" consent
 # grant; ungranted channels fail open to direct submit with no external traffic.
 orchestrator:
@@ -316,9 +320,9 @@ orchestrator:
     - model: "deepseek/deepseek-v4-flash"
       base_url: "https://openrouter.ai/api/v1"
       api_key_env: "OPENROUTER_API_KEY"
-    - model: "qwen3.6-27b"
-      base_url: "http://inference.inference.svc.cluster.local:8080/v1"
-      api_key_env: ""
+    - model: "muse-spark-1.3-contributor"
+      base_url: "https://api.meta.ai/v1"
+      api_key_env: "META_SPARK_API_KEY"
 
 # WhatsApp channel gateway (ADR 039). Left disabled: Joe flips enabled to true in
 # a follow-up commit after pairing the throwaway bot number via the notify flow

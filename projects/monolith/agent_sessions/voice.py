@@ -24,6 +24,6 @@ def extract_voice_summary(result_text: str) -> str:
     return " ".join(first_sentence.split())[:200]
 
 
-def qwen_voice_fallback(result_text: str) -> str:
-    """Reserved hook for a future Qwen summary fallback."""
+def spark_voice_fallback(result_text: str) -> str:
+    """Reserved hook for a future model summary fallback."""
     return ""

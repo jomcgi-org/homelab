@@ -1,23 +1,18 @@
-"""Text-only streaming client for the shared vLLM (ADR 005 layer 6).
+"""Text-only streaming client for OpenAI-compatible chat inference.
 
 Grimoire chat is text-in / text-out with NO tools and NO function-calling. This
 is a deliberate direct httpx call to the OpenAI-compatible
 ``/v1/chat/completions`` endpoint rather than PydanticAI, precisely so that
 guarantee is obvious on the page: the request body carries only
 model/messages/max_tokens/stream, and there is no ``tools=`` argument anywhere
-that could be populated by accident. The model is the shared in-cluster Qwen (the
-same endpoint chat_public, the Discord bot, and the private ``/explore`` chat
-use); the reserved-headroom slot in ``limits.py`` keeps public load from starving
-those trusted callers (the slot is held by the caller for the whole stream).
+that could be populated by accident. The reserved-headroom slot in ``limits.py``
+keeps public load bounded (the slot is held for the whole stream).
 
 The base URL is injected from the environment with an empty-string default and NO
-hardcoded k8s service URL (the repo no-hardcoded-service-url rule). It reads
+hardcoded endpoint. It reads
 ``GRIMOIRE_CHAT_INFERENCE_URL`` first and falls back to the already-configured
-``CHAT_PUBLIC_INFERENCE_URL`` (both public chat surfaces hit the SAME in-cluster
-vLLM, so reusing the chat_public value means one place to configure the endpoint,
-with a grimoire-specific override available if it is ever needed). The inference
-service is in-cluster, so the public namespace's off-cluster ``EgressNetwork``
-deny does not block it.
+``CHAT_PUBLIC_INFERENCE_URL``, so both public chat surfaces share one configured
+provider unless a Grimoire-specific override is needed.
 """
 
 from __future__ import annotations
@@ -31,22 +26,22 @@ from dataclasses import dataclass
 import httpx
 
 from grimoire_chat import limits
+import shared.inference
 
 logger = logging.getLogger(__name__)
 
-# Base URL of the shared vLLM, OpenAI-compatible. Empty default + values
-# injection (no hardcoded service URL); falls back to CHAT_PUBLIC_INFERENCE_URL so
+# OpenAI-compatible base URL. Empty default plus values injection means there is
+# no hidden network destination in code. It falls back to CHAT_PUBLIC_INFERENCE_URL so
 # both public chat surfaces share the one configured endpoint. See module
 # docstring.
 INFERENCE_URL = os.environ.get("GRIMOIRE_CHAT_INFERENCE_URL") or os.environ.get(
     "CHAT_PUBLIC_INFERENCE_URL", ""
 )
 
-# The shared Qwen alias served by the in-cluster vLLM (name != physical model
-# since 2026-06-03, but the alias is stable). Overridable for tests/ops; falls
-# back to the chat_public model var so both surfaces target the same model.
+# The pinned contributor-tier model is overridable for tests and operations. It
+# falls back to the public chat model so both surfaces target the same model.
 MODEL = os.environ.get("GRIMOIRE_CHAT_MODEL") or os.environ.get(
-    "CHAT_PUBLIC_MODEL", "qwen3.6-27b"
+    "CHAT_PUBLIC_MODEL", shared.inference.META_SPARK_MODEL
 )
 
 # A streamed generation runs for many seconds; allow a generous read timeout but
@@ -61,7 +56,7 @@ _TIMEOUT = httpx.Timeout(
 
 
 class InferenceError(RuntimeError):
-    """The vLLM endpoint is unset, unreachable, or returned a bad response."""
+    """The inference endpoint is unset, unreachable, or returned a bad response."""
 
 
 @dataclass
@@ -128,7 +123,10 @@ async def stream_chat(
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             async with client.stream(
-                "POST", f"{url}/v1/chat/completions", json=body
+                "POST",
+                f"{url}/v1/chat/completions",
+                headers=shared.inference.auth_headers(url),
+                json=body,
             ) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
@@ -179,7 +177,11 @@ async def complete(messages: list[dict[str, str]], *, max_tokens: int) -> str:
     body = _payload(messages, max_tokens=max_tokens, stream=False)
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = await client.post(f"{url}/v1/chat/completions", json=body)
+            resp = await client.post(
+                f"{url}/v1/chat/completions",
+                headers=shared.inference.auth_headers(url),
+                json=body,
+            )
             resp.raise_for_status()
             data = resp.json()
     except httpx.HTTPError as exc:

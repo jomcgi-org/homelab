@@ -225,6 +225,72 @@ async def test_probe_codex_exception(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_probe_spark_success(monkeypatch):
+    class Turn:
+        terminal_reason = "completed"
+        result = " spark synthetic ok "
+
+    async def run_session(prompt, model):
+        assert prompt == "Reply with exactly: spark synthetic ok"
+        assert model == "spark"
+        return Turn()
+
+    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
+
+    result = await probe.probe_spark()
+
+    assert result["ok"] is True
+    assert isinstance(result["latency_ms"], (int, float))
+
+
+@pytest.mark.asyncio
+async def test_probe_spark_bad_terminal_reason(monkeypatch):
+    class Turn:
+        terminal_reason = "pending"
+        result = "not done"
+
+    async def run_session(*_, **__):
+        return Turn()
+
+    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
+
+    result = await probe.probe_spark()
+
+    assert result["ok"] is False
+    assert "turn reason" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_probe_spark_empty_result(monkeypatch):
+    class Turn:
+        terminal_reason = "completed"
+        result = ""
+
+    async def run_session(*_, **__):
+        return Turn()
+
+    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
+
+    result = await probe.probe_spark()
+
+    assert result["ok"] is False
+    assert "empty result" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_probe_spark_exception(monkeypatch):
+    async def run_session(*_, **__):
+        raise RuntimeError("Spark transport unavailable")
+
+    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
+
+    result = await probe.probe_spark()
+
+    assert result["ok"] is False
+    assert result["latency_ms"] is None
+
+
+@pytest.mark.asyncio
 async def test_page_5xx_retried_once_then_failed(monkeypatch):
     class Response:
         status_code = 503

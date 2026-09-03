@@ -93,7 +93,7 @@ progress:
 agents:
   # Current production selection, listed explicitly so new supported models do
   # not appear in the console or Discord command without a values change.
-  models: "luna,terra,sol,opus,sonnet,fable"
+  models: "luna,terra,sol,opus,sonnet,fable,spark"
   drainer:
     # Master kill switch. The CronWorkflow stays unsuspended and safely gets a
     # disabled response until a follow-up production values PR turns this on,
@@ -483,7 +483,7 @@ jobs:
         limits:
           memory: 512Mi
     # chat.summary_generation: per-user + per-channel LLM summaries. LLM-only
-    # (Qwen via LLAMA_CPP_URL), no Discord bot needed, so it is a clean cutover.
+    # (configured provider via LLAMA_CPP_URL), no Discord bot needed.
     # Daily (was 86400s); generous deadline since it loops users/channels with
     # an LLM call each.
     - name: chat-summary-generation
@@ -494,14 +494,19 @@ jobs:
       activeDeadlineSeconds: 1800
       suspend: false
       env:
-        LLAMA_CPP_URL: "http://inference.inference.svc.cluster.local:8080"
+        LLAMA_CPP_URL: "https://api.meta.ai"
+      secretEnv:
+        META_SPARK_API_KEY:
+          secretName: monolith-meta-spark
+          key: META_SPARK_API_KEY
+          optional: true
       resources:
         requests:
           cpu: 250m
           memory: 512Mi
         limits:
           memory: 512Mi
-    # chat.changelog.* (one per config): fetch new commits, summarize via Qwen,
+    # chat.changelog.* (one per config): fetch new commits, summarize via the LLM,
     # ENQUEUE the embed to the Discord outbox (the leader's bot drains + posts).
     # No bot in the job. `changelog: true` injects CHANGELOG_CONFIGS + GITHUB_TOKEN.
     # Hourly (was intervalHours=1), offset so the three do not fire together.
@@ -514,7 +519,12 @@ jobs:
       suspend: false
       changelog: true
       env:
-        LLAMA_CPP_URL: "http://inference.inference.svc.cluster.local:8080"
+        LLAMA_CPP_URL: "https://api.meta.ai"
+      secretEnv:
+        META_SPARK_API_KEY:
+          secretName: monolith-meta-spark
+          key: META_SPARK_API_KEY
+          optional: true
       resources:
         requests:
           cpu: 250m
@@ -530,7 +540,12 @@ jobs:
       suspend: false
       changelog: true
       env:
-        LLAMA_CPP_URL: "http://inference.inference.svc.cluster.local:8080"
+        LLAMA_CPP_URL: "https://api.meta.ai"
+      secretEnv:
+        META_SPARK_API_KEY:
+          secretName: monolith-meta-spark
+          key: META_SPARK_API_KEY
+          optional: true
       resources:
         requests:
           cpu: 250m
@@ -546,7 +561,12 @@ jobs:
       suspend: false
       changelog: true
       env:
-        LLAMA_CPP_URL: "http://inference.inference.svc.cluster.local:8080"
+        LLAMA_CPP_URL: "https://api.meta.ai"
+      secretEnv:
+        META_SPARK_API_KEY:
+          secretName: monolith-meta-spark
+          key: META_SPARK_API_KEY
+          optional: true
       resources:
         requests:
           cpu: 250m
@@ -578,7 +598,7 @@ jobs:
     # wires the 👍/👎 confirm flow. Sensitivity is env config: OBSERVER_MIN_EVIDENCE
     # (min distinct evidence messages the classifier must cite) and
     # OBSERVER_COOLDOWN_DAYS (suppress a channel that saw a recent proposal). The
-    # LLM classify hits Qwen via LLAMA_CPP_URL (injected into the workflows pod).
+    # LLM classify uses LLAMA_CPP_URL injected into the workflows pod.
     - name: chat-observe-directives
       args: ["chat-observe-directives"]
       schedule: "0 18 * * 5"
@@ -586,9 +606,14 @@ jobs:
       activeDeadlineSeconds: 600
       suspend: false
       env:
-        LLAMA_CPP_URL: "http://inference.inference.svc.cluster.local:8080"
+        LLAMA_CPP_URL: "https://api.meta.ai"
         OBSERVER_MIN_EVIDENCE: "3"
         OBSERVER_COOLDOWN_DAYS: "14"
+      secretEnv:
+        META_SPARK_API_KEY:
+          secretName: monolith-meta-spark
+          key: META_SPARK_API_KEY
+          optional: true
       resources:
         requests:
           cpu: 100m
@@ -602,8 +627,8 @@ jobs:
     # regression. It NEVER posts to Discord; provenance is read out-of-band via
     # the monolith-chat-* MCP tools. A human manual tune (source=manual) wins.
     # Shipping LIVE + AGGRESSIVE per PR 3: AUTOPILOT_MODE=live (flip to shadow to
-    # kill-switch: it logs what it WOULD do and mutates nothing). Classifies via
-    # Qwen (LLAMA_CPP_URL). All thresholds are AUTOPILOT_* env knobs.
+    # kill-switch: it logs what it WOULD do and mutates nothing). Classification
+    # uses LLAMA_CPP_URL. All thresholds are AUTOPILOT_* env knobs.
     - name: chat-directive-autopilot
       args: ["chat-directive-autopilot"]
       schedule: "30 4 * * *"
@@ -616,7 +641,7 @@ jobs:
       activeDeadlineSeconds: 600
       suspend: false
       env:
-        LLAMA_CPP_URL: "http://inference.inference.svc.cluster.local:8080"
+        LLAMA_CPP_URL: "https://api.meta.ai"
         AUTOPILOT_MODE: "live"
         AUTOPILOT_MIN_CONFIDENCE: "0.65"
         AUTOPILOT_MIN_EVIDENCE: "2"
@@ -626,6 +651,11 @@ jobs:
         AUTOPILOT_REGRESS_MARGIN: "0.1"
         AUTOPILOT_LOOKBACK_DAYS: "7"
         AUTOPILOT_MAX_LEN_DELTA: "300"
+      secretEnv:
+        META_SPARK_API_KEY:
+          secretName: monolith-meta-spark
+          key: META_SPARK_API_KEY
+          optional: true
       resources:
         requests:
           cpu: 100m
@@ -894,6 +924,17 @@ jobs:
         requests:
           cpu: 100m
           memory: 256Mi
+    - name: ember-spark-session-synthetic
+      args: ["ember-spark-synthetic-trigger"]
+      schedule: "2 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 300
+      suspend: false
+      internalApi: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
 
 # Ember synthetic probes (the ember-synthetic CronWorkflow above). This now
 # feeds the Deployment, not the cron; the probes' control-plane address is read from
@@ -1106,9 +1147,9 @@ sandbox:
   workloadPrefix: "sandbox-"
 
 agentSessions:
-  # EmberVM workload the qwen (pi) family creates its guest sessions on.
+  # EmberVM workload the spark (pi) family creates its guest sessions on.
   # Empty means "use the code default" (pi-runtime). This is the REVERT
-  # LEVER for routing qwen back to the claude-runtime lane: set it to
+  # LEVER for routing spark back to the claude-runtime lane: set it to
   # "claude-runtime" to revert by values edit, no code deploy.
   #
   # A consumer values file that OMITS agentSessions renders fine, because
@@ -1183,6 +1224,14 @@ semgrep:
 # historical name to avoid a coordinated rename across consumers.
 goosecracker:
   enabled: false
+  onepassword:
+    itemPath: ""
+
+# Meta Spark contributor-tier credential. The item is synced only when an
+# environment values file supplies its path. The backend and selected workflow
+# jobs read META_SPARK_API_KEY from the resulting Secret.
+metaSpark:
+  secretName: monolith-meta-spark
   onepassword:
     itemPath: ""
 
@@ -1292,7 +1341,7 @@ orchestrator:
   # OrchestratorUnavailable (timeout, 5xx/429, or an unusable/absent tool call),
   # before the flow fails open to direct submit. Each entry (snake_case, passed
   # verbatim to the client as JSON): model, base_url, and api_key_env (the env var
-  # holding that provider's key; empty = no auth, e.g. in-cluster Qwen). Empty
+  # holding that provider's key; empty means no auth for a local provider). Empty
   # list = no fallback (single-attempt contract).
   fallbacks: []
   # Initial-compile budget: covers BOTH the route-decision call and the

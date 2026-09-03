@@ -41,6 +41,8 @@ internal_router = APIRouter(prefix="/internal/ember", tags=["ember-internal"])
 _probe_in_flight = False
 # The hourly Codex lane probe must not block, or be blocked by, the demo sweep.
 _codex_probe_in_flight = False
+# The Spark lane probe has an independent cadence and guard.
+_spark_probe_in_flight = False
 
 
 async def _notify(message: str, level: str) -> None:
@@ -108,3 +110,26 @@ async def codex_session_probe_endpoint() -> dict:
         return {"codex": result}
     finally:
         _codex_probe_in_flight = False
+
+
+@internal_router.post("/spark-session-probe")
+async def spark_session_probe_endpoint() -> dict:
+    """Run and latch only the Spark lane session synthetic."""
+    global _spark_probe_in_flight
+
+    if _spark_probe_in_flight:
+        logger.warning("Spark synthetic probe already in flight, skipping this trigger")
+        return {"skipped": True, "detail": "already running"}
+
+    _spark_probe_in_flight = True
+    try:
+        from ember_public import synthetic_probe
+
+        result = await synthetic_probe.probe_spark()
+        if not result["ok"]:
+            logger.warning("ember synthetic spark failed: %s", result["detail"])
+            await _notify(result["detail"], level="warn")
+        await synthetic_probe.record("spark", result)
+        return {"spark": result}
+    finally:
+        _spark_probe_in_flight = False

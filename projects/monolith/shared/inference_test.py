@@ -1,32 +1,32 @@
-from __future__ import annotations
-
-import pytest
-
 from shared.inference import (
-    REASONING_EFFORTS,
-    reasoning_effort,
+    META_SPARK_API_KEY_ENV,
+    auth_headers,
     structured_output,
-    thinking_off,
 )
 
 
-def test_thinking_off():
-    assert thinking_off() == {"chat_template_kwargs": {"enable_thinking": False}}
+def test_auth_headers_adds_bearer_when_meta_spark_key_is_set(monkeypatch):
+    monkeypatch.setenv(META_SPARK_API_KEY_ENV, "spark-secret")
+
+    assert auth_headers() == {"Authorization": "Bearer spark-secret"}
 
 
-@pytest.mark.parametrize("effort", sorted(REASONING_EFFORTS))
-def test_reasoning_effort_accepts_legal_values(effort: str):
-    assert reasoning_effort(effort) == {
-        "chat_template_kwargs": {"reasoning_effort": effort}
-    }
+def test_auth_headers_omits_authorization_when_meta_spark_key_is_unset(monkeypatch):
+    monkeypatch.delenv(META_SPARK_API_KEY_ENV, raising=False)
+
+    assert auth_headers() == {}
 
 
-@pytest.mark.parametrize("effort", ["none", "off", "invalid"])
-def test_reasoning_effort_rejects_illegal_values(effort: str):
-    with pytest.raises(ValueError) as exc_info:
-        reasoning_effort(effort)
-    for legal in REASONING_EFFORTS:
-        assert legal in str(exc_info.value)
+def test_auth_headers_omits_authorization_when_meta_spark_key_is_empty(monkeypatch):
+    monkeypatch.setenv(META_SPARK_API_KEY_ENV, "")
+
+    assert auth_headers() == {}
+
+
+def test_auth_headers_does_not_send_meta_key_to_another_host(monkeypatch):
+    monkeypatch.setenv(META_SPARK_API_KEY_ENV, "spark-secret")
+
+    assert auth_headers("http://inference.internal:8080") == {}
 
 
 def test_structured_output_carries_both_dialects_and_same_schema():

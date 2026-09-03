@@ -14,7 +14,7 @@ as ``user``), calls the OpenRouter client, and turns the reply into one of:
                     route (runtime-recipe orchestrator, Task 5).
 - ``ChatVerdict`` - the request is conversational; carries the model's reply
                     guidance (context, direction, optional redirect) for the
-                    local-Qwen concierge to author the actual reply.
+                    Meta Spark concierge to author the actual reply.
 - ``FailOpen``    - degrade to today's direct-submit path (disabled, ungranted,
                     unreachable, unparseable, or an unusable/invalid plan).
 
@@ -120,7 +120,7 @@ class PlanVerdict:
 @dataclass
 class ChatVerdict:
     """A conversational verdict carrying the model's reply guidance (ADR 036
-    chat-route amendment). The local-Qwen concierge authors the reply using this
+    chat-route amendment). The Meta Spark concierge authors the reply using this
     as advisory context; ``redirect`` is optional (e.g. "this is really a repo
     task, offer to escalate")."""
 
@@ -241,7 +241,7 @@ def plan_system_prompt() -> str:
     """
     lines = [
         "You are the delegation orchestrator in front of a coding agent "
-        "(goose/Qwen). The routing tier has already decided this request needs a "
+        "(goose/Pi). The routing tier has already decided this request needs a "
         "real agent session; your only job now is to construct the PLAN for it.",
         "",
         "You never write code yourself, you never invent sub-recipe names, and "

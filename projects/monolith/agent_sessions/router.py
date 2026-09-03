@@ -17,6 +17,7 @@ from sqlmodel import Session, func, select
 from agent_sessions import (
     mcp,
     model_family,
+    normalize_model,
     offered_models,
     store,
     transport as transport_module,
@@ -733,7 +734,8 @@ async def start_session(request: Request, start_request: StartRequest) -> dict:
             ),
         }
     try:
-        model_family(start_request.model)
+        selected_model = normalize_model(start_request.model)
+        model_family(selected_model)
     except ValueError as exc:
         return {"accepted": False, "error": str(exc)}
     row = await asyncio.to_thread(
@@ -741,18 +743,18 @@ async def start_session(request: Request, start_request: StartRequest) -> dict:
         str(uuid4()),
         start_request.workspace,
         start_request.branch,
-        start_request.model,
+        selected_model,
         start_request.repo,
         system_prompt=_append_rationale_trailer(None, start_request.repo),
         reasoning=_resolve_reasoning(start_request),
         triggered_by=triggered_by,
     )
     turn = await asyncio.to_thread(
-        _persist_pending_message, row.id, start_request.prompt, start_request.model
+        _persist_pending_message, row.id, start_request.prompt, selected_model
     )
     # Queued from the UI, so its result does not get echoed to Discord.
     _mark_ui_originated(row.id, turn)
-    login = await codex_login_gate(start_request.model)
+    login = await codex_login_gate(selected_model)
     if login is not None:
         await asyncio.to_thread(_set_session_status, row.id, "awaiting_login")
 
@@ -866,9 +868,13 @@ async def send_message(session_id: int, request: MessageRequest) -> dict:
     if row is None:
         return {"accepted": False, "error": f"Unknown agent session {session_id}"}
     try:
-        session_family = model_family(row.model)
+        session_model = normalize_model(row.model)
+        requested_model = normalize_model(request.model)
+        session_family = model_family(session_model)
         requested_family = (
-            model_family(request.model) if request.model is not None else session_family
+            model_family(requested_model)
+            if requested_model is not None
+            else session_family
         )
     except ValueError as exc:
         return {"accepted": False, "error": str(exc)}
@@ -880,7 +886,7 @@ async def send_message(session_id: int, request: MessageRequest) -> dict:
                 f"requested model family is {requested_family}"
             ),
         }
-    effective_model = request.model or row.model
+    effective_model = requested_model or session_model
     turn = await asyncio.to_thread(
         _persist_pending_message, session_id, request.prompt, effective_model
     )

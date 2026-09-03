@@ -1,4 +1,4 @@
-"""Hourly changelog notifier — polls GitHub for new feat commits, summarizes via Qwen, posts to Discord."""
+"""Hourly changelog notifier that summarizes new feature commits for Discord."""
 
 import asyncio
 import dataclasses
@@ -123,12 +123,12 @@ def _filter_changelog_commits(commits: list[dict], pattern: re.Pattern) -> list[
     return result
 
 
-async def _summarize_with_qwen(
+async def _summarize_with_llm(
     commits: list[dict],
     llm_call: Callable[[str], Awaitable[str]],
     prompt_template: str,
 ) -> str:
-    """Ask Qwen to produce a concise changelog from commit data."""
+    """Ask the configured chat model to produce a concise changelog."""
     commit_descriptions = []
     for c in commits:
         msg = c["commit"]["message"].split("\n", 1)[0]
@@ -201,7 +201,7 @@ async def run_changelog_iteration(
         prompt_key = "roast"
         logger.info("Changelog[%s]: roast mode activated", config.name)
     prompt_template = PROMPTS[prompt_key]
-    summary = await _summarize_with_qwen(commits, llm_call, prompt_template)
+    summary = await _summarize_with_llm(commits, llm_call, prompt_template)
     embed = _build_embed(
         summary, len(commits), title=config.embed_title, color=config.embed_color
     )
@@ -256,7 +256,7 @@ async def run_changelog_for_config(
 
     Module-level entrypoint for the off-pod Argo job (jobs_main chat-changelog
     <name>). It computes the embed exactly like run_changelog_iteration (GitHub
-    fetch + Qwen summary), but instead of posting via the bot it enqueues the
+    fetch plus model summary), but instead of posting via the bot it enqueues the
     embed - the leader's outbox drain posts it. No bot is required, so this runs
     in an ephemeral pod. Reads the config from CHANGELOG_CONFIGS by name.
 
@@ -302,7 +302,7 @@ async def run_changelog_for_config(
     if config.roast_chance > 0 and random.random() < config.roast_chance:
         prompt_key = "roast"
         logger.info("Changelog[%s]: roast mode activated", config.name)
-    summary = await _summarize_with_qwen(commits, llm_call, PROMPTS[prompt_key])
+    summary = await _summarize_with_llm(commits, llm_call, PROMPTS[prompt_key])
     embed = _build_embed(
         summary, len(commits), title=config.embed_title, color=config.embed_color
     )

@@ -29,6 +29,7 @@ SQLite cannot span, so the schema= overrides are stripped for the fixture).
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -339,3 +340,39 @@ def test_slot_released_after_stream_allows_next_turn(client, session, monkeypatc
     # Two full turns persisted (four messages).
     messages = session.exec(select(ChatMessage).order_by(ChatMessage.id)).all()
     assert [m.role for m in messages] == ["user", "assistant", "user", "assistant"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("api_key", "expected_headers"),
+    [
+        ("public-spark-key", {"Authorization": "Bearer public-spark-key"}),
+        ("", {}),
+    ],
+)
+async def test_complete_uses_optional_meta_spark_bearer(
+    monkeypatch, api_key, expected_headers
+):
+    """The public inference call authenticates only for a non-empty key."""
+    monkeypatch.setattr(inference, "INFERENCE_URL", "https://api.meta.ai")
+    monkeypatch.setenv("META_SPARK_API_KEY", api_key)
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.json.return_value = {
+        "choices": [{"message": {"content": "public answer"}}]
+    }
+    http_client = AsyncMock()
+    http_client.__aenter__ = AsyncMock(return_value=http_client)
+    http_client.__aexit__ = AsyncMock(return_value=False)
+    http_client.post = AsyncMock(return_value=response)
+
+    with patch("chat_public.inference.httpx.AsyncClient", return_value=http_client):
+        result = await inference.complete(
+            [{"role": "user", "content": "hello"}], max_tokens=32
+        )
+
+    assert result == "public answer"
+    assert http_client.post.call_args.args[0] == (
+        "https://api.meta.ai/v1/chat/completions"
+    )
+    assert http_client.post.call_args.kwargs["headers"] == expected_headers

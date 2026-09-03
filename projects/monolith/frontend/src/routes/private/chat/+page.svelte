@@ -726,7 +726,7 @@
       <div class="chat-log" bind:this={chatLog}>
         {#each messages as msg, i}
           <div class="chat-msg chat-msg--{msg.role}">
-            <span class="chat-role">{msg.role === "user" ? "you" : "qwen"}</span
+            <span class="chat-role">{msg.role === "user" ? "you" : "spark"}</span
             >
             {#if msg.role === "assistant"}
               <span class="chat-text">{@html marked(msg.content)}</span>

@@ -71,9 +71,8 @@ bricks:
 warmthS3Gc:
   expectedNodes: []
 
-# Only services reachable from the hub belong on the internal lane. searxng
-# runs on the hub; inference is reached through the node-4 tailnet bridge
-# (same ports the bare-metal servers keep after the wipe).
+# Only services reachable from the hub belong on the internal lane. Meta Spark
+# uses the external credentialed egress catalog instead.
 egress:
   internal:
     allowlist:
@@ -81,7 +80,6 @@ egress:
       - monolith-public-frontend.monolith-public.svc.cluster.local:3000
       - monolith.monolith.svc.cluster.local:3000
       - monolith-searxng.monolith.svc.cluster.local:8080
-      - inference-bridge.tailscale.svc.cluster.local:8080
       - inference-embeddings.inference.svc.cluster.local:8080
 
 # Home provisions node scratch out of band (dedicated NVMe); the hub has no
@@ -94,7 +92,7 @@ scratchPrep:
 # Single-Spot-node fleet: 2gi bricks scale horizontally (chart ceiling 4);
 # the big classes are capped off, including the chart default 16gi warm floor
 # (a home policy for the scratch-k8s composite). Revisit the session-class
-# ceiling and group-spread when the qwen lane revives (#5459, #5461).
+# ceiling and group-spread when the Spark lane revives (#5459, #5461).
 
 # Stateful relight is broken on the hub: a bundle banked on one brick can be
 # relit on a sibling brick (four bricks share the node and its scratch tree, a

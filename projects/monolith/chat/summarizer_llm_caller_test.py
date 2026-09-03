@@ -9,6 +9,7 @@ from sqlmodel.pool import StaticPool
 
 from chat.models import Message, UserChannelSummary
 from chat.summarizer import build_llm_caller, generate_summaries
+import shared.inference
 
 
 # ---------------------------------------------------------------------------
@@ -82,15 +83,39 @@ class TestBuildLlmCaller:
         url_arg = call_kwargs[0][0] if call_kwargs[0] else call_kwargs.kwargs.get("url")
         assert url_arg == "http://fake:8080/v1/chat/completions"
         payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
-        assert payload["model"] == "qwen3.6-27b"
+        assert payload["model"] == shared.inference.META_SPARK_MODEL
         assert payload["messages"][0]["role"] == "user"
         assert payload["messages"][0]["content"] == "Summarize this conversation."
         # max_tokens must leave room for the prompt within the 32768 context;
         # reserving the whole window 400s on any non-empty prompt.
         assert payload["max_tokens"] == 8192
-        # Thinking disabled so the model returns the summary in content, not a
-        # content:null thinking response.
-        assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+        assert "chat_template_kwargs" not in payload
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("api_key", "expected_headers"),
+        [
+            ("backend-spark-key", {"Authorization": "Bearer backend-spark-key"}),
+            ("", {}),
+        ],
+    )
+    async def test_uses_optional_meta_spark_bearer(
+        self, monkeypatch, api_key, expected_headers
+    ):
+        monkeypatch.setenv("META_SPARK_API_KEY", api_key)
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {
+            "choices": [{"message": {"content": "Summary text"}}]
+        }
+        http_client = MagicMock()
+        http_client.post = AsyncMock(return_value=response)
+
+        with patch("chat.summarizer.httpx.AsyncClient", return_value=http_client):
+            caller = build_llm_caller("https://api.meta.ai")
+            await caller("Summarize this conversation.")
+
+        assert http_client.post.call_args.kwargs["headers"] == expected_headers
 
     @pytest.mark.asyncio
     async def test_raises_runtime_error_on_missing_choices(self):
@@ -284,7 +309,7 @@ class TestGenerateSummariesErrorHandling:
         summaries_generated = []
 
         async def mock_llm(prompt: str) -> str:
-            summary = f"summary for prompt"
+            summary = "summary for prompt"
             summaries_generated.append(prompt)
             return summary
 

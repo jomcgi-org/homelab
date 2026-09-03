@@ -17,7 +17,7 @@ import httpx
 
 import agent.api as agent_api
 from agent_sessions import store, voice, voice_ui
-from agent_sessions import model_family
+from agent_sessions import model_family, normalize_model
 from agent_sessions.constants import CLEAN_TERMINAL_REASONS, DRAINER_NODE_KEY
 from agent_sessions.rationale import rationale_trailer_instruction
 from agent_sessions.models import AgentSession, AgentTurn
@@ -503,11 +503,12 @@ async def _execute_pending_message(session_id: int) -> None:
                 deliver_kwargs["system_prompt"] = session_row.system_prompt
             if session_row.reasoning:
                 deliver_kwargs["reasoning"] = True
+            effective_model = normalize_model(row.model)
             turn, ember = await _transport.deliver(
                 existing_ember,
                 cli_session_id,
                 row.message_text,
-                row.model,
+                effective_model,
                 **deliver_kwargs,
             )
             # Check if claim was stolen while deliver was running
@@ -549,7 +550,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 summary,
                 status,
                 turn.session_id,  # Store for resumption
-                row.model,
+                effective_model,
             )
         except IntegrityError:
             # Turn already exists (duplicate seq), likely from a retry of a completed turn.
@@ -669,21 +670,20 @@ async def monolith_agent_session_start(
         prompt: The first message for the session.
         model: Optional model, which also pins the session's adapter family.
             Claude family: opus, sonnet, fable. Codex family: luna, terra,
-            sol. Pi family: qwen. Omit for the claude CLI default. Later
+            sol. Pi family: spark. The deprecated qwen alias is accepted. Omit
+            for the claude CLI default. Later
             sends may only name models within the pinned family.
         repo: owner/repo to check out into the guest workspace, defaulting to
             jomcgi-org/homelab. Must be in the catalog. Pass an empty string for a
             session with NO checkout, which starts faster and suits a session
             that only talks.
         branch: Branch to check out. Defaults to main.
-        reasoning: Keeps qwen thinking on for the whole session. Omit to
-            decide from repo presence: on for a repo-attached session, off for
-            a repo-less one. Thinking off on a repo session makes qwen repeat
-            one identical tool call until its context window fills. Pass false
-            explicitly to force it off, or true to force it on.
+        reasoning: Optional reasoning preference retained across the session.
+            Muse Spark currently ignores this legacy Pi hint.
     """
     try:
-        model_family(model)
+        selected_model = normalize_model(model)
+        model_family(selected_model)
     except ValueError as exc:
         return {"accepted": False, "error": str(exc)}
     # Catalog-gated on the same rule the /agents route uses, and for a stronger
@@ -703,14 +703,16 @@ async def monolith_agent_session_start(
         local_session_id,
         workspace,
         branch,
-        model,
+        selected_model,
         selected_repo,
         discord_thread=None,
         system_prompt=_append_rationale_trailer(voice.VOICE_INSTRUCTION, selected_repo),
         # Unset means decide from repo presence, matching the /agents route.
         reasoning=bool(selected_repo) if reasoning is None else reasoning,
     )
-    turn = await asyncio.to_thread(_persist_pending_message, row.id, prompt, model)
+    turn = await asyncio.to_thread(
+        _persist_pending_message, row.id, prompt, selected_model
+    )
     _schedule_next_message(row.id)
     return {"accepted": True, "session_id": row.id, "turn": turn}
 
@@ -865,7 +867,8 @@ async def monolith_agent_session_send(
         message: The message text for the next turn.
         model: Optional per-turn model within the session's pinned family.
             Claude family: opus, sonnet, fable. Codex family: luna, terra,
-            sol. Pi family: qwen. Defaults to the session's model.
+            sol. Pi family: spark. The deprecated qwen alias is accepted.
+            Defaults to the session's model.
     """
     row = await asyncio.to_thread(_load_session_row, session_id)
     if row is None:
@@ -874,8 +877,14 @@ async def monolith_agent_session_send(
         # Both lookups stay inside the try: a session pinned to a model whose
         # alias has since been retired must produce the readable rejection, not
         # an uncaught ValueError out of the tool.
-        session_family = model_family(row.model)
-        requested_family = model_family(model) if model is not None else session_family
+        session_model = normalize_model(row.model)
+        requested_model = normalize_model(model)
+        session_family = model_family(session_model)
+        requested_family = (
+            model_family(requested_model)
+            if requested_model is not None
+            else session_family
+        )
     except ValueError as exc:
         return {"accepted": False, "error": str(exc)}
     if requested_family != session_family:
@@ -886,7 +895,7 @@ async def monolith_agent_session_send(
                 f"requested model family is {requested_family}"
             ),
         }
-    effective_model = model or row.model
+    effective_model = requested_model or session_model
     turn = await asyncio.to_thread(
         _persist_pending_message, session_id, message, effective_model
     )
@@ -956,7 +965,7 @@ async def monolith_agent_session_vms(
 
     Args:
         workload: Which lane to list, defaults to the claude runtime. Pass
-            "pi-runtime" to see the qwen family's lane instead. The two
+            "pi-runtime" to see the spark family's lane instead. The two
             lanes are never aggregated, since the session cap is per
             workload.
     """

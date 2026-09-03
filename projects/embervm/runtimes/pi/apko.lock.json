@@ -2,7 +2,7 @@
   "version": "v1",
   "config": {
     "name": "projects/embervm/runtimes/pi/apko.yaml",
-    "checksum": "sha256-vuiLGOUu6veyvvrXVxmQOgWDT6qwUMpLOhAx+WFrKSI="
+    "checksum": "sha256-NKewMUoRZmFj5yucVlcQ2etbArOJFnplvcDW4J1C4nk="
   },
   "contents": {
     "keyring": [

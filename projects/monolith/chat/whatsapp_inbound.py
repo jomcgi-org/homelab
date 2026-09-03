@@ -195,7 +195,7 @@ async def _generate_reply(
     )
     prompt = f"{context}\n\nCurrent message from {sender_name or 'someone'}: {text}"
     # Household content is authored by DeepSeek V4 Flash on OpenRouter, not the
-    # in-cluster Qwen the Discord concierge uses (ADR 039, amended).
+    # Meta Spark provider the Discord concierge uses (ADR 039, amended).
     agent = create_household_agent()
     result = await agent.run(prompt, deps=deps)
     # Deliver any images run_code generated (charts, etc.) as inline media, the

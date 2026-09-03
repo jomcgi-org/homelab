@@ -16,6 +16,10 @@ onepassword:
   # (public_reader_db). The r2-s3-public-read item is set in the web component
   # env block below (app-specific override for web component onepassword).
 
+metaSpark:
+  onepassword:
+    itemPath: "vaults/k8s-homelab/items/meta-spark"
+
 databaseSecretName: monolith-public-db
 
 # Public chat (ADR 005, Phase 1): sync the public_writer DB credential from

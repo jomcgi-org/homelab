@@ -24,6 +24,7 @@ def test_module_registers_synthetic_postgres_health_hook():
         "ember_pages",
         "ember_postgres",
         "ember_codex",
+        "ember_spark",
     }
 
 
@@ -71,3 +72,27 @@ def test_public_app_api_health_surfaces_synthetic_probe_failure(monkeypatch):
     body = resp.json()
     assert body["components"]["ember_postgres"]["ok"] is False
     assert "demo_postgres" not in body["components"]
+
+
+def test_public_app_api_health_surfaces_spark_probe(monkeypatch):
+    row = EmberSyntheticProbe(
+        demo="spark",
+        ok=False,
+        detail="Spark lane unavailable",
+        checked_at=datetime.now(timezone.utc),
+    )
+
+    async def read_probe(demo):
+        return row if demo == "spark" else None
+
+    monkeypatch.setattr(health, "read_probe", read_probe)
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    monkeypatch.setattr("core.db.get_engine", lambda: engine)
+
+    app = build_app(PUBLIC_PROFILE, [MODULE])
+    body = TestClient(app).get("/api/health").json()
+
+    assert body["components"]["ember_spark"]["ok"] is False
+    assert body["components"]["ember_spark"]["detail"] == "Spark lane unavailable"

@@ -539,8 +539,6 @@ egress:
     # nothing else, so a prompt-injected guest still cannot pivot into the
     # cluster. Adding an entry here is a security decision, not tuning.
     #
-    # inference: the pi adapter drives the in-cluster Qwen model on this exact
-    # host:port.
     # monolith-searxng: Pi's image-owned web_search extension queries its JSON
     # endpoint. web_fetch uses the external lane and adds no internal reach.
     # monolith.monolith.svc.cluster.local:8091
@@ -574,7 +572,6 @@ egress:
     # whatever needs an entry next, which is why it is written down rather than
     # treated as settled.
     allowlist:
-      - inference.inference.svc.cluster.local:8080
       - monolith-searxng.monolith.svc.cluster.local:8080
       - monolith.monolith.svc.cluster.local:8091
       - monolith-public-frontend.monolith-public.svc.cluster.local:3000
@@ -603,6 +600,19 @@ egress:
       secretRef:
         name: embervm-embervm-egress
         key: CLAUDE_AUTH_TOKEN
+    # Pi reaches Meta through the same CA-backed HTTPS proxy path as the other
+    # external providers. The guest's placeholder Authorization header opts in
+    # to this exact catalog entry; the sidecar replaces it before originating
+    # verified TLS to Meta. A missing secret key leaves the catalog entry dead,
+    # so api.meta.ai is denied rather than passed through without credentials.
+    - header: Authorization
+      valuePrefix: "Bearer "
+      env: EMBER_META_SPARK_API_KEY
+      egressTo:
+        - api.meta.ai
+      secretRef:
+        name: embervm-meta-spark
+        key: META_SPARK_API_KEY
     # Note: credential field absent (deferred); fails closed until 1Password
     # operator fills vaults/k8s-homelab/items/litellm-claude-auth. Co-location
     # caveat: this item is also read by monolith gardener; adding a field is
@@ -674,6 +684,9 @@ egress:
   onepassword:
     name: embervm-embervm-egress
     itemPath: "vaults/k8s-homelab/items/embervm-agent-secrets"
+  metaSpark:
+    name: embervm-meta-spark
+    itemPath: "vaults/k8s-homelab/items/meta-spark"
 
 # Node-local git mirror (#4473): serve the mirrored repos over git smart http
 # from a loopback sidecar in every noded pod, and point session hydration at it

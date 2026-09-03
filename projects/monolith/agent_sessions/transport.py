@@ -176,7 +176,7 @@ EMBERVM_URL = os.environ.get("EMBERVM_URL", "")
 # agentSessions.piWorkload value. There is no security semantic here (unlike
 # an egress allowlist), so an unset OR blank value means "use the code
 # default", not "deny": this is a REVERT LEVER (set it to claude-runtime to
-# put qwen back on the old lane by a values edit, no code deploy), never a
+# put spark back on the old lane by a values edit, no code deploy), never a
 # deny-by-default control.
 #
 # Extracted as a function purely so the env-reading behaviour is testable
@@ -835,9 +835,9 @@ class EmberVmShimTransport:
                 # _status_error_detail, not str(exc): the guest reports WHY in
                 # the response body, and this log is what a human reads first.
                 # #4884 was a bare "422 Unprocessable Content" here for every
-                # qwen session, while the body said "File Not Found" (llama.cpp
+                # pi-family session, while the body said "File Not Found",
                 # rejecting the absolute-form request line the egress proxy
-                # forwarded). The body reached the raised error downstream but
+                # forwarded. The body reached the raised error downstream but
                 # never the log, so the one layer that saw the cause dropped it.
                 logger.warning(
                     "embervm invoke failed for session %s: %s",

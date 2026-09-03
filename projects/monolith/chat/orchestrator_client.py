@@ -1,8 +1,8 @@
 """ADR 036 orchestrator brief-compiler OpenAI-compatible client.
 
 Unary, short-timeout httpx client shaped like ``summarizer.build_llm_caller``
-(summarizer.py:412), but for the hosted escalation tier rather than the local
-Qwen executor. Per the fail-open philosophy (ADR 036 Architecture: "Fail open"),
+(summarizer.py:412), but for the hosted escalation tier rather than the default
+chat provider. Per the fail-open philosophy (ADR 036 Architecture: "Fail open"),
 each provider attempt makes exactly one call: any timeout, HTTP error, or
 unusable response shape raises ``OrchestratorUnavailable``.
 
@@ -12,8 +12,8 @@ additional providers (``{"model", "base_url", "api_key_env"}``); a primary
 ``OrchestratorUnavailable`` walks that chain in order, stopping at the first
 success, before the exception finally propagates and the caller fails open to
 direct submit. This exists so a free rate-limited primary (Nemotron on NVIDIA's
-40 RPM tier) degrades to DeepSeek/OpenRouter, then to always-available in-cluster
-Qwen, rather than dropping the whole brief on one throttle or blip. With no chain
+40 RPM tier) degrades to DeepSeek/OpenRouter, then to Meta Spark, rather than
+dropping the whole brief on one throttle or blip. With no chain
 configured the behavior is byte-identical to the original single-attempt contract.
 There is still no per-provider retry loop (contrast with build_llm_caller's 3
 retries), because escalations must degrade quickly, not stall on any single call.
@@ -93,10 +93,10 @@ def _read_fallback_chain() -> list[tuple[str, str, str]]:
     Parses ``ORCHESTRATOR_FALLBACKS``, a JSON array of
     ``{"model", "base_url", "api_key_env"}`` objects in priority order. Each
     ``api_key_env`` names the env var holding that provider's key (injected from a
-    Secret; empty/absent means no auth, e.g. the in-cluster Qwen tier). A primary
+    Secret; empty or absent means no auth for a local provider). A primary
     ``OrchestratorUnavailable`` walks this list in order, so a rate-limited or
-    erroring primary degrades to DeepSeek, then to always-available in-cluster
-    Qwen, before failing open. Returns ``[]`` when unset or unparseable, which
+    erroring primary degrades to DeepSeek, then to Meta Spark, before failing
+    open. Returns ``[]`` when unset or unparseable, which
     restores the single-attempt contract exactly.
     """
     raw = os.environ.get("ORCHESTRATOR_FALLBACKS", "").strip()

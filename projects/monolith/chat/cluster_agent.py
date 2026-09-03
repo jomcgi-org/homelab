@@ -50,11 +50,15 @@ class ClusterDeps:
 
 
 def create_cluster_agent() -> Agent[ClusterDeps]:
-    """Create a PydanticAI agent configured for read-only cluster chat via Qwen."""
+    """Create a PydanticAI agent configured for read-only cluster chat."""
     url = os.environ.get("LLAMA_CPP_URL", "http://localhost:8000")
+    authorization = shared.inference.auth_headers(url).get("Authorization", "")
     model = OpenAIChatModel(
-        "qwen3.6-27b",
-        provider=OpenAIProvider(base_url=f"{url}/v1", api_key="not-needed"),
+        shared.inference.META_SPARK_MODEL,
+        provider=OpenAIProvider(
+            base_url=f"{url}/v1",
+            api_key=authorization.removeprefix("Bearer ") or "not-needed",
+        ),
     )
     agent: Agent[ClusterDeps] = Agent(
         model,
@@ -62,14 +66,7 @@ def create_cluster_agent() -> Agent[ClusterDeps]:
         model_settings=ModelSettings(
             temperature=1.0,
             top_p=0.95,
-            extra_body={
-                "top_k": 20,
-                "presence_penalty": 1.5,
-                # The served Qwen is a hybrid thinking model: without this the
-                # whole generation lands in the reasoning field, content comes
-                # back null, and the SSE stream emits an empty answer.
-                **shared.inference.thinking_off(),
-            },
+            presence_penalty=1.5,
         ),
     )
 
