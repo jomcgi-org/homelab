@@ -107,6 +107,23 @@ def test_build_app_enables_otel_with_an_endpoint(monkeypatch):
     assert calls == [(app, "monolith-backend")]
 
 
+def test_public_profile_enables_otel_with_an_endpoint(monkeypatch):
+    calls: list[tuple[FastAPI, str]] = []
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "http://collector.example:4318/v1/traces",
+    )
+    monkeypatch.setattr(
+        framework_core,
+        "_setup_otel",
+        lambda app, service_name: calls.append((app, service_name)),
+    )
+
+    app = build_app(PUBLIC_PROFILE, [])
+
+    assert calls == [(app, "monolith-public")]
+
+
 def _routed_module(name: str, prefix: str) -> Module:
     def register(app: FastAPI) -> None:
         @app.get(f"/api/{prefix}/ping")

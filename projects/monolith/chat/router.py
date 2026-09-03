@@ -20,6 +20,7 @@ from chat.explorer import ExplorerDeps, create_explorer_agent
 from chat.sse import SSEEmitter
 from knowledge.api import get_store
 from shared.embedding import EmbeddingClient
+import shared.inference
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,19 @@ async def explore(body: ExploreRequest, request: Request):
             ) as stream:
                 async for text in stream.stream_text(delta=True):
                     emitter.emit("text_chunk", {"text": text})
+                try:
+                    usage = stream.usage
+                    shared.inference.record_usage(
+                        {
+                            "prompt_tokens": usage.input_tokens,
+                            "completion_tokens": usage.output_tokens,
+                            "total_tokens": usage.total_tokens,
+                        },
+                        shared.inference.META_SPARK_MODEL,
+                        "explorer",
+                    )
+                except Exception:
+                    pass
 
             emitter.emit("done", {})
             emitter.close()
@@ -157,6 +171,19 @@ async def cluster_chat(body: ClusterChatRequest, request: Request):
             ) as stream:
                 async for text in stream.stream_text(delta=True):
                     emitter.emit("text_chunk", {"text": text})
+                try:
+                    usage = stream.usage
+                    shared.inference.record_usage(
+                        {
+                            "prompt_tokens": usage.input_tokens,
+                            "completion_tokens": usage.output_tokens,
+                            "total_tokens": usage.total_tokens,
+                        },
+                        shared.inference.META_SPARK_MODEL,
+                        "cluster_agent",
+                    )
+                except Exception:
+                    pass
 
             emitter.emit("done", {})
             emitter.close()

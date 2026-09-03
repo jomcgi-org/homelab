@@ -138,7 +138,13 @@ async def _call_inference(prompt: str) -> str:
             },
         )
         resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
+        response_data = resp.json()
+        shared.inference.record_usage(
+            response_data.get("usage"),
+            shared.inference.META_SPARK_MODEL,
+            "titles",
+        )
+        content = response_data["choices"][0]["message"]["content"]
         if not content:
             raise RuntimeError("LLM returned empty content")
         return content

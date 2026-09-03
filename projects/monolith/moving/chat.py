@@ -122,7 +122,9 @@ async def stream_chat(
         "messages": messages,
         "max_tokens": MAX_TOKENS,
         "stream": True,
+        "stream_options": {"include_usage": True},
     }
+    usage_dict = None
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         async with client.stream(
             "POST",
@@ -141,10 +143,13 @@ async def stream_chat(
                     chunk = json.loads(data)
                 except ValueError:
                     continue
+                if chunk.get("usage"):
+                    usage_dict = chunk["usage"]
                 for choice in chunk.get("choices") or []:
                     text = (choice.get("delta") or {}).get("content")
                     if text:
                         yield text
+    shared.inference.record_usage(usage_dict, MOVING_CHAT_MODEL, "moving")
 
 
 async def _response_stream(

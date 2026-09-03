@@ -97,6 +97,10 @@ spec:
                 secretKeyRef:
                   name: {{ $.Values.jobs.dbSecretName }}
                   key: {{ $.Values.jobs.dbSecretKey }}
+            {{- if $.Values.backend.otelEndpoint }}
+            - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+              value: {{ $.Values.backend.otelEndpoint | quote }}
+            {{- end }}
             {{- if .internalApi }}
             - name: MONOLITH_INTERNAL_URL
               value: "http://{{ include "monolith.fullname" $ }}.{{ $.Release.Namespace }}.svc:{{ $.Values.service.apiPort }}"

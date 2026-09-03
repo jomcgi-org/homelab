@@ -169,6 +169,14 @@ def test_allowlisted_service_gets_a_filtered_traces_pipeline():
     assert any("monolith" in c for c in conditions)
 
 
+def test_prod_allowlist_includes_monolith_emitters():
+    values = yaml.safe_load(_values("values-prod").read_text())
+
+    assert {"monolith-backend", "monolith-jobs", "monolith-public"} <= set(
+        values["allowedServices"]
+    )
+
+
 def test_allowlist_drops_services_not_named():
     """The conditions are OR-ed drop rules, so an unlisted service must be
     dropped by the same condition that keeps a listed one."""

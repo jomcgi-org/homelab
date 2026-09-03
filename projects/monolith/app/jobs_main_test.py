@@ -87,6 +87,52 @@ def test_no_args_lists_commands():
     assert "worldcup-sim" in result.output
 
 
+def test_setup_otel_skips_when_endpoint_is_absent(monkeypatch):
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
+
+    assert jobs_main._setup_otel() is None
+
+
+def test_setup_otel_installs_http_exporter_when_endpoint_is_present(monkeypatch):
+    endpoint = "http://collector.example:4318/v1/traces"
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", endpoint)
+    provider = mock.Mock()
+    processor = mock.Mock()
+
+    with (
+        mock.patch(
+            "opentelemetry.sdk.trace.TracerProvider", return_value=provider
+        ) as provider_class,
+        mock.patch(
+            "opentelemetry.sdk.trace.export.BatchSpanProcessor",
+            return_value=processor,
+        ) as processor_class,
+        mock.patch(
+            "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter"
+        ) as exporter_class,
+        mock.patch("opentelemetry.trace.set_tracer_provider") as set_provider,
+    ):
+        result = jobs_main._setup_otel()
+
+    assert result is provider
+    exporter_class.assert_called_once_with(endpoint=endpoint)
+    processor_class.assert_called_once_with(exporter_class.return_value)
+    provider.add_span_processor.assert_called_once_with(processor)
+    set_provider.assert_called_once_with(provider)
+    resource = provider_class.call_args.kwargs["resource"]
+    assert resource.attributes["service.name"] == "monolith-jobs"
+
+
+def test_shutdown_otel_flushes_and_shuts_down():
+    provider = mock.Mock()
+    provider.force_flush.return_value = True
+
+    jobs_main._shutdown_otel(provider)
+
+    provider.force_flush.assert_called_once_with()
+    provider.shutdown.assert_called_once_with()
+
+
 def test_post_internal_retries_follower_503(monkeypatch):
     """A follower replica answers 503; the trigger retries on a fresh
     connection until the leader answers (#5590)."""

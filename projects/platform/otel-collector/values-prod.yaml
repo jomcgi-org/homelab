@@ -20,11 +20,13 @@ environment: production
 # projects/monolith/framework/core.py, which is what _setup_otel puts in the
 # resource. Its endpoint is set in projects/monolith/deploy/values.yaml and
 # points at 4318 rather than 4317: that service exports over HTTP, not gRPC.
-# monolith-public is deliberately absent, since PUBLIC_PROFILE sets
-# otel_enabled=False and the public tier never builds an exporter.
+# monolith-public and monolith-jobs use the same OTLP/HTTP endpoint. Their
+# service names are set by PUBLIC_PROFILE and app/jobs_main.py respectively.
 allowedServices:
   - embervm-control
   - monolith-backend
+  - monolith-jobs
+  - monolith-public
 
 httpcheck:
   enabled: true

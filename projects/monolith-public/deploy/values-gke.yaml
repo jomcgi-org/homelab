@@ -3,6 +3,8 @@
 # self-reference), so pointing public chat at Meta Spark while retaining the
 # in-cluster embedding service means overriding the WHOLE list here. Fold this
 # back into a template-driven env in the chart post-window (#5457).
+otelEndpoint: "http://otel-collector.otel-collector.svc:4318/v1/traces"
+
 web:
   env:
   - name: DATABASE_URL

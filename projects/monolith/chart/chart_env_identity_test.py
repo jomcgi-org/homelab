@@ -314,6 +314,31 @@ def test_dev_does_not_render_the_refresh_workflow(renders):
     assert "cnpg-dev-refresh" not in renders["dev"]
 
 
+def test_production_jobs_receive_otel_endpoint(renders):
+    workflows = [
+        yaml.safe_load(doc)
+        for kind, _name, doc in _docs(renders["prod"])
+        if kind == "CronWorkflow"
+    ]
+    job_workflows = [
+        workflow
+        for workflow in workflows
+        if workflow["spec"]["workflowSpec"]
+        .get("podMetadata", {})
+        .get("labels", {})
+        .get("app.kubernetes.io/part-of")
+        == "monolith-jobs"
+    ]
+    assert job_workflows, "production rendered no jobs CronWorkflows; test is inert"
+    for workflow in job_workflows:
+        container = workflow["spec"]["workflowSpec"]["templates"][0]["container"]
+        env = {item["name"]: item.get("value") for item in container["env"]}
+        endpoint = env.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+        assert endpoint.endswith(":4318/v1/traces"), (
+            f"{workflow['metadata']['name']} has no usable OTLP/HTTP endpoint"
+        )
+
+
 def test_dev_mutes_leader_singletons_and_production_does_not(renders):
     """The side-effect mute, asserted in BOTH directions.
 

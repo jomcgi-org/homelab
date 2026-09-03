@@ -3,10 +3,9 @@
 Composed by the FastMonolith framework (ADR services/010) from the public
 module registry: only each domain's ``register_public`` surface is mounted.
 The public profile deliberately omits everything the public tier must never
-run: the Discord bot, leader singletons, the ``/mcp`` mount, OTel background
-setup, and the SvelteKit static mount. There is no lifespan, so importing this
-module is cheap and side-effect-free (the route-table guard test relies on
-that).
+run: the Discord bot, leader singletons, the ``/mcp`` mount, and the SvelteKit
+static mount. OpenTelemetry setup is gated on its endpoint env. There is no
+lifespan, so importing this module remains cheap when that endpoint is absent.
 
 The deep ``/api/health`` route (SELECT 1 via the public_reader role on the
 read replica) comes from the profile's ``deep_health`` flag; see
