@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
+
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
 import pytest
+from sqlalchemy import text
+from sqlmodel import Session, create_engine
 
 import swarm.drainer as drainer
 
@@ -48,7 +52,14 @@ def _spans_named(name: str):
     return [s for s in _EXPORTER.get_finished_spans() if s.name == name]
 
 
-def _run(monkeypatch, jobs, await_turn=None, start_session=None, settings=None):
+def _run(
+    monkeypatch,
+    jobs,
+    await_turn=None,
+    start_session=None,
+    send_message=None,
+    settings=None,
+):
     claims = []
     starts = []
     completions = []
@@ -73,7 +84,13 @@ def _run(monkeypatch, jobs, await_turn=None, start_session=None, settings=None):
         return 100 + len(starts)
 
     monkeypatch.setattr(drainer, "claim_drainer_job", claim)
+    monkeypatch.setattr(drainer, "increment_kg_job_attempt", lambda _name: 1)
     monkeypatch.setattr(drainer, "start_agent_session", start)
+    monkeypatch.setattr(
+        drainer,
+        "send_agent_session_message",
+        send_message or (lambda *_args: 2),
+    )
     monkeypatch.setattr(
         drainer,
         "_await_turn",
@@ -98,6 +115,157 @@ def _run(monkeypatch, jobs, await_turn=None, start_session=None, settings=None):
 
     result = drainer.drain_cycle.__wrapped__()
     return result, claims, starts, completions, notifications, destroys
+
+
+def test_kg_rejection_gets_exactly_one_correction_turn(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _payload: "kg prompt")
+    monkeypatch.setattr(
+        drainer,
+        "build_kg_correction_prompt",
+        lambda rejected: f"correct {len(rejected)}",
+    )
+    applied = []
+
+    def apply(name, payload, output, correction=False):
+        applied.append((name, payload, output, correction))
+        if correction:
+            return {
+                "atoms": ["corrected-atom"],
+                "rejected": [],
+                "dispute": None,
+                "doc_drift": 0,
+                "docfix_jobs": 0,
+                "replayed": False,
+            }
+        return {
+            "atoms": ["first-atom"],
+            "rejected": [
+                {"title": "bare value", "reason_code": "value", "reason": "bare"}
+            ],
+            "dispute": None,
+            "doc_drift": 0,
+            "docfix_jobs": 0,
+            "replayed": False,
+        }
+
+    monkeypatch.setattr(drainer, "apply_kg_extraction", apply)
+    turns = iter(
+        [
+            {"seq": 1, "result_text": "first", "terminal_reason": "stop"},
+            {"seq": 2, "result_text": "second", "terminal_reason": "stop"},
+        ]
+    )
+    awaits = []
+
+    def await_turn(*args):
+        awaits.append(args)
+        return next(turns)
+
+    sends = []
+    job = {
+        "name": "kg:raw-1",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-1"},
+    }
+
+    _, _, _, completions, _, _ = _run(
+        monkeypatch,
+        [job],
+        await_turn=await_turn,
+        send_message=lambda *args: sends.append(args) or 2,
+    )
+
+    assert sends == [(101, "correct 1")]
+    assert awaits == [(101, 0, 1800), (101, 1, 1800)]
+    assert [call[3] for call in applied] == [False, True]
+    assert completions == [
+        (
+            "kg:raw-1",
+            "ok",
+            "atoms=2 rejected=1 corrected=1 dispute=None doc_drift=0 docfix_jobs=0",
+            True,
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "first_result",
+    [
+        {
+            "atoms": ["one"],
+            "rejected": [],
+            "dispute": None,
+            "doc_drift": 0,
+            "docfix_jobs": 0,
+            "replayed": False,
+        },
+        {
+            "atoms": ["one", "two", "three"],
+            "rejected": [{"reason_code": "value"}],
+            "dispute": None,
+            "doc_drift": 0,
+            "docfix_jobs": 0,
+            "replayed": False,
+        },
+    ],
+)
+def test_kg_correction_not_sent_without_both_triggers(monkeypatch, first_result):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _payload: "kg prompt")
+    monkeypatch.setattr(drainer, "apply_kg_extraction", lambda *_args: first_result)
+    sends = []
+    job = {
+        "name": "kg:raw-1",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-1"},
+    }
+
+    _run(monkeypatch, [job], send_message=lambda *args: sends.append(args) or 2)
+
+    assert sends == []
+
+
+def test_kg_never_sends_a_third_turn_after_rejected_correction(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _payload: "kg prompt")
+    monkeypatch.setattr(drainer, "build_kg_correction_prompt", lambda _items: "fix")
+    calls = []
+
+    def apply(_name, _payload, _output, correction=False):
+        calls.append(correction)
+        return {
+            "atoms": [],
+            "rejected": [{"reason_code": "value"}],
+            "dispute": None,
+            "doc_drift": 0,
+            "docfix_jobs": 0,
+            "replayed": False,
+        }
+
+    monkeypatch.setattr(drainer, "apply_kg_extraction", apply)
+    turns = iter(
+        [
+            {"seq": 1, "result_text": "first", "terminal_reason": "stop"},
+            {"seq": 2, "result_text": "second", "terminal_reason": "stop"},
+        ]
+    )
+    sends = []
+    job = {
+        "name": "kg:raw-1",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-1"},
+    }
+
+    _run(
+        monkeypatch,
+        [job],
+        await_turn=lambda *_args: next(turns),
+        send_message=lambda *args: sends.append(args) or 2,
+    )
+
+    assert calls == [False, True]
+    assert sends == [(101, "fix")]
 
 
 def test_drain_cycle_claims_then_completes(monkeypatch):
@@ -138,14 +306,21 @@ def test_kg_job_builds_prompt_uses_kg_session_and_applies(monkeypatch):
     prompts = []
     applied = []
     monkeypatch.setattr(
-        drainer, "build_kg_prompt", lambda raw_id: prompts.append(raw_id) or "kg prompt"
+        drainer,
+        "build_kg_prompt",
+        lambda payload: prompts.append(payload) or "kg prompt",
     )
     monkeypatch.setattr(
         drainer,
         "apply_kg_extraction",
-        lambda raw_id, output: (
-            applied.append((raw_id, output))
-            or {"atoms": ["one", "two"], "dispute": "narrowed"}
+        lambda name, payload, output: (
+            applied.append((name, payload, output))
+            or {
+                "atoms": ["one", "two"],
+                "dispute": "narrowed",
+                "doc_drift": 1,
+                "docfix_jobs": 1,
+            }
         ),
     )
     job = {
@@ -157,12 +332,19 @@ def test_kg_job_builds_prompt_uses_kg_session_and_applies(monkeypatch):
     result, _, starts, completions, notifications, destroys = _run(monkeypatch, [job])
 
     assert result == {"status": "complete", "processed": 1}
-    assert prompts == ["raw-1"]
+    assert prompts == [{"raw_id": "raw-1"}]
     assert starts[0][0] == "workflow-1:kg-drain:kg:raw-1"
     assert starts[0][1] == "kg prompt"
     assert starts[0][6] == "kg-drain"
-    assert applied == [("raw-1", "finished")]
-    assert completions == [("kg:raw-1", "ok", "atoms=2 dispute=narrowed", True)]
+    assert applied == [("kg:raw-1", {"raw_id": "raw-1"}, "finished")]
+    assert completions == [
+        (
+            "kg:raw-1",
+            "ok",
+            "atoms=2 rejected=0 corrected=0 dispute=narrowed doc_drift=1 docfix_jobs=1",
+            True,
+        )
+    ]
     assert notifications == []
     assert destroys == [(101, "workflow-1:kg-drain:kg:raw-1")]
 
@@ -174,8 +356,14 @@ def test_kg_job_applies_full_output_beyond_summary_cap(monkeypatch):
     monkeypatch.setattr(
         drainer,
         "apply_kg_extraction",
-        lambda raw_id, output: (
-            applied.append((raw_id, output)) or {"atoms": [], "dispute": None}
+        lambda name, payload, output: (
+            applied.append((name, payload, output))
+            or {
+                "atoms": [],
+                "dispute": None,
+                "doc_drift": 0,
+                "docfix_jobs": 0,
+            }
         ),
     )
     full_output = "x" * (drainer.SUMMARY_MAX_CHARS + 1)
@@ -194,7 +382,120 @@ def test_kg_job_applies_full_output_beyond_summary_cap(monkeypatch):
         },
     )
 
-    assert applied == [("raw-1", full_output)]
+    assert applied == [("kg:raw-1", {"raw_id": "raw-1"}, full_output)]
+
+
+def test_repo_diff_mode_dispatches_through_repo_apply(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    prompts = []
+    applied = []
+    monkeypatch.setattr(
+        drainer,
+        "build_kg_prompt",
+        lambda payload: prompts.append(payload) or "scout prompt",
+    )
+    monkeypatch.setattr(
+        drainer,
+        "apply_kg_extraction",
+        lambda name, payload, output: (
+            applied.append((name, payload, output)) or {"summary": "no changes"}
+        ),
+    )
+    payload = {"mode": "repo-diff", "last_sha": None}
+    job = {
+        "name": "kg-repo-diff",
+        "routine_kind": "kg-drain",
+        "interval_secs": 3600,
+        "payload": payload,
+    }
+
+    _, _, starts, completions, _, _ = _run(monkeypatch, [job])
+
+    assert prompts == [payload]
+    assert applied == [("kg-repo-diff", payload, "finished")]
+    assert starts[0][1] == "scout prompt"
+    assert completions == [("kg-repo-diff", "ok", "no changes", False)]
+
+
+def test_retry_uses_current_repo_diff_cursor(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite:///{tmp_path / 'retry.db'}")
+    with Session(engine) as session:
+        session.execute(
+            text(
+                """
+                CREATE TABLE routine_jobs (
+                    name TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL
+                )
+                """
+            )
+        )
+        session.execute(
+            text("INSERT INTO routine_jobs (name, payload) VALUES (:name, :payload)"),
+            {
+                "name": "kg-repo-diff",
+                "payload": json.dumps(
+                    {"mode": "repo-diff", "last_sha": "b" * 40, "attempts": 1}
+                ),
+            },
+        )
+        session.commit()
+    monkeypatch.setattr("core.db.get_engine", lambda: engine)
+
+    attempt = drainer.increment_kg_job_attempt.__wrapped__("kg-repo-diff")
+
+    with Session(engine) as session:
+        payload = json.loads(
+            session.execute(
+                text("SELECT payload FROM routine_jobs WHERE name = 'kg-repo-diff'")
+            ).scalar_one()
+        )
+    assert attempt == 2
+    assert payload == {"mode": "repo-diff", "last_sha": "b" * 40, "attempts": 2}
+
+
+def test_completed_docfix_review_is_retained_for_debounce(monkeypatch):
+    job = {
+        "name": "docfix-review:current",
+        "routine_kind": "qwen-drain",
+        "payload": {"prompt": "review docs"},
+    }
+
+    _, _, _, completions, _, _ = _run(monkeypatch, [job])
+
+    assert completions == [("docfix-review:current", "ok", "finished")]
+
+
+def test_recurring_kg_job_is_not_deregistered_on_completion(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _payload: "kg prompt")
+    monkeypatch.setattr(
+        drainer,
+        "apply_kg_extraction",
+        lambda *_args: {
+            "atoms": [],
+            "dispute": None,
+            "doc_drift": 0,
+            "docfix_jobs": 0,
+        },
+    )
+    job = {
+        "name": "kg:recurring",
+        "routine_kind": "kg-drain",
+        "interval_secs": 3600,
+        "payload": {"raw_id": "raw-1"},
+    }
+
+    _, _, _, completions, _, _ = _run(monkeypatch, [job])
+
+    assert completions == [
+        (
+            "kg:recurring",
+            "ok",
+            "atoms=0 rejected=0 corrected=0 dispute=None doc_drift=0 docfix_jobs=0",
+            False,
+        )
+    ]
 
 
 def test_kg_daily_cap_defers_without_processing_or_notification(monkeypatch):
@@ -229,13 +530,7 @@ def test_invalid_kg_output_defers_on_bounded_retry_path(monkeypatch):
         raise drainer.ExtractionOutputInvalid("invalid extraction")
 
     monkeypatch.setattr(drainer, "apply_kg_extraction", invalid)
-    payload_updates = []
     deferrals = []
-    monkeypatch.setattr(
-        drainer,
-        "update_drainer_job_payload",
-        lambda name, payload: payload_updates.append((name, payload)) or True,
-    )
     monkeypatch.setattr(
         drainer,
         "defer_drainer_job",
@@ -249,7 +544,6 @@ def test_invalid_kg_output_defers_on_bounded_retry_path(monkeypatch):
 
     _, _, _, completions, notifications, destroys = _run(monkeypatch, [job])
 
-    assert payload_updates == [("kg:raw-1", {"raw_id": "raw-1", "attempts": 1})]
     assert deferrals == [("kg:raw-1", 900)]
     assert completions == []
     assert notifications == [("kg:raw-1", "invalid extraction")]
@@ -442,7 +736,6 @@ def _run_transient_kg_failure(monkeypatch, attempts):
         "payload": {"raw_id": "raw-1", "attempts": attempts},
     }
     queue = iter([job, None])
-    payload_updates = []
     deferrals = []
     completions = []
     failures = []
@@ -457,11 +750,7 @@ def _run_transient_kg_failure(monkeypatch, attempts):
         "_await_turn",
         lambda *_args: (_ for _ in ()).throw(RuntimeError("ember unavailable")),
     )
-    monkeypatch.setattr(
-        drainer,
-        "update_drainer_job_payload",
-        lambda name, payload: payload_updates.append((name, payload)) or True,
-    )
+    monkeypatch.setattr(drainer, "increment_kg_job_attempt", lambda _name: attempts + 1)
     monkeypatch.setattr(
         drainer,
         "defer_drainer_job",
@@ -481,26 +770,20 @@ def _run_transient_kg_failure(monkeypatch, attempts):
     monkeypatch.setattr(drainer, "destroy_drainer_session", lambda *_args: True)
 
     drainer.drain_cycle.__wrapped__()
-    return payload_updates, deferrals, completions, failures
+    return deferrals, completions, failures
 
 
 def test_transient_kg_failure_defers_with_incremented_attempt(monkeypatch):
-    payload_updates, deferrals, completions, failures = _run_transient_kg_failure(
-        monkeypatch, 0
-    )
+    deferrals, completions, failures = _run_transient_kg_failure(monkeypatch, 0)
 
-    assert payload_updates == [("kg:raw-1", {"raw_id": "raw-1", "attempts": 1})]
     assert deferrals == [("kg:raw-1", 900)]
     assert completions == []
     assert failures == []
 
 
 def test_transient_kg_failure_gives_up_after_retry_ceiling(monkeypatch):
-    payload_updates, deferrals, completions, failures = _run_transient_kg_failure(
-        monkeypatch, 2
-    )
+    deferrals, completions, failures = _run_transient_kg_failure(monkeypatch, 2)
 
-    assert payload_updates == [("kg:raw-1", {"raw_id": "raw-1", "attempts": 3})]
     assert deferrals == []
     assert completions == [("kg:raw-1", "error", "ember unavailable", True)]
     assert failures == [("raw-1", "ember unavailable", 3)]

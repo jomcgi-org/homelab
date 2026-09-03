@@ -1,5 +1,6 @@
 """Tests for KnowledgeStore."""
 
+from datetime import datetime, timezone
 import os
 
 import pytest
@@ -497,6 +498,41 @@ class TestSearchNotesWithContext:
         assert len(results) == 1
         assert results[0]["note_id"] == "n1"
         assert results[0]["type"] == "paper"
+
+    def test_can_exclude_invalidated_notes_for_dedupe(self):
+        content = "A sufficiently long behavioral note body for stable vector ranking."
+        for note_id in ("current", "expired", "invalidated"):
+            self.store.upsert_note(
+                note_id=note_id,
+                path=f"{note_id}.md",
+                content_hash=note_id,
+                title=note_id,
+                metadata=_meta(title=note_id, type="fact"),
+                chunks=[{"index": 0, "section_header": "", "text": content}],
+                vectors=[[0.0] * 1024],
+                links=[],
+            )
+        expired = self.session.exec(select(Note).where(Note.note_id == "expired")).one()
+        invalidated = self.session.exec(
+            select(Note).where(Note.note_id == "invalidated")
+        ).one()
+        expired.valid_until = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        invalidated.verification_state = "invalidated"
+        self.session.add(expired)
+        self.session.add(invalidated)
+        self.session.commit()
+
+        public_results = self.store.search_notes_with_context([0.0] * 1024)
+        dedupe_results = self.store.search_notes_with_context(
+            [0.0] * 1024, exclude_invalidated=True
+        )
+
+        assert {row["note_id"] for row in public_results} == {
+            "current",
+            "expired",
+            "invalidated",
+        }
+        assert [row["note_id"] for row in dedupe_results] == ["current"]
 
     def test_empty_db_returns_empty_list(self):
         results = self.store.search_notes_with_context(query_embedding=[0.0] * 1024)

@@ -12,6 +12,7 @@ lane bills nothing, so it exists to convert idle overnight capacity into
 audits, reports, and small PRs. This skill is the operating manual plus the
 improvement loop.
 The same drainer also claims `kg-drain` jobs for knowledge extraction.
+`docfix:` jobs are one-shot `qwen-drain` tasks for human-reviewed documentation PRs.
 
 ## Queueing work
 
@@ -195,7 +196,10 @@ Review keys on diff class, not author.
   and the edit. Read the evidence block in the PR body first; if the two sides
   it quotes do not actually disagree, close the PR rather than fixing it.
 
-A human merges; qwen PRs are never auto-merged.
+Lane PRs are human-merged except docs-only `docs:` PRs, which a demand-driven
+`docfix-review` job verifies against main and queues when `docFixAutoMerge` is
+on. The protected set (`.claude/**`, `AGENTS.md`, skills, runbooks, and ADRs) is
+always human-merged.
 
 The review gate is what makes audit-and-fix affordable. A false positive costs
 one review, not a bad merge. But it is still a real cost: a 174-job batch

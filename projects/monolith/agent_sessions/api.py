@@ -238,6 +238,24 @@ def start_session_for_swarm(
     return row.id
 
 
+def send_to_swarm_session(session_id: int, message: str) -> int:
+    """Queue one follow-up turn on an existing swarm-owned session."""
+    row = _load_session_row(session_id)
+    if row is None:
+        raise ValueError(f"Unknown agent session {session_id}")
+    model = normalize_model(row.model)
+    model_family(model)
+    turn = _persist_pending_message(session_id, message, model)
+    _set_session_status(session_id, "running")
+    try:
+        _schedule_next_message(session_id)
+    except RuntimeError:
+        # DBOS sync steps have no running event loop. The orphan sweep picks up
+        # the durable pending message, just as it does for the initial turn.
+        pass
+    return turn
+
+
 def _sessions_for_workflow(workflow_id: str):
     with Session(get_engine()) as db_session:
         return store.sessions_for_workflow(db_session, workflow_id)

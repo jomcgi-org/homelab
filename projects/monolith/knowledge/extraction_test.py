@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
@@ -21,11 +23,17 @@ from knowledge.extraction import (
     record_extraction_failure,
     sweep_unqueued_raws,
 )
-from knowledge.models import AtomRawProvenance, Dispute, Note, RawInput
+from knowledge.models import AtomRawProvenance, Dispute, Note, NoteLink, RawInput
 
 
 @pytest.fixture(name="session")
-def session_fixture(tmp_path):
+def session_fixture(tmp_path, monkeypatch):
+    monkeypatch.setattr("knowledge.extraction.EmbeddingClient", _Embedder)
+    monkeypatch.setattr("knowledge.atoms.EmbeddingClient", _Embedder)
+    monkeypatch.setattr(
+        "knowledge.store.KnowledgeStore.search_notes_with_context",
+        lambda *_args, **_kwargs: [],
+    )
     engine = create_engine(f"sqlite:///{tmp_path / 'extraction.db'}")
     original_schemas = {}
     for table in SQLModel.metadata.tables.values():
@@ -165,11 +173,12 @@ def _patch_prompt(monkeypatch, body: str, related=None):
 @pytest.mark.parametrize(
     ("source", "phrase"),
     [
-        ("claude-session", "reusable beyond this session"),
-        ("codex-session", "reusable beyond this session"),
-        ("ember-session", "reusable beyond this session"),
+        ("claude-session", "states how something BEHAVES"),
+        ("codex-session", "states how something BEHAVES"),
+        ("ember-session", "states how something BEHAVES"),
         ("agent-report", "This is a claim by an agent"),
         ("dispute", "Seek disconfirming AND confirming evidence"),
+        ("repo-diff", "diff merged into main between base and head"),
     ],
 )
 def test_prompt_uses_source_lens(session, monkeypatch, source, phrase):
@@ -311,13 +320,14 @@ def test_parser_rejects_bad_scope_and_state(field):
         _parse_result(f"```json\n{json.dumps({'assertions': [assertion]})}\n```")
 
 
-def _result(assertions, dispute_resolution=None):
+def _result(assertions, dispute_resolution=None, doc_drift=None):
     return (
         "```json\n"
         + json.dumps(
             {
                 "assertions": assertions,
                 "dispute_resolution": dispute_resolution,
+                "doc_drift": doc_drift or [],
                 "notes": "",
             }
         )
@@ -353,8 +363,12 @@ def test_apply_writes_atom_provenance_and_scoped_columns(session, monkeypatch):
     assert applied == {
         "raw_id": raw.raw_id,
         "atoms": ["confirmed-behavior"],
+        "rejected": [],
         "dispute": None,
+        "doc_drift": 0,
+        "docfix_jobs": 0,
         "failed": False,
+        "replayed": False,
     }
     note = session.exec(select(Note).where(Note.note_id == "confirmed-behavior")).one()
     assert note.scope == "repo:acme/repo"
@@ -407,7 +421,10 @@ def test_apply_is_idempotent_for_same_lane_version(session, monkeypatch):
     assert second == {
         "raw_id": raw.raw_id,
         "atoms": [],
+        "rejected": [],
         "dispute": None,
+        "doc_drift": 0,
+        "docfix_jobs": 0,
         "failed": False,
         "replayed": True,
     }
@@ -425,7 +442,7 @@ def test_apply_downgrades_verified_assertion_without_evidence(session, monkeypat
             [
                 {
                     "title": "Unsupported verification",
-                    "body": "No evidence was supplied.",
+                    "body": "Without evidence, verification cannot remain trusted.",
                     "scope": "repo:acme/repo",
                     "verification_state": "verified",
                     "confidence": 0.8,
@@ -441,6 +458,212 @@ def test_apply_downgrades_verified_assertion_without_evidence(session, monkeypat
     assert note.verification_state == "unverified"
 
 
+def test_apply_supersedes_live_note_and_keeps_edge(session, monkeypatch):
+    old = Note(
+        note_id="old-setting",
+        path="old-setting.md",
+        title="Old setting",
+        content_hash="old-hash",
+        content="The default is false.",
+        verification_state="verified",
+    )
+    session.add(old)
+    session.commit()
+    raw = _raw(session, "repo-diff")
+    monkeypatch.setattr("knowledge.atoms.EmbeddingClient", _Embedder)
+
+    apply_extraction(
+        session,
+        raw.raw_id,
+        _result(
+            [
+                {
+                    "title": "New setting",
+                    "body": "When the new setting is enabled, requests use the new path.",
+                    "scope": "repo:acme/repo",
+                    "verification_state": "verified",
+                    "confidence": 1,
+                    "observed_at": "2026-09-03T12:00:00Z",
+                    "edges": {"supersedes": ["old-setting"]},
+                    "evidence": ["settings.py:10"],
+                }
+            ]
+        ),
+    )
+
+    session.refresh(old)
+    assert old.verification_state == "invalidated"
+    assert old.valid_until is not None
+    edge = session.exec(
+        select(NoteLink).where(
+            NoteLink.target_id == "old-setting",
+            NoteLink.edge_type == "supersedes",
+        )
+    ).one()
+    assert edge.kind == "edge"
+
+
+def test_apply_ignores_unresolved_supersedes_id(session, monkeypatch):
+    raw = _raw(session, "repo-diff")
+    monkeypatch.setattr("knowledge.atoms.EmbeddingClient", _Embedder)
+
+    applied = apply_extraction(
+        session,
+        raw.raw_id,
+        _result(
+            [
+                {
+                    "title": "Current contract",
+                    "body": "The current contract.",
+                    "scope": "repo:acme/repo",
+                    "verification_state": "unverified",
+                    "confidence": 0.7,
+                    "edges": {"supersedes": ["missing-note"]},
+                }
+            ]
+        ),
+    )
+
+    assert applied["atoms"] == ["current-contract"]
+    assert session.exec(select(Note)).one().verification_state == "unverified"
+
+
+def _doc_drift(path: str) -> dict:
+    return {
+        "doc_path": path,
+        "doc_claim": "The default is false.",
+        "fact_title": "New setting",
+        "evidence": ["settings.py:10"],
+        "suggested_fix": "Say the default is true.",
+    }
+
+
+def _manifest_with(*paths: str):
+    return [SimpleNamespace(path=path) for path in paths]
+
+
+def test_apply_records_doc_drift_in_raw_extra(session, monkeypatch):
+    monkeypatch.setattr(
+        "knowledge.repo_docs.load_manifest",
+        lambda: _manifest_with("docs/guide.md"),
+    )
+    raw = _raw(session, "repo-diff")
+
+    applied = apply_extraction(
+        session,
+        raw.raw_id,
+        _result([], doc_drift=[_doc_drift("docs/guide.md")]),
+    )
+
+    session.refresh(raw)
+    assert applied["doc_drift"] == 1
+    assert applied["docfix_jobs"] == 0
+    assert raw.extra["doc_drift"] == [_doc_drift("docs/guide.md")]
+
+
+def test_docfix_jobs_are_enabled_named_and_idempotent(session, monkeypatch):
+    monkeypatch.setattr(
+        "knowledge.repo_docs.load_manifest",
+        lambda: _manifest_with("docs/guide.md"),
+    )
+    monkeypatch.setenv("DRAINER_DOCFIX_ENABLED", "true")
+    monkeypatch.setattr("knowledge.atoms.EmbeddingClient", _Embedder)
+    _create_routine_jobs(session)
+    assertion = {
+        "title": "New setting",
+        "body": "The default is true.",
+        "scope": "repo:acme/repo",
+        "verification_state": "verified",
+        "confidence": 1,
+        "evidence": ["settings.py:10"],
+    }
+    extra = {"base_sha": "a" * 40, "head_sha": "b" * 40}
+
+    first_raw = _raw(session, "repo-diff", extra=extra)
+    first = apply_extraction(
+        session,
+        first_raw.raw_id,
+        _result([assertion], doc_drift=[_doc_drift("docs/guide.md")]),
+    )
+    second_raw = _raw(session, "repo-diff", extra=extra)
+    second = apply_extraction(
+        session,
+        second_raw.raw_id,
+        _result([assertion], doc_drift=[_doc_drift("docs/guide.md")]),
+    )
+
+    digest = hashlib.sha256(b"docs/guide.mdThe default is false.").hexdigest()[:16]
+    row = session.execute(text("SELECT * FROM routine_jobs")).one()
+    payload = json.loads(row.payload)
+    assert row.name == f"docfix:{digest}"
+    assert row.routine_kind == "qwen-drain"
+    assert row.interval_secs is None
+    assert payload["repo"] == "jomcgi-org/homelab"
+    assert payload["branch"] == "main"
+    assert f"branch `docfix/{digest}`" in payload["prompt"]
+    assert "Never enable auto-merge" in payload["prompt"]
+    assert first["docfix_jobs"] == 1
+    assert second["docfix_jobs"] == 0
+
+
+def test_doc_path_outside_allowed_globs_is_dropped(session, monkeypatch):
+    monkeypatch.setattr(
+        "knowledge.repo_docs.load_manifest",
+        lambda: _manifest_with("projects/monolith/settings.py"),
+    )
+    raw = _raw(session, "repo-diff")
+
+    applied = apply_extraction(
+        session,
+        raw.raw_id,
+        _result(
+            [],
+            doc_drift=[_doc_drift("projects/monolith/settings.py")],
+        ),
+    )
+
+    session.refresh(raw)
+    assert applied["doc_drift"] == 0
+    assert raw.extra["doc_drift"] == []
+
+
+def test_doc_path_missing_from_manifest_is_dropped(session, monkeypatch):
+    monkeypatch.setattr("knowledge.repo_docs.load_manifest", lambda: [])
+    raw = _raw(session, "repo-diff")
+
+    applied = apply_extraction(
+        session,
+        raw.raw_id,
+        _result([], doc_drift=[_doc_drift("docs/guide.md")]),
+    )
+
+    session.refresh(raw)
+    assert applied["doc_drift"] == 0
+    assert raw.extra["doc_drift"] == []
+
+
+def test_correction_merges_and_deduplicates_doc_drift(session, monkeypatch):
+    monkeypatch.setattr(
+        "knowledge.repo_docs.load_manifest",
+        lambda: _manifest_with("docs/first.md", "docs/second.md"),
+    )
+    raw = _raw(session, "repo-diff")
+    first = _doc_drift("docs/first.md")
+    second = _doc_drift("docs/second.md")
+
+    apply_extraction(session, raw.raw_id, _result([], doc_drift=[first]))
+    applied = apply_extraction(
+        session,
+        raw.raw_id,
+        _result([], doc_drift=[first, second]),
+        correction=True,
+    )
+
+    session.refresh(raw)
+    assert applied["doc_drift"] == 2
+    assert raw.extra["doc_drift"] == [first, second]
+
+
 def test_apply_stores_capped_extraction_notes(session):
     raw = _raw(session, "agent-report", extra={"existing": True})
     result = "```json\n" + json.dumps({"assertions": [], "notes": "n" * 2100}) + "\n```"
@@ -448,7 +671,13 @@ def test_apply_stores_capped_extraction_notes(session):
     apply_extraction(session, raw.raw_id, result)
 
     session.refresh(raw)
-    assert raw.extra == {"existing": True, "extraction_notes": "n" * 2000}
+    assert raw.extra == {
+        "existing": True,
+        "extraction_passes": 1,
+        "extraction_rejected": [],
+        "extraction_notes": "n" * 2000,
+        "doc_drift": [],
+    }
 
 
 @pytest.mark.parametrize(

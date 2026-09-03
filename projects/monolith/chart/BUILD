@@ -12,6 +12,20 @@ filegroup(
     visibility = ["//projects/monolith:__subpackages__"],
 )
 
+filegroup(
+    name = "docfix_review_test_data",
+    srcs = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "migrations/**/*",
+    ]),
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
 sh_test(
     name = "atlas_sum_test",
     srcs = ["//bazel/tools/format:validate-atlas-sum.sh"],
