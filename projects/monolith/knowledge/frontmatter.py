@@ -60,12 +60,22 @@ _PROMOTED_KEYS = {
     "status",
     "visibility",
     "source",
+    "scope",
+    "verification_state",
+    "confidence",
+    "valid_from",
+    "valid_until",
+    "observed_at",
     "tags",
     "aliases",
     "edges",
     "created",
     "updated",
 }
+
+_VERIFICATION_STATES = frozenset(
+    {"legacy", "unverified", "verified", "disputed", "invalidated"}
+)
 
 # Mirror of the CHECK constraint in chart/migrations/20260408000000_knowledge_schema.sql:67-70 — keep in sync.
 _KNOWN_EDGE_TYPES = frozenset(
@@ -88,12 +98,21 @@ class ParsedFrontmatter:
     status: str | None = None
     visibility: str | None = None
     source: str | None = None
+    scope: str | None = None
+    verification_state: str | None = None
+    confidence: float | None = None
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
+    observed_at: datetime | None = None
     tags: list[str] = field(default_factory=list)
     aliases: list[str] = field(default_factory=list)
     edges: dict[str, list[str]] = field(default_factory=dict)
     created: datetime | None = None
     updated: datetime | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+    present_keys: frozenset[str] = field(
+        default_factory=frozenset, repr=False, compare=False
+    )
 
 
 def parse(raw: str) -> tuple[ParsedFrontmatter, str]:
@@ -134,6 +153,7 @@ def _json_safe(v: Any) -> Any:
 
 def _build(data: dict[str, Any]) -> ParsedFrontmatter:
     meta = ParsedFrontmatter()
+    meta.present_keys = frozenset(data)
     meta.note_id = _str_or_none(data.get("id"))
     meta.title = _str_or_none(data.get("title"))
     meta.type = _str_or_none(data.get("type"))
@@ -148,6 +168,19 @@ def _build(data: dict[str, Any]) -> ParsedFrontmatter:
         )
         meta.visibility = None
     meta.source = _str_or_none(data.get("source"))
+    meta.scope = _str_or_none(data.get("scope"))
+    raw_verification_state = _str_or_none(data.get("verification_state"))
+    if raw_verification_state in _VERIFICATION_STATES:
+        meta.verification_state = raw_verification_state
+    elif raw_verification_state is not None:
+        logger.warning(
+            "frontmatter verification_state has unknown value %r, treating as null",
+            raw_verification_state,
+        )
+    meta.confidence = _to_float(data.get("confidence"))
+    meta.valid_from = _to_datetime(data.get("valid_from"))
+    meta.valid_until = _to_datetime(data.get("valid_until"))
+    meta.observed_at = _to_datetime(data.get("observed_at"))
     meta.tags = _string_list(data.get("tags"))
     meta.aliases = _string_list(data.get("aliases"))
     meta.edges = _edges(data.get("edges"))
@@ -209,3 +242,17 @@ def _to_datetime(v: Any) -> datetime | None:
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     logger.warning("unparseable date type in frontmatter: %r", type(v).__name__)
     return None
+
+
+def _to_float(v: Any) -> float | None:
+    if v is None:
+        return None
+    try:
+        value = float(v)
+    except (TypeError, ValueError):
+        logger.warning("invalid confidence in frontmatter: %r", v)
+        return None
+    if not 0 <= value <= 1:
+        logger.warning("confidence outside [0, 1] in frontmatter: %r", v)
+        return None
+    return value

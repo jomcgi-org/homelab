@@ -1,7 +1,6 @@
 """Tests for KnowledgeStore."""
 
 import os
-from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import event
@@ -421,6 +420,15 @@ class TestSearchNotesWithContext:
             "score",
             "section",
             "snippet",
+            "edges",
+            "scope",
+            "verification_state",
+            "confidence",
+            "valid_from",
+            "valid_until",
+            "observed_at",
+            "disputed",
+            "provenance",
         }
         assert row["note_id"] == "n1"
         assert row["title"] == "Attention"
@@ -512,6 +520,14 @@ class TestGetNoteById:
             "type": "paper",
             "tags": ["x"],
             "content": None,
+            "scope": None,
+            "verification_state": "legacy",
+            "confidence": None,
+            "valid_from": None,
+            "valid_until": None,
+            "observed_at": None,
+            "disputed": False,
+            "provenance": [],
         }
 
     def test_returns_content_when_set(self, store):

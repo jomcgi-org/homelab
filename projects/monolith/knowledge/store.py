@@ -13,7 +13,15 @@ from sqlmodel import Session, delete, select
 from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.gardener import GARDENER_VERSION, MAX_GARDENER_RETRIES, _slugify
 from knowledge.links import Link
-from knowledge.models import AtomRawProvenance, Chunk, Gap, Note, NoteLink, RawInput
+from knowledge.models import (
+    AtomRawProvenance,
+    Chunk,
+    Dispute,
+    Gap,
+    Note,
+    NoteLink,
+    RawInput,
+)
 from knowledge.chunker import Chunk as ChunkPayload
 
 logger = logging.getLogger(__name__)
@@ -51,6 +59,56 @@ def _resolve_edge_targets(session: Session, rows: list) -> set[str]:
         .scalars()
         .all()
     )
+
+
+def open_dispute_note_ids(session: Session, note_ids: Iterable[str]) -> set[str]:
+    """Return note ids with an open dispute in one query."""
+    ids = list(note_ids)
+    if not ids:
+        return set()
+    return set(
+        session.execute(
+            select(Dispute.note_id).where(
+                Dispute.note_id.in_(ids), Dispute.state == "open"
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+def provenance_for_notes(
+    session: Session, note_fks: Iterable[int]
+) -> dict[int, list[dict]]:
+    """Return raw provenance grouped by note foreign key in one query."""
+    ids = list(note_fks)
+    if not ids:
+        return {}
+    rows = session.execute(
+        select(
+            AtomRawProvenance.atom_fk,
+            RawInput.raw_id,
+            RawInput.source,
+            AtomRawProvenance.gardener_version,
+        )
+        .join(RawInput, RawInput.id == AtomRawProvenance.raw_fk)
+        .where(AtomRawProvenance.atom_fk.in_(ids))
+        .order_by(AtomRawProvenance.id)
+    ).all()
+    grouped: dict[int, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(row.atom_fk, []).append(
+            {
+                "raw_id": row.raw_id,
+                "source": row.source,
+                "gardener_version": row.gardener_version,
+            }
+        )
+    return grouped
+
+
+def _iso_or_none(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
 
 
 class KnowledgeStore:
@@ -107,14 +165,28 @@ class KnowledgeStore:
             # foreign_keys=ON for FK cascades to fire).
             # Fall back to note_id lookup to handle path migrations (e.g.
             # notes moved from their original vault path into _processed/).
-            existing = self.session.execute(
-                select(Note.id).where(Note.path == path)
+            existing_note = self.session.execute(
+                select(Note).where(Note.path == path)
             ).scalar_one_or_none()
-            if existing is None:
-                existing = self.session.execute(
-                    select(Note.id).where(Note.note_id == note_id)
+            if existing_note is None:
+                existing_note = self.session.execute(
+                    select(Note).where(Note.note_id == note_id)
                 ).scalar_one_or_none()
-            if existing is not None:
+
+            existing_scope: str | None = None
+            existing_verification_state = "legacy"
+            existing_confidence: float | None = None
+            existing_valid_from: datetime | None = None
+            existing_valid_until: datetime | None = None
+            existing_observed_at: datetime | None = None
+            if existing_note is not None:
+                existing_scope = existing_note.scope
+                existing_verification_state = existing_note.verification_state
+                existing_confidence = existing_note.confidence
+                existing_valid_from = existing_note.valid_from
+                existing_valid_until = existing_note.valid_until
+                existing_observed_at = existing_note.observed_at
+                existing = existing_note.id
                 self.session.execute(delete(Chunk).where(Chunk.note_fk == existing))
                 self.session.execute(
                     delete(NoteLink).where(NoteLink.src_note_fk == existing)
@@ -132,6 +204,40 @@ class KnowledgeStore:
                 status=metadata.status,
                 visibility=metadata.visibility,
                 source=metadata.source,
+                scope=(
+                    metadata.scope
+                    if metadata.scope is not None or "scope" in metadata.present_keys
+                    else existing_scope
+                ),
+                verification_state=(
+                    metadata.verification_state
+                    if metadata.verification_state is not None
+                    else existing_verification_state
+                ),
+                confidence=(
+                    metadata.confidence
+                    if metadata.confidence is not None
+                    or "confidence" in metadata.present_keys
+                    else existing_confidence
+                ),
+                valid_from=(
+                    metadata.valid_from
+                    if metadata.valid_from is not None
+                    or "valid_from" in metadata.present_keys
+                    else existing_valid_from
+                ),
+                valid_until=(
+                    metadata.valid_until
+                    if metadata.valid_until is not None
+                    or "valid_until" in metadata.present_keys
+                    else existing_valid_until
+                ),
+                observed_at=(
+                    metadata.observed_at
+                    if metadata.observed_at is not None
+                    or "observed_at" in metadata.present_keys
+                    else existing_observed_at
+                ),
                 tags=metadata.tags,
                 aliases=metadata.aliases,
                 created_at=metadata.created,
@@ -270,6 +376,12 @@ class KnowledgeStore:
                 Note.type,
                 Note.tags,
                 best_score,
+                Note.scope,
+                Note.verification_state,
+                Note.confidence,
+                Note.valid_from,
+                Note.valid_until,
+                Note.observed_at,
             )
             .join(Chunk, Chunk.note_fk == Note.id)
             .where(Note.deleted_at.is_(None))
@@ -286,6 +398,7 @@ class KnowledgeStore:
             return []
 
         top_ids = [row.id for row in note_rows]
+        top_note_ids = [row.note_id for row in note_rows]
 
         chunk_adj = (1 - Chunk.embedding.cosine_distance(query_embedding)) * func.least(
             1.0, func.length(Chunk.chunk_text) / float(_CHUNK_LEN_RAMP)
@@ -335,6 +448,9 @@ class KnowledgeStore:
                 )
             edges_by_note.setdefault(row.src_note_fk, []).append(edge)
 
+        disputed_note_ids = open_dispute_note_ids(self.session, top_note_ids)
+        provenance_by_note = provenance_for_notes(self.session, top_ids)
+
         results: list[dict] = []
         for row in note_rows:
             section, chunk_text = best_chunk_by_note.get(row.id, ("", ""))
@@ -349,6 +465,17 @@ class KnowledgeStore:
                     "section": section,
                     "snippet": (chunk_text or "")[:240],
                     "edges": edges_by_note.get(row.id, []),
+                    "scope": row.scope,
+                    "verification_state": row.verification_state,
+                    "confidence": row.confidence,
+                    "valid_from": _iso_or_none(row.valid_from),
+                    "valid_until": _iso_or_none(row.valid_until),
+                    "observed_at": _iso_or_none(row.observed_at),
+                    "disputed": (
+                        row.note_id in disputed_note_ids
+                        or row.verification_state == "disputed"
+                    ),
+                    "provenance": provenance_by_note.get(row.id, []),
                 }
             )
         return results
@@ -370,6 +497,13 @@ class KnowledgeStore:
                 Note.type,
                 Note.tags,
                 Note.content,
+                Note.id,
+                Note.scope,
+                Note.verification_state,
+                Note.confidence,
+                Note.valid_from,
+                Note.valid_until,
+                Note.observed_at,
             )
             .where(Note.note_id == note_id)
             .where(Note.deleted_at.is_(None))
@@ -377,6 +511,8 @@ class KnowledgeStore:
         ).first()
         if row is None:
             return None
+        disputed_note_ids = open_dispute_note_ids(self.session, [row.note_id])
+        provenance_by_note = provenance_for_notes(self.session, [row.id])
         return {
             "note_id": row.note_id,
             "title": row.title,
@@ -384,6 +520,16 @@ class KnowledgeStore:
             "type": row.type,
             "tags": list(row.tags or []),
             "content": row.content,
+            "scope": row.scope,
+            "verification_state": row.verification_state,
+            "confidence": row.confidence,
+            "valid_from": _iso_or_none(row.valid_from),
+            "valid_until": _iso_or_none(row.valid_until),
+            "observed_at": _iso_or_none(row.observed_at),
+            "disputed": (
+                row.note_id in disputed_note_ids or row.verification_state == "disputed"
+            ),
+            "provenance": provenance_by_note.get(row.id, []),
         }
 
     def get_graph(self) -> dict:
