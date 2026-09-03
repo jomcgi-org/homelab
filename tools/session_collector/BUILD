@@ -1,12 +1,12 @@
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
+load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 py_library(
     name = "session_collector",
     srcs = [
         "__init__.py",
-        "__main__.py",
         "claude_v1.py",
         "codex_v1.py",
         "collector.py",
@@ -21,7 +21,8 @@ py_library(
     imports = ["../.."],
     visibility = ["//:__subpackages__"],
     deps = [
-        "//tools/cli:cli",
+        ":session_collector_bin",
+        "//tools/cli",
         "@pip//httpx",
     ],
 )
@@ -41,10 +42,7 @@ py_test(
         "fixtures/codex.jsonl",
     ],
     imports = ["../.."],
-    deps = [
-        ":session_collector",
-        "@pip//pytest",
-    ],
+    deps = [":session_collector"],
 )
 
 py_test(
@@ -57,7 +55,7 @@ py_test(
     imports = ["../.."],
     deps = [
         ":session_collector",
-        "@pip//pytest",
+        "@pip//httpx",
     ],
 )
 
@@ -71,7 +69,7 @@ py_test(
     imports = ["../.."],
     deps = [
         ":session_collector",
-        "@pip//pytest",
+        ":session_collector_bin",
     ],
 )
 
@@ -79,10 +77,7 @@ py_test(
     name = "scope_test",
     srcs = ["scope_test.py"],
     imports = ["../.."],
-    deps = [
-        ":session_collector",
-        "@pip//pytest",
-    ],
+    deps = [":session_collector"],
 )
 
 py_test(
@@ -91,7 +86,51 @@ py_test(
     imports = ["../.."],
     deps = [
         ":session_collector",
+        "//tools/cli",
         "@pip//httpx",
         "@pip//pytest",
     ],
+)
+
+semgrep_target_test(
+    name = "main_semgrep_test",
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    target = ":main",
+)
+
+semgrep_test(
+    name = "adapters_test_semgrep_test",
+    srcs = ["adapters_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "redact_test_semgrep_test",
+    srcs = ["redact_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "scope_test_semgrep_test",
+    srcs = ["scope_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "state_test_semgrep_test",
+    srcs = ["state_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "upload_test_semgrep_test",
+    srcs = ["upload_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+py_venv_binary(
+    name = "session_collector_bin",
+    srcs = ["__main__.py"],
+    main = "__main__.py",
+    visibility = ["//:__subpackages__"],
 )
