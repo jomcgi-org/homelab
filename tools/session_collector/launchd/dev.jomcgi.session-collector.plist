@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.jomcgi.session-collector</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__REPO__/.venv/bin/python3</string>
+    <string>-m</string>
+    <string>tools.session_collector</string>
+    <string>run</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/session-collector.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/session-collector.log</string>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>

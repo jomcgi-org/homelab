@@ -14,6 +14,11 @@ CF_TOKEN_DIR = Path.home() / ".cloudflared"
 DEFAULT_HOSTNAME = "private.jomcgi.dev"
 
 
+def read_cached_cf_token(hostname: str = DEFAULT_HOSTNAME) -> str | None:
+    """Return the cached token for *hostname* without starting a login."""
+    return _read_token(hostname)
+
+
 def get_cf_token(hostname: str = DEFAULT_HOSTNAME) -> str:
     """Return a valid Cloudflare Access token for *hostname*.
 
