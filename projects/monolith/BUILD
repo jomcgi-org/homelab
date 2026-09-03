@@ -6225,9 +6225,9 @@ py_test(
     srcs = ["knowledge/router_raws_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_knowledge",
         ":pkg_core",
         ":pkg_framework",
+        ":pkg_knowledge",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
