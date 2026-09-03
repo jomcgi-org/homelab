@@ -151,3 +151,9 @@ semgrep_target_test(
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":session_collector_bin",
 )
+
+semgrep_test(
+    name = "base_url_test_semgrep_test",
+    srcs = ["base_url_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
