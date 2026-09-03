@@ -58,9 +58,8 @@ def _capture():
 
 class TestSingletons:
     @pytest.mark.asyncio
-    async def test_start_singletons_starts_four_tasks_with_token(self):
-        """With a token, the leader starts bot + outbox drain + ships + sweep = 4
-        tasks (the scheduler dispatch loop was removed)."""
+    async def test_start_singletons_starts_expected_tasks_with_token(self):
+        """With a token, the leader starts Discord and service loops."""
         created, cap = _capture()
         mock_bot = MagicMock()
         mock_bot.close = AsyncMock()
@@ -78,15 +77,15 @@ class TestSingletons:
         ):
             await _start_singletons(app)
 
-        assert (
-            len(created) == 7
-        )  # bot + outbox + ships + agent_sessions + lock sweeps + title refresh
+        # bot + outbox + ships + agent_sessions + lock sweeps + title + KG feed
+        assert len(created) == 8
 
     @pytest.mark.asyncio
-    async def test_start_singletons_one_task_without_token(self):
-        """Without a token: ships + agent_sessions sweep + title refresh = 3 tasks
-        (no bot, no drain, no lock sweep; the scheduler dispatch loop was
-        removed - jobs run as Argo CronWorkflows)."""
+    async def test_start_singletons_starts_service_tasks_without_token(self):
+        """Without a token, agent_sessions also starts title and KG feed loops.
+
+        There is no bot, outbox drain, or lock sweep. The scheduler loop was
+        removed, jobs run as Argo CronWorkflows."""
         created, cap = _capture()
         env = {k: v for k, v in os.environ.items() if k != "DISCORD_BOT_TOKEN"}
         env["DISCORD_BOT_TOKEN"] = ""
@@ -100,9 +99,8 @@ class TestSingletons:
         ):
             await _start_singletons(app)
 
-        assert (
-            len(created) == 4
-        )  # ships + agent_sessions sweep + title refresh + cd probe
+        # ships + agent_sessions sweep + title refresh + KG feed + cd probe
+        assert len(created) == 5
 
     @pytest.mark.asyncio
     async def test_stop_singletons_closes_and_cancels(self):

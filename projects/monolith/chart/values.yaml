@@ -1071,6 +1071,10 @@ knowledge:
   enabled: false
   # Scope assigned to repository knowledge reports when callers propose repo.
   defaultRepoScope: "repo:jomcgi-org/homelab"
+  feeds:
+    emberSessions:
+      # Export finished Ember sessions only after this dark feed is verified.
+      enabled: false
   gaps:
     # When true, the gardener rewrites [[X]] -> bare text in source notes
     # whose stub is marked `triaged: discardable`, then tombstones the gap

@@ -218,13 +218,9 @@ class TestSweepTaskRegistration:
         ):
             await _start_singletons(app)
 
-        # 3 tasks: ships ingest, the agent_sessions pending-message sweep, and
-        # the agent_sessions title refresh. The scheduler dispatch loop was
-        # removed (batch jobs run as Argo CronWorkflows) and the Discord bot is
-        # patched out here, so those three leader-elected singletons are the
-        # whole set.
-        # 4 not 3: cd-probe (cluster) writes the platform_probe latch, see core/platform_probe.py
-        assert len(tasks_created) == 4
+        # Ships ingest, the agent_sessions pending-message sweep, title refresh,
+        # KG feed, and cd-probe are the five non-Discord singleton tasks.
+        assert len(tasks_created) == 5
         messages = [str(c) for c in mock_logger.info.call_args_list]
         assert not any("Message lock sweep started" in m for m in messages)
 

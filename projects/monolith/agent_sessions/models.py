@@ -83,6 +83,9 @@ class AgentSession(SQLModel, table=True):
     # newer turns land. The router falls back to the first prompt when unset.
     title: str | None = Field(default=None)
     title_turn_seq: int | None = Field(default=None)
+    # Highest turn sequence exported to the knowledge raw feed. A later turn
+    # makes a finished session eligible for another incremental export.
+    kg_extracted_turn_seq: int | None = Field(default=None)
 
 
 class AgentTurn(SQLModel, table=True):

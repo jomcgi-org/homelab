@@ -6,9 +6,7 @@ this module is imported so that we can test the "directory missing" code path.
 The StaticFiles conditional mount runs at module-import time in app/main.py.
 """
 
-import asyncio
 import os
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -187,10 +185,8 @@ def _lifespan_patches_no_discord():
 
 
 @pytest.mark.asyncio
-async def test_lifespan_creates_one_background_task_on_startup():
-    """Without discord, the leader creates a single task (ships ingest); the
-    scheduler dispatch loop was removed - batch jobs run as Argo CronWorkflows."""
-    from app.main import lifespan
+async def test_lifespan_creates_background_tasks_on_startup():
+    """Without Discord, the leader creates the service background tasks."""
 
     created_tasks = []
 
@@ -206,15 +202,13 @@ async def test_lifespan_creates_one_background_task_on_startup():
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             await _start_singletons(app)
 
-    assert (
-        len(created_tasks) == 4
-    )  # ships + agent_sessions sweep + title refresh + cd probe
+    # ships + agent_sessions sweep + title refresh + KG feed + cd probe
+    assert len(created_tasks) == 5
 
 
 @pytest.mark.asyncio
 async def test_lifespan_cancels_all_tasks_on_shutdown():
     """Background task is cancelled when the lifespan context exits."""
-    from app.main import lifespan
 
     mock_tasks = []
 
@@ -231,9 +225,8 @@ async def test_lifespan_cancels_all_tasks_on_shutdown():
             await _start_singletons(app)
             await _stop_singletons(app)
 
-    assert (
-        len(mock_tasks) == 4
-    )  # ships + agent_sessions sweep + title refresh + cd probe
+    # ships + agent_sessions sweep + title refresh + KG feed + cd probe
+    assert len(mock_tasks) == 5
     for task in mock_tasks:
         task.cancel.assert_called_once()
 
@@ -241,7 +234,6 @@ async def test_lifespan_cancels_all_tasks_on_shutdown():
 @pytest.mark.asyncio
 async def test_lifespan_no_tasks_cancelled_before_shutdown():
     """Tasks are created but not cancelled until the lifespan context manager exits."""
-    from app.main import lifespan
 
     mock_tasks = []
 
@@ -256,9 +248,8 @@ async def test_lifespan_no_tasks_cancelled_before_shutdown():
     with patch("asyncio.create_task", side_effect=capture_create_task):
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             await _start_singletons(app)
-            assert (
-                len(mock_tasks) == 4
-            )  # ships + agent_sessions sweep + title refresh + cd probe
+            # ships + agent_sessions sweep + title refresh + KG feed + cd probe
+            assert len(mock_tasks) == 5
             for task in mock_tasks:
                 task.cancel.assert_not_called()
             await _stop_singletons(app)
@@ -451,7 +442,6 @@ async def test_lifespan_registers_done_callback_on_bot_task_when_token_set():
 @pytest.mark.asyncio
 async def test_lifespan_logs_discord_bot_starting_when_token_set():
     """When DISCORD_BOT_TOKEN is set, 'Discord bot starting' is logged."""
-    from app.main import lifespan
 
     mock_bot = MagicMock()
     mock_bot.close = AsyncMock()
@@ -484,10 +474,8 @@ async def test_lifespan_logs_discord_bot_starting_when_token_set():
 
 
 @pytest.mark.asyncio
-async def test_lifespan_creates_four_tasks_when_discord_token_set():
-    """When DISCORD_BOT_TOKEN is set, the leader creates four tasks (bot, outbox
-    drain, ships ingest, sweep). The scheduler dispatch loop was removed."""
-    from app.main import lifespan
+async def test_lifespan_creates_discord_and_service_tasks_when_token_set():
+    """A Discord token adds the bot, outbox, and lock sweep tasks."""
 
     mock_bot = MagicMock()
     mock_bot.close = AsyncMock()
@@ -516,9 +504,8 @@ async def test_lifespan_creates_four_tasks_when_discord_token_set():
             ):
                 await _start_singletons(app)
 
-    assert (
-        len(created_tasks) == 7
-    )  # bot + outbox + ships + agent_sessions + lock sweeps + title refresh
+    # bot + outbox + ships + agent_sessions + lock sweeps + title + KG feed
+    assert len(created_tasks) == 8
 
 
 @pytest.mark.asyncio

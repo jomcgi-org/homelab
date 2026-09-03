@@ -101,10 +101,8 @@ class TestSingletonBotClose:
         mock_bot.close.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_start_singletons_creates_four_tasks(self):
-        """The leader starts bot + outbox drain + ships ingest + agent_sessions sweep + lock sweep = 5 tasks
-        (the scheduler dispatch loop was removed - jobs run as Argo
-        CronWorkflows)."""
+    async def test_start_singletons_creates_expected_tasks(self):
+        """The leader starts the expected Discord and service loops."""
         tasks, capture = _make_task_capturer()
 
         mock_bot = MagicMock()
@@ -126,9 +124,8 @@ class TestSingletonBotClose:
         ):
             await _start_singletons(app)
 
-        assert (
-            len(tasks) == 7
-        )  # bot + outbox + ships + agent_sessions + lock sweeps + title refresh
+        # bot + outbox + ships + agent_sessions + lock sweeps + title + KG feed
+        assert len(tasks) == 8
 
 
 # ---------------------------------------------------------------------------

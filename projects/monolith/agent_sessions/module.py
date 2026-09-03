@@ -14,11 +14,16 @@ def _register_mcp() -> None:
 
 
 async def _leader_start(app):
-    """Start the leader-owned pending-message sweep and title refresh."""
+    """Start leader-owned agent session maintenance loops."""
+    from agent_sessions.kg_feed import start_kg_feed_loop
     from agent_sessions.mcp import start_pending_message_sweep
     from agent_sessions.titles import start_title_refresh_loop
 
-    return start_pending_message_sweep() + start_title_refresh_loop()
+    return (
+        start_pending_message_sweep()
+        + start_title_refresh_loop()
+        + start_kg_feed_loop()
+    )
 
 
 MODULE = _Module(
