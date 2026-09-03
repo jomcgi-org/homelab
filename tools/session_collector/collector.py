@@ -14,6 +14,7 @@ import httpx
 from tools.cli.auth import read_cached_cf_token
 
 from . import claude_v1, codex_v1
+from .base_url import DEFAULT_BASE_URL, resolve_auth_mode
 from .models import Session
 from .render import RenderedSession, render
 from .scope import allowed_scope, discover_repo, reset_worktree_cache
@@ -112,7 +113,8 @@ def run_collection(
     path_allowlist: dict[Path, str] | None = None,
     quiet_minutes: float = 30,
     max_uploads: int = 20,
-    base_url: str = "https://private.jomcgi.dev",
+    base_url: str = DEFAULT_BASE_URL,
+    auth: str = "auto",
     dry_run: bool = False,
     client: httpx.Client | None = None,
     token_reader: Callable[[str], str | None] | None = None,
@@ -130,6 +132,7 @@ def run_collection(
             quiet_minutes=quiet_minutes,
             max_uploads=max_uploads,
             base_url=base_url,
+            auth=auth,
             dry_run=dry_run,
             client=client,
             token_reader=token_reader,
@@ -147,6 +150,7 @@ def _run_collection_locked(
     quiet_minutes: float,
     max_uploads: int,
     base_url: str,
+    auth: str,
     dry_run: bool,
     client: httpx.Client | None,
     token_reader: Callable[[str], str | None] | None,
@@ -160,6 +164,7 @@ def _run_collection_locked(
     ]
     token: str | None = None
     token_checked = False
+    auth_mode = resolve_auth_mode(auth, base_url)
     owned_client = client is None
     if client is None:
         client = httpx.Client(timeout=60, follow_redirects=False)
@@ -199,7 +204,7 @@ def _run_collection_locked(
                 if dry_run:
                     print(f"would upload {path} redactions={rendered.redactions}")
                     continue
-                if not token_checked:
+                if auth_mode == "cloudflare" and not token_checked:
                     hostname = urlparse(base_url).hostname or "private.jomcgi.dev"
                     reader = token_reader or read_cached_cf_token
                     token = reader(hostname)
@@ -207,12 +212,30 @@ def _run_collection_locked(
                     if not token:
                         print(TOKEN_MESSAGE, file=sys.stderr)
                         return 0
-                result = upload_raw(
-                    client,
-                    base_url,
-                    token or "",
-                    _payload(session, rendered, path.stat().st_size),
-                )
+                try:
+                    result = upload_raw(
+                        client,
+                        base_url,
+                        token,
+                        _payload(session, rendered, path.stat().st_size),
+                        cloudflare=auth_mode == "cloudflare",
+                    )
+                except httpx.RequestError:
+                    if auth_mode != "none":
+                        raise
+                    reason = "unreachable"
+                    state_value[key] = _entry(
+                        path,
+                        session,
+                        repo,
+                        "failed",
+                        reason,
+                        None,
+                        _next_failure_count(path, state_value.get(key)),
+                    )
+                    save(state_file, state_value)
+                    print(f"failed {path}: {reason}", file=sys.stderr)
+                    continue
                 if result.status == "expired":
                     print(TOKEN_MESSAGE, file=sys.stderr)
                     return 0
@@ -222,7 +245,11 @@ def _run_collection_locked(
                     )
                     print(f"uploaded {path}: {result.raw_id}", file=sys.stderr)
                 else:
-                    reason = f"HTTP {result.status_code}"
+                    reason = (
+                        "unauthorized"
+                        if auth_mode == "none" and result.status_code in {401, 403}
+                        else f"HTTP {result.status_code}"
+                    )
                     state_value[key] = _entry(
                         path,
                         session,

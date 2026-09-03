@@ -16,12 +16,18 @@ class UploadResult:
 
 
 def upload_raw(
-    client: httpx.Client, base_url: str, token: str, payload: dict[str, object]
+    client: httpx.Client,
+    base_url: str,
+    token: str | None,
+    payload: dict[str, object],
+    *,
+    cloudflare: bool,
 ) -> UploadResult:
+    headers = {"Cookie": f"CF_Authorization={token}"} if cloudflare else None
     response = client.post(
         f"{base_url.rstrip('/')}/api/knowledge/raws",
         json=payload,
-        headers={"Cookie": f"CF_Authorization={token}"},
+        headers=headers,
     )
     if response.status_code in {200, 201}:
         try:
@@ -32,6 +38,8 @@ def upload_raw(
         return UploadResult(
             "uploaded", raw_id, bool(data.get("created")), response.status_code
         )
-    if response.status_code in {401, 403} or 300 <= response.status_code < 400:
+    if cloudflare and (
+        response.status_code in {401, 403} or 300 <= response.status_code < 400
+    ):
         return UploadResult("expired", status_code=response.status_code)
     return UploadResult("failed", status_code=response.status_code)

@@ -7,6 +7,7 @@ py_library(
     name = "session_collector",
     srcs = [
         "__init__.py",
+        "base_url.py",
         "claude_v1.py",
         "cli.py",
         "codex_v1.py",
@@ -43,6 +44,16 @@ py_test(
     ],
     imports = ["../.."],
     deps = [":session_collector"],
+)
+
+py_test(
+    name = "base_url_test",
+    srcs = ["base_url_test.py"],
+    imports = ["../.."],
+    deps = [
+        ":session_collector",
+        "@pip//pytest",
+    ],
 )
 
 py_test(
