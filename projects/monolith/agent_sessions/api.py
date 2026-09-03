@@ -13,6 +13,7 @@ from agent_sessions import model_family, normalize_model, store
 from agent_sessions.codex_login import codex_login_gate, watch_for_login
 from agent_sessions.constants import SYNTHETIC_SESSION_PREFIX
 from agent_sessions.mcp import (
+    _activate_session_after_enqueue,
     _append_rationale_trailer,
     _claim_pending_message_sync,
     _clear_ember_bindings_for,
@@ -29,6 +30,7 @@ from agent_sessions.mcp import (
     _schedule_next_message,
     _set_session_status,
     _transport,
+    recover_zombie_session_if_needed,
 )
 from agent_sessions.transport import EmberSessionGone
 from core.db import get_engine
@@ -355,7 +357,28 @@ async def send_to_thread_session(thread_id: str, message: str) -> dict | None:
     # against a session whose CLI transcript belongs to codex and died with
     # "claude exited before init / No conversation found with session ID".
     # Every follow-up turn must stay inside the family the session pinned.
-    turn = await asyncio.to_thread(_persist_pending_message, session_id, message, model)
+    try:
+        await recover_zombie_session_if_needed(session_id)
+    except Exception:  # noqa: BLE001 - recovery cannot reject or lose a send
+        logger.exception("Recovery check failed for session %s", session_id)
+    try:
+        turn = await asyncio.to_thread(
+            _persist_pending_message, session_id, message, model
+        )
+    except Exception:  # noqa: BLE001 - send gates return structured failures
+        logger.exception("Could not persist message for session %s", session_id)
+        return {
+            "accepted": False,
+            "error": "Could not queue message",
+            "session_id": session_id,
+        }
+    try:
+        activated = await asyncio.to_thread(_activate_session_after_enqueue, session_id)
+    except Exception:  # noqa: BLE001 - the durable queue remains the backstop
+        logger.exception("Could not activate queued session %s", session_id)
+        activated = False
+    if not activated:
+        return {"action": "queued", "session_id": session_id, "turn": turn}
     login = await codex_login_gate(model)
     if login is not None:
         await asyncio.to_thread(_set_session_status, session_id, "awaiting_login")
@@ -366,7 +389,6 @@ async def send_to_thread_session(thread_id: str, message: str) -> dict | None:
 
         watch_for_login(login.get("grant", "codex-cluster"), resume)
         return login
-    await asyncio.to_thread(_set_session_status, session_id, "running")
     _schedule_next_message(session_id)
     return {"action": "queued", "session_id": session_id, "turn": turn}
 

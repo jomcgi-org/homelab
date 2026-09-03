@@ -56,7 +56,7 @@ _WORKLOAD_MEM_MIB = {"semgrep": 1536, "sandbox-python": 512}
 
 # Agent-session non-terminal states: an active agent run holds
 # node-4 capacity, so a load test must not run concurrently with one.
-_AGENT_BUSY_STATES = ("running",)
+_AGENT_BUSY_STATES = ("running", "recovering")
 
 # Only a running row this recent counts as a live run. A crashed session can
 # leave a running tombstone; without this bound one orphan would block

@@ -73,6 +73,20 @@ describe("inbox groups", () => {
     ]);
   });
 
+  test("keeps recovering sessions in the running group", () => {
+    const groups = inboxGroups(
+      [],
+      [
+        session("session-recovering", "2026-08-21T12:00:00Z", {
+          status: "recovering",
+        }),
+      ],
+      {},
+    );
+
+    expect(groups.running.map(({ id }) => id)).toEqual(["session-recovering"]);
+  });
+
   test("keeps attention rows out of running and omits run-owned sessions", () => {
     const needsRun = run("run-needs", "2026-08-21T12:00:00Z", {
       needs: { kind: "human" },

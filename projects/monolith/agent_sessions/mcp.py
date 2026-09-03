@@ -8,6 +8,7 @@ import os
 import platform
 import re
 import secrets
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from sqlalchemy.exc import IntegrityError
@@ -30,6 +31,8 @@ from agent_sessions.transport import (
 from core.db import get_engine
 from core.github import GITHUB_REPO
 from core.mcp_app import mcp
+from faas.embervm_client import EmberVMTransportError
+from framework import log_task_exception
 from goosecracker.api import REPO_CATALOG
 from agent_sessions.rationale import parse_rationale
 from auth.api import Authority, current_principal
@@ -45,13 +48,16 @@ from auth.api import Authority, current_principal
 # mirror over http, which is what makes this default cheap rather than merely
 # convenient.
 DEFAULT_AGENT_REPO = GITHUB_REPO
-from faas.embervm_client import EmberVMTransportError
-from framework import log_task_exception
 
 _transport = EmberVmShimTransport()
 _sweep_task: asyncio.Task | None = None
 _REPLICA_ID = platform.node()
 logger = logging.getLogger(__name__)
+
+# A first turn normally claims its pending row within seconds. Three minutes
+# leaves ample room for broker and scheduler jitter while bounding how long a
+# session can remain behind a workflow owned by a dead application version.
+ZOMBIE_SESSION_THRESHOLD_SECONDS = 180
 
 # Messages queued by the /agents UI, so their terminal Discord post can be
 # suppressed: someone watching the UI is already looking at the result and does
@@ -102,6 +108,11 @@ def _load_session_row(session_id: int) -> AgentSession | None:
 def _set_session_status(session_id: int, status: str) -> None:
     with Session(get_engine()) as db_session:
         store.update_session_status(db_session, session_id, status)
+
+
+def _activate_session_after_enqueue(session_id: int) -> bool:
+    with Session(get_engine()) as db_session:
+        return store.activate_session_after_enqueue(db_session, session_id)
 
 
 def _ember_session(row: AgentSession) -> EmberSession | None:
@@ -357,6 +368,25 @@ def _get_all_pending_messages_sync():
     return store.get_all_pending_messages_sync()
 
 
+def _find_zombie_session_ids_sync(
+    cutoff: datetime, now: datetime, limit: int = 5
+) -> list[int]:
+    with Session(get_engine()) as db_session:
+        return store.find_zombie_session_ids(db_session, cutoff, now, limit)
+
+
+def _claim_zombie_session_recovery_sync(
+    session_id: int, cutoff: datetime, now: datetime
+) -> dict | None:
+    with Session(get_engine()) as db_session:
+        return store.claim_zombie_session_recovery(db_session, session_id, cutoff, now)
+
+
+def _finalize_zombie_session_recovery_sync(claim: dict, now: datetime) -> int | None:
+    with Session(get_engine()) as db_session:
+        return store.finalize_zombie_session_recovery(db_session, claim, now)
+
+
 def _reclaim_stale_claims_sync():
     """Reclaim messages whose claims have expired (replica crashed or hung)."""
     return store.reclaim_stale_claims_sync()
@@ -603,6 +633,80 @@ async def _execute_pending_message(session_id: int) -> None:
         )
 
 
+async def recover_zombie_session_if_needed(
+    session_id: int, *, now: datetime | None = None
+) -> dict | None:
+    """Recover one old first-turn session if this pod wins its CAS."""
+    recovery_now = now or datetime.now(timezone.utc)
+    cutoff = recovery_now - timedelta(seconds=ZOMBIE_SESSION_THRESHOLD_SECONDS)
+    claim = await asyncio.to_thread(
+        _claim_zombie_session_recovery_sync, session_id, cutoff, recovery_now
+    )
+    if claim is None:
+        return None
+
+    ember_session_id = claim["ember_session_id"]
+    if ember_session_id:
+        try:
+            await _transport.destroy_session(ember_session_id)
+        except Exception:  # noqa: BLE001 - binding clear is the recovery backstop
+            # A dead or unreachable application version commonly leaves a
+            # control-plane id that is already gone. The durable binding must
+            # still be cleared so the retry can create or restore a guest.
+            logger.warning(
+                "Could not destroy zombie EmberVM session %s; clearing its binding",
+                ember_session_id,
+                exc_info=True,
+            )
+        await asyncio.to_thread(_clear_ember_bindings_for, ember_session_id)
+
+    retry_seq = await asyncio.to_thread(
+        _finalize_zombie_session_recovery_sync,
+        claim,
+        datetime.now(timezone.utc),
+    )
+    if retry_seq is None:
+        logger.warning(
+            "Zombie recovery lost ownership for session %s turn %s",
+            session_id,
+            claim["turn_seq"],
+        )
+        return None
+    logger.warning(
+        "Recovered zombie session %s turn %s in place (workspace_loss=%s)",
+        session_id,
+        claim["turn_seq"],
+        claim["recovery_workspace_loss"],
+    )
+    # Discord echo is accepted: the recovered turn's process-local UI mark died with its pod.
+    _schedule_next_message(session_id)
+    return {**claim, "retry_seq": retry_seq}
+
+
+async def _reconcile_zombie_sessions() -> int:
+    """Recover a bounded batch of eligible first-turn lane heads.
+
+    A claim that keeps heartbeating while the guest is never invoked is out of
+    scope here and tracked as #5601. Recovery runs at most once per session,
+    deliberately, until #5601 supplies the dispatch count needed to retry it.
+    """
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=ZOMBIE_SESSION_THRESHOLD_SECONDS)
+    session_ids = await asyncio.to_thread(_find_zombie_session_ids_sync, cutoff, now, 5)
+    if not session_ids:
+        return 0
+    recovered = 0
+    for session_id in session_ids:
+        try:
+            result = await recover_zombie_session_if_needed(session_id, now=now)
+        except Exception as exc:  # noqa: BLE001 - one recovery must not stop the sweep
+            logger.error("Zombie recovery failed for session %s: %s", session_id, exc)
+            continue
+        if result is not None:
+            recovered += 1
+    return recovered
+
+
 async def _sweep_orphaned_pending_messages() -> None:
     """Pick up pending messages left behind by a crash or restart.
 
@@ -612,6 +716,9 @@ async def _sweep_orphaned_pending_messages() -> None:
     2. Execute any pending messages that are not yet claimed.
     """
     while True:
+        recovered = await _reconcile_zombie_sessions()
+        if recovered > 0:
+            logger.warning("Recovered %d zombie agent sessions", recovered)
         await asyncio.sleep(5)
         # Reclaim stale claims from crashed replicas
         reclaimed = await asyncio.to_thread(_reclaim_stale_claims_sync)
@@ -901,11 +1008,28 @@ async def monolith_agent_session_send(
             ),
         }
     effective_model = requested_model or session_model
-    turn = await asyncio.to_thread(
-        _persist_pending_message, session_id, message, effective_model
-    )
-    await asyncio.to_thread(_set_session_status, session_id, "running")
-    _schedule_next_message(session_id)
+    try:
+        await recover_zombie_session_if_needed(session_id)
+    except Exception:  # noqa: BLE001 - recovery cannot reject or lose a send
+        logger.exception("Recovery check failed for session %s", session_id)
+    try:
+        turn = await asyncio.to_thread(
+            _persist_pending_message, session_id, message, effective_model
+        )
+    except Exception:  # noqa: BLE001 - MCP gates return structured failures
+        logger.exception("Could not persist message for session %s", session_id)
+        return {
+            "accepted": False,
+            "error": "Could not queue message",
+            "session_id": session_id,
+        }
+    try:
+        activated = await asyncio.to_thread(_activate_session_after_enqueue, session_id)
+    except Exception:  # noqa: BLE001 - the durable queue remains the backstop
+        logger.exception("Could not activate queued session %s", session_id)
+        activated = False
+    if activated:
+        _schedule_next_message(session_id)
     return {"accepted": True, "session_id": session_id, "turn": turn}
 
 

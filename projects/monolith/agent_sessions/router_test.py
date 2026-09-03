@@ -897,6 +897,9 @@ def test_get_session_detail(client, session):
     assert body["session"]["title"] == "one"
     assert [turn["seq"] for turn in body["turns"]] == [1, 2]
     assert body["turns"][1]["usage"] == {"activities": ["shell"]}
+    assert "workspace_recovery" not in body["turns"][1]
+    assert "repo_had_uncommitted_files" not in body["turns"][1]
+    assert body["session"]["recovery_workspace_loss"] is None
     assert body["pending_queue"][0]["prompt"] == "next"
     assert body["pending_queue"][0]["partial_text"] == "in progress"
     assert body["pending_queue"][0]["partial_activities"] == [
@@ -912,6 +915,24 @@ def test_get_session_detail(client, session):
 def test_get_session_detail_rejects_negative_after_seq(client, session):
     row = _session(session, "after-seq")
     assert client.get(f"/api/agents/sessions/{row.id}?after_seq=-1").status_code == 422
+
+
+def test_recovery_workspace_loss_is_surfaced_only_while_recovering(client, session):
+    row = _session(
+        session,
+        "recovery-status",
+        status="recovering",
+        recovery_workspace_loss=True,
+    )
+
+    recovering = client.get(f"/api/agents/sessions/{row.id}").json()["session"]
+    assert recovering["recovery_workspace_loss"] is True
+
+    row.status = "running"
+    session.add(row)
+    session.commit()
+    running = client.get(f"/api/agents/sessions/{row.id}").json()["session"]
+    assert running["recovery_workspace_loss"] is None
 
 
 def test_get_session_not_found(client):
@@ -1176,12 +1197,27 @@ def test_start_session_model_validation(client):
 
 def test_send_message_happy_path(client, session, monkeypatch):
     row = _session(session, "send", status="completed")
+    calls = []
+
+    async def recover(session_id):
+        calls.append(("recover", session_id))
+
+    def persist(session_id, prompt, model):
+        calls.append(("persist", session_id))
+        return store.create_pending_message(session, session_id, prompt, model).seq
+
+    def activate(session_id):
+        calls.append(("activate", session_id))
+        return store.activate_session_after_enqueue(session, session_id)
+
     monkeypatch.setattr("agent_sessions.router._load_session_row", lambda _: row)
     monkeypatch.setattr(
-        "agent_sessions.router._persist_pending_message",
-        lambda session_id, prompt, model: (
-            store.create_pending_message(session, session_id, prompt, model).seq
-        ),
+        "agent_sessions.router.mcp.recover_zombie_session_if_needed", recover
+    )
+    monkeypatch.setattr("agent_sessions.router._persist_pending_message", persist)
+    monkeypatch.setattr(
+        "agent_sessions.router._activate_session_after_enqueue",
+        activate,
     )
     monkeypatch.setattr(
         "agent_sessions.router._set_session_status",
@@ -1195,7 +1231,59 @@ def test_send_message_happy_path(client, session, monkeypatch):
         f"/api/agents/sessions/{row.id}/messages", json={"prompt": "follow up"}
     ).json()
     assert body == {"accepted": True, "session_id": row.id, "turn": 1}
+    assert calls == [
+        ("recover", row.id),
+        ("persist", row.id),
+        ("activate", row.id),
+    ]
     assert session.get(AgentSession, row.id).status == "running"
+
+
+def test_send_during_another_pods_recovery_queues_without_waiting(
+    client, session, monkeypatch
+):
+    now = datetime.now(timezone.utc)
+    row = _session(
+        session,
+        "send-during-recovery",
+        status="recovering",
+        model="luna",
+        recovery_workspace_loss=True,
+    )
+    session.add(
+        PendingMessage(
+            session_id=row.id,
+            seq=1,
+            message_text="recover me first",
+            created_at=now - timedelta(seconds=181),
+        )
+    )
+    session.commit()
+    engine = session.get_bind()
+    scheduled = []
+    mcp._ui_originated.clear()
+    monkeypatch.setattr(mcp, "get_engine", lambda: engine)
+    monkeypatch.setattr(store, "get_engine", lambda: engine)
+    monkeypatch.setattr(agent_router, "_schedule_next_message", scheduled.append)
+
+    body = client.post(
+        f"/api/agents/sessions/{row.id}/messages",
+        json={"prompt": "queued behind recovery"},
+    ).json()
+
+    assert body == {"accepted": True, "session_id": row.id, "turn": 2}
+    pending = session.exec(
+        select(PendingMessage)
+        .where(PendingMessage.session_id == row.id)
+        .order_by(PendingMessage.seq)
+    ).all()
+    assert [message.message_text for message in pending] == [
+        "recover me first",
+        "queued behind recovery",
+    ]
+    assert store.get_session(session, row.id).status == "recovering"
+    assert scheduled == []
+    mcp._ui_originated.clear()
 
 
 def test_send_message_model_family_mismatch(client, session, monkeypatch):
@@ -1207,6 +1295,34 @@ def test_send_message_model_family_mismatch(client, session, monkeypatch):
     ).json()
     assert body["accepted"] is False
     assert "Model family mismatch" in body["error"]
+
+
+def test_send_message_persistence_failure_returns_structured_rejection(
+    client, session, monkeypatch
+):
+    row = _session(session, "send-persist-failure", status="completed")
+
+    async def no_recovery(_session_id):
+        return None
+
+    def fail_persist(_session_id, _prompt, _model):
+        raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr(agent_router, "_load_session_row", lambda _: row)
+    monkeypatch.setattr(
+        agent_router.mcp, "recover_zombie_session_if_needed", no_recovery
+    )
+    monkeypatch.setattr(agent_router, "_persist_pending_message", fail_persist)
+
+    body = client.post(
+        f"/api/agents/sessions/{row.id}/messages", json={"prompt": "keep me"}
+    ).json()
+
+    assert body == {
+        "accepted": False,
+        "error": "Could not queue message",
+        "session_id": row.id,
+    }
 
 
 @pytest.mark.asyncio
@@ -1326,6 +1442,13 @@ def test_send_message_gates_on_effective_model(client, session, monkeypatch):
         return None
 
     monkeypatch.setattr("agent_sessions.router._load_session_row", lambda _: row)
+    monkeypatch.setattr(
+        "agent_sessions.router.mcp.recover_zombie_session_if_needed",
+        lambda _session_id: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        "agent_sessions.router._activate_session_after_enqueue", lambda _: True
+    )
     monkeypatch.setattr("agent_sessions.router.codex_login_gate", fake_gate)
     monkeypatch.setattr(
         "agent_sessions.router._persist_pending_message",
@@ -1472,6 +1595,13 @@ def test_send_message_login_required_persists_and_watches(client, session, monke
         }
 
     monkeypatch.setattr("agent_sessions.router._load_session_row", lambda _: row)
+    monkeypatch.setattr(
+        "agent_sessions.router.mcp.recover_zombie_session_if_needed",
+        lambda _session_id: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        "agent_sessions.router._activate_session_after_enqueue", lambda _: True
+    )
     monkeypatch.setattr("agent_sessions.router.codex_login_gate", fake_gate)
     monkeypatch.setattr(
         "agent_sessions.router._persist_pending_message",
@@ -1828,6 +1958,10 @@ def test_send_to_thread_session_queues_without_broker_for_non_codex(
     monkeypatch.setattr(api, "session_id_for_thread", lambda _: row.id)
     monkeypatch.setattr(api, "_load_session_row", lambda _: row)
     monkeypatch.setattr(
+        api, "recover_zombie_session_if_needed", lambda _: asyncio.sleep(0)
+    )
+    monkeypatch.setattr(api, "_activate_session_after_enqueue", lambda _: True)
+    monkeypatch.setattr(
         api,
         "_persist_pending_message",
         lambda session_id, prompt, model: (
@@ -1866,6 +2000,10 @@ def test_send_to_thread_session_login_required_persists_and_watches(
 
     monkeypatch.setattr(api, "session_id_for_thread", lambda _: row.id)
     monkeypatch.setattr(api, "_load_session_row", lambda _: row)
+    monkeypatch.setattr(
+        api, "recover_zombie_session_if_needed", lambda _: asyncio.sleep(0)
+    )
+    monkeypatch.setattr(api, "_activate_session_after_enqueue", lambda _: True)
     monkeypatch.setattr(api, "codex_login_gate", fake_gate)
     monkeypatch.setattr(
         api,
@@ -1907,6 +2045,13 @@ def test_send_message_marks_message_ui_originated(client, session, monkeypatch):
     mcp._ui_originated.clear()
     row = _session(session, "send-ui", status="completed")
     monkeypatch.setattr("agent_sessions.router._load_session_row", lambda _: row)
+    monkeypatch.setattr(
+        "agent_sessions.router.mcp.recover_zombie_session_if_needed",
+        lambda _session_id: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        "agent_sessions.router._activate_session_after_enqueue", lambda _: True
+    )
     monkeypatch.setattr(
         "agent_sessions.router._persist_pending_message",
         lambda session_id, prompt, model: (

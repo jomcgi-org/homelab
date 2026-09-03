@@ -7,8 +7,9 @@ import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, text, update
+from sqlalchemy import and_, exists, func, text, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from agent_sessions.constants import (
@@ -28,6 +29,7 @@ from core.db import get_engine
 logger = logging.getLogger(__name__)
 
 _UNSET = object()
+RECLAIM_LEASE = timedelta(seconds=30)
 
 
 def create_voice_ui_companion(
@@ -377,6 +379,156 @@ def create_turn(
     return row
 
 
+def _no_live_pending_claim(session_id_column, now: datetime):
+    """Return the shared lane invariant excluding a live executor claim."""
+    claimed = aliased(PendingMessage)
+    live_claim_cutoff = now - RECLAIM_LEASE
+    return ~exists().where(
+        claimed.session_id == session_id_column,
+        claimed.claimed_by_replica.isnot(None),
+        claimed.claimed_at.isnot(None),
+        claimed.claimed_at > live_claim_cutoff,
+    )
+
+
+def _lane_head_id(session_id_column):
+    pending = aliased(PendingMessage)
+    return (
+        select(pending.id)
+        .where(pending.session_id == session_id_column)
+        .order_by(pending.seq)
+        .limit(1)
+        .correlate(AgentSession)
+        .scalar_subquery()
+    )
+
+
+def _recovery_candidate_predicate(cutoff: datetime, now: datetime):
+    # A heartbeating claim whose guest was never invoked is out of scope and
+    # tracked as #5601. The completed audit makes recovery deliberately one-shot
+    # until that issue adds dispatch counting.
+    head = aliased(PendingMessage)
+    turn_exists = exists().where(AgentTurn.session_id == AgentSession.id)
+    old_lane_head_exists = exists().where(
+        head.id == _lane_head_id(AgentSession.id),
+        head.created_at <= cutoff,
+    )
+    return and_(
+        AgentSession.status == "running",
+        AgentSession.recovery_completed_at.is_(None),
+        ~turn_exists,
+        old_lane_head_exists,
+        _no_live_pending_claim(AgentSession.id, now),
+    )
+
+
+def _recovery_workspace_loss(row: AgentSession, pending: PendingMessage) -> bool:
+    """Decide once, at claim time, whether recovery may lose workspace state."""
+    guest_may_have_run = bool(row.ember_session_id or pending.claimed_by_replica)
+    return row.repo is not None and guest_may_have_run
+
+
+def find_zombie_session_ids(
+    session: Session, cutoff: datetime, now: datetime, limit: int = 5
+) -> list[int]:
+    """Find a bounded batch of old, unexecuted running lane heads.
+
+    The hung-lane shape where a claim keeps heartbeating but the guest is never
+    invoked is out of scope and tracked as #5601. Recovery fires at most once
+    per session: recovery_completed_at is the session-level failed-recovered
+    audit, and that cap is deliberate until #5601 adds dispatch counting.
+    """
+    return list(
+        session.exec(
+            select(AgentSession.id)
+            .where(_recovery_candidate_predicate(cutoff, now))
+            .order_by(AgentSession.id)
+            .limit(limit)
+        ).all()
+    )
+
+
+def claim_zombie_session_recovery(
+    session: Session,
+    session_id: int,
+    cutoff: datetime,
+    now: datetime,
+) -> dict | None:
+    """CAS a first-turn zombie into a recovery lease.
+
+    The update predicate repeats the detection conditions. This makes the
+    status transition the cross-pod arbiter instead of relying on a preceding
+    read that can race another reconciler.
+    """
+    result = session.execute(
+        update(AgentSession)
+        .where(
+            AgentSession.id == session_id,
+            _recovery_candidate_predicate(cutoff, now),
+        )
+        .values(status="recovering", last_turn_at=now)
+    )
+    if result.rowcount != 1:
+        session.rollback()
+        return None
+
+    row = session.get(AgentSession, session_id, populate_existing=True)
+    pending = session.exec(
+        select(PendingMessage)
+        .where(PendingMessage.session_id == session_id)
+        .order_by(PendingMessage.seq)
+    ).first()
+    if row is None or pending is None:
+        # The lane head can disappear after the CAS predicate is evaluated.
+        # Revert in this transaction so no abandoned claim strands recovering.
+        session.execute(
+            update(AgentSession)
+            .where(
+                AgentSession.id == session_id,
+                AgentSession.status == "recovering",
+            )
+            .values(status="running", recovery_workspace_loss=None)
+        )
+        session.commit()
+        return None
+    recovery_workspace_loss = _recovery_workspace_loss(row, pending)
+    row.recovery_workspace_loss = recovery_workspace_loss
+    session.add(row)
+    session.commit()
+    return {
+        "session_id": session_id,
+        "turn_seq": pending.seq,
+        "message_text": pending.message_text,
+        "model": pending.model,
+        "ember_session_id": row.ember_session_id,
+        "recovery_workspace_loss": recovery_workspace_loss,
+    }
+
+
+def finalize_zombie_session_recovery(
+    session: Session, claim: dict, now: datetime
+) -> int | None:
+    """Release the original lane head in place after clearing its binding."""
+    session_id = claim["session_id"]
+    turn_seq = claim["turn_seq"]
+    row = session.get(AgentSession, session_id)
+    pending = get_pending_message(session, session_id, turn_seq)
+    if row is None or row.status != "recovering" or pending is None:
+        return None
+    if get_turn(session, session_id, turn_seq) is not None:
+        return None
+
+    pending.claimed_by_replica = None
+    pending.claimed_at = None
+    row.status = "running"
+    row.last_turn_at = now
+    row.recovery_workspace_loss = None
+    row.recovery_completed_at = now
+    session.add_all([row, pending])
+    session.commit()
+    return turn_seq
+
+
 def update_session_status(
     session: Session, session_id: int, status: str, voice_summary: str | None = None
 ) -> AgentSession:
@@ -391,6 +543,20 @@ def update_session_status(
     session.commit()
     session.refresh(row)
     return row
+
+
+def activate_session_after_enqueue(session: Session, session_id: int) -> bool:
+    """Set running unless recovery currently owns the session lane."""
+    result = session.execute(
+        update(AgentSession)
+        .where(
+            AgentSession.id == session_id,
+            AgentSession.status != "recovering",
+        )
+        .values(status="running", last_turn_at=datetime.now(timezone.utc))
+    )
+    session.commit()
+    return result.rowcount == 1
 
 
 def get_turns(session: Session, session_id: int) -> list[AgentTurn]:
@@ -810,7 +976,7 @@ def mark_turn_error_sync(session_id: int, turn_seq: int, error_msg: str) -> None
         session.commit()
 
 
-def reclaim_stale_claims_sync(lease_interval_seconds: int = 30) -> int:
+def reclaim_stale_claims_sync() -> int:
     """Reclaim pending messages whose claims have expired due to replica crash.
 
     A claim is considered stale if claimed_by_replica is not null and the
@@ -842,13 +1008,15 @@ def reclaim_stale_claims_sync(lease_interval_seconds: int = 30) -> int:
     with Session(get_engine()) as session:
         # Compute cutoff in Python, not as a SQL expression. SQLAlchemy cannot
         # reliably render timedelta subtraction across SQLite and Postgres dialects.
-        cutoff = datetime.now(timezone.utc) - timedelta(seconds=lease_interval_seconds)
+        now = datetime.now(timezone.utc)
+        cutoff = now - RECLAIM_LEASE
         result = session.execute(
             update(PendingMessage)
             .where(
                 PendingMessage.claimed_by_replica.isnot(None),
                 PendingMessage.claimed_at.isnot(None),
                 PendingMessage.claimed_at < cutoff,
+                _no_live_pending_claim(PendingMessage.session_id, now),
             )
             .values(claimed_by_replica=None, claimed_at=None)
         )
@@ -892,6 +1060,6 @@ def get_all_pending_messages_sync() -> list[PendingMessage]:
             session.exec(
                 select(PendingMessage)
                 .join(AgentSession, AgentSession.id == PendingMessage.session_id)
-                .where(AgentSession.status != "awaiting_login")
+                .where(AgentSession.status.notin_({"awaiting_login", "recovering"}))
             ).all()
         )

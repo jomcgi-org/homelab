@@ -91,7 +91,9 @@ export function inboxGroups(runs = [], sessions = [], vms = {}) {
           !item.value.needs &&
           !humanDecision(item.value),
       ),
-      ...sessionItems.filter((item) => item.value.status === "running"),
+      ...sessionItems.filter((item) =>
+        ["running", "recovering"].includes(item.value.status),
+      ),
     ].sort(newestFirst),
   };
 }

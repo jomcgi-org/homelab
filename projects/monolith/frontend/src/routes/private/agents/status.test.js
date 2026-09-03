@@ -8,6 +8,7 @@ test.each([
   [{ status: "warn" }, "warn", "warn"],
   [{ status: "needs_input" }, "needs input", "needs_input"],
   [{ status: "awaiting_login" }, "awaiting login", "awaiting_login"],
+  [{ status: "recovering" }, "recovering", "recovering"],
   [{ status: "unknown" }, "completed", "completed"],
   [null, "completed", "completed"],
 ])("maps %j to label %s and class %s", (session, label, className) => {

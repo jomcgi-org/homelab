@@ -326,7 +326,10 @@
   );
 
   function isActive(session) {
-    return session?.status === "running" || Number(session?.pending_count) > 0;
+    return (
+      ["running", "recovering"].includes(session?.status) ||
+      Number(session?.pending_count) > 0
+    );
   }
 
   function formatRepoContext(session) {
@@ -2190,7 +2193,7 @@
               {#if formatRepoContext(selectedSession)}
                 <span class="pill">{formatRepoContext(selectedSession)}</span>
               {/if}
-              {#if ["needs_input", "warn", "awaiting_login"].includes(statusClass(selectedSession))}
+              {#if ["needs_input", "warn", "awaiting_login", "recovering"].includes(statusClass(selectedSession))}
                 <span class={`pill state-pill ${statusClass(selectedSession)}`}
                   >{statusClass(selectedSession) === "awaiting_login"
                     ? P.labels.awaitingLogin
@@ -2247,6 +2250,13 @@
               </svg>
             </button>
           </header>
+          {#if statusClass(selectedSession) === "recovering"}
+            <div class="session-recovery-banner" role="status">
+              Agent recovering from an error.{#if selectedSession.recovery_workspace_loss}
+                Workspace state may have been lost.
+              {/if}
+            </div>
+          {/if}
           {#if sessionView === SESSION_VIEW_CONVERSATION}
             <Turns
               {detail}
@@ -3065,7 +3075,8 @@
     background: var(--ok);
   }
   .dot.needs_input,
-  .dot.awaiting_login {
+  .dot.awaiting_login,
+  .dot.recovering {
     background: var(--attn);
   }
   .dot.warn {
@@ -3252,8 +3263,18 @@
   .state-pill.awaiting_login {
     color: var(--attn-text);
   }
+  .state-pill.recovering {
+    color: var(--attn-text);
+  }
   .state-pill.warn {
     color: var(--err);
+  }
+  .session-recovery-banner {
+    padding: 10px 28px;
+    border-bottom: 1px solid var(--attn-soft);
+    color: var(--attn-text);
+    background: var(--attn-soft);
+    font: 500 12px var(--font-mono);
   }
   .vm-stream-dot {
     width: 6px;
