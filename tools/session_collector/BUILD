@@ -8,6 +8,7 @@ py_library(
     srcs = [
         "__init__.py",
         "claude_v1.py",
+        "cli.py",
         "codex_v1.py",
         "collector.py",
         "main.py",
@@ -21,7 +22,6 @@ py_library(
     imports = ["../.."],
     visibility = ["//:__subpackages__"],
     deps = [
-        ":session_collector_bin",
         "//tools/cli",
         "@pip//httpx",
     ],
@@ -69,7 +69,6 @@ py_test(
     imports = ["../.."],
     deps = [
         ":session_collector",
-        ":session_collector_bin",
     ],
 )
 
