@@ -60,6 +60,7 @@ async def index_parsed_note(
     title: str,
     meta: ParsedFrontmatter,
     authored_body: str,
+    commit: bool = True,
 ) -> None:
     """Chunk, embed, extract links, and upsert a non-gap note.
 
@@ -83,6 +84,7 @@ async def index_parsed_note(
         vectors=vectors,
         links=note_links,
         content=authored_body,
+        commit=commit,
     )
 
 
@@ -93,6 +95,7 @@ async def index_note_from_raw(
     note_id: str,
     rel_path: str,
     raw: str,
+    commit: bool = True,
 ) -> None:
     """Parse a raw markdown file and index it under ``note_id``.
 
@@ -114,6 +117,7 @@ async def index_note_from_raw(
         title=title,
         meta=meta,
         authored_body=authored_body,
+        commit=commit,
     )
 
 

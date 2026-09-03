@@ -111,10 +111,12 @@ agents:
     # the queue drains, and a REAL stall keeps it latched with no completions
     # moving.
     stallThresholdSeconds: 2700
-    # Keep claiming the legacy kind because routine jobs already registered in
-    # production carry it. The kind selects rows only; the drainer launches
-    # those jobs with the Luna model on the Codex runtime.
-    jobKind: "qwen-drain"
+    # Claim the existing general-purpose lane and the knowledge extraction lane.
+    # DRAINER_JOB_KIND remains wired to the first entry for one compatibility
+    # release while health and console readers move to the full list.
+    jobKinds: ["qwen-drain", "kg-drain"]
+    # Bound knowledge extraction turns independently of the general queue.
+    kgMaxJobsPerDay: 40
     repo: "jomcgi-org/homelab"
     branch: "main"
     # High reasoning for every Luna drain job unless the payload overrides it.

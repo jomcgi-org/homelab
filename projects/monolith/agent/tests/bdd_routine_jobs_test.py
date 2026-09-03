@@ -127,6 +127,23 @@ class TestClaimNextDue:
         assert claimed["name"] == "check-1"
         assert claimed["routine_kind"] == "check"
 
+    def test_filters_by_multiple_kinds(self, agent_db: Session):
+        now = _now_utc()
+        routine_jobs.register_job(
+            name="ignored", kind="other", next_run_at=now - timedelta(minutes=5)
+        )
+        routine_jobs.register_job(
+            name="kg", kind="kg-drain", next_run_at=now - timedelta(minutes=3)
+        )
+
+        claimed = routine_jobs.claim_job(
+            holder="r1", ttl_secs=60, kinds=["qwen-drain", "kg-drain"]
+        )
+
+        assert claimed is not None
+        assert claimed["name"] == "kg"
+        assert claimed["routine_kind"] == "kg-drain"
+
     def test_skips_live_locks_claims_expired(self, agent_db: Session):
         now = _now_utc()
         routine_jobs.register_job(
@@ -221,6 +238,19 @@ class TestTrigger:
         assert row["next_run_at"] < future - timedelta(hours=1)
         # And due (now or earlier).
         assert row["next_run_at"] <= _now_utc() + timedelta(seconds=5)
+
+    def test_defer_rearms_in_the_future_and_clears_lock(self, agent_db: Session):
+        routine_jobs.register_job(
+            name="deferred", kind="kg-drain", next_run_at=_now_utc()
+        )
+        assert routine_jobs.claim_job("holder", 60, name="deferred") is not None
+
+        assert routine_jobs.defer_job("deferred", 3600) is True
+
+        row = next(r for r in routine_jobs.list_jobs() if r["name"] == "deferred")
+        assert row["next_run_at"] > _now_utc() + timedelta(minutes=59)
+        assert row["locked_by"] is None
+        assert row["locked_at"] is None
 
 
 class TestDeregister:

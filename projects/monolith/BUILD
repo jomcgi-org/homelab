@@ -1355,6 +1355,7 @@ py_library(
         ":pkg_core",
         ":pkg_cyclegroup",
         ":pkg_framework",
+        ":pkg_knowledge",
         "@pip//certifi",
         "@pip//dbos",
         "@pip//fastapi",
@@ -4303,6 +4304,19 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_extraction_test",
+    srcs = ["knowledge/extraction_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pydantic",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_drain_console_test",
     srcs = ["swarm/drain_console_test.py"],
     imports = ["."],
@@ -6960,6 +6974,7 @@ bdd_test(
     srcs = [
         "knowledge/tests/__init__.py",
         "knowledge/tests/bdd_api_test.py",
+        "knowledge/tests/bdd_health_kg_test.py",
         "knowledge/tests/bdd_raws_test.py",
         "knowledge/tests/conftest.py",
     ],

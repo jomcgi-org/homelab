@@ -4,6 +4,7 @@ from __future__ import annotations
 # in-flight and historical drain sessions remain correlated after the Luna
 # runtime switch.
 DRAINER_NODE_KEY = "qwen-drain"
+KG_NODE_KEY = "kg-drain"
 
 # Retired synthetic sessions are not operator work, so console queries keep
 # using their origin marker and original prompt to hide existing database rows.

@@ -52,6 +52,11 @@ Cloudflare Pages frontends were decommissioned (ADR docs/002).
 
 ## Service Details
 
+The monolith drainer claims `kg-drain` routine jobs alongside `qwen-drain`
+jobs. Each `kg-drain` payload carries a `raw_id` for the selected knowledge raw
+input. After Luna completes the extraction turn, the monolith validates the
+result and writes the resulting atoms itself.
+
 For detailed information about specific services, see the README in each project directory:
 
 - `projects/<service>/README.md`

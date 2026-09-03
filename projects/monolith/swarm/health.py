@@ -41,14 +41,14 @@ def _result(lag_seconds: float, threshold_seconds: int) -> dict:
 
 
 def _drainer_health_core(
-    session: Session, job_kind: str, threshold_seconds: int
+    session: Session, job_kinds: tuple[str, ...] | list[str], threshold_seconds: int
 ) -> dict:
     """Compute claim lag using the routine-job claimability predicate."""
     sql = text(
         """
         SELECT EXTRACT(EPOCH FROM (now() - MIN(next_run_at))) AS lag_seconds
           FROM claude_agent.routine_jobs
-         WHERE routine_kind = :kind
+         WHERE routine_kind = ANY(:kinds)
            AND next_run_at IS NOT NULL
            AND next_run_at <= now()
            AND (
@@ -57,7 +57,7 @@ def _drainer_health_core(
            )
         """
     )
-    lag_seconds = session.execute(sql, {"kind": job_kind}).scalar_one_or_none()
+    lag_seconds = session.execute(sql, {"kinds": list(job_kinds)}).scalar_one_or_none()
     return _result(float(lag_seconds or 0.0), threshold_seconds)
 
 
@@ -66,7 +66,7 @@ def _read_drainer_health(settings: DrainerSettings) -> dict:
 
     with Session(get_engine()) as session:
         return _drainer_health_core(
-            session, settings.job_kind, settings.stall_threshold_seconds
+            session, settings.job_kinds, settings.stall_threshold_seconds
         )
 
 
