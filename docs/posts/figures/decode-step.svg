@@ -17,7 +17,7 @@
   <text x="278" y="148" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">exec</text>
   <rect x="48" y="118" width="210" height="40" fill="none" stroke="var(--tone-ram)" stroke-width="1.25"/>
   <text x="54" y="134" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">pinned banks</text>
-  <text x="54" y="148" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">40 GB</text>
+  <text x="54" y="148" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">26 GB</text>
   <rect x="48" y="172" width="210" height="34" fill="none" stroke="var(--tone-cache)" stroke-width="1.25" stroke-dasharray="4 3"/>
   <text x="54" y="192" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-cache)" text-anchor="start">page cache</text>
   <rect x="48" y="220" width="210" height="40" fill="none" stroke="var(--tone-disk)" stroke-width="1.25"/>
@@ -62,7 +62,7 @@
   <text x="628" y="148" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">exec</text>
   <rect x="398" y="118" width="210" height="40" fill="none" stroke="var(--tone-ram)" stroke-width="1.25"/>
   <text x="404" y="134" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">pinned banks</text>
-  <text x="404" y="148" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">40 GB</text>
+  <text x="404" y="148" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">26 GB</text>
   <rect x="398" y="172" width="210" height="34" fill="none" stroke="var(--tone-cache)" stroke-width="1.25" stroke-dasharray="4 3"/>
   <text x="404" y="192" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-cache)" text-anchor="start">page cache</text>
   <rect x="398" y="220" width="210" height="40" fill="none" stroke="var(--tone-disk)" stroke-width="1.25"/>
@@ -87,7 +87,7 @@
   <text x="278" y="464" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">exec</text>
   <rect x="48" y="434" width="210" height="40" fill="none" stroke="var(--tone-ram)" stroke-width="1.25"/>
   <text x="54" y="450" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">pinned banks</text>
-  <text x="54" y="464" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">40 GB</text>
+  <text x="54" y="464" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">26 GB</text>
   <rect x="48" y="488" width="210" height="34" fill="none" stroke="var(--tone-cache)" stroke-width="1.25" stroke-dasharray="4 3"/>
   <text x="54" y="508" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-cache)" text-anchor="start">page cache</text>
   <rect x="48" y="536" width="210" height="40" fill="none" stroke="var(--tone-disk)" stroke-width="1.25"/>
@@ -112,7 +112,7 @@
   <text x="628" y="464" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">exec</text>
   <rect x="398" y="434" width="210" height="40" fill="none" stroke="var(--tone-ram)" stroke-width="1.25"/>
   <text x="404" y="450" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">pinned banks</text>
-  <text x="404" y="464" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">40 GB</text>
+  <text x="404" y="464" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-ram)" text-anchor="start">26 GB</text>
   <rect x="398" y="488" width="210" height="34" fill="none" stroke="var(--tone-cache)" stroke-width="1.25" stroke-dasharray="4 3"/>
   <text x="404" y="508" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--tone-cache)" text-anchor="start">page cache</text>
   <rect x="398" y="536" width="210" height="40" fill="none" stroke="var(--tone-disk)" stroke-width="1.25"/>
