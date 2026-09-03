@@ -230,13 +230,43 @@ func run(logger *slog.Logger) error {
 		opts.SignStoreRequest = artStore.SignRequest
 	}
 	srv := server.New(opts)
+	// Bind liveness before disk adoption. A missing marker can wait indefinitely,
+	// but kubelet must see the process as live and unready while it does.
+	healthLis, err := net.Listen("tcp", cfg.HealthAddr)
+	if err != nil {
+		return fmt.Errorf("health listen: %w", err)
+	}
+	health := &http.Server{
+		Handler:           healthHandler(srv),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		logger.Info("health endpoint listening", "addr", cfg.HealthAddr)
+		if err := health.Serve(healthLis); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("health server failed", "err", err)
+		}
+	}()
+	defer health.Close()
+
 	// Cap the tap-prealloc pool (ADR embervm/014 decision 4) at the brick's
 	// configured live-VM backstop: pre-creating more taps than the daemon's runaway
 	// limit wastes boot-time netlink work. Must run before EnsureNetwork below.
 	servingNet.ClampTapPrealloc(srv.SlotCeiling())
 	// Report node-local base snapshots left by a prior incarnation so the control
-	// plane reconciles rather than rebuilding.
-	srv.ReconcileBasesFromDisk()
+	// plane reconciles rather than rebuilding. The chart's init gate normally
+	// makes this immediate; the loop is a cheap backstop for direct launches.
+	for {
+		if err := srv.ReconcileBasesFromDisk(); err == nil {
+			break
+		} else {
+			logBaseAdoptionRetry(logger, err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
 	// Called only at daemon startup, before any work begins.
 	srv.CleanupStagingDirs()
 	// Report node-local BANKED session snapshots left by a prior incarnation so the
@@ -342,19 +372,6 @@ func run(logger *slog.Logger) error {
 		srv.StartGroupActivator(ctx, groupActivatorListeners)
 	}
 
-	// Plain-HTTP /healthz for kubelet probes (a privileged single-replica pod does
-	// not warrant gRPC health-checking machinery).
-	health := &http.Server{
-		Addr:              cfg.HealthAddr,
-		Handler:           healthHandler(srv),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	go func() {
-		logger.Info("health endpoint listening", "addr", cfg.HealthAddr)
-		if err := health.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("health server failed", "err", err)
-		}
-	}()
 	go func() {
 		logger.Info("activator endpoint listening", "addr", cfg.ActivatorAddr)
 		if err := activatorHTTP.Serve(activatorLis); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -468,6 +485,14 @@ func newDriver(cfg config.Config, self string, x driverExtras) *driver.Driver {
 		VsockBindTarget: cfg.CanonicalVsockDir,
 		Self:            self,
 	}, nil)
+}
+
+func logBaseAdoptionRetry(logger *slog.Logger, err error) {
+	if errors.Is(err, server.ErrScratchGenerationUnavailable) {
+		logger.Warn("waiting for scratch generation before base adoption", "err", err)
+		return
+	}
+	logger.Error("base adoption scan failed; retrying", "err", err)
 }
 
 // healthHandler answers the kubelet probes. /healthz is LIVENESS: it is 200 as

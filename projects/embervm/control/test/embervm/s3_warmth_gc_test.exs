@@ -1,7 +1,8 @@
 defmodule Embervm.S3WarmthGcTest do
   use ExUnit.Case, async: true
 
-  alias Embervm.{NodeCapacity, S3Client, S3WarmthGc}
+  alias Embervm.{NodeCapacity, NodeRegistry, S3Client, S3WarmthGc}
+  alias Embervm.Node.V1.NodeStatus
 
   # Fixed clocks: the monotonic clock (uptime + NodeCapacity freshness) and the
   # wall clock (age gate against meta createdAtUnixMs) are injected so every
@@ -141,7 +142,14 @@ defmodule Embervm.S3WarmthGcTest do
             s3: s3_funs,
             sweep_interval_ms: 0,
             min_uptime_ms: 0,
-            expected_nodes: ["node-4"],
+            node_registry_fun: fn ->
+              %{
+                "node-4/pod" => %{
+                  configured_id: "node-4",
+                  pod_uid: "pod"
+                }
+              }
+            end,
             session_store: start_store([]),
             serving_store: start_store([]),
             clock: fn -> @mono end,
@@ -563,10 +571,105 @@ defmodule Embervm.S3WarmthGcTest do
   # -- sweep-level aborts ------------------------------------------------------
 
   describe "aborts" do
-    test "a missing expected node aborts the whole sweep before any list or delete" do
+    test "expired node tombstone aborts within grace, then replacement permits sweep" do
+      %{prefix: prefix, s3: s3, table: table, base_opts: base_opts} = orphan_fixture()
+      {:ok, clock} = Agent.start_link(fn -> @mono end)
+      clock_fun = fn -> Agent.get(clock, & &1) end
+
+      {:ok, registry} =
+        NodeRegistry.start_link(
+          name: nil,
+          table: table,
+          nodes: [],
+          watch_startup: false,
+          registry_resync_ms: 0,
+          clock: clock_fun,
+          unknown_after_ms: 5_000,
+          down_after_ms: 10_000,
+          down_expire_after_ms: 20_000,
+          expire_after_ms: 90_000,
+          tombstone_grace_ms: 100,
+          base_backoff_ms: 1_000_000,
+          max_backoff_ms: 1_000_000,
+          connect_fun: fn _ -> {:error, :offline} end,
+          channel_updater_fun: fn _, _ -> :ok end,
+          channel_remover_fun: fn _ -> :ok end,
+          base_builder_updater_fun: fn _ -> :ok end,
+          resident_health_fun: fn _, _, _, _ -> :ok end
+        )
+
+      on_exit(fn ->
+        Embervm.TestProcess.stop_safely(registry)
+        Embervm.TestProcess.stop_safely(clock)
+      end)
+
+      :ok =
+        NodeRegistry.register(registry, %{
+          "node" => "node-lost",
+          "pod_uid" => "pod-old",
+          "address" => "lost.test:9090",
+          "scratch_generation" => "generation-1"
+        })
+
+      :ok =
+        NodeRegistry.inject_status(registry, "node-lost/pod-old", %NodeStatus{
+          node_id: "node-lost",
+          scratch_generation: "generation-1"
+        })
+
+      Agent.update(clock, &(&1 + 20_000))
+      :ok = NodeRegistry.tick(registry)
+      assert Map.has_key?(NodeRegistry.expected_instances(registry), "node-lost/pod-old")
+
+      gc =
+        start_gc(
+          s3,
+          base_opts ++
+            [
+              enabled: false,
+              clock: clock_fun,
+              node_registry_fun: fn -> NodeRegistry.expected_instances(registry) end
+            ]
+        )
+
+      assert {:error, :fleet_stale} = S3WarmthGc.sweep_now(gc)
+
+      Agent.update(clock, &(&1 + 100))
+
+      :ok =
+        NodeRegistry.register(registry, %{
+          "node" => "node-lost",
+          "pod_uid" => "pod-new",
+          "address" => "replacement.test:9090",
+          "scratch_generation" => "generation-2"
+        })
+
+      :ok =
+        NodeRegistry.inject_status(registry, "node-lost/pod-new", %NodeStatus{
+          node_id: "node-lost",
+          scratch_generation: "generation-2"
+        })
+
+      refute Map.has_key?(NodeRegistry.expected_instances(registry), "node-lost/pod-old")
+      assert {:ok, %{plan: [%{prefix: ^prefix}]}} = S3WarmthGc.sweep_now(gc)
+    end
+
+    test "a registry instance missing from capacity aborts before any list or delete" do
       %{agent: agent, s3: s3, base_opts: base_opts} = orphan_fixture()
 
-      gc = start_gc(s3, base_opts ++ [enabled: true, expected_nodes: ["node-4", "node-9"]])
+      registry_fun = fn ->
+        %{
+          "node-4/pod" => %{configured_id: "node-4", pod_uid: "pod"},
+          "node-9/pod" => %{configured_id: "node-9", pod_uid: "pod"}
+        }
+      end
+
+      opts =
+        base_opts
+        |> Keyword.put(:enabled, true)
+        |> Keyword.put(:node_registry_fun, registry_fun)
+
+      gc = start_gc(s3, opts)
       assert {:error, :fleet_stale} = S3WarmthGc.sweep_now(gc)
       assert deleted(agent) == []
       assert puts(agent) == []
@@ -582,11 +685,28 @@ defmodule Embervm.S3WarmthGcTest do
       assert deleted(agent) == []
     end
 
-    test "an empty expected-node list always aborts (no fleet contract, no sweep)" do
+    test "an empty live node registry retains the no-fleet abort" do
       %{agent: agent, s3: s3, base_opts: base_opts} = orphan_fixture()
-      gc = start_gc(s3, base_opts ++ [enabled: true, expected_nodes: []])
+      opts =
+        base_opts
+        |> Keyword.put(:enabled, true)
+        |> Keyword.put(:node_registry_fun, fn -> %{} end)
+
+      gc = start_gc(s3, opts)
       assert {:error, :no_expected_nodes} = S3WarmthGc.sweep_now(gc)
       assert deleted(agent) == []
+    end
+
+    test "fleet freshness derives expected instances from the live registry" do
+      %{prefix: prefix, s3: s3, base_opts: base_opts} = orphan_fixture()
+
+      gc =
+        start_gc(
+          s3,
+          base_opts ++ [enabled: false]
+        )
+
+      assert {:ok, %{plan: [%{prefix: ^prefix}]}} = S3WarmthGc.sweep_now(gc)
     end
 
     test "empty CP state aborts: S3 objects with a store tracking nothing is never all-orphaned" do

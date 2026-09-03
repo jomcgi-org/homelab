@@ -12,6 +12,10 @@ import pytest
 
 _NAME = re.compile(r"^  name: (\S+)$", re.MULTILINE)
 _WAVE = re.compile(r'^    argocd\.argoproj\.io/sync-wave: "(\d+)"$', re.MULTILINE)
+_FIRST_INIT = re.compile(
+    r"^      initContainers:\n(?:^        #.*\n)*^        - name: (\S+)$",
+    re.MULTILINE,
+)
 
 
 def _chart_dir() -> Path:
@@ -74,6 +78,9 @@ def _render_waves(tmp_path: Path, group_size: int) -> tuple[list[int], list[int]
         wave = _WAVE.search(document)
         if name and wave:
             rendered_waves[name.group(1)] = int(wave.group(1))
+            first_init = _FIRST_INIT.search(document)
+            assert first_init, f"{name.group(1)} rendered without init containers"
+            assert first_init.group(1) == "wait-for-scratch-generation"
 
     class_waves = [
         rendered_waves[f"sync-wave-test-embervm-noded-brick-class-{index}"]
@@ -105,3 +112,59 @@ def test_brick_sync_waves_are_grouped_without_class_floor_overlap(
     assert class_waves == expected_classes
     assert floor_waves == expected_floors
     assert min(floor_waves) > max(class_waves)
+
+
+def test_scratch_generation_marker_is_the_final_prep_step() -> None:
+    template = (_chart_dir() / "templates" / "scratch-prep-daemonset.yaml").read_text()
+
+    fstab = template.index("FSTAB_LINE=")
+    marker = template.index(
+        'GENERATION="${NODE_NAME}-$(cat /proc/sys/kernel/random/uuid)"'
+    )
+    sleep = template.index("exec sleep infinity")
+    assert fstab < marker < sleep
+
+
+def test_wildcard_daemonset_does_not_inherit_scratch_marker_gate() -> None:
+    helm_bin = os.environ.get("HELM_BIN", "helm")
+    result = subprocess.run(
+        [
+            helm_bin,
+            "template",
+            "scratch-wildcard-test",
+            str(_chart_dir()),
+            "--set",
+            "scratchPrep.enabled=true",
+            "--show-only",
+            "templates/noded-deployment.yaml",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "wait-for-scratch-generation" not in result.stdout
+    assert "EMBERVM_NODED_SCRATCH_GENERATION_PATH" not in result.stdout
+
+
+def test_scratch_prep_marker_path_tracks_nvme_root() -> None:
+    helm_bin = os.environ.get("HELM_BIN", "helm")
+    marker = "/custom/embervm-scratch/.scratch-generation"
+    result = subprocess.run(
+        [
+            helm_bin,
+            "template",
+            "scratch-path-test",
+            str(_chart_dir()),
+            "--set",
+            "scratchPrep.enabled=true",
+            "--set",
+            "noded.firecracker.nvmeRoot=/custom/embervm-scratch",
+            "--show-only",
+            "templates/scratch-prep-daemonset.yaml",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert f'MARKER="{marker}"' in result.stdout
+    assert f'test -s "{marker}"' in result.stdout

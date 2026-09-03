@@ -493,9 +493,8 @@ warmthRetention:
 # The caps are pre-staged for the drain the census predicts (~2.29 TiB /
 # 4611 stateful refs past the 8h TTL): at the 10-prefix/20GiB defaults that
 # backlog would take ~19 days of hourly sweeps, at 200/100GiB about a day.
-# expectedNodes names the real fleet for the fleet-freshness abort: every
-# listed node must be present and fresh in the CP's capacity facts or the
-# sweep (dry-run included) aborts.
+# Fleet freshness is derived from the live NodeRegistry. Every registered brick
+# must have fresh capacity facts or the sweep, including dry-run, aborts.
 warmthS3Gc:
   allowEmptyKinds: "group"
   # ARMED (Joe 2026-08-04) after reading dry-run manifest
@@ -507,11 +506,6 @@ warmthS3Gc:
   enabled: "1"
   maxPrefixes: "200"
   maxBytes: "107374182400"
-  expectedNodes:
-    - node-1
-    - node-2
-    - node-3
-    - node-4
   statefulTtlMs: ""
   sessionTtlMs: ""
   servingTtlMs: ""

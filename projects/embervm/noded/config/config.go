@@ -154,6 +154,11 @@ type Config struct {
 	// this is empty, so a Config built directly (tests) without deriving it keeps
 	// the flat layout.
 	WarmthRoot string
+	// ScratchGenerationPath is the scratch-prep completion marker. Base adoption
+	// is refused until this file exists and is non-empty, and a changed value
+	// invalidates the in-memory base registry before it is rebuilt from disk.
+	// Empty disables the guard for out-of-cluster callers and direct test Configs.
+	ScratchGenerationPath string
 	// WarmthHeartbeatInterval controls how often a brick refreshes the .alive
 	// claim in its per-instance warmth directory. Default 30s. Env
 	// EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL.
@@ -450,6 +455,7 @@ func Load() (Config, error) {
 		AdmissionModel:          getenvDefault("EMBERVM_NODED_ADMISSION_MODEL", "observed"),
 		VMOverheadMib:           atoiDefault("EMBERVM_NODED_VM_OVERHEAD_MIB", 0),
 		SnapshotRoot:            os.Getenv("EMBERVM_NODED_SNAPSHOT_ROOT"),
+		ScratchGenerationPath:   os.Getenv("EMBERVM_NODED_SCRATCH_GENERATION_PATH"),
 		WarmthHeartbeatInterval: 30 * time.Second,
 		WarmthStaleAfter:        600 * time.Second,
 		ReapUnclaimedWarmth:     os.Getenv("EMBERVM_NODED_REAP_UNCLAIMED_WARMTH") == "1",

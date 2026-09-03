@@ -267,13 +267,10 @@ warmthRetention:
   sweepEnabled: "1"
 
 # #4952: S3-direct warmth GC is armed against dev's own embervm-dev bucket.
-# expectedNodes names dev's entire one-node fleet so the freshness contract can
-# pass. The per-sweep caps are a quarter of production for a quarter of the
-# fleet. Rollback is setting enabled back to "".
+# Fleet membership comes from the live NodeRegistry. The per-sweep caps are a
+# quarter of production. Rollback is setting enabled back to "".
 warmthS3Gc:
   enabled: "1"
-  expectedNodes:
-    - node-4
   maxPrefixes: "50"
   maxBytes: "26843545600" # 25 GiB
 

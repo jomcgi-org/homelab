@@ -150,6 +150,33 @@ defmodule Embervm.WorkloadWatcherTest do
     assert desc.mem_mib == 256
   end
 
+  test "node registration redrive uses the full LIST reconcile path" do
+    table = unique_table()
+    status = start_recorder()
+    base = start_base_recorder()
+    {:ok, lists} = Agent.start_link(fn -> 0 end)
+
+    lister = fn ->
+      Agent.update(lists, &(&1 + 1))
+      {:ok, [valid_cr()]}
+    end
+
+    watcher =
+      start_watcher(
+        lister,
+        recording_status_writer(status),
+        table,
+        base_seams(agent: base)
+      )
+
+    :ok = WorkloadWatcher.redrive(watcher)
+    _ = :sys.get_state(watcher)
+
+    assert Agent.get(lists, & &1) == 1
+    assert [%{name: "semgrep"}] = Agent.get(base, & &1.reconciled)
+    assert {:ok, _entry} = WorkloadCatalog.fetch(table, "semgrep")
+  end
+
   test "update: a changed generation and retry.maxAttempts updates the catalog entry" do
     table = unique_table()
     agent = start_recorder()

@@ -374,6 +374,12 @@ func (r *sessionSnapshotRegistry) remove(ref string) {
 	delete(r.snaps, ref)
 }
 
+func (r *sessionSnapshotRegistry) reset() {
+	r.mu.Lock()
+	r.snaps = make(map[string]*sessionSnapshotEntry)
+	r.mu.Unlock()
+}
+
 // snapshot returns a copy of every banked snapshot entry, for building NodeStatus.
 func (r *sessionSnapshotRegistry) snapshot() []sessionSnapshotEntry {
 	r.mu.Lock()
@@ -411,6 +417,29 @@ type baseRegistry struct {
 
 func newBaseRegistry() *baseRegistry {
 	return &baseRegistry{bases: make(map[string]*baseEntry)}
+}
+
+// reset drops every in-memory base fact. Scratch generation changes call this
+// before rescanning disk, so READY and FAILED state from the replaced filesystem
+// can never survive into the new generation.
+func (b *baseRegistry) reset() {
+	b.mu.Lock()
+	b.bases = make(map[string]*baseEntry)
+	b.mu.Unlock()
+}
+
+// replace atomically publishes a complete disk-adoption result. Readers see
+// either the empty post-wipe registry or the fully rescanned registry, never a
+// partially adopted set.
+func (b *baseRegistry) replace(entries []baseEntry) {
+	bases := make(map[string]*baseEntry, len(entries))
+	for _, e := range entries {
+		entry := e
+		bases[e.snapshotRef] = &entry
+	}
+	b.mu.Lock()
+	b.bases = bases
+	b.mu.Unlock()
 }
 
 // get returns a copy of the base entry for a snapshot_ref.

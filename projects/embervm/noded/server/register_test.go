@@ -78,6 +78,7 @@ func registerTestServer(cfg config.Config) *Server {
 // token path, and treats a 2xx as success.
 func TestRegisterPostsIdentity(t *testing.T) {
 	tokenFile := writeTempFile(t, "sa-token\n")
+	generationFile := writeTempFile(t, "scratch-gen-7\n")
 	s := registerTestServer(config.Config{
 		Node:                  "node-4",
 		PodUID:                "uid-abc",
@@ -85,6 +86,7 @@ func TestRegisterPostsIdentity(t *testing.T) {
 		ListenAddr:            ":9090",
 		ControlPlaneURL:       "http://cp.embervm.svc:8080/",
 		ControlPlaneTokenPath: tokenFile,
+		ScratchGenerationPath: generationFile,
 	})
 	doer := &fakeDoer{status: http.StatusOK}
 
@@ -110,6 +112,9 @@ func TestRegisterPostsIdentity(t *testing.T) {
 	}
 	if req.body.BootID != "boot-xyz" {
 		t.Fatalf("unexpected boot id %q", req.body.BootID)
+	}
+	if req.body.ScratchGeneration != "scratch-gen-7" {
+		t.Fatalf("unexpected scratch generation %q", req.body.ScratchGeneration)
 	}
 }
 

@@ -69,6 +69,7 @@ defmodule Embervm.NodeRegistryTest do
       cpu_budget_millicores: Keyword.get(opts, :cpu_budget_millicores, 2000),
       draining: Keyword.get(opts, :draining, false),
       cpu_vendor: Keyword.get(opts, :cpu_vendor, ""),
+      scratch_generation: Keyword.get(opts, :scratch_generation, ""),
       build_error: ""
     }
   end
@@ -1193,6 +1194,156 @@ defmodule Embervm.NodeRegistryTest do
 
     :ok = NodeRegistry.register(reg, %{"node" => "node-a", "pod_uid" => "uid-a", "address" => "a.test:9090"})
     eventually(fn -> {:add, "node-a/uid-a", "a.test:9090"} in Agent.get(bb, & &1) end, 200)
+  end
+
+  test "a new node identity does not trigger a workload re-LIST" do
+    {:ok, redrives} = Agent.start_link(fn -> 0 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(redrives) end)
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          watch_startup: false,
+          workload_redrive_fun: fn -> Agent.update(redrives, &(&1 + 1)) end
+        )
+      )
+
+    :ok =
+      NodeRegistry.register(reg, %{
+        "node" => "node-a",
+        "pod_uid" => "uid-a",
+        "address" => "a.test:9090",
+        "scratch_generation" => "generation-1"
+      })
+
+    assert Agent.get(redrives, & &1) == 0
+  end
+
+  test "a changed scratch generation triggers a workload re-LIST" do
+    {:ok, redrives} = Agent.start_link(fn -> 0 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(redrives) end)
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          watch_startup: false,
+          workload_redrive_fun: fn -> Agent.update(redrives, &(&1 + 1)) end
+        )
+      )
+
+    registration = %{
+      "node" => "node-a",
+      "pod_uid" => "uid-a",
+      "address" => "a.test:9090",
+      "scratch_generation" => "generation-1"
+    }
+
+    :ok = NodeRegistry.register(reg, registration)
+    :ok = NodeRegistry.register(reg, %{registration | "scratch_generation" => "generation-2"})
+
+    assert Agent.get(redrives, & &1) == 1
+    assert NodeRegistry.status(reg)["node-a/uid-a"].scratch_generation == "generation-2"
+  end
+
+  test "an unchanged scratch generation does not re-drive workloads" do
+    {:ok, redrives} = Agent.start_link(fn -> 0 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(redrives) end)
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          watch_startup: false,
+          workload_redrive_fun: fn -> Agent.update(redrives, &(&1 + 1)) end
+        )
+      )
+
+    registration = %{
+      "node" => "node-a",
+      "pod_uid" => "uid-a",
+      "address" => "a.test:9090",
+      "scratch_generation" => "generation-1"
+    }
+
+    :ok = NodeRegistry.register(reg, registration)
+    :ok = NodeRegistry.register(reg, registration)
+
+    assert Agent.get(redrives, & &1) == 0
+  end
+
+  test "a new instance does not arm scratch repair" do
+    {:ok, updates} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(updates) end)
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          watch_startup: false,
+          connect_fun: fn _ -> {:error, :offline} end,
+          base_builder_updater_fun: fn update -> Agent.update(updates, &[update | &1]) end
+        )
+      )
+
+    :ok =
+      NodeRegistry.register(reg, %{
+        "node" => "node-a",
+        "pod_uid" => "uid-a",
+        "address" => "a.test:9090",
+        "scratch_generation" => "generation-1"
+      })
+
+    assert [{:add, "node-a/uid-a", "a.test:9090"}] = Agent.get(updates, &Enum.reverse/1)
+  end
+
+  test "scratch repair is consumed only by status from the registered generation" do
+    {:ok, updates} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(updates) end)
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          watch_startup: false,
+          connect_fun: fn _ -> {:error, :offline} end,
+          base_builder_updater_fun: fn update -> Agent.update(updates, &[update | &1]) end
+        )
+      )
+
+    registration = %{
+      "node" => "node-a",
+      "pod_uid" => "uid-a",
+      "address" => "a.test:9090",
+      "scratch_generation" => "generation-1"
+    }
+
+    :ok = NodeRegistry.register(reg, registration)
+    :ok = NodeRegistry.register(reg, %{registration | "scratch_generation" => "generation-2"})
+    assert Enum.count(Agent.get(updates, & &1), &match?({:scratch_generation, _}, &1)) == 1
+
+    :ok =
+      NodeRegistry.inject_status(
+        reg,
+        "node-a/uid-a",
+        node_status(node_id: "node-a", scratch_generation: "generation-1")
+      )
+
+    assert Enum.count(Agent.get(updates, & &1), &match?({:scratch_generation, _}, &1)) == 1
+
+    :ok =
+      NodeRegistry.inject_status(
+        reg,
+        "node-a/uid-a",
+        node_status(node_id: "node-a", scratch_generation: "generation-2")
+      )
+
+    assert Enum.count(Agent.get(updates, & &1), &match?({:scratch_generation, _}, &1)) == 2
+
+    :ok =
+      NodeRegistry.inject_status(
+        reg,
+        "node-a/uid-a",
+        node_status(node_id: "node-a", scratch_generation: "generation-2")
+      )
+
+    assert Enum.count(Agent.get(updates, & &1), &match?({:scratch_generation, _}, &1)) == 2
   end
 
   test "register/2 rejects a body with no node" do

@@ -26,6 +26,8 @@ Call with `{{- include "embervm.noded.podSpec" (dict "ctx" . "sizeClass" "" "res
 */}}
 {{- define "embervm.noded.podSpec" -}}
 {{- $ctx := .ctx -}}
+{{- $sizeClass := .sizeClass -}}
+{{- $scratchGate := and $sizeClass $ctx.Values.scratchPrep.enabled -}}
 {{- $nodeSelector := .nodeSelector | default $ctx.Values.noded.nodeSelector -}}
 # Safe-rollout drain: give the daemon time to finish in-flight Assigns on
 # SIGTERM before Kubernetes SIGKILLs it. Set above the daemon's own drain
@@ -50,7 +52,7 @@ tolerations:
 securityContext:
   runAsUser: 0
   runAsGroup: 0
-{{- if $ctx.Values.workloads }}
+{{- if or $scratchGate $ctx.Values.workloads }}
 # Build each workload's base rootfs in-cluster from its pinned guest image
 # (crane export + mkfs.ext4 onto the nvme scratch), so node-4 never needs a
 # manual sudo rootfs placement. One builder per workload that declares a
@@ -59,6 +61,27 @@ securityContext:
 # into the workload's rootfsPath. Idempotent (a marker skips the multi-GB
 # rebuild when the guest ref is unchanged). Mirrors the fc-invoke pattern.
 initContainers:
+  {{- if $scratchGate }}
+  # The first brick init is the host scratch boot-order gate. The nvme hostPath
+  # can exist before scratch-prep mounts its filesystem, so directory existence
+  # alone is not sufficient. Only the generation marker proves prep finished.
+  - name: wait-for-scratch-generation
+    image: "{{ $ctx.Values.rootfsBuilder.image.repository }}@{{ $ctx.Values.rootfsBuilder.image.digest }}"
+    command:
+      - /bin/sh
+      - -c
+      - |
+        while [ ! -s {{ printf "%s/.scratch-generation" $ctx.Values.noded.firecracker.nvmeRoot | quote }} ]; do
+          echo "wait-for-scratch-generation: scratch-prep has not finished; retrying in 10s"
+          sleep 10
+        done
+        echo "wait-for-scratch-generation: scratch generation is ready"
+    volumeMounts:
+      - name: nvme
+        mountPath: {{ $ctx.Values.noded.firecracker.nvmeRoot }}
+        mountPropagation: HostToContainer
+  {{- end }}
+  {{- if $ctx.Values.workloads }}
   {{- range $name, $wl := $ctx.Values.workloads }}
   {{- $top := index $ctx.Values $name }}
   {{- if and $top $top.guestImage $top.guestImage.repository }}
@@ -88,6 +111,7 @@ initContainers:
     volumeMounts:
       - name: nvme
         mountPath: {{ $ctx.Values.noded.firecracker.nvmeRoot }}
+        mountPropagation: HostToContainer
       - name: rootfs-builder-script
         mountPath: /scripts
         readOnly: true
@@ -104,6 +128,7 @@ initContainers:
         memory: 512Mi
       limits:
         memory: 512Mi
+  {{- end }}
   {{- end }}
   {{- end }}
 {{- end }}
@@ -239,6 +264,10 @@ containers:
       # embeds both derive from nvmeRoot so the scratch disk is one knob.
       - name: EMBERVM_NODED_SNAPSHOT_ROOT
         value: {{ printf "%s/embervm-noded/snapshots" $ctx.Values.noded.firecracker.nvmeRoot | quote }}
+      {{- if $scratchGate }}
+      - name: EMBERVM_NODED_SCRATCH_GENERATION_PATH
+        value: {{ printf "%s/.scratch-generation" $ctx.Values.noded.firecracker.nvmeRoot | quote }}
+      {{- end }}
       - name: EMBERVM_NODED_CANONICAL_VSOCK_DIR
         value: {{ printf "%s/embervm-noded-vsock" $ctx.Values.noded.firecracker.nvmeRoot | quote }}
       - name: EMBERVM_NODED_GUEST_OOM_SCORE_ADJ
@@ -408,6 +437,7 @@ containers:
         mountPath: /dev/kvm
       - name: nvme
         mountPath: {{ $ctx.Values.noded.firecracker.nvmeRoot }}
+        mountPropagation: HostToContainer
 {{- if $ctx.Values.egress.enabled }}
   # Egress-proxy sidecar (ADR 023). noded tunnels each guest's vsock egress to
   # this process over localhost; it is the only thing in the pod that reaches the
@@ -608,10 +638,11 @@ volumes:
   - name: nvme
     hostPath:
       path: {{ $ctx.Values.noded.firecracker.nvmeRoot }}
-      # Directory (the default) is a GUARD, not a formality: if the NVMe is not
-      # mounted, the pod fails to start rather than silently creating the path on
-      # the node's ROOT filesystem and filling it with multi-GB base images.
-      # Production must keep it.
+      # Directory (the default) refuses a missing host path. When scratch-prep is
+      # enabled, the first init container's generation-marker gate also proves the
+      # existing path is the prepared mount before a rootfs builder can write.
+      # HostToContainer propagation on every consumer makes a later scratch-prep
+      # mount visible when kubelet created this hostPath bind first.
       #
       # DirectoryOrCreate is for a path UNDER an already-mounted parent, where
       # the mount is guaranteed by the parent's existence and only the leaf needs

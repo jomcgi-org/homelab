@@ -2753,6 +2753,129 @@ func TestReconcileBasesFromDiskRestoresRefAndGCsRefless(t *testing.T) {
 	}
 }
 
+// TestReconcileBasesRefusesMissingScratchGeneration proves the adoption
+// backstop never trusts bundles before scratch-prep has identified the mounted
+// filesystem.
+func TestReconcileBasesRefusesMissingScratchGeneration(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, ".scratch-generation")
+	s := New(Options{
+		Config: config.Config{
+			Arch: "amd64", Node: "node-4", MaxLiveVMs: 4, SnapshotRoot: dir,
+			ScratchGenerationPath: marker,
+		},
+	})
+	writeReconcileBase(t, filepath.Join(dir, "bases"), "wl-a__stale", "img-stale")
+
+	if err := s.ReconcileBasesFromDisk(); err == nil {
+		t.Fatal("base adoption succeeded without scratch generation marker")
+	}
+	if _, ok := s.bases.get("wl-a__stale"); ok {
+		t.Fatal("base was adopted without scratch generation marker")
+	}
+}
+
+func TestNodeStatusCarriesCurrentScratchGeneration(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, ".scratch-generation")
+	if err := os.WriteFile(marker, []byte("generation-status\n"), 0o644); err != nil {
+		t.Fatalf("write generation marker: %v", err)
+	}
+	s := New(Options{
+		Config: config.Config{
+			Arch: "amd64", Node: "node-4", MaxLiveVMs: 4, SnapshotRoot: dir,
+			ScratchGenerationPath: marker,
+		},
+	})
+
+	if got := s.nodeStatus().GetScratchGeneration(); got != "generation-status" {
+		t.Fatalf("NodeStatus scratch generation = %q, want generation-status", got)
+	}
+}
+
+func TestReconcileBasesReturnsNonMarkerScanError(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, ".scratch-generation")
+	if err := os.WriteFile(marker, []byte("generation-io\n"), 0o644); err != nil {
+		t.Fatalf("write generation marker: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bases"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write invalid bases path: %v", err)
+	}
+	s := New(Options{
+		Config: config.Config{
+			Arch: "amd64", Node: "node-4", MaxLiveVMs: 4, SnapshotRoot: dir,
+			ScratchGenerationPath: marker,
+		},
+	})
+
+	err := s.ReconcileBasesFromDisk()
+	if err == nil || !strings.Contains(err.Error(), "scan base bundles") {
+		t.Fatalf("reconcile error = %v, want base scan failure", err)
+	}
+	if errors.Is(err, ErrScratchGenerationUnavailable) {
+		t.Fatalf("base scan error was mislabeled as marker wait: %v", err)
+	}
+}
+
+// TestScratchGenerationChangeReadoptsAndSignals proves a live filesystem
+// replacement clears stale READY facts, adopts only the new disk truth, and
+// wakes WatchNode so the control plane sees the loss without a daemon restart.
+func TestScratchGenerationChangeReadoptsAndSignals(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, ".scratch-generation")
+	basesDir := filepath.Join(dir, "bases")
+	if err := os.WriteFile(marker, []byte("generation-1\n"), 0o644); err != nil {
+		t.Fatalf("write first generation: %v", err)
+	}
+	s := New(Options{
+		Config: config.Config{
+			Arch: "amd64", Node: "node-4", MaxLiveVMs: 4, SnapshotRoot: dir,
+			ScratchGenerationPath: marker,
+		},
+	})
+	writeReconcileBase(t, basesDir, "wl-a__old", "img-old")
+	if err := s.ReconcileBasesFromDisk(); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if _, ok := s.bases.get("wl-a__old"); !ok {
+		t.Fatal("first generation base was not adopted")
+	}
+	s.sessionSnap.add(sessionSnapshotEntry{snapshotRef: "session-old"})
+
+	changes := s.subscribe()
+	defer s.unsubscribe(changes)
+	if err := os.RemoveAll(filepath.Join(basesDir, "wl-a__old")); err != nil {
+		t.Fatalf("remove old generation base: %v", err)
+	}
+	writeReconcileBase(t, basesDir, "wl-b__new", "img-new")
+	if err := os.WriteFile(marker, []byte("generation-2\n"), 0o644); err != nil {
+		t.Fatalf("write second generation: %v", err)
+	}
+
+	generation, err := s.refreshScratchGeneration()
+	if err != nil {
+		t.Fatalf("refresh generation: %v", err)
+	}
+	if generation != "generation-2" {
+		t.Fatalf("generation = %q, want generation-2", generation)
+	}
+	if _, ok := s.bases.get("wl-a__old"); ok {
+		t.Fatal("old generation base survived the registry reset")
+	}
+	if got, ok := s.bases.get("wl-b__new"); !ok || got.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+		t.Fatalf("new generation base = %+v ok=%v, want adopted READY", got, ok)
+	}
+	if got := s.sessionSnap.snapshot(); len(got) != 0 {
+		t.Fatalf("old generation session inventory survived rescan: %+v", got)
+	}
+	select {
+	case <-changes:
+	case <-time.After(time.Second):
+		t.Fatal("generation change did not signal a NodeStatus update")
+	}
+}
+
 // TestReconcileThenCapacityFilterHidesUnprovisioned proves the two-stage contract:
 // ReconcileBasesFromDisk adopts a base READY even when its runtime is not yet
 // provisioned, and the NodeStatus capacity filter then HIDES it until the pushed

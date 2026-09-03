@@ -1465,7 +1465,6 @@ defmodule Embervm.BaseBuilderTest do
     refute_receive {:evicted, "w", "w__old"}, 100
   end
 
-
   test "export skips targets without node_addr entries and logs warning" do
     agent = start_recorder()
     test_pid = self()
@@ -1748,6 +1747,58 @@ defmodule Embervm.BaseBuilderTest do
     })
   end
 
+  test "scratch checks retry on a capacity fact, dedupe rebuilds, and prune on removal" do
+    table = new_cap_table()
+    put_brick(table, "node-4", "uid", cpu_vendor: "amd")
+    {:ok, builds} = Agent.start_link(fn -> 0 end)
+
+    build_fun = fn :fake_channel, _req ->
+      count = Agent.get_and_update(builds, fn n -> {n + 1, n + 1} end)
+      {:ok, resp("snap-#{count}")}
+    end
+
+    builder =
+      start_builder(
+        nodes: [
+          %{id: "node-4/uid", address: "node-4:9090"},
+          %{id: "node-5/uid", address: "node-5:9090"}
+        ],
+        capacity_table: table,
+        status_writer: fn _, _, _ -> :ok end,
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> Agent.get(builds, & &1) == 1 end)
+
+    put_base_fact(table, "node-4", "uid", "w", "snap-1", :BASE_BUILD_STATE_READY, false)
+    :ok = BaseBuilder.scratch_generation_changed(builder, "node-4/uid")
+    _ = :sys.get_state(builder)
+    assert Agent.get(builds, & &1) == 1
+
+    NodeCapacity.drop(table, {"node-4", "uid"})
+    :ok = BaseBuilder.scratch_generation_changed(builder, "node-4/uid")
+    :ok = BaseBuilder.scratch_generation_changed(builder, "node-5/uid")
+
+    assert_eventually(fn ->
+      checks = :sys.get_state(builder).scratch_checks
+      MapSet.member?(checks, "node-4/uid") and MapSet.member?(checks, "node-5/uid")
+    end)
+
+    put_brick(table, "node-4", "uid", cpu_vendor: "amd")
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    assert_eventually(fn -> Agent.get(builds, & &1) == 2 end)
+
+    :ok = BaseBuilder.remove_node(builder, "node-5/uid")
+
+    assert_eventually(fn ->
+      not MapSet.member?(:sys.get_state(builder).scratch_checks, "node-5/uid")
+    end)
+
+    _ = :sys.get_state(builder)
+    assert Agent.get(builds, & &1) == 2
+  end
 
   test "fact-less instances are excluded from build placement" do
     test_pid = self()

@@ -396,6 +396,12 @@ func (r *groupBundleRegistry) remove(ref string) {
 	delete(r.snaps, ref)
 }
 
+func (r *groupBundleRegistry) reset() {
+	r.mu.Lock()
+	r.snaps = make(map[string]*groupBundleEntry)
+	r.mu.Unlock()
+}
+
 // snapshot returns a copy of every banked group bundle entry.
 func (r *groupBundleRegistry) snapshot() []groupBundleEntry {
 	r.mu.Lock()

@@ -271,6 +271,30 @@ defmodule Embervm.PoolManagerTest do
     assert Agent.get(ctx.status, & &1) == writes1
   end
 
+  test "primedFloorSatisfied resets from catalog truth when a wiped base disappears" do
+    ctx = start_pool()
+    put_catalog(ctx, "wl-a", 1)
+    put_facts(ctx, [{"wl-a", 1}], max: 4)
+
+    PoolManager.refill(ctx.pool)
+    assert eventually(fn ->
+             Enum.any?(Agent.get(ctx.status, & &1), fn
+               {"wl-a", %{"primedFloorSatisfied" => true}} -> true
+               _ -> false
+             end)
+           end)
+
+    put_facts(ctx, [], max: 4)
+    PoolManager.refill(ctx.pool)
+
+    assert eventually(fn ->
+             Enum.any?(Agent.get(ctx.status, & &1), fn
+               {"wl-a", %{"primedFloorSatisfied" => false}} -> true
+               _ -> false
+             end)
+           end)
+  end
+
   test "fleet-wide floor spreads four total across two equal wildcard instances" do
     parent = self()
     ctx = start_pool(channel_fun: fn node -> {:ok, node} end,
