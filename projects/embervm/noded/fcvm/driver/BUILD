@@ -22,7 +22,7 @@ go_library(
         "//projects/embervm/noded/fcvm/fcclient",
         "//projects/embervm/noded/sparse",
         "//projects/embervm/noded/substrate",
-		"//projects/embervm/noded/vsockproto",
+        "//projects/embervm/noded/vsockproto",
         "@io_opentelemetry_go_otel//:otel",
     ],
 )
@@ -34,7 +34,7 @@ go_test(
         "driver_test.go",
         "group_test.go",
         "gueststats_test.go",
-		"launcher_linux_test.go",
+        "launcher_linux_test.go",
         "launcher_test.go",
         "provisioner_test.go",
         "serial_test.go",
