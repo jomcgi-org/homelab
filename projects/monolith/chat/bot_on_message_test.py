@@ -1682,6 +1682,8 @@ class TestStartAgentFlowOrchestrator:
         scenarios = [
             None,
             "",
+            "spark",
+            "spark,luna",
             "qwen",
             "qwen,luna",
             " luna , terra ",
@@ -1699,7 +1701,7 @@ class TestStartAgentFlowOrchestrator:
         assert tuple(_ALL_AGENT_MODEL_CHOICES) == tuple(SUPPORTED_MODELS)
         assert 0 < len(AGENT_MODEL_CHOICES) <= 25
         for name in AGENT_MODEL_CHOICES:
-            assert model_family(name) in {"codex", "claude"}
+            assert model_family(name) in {"codex", "claude", "pi"}
 
     @pytest.mark.asyncio
     async def test_plan_verdict_opens_thread_and_submits_raw_prompt(

@@ -58,6 +58,14 @@ def ember_codex_synthetic_trigger() -> None:
     )
 
 
+@app.command("ember-spark-synthetic-trigger")
+def ember_spark_synthetic_trigger() -> None:
+    """Trigger the Spark session synthetic in the monolith API pod."""
+    _post_internal(
+        "/internal/ember/spark-session-probe", "ember-spark-synthetic-trigger"
+    )
+
+
 @app.command("agent-drain-trigger")
 def agent_drain_trigger() -> None:
     """Trigger one asynchronous Luna work-queue drain cycle."""
@@ -379,7 +387,7 @@ def home_calendar_poll() -> None:
 @app.command("chat-summary-generation")
 def chat_summary_generation() -> None:
     """Generate per-user and per-channel chat summaries (one-shot of
-    chat.summary_generation). Needs LLAMA_CPP_URL (Qwen); no bot required."""
+    chat.summary_generation). Needs LLAMA_CPP_URL; no bot required."""
     _run_job("chat-summary-generation", "chat.api", "run_summary_generation")
 
 
@@ -410,7 +418,7 @@ def chat_observe_directives() -> None:
 
     One-shot of chat.observer_job.observe_directives_handler. Observes only
     ambient-granted channels (ADR 029), classifies recent bot-directed messages
-    for recurring style friction via Qwen (needs LLAMA_CPP_URL), and enqueues at
+    for recurring style friction via LLAMA_CPP_URL, and enqueues at
     most one directive-proposal outbox row per channel; the leader's outbox drain
     posts it and wires the propose-then-confirm flow. Sensitivity is env config:
     OBSERVER_MIN_EVIDENCE (default 3), OBSERVER_COOLDOWN_DAYS (default 14)."""
@@ -428,7 +436,7 @@ def chat_directive_autopilot() -> None:
     regression (one-shot of chat.autopilot_job.directive_autopilot_handler).
 
     NEVER posts to Discord; provenance is exposed via the monolith-chat-* MCP
-    tools. Classifies with Qwen (needs LLAMA_CPP_URL). All thresholds come from
+    tools. Classifies through LLAMA_CPP_URL. All thresholds come from
     the AUTOPILOT_* env: AUTOPILOT_MODE (live or shadow kill switch),
     AUTOPILOT_MIN_CONFIDENCE, AUTOPILOT_MIN_EVIDENCE, AUTOPILOT_COOLDOWN_DAYS,
     AUTOPILOT_VALIDATE_DAYS, AUTOPILOT_MANUAL_COOLDOWN_DAYS,

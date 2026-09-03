@@ -9,7 +9,7 @@ from uuid import uuid4
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
-from agent_sessions import model_family, store
+from agent_sessions import model_family, normalize_model, store
 from agent_sessions.codex_login import codex_login_gate, watch_for_login
 from agent_sessions.constants import SYNTHETIC_SESSION_PREFIX
 from agent_sessions.mcp import (
@@ -47,6 +47,7 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
     """
     from agent_sessions.mcp import _turn_status
 
+    model = normalize_model(model)
     model_family(model)
     row = await asyncio.to_thread(
         _persist_session,
@@ -207,6 +208,7 @@ def start_session_for_swarm(
     """
     if repo not in REPO_CATALOG:
         raise ValueError(f"unknown repo {repo}; catalog: {', '.join(REPO_CATALOG)}")
+    model = normalize_model(model)
     model_family(model)
     with Session(get_engine()) as session:
         existing = store.get_session_by_local_id(session, local_session_id)
@@ -294,6 +296,7 @@ async def start_session_for_thread(
     """
     if repo is not None and repo not in REPO_CATALOG:
         raise ValueError(f"unknown repo {repo}; catalog: {', '.join(REPO_CATALOG)}")
+    model = normalize_model(model)
     model_family(model)
     row = await asyncio.to_thread(
         _persist_session,
@@ -345,16 +348,15 @@ async def send_to_thread_session(thread_id: str, message: str) -> dict | None:
     row = await asyncio.to_thread(_load_session_row, session_id)
     if row is None:
         return None
-    model_family(row.model)
+    model = normalize_model(row.model)
+    model_family(model)
     # row.model, NOT None. None is not "unset", it resolves to the CLAUDE family
     # (model_family(None) == "claude"), so a None here ran the claude adapter
     # against a session whose CLI transcript belongs to codex and died with
     # "claude exited before init / No conversation found with session ID".
     # Every follow-up turn must stay inside the family the session pinned.
-    turn = await asyncio.to_thread(
-        _persist_pending_message, session_id, message, row.model
-    )
-    login = await codex_login_gate(row.model)
+    turn = await asyncio.to_thread(_persist_pending_message, session_id, message, model)
+    login = await codex_login_gate(model)
     if login is not None:
         await asyncio.to_thread(_set_session_status, session_id, "awaiting_login")
 

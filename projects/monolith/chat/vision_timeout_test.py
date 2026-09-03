@@ -15,6 +15,7 @@ import httpx
 import pytest
 
 from chat.vision import VisionClient, VISION_SYSTEM_PROMPT
+import shared.inference
 
 
 def _make_mock_http_client(response=None, side_effect=None):
@@ -265,7 +266,7 @@ class TestVisionClientEnvFallback:
 class TestVisionClientPayload:
     @pytest.mark.asyncio
     async def test_payload_includes_correct_model(self):
-        """describe() sends 'qwen3.6-27b' as the model in the payload."""
+        """describe() sends the Meta Spark model in the payload."""
         client = VisionClient(base_url="http://fake:8080")
 
         with patch("chat.vision.httpx.AsyncClient") as mock_cls:
@@ -273,7 +274,7 @@ class TestVisionClientPayload:
             await client.describe(b"\x89PNG", "image/png")
 
         payload = mock_cls.return_value.post.call_args.kwargs.get("json")
-        assert payload["model"] == "qwen3.6-27b"
+        assert payload["model"] == shared.inference.META_SPARK_MODEL
 
     @pytest.mark.asyncio
     async def test_payload_includes_max_tokens_default(self):
@@ -303,8 +304,8 @@ class TestVisionClientPayload:
         assert system_messages[0]["content"] == VISION_SYSTEM_PROMPT
 
     @pytest.mark.asyncio
-    async def test_payload_disables_thinking(self):
-        """describe() sends chat_template_kwargs with enable_thinking=False."""
+    async def test_payload_omits_vendor_thinking_parameters(self):
+        """describe() does not send Qwen chat-template parameters to Meta."""
         client = VisionClient(base_url="http://fake:8080")
 
         with patch("chat.vision.httpx.AsyncClient") as mock_cls:
@@ -312,7 +313,7 @@ class TestVisionClientPayload:
             await client.describe(b"\x89PNG", "image/png")
 
         payload = mock_cls.return_value.post.call_args.kwargs.get("json")
-        assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+        assert "chat_template_kwargs" not in payload
 
     @pytest.mark.asyncio
     async def test_raises_on_null_content(self):

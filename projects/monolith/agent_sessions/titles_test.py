@@ -121,7 +121,7 @@ def test_build_title_prompt_clips_and_includes_context():
 
 
 def test_refresh_titles_once_names_and_stores(monkeypatch):
-    monkeypatch.setenv("LLAMA_CPP_URL", "http://qwen.test")
+    monkeypatch.setenv("LLAMA_CPP_URL", "http://spark.test")
     stored = []
     monkeypatch.setattr(
         titles,
@@ -154,7 +154,7 @@ def test_refresh_titles_once_names_and_stores(monkeypatch):
 
 
 def test_refresh_titles_once_survives_llm_failure(monkeypatch):
-    monkeypatch.setenv("LLAMA_CPP_URL", "http://qwen.test")
+    monkeypatch.setenv("LLAMA_CPP_URL", "http://spark.test")
     monkeypatch.setattr(
         titles,
         "_pick_stale_sessions_sync",
@@ -176,7 +176,7 @@ def test_refresh_titles_once_survives_llm_failure(monkeypatch):
     )
 
     async def broken_llm(prompt):
-        raise RuntimeError("qwen is down")
+        raise RuntimeError("spark is down")
 
     named = asyncio.run(titles.refresh_titles_once(call_llm=broken_llm))
     assert named == 0

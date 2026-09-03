@@ -1,9 +1,8 @@
-"""Qwen-generated session names for the /agents UI.
+"""Inference-generated session names for the /agents UI.
 
 The leader runs a small refresh loop: any session whose newest turn is
 beyond the turn its title was generated from (``title_turn_seq``) gets
-renamed from its transcript. Qwen is self-hosted, so the calls are free;
-the loop stays out of the turn-execution path entirely and a failed pass
+renamed from its transcript. The loop stays out of the turn-execution path and a failed pass
 simply leaves the session stale for the next tick. Sessions without a
 title fall back to their first prompt in the router.
 """
@@ -25,12 +24,11 @@ import shared.inference
 logger = logging.getLogger(__name__)
 
 # One pass every 20s names a fresh session within a couple of UI poll
-# cycles without hammering the shared vLLM.
+# cycles without hammering the shared provider.
 REFRESH_INTERVAL_SECONDS = 20
 BATCH_LIMIT = 3
 TITLE_MAX_CHARS = 80
-# Short name only. Thinking is disabled in the request, so the budget is
-# spent on the name itself.
+# Short name only, so a small output budget is sufficient.
 _LLM_MAX_TOKENS = 40
 
 _TITLE_PROMPT = """You name coding-agent sessions for a session list.
@@ -127,18 +125,16 @@ def sanitize_title(raw: str) -> str:
     return text[:TITLE_MAX_CHARS].strip()
 
 
-async def _call_qwen(prompt: str) -> str:
+async def _call_inference(prompt: str) -> str:
     url = os.environ.get("LLAMA_CPP_URL", "").rstrip("/")
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
         resp = await client.post(
             f"{url}/v1/chat/completions",
+            headers=shared.inference.auth_headers(url),
             json={
-                "model": "qwen3.6-27b",
+                "model": shared.inference.META_SPARK_MODEL,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": _LLM_MAX_TOKENS,
-                # A thinking response spends the budget on <think> and
-                # returns content: null behind a 200, so disable it.
-                **shared.inference.thinking_off(),
             },
         )
         resp.raise_for_status()
@@ -158,7 +154,7 @@ def _store_title_sync(session_id: int, title: str, turn_seq: int) -> None:
         store_title(session, session_id, title, turn_seq)
 
 
-async def refresh_titles_once(call_llm=_call_qwen) -> int:
+async def refresh_titles_once(call_llm=_call_inference) -> int:
     """Name up to BATCH_LIMIT stale sessions; returns how many were named."""
     if not os.environ.get("LLAMA_CPP_URL"):
         return 0

@@ -21,6 +21,9 @@ EMBER_SYNTHETIC_STALENESS_S = 750.0
 # missed or slow run does not flap the health check.
 EMBER_CODEX_STALENESS_S = 9000.0
 
+# The Spark lane synthetic also runs hourly and uses its own latch.
+EMBER_SPARK_STALENESS_S = 9000.0
+
 
 def synthetic_probe_health(demo: str, staleness_s: float):
     """Build a health component backed by one synthetic probe latch row."""

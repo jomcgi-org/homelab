@@ -74,14 +74,17 @@ verifier:
                 stream.write("\n")
         assert "--provider" in sys.argv
         assert sys.argv[sys.argv.index("--provider") + 1] == "openai-completions"
-        assert sys.argv[sys.argv.index("--model") + 1] == "qwen3.6-27b"
+        assert sys.argv[sys.argv.index("--model") + 1] == "muse-spark-1.3-contributor"
         for flag in ("--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates"):
             assert flag in sys.argv
         assert sys.argv[sys.argv.index("--extension") + 1] == "/usr/share/ember-pi/extensions/web-research.ts"
         assert "--tools" not in sys.argv
         assert "disposable Firecracker microVM" in sys.argv[sys.argv.index("--system-prompt") + 1]
         rpc_path = os.environ.get("FAKE_PI_RPC")
-        state = {"sessionId": "pi-session", "model": {"id": "qwen3.6-27b"}}
+        state = {
+            "sessionId": "pi-session",
+            "model": {"id": "muse-spark-1.3-contributor"},
+        }
         def record(value):
             if rpc_path:
                 with open(rpc_path, "a") as stream:

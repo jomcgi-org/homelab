@@ -15,7 +15,7 @@ from chat.changelog import (
     _auth_headers,
     _build_embed,
     _filter_changelog_commits,
-    _summarize_with_qwen,
+    _summarize_with_llm,
     load_changelog_configs,
     run_changelog_for_config,
     run_changelog_iteration,
@@ -322,18 +322,18 @@ class TestAuthHeaders:
 
 
 # ---------------------------------------------------------------------------
-# _summarize_with_qwen
+# _summarize_with_llm
 # ---------------------------------------------------------------------------
 
 
-class TestSummarizeWithQwen:
+class TestSummarizeWithLlm:
     @pytest.mark.asyncio
     async def test_prompt_includes_commit_messages(self):
         """The prompt forwarded to llm_call contains commit message text."""
         commits = [_make_commit("feat: add search", "Bob")]
         mock_llm = AsyncMock(return_value="Added search functionality.")
 
-        await _summarize_with_qwen(commits, mock_llm, PROMPTS["professional"])
+        await _summarize_with_llm(commits, mock_llm, PROMPTS["professional"])
 
         call_args = mock_llm.call_args[0][0]
         assert "feat: add search" in call_args
@@ -344,7 +344,7 @@ class TestSummarizeWithQwen:
         commits = [_make_commit("feat: add feature", "Charlie")]
         mock_llm = AsyncMock(return_value="Added a feature.")
 
-        await _summarize_with_qwen(commits, mock_llm, PROMPTS["professional"])
+        await _summarize_with_llm(commits, mock_llm, PROMPTS["professional"])
 
         call_args = mock_llm.call_args[0][0]
         assert "Charlie" in call_args
@@ -356,7 +356,7 @@ class TestSummarizeWithQwen:
         expected = "Users can now toggle dark mode."
         mock_llm = AsyncMock(return_value=expected)
 
-        result = await _summarize_with_qwen(commits, mock_llm, PROMPTS["professional"])
+        result = await _summarize_with_llm(commits, mock_llm, PROMPTS["professional"])
 
         assert result == expected
 
@@ -366,7 +366,7 @@ class TestSummarizeWithQwen:
         commits = [_make_commit("feat: a"), _make_commit("feat: b")]
         mock_llm = AsyncMock(return_value="summary")
 
-        await _summarize_with_qwen(commits, mock_llm, PROMPTS["professional"])
+        await _summarize_with_llm(commits, mock_llm, PROMPTS["professional"])
 
         mock_llm.assert_called_once()
 
@@ -379,7 +379,7 @@ class TestSummarizeWithQwen:
         ]
         mock_llm = AsyncMock(return_value="Two features added.")
 
-        await _summarize_with_qwen(commits, mock_llm, PROMPTS["professional"])
+        await _summarize_with_llm(commits, mock_llm, PROMPTS["professional"])
 
         call_args = mock_llm.call_args[0][0]
         assert "feat: feature A" in call_args

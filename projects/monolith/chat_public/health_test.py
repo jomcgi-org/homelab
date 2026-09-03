@@ -24,6 +24,8 @@ class FakeClient:
     ) -> None:
         self.status_code = status_code
         self.error = error
+        self.url: str | None = None
+        self.headers: dict[str, str] | None = None
 
     async def __aenter__(self) -> "FakeClient":
         return self
@@ -31,7 +33,9 @@ class FakeClient:
     async def __aexit__(self, *args) -> None:
         return None
 
-    async def get(self, _url: str) -> httpx.Response:
+    async def get(self, url: str, *, headers: dict[str, str]) -> httpx.Response:
+        self.url = url
+        self.headers = headers
         if self.error is not None:
             raise self.error
         assert self.status_code is not None
@@ -61,12 +65,31 @@ def test_chat_public_module_is_wired_into_public_app():
 @pytest.mark.asyncio
 async def test_inference_health_accepts_200(monkeypatch):
     monkeypatch.setenv(health.INFERENCE_URL_ENV, "http://inference.test")
-    _patch_client(monkeypatch, FakeClient(status_code=200))
+    client = FakeClient(status_code=200)
+    _patch_client(monkeypatch, client)
 
     result = await health.inference_health()
 
     assert result["ok"] is True
     assert "ms" in result["detail"]
+    assert client.url == "http://inference.test/v1/models"
+    assert client.headers == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api_key", ["meta-key", ""])
+async def test_inference_health_uses_optional_meta_spark_bearer(monkeypatch, api_key):
+    monkeypatch.setenv(health.INFERENCE_URL_ENV, "https://api.meta.ai")
+    monkeypatch.setenv("META_SPARK_API_KEY", api_key)
+    client = FakeClient(status_code=200)
+    _patch_client(monkeypatch, client)
+
+    result = await health.inference_health()
+
+    assert result["ok"] is True
+    assert client.url == "https://api.meta.ai/v1/models"
+    expected = {"Authorization": "Bearer meta-key"} if api_key else {}
+    assert client.headers == expected
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,7 @@ from chat_public.api import format_sse
 from core.db import get_session
 from moving.router import build_state
 from moving.viewer import get_viewer
+import shared.inference
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ router = APIRouter(prefix="/api/moving", tags=["moving"])
 MESSAGE_CHAR_CAP = 2000
 HISTORY_MESSAGE_CAP = 8000
 HISTORY_LIMIT = 12
-MOVING_CHAT_MODEL = os.getenv("MOVING_CHAT_MODEL", "qwen3.6-27b")
+MOVING_CHAT_MODEL = os.getenv("MOVING_CHAT_MODEL", shared.inference.META_SPARK_MODEL)
 MAX_TOKENS = 2000
 
 INFERENCE_URL = os.environ.get("MOVING_CHAT_INFERENCE_URL") or os.environ.get(
@@ -124,7 +125,10 @@ async def stream_chat(
     }
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         async with client.stream(
-            "POST", f"{inference_url}/v1/chat/completions", json=body
+            "POST",
+            f"{inference_url}/v1/chat/completions",
+            headers=shared.inference.auth_headers(inference_url),
+            json=body,
         ) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():

@@ -338,14 +338,14 @@ if args_path:
         stream.write("\n")
 assert "--provider" in sys.argv
 assert sys.argv[sys.argv.index("--provider") + 1] == "openai-completions"
-assert sys.argv[sys.argv.index("--model") + 1] == "qwen3.6-27b"
+assert sys.argv[sys.argv.index("--model") + 1] == "muse-spark-1.3-contributor"
 for flag in ("--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates"):
     assert flag in sys.argv
 assert sys.argv[sys.argv.index("--extension") + 1] == "/usr/share/ember-pi/extensions/web-research.ts"
 assert "--tools" not in sys.argv
 assert "disposable Firecracker microVM" in sys.argv[sys.argv.index("--system-prompt") + 1]
 rpc_path = os.environ.get("FAKE_PI_RPC")
-state = {"sessionId": "pi-session", "model": {"id": "qwen3.6-27b"}}
+state = {"sessionId": "pi-session", "model": {"id": "muse-spark-1.3-contributor"}}
 def record(value):
     if rpc_path:
         with open(rpc_path, "a") as stream:
@@ -583,7 +583,7 @@ def test_pi_empty_event_stream_raises_error(tmp_path, monkeypatch):
         tmp_path, monkeypatch, FAKE_EMPTY_PI_CLI, shim.PiProcess
     )
     with pytest.raises(RuntimeError, match="pi empty event stream") as exc_info:
-        manager.turn("hello", model="qwen")
+        manager.turn("hello", model="spark")
     assert "exit code 0" in str(exc_info.value)
 
 
@@ -598,7 +598,7 @@ def test_codex_empty_event_stream_raises_error(tmp_path, monkeypatch):
 
 def test_pi_first_turn_returns_text_session_and_usage(tmp_path, monkeypatch):
     manager = _pi_manager(tmp_path, monkeypatch)
-    record = manager.turn("hello", model="qwen")
+    record = manager.turn("hello", model="spark")
     assert record["result"] == "Done <voice>Pi completed the work.</voice>"
     assert record["session_id"] == "pi-session"
     assert "input_tokens" in record["usage"]
@@ -628,7 +628,7 @@ def test_pi_truncated_tool_call_fails_turn(tmp_path, monkeypatch, capsys, partia
         RuntimeError,
         match="tool-call syntax",
     ):
-        manager.turn("hello", model="qwen")
+        manager.turn("hello", model="spark")
     manager._close_process()
 
     assert "pi-tool-call-leak terminal_reason=length" in capsys.readouterr().err
@@ -640,7 +640,7 @@ def test_pi_tool_call_leak_balanced_block_fails_turn(tmp_path, monkeypatch, caps
     manager = _pi_manager(tmp_path, monkeypatch)
 
     with pytest.raises(RuntimeError, match="tool-call syntax"):
-        manager.turn("hello", model="qwen")
+        manager.turn("hello", model="spark")
     manager._close_process()
 
     assert "pi-tool-call-leak terminal_reason=stop" in capsys.readouterr().err
@@ -650,40 +650,22 @@ def test_pi_prose_tool_call_mention_is_untouched(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_PI_MODE", "prose-tool-call")
     manager = _pi_manager(tmp_path, monkeypatch)
 
-    record = manager.turn("hello", model="qwen")
+    record = manager.turn("hello", model="spark")
     manager._close_process()
 
     assert record["result"] == "The response may mention <tool_call> in prose."
 
 
-def test_resolve_thinking_level():
-    assert shim._resolve_thinking_level(None) == shim.PI_DEFAULT_THINKING_LEVEL
-    assert shim._resolve_thinking_level(True) == "high"
-    assert shim._resolve_thinking_level(False) == "off"
-    assert shim._resolve_thinking_level("medium") == "medium"
-    assert shim._resolve_thinking_level("bogus") == shim.PI_DEFAULT_THINKING_LEVEL
-
-
-@pytest.mark.parametrize(
-    ("thinking", "expected"),
-    [("high", "high"), (None, shim.PI_DEFAULT_THINKING_LEVEL)],
-)
-def test_pi_turn_sets_thinking_level_before_prompt(
-    tmp_path, monkeypatch, thinking, expected
-):
+def test_pi_turn_does_not_send_vendor_thinking_level(tmp_path, monkeypatch):
     manager = _pi_manager(tmp_path, monkeypatch)
-    manager.turn("hello", model="qwen", thinking=thinking)
+    manager.turn("hello", model="spark", thinking="high")
     requests = [
         json.loads(line)
         for line in (tmp_path / "pi-rpc.jsonl").read_text().splitlines()
     ]
     commands = [request["type"] for request in requests]
-    thinking_index = commands.index("set_thinking_level")
-    assert requests[thinking_index] == {
-        "type": "set_thinking_level",
-        "level": expected,
-    }
-    assert thinking_index < commands.index("prompt")
+    assert "set_thinking_level" not in commands
+    assert "prompt" in commands
     manager._close_process()
 
 
@@ -697,7 +679,7 @@ def test_pi_turn_reports_model_and_tool_timing(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr(shim, "_turn_timing_now", timing_now)
     manager = _pi_manager(tmp_path, monkeypatch)
-    record = manager.turn("hello", model="qwen")
+    record = manager.turn("hello", model="spark")
     manager._close_process()
 
     assert record["num_turns"] == 2
@@ -723,7 +705,7 @@ def test_pi_turn_reports_model_and_tool_timing(tmp_path, monkeypatch, capsys):
 def test_pi_turn_without_tools_reports_zero_tool_time(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_PI_MODE", "no-tools")
     manager = _pi_manager(tmp_path, monkeypatch)
-    record = manager.turn("hello", model="qwen")
+    record = manager.turn("hello", model="spark")
     manager._close_process()
 
     assert record["num_turns"] == 1
@@ -738,14 +720,14 @@ def test_pi_repeated_tool_calls_raises(tmp_path, monkeypatch):
     manager = _pi_manager(tmp_path, monkeypatch)
 
     with pytest.raises(RuntimeError, match="repeated the same bash tool call"):
-        manager.turn("hello", model="qwen")
+        manager.turn("hello", model="spark")
 
 
 def test_pi_repeated_tool_calls_n_minus_1_completes(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_PI_MODE", "repeated-tool-calls-n-minus-1")
     monkeypatch.setenv("FAKE_PI_REPEAT_LIMIT", str(shim.PI_MAX_IDENTICAL_TOOL_CALLS))
     manager = _pi_manager(tmp_path, monkeypatch)
-    record = manager.turn("hello", model="qwen")
+    record = manager.turn("hello", model="spark")
     manager._close_process()
 
     assert "Loop guard test completed" in record["result"]
@@ -755,7 +737,7 @@ def test_pi_repeated_tool_calls_separated_resets_counter(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_PI_MODE", "repeated-tool-calls-separated")
     monkeypatch.setenv("FAKE_PI_REPEAT_LIMIT", str(shim.PI_MAX_IDENTICAL_TOOL_CALLS))
     manager = _pi_manager(tmp_path, monkeypatch)
-    record = manager.turn("hello", model="qwen")
+    record = manager.turn("hello", model="spark")
     manager._close_process()
 
     assert "Loop guard test completed" in record["result"]
@@ -767,7 +749,7 @@ def test_pi_repeated_tool_calls_missing_args_raises(tmp_path, monkeypatch):
     manager = _pi_manager(tmp_path, monkeypatch)
 
     with pytest.raises(RuntimeError, match="repeated the same bash tool call"):
-        manager.turn("hello", model="qwen")
+        manager.turn("hello", model="spark")
 
 
 def test_pi_pushes_progress_during_turn(tmp_path, monkeypatch):
@@ -785,7 +767,7 @@ def test_pi_pushes_progress_during_turn(tmp_path, monkeypatch):
 
     monkeypatch.setattr(shim, "_ProgressPusher", FakePusher)
     manager = _pi_manager(tmp_path, monkeypatch)
-    manager.turn("hello", model="qwen", progress_token="pi-token")
+    manager.turn("hello", model="spark", progress_token="pi-token")
     manager._close_process()
 
     assert pushes
@@ -806,7 +788,7 @@ def test_pi_no_progress_without_token(tmp_path, monkeypatch):
 
     monkeypatch.setattr(shim, "_ProgressPusher", UnexpectedPusher)
     manager = _pi_manager(tmp_path, monkeypatch)
-    manager.turn("hello", model="qwen")
+    manager.turn("hello", model="spark")
     manager._close_process()
 
 
@@ -817,16 +799,16 @@ def test_pi_failing_progress_pusher_does_not_fail_turn(tmp_path, monkeypatch):
 
     monkeypatch.setattr(shim, "_ProgressPusher", FailingPusher)
     manager = _pi_manager(tmp_path, monkeypatch)
-    record = manager.turn("hello", model="qwen", progress_token="pi-token")
+    record = manager.turn("hello", model="spark", progress_token="pi-token")
     manager._close_process()
     assert record["result"].startswith("Done ")
 
 
 def test_pi_rpc_reuses_process_and_records_commands(tmp_path, monkeypatch):
     manager = _pi_manager(tmp_path, monkeypatch)
-    manager.turn("first", model="qwen")
+    manager.turn("first", model="spark")
     first_process = manager.process
-    manager.turn("second", model="qwen")
+    manager.turn("second", model="spark")
     assert manager.process is first_process
     requests = [
         json.loads(line)
@@ -845,29 +827,29 @@ def test_pi_textless_terminal_event_surfaces_error_message(tmp_path, monkeypatch
     monkeypatch.setenv("FAKE_PI_MODE", "provider-error")
     manager = _pi_manager(tmp_path, monkeypatch)
     with pytest.raises(RuntimeError) as excinfo:
-        manager.turn("hello", model="qwen")
+        manager.turn("hello", model="spark")
     assert "ECONNREFUSED" in str(excinfo.value)
 
 
 def test_pi_cancelled_switch_raises_session_conflict(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_PI_SWITCH", "cancelled")
     manager = _pi_manager(tmp_path, monkeypatch)
-    manager.turn("first", model="qwen")
+    manager.turn("first", model="spark")
     manager.session_id = None
     with pytest.raises(shim.SessionConflictError, match="pi-session"):
-        manager.turn("resume", session_id="pi-session", model="qwen")
+        manager.turn("resume", session_id="pi-session", model="spark")
     manager._close_process()
 
 
 def test_pi_failed_switch_raises_session_conflict(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_PI_SWITCH", "failed")
     manager = _pi_manager(tmp_path, monkeypatch)
-    manager.turn("first", model="qwen")
+    manager.turn("first", model="spark")
     manager.session_id = None
     with pytest.raises(
         shim.SessionConflictError, match="switch_session failed.*pi-session"
     ):
-        manager.turn("resume", session_id="pi-session", model="qwen")
+        manager.turn("resume", session_id="pi-session", model="spark")
     manager._close_process()
 
 
@@ -879,7 +861,7 @@ def test_pi_interrupt_sends_abort(tmp_path, monkeypatch):
 
     def run_turn():
         try:
-            result[0] = manager.turn("block", model="qwen")
+            result[0] = manager.turn("block", model="spark")
         except Exception as exc:
             exception[0] = exc
 
@@ -908,10 +890,10 @@ def test_pi_read_timeout_respawns(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_PI_SLEEP", "1")
     manager = _pi_manager(tmp_path, monkeypatch)
     with pytest.raises(RuntimeError, match="timed out waiting for Pi output"):
-        manager.turn("slow", model="qwen")
+        manager.turn("slow", model="spark")
     assert manager.process is None
     monkeypatch.delenv("FAKE_PI_SLEEP")
-    manager.turn("again", model="qwen")
+    manager.turn("again", model="spark")
     manager._close_process()
 
 
@@ -919,7 +901,7 @@ def test_pi_death_mid_turn_includes_stderr(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_PI_MODE", "death")
     manager = _pi_manager(tmp_path, monkeypatch)
     with pytest.raises(RuntimeError) as excinfo:
-        manager.turn("die", model="qwen")
+        manager.turn("die", model="spark")
     assert "fake pi died mid-turn" in str(excinfo.value)
     assert "exit code 17" in str(excinfo.value)
     manager._close_process()
@@ -927,9 +909,9 @@ def test_pi_death_mid_turn_includes_stderr(tmp_path, monkeypatch):
 
 def test_pi_resume_uses_session_flag(tmp_path, monkeypatch):
     manager = _pi_manager(tmp_path, monkeypatch)
-    manager.turn("first", model="qwen")
+    manager.turn("first", model="spark")
     manager.session_id = None
-    manager.turn("second", session_id="pi-session", model="qwen")
+    manager.turn("second", session_id="pi-session", model="spark")
     requests = [
         json.loads(line)
         for line in (tmp_path / "pi-rpc.jsonl").read_text().splitlines()
@@ -941,16 +923,22 @@ def test_pi_resume_uses_session_flag(tmp_path, monkeypatch):
     manager._close_process()
 
 
-def test_manager_routes_qwen_to_pi(tmp_path, monkeypatch):
+def test_manager_routes_spark_to_pi(tmp_path, monkeypatch):
     manager = shim.ProcessManager(
         tmp_path / "workspace",
         tmp_path / "fake-claude",
         tmp_path / "fake-codex",
         tmp_path / "fake-pi",
     )
+    assert manager._adapter("spark") is manager.pi
     assert manager._adapter("qwen") is manager.pi
     assert manager._adapter("luna") is manager.codex
     assert manager._adapter(None) is manager.claude
+
+
+def test_pi_model_alias_normalizes_to_spark():
+    assert shim._canonical_pi_model("qwen") == "spark"
+    assert shim._canonical_pi_model("spark") == "spark"
 
 
 def _adapter_manager(prewarm_clis):
@@ -979,7 +967,7 @@ def test_manager_explicit_model_routing_precedes_cli_fallback(prewarm_clis):
     manager = _adapter_manager(prewarm_clis)
     codex_model = next(iter(shim.CODEX_MODELS))
 
-    assert manager._adapter("qwen") is manager.pi
+    assert manager._adapter("spark") is manager.pi
     assert manager._adapter(codex_model) is manager.codex
 
 
@@ -1457,7 +1445,7 @@ def test_spawn_keeps_pi_stdin_as_a_pipe(tmp_path, monkeypatch):
 
     monkeypatch.setattr(shim.subprocess, "Popen", fake_popen)
     with pytest.raises(RuntimeError, match="stop after capturing"):
-        pi._spawn("qwen")
+        pi._spawn("spark")
     assert captured["stdin"] is subprocess.PIPE
 
 
@@ -3376,7 +3364,7 @@ def test_pi_parked_prewarm_serves_first_turn_without_respawn(
     manager.session_id = None
     parked_process = manager.process
 
-    record = manager.turn("hello", model="qwen")
+    record = manager.turn("hello", model="spark")
 
     assert manager.process is parked_process
     assert record["voice"] == "Pi completed the work."
@@ -3402,7 +3390,7 @@ def test_pi_parked_prewarm_binds_caller_session_without_conflict(
     manager.session_id = None
     parked_process = manager.process
 
-    manager.turn("resume", session_id="pi-session", model="qwen")
+    manager.turn("resume", session_id="pi-session", model="spark")
 
     assert manager.process is parked_process
     requests = [
@@ -3614,7 +3602,7 @@ def test_process_manager_forwards_adapter_specific_turn_options(monkeypatch):
     assert "progress_token" not in calls[0][1]
 
     calls.clear()
-    manager.turn("msg", session_id="s1", model="qwen", thinking="high")
+    manager.turn("msg", session_id="s1", model="spark", thinking="high")
     assert len(calls) == 1
     assert calls[0][1].get("thinking") == "high"
 
@@ -4871,7 +4859,7 @@ def test_claude_spawn_rejects_an_empty_checkout_on_a_repo_backed_session(
 
 
 def test_pi_spawn_rejects_the_git_stub_on_a_repo_backed_session(tmp_path, monkeypatch):
-    # qwen routes to Pi, and the drainer's failure taxonomy keys on this exact
+    # spark routes to Pi, and the drainer's failure taxonomy keys on this exact
     # message, so the stub has to raise it rather than start a turn.
     _install_fake_git(monkeypatch)
     checkout = tmp_path / "src"
@@ -4882,7 +4870,7 @@ def test_pi_spawn_rejects_the_git_stub_on_a_repo_backed_session(tmp_path, monkey
     pi.requires_git_checkout = True
 
     with pytest.raises(shim.StartupError, match="workspace does not exist"):
-        pi._spawn("qwen")
+        pi._spawn("spark")
 
 
 def test_hydration_clones_once_then_skips_a_usable_checkout(tmp_path, monkeypatch):
@@ -5697,7 +5685,7 @@ def test_pi_argv_constrains_the_context_budget(tmp_path, monkeypatch):
     prompt instead of the task, and the answers quietly get worse.
     """
     manager = _pi_manager(tmp_path, monkeypatch)
-    manager.turn("hello", model="qwen", system_prompt="CALLER-MARKER")
+    manager.turn("hello", model="spark", system_prompt="CALLER-MARKER")
     argv = json.loads((tmp_path / "pi-args.jsonl").read_text().splitlines()[0])
 
     # --system-prompt REPLACES pi's default coding prompt (it does not append),
@@ -5717,7 +5705,7 @@ def test_pi_argv_constrains_the_context_budget(tmp_path, monkeypatch):
         "--no-skills",
         "--no-prompt-templates",
     ):
-        assert flag in argv, "missing %s: Qwen's context budget is unguarded" % flag
+        assert flag in argv, "missing %s: model context budget is unguarded" % flag
 
     # Explicitly load the trusted extension while all discovery stays off.
     assert "--extension" in argv
@@ -5728,7 +5716,7 @@ def test_pi_argv_constrains_the_context_budget(tmp_path, monkeypatch):
 def test_pi_argv_does_not_allowlist_away_extension_tools(tmp_path, monkeypatch):
     """Pi's built-in allowlist must not block the trusted web extension."""
     manager = _pi_manager(tmp_path, monkeypatch)
-    manager.turn("hello", model="qwen")
+    manager.turn("hello", model="spark")
     argv = json.loads((tmp_path / "pi-args.jsonl").read_text().splitlines()[0])
 
     assert argv[argv.index("--extension") + 1] == shim.PI_WEB_RESEARCH_EXTENSION
@@ -5749,7 +5737,7 @@ def test_pi_models_json_declares_correct_context_window(tmp_path, monkeypatch):
     headroom in NInfer's 262144-token page pool.
     """
     manager = _pi_manager(tmp_path, monkeypatch)
-    manager.turn("hello", model="qwen")
+    manager.turn("hello", model="spark")
 
     assert (
         shim.PI_CONTEXT_WINDOW
@@ -5764,10 +5752,12 @@ def test_pi_models_json_declares_correct_context_window(tmp_path, monkeypatch):
     provider = models["providers"]["openai-completions"]
     model_dict = provider["models"][0]
 
-    assert provider["compat"]["thinkingFormat"] == "qwen-chat-template"
+    assert provider["baseUrl"] == "https://api.meta.ai/v1"
+    assert "thinkingFormat" not in provider["compat"]
+    assert model_dict["id"] == "muse-spark-1.3-contributor"
     assert model_dict["contextWindow"] == shim.PI_CONTEXT_WINDOW
     assert model_dict["maxTokens"] == shim.PI_MAX_OUTPUT_TOKENS
-    assert model_dict["reasoning"] is True
+    assert model_dict["reasoning"] is False
 
     manager._close_process()
 
@@ -5807,17 +5797,6 @@ def test_pi_settings_json_compaction_reserve_exceeds_max_output(tmp_path, monkey
     ), "Compaction reserve too small: full response may not fit when compaction fires"
 
 
-def test_pi_default_thinking_level_is_valid():
-    """The configured default must be one of pi's ThinkingLevel strings."""
-    assert shim.PI_DEFAULT_THINKING_LEVEL in {
-        "off",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-    }
-
-
 def test_pi_settings_json_keep_recent_smaller_than_usable_window(tmp_path, monkeypatch):
     """keepRecentTokens must be less than the usable window after compaction."""
     usable_after_reserve = shim.PI_CONTEXT_WINDOW - shim.PI_COMPACTION_RESERVE_TOKENS
@@ -5829,7 +5808,7 @@ def test_pi_settings_json_keep_recent_smaller_than_usable_window(tmp_path, monke
 def test_pi_settings_json_is_written_with_compaction_block(tmp_path, monkeypatch):
     """settings.json must contain pi's compaction configuration."""
     manager = _pi_manager(tmp_path, monkeypatch)
-    manager.turn("hello", model="qwen")
+    manager.turn("hello", model="spark")
 
     settings_path = tmp_path / "workspace" / ".pi" / "agent" / "settings.json"
     settings = json.loads(settings_path.read_text())
@@ -5841,7 +5820,7 @@ def test_pi_settings_json_is_written_with_compaction_block(tmp_path, monkeypatch
         settings["compaction"]["keepRecentTokens"]
         == shim.PI_COMPACTION_KEEP_RECENT_TOKENS
     )
-    assert settings["defaultThinkingLevel"] == shim.PI_DEFAULT_THINKING_LEVEL
+    assert "defaultThinkingLevel" not in settings
 
     manager._close_process()
 
@@ -5853,15 +5832,18 @@ def test_pi_settings_json_merge_preserves_unrelated_keys(tmp_path, monkeypatch):
     settings_dir = tmp_path / "workspace" / ".pi" / "agent"
     settings_dir.mkdir(parents=True, exist_ok=True)
     settings_path = settings_dir / "settings.json"
-    settings_path.write_text(json.dumps({"custom": {"key": "value"}}))
+    settings_path.write_text(
+        json.dumps({"custom": {"key": "value"}, "defaultThinkingLevel": "off"})
+    )
 
-    manager.turn("hello", model="qwen")
+    manager.turn("hello", model="spark")
 
     settings = json.loads(settings_path.read_text())
     assert settings["custom"] == {"key": "value"}, (
         "Merge did not preserve unrelated key"
     )
     assert "compaction" in settings, "Merge did not add compaction block"
+    assert "defaultThinkingLevel" not in settings
 
     manager._close_process()
 
@@ -5875,11 +5857,11 @@ def test_pi_settings_json_corrupt_file_does_not_break_spawn(tmp_path, monkeypatc
     settings_path = settings_dir / "settings.json"
     settings_path.write_text("{invalid json content")
 
-    manager.turn("hello", model="qwen")
+    manager.turn("hello", model="spark")
 
     settings = json.loads(settings_path.read_text())
     assert "compaction" in settings, "Corrupt file was not replaced with fresh content"
-    assert settings["defaultThinkingLevel"] == shim.PI_DEFAULT_THINKING_LEVEL
+    assert "defaultThinkingLevel" not in settings
 
     manager._close_process()
 
@@ -5900,7 +5882,7 @@ def test_pi_settings_json_invalid_utf8_does_not_crash(tmp_path, monkeypatch):
     settings_path.write_bytes(b"\xff\xfe\x00garbage")
 
     # This should not crash; the spawn should proceed
-    manager.turn("hello", model="qwen")
+    manager.turn("hello", model="spark")
 
     settings = json.loads(settings_path.read_text())
     assert "compaction" in settings, (
@@ -5923,7 +5905,7 @@ def test_pi_settings_json_valid_non_object_json_does_not_crash(tmp_path, monkeyp
     settings_path = settings_dir / "settings.json"
     settings_path.write_text(json.dumps([1, 2, 3]))
 
-    manager.turn("hello", model="qwen")
+    manager.turn("hello", model="spark")
 
     settings = json.loads(settings_path.read_text())
     assert isinstance(settings, dict), "Non-dict JSON should be replaced with dict"
@@ -5948,7 +5930,7 @@ def test_pi_settings_json_existing_compaction_block_replaced(tmp_path, monkeypat
         )
     )
 
-    manager.turn("hello", model="qwen")
+    manager.turn("hello", model="spark")
 
     settings = json.loads(settings_path.read_text())
     assert settings["compaction"]["enabled"] is True

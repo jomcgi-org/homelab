@@ -171,6 +171,81 @@ def test_codex_probe_independent_guard(app, monkeypatch):
     assert calls == 1
 
 
+def test_spark_session_probe_success(app, monkeypatch):
+    result = {"ok": True, "detail": "completed, destroyed", "latency_ms": 1.0}
+    recorded = {}
+
+    async def probe_spark():
+        return result
+
+    async def record(demo, outcome):
+        recorded[demo] = outcome
+
+    monkeypatch.setattr("ember_public.synthetic_probe.probe_spark", probe_spark)
+    monkeypatch.setattr("ember_public.synthetic_probe.record", record)
+
+    response = TestClient(app).post("/internal/ember/spark-session-probe")
+
+    assert response.status_code == 200
+    assert response.json() == {"spark": result}
+    assert recorded == {"spark": result}
+
+
+def test_spark_session_probe_failure_sends_notify(app, monkeypatch):
+    detail = "Spark lane failed verbatim"
+    result = {"ok": False, "detail": detail, "latency_ms": None}
+    notifications = []
+
+    async def probe_spark():
+        return result
+
+    async def record(*_):
+        return None
+
+    async def notify(message, level):
+        notifications.append({"message": message, "level": level})
+
+    monkeypatch.setattr("ember_public.synthetic_probe.probe_spark", probe_spark)
+    monkeypatch.setattr("ember_public.synthetic_probe.record", record)
+    monkeypatch.setattr(synthetic_router, "_notify", notify)
+
+    response = TestClient(app).post("/internal/ember/spark-session-probe")
+
+    assert response.status_code == 200
+    assert response.json() == {"spark": result}
+    assert notifications == [{"message": detail, "level": "warn"}]
+
+
+def test_spark_probe_has_independent_guard(app, monkeypatch):
+    calls = 0
+    result = {"ok": True, "detail": "completed", "latency_ms": 1.0}
+
+    async def probe_spark():
+        nonlocal calls
+        calls += 1
+        return result
+
+    async def record(*_):
+        return None
+
+    monkeypatch.setattr("ember_public.synthetic_probe.probe_spark", probe_spark)
+    monkeypatch.setattr("ember_public.synthetic_probe.record", record)
+    monkeypatch.setattr(synthetic_router, "_codex_probe_in_flight", True)
+
+    response = TestClient(app).post("/internal/ember/spark-session-probe")
+
+    assert response.json() == {"spark": result}
+    assert calls == 1
+
+    monkeypatch.setattr(synthetic_router, "_codex_probe_in_flight", False)
+    monkeypatch.setattr(synthetic_router, "_spark_probe_in_flight", True)
+
+    response = TestClient(app).post("/internal/ember/spark-session-probe")
+
+    assert response.json() == {"skipped": True, "detail": "already running"}
+    assert calls == 1
+
+
 def test_record_failure_propagates(app, monkeypatch):
     """A failed write must surface, so the job fails rather than going blind."""
     for demo in DEMOS:

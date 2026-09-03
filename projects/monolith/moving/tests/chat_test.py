@@ -191,8 +191,8 @@ def test_stream_endpoint_emits_sse_frames(
         async def __aexit__(self, exc_type, exc, traceback):
             return False
 
-        def stream(self, method, url, *, json):
-            captured.update(method=method, url=url, body=json)
+        def stream(self, method, url, *, headers, json):
+            captured.update(method=method, url=url, headers=headers, body=json)
             return StreamContext()
 
     monkeypatch.setattr(chat.httpx, "AsyncClient", FakeClient)
@@ -218,6 +218,8 @@ def test_stream_endpoint_emits_sse_frames(
     ]
     assert captured["method"] == "POST"
     assert captured["url"] == "http://inference.test/v1/chat/completions"
+    assert captured["headers"] == {}
+    assert captured["body"]["model"] == "muse-spark-1.3-contributor"
     assert captured["body"]["model"] == chat.MOVING_CHAT_MODEL
     assert captured["body"]["max_tokens"] == chat.MAX_TOKENS
     assert "stream_options" not in captured["body"]
@@ -253,7 +255,7 @@ def test_midstream_exception_emits_error_frame(
         async def __aexit__(self, exc_type, exc, traceback):
             return False
 
-        def stream(self, method, url, *, json):
+        def stream(self, method, url, *, headers, json):
             return StreamContext()
 
     monkeypatch.setattr(chat.httpx, "AsyncClient", FakeClient)

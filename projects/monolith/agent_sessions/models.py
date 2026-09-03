@@ -78,7 +78,7 @@ class AgentSession(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_turn_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     voice_summary: str | None = Field(default=None)
-    # Qwen-generated display name (titles.py). title_turn_seq is the turn
+    # Model-generated display name (titles.py). title_turn_seq is the turn
     # the name was generated from; the leader loop refreshes the name when
     # newer turns land. The router falls back to the first prompt when unset.
     title: str | None = Field(default=None)

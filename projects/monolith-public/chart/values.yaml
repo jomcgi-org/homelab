@@ -63,6 +63,13 @@ databaseSecretName: monolith-public-db
 onepassword:
   itemPath: ""
 
+# Meta Spark contributor-tier key for public chat. The synced Secret is read by
+# the web backend only; the frontend never receives this credential.
+metaSpark:
+  secretName: monolith-public-meta-spark
+  onepassword:
+    itemPath: ""
+
 # public_writer DB credential (ADR 005, Public Chat V3 Phase 1). The generic
 # public-tier WRITE identity on the Postgres PRIMARY (monolith-pg-rw), distinct
 # from the read-only public_reader the rest of the public tier uses. Today it is
@@ -303,6 +310,12 @@ web:
     # inference if this is unset (no hardcoded service URL in code).
     - name: CHAT_PUBLIC_INFERENCE_URL
       value: "http://inference.inference.svc.cluster.local:8080"
+    - name: META_SPARK_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: monolith-public-meta-spark
+          key: META_SPARK_API_KEY
+          optional: true
     # Public-graph retrieval (ADR 005 layer 5 / Phase 4a). EMBEDDING_URL is the
     # in-cluster embeddings endpoint the retrieval path embeds the live query
     # against; CHAT_PUBLIC_RETRIEVAL_K is the number of distinct public notes a

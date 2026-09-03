@@ -524,12 +524,16 @@ CODEX_SUBSCRIPTION_BASE_URL_ENV = "CODEX_SUBSCRIPTION_BASE_URL"
 DEFAULT_CODEX_SUBSCRIPTION_BASE_URL = "http://chatgpt.com/backend-api/"
 CODEX_DUMMY_ACCOUNT_ID = "guest-subscription-account"
 PI_MODELS = {
-    # Must match the inference server's public model id (projects/inference/deploy/
-    # values.yaml); a wrong name 404s at the provider ("The model does not
-    # exist"), proven live in #4252.
-    "qwen": "qwen3.6-27b",
+    "spark": "muse-spark-1.3-contributor",
 }
-DEFAULT_PI_MODEL = "qwen"
+PI_MODEL_ALIASES = {"qwen": "spark"}
+DEFAULT_PI_MODEL = "spark"
+
+
+def _canonical_pi_model(model):
+    """Map persisted legacy model names to the active Pi model identity."""
+    return PI_MODEL_ALIASES.get(model, model)
+
 
 # Pi gets a 120K per-session budget from NInfer's shared 262144-token KV pool.
 # NInfer has two generation lanes, so two full Pi contexts consume 245760
@@ -558,21 +562,21 @@ PI_CONTEXT_SAFETY_TOKENS = 4096
 # conversation. This is why PI_MAX_OUTPUT_TOKENS matters for compaction but not
 # for 400-safety.
 #
-# 12288, not 4096: qwen3.8 thinks before it answers and the reasoning counts
-# against this cap. At 4096 a hard task hit the cap mid-reasoning, pi ended
-# the turn with agent_end and no assistant text, and the shim raised
-# "pi turn produced no output" (3 of 5 graded long reps in the #5051
-# baseline). model-bench runs the same model at 16384 and passes 6/7 hard
-# tasks; 12288 still fits alongside pi's fixed safety margin in the compaction
-# reserve.
+# Keep the established output cap during the provider cutover. It fits beside
+# pi's fixed safety margin in the compaction reserve and remains independently
+# bounded from the caller's requested output size.
 PI_MAX_OUTPUT_TOKENS = 12288
+
+# Preserve the public turn request schema while the Meta-backed Pi adapter
+# ignores this legacy hint. No value from this set is sent to the provider.
+PI_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high")
 
 
 def _is_leaked_tool_call(text):
     """Return whether text starts with tool-call syntax as the answer.
 
-    Qwen sometimes emits a tool-call block with spurious junk closing tags,
-    NInfer's parser rejects it and returns the raw XML as content. Because
+    A provider can emit a tool-call block with spurious junk closing tags.
+    The parser rejects it and returns the raw XML as content. Because
     the turn ends stop it passes the clean check and records ok. Alternatively,
     an emission cut off by the token cap (terminal_reason: length) also begins
     with <tool_call>. The leading anchor prevents false positives from
@@ -584,33 +588,6 @@ def _is_leaked_tool_call(text):
     # The leading <tool_call> anchor prevents false positives from legitimate
     # answers that merely mention tool-call syntax in prose.
     return stripped.startswith("<tool_call>")
-
-
-# Thinking level for the pi lane. "off" makes pi send
-# chat_template_kwargs.enable_thinking=false to the qwen server, which for a
-# short task cuts generation from a full reasoning trace to a direct answer
-# (measured 32 -> 4 tokens on a trivial prompt, #5051). This is the SMALL-TASK
-# lane (chart comment), so thinking off is the intended default; flip to
-# "high" to restore full reasoning. The value must be one of pi's
-# ThinkingLevel strings: off, minimal, low, medium, high.
-PI_DEFAULT_THINKING_LEVEL = "off"
-PI_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high")
-
-
-def _resolve_thinking_level(value):
-    """Map an inbound thinking request to a valid pi ThinkingLevel.
-
-    None or an unrecognised value falls back to PI_DEFAULT_THINKING_LEVEL, so a
-    bad or missing field can never crash a turn or silently pick a wrong level.
-    A bare True means "the caller wants thinking" -> "high"; False -> "off".
-    """
-    if value is True:
-        return "high"
-    if value is False:
-        return "off"
-    if isinstance(value, str) and value in PI_THINKING_LEVELS:
-        return value
-    return PI_DEFAULT_THINKING_LEVEL
 
 
 # Compaction reserve in tokens. This must exceed PI_MAX_OUTPUT_TOKENS plus
@@ -2972,7 +2949,7 @@ wire_api = "responses"
 class PiProcess:
     """Own one long-lived Pi RPC process and bind sessions lazily."""
 
-    INFERENCE_BASE_URL = "http://inference.inference.svc.cluster.local:8080/v1"
+    INFERENCE_BASE_URL = "https://api.meta.ai/v1"
 
     # See ClaudeProcess.requires_git_checkout.
     requires_git_checkout = False
@@ -3030,14 +3007,13 @@ class PiProcess:
                     "compat": {
                         "supportsDeveloperRole": False,
                         "supportsReasoningEffort": False,
-                        "thinkingFormat": "qwen-chat-template",
                     },
                     "models": [
                         {
                             "id": PI_MODELS[DEFAULT_PI_MODEL],
                             "contextWindow": PI_CONTEXT_WINDOW,
                             "maxTokens": PI_MAX_OUTPUT_TOKENS,
-                            "reasoning": True,
+                            "reasoning": False,
                         }
                     ],
                 }
@@ -3047,10 +3023,10 @@ class PiProcess:
             json.dump(config, stream)
 
     def _write_settings_json(self, pi_home):
-        """Write pi's settings.json with managed lane configuration.
+        """Write pi's settings.json with managed compaction configuration.
 
         pi may persist unrelated keys in settings.json, so this method reads
-        any existing file, merges the compaction and thinking defaults, and
+        any existing file, merges the compaction defaults, and
         writes back. If the file is missing, unreadable, or contains invalid
         JSON, fall back to writing just those defaults without crashing the
         spawn.
@@ -3076,7 +3052,9 @@ class PiProcess:
             "reserveTokens": PI_COMPACTION_RESERVE_TOKENS,
             "keepRecentTokens": PI_COMPACTION_KEEP_RECENT_TOKENS,
         }
-        existing_settings["defaultThinkingLevel"] = PI_DEFAULT_THINKING_LEVEL
+        # Remove the retired Qwen setting from durable session workspaces so a
+        # relit session cannot keep sending chat_template_kwargs to Meta.
+        existing_settings.pop("defaultThinkingLevel", None)
 
         try:
             with open(settings_path, "w") as stream:
@@ -3091,6 +3069,7 @@ class PiProcess:
     def _spawn(self, model, system_prompt=None):
         if not _workspace_ready_for_spawn(self.workspace, self.requires_git_checkout):
             raise StartupError("workspace does not exist: %s" % self.workspace)
+        model = _canonical_pi_model(model)
         model_name = PI_MODELS.get(model, PI_MODELS[DEFAULT_PI_MODEL])
         child_env = self._child_env()
         pi_home = child_env["PI_HOME"]
@@ -3271,6 +3250,7 @@ class PiProcess:
                 process = self.process
             cli_ready_path = None
             process_was_unbound = not self.session_id
+            model = _canonical_pi_model(model)
             model_name = PI_MODELS.get(model, PI_MODELS[DEFAULT_PI_MODEL])
             if process is None or process.poll() is not None:
                 self._close_process(kill=False)
@@ -3342,13 +3322,6 @@ class PiProcess:
             try:
                 self._turn_timing_model_start = _turn_timing_now()
                 model_fallback_started_at = _turn_timing_now()
-                level = _resolve_thinking_level(thinking)
-                try:
-                    self._command({"type": "set_thinking_level", "level": level})
-                except Exception:
-                    # pi older than the RPC, or a transient RPC error, must never
-                    # fail the turn: the model just keeps its current level.
-                    pass
                 self._send({"type": "prompt", "message": message})
                 while True:
                     try:
@@ -4096,7 +4069,7 @@ class ProcessManager:
         _emit_elapsed("hydration", hydration_start, status="cloned")
 
     def _adapter(self, model):
-        if model == "qwen":
+        if model in ("spark", "qwen"):
             return self.pi
         if isinstance(model, str) and model in CODEX_MODELS:
             return self.codex

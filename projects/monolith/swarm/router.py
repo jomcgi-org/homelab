@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from goosecracker.api import REPO_CATALOG
+import shared.inference
 from swarm import config, runtime
 from swarm.compare_router import router as compare_router
 from swarm.compare_router import compare_stats
@@ -313,7 +314,13 @@ def _create_task_sync(
 
     with Session(get_engine()) as db:
         models.create_task(
-            task_id, task, repo, branch, "qwen3.6-27b", budget_usd, session=db
+            task_id,
+            task,
+            repo,
+            branch,
+            shared.inference.META_SPARK_MODEL,
+            budget_usd,
+            session=db,
         )
 
 
@@ -334,7 +341,7 @@ def _record_classification_sync(
     with Session(get_engine()) as db:
         models.record_conductor_call(
             task_id,
-            "qwen3.6-27b",
+            shared.inference.META_SPARK_MODEL,
             "classify_task",
             json.dumps({"task": task}),
             outcome,
@@ -360,7 +367,7 @@ def _record_classification_sync(
                 "implement",
                 "research",
                 task,
-                "qwen3.6-27b",
+                shared.inference.META_SPARK_MODEL,
                 "[]",
                 budget_usd if budget_usd is not None else 0,
                 False,
@@ -562,7 +569,7 @@ def promote_session(request: Request, body: PromoteSessionRequest):
         task,
         repo,
         branch,
-        "qwen3.6-27b",
+        shared.inference.META_SPARK_MODEL,
         None,
         workflow_id=result["workflow_id"],
     )

@@ -141,9 +141,9 @@ spec:
               value: {{ .Values.sandbox.workloadPrefix | quote }}
             {{- end }}
             {{- if .Values.agentSessions.piWorkload }}
-            # Override for the qwen (pi family) EmberVM workload name; the
+            # Override for the spark (pi family) EmberVM workload name; the
             # code default is pi-runtime. This is the REVERT LEVER: setting
-            # it to claude-runtime puts qwen back on the old lane by a
+            # it to claude-runtime puts spark back on the old lane by a
             # values edit, with no code deploy.
             - name: AGENT_PI_WORKLOAD
               value: {{ .Values.agentSessions.piWorkload | quote }}
@@ -157,8 +157,9 @@ spec:
             - name: AGENT_MODELS
               value: {{ .Values.agents.models | default "" | quote }}
             {{- with .Values.agents.drainer }}
-            # Qwen routine-job drainer. DRAINER_ENABLED is checked both by the
-            # internal trigger and inside the DBOS workflow.
+            # Work-queue drainer. DRAINER_ENABLED is checked both by the
+            # internal trigger and inside the DBOS workflow. Its job kind is a
+            # legacy persisted value and does not name the execution model.
             - name: DRAINER_ENABLED
               value: {{ .enabled | quote }}
             - name: DRAINER_MAX_JOBS_PER_CYCLE
@@ -250,6 +251,13 @@ spec:
               value: {{ .Values.chat.llamaCppUrl | quote }}
             - name: MOVING_CHAT_INFERENCE_URL
               value: {{ .Values.chat.movingChatInferenceUrl | quote }}
+            {{- if .Values.metaSpark.onepassword.itemPath }}
+            - name: META_SPARK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.metaSpark.secretName }}
+                  key: META_SPARK_API_KEY
+            {{- end }}
             # Pinned OpenRouter model for household content generation.
             - name: HOUSEHOLD_LLM_MODEL
               value: {{ .Values.whatsapp.model | quote }}

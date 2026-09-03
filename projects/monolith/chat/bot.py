@@ -59,7 +59,15 @@ DEFAULT_AGENT_MODEL = "luna"
 # supported_models) in a target that already depends on both, and the filter
 # below mirroring agent_sessions.offered_models, which the same test checks
 # for behavioural equality across env settings.
-_ALL_AGENT_MODEL_CHOICES = ("luna", "terra", "sol", "opus", "sonnet", "fable")
+_ALL_AGENT_MODEL_CHOICES = (
+    "luna",
+    "terra",
+    "sol",
+    "opus",
+    "sonnet",
+    "fable",
+    "spark",
+)
 
 
 def _filter_agent_models(models, configured: str) -> tuple:
@@ -490,7 +498,7 @@ async def download_image_attachments(
     vision_client: VisionClient,
     store: MessageStore | None = None,
 ) -> list[dict]:
-    """Download image attachments and describe them with Qwen 3 vision.
+    """Download image attachments and describe them with the vision model.
 
     When a store is provided, checks for an existing blob by content hash
     and reuses its description instead of calling the vision model again.

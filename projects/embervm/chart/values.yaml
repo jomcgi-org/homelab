@@ -887,7 +887,7 @@ runtimeClaude:
 
 # The runtime-pi base image: the same session-class guest as runtimeClaude (same
 # shim, same guest-init, same vsock contract) carrying ONLY the pi coding agent,
-# so a qwen turn stops paying for the claude and codex CLIs it can never invoke.
+# so a spark turn stops paying for the claude and codex CLIs it can never invoke.
 # Bazel-pinned (helm_chart images="runtimePi.guestImage") from its .info
 # provider. Distinct FLAT top-level key (never nested), per D14a.6, and the key
 # matches the `workloads.runtimePi` entry above because the deployment ranges
@@ -1726,10 +1726,8 @@ egress:
     # case-insensitive host compare (main.go allowed), so wildcards are NOT
     # supported. Adding an entry is a security decision: an agent with internal
     # reach can pivot to other cluster services. Empty list (the default) means
-    # deny-all-internal; the claude runtime needs only the public internet.
-    allowlist:
-      # Qwen adapter needs in-cluster vLLM endpoint for model inference
-      - inference.inference.svc.cluster.local:8080
+    # deny-all-internal; the runtime lanes need only the public internet.
+    allowlist: []
     # Extra CIDRs treated as internal beyond the baked private/loopback/link-local
     # ranges. This cluster's pod/service/node nets are already RFC1918.
     cidrs: []
@@ -1781,6 +1779,11 @@ egress:
   # 1Password item backing the secretRefs above, synced by the operator into a
   # Secret of the same name as the CR. Empty creates no item.
   onepassword:
+    name: ""
+    itemPath: ""
+  # Optional second item for Meta Spark. It stays separate from the shared
+  # agent credential item so its rotation and ownership remain independent.
+  metaSpark:
     name: ""
     itemPath: ""
   # Repo convention: memory requests == limits (no bursting); CPU is a request
@@ -1927,27 +1930,24 @@ claudeRuntimeWorkload:
 # claude-runtime (vsock 1027, /shim/ready, invoke at /shim/turn) served by the
 # SAME shim, from an image carrying only the pi CLI (runtimes/pi).
 #
-# The monolith still maps explicitly requested qwen sessions to family `pi`
-# (agent_sessions/__init__.py), so this workload remains enabled for persisted
-# sessions and direct callers. Production no longer offers qwen in its agent
-# catalogue, and neither the queue drainer nor an EmberVM session synthetic
-# consumes this lane. Served on claude-runtime, a qwen session would cold-boot
-# a 4096 MiB guest holding CLIs it cannot invoke. Here it is 256 MiB.
+# The monolith maps Spark sessions to family `pi` (agent_sessions/__init__.py),
+# and accepts persisted qwen values as a deprecated alias. Served on
+# claude-runtime, a Spark session would cold-boot a 4096 MiB guest holding CLIs
+# it cannot invoke. Here it is 256 MiB.
 #
 # WHY 256 MiB HOLDS, and where it stops holding. What lives in guest RAM is the
 # Bun-compiled pi binary, the stdlib-python shim, and the tmpfs the guest-init
 # mounts over /tmp and /workspace. The pi binary's code pages are mmapped from
 # the rootfs BLOCK DEVICE, so they are reclaimable page cache rather than a
-# resident cost, and pi's context is bounded hard at 30000 tokens
-# (PI_CONTEXT_WINDOW in the shim) against Qwen's 32768 window, so the JS heap
-# has a ceiling rather than a frontier model's appetite. The CRD floors memMib
+# resident cost, and pi's context is bounded by PI_CONTEXT_WINDOW in the shim,
+# so the JS heap has a ceiling rather than a frontier model's appetite. The CRD floors memMib
 # at 128 (chart/crds/workload-crd.yaml:215), so this is legal, not a special
 # case.
 #
 # It stops holding the moment a session hydrates a repository. With persistence
 # off (below) /workspace IS the tmpfs, so a checkout is spent out of these same
 # 256 MiB with no disk to fall back on. THIS IS THE SMALL-TASK LANE: probes and
-# short conversational turns, not repo-attached work. A repo-attached qwen
+# short conversational turns, not repo-attached work. A repo-attached Spark
 # session belongs on claude-runtime until this workload is given a volume.
 # Raising it is a values-only change; the honest ladder is 256 -> 512 -> a
 # persistenceEnabled flip with a workspaceSizeBytes, in that order. Deploy has
@@ -1993,7 +1993,7 @@ piRuntimeWorkload:
   cap: 2
   session:
     # 20s: a probe session is created, served and destroyed inside one call, and
-    # an interactive qwen turn is a fast round trip. A longer idle window would
+    # an interactive Spark turn is a fast round trip. A longer idle window would
     # hold cap slots for conversations that have already ended.
     idleBankSeconds: 20
     maxLifetimeSeconds: 21600
@@ -2007,7 +2007,7 @@ piRuntimeWorkload:
     invokeQueueCap: 4
   invocation:
     # 900s, the same as claude-runtime, and deliberately NOT tightened even
-    # though a bounded-context Qwen turn is far shorter than a frontier one. The
+    # though a bounded-context Spark turn is far shorter than a frontier one. The
     # ordering shim per-event 600s < CP total 900s < monolith outer 1800s is
     # load-bearing: the INNERMOST timeout has to fire first so a wedged CLI
     # returns a specific shim error instead of a generic transport cancel.

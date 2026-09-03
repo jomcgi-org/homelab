@@ -5,6 +5,7 @@ import logging
 import os
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 import httpx
 from sqlmodel import Session, select
@@ -12,12 +13,13 @@ from sqlmodel import Session, select
 from chat.models import ChannelSummary, Message, UserChannelSummary
 import shared.inference
 
+if TYPE_CHECKING:
+    import discord
+
 logger = logging.getLogger(__name__)
 
-# Output token budget. Must leave room for the prompt: the qwen3.6-27b alias has
-# a 32768-token context, so reserving the whole window for output leaves 0 tokens
-# for input and vLLM rejects every non-empty prompt with a 400. 8192 (matching the
-# vision path) is far more than a summary/changelog needs and leaves ~24k for input.
+# Output token budget shared by summaries and changelogs. It is intentionally
+# bounded so a background job cannot spend an unbounded contributor-tier turn.
 _LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "8192"))
 
 
@@ -207,7 +209,7 @@ async def run_summary_generation(
 
     Module-level entrypoint so the one-shot jobs image (jobs_main
     chat-summary-generation) can run it without the scheduler closure. Builds
-    its own LLM caller (Qwen via LLAMA_CPP_URL) when one is not injected."""
+    its own LLM caller (via LLAMA_CPP_URL) when one is not injected."""
     if llm_call is None:
         llm_call = build_llm_caller()
     await generate_summaries(session, llm_call)
@@ -409,7 +411,7 @@ async def conversational_agent_reply(
     """Rephrase an agent run's typed summary as a conversational channel reply,
     grounded in channel-scoped context.
 
-    Reuses the shared inference seam (``build_llm_caller`` -> Qwen). Raises on a
+    Reuses the shared inference seam (``build_llm_caller``). Raises on a
     model failure so the caller can fall back to the deterministic summary; the
     caller (the goose runner's ``_delivery_message``) is fail-open around this.
     """
@@ -469,7 +471,7 @@ async def conversational_chat_reply(
 
     Unlike ``conversational_agent_reply`` this does not assume an agent ran: the
     prompt answers the question directly. Reuses the shared inference seam
-    (``build_llm_caller`` -> Qwen) and raises on model failure so the caller can
+    (``build_llm_caller``) and raises on model failure so the caller can
     fail open.
     """
     context = await asyncio.to_thread(_fetch_agent_reply_context, channel_id)
@@ -483,7 +485,7 @@ _RETRYABLE_STATUS_CODES = {502, 503, 504}
 
 
 def build_llm_caller(base_url: str | None = None) -> Callable[[str], Awaitable[str]]:
-    """Create an async callable that sends a prompt to Qwen via llama.cpp."""
+    """Create an async callable for the configured OpenAI-compatible endpoint."""
     url = base_url or os.environ.get("LLAMA_CPP_URL", "")
     client = httpx.AsyncClient(timeout=httpx.Timeout(600.0))
 
@@ -493,15 +495,11 @@ def build_llm_caller(base_url: str | None = None) -> Callable[[str], Awaitable[s
             try:
                 resp = await client.post(
                     f"{url}/v1/chat/completions",
+                    headers=shared.inference.auth_headers(url),
                     json={
-                        "model": "qwen3.6-27b",
+                        "model": shared.inference.META_SPARK_MODEL,
                         "messages": [{"role": "user", "content": prompt}],
                         "max_tokens": _LLM_MAX_TOKENS,
-                        # Disable thinking so the budget is spent on the summary,
-                        # not <think> reasoning -- a thinking response puts the
-                        # reasoning in reasoning_content and returns content:null
-                        # behind a 200, which would slip past raise_for_status.
-                        **shared.inference.thinking_off(),
                     },
                 )
                 resp.raise_for_status()
@@ -510,10 +508,7 @@ def build_llm_caller(base_url: str | None = None) -> Callable[[str], Awaitable[s
                 except (KeyError, IndexError, ValueError) as e:
                     raise RuntimeError(f"unexpected LLM response shape: {e}") from e
                 if not content:
-                    raise RuntimeError(
-                        "LLM returned empty content (thinking may have consumed "
-                        "the token budget)"
-                    )
+                    raise RuntimeError("LLM returned empty content")
                 return content
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code not in _RETRYABLE_STATUS_CODES:
@@ -540,7 +535,7 @@ def build_llm_caller(base_url: str | None = None) -> Callable[[str], Awaitable[s
 
 # Household (ADR 039, amended): all generated CONTENT for the WhatsApp channel is
 # authored by a strong-but-cheap hosted model (DeepSeek V4 Flash on OpenRouter),
-# while the in-cluster Qwen is reserved for the activation classifier. The model
+# while Meta Spark is reserved for the activation classifier. The model
 # is pinned (never :auto) so replies stay attributable; the default here is the
 # floor, and HOUSEHOLD_LLM_MODEL (set from Helm values) is the source of truth in
 # a real deployment. This runs IN the monolith, which already holds
@@ -563,7 +558,7 @@ def build_openrouter_caller(
     Mirrors ``build_llm_caller`` (same retry contract, same ``str -> str`` shape)
     but targets OpenRouter with ``OPENROUTER_API_KEY`` and a pinned model. Used
     for household-tier content so the WhatsApp channel answers on DeepSeek V4
-    Flash while Discord stays on in-cluster Qwen.
+    Flash while Discord stays on Meta Spark.
     """
     url = (base_url or _OPENROUTER_BASE_URL).rstrip("/")
     model_id = model or household_model()
@@ -621,10 +616,9 @@ def concierge_caller_for_tier(
     """The content-generation caller for a tier, or None to use the default.
 
     The household tier (WhatsApp) authors content on DeepSeek V4 Flash; every
-    other tier returns None so the caller keeps its existing default (in-cluster
-    Qwen via ``build_llm_caller``). Returning None rather than the Qwen caller
-    keeps the Discord path byte-identical (it never builds a caller it would not
-    have built before).
+    other tier returns None so the caller keeps its existing default through
+    ``build_llm_caller``. Returning None avoids building a caller that would not
+    otherwise be used.
     """
     if tier == "household":
         return build_openrouter_caller()

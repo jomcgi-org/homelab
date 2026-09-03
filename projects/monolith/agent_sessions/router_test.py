@@ -305,7 +305,7 @@ def test_models_endpoint_offers_everything_when_env_unset(client, monkeypatch):
 
     assert [entry["name"] for entry in body["models"]] == list(SUPPORTED_MODELS)
     for entry in body["models"]:
-        assert entry["family"] in {"codex", "claude"}
+        assert entry["family"] in {"codex", "claude", "pi"}
 
 
 def test_models_endpoint_narrows_to_configured_list(client, monkeypatch):
@@ -314,6 +314,14 @@ def test_models_endpoint_narrows_to_configured_list(client, monkeypatch):
     body = client.get("/api/agents/models").json()
 
     assert body == {"models": [{"name": "luna", "family": "codex"}]}
+
+
+def test_models_endpoint_offers_spark_as_pi_family(client, monkeypatch):
+    monkeypatch.setenv("AGENT_MODELS", "spark")
+
+    body = client.get("/api/agents/models").json()
+
+    assert body == {"models": [{"name": "spark", "family": "pi"}]}
 
 
 def test_models_endpoint_ignores_unknown_names_and_blank_parts(client, monkeypatch):
@@ -582,15 +590,15 @@ def test_list_sessions_title_falls_back_to_pending_prompt(client, session):
     _session(session, "empty")
     session.commit()
 
-    _session(session, "named", title="Qwen picked this name")
+    _session(session, "named", title="Spark picked this name")
     body = client.get("/api/agents/sessions").json()
     titles = {item["local_session_id"]: item["title"] for item in body}
     # No completed turn yet: the queued prompt names the session, first
     # line only. A session with no turns and no queue has no title, and a
-    # Qwen-generated name always wins over the prompt fallback.
+    # A model-generated name always wins over the prompt fallback.
     assert titles["pending-only"] == "First line"
     assert titles["empty"] == ""
-    assert titles["named"] == "Qwen picked this name"
+    assert titles["named"] == "Spark picked this name"
 
 
 def test_list_sessions_exposes_ember_binding(client, session):
@@ -1299,9 +1307,11 @@ def test_send_message_gates_on_effective_model(client, session, monkeypatch):
     assert seen == ["terra"]
 
 
-@pytest.mark.parametrize("model", ["opus", "qwen"])
+@pytest.mark.parametrize(
+    ("model", "stored_model"), [("opus", "opus"), ("spark", "spark"), ("qwen", "spark")]
+)
 def test_router_start_non_codex_models_enqueue_without_broker(
-    client, session, monkeypatch, model
+    client, session, monkeypatch, model, stored_model
 ):
     calls = []
 
@@ -1335,6 +1345,10 @@ def test_router_start_non_codex_models_enqueue_without_broker(
 
     assert body["accepted"] is True
     assert body["turn"] == 1
+    row = store.get_session(session, body["session_id"])
+    pending = store.get_pending_message(session, row.id, body["turn"])
+    assert row.model == stored_model
+    assert pending.model == stored_model
     assert calls == []
 
 

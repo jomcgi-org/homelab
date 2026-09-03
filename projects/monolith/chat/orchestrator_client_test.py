@@ -194,7 +194,7 @@ _FALLBACK_ENV = {
     "OPENROUTER_API_KEY": "openrouter-key",
 }
 
-# A three-tier chain: NVIDIA primary -> DeepSeek -> in-cluster Qwen (no auth).
+# A three-tier chain: NVIDIA primary, DeepSeek, then Meta Spark.
 _CHAIN_ENV = {
     "ORCHESTRATOR_MODEL": "nvidia/nemotron-3-ultra-550b-a55b",
     "ORCHESTRATOR_BASE_URL": "https://integrate.api.nvidia.com/v1",
@@ -207,13 +207,14 @@ _CHAIN_ENV = {
                 "api_key_env": "OPENROUTER_API_KEY",
             },
             {
-                "model": "qwen3.6-27b",
-                "base_url": "http://inference.inference.svc.cluster.local:8080/v1",
-                "api_key_env": "",
+                "model": "muse-spark-1.3-contributor",
+                "base_url": "https://api.meta.ai/v1",
+                "api_key_env": "META_SPARK_API_KEY",
             },
         ]
     ),
     "OPENROUTER_API_KEY": "openrouter-key",
+    "META_SPARK_API_KEY": "meta-key",
 }
 
 
@@ -248,9 +249,9 @@ class TestCallFallback:
 
     @pytest.mark.asyncio
     async def test_walks_full_chain_to_last_provider(self):
-        """Primary and first fallback both fail; the third tier (Qwen, no auth)
+        """Primary and first fallback both fail; the third tier (Meta Spark)
         succeeds. Confirms an ordered N-tier walk, not a single fallback."""
-        payload = {"choices": [{"message": {"content": "qwen brief"}}]}
+        payload = {"choices": [{"message": {"content": "spark brief"}}]}
         instance = _mock_client(
             post_side_effect=[
                 httpx.ConnectError("nvidia 429"),
@@ -264,16 +265,12 @@ class TestCallFallback:
         ):
             result = await call("system", "user")
 
-        assert result.content == "qwen brief"
+        assert result.content == "spark brief"
         assert instance.post.call_count == 3
         third_args, third_kwargs = instance.post.call_args_list[2]
-        assert (
-            third_args[0]
-            == "http://inference.inference.svc.cluster.local:8080/v1/chat/completions"
-        )
-        # Empty api_key_env => no-auth Bearer (in-cluster Qwen).
-        assert third_kwargs["headers"]["Authorization"] == "Bearer "
-        assert third_kwargs["json"]["model"] == "qwen3.6-27b"
+        assert third_args[0] == "https://api.meta.ai/v1/chat/completions"
+        assert third_kwargs["headers"]["Authorization"] == "Bearer meta-key"
+        assert third_kwargs["json"]["model"] == "muse-spark-1.3-contributor"
 
     @pytest.mark.asyncio
     async def test_raises_when_entire_chain_fails(self):
@@ -281,7 +278,7 @@ class TestCallFallback:
             post_side_effect=[
                 httpx.ConnectError("nvidia refused"),
                 httpx.ConnectError("openrouter refused"),
-                httpx.ConnectError("qwen refused"),
+                httpx.ConnectError("meta refused"),
             ]
         )
         with (
@@ -371,14 +368,15 @@ class TestReadFallbackChain:
                         "api_key_env": "OPENROUTER_API_KEY",
                     },
                     {
-                        "model": "qwen3.6-27b",
-                        "base_url": "http://inference.inference.svc.cluster.local:8080/v1",
-                        "api_key_env": "",
+                        "model": "muse-spark-1.3-contributor",
+                        "base_url": "https://api.meta.ai/v1",
+                        "api_key_env": "META_SPARK_API_KEY",
                     },
                 ]
             ),
         )
         monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
+        monkeypatch.setenv("META_SPARK_API_KEY", "meta-key")
         chain = _read_fallback_chain()
         assert chain == [
             (
@@ -387,9 +385,9 @@ class TestReadFallbackChain:
                 "openrouter-key",
             ),
             (
-                "qwen3.6-27b",
-                "http://inference.inference.svc.cluster.local:8080/v1",
-                "",
+                "muse-spark-1.3-contributor",
+                "https://api.meta.ai/v1",
+                "meta-key",
             ),
         ]
 
