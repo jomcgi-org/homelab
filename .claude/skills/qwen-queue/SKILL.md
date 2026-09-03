@@ -11,6 +11,7 @@ session each, strictly serially, claimed by a `*/15` CronWorkflow tick. The
 lane bills nothing, so it exists to convert idle overnight capacity into
 audits, reports, and small PRs. This skill is the operating manual plus the
 improvement loop.
+The same drainer also claims `kg-drain` jobs for knowledge extraction.
 
 ## Queueing work
 

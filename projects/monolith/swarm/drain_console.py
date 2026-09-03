@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta, timezone
 
-from agent_sessions.constants import DRAINER_NODE_KEY
+from agent_sessions.constants import DRAINER_NODE_KEY, KG_NODE_KEY
 
 # Lane liveness thresholds, in seconds of checkpoint silence.
 #
@@ -35,8 +35,7 @@ from agent_sessions.constants import DRAINER_NODE_KEY
 QUIET_AFTER_SECONDS = 120
 WEDGED_AFTER_SECONDS = 600
 
-# The session key retains the legacy kind: <workflow_id>:qwen-drain:<job>.
-_SESSION_KEY_MARKER = f":{DRAINER_NODE_KEY}:"
+_SESSION_KEY_MARKERS = (f":{DRAINER_NODE_KEY}:", f":{KG_NODE_KEY}:")
 
 PROMPT_HEAD_CHARS = 160
 SUMMARY_HEAD_CHARS = 200
@@ -77,9 +76,12 @@ def job_name_from_session_key(local_session_id: str | None) -> str | None:
     The workflow id half is not parsed out because job name is the join key
     the console needs; the workflow id is carried on the session row itself.
     """
-    if not local_session_id or _SESSION_KEY_MARKER not in local_session_id:
+    if not local_session_id:
         return None
-    return local_session_id.split(_SESSION_KEY_MARKER, 1)[1] or None
+    for marker in _SESSION_KEY_MARKERS:
+        if marker in local_session_id:
+            return local_session_id.split(marker, 1)[1] or None
+    return None
 
 
 def _head(value: object, limit: int) -> str:
@@ -205,6 +207,7 @@ def compose_jobs(
             }
         entry = {
             "name": name,
+            "kind": job.get("routine_kind"),
             "state": job_state(job, now),
             "outcome": outcome,
             "prompt_head": _head(

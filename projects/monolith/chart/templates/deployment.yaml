@@ -168,8 +168,12 @@ spec:
               value: {{ .turnTimeoutSeconds | quote }}
             - name: DRAINER_STALL_THRESHOLD_SECONDS
               value: {{ .stallThresholdSeconds | quote }}
+            - name: DRAINER_JOB_KINDS
+              value: {{ join "," .jobKinds | quote }}
             - name: DRAINER_JOB_KIND
-              value: {{ .jobKind | quote }}
+              value: {{ first .jobKinds | quote }}
+            - name: DRAINER_KG_MAX_JOBS_PER_DAY
+              value: {{ .kgMaxJobsPerDay | quote }}
             - name: DRAINER_REPO
               value: {{ .repo | quote }}
             - name: DRAINER_BRANCH

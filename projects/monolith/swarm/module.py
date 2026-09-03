@@ -1,5 +1,6 @@
 from framework import Module as _Module
 
+from knowledge.api import kg_health
 from swarm.health import drainer_health
 
 
@@ -31,5 +32,5 @@ MODULE = _Module(
     register=register,
     leader_start=_leader_start,
     leader_stop=_leader_stop,
-    register_health_advisory={"drainer": drainer_health},
+    register_health_advisory={"drainer": drainer_health, "kg": kg_health},
 )

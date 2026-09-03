@@ -31,7 +31,7 @@ from sqlalchemy import bindparam, text
 from sqlmodel import Session
 
 from agent.api import list_jobs, load_drainer_settings
-from agent_sessions.constants import DRAINER_NODE_KEY
+from agent_sessions.constants import DRAINER_NODE_KEY, KG_NODE_KEY
 from core.db import get_engine
 from core.github import GITHUB_API, GITHUB_REPO
 from swarm import drain_console
@@ -184,14 +184,14 @@ def _load_drainer_sessions(limit: int = _SESSION_SCAN_LIMIT) -> list[dict]:
         """
         SELECT id, local_session_id, workflow_id, status, created_at
           FROM agent_sessions.agent_sessions
-         WHERE node_key = :node_key
+         WHERE node_key = ANY(:node_keys)
          ORDER BY id DESC
          LIMIT :limit
         """
     )
     with Session(get_engine()) as session:
         rows = session.execute(
-            sql, {"node_key": DRAINER_NODE_KEY, "limit": limit}
+            sql, {"node_keys": [DRAINER_NODE_KEY, KG_NODE_KEY], "limit": limit}
         ).fetchall()
     return [
         {
@@ -336,7 +336,7 @@ def _capped_activities(usage_json: str | None) -> tuple[list, int]:
 @router.get("/console")
 def drain_console_view() -> dict:
     settings = asdict(load_drainer_settings())
-    jobs = list_jobs(kind=settings["job_kind"])
+    jobs = list_jobs(kinds=settings["job_kinds"])
     now = datetime.now(timezone.utc)
 
     sessions = _load_drainer_sessions()
@@ -373,7 +373,7 @@ def drain_console_view() -> dict:
 
     return {
         "enabled": settings["enabled"],
-        "kind": settings["job_kind"],
+        "kinds": settings["job_kinds"],
         "settings": {
             "max_jobs_per_cycle": settings["max_jobs_per_cycle"],
             "turn_timeout_seconds": settings["turn_timeout_seconds"],
@@ -389,7 +389,7 @@ def drain_console_view() -> dict:
 @router.get("/jobs/{name}")
 def drain_job_detail(name: str) -> dict:
     settings = asdict(load_drainer_settings())
-    jobs = list_jobs(kind=settings["job_kind"])
+    jobs = list_jobs(kinds=settings["job_kinds"])
     job = next((j for j in jobs if j["name"] == name), None)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown drain job")
@@ -489,7 +489,7 @@ def requeue_drain_job(name: str) -> dict:
     from agent import routine_jobs
 
     settings = asdict(load_drainer_settings())
-    jobs = list_jobs(kind=settings["job_kind"])
+    jobs = list_jobs(kinds=settings["job_kinds"])
     job = next((j for j in jobs if j["name"] == name), None)
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown drain job")

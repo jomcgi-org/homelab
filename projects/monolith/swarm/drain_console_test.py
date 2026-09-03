@@ -63,6 +63,12 @@ class TestSessionKey:
             == "qd0828-x-onepassword-embervm"
         )
 
+    def test_parses_kg_job_name(self):
+        assert (
+            drain_console.job_name_from_session_key("wf:kg-drain:kg:raw-1")
+            == "kg:raw-1"
+        )
+
     def test_rejects_foreign_keys(self):
         assert drain_console.job_name_from_session_key("plain-uuid") is None
         assert drain_console.job_name_from_session_key(None) is None
@@ -101,6 +107,7 @@ class TestComposeJobs:
         entries = drain_console.compose_jobs(jobs, [], {}, {}, NOW)
         assert entries[0]["prompt_head"] == "Audit the thing"
         assert entries[0]["summary_head"] == "line one"
+        assert entries[0]["kind"] == "qwen-drain"
 
     def test_error_outcome_wins_over_a_pr_url(self):
         jobs = [

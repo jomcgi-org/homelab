@@ -13,7 +13,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlmodel import Session
 
 from core.db import get_engine
@@ -40,8 +40,13 @@ def _row_to_dict(row: Any) -> dict:
     return {col: getattr(row, col) for col in _ROW_COLUMNS}
 
 
-def list_jobs(due_only: bool = False, kind: str | None = None) -> list[dict]:
+def list_jobs(
+    due_only: bool = False,
+    kind: str | None = None,
+    kinds: tuple[str, ...] | list[str] | None = None,
+) -> list[dict]:
     """Return routine_jobs rows, optionally filtered to due-only and/or by kind."""
+    kind_filter = "routine_kind = ANY(:kinds)" if kinds else "TRUE"
     sql = text(
         """
         SELECT name, routine_kind, interval_secs, next_run_at, last_run_at,
@@ -54,11 +59,15 @@ def list_jobs(due_only: bool = False, kind: str | None = None) -> list[dict]:
                     AND (locked_by IS NULL
                          OR locked_at + (ttl_secs || ' seconds')::interval < now())))
            AND (CAST(:kind AS text) IS NULL OR routine_kind = CAST(:kind AS text))
+           AND ("""
+        + kind_filter
+        + """)
          ORDER BY next_run_at NULLS LAST, name
         """
     )
     with Session(get_engine()) as session:
-        rows = session.execute(sql, {"due_only": due_only, "kind": kind}).fetchall()
+        params = {"due_only": due_only, "kind": kind, "kinds": list(kinds or [])}
+        rows = session.execute(sql, params).fetchall()
     return [_row_to_dict(r) for r in rows]
 
 
@@ -66,6 +75,7 @@ def claim_job(
     holder: str,
     ttl_secs: int,
     kind: str | None = None,
+    kinds: tuple[str, ...] | list[str] | None = None,
     name: str | None = None,
 ) -> dict | None:
     """Claim a routine_jobs row, including its JSONB payload.
@@ -75,38 +85,58 @@ def claim_job(
     unclaimed row, optionally filtered by ``kind``. Uses ``SELECT FOR UPDATE
     SKIP LOCKED`` so concurrent claimers never block each other.
     """
+    engine = get_engine()
+    sqlite = engine.dialect.name == "sqlite"
+    table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
+    now_expr = "CURRENT_TIMESTAMP" if sqlite else "now()"
+    expired_expr = (
+        "datetime(locked_at, '+' || ttl_secs || ' seconds') < CURRENT_TIMESTAMP"
+        if sqlite
+        else "locked_at + (ttl_secs || ' seconds')::interval < now()"
+    )
     if name is not None:
         select_sql = text(
-            """
+            f"""
             SELECT name, locked_by, locked_at, ttl_secs
-              FROM claude_agent.routine_jobs
+              FROM {table}
              WHERE name = :name
-             FOR UPDATE
+             {"" if sqlite else "FOR UPDATE"}
             """
         )
     else:
+        if kinds and sqlite:
+            kinds_filter = "routine_kind IN :kinds"
+        elif kinds:
+            kinds_filter = "routine_kind = ANY(:kinds)"
+        else:
+            kinds_filter = "TRUE"
         select_sql = text(
-            """
+            f"""
             SELECT name, locked_by, locked_at, ttl_secs
-              FROM claude_agent.routine_jobs
+              FROM {table}
              WHERE next_run_at IS NOT NULL
-               AND next_run_at <= now()
+               AND next_run_at <= {now_expr}
                AND (
                     locked_by IS NULL
-                    OR locked_at + (ttl_secs || ' seconds')::interval < now()
+                    OR {expired_expr}
                )
                AND (CAST(:kind AS text) IS NULL OR routine_kind = CAST(:kind AS text))
+               AND ("""
+            + kinds_filter
+            + f""")
              ORDER BY next_run_at ASC
              LIMIT 1
-             FOR UPDATE SKIP LOCKED
+             {"" if sqlite else "FOR UPDATE SKIP LOCKED"}
             """
         )
+        if kinds and sqlite:
+            select_sql = select_sql.bindparams(bindparam("kinds", expanding=True))
 
     update_sql = text(
-        """
-        UPDATE claude_agent.routine_jobs
+        f"""
+        UPDATE {table}
            SET locked_by = :holder,
-               locked_at = now(),
+               locked_at = {now_expr},
                ttl_secs = :ttl
          WHERE name = :name
         RETURNING name, routine_kind, interval_secs, next_run_at, last_run_at,
@@ -119,7 +149,9 @@ def claim_job(
         if name is not None:
             row = session.execute(select_sql, {"name": name}).first()
         else:
-            row = session.execute(select_sql, {"kind": kind}).first()
+            row = session.execute(
+                select_sql, {"kind": kind, "kinds": list(kinds or [])}
+            ).first()
 
         if row is None:
             session.rollback()
@@ -131,12 +163,22 @@ def claim_job(
             and row.locked_at is not None
             and row.ttl_secs is not None
         ):
-            still_live = session.execute(
-                text(
-                    "SELECT (:locked_at + (:ttl || ' seconds')::interval) > now() AS live"
-                ),
-                {"locked_at": row.locked_at, "ttl": row.ttl_secs},
-            ).scalar()
+            if sqlite:
+                still_live = session.execute(
+                    text(
+                        "SELECT datetime(:locked_at, '+' || :ttl || ' seconds') "
+                        "> CURRENT_TIMESTAMP AS live"
+                    ),
+                    {"locked_at": row.locked_at, "ttl": row.ttl_secs},
+                ).scalar()
+            else:
+                still_live = session.execute(
+                    text(
+                        "SELECT (:locked_at + (:ttl || ' seconds')::interval) "
+                        "> now() AS live"
+                    ),
+                    {"locked_at": row.locked_at, "ttl": row.ttl_secs},
+                ).scalar()
             if still_live:
                 session.rollback()
                 return None
@@ -233,5 +275,29 @@ def trigger_job(name: str) -> bool:
     )
     with Session(get_engine()) as session:
         result = session.execute(sql, {"name": name})
+        session.commit()
+    return result.rowcount > 0
+
+
+def defer_job(name: str, seconds: int) -> bool:
+    """Re-arm a job after ``seconds`` while clearing any active claim."""
+    engine = get_engine()
+    if engine.dialect.name == "sqlite":
+        table = "routine_jobs"
+        deferred_expr = "datetime(CURRENT_TIMESTAMP, '+' || :seconds || ' seconds')"
+    else:
+        table = "claude_agent.routine_jobs"
+        deferred_expr = "now() + (:seconds || ' seconds')::interval"
+    sql = text(
+        f"""
+        UPDATE {table}
+           SET next_run_at = {deferred_expr},
+               locked_by = NULL,
+               locked_at = NULL
+         WHERE name = :name
+        """
+    )
+    with Session(get_engine()) as session:
+        result = session.execute(sql, {"name": name, "seconds": seconds})
         session.commit()
     return result.rowcount > 0

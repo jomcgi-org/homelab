@@ -27,7 +27,8 @@ class DrainerSettings:
     max_jobs_per_cycle: int
     turn_timeout_seconds: int
     stall_threshold_seconds: int
-    job_kind: str
+    job_kinds: tuple[str, ...]
+    kg_max_jobs_per_day: int
     repo: str
     branch: str
     reasoning: bool
@@ -49,6 +50,16 @@ def drainer_enabled() -> bool:
 
 
 def load_drainer_settings() -> DrainerSettings:
+    configured_kinds = os.environ.get("DRAINER_JOB_KINDS")
+    if configured_kinds is not None:
+        job_kinds = tuple(
+            kind.strip() for kind in configured_kinds.split(",") if kind.strip()
+        )
+        if not job_kinds:
+            job_kinds = ("qwen-drain", "kg-drain")
+    else:
+        legacy_kind = os.environ.get("DRAINER_JOB_KIND", "").strip()
+        job_kinds = (legacy_kind,) if legacy_kind else ("qwen-drain", "kg-drain")
     return DrainerSettings(
         enabled=drainer_enabled(),
         max_jobs_per_cycle=int(os.environ.get("DRAINER_MAX_JOBS_PER_CYCLE", "3")),
@@ -58,7 +69,8 @@ def load_drainer_settings() -> DrainerSettings:
         stall_threshold_seconds=int(
             os.environ.get("DRAINER_STALL_THRESHOLD_SECONDS", "2700")
         ),
-        job_kind=os.environ.get("DRAINER_JOB_KIND", "qwen-drain"),
+        job_kinds=job_kinds,
+        kg_max_jobs_per_day=int(os.environ.get("DRAINER_KG_MAX_JOBS_PER_DAY", "40")),
         repo=os.environ.get("DRAINER_REPO", GITHUB_REPO),
         branch=os.environ.get("DRAINER_BRANCH", "main"),
         # Drain jobs are usually multi-step repo audits, so Luna uses high

@@ -201,6 +201,10 @@ def ingest_raw_with_status(
     else:
         savepoint.commit()
         session.commit()
+    from knowledge.extraction import EXTRACTABLE_SOURCES, enqueue_extraction
+
+    if source in EXTRACTABLE_SOURCES:
+        enqueue_extraction(session, raw_id)
     logger.info("ingest_queue: ingested raw %s (source=%s)", raw_id, source)
     return raw, True
 

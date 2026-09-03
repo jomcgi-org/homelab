@@ -17,7 +17,11 @@ def load_drainer_settings():
     return _config.load_drainer_settings()
 
 
-def list_jobs(*, kind: str) -> list[dict]:
+def list_jobs(
+    *, kind: str | None = None, kinds: tuple[str, ...] | list[str] | None = None
+) -> list[dict]:
+    if kinds is not None:
+        return _routine_jobs.list_jobs(kinds=kinds)
     return _routine_jobs.list_jobs(kind=kind)
 
 

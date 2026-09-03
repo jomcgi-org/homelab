@@ -23,7 +23,8 @@ def _settings() -> DrainerSettings:
         max_jobs_per_cycle=3,
         turn_timeout_seconds=1800,
         stall_threshold_seconds=2700,
-        job_kind="qwen-drain",
+        job_kinds=("qwen-drain", "kg-drain"),
+        kg_max_jobs_per_day=40,
         repo="jomcgi/homelab",
         branch="main",
         reasoning=True,
@@ -52,7 +53,7 @@ def _job(**overrides):
 
 def _patch_common(monkeypatch, jobs, sessions=None, cycles=None, stats=None):
     monkeypatch.setattr(drain_console_router, "load_drainer_settings", _settings)
-    monkeypatch.setattr(drain_console_router, "list_jobs", lambda kind: jobs)
+    monkeypatch.setattr(drain_console_router, "list_jobs", lambda *, kinds: jobs)
     monkeypatch.setattr(
         drain_console_router, "_load_drainer_sessions", lambda limit=0: sessions or []
     )

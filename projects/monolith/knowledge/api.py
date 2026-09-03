@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from knowledge.extraction import ExtractionOutputInvalid, KG_JOB_KIND
 from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.store import KnowledgeStore  # re-exported for cross-domain typing
 
@@ -20,12 +21,18 @@ if TYPE_CHECKING:
 __all__ = [
     "KnowledgeStore",
     "MAX_GARDENER_RETRIES",
+    "ExtractionOutputInvalid",
+    "KG_JOB_KIND",
     "get_store",
     "search_notes",
     "search_public_chunks",
     "get_embedding_client",
     "ingest_raw",
     "ingest_raw_with_status",
+    "enqueue_extraction",
+    "apply_extraction",
+    "build_extraction_prompt",
+    "kg_health",
     "count_notes_review_queue",
     "count_gaps_review_queue",
     "list_tasks_daily",
@@ -81,6 +88,30 @@ def ingest_raw_with_status(
         original_url=original_url,
         extra=extra,
     )
+
+
+def enqueue_extraction(session: "Session", raw_id: str) -> bool:
+    from knowledge.extraction import enqueue_extraction as _enqueue_extraction
+
+    return _enqueue_extraction(session, raw_id)
+
+
+def apply_extraction(session: "Session", raw_id: str, result_text: str) -> dict:
+    from knowledge.extraction import apply_extraction as _apply_extraction
+
+    return _apply_extraction(session, raw_id, result_text)
+
+
+def build_extraction_prompt(session: "Session", raw) -> str:
+    from knowledge.extraction import build_extraction_prompt as _build_prompt
+
+    return _build_prompt(session, raw)
+
+
+async def kg_health() -> dict:
+    from knowledge.health import kg_health as _kg_health
+
+    return await _kg_health()
 
 
 def search_notes(session: "Session", query_embedding: list[float], **kwargs):

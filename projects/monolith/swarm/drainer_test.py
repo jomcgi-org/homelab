@@ -24,7 +24,8 @@ SETTINGS = {
     "enabled": True,
     "max_jobs_per_cycle": 3,
     "turn_timeout_seconds": 1800,
-    "job_kind": "qwen-drain",
+    "job_kinds": ("qwen-drain", "kg-drain"),
+    "kg_max_jobs_per_day": 40,
     "repo": "jomcgi-org/homelab",
     "branch": "main",
     "reasoning": True,
@@ -51,13 +52,13 @@ def _run(monkeypatch, jobs, await_turn=None, start_session=None):
     completions = []
     notifications = []
     destroys = []
-    queued = iter([*jobs, None])
+    queued = iter([{"routine_kind": "qwen-drain", **job} for job in jobs] + [None])
 
     monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: SETTINGS.copy())
     monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
 
-    def claim(ttl_secs, kind):
-        claims.append((ttl_secs, kind))
+    def claim(ttl_secs, kinds):
+        claims.append((ttl_secs, kinds))
         return next(queued)
 
     def start(*args):
@@ -105,7 +106,10 @@ def test_drain_cycle_claims_then_completes(monkeypatch):
     )
 
     assert result == {"status": "complete", "processed": 1}
-    assert claims == [(2100, "qwen-drain"), (2100, "qwen-drain")]
+    assert claims == [
+        (2100, ("qwen-drain", "kg-drain")),
+        (2100, ("qwen-drain", "kg-drain")),
+    ]
     assert starts == [
         (
             "workflow-1:qwen-drain:job-1",
@@ -122,6 +126,115 @@ def test_drain_cycle_claims_then_completes(monkeypatch):
     assert completions == [("job-1", "ok", "finished")]
     assert notifications == []
     assert destroys == [(101, "workflow-1:qwen-drain:job-1")]
+
+
+def test_kg_job_builds_prompt_uses_kg_session_and_applies(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 2)
+    prompts = []
+    applied = []
+    monkeypatch.setattr(
+        drainer, "build_kg_prompt", lambda raw_id: prompts.append(raw_id) or "kg prompt"
+    )
+    monkeypatch.setattr(
+        drainer,
+        "apply_kg_extraction",
+        lambda raw_id, output: (
+            applied.append((raw_id, output))
+            or {"atoms": ["one", "two"], "dispute": "narrowed"}
+        ),
+    )
+    job = {
+        "name": "kg:raw-1",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-1"},
+    }
+
+    result, _, starts, completions, notifications, destroys = _run(monkeypatch, [job])
+
+    assert result == {"status": "complete", "processed": 1}
+    assert prompts == ["raw-1"]
+    assert starts[0][0] == "workflow-1:kg-drain:kg:raw-1"
+    assert starts[0][1] == "kg prompt"
+    assert starts[0][6] == "kg-drain"
+    assert applied == [("raw-1", "finished")]
+    assert completions == [("kg:raw-1", "ok", "atoms=2 dispute=narrowed")]
+    assert notifications == []
+    assert destroys == [(101, "workflow-1:kg-drain:kg:raw-1")]
+
+
+def test_kg_job_applies_full_output_beyond_summary_cap(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _raw_id: "kg prompt")
+    applied = []
+    monkeypatch.setattr(
+        drainer,
+        "apply_kg_extraction",
+        lambda raw_id, output: (
+            applied.append((raw_id, output)) or {"atoms": [], "dispute": None}
+        ),
+    )
+    full_output = "x" * (drainer.SUMMARY_MAX_CHARS + 1)
+    job = {
+        "name": "kg:raw-1",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-1"},
+    }
+
+    _run(
+        monkeypatch,
+        [job],
+        await_turn=lambda *_: {
+            "result_text": full_output,
+            "terminal_reason": "stop",
+        },
+    )
+
+    assert applied == [("raw-1", full_output)]
+
+
+def test_kg_daily_cap_defers_without_processing_or_notification(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 40)
+    deferred = []
+    monkeypatch.setattr(
+        drainer,
+        "defer_drainer_job",
+        lambda name, seconds: deferred.append((name, seconds)) or True,
+    )
+    job = {
+        "name": "kg:raw-1",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-1"},
+    }
+
+    result, _, starts, completions, notifications, destroys = _run(monkeypatch, [job])
+
+    assert result == {"status": "complete", "processed": 0}
+    assert completions == [("kg:raw-1", "deferred", "kg daily cap reached")]
+    assert deferred == [("kg:raw-1", 3600)]
+    assert starts == []
+    assert notifications == []
+    assert destroys == []
+
+
+def test_invalid_kg_output_completes_error_without_notification(monkeypatch):
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _raw_id: "kg prompt")
+
+    def invalid(*_args):
+        raise drainer.ExtractionOutputInvalid("invalid extraction")
+
+    monkeypatch.setattr(drainer, "apply_kg_extraction", invalid)
+    job = {
+        "name": "kg:raw-1",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-1"},
+    }
+
+    _, _, _, completions, notifications, destroys = _run(monkeypatch, [job])
+
+    assert completions == [("kg:raw-1", "error", "invalid extraction")]
+    assert notifications == []
+    assert destroys == [(101, "workflow-1:kg-drain:kg:raw-1")]
 
 
 @pytest.mark.parametrize(
@@ -166,7 +279,8 @@ def test_reasoning_survives_replayed_settings_without_the_key():
         "enabled": True,
         "max_jobs_per_cycle": 3,
         "turn_timeout_seconds": 1800,
-        "job_kind": "qwen-drain",
+        "job_kinds": ("qwen-drain",),
+        "kg_max_jobs_per_day": 40,
         "repo": "jomcgi-org/homelab",
         "branch": "main",
     }
@@ -186,7 +300,7 @@ def test_empty_queue_exits_immediately(monkeypatch):
     result, claims, starts, completions, notifications, destroys = _run(monkeypatch, [])
 
     assert result == {"status": "complete", "processed": 0}
-    assert claims == [(2100, "qwen-drain")]
+    assert claims == [(2100, ("qwen-drain", "kg-drain"))]
     assert starts == []
     assert completions == []
     assert notifications == []
@@ -499,7 +613,7 @@ def test_claim_step_span_lives_inside_the_step_body(monkeypatch):
         lambda **_kwargs: {"name": "job-1", "payload": {"prompt": "work"}},
     )
 
-    drainer.claim_drainer_job.__wrapped__(60, "qwen-drain")
+    drainer.claim_drainer_job.__wrapped__(60, ["qwen-drain", "kg-drain"])
 
     spans = _spans_named("drain.claim_job")
     assert len(spans) == 1

@@ -9,7 +9,12 @@ from opentelemetry.context import Context
 from opentelemetry.trace import Status, StatusCode
 
 from agent import config as agent_config
-from agent_sessions.constants import CLEAN_TERMINAL_REASONS, DRAINER_NODE_KEY
+from agent_sessions.constants import (
+    CLEAN_TERMINAL_REASONS,
+    DRAINER_NODE_KEY,
+    KG_NODE_KEY,
+)
+from knowledge.api import ExtractionOutputInvalid, KG_JOB_KIND
 from swarm.steps import start_agent_session
 from swarm.tracing import set_attributes, tracer
 
@@ -33,8 +38,9 @@ def pin_drainer_settings() -> dict:
             span,
             {
                 "drain.enabled": settings["enabled"],
-                "drain.job_kind": settings["job_kind"],
+                "drain.job_kinds": ",".join(settings["job_kinds"]),
                 "drain.max_jobs_per_cycle": settings["max_jobs_per_cycle"],
+                "drain.kg_max_jobs_per_day": settings["kg_max_jobs_per_day"],
                 "drain.turn_timeout_seconds": settings["turn_timeout_seconds"],
                 "drain.reasoning": settings["reasoning"],
             },
@@ -43,21 +49,74 @@ def pin_drainer_settings() -> dict:
 
 
 @DBOS.step()
-def claim_drainer_job(ttl_secs: int, kind: str) -> dict | None:
+def claim_drainer_job(ttl_secs: int, kinds: tuple[str, ...] | list[str]) -> dict | None:
     from agent.routine_jobs import claim_job
 
     with tracer.start_as_current_span("drain.claim_job") as span:
-        job = claim_job(holder=CLAIM_HOLDER, ttl_secs=ttl_secs, kind=kind)
+        job = claim_job(holder=CLAIM_HOLDER, ttl_secs=ttl_secs, kinds=kinds)
         set_attributes(
             span,
             {
-                "drain.job_kind": kind,
+                "drain.job_kinds": ",".join(kinds),
                 "drain.ttl_seconds": ttl_secs,
                 "drain.claimed": job is not None,
                 "drain.job_name": job.get("name") if job is not None else None,
             },
         )
         return job
+
+
+@DBOS.step()
+def kg_jobs_today() -> int:
+    from core.db import get_engine
+    from sqlalchemy import text
+    from sqlmodel import Session
+
+    with Session(get_engine()) as session:
+        return int(
+            session.execute(
+                text(
+                    """
+                    SELECT count(*)
+                      FROM agent_sessions.agent_sessions
+                     WHERE node_key = :node_key
+                       AND created_at >= now() - interval '24 hours'
+                    """
+                ),
+                {"node_key": KG_NODE_KEY},
+            ).scalar_one()
+        )
+
+
+@DBOS.step()
+def defer_drainer_job(name: str, seconds: int) -> bool:
+    from agent.routine_jobs import defer_job
+
+    return defer_job(name, seconds)
+
+
+@DBOS.step()
+def build_kg_prompt(raw_id: str) -> str:
+    from core.db import get_engine
+    from knowledge.api import build_extraction_prompt
+    from knowledge.models import RawInput
+    from sqlmodel import Session, select
+
+    with Session(get_engine()) as session:
+        raw = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
+        if raw is None:
+            raise MalformedPayload(f"raw not found: {raw_id}")
+        return build_extraction_prompt(session, raw)
+
+
+@DBOS.step()
+def apply_kg_extraction(raw_id: str, result_text: str) -> dict:
+    from core.db import get_engine
+    from knowledge.api import apply_extraction
+    from sqlmodel import Session
+
+    with Session(get_engine()) as session:
+        return apply_extraction(session, raw_id, result_text)
 
 
 @DBOS.step()
@@ -183,8 +242,10 @@ def _workflow_id() -> str:
     return workflow_id
 
 
-def _session_key(workflow_id: str, job_name: str) -> str:
-    return f"{workflow_id}:{DRAINER_NODE_KEY}:{job_name}"
+def _session_key(
+    workflow_id: str, job_name: str, node_key: str = DRAINER_NODE_KEY
+) -> str:
+    return f"{workflow_id}:{node_key}:{job_name}"
 
 
 def _await_turn(session_id: int, after_seq: int, timeout_seconds: int) -> dict | None:
@@ -219,6 +280,22 @@ def _payload_values(payload: object, settings: dict) -> tuple[str, str, str, boo
     if not isinstance(reasoning, bool):
         raise MalformedPayload("reasoning must be a boolean")
     return prompt.strip(), repo.strip(), branch.strip(), reasoning
+
+
+def _kg_raw_id(payload: object) -> str:
+    if not isinstance(payload, dict):
+        raise MalformedPayload("missing raw_id in payload")
+    raw_id = payload.get("raw_id")
+    if not isinstance(raw_id, str) or not raw_id.strip():
+        raise MalformedPayload("missing raw_id in payload")
+    return raw_id.strip()
+
+
+def _job_kinds(settings: dict) -> tuple[str, ...]:
+    kinds = settings.get("job_kinds")
+    if kinds:
+        return tuple(kinds)
+    return (settings.get("job_kind", "qwen-drain"),)
 
 
 def _summary(value: object) -> str:
@@ -270,7 +347,7 @@ def drain_cycle() -> dict:
             span,
             {
                 "drain.workflow_id": workflow_id,
-                "drain.job_kind": settings["job_kind"],
+                "drain.job_kinds": ",".join(_job_kinds(settings)),
                 "drain.max_jobs_per_cycle": settings["max_jobs_per_cycle"],
             },
         )
@@ -279,16 +356,28 @@ def drain_cycle() -> dict:
         ttl_secs = settings["turn_timeout_seconds"] + CLAIM_TTL_MARGIN_SECONDS
 
         for _ in range(settings["max_jobs_per_cycle"]):
-            job = claim_drainer_job(ttl_secs, settings["job_kind"])
+            job = claim_drainer_job(ttl_secs, _job_kinds(settings))
             if job is None:
                 break
             with tracer.start_as_current_span("drain.job") as job_span:
-                processed += 1
                 name = job["name"]
-                set_attributes(job_span, {"drain.job_name": name})
+                job_kind = job["routine_kind"]
+                set_attributes(
+                    job_span, {"drain.job_name": name, "drain.job_kind": job_kind}
+                )
+
+                if job_kind == KG_JOB_KIND and kg_jobs_today() >= settings.get(
+                    "kg_max_jobs_per_day", 40
+                ):
+                    finish_drainer_job(name, "deferred", "kg daily cap reached")
+                    defer_drainer_job(name, 3600)
+                    continue
+
+                processed += 1
 
                 session_id = None
-                local_session_id = _session_key(workflow_id, name)
+                node_key = KG_NODE_KEY if job_kind == KG_JOB_KIND else DRAINER_NODE_KEY
+                local_session_id = _session_key(workflow_id, name, node_key)
                 set_attributes(
                     job_span,
                     {"drain.local_session_id": local_session_id},
@@ -297,9 +386,16 @@ def drain_cycle() -> dict:
                 # non-replaying step, to avoid double-counting on recovery.
                 start_attempted = False
                 try:
-                    prompt, repo, branch, reasoning = _payload_values(
-                        job.get("payload"), settings
-                    )
+                    if job_kind == KG_JOB_KIND:
+                        raw_id = _kg_raw_id(job.get("payload"))
+                        prompt = build_kg_prompt(raw_id)
+                        repo = settings["repo"]
+                        branch = settings["branch"]
+                        reasoning = settings.get("reasoning", False)
+                    else:
+                        prompt, repo, branch, reasoning = _payload_values(
+                            job.get("payload"), settings
+                        )
                     set_attributes(
                         job_span,
                         {
@@ -316,7 +412,7 @@ def drain_cycle() -> dict:
                         repo,
                         branch,
                         workflow_id,
-                        DRAINER_NODE_KEY,
+                        node_key,
                         None,
                         reasoning,
                     )
@@ -327,9 +423,22 @@ def drain_cycle() -> dict:
                             "turn timed out after "
                             f"{settings['turn_timeout_seconds']} seconds"
                         )
-                    finish_drainer_job(name, "ok", _completed_output(turn))
+                    output = _completed_output(turn)
+                    if job_kind == KG_JOB_KIND:
+                        result_text = str(turn.get("result_text") or "")
+                        applied = apply_kg_extraction(raw_id, result_text)
+                        summary = (
+                            f"atoms={len(applied['atoms'])} "
+                            f"dispute={applied['dispute']}"
+                        )
+                    else:
+                        summary = output
+                    finish_drainer_job(name, "ok", summary)
                     succeeded += 1
                 except MalformedPayload as exc:
+                    error = _summary(exc)
+                    finish_drainer_job(name, "error", error)
+                except ExtractionOutputInvalid as exc:
                     error = _summary(exc)
                     finish_drainer_job(name, "error", error)
                 except Exception as exc:  # noqa: BLE001 - one job must not stop the cycle

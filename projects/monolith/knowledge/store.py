@@ -228,6 +228,7 @@ class KnowledgeStore:
         vectors: list[list[float]],
         links: list[Link],
         content: str | None = None,
+        commit: bool = True,
     ) -> None:
         # Wrap delete+insert in a SAVEPOINT so a mid-insert failure rolls
         # back the cascade deletes — the existing row is preserved even if
@@ -358,7 +359,10 @@ class KnowledgeStore:
                     )
             self.session.flush()
 
-        self.session.commit()
+        if commit:
+            self.session.commit()
+        else:
+            self.session.flush()
 
     def search_notes(
         self,

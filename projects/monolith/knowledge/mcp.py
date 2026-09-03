@@ -21,6 +21,7 @@ from knowledge import notes as notes_module
 from knowledge.gaps import answer_gap as _answer_gap
 from knowledge.gaps import list_review_queue, resolve_gaps_for_note, split_csv
 from knowledge.gaps import set_gap_class as _set_gap_class
+from knowledge.atoms import index_atom
 from knowledge.gardener import GARDENER_VERSION, _slugify
 from knowledge.indexing import index_note_from_raw, reindex_note_with_edits
 from knowledge.models import AtomRawProvenance, RawInput
@@ -30,6 +31,17 @@ from knowledge.store import KnowledgeStore
 from shared.embedding import EmbeddingClient
 
 logger = logging.getLogger(__name__)
+
+
+async def _index_atom(session: Session, **kwargs) -> str:
+    """Compatibility seam around the shared atom core for existing callers."""
+    return await index_atom(
+        session,
+        **kwargs,
+        _store_factory=KnowledgeStore,
+        _embedding_client_factory=EmbeddingClient,
+        _indexer=index_note_from_raw,
+    )
 
 
 @mcp.tool
@@ -494,101 +506,6 @@ async def get_raw(raw_id: str) -> dict:
     if content is None:
         return {"error": f"raw content not in object storage: {raw_id}"}
     return {"raw_id": raw_id, "content": content, "source": source}
-
-
-async def _index_atom(
-    session: Session,
-    *,
-    title: str,
-    body: str,
-    type: str,
-    visibility: str,
-    source_tier: str | None = None,
-    tags: list[str] | None = None,
-    aliases: list[str] | None = None,
-    edges: dict[str, list[str]] | None = None,
-    derived_from_raw: str | None = None,
-    status: str | None = None,
-    size: str | None = None,
-    due: str | None = None,
-    blocked_by: list[str] | None = None,
-    scope: str | None = None,
-    verification_state: str | None = None,
-    confidence: float | None = None,
-    valid_from: str | None = None,
-    valid_until: str | None = None,
-    observed_at: str | None = None,
-) -> str:
-    """Build and index a fileless atom into Postgres, returning its note_id.
-
-    The shared core behind both create_atom (gardener and research routine)
-    and answer_gap (user-answered gaps). Resolves a DB-unique note_id from the
-    slugified title, serializes frontmatter, and indexes the note under the
-    open session. source_tier is emitted only when provided (create_atom never
-    sets it, answer_gap sets personal).
-
-    The caller owns the gap-resolution step (resolve_gaps_for_note): it lives
-    in create_atom only, so callers that manage their own gap state
-    (answer_gap) do not double-resolve.
-    """
-    store = KnowledgeStore(session)
-
-    # Resolve a unique note_id against the DB (fileless: no filesystem
-    # collision check). The slug stem becomes the stable id.
-    base = _slugify(title)
-    note_id = base
-    counter = 1
-    while store.get_note_by_id(note_id) is not None:
-        note_id = f"{base}-{counter}"
-        counter += 1
-
-    fm_dict: dict[str, object] = {
-        "id": note_id,
-        "title": title,
-        "type": type,
-        "visibility": visibility,
-    }
-    if source_tier is not None:
-        fm_dict["source_tier"] = source_tier
-    if derived_from_raw is not None:
-        fm_dict["derived_from_raw"] = derived_from_raw
-    if scope is not None:
-        fm_dict["scope"] = scope
-    if verification_state is not None:
-        fm_dict["verification_state"] = verification_state
-    if confidence is not None:
-        fm_dict["confidence"] = confidence
-    if valid_from is not None:
-        fm_dict["valid_from"] = valid_from
-    if valid_until is not None:
-        fm_dict["valid_until"] = valid_until
-    if observed_at is not None:
-        fm_dict["observed_at"] = observed_at
-    if tags:
-        fm_dict["tags"] = list(tags)
-    if aliases:
-        fm_dict["aliases"] = list(aliases)
-    if edges:
-        fm_dict["edges"] = {k: list(v) for k, v in edges.items()}
-    if type == "active":
-        fm_dict["status"] = status
-        fm_dict["size"] = size
-        if due is not None:
-            fm_dict["due"] = due
-        if blocked_by:
-            fm_dict["blocked_by"] = list(blocked_by)
-
-    fm_str = yaml.dump(fm_dict, default_flow_style=False, sort_keys=False)
-    raw = f"---\n{fm_str}---\n\n{body.strip()}\n"
-
-    await index_note_from_raw(
-        store,
-        EmbeddingClient(),
-        note_id=note_id,
-        rel_path=f"_processed/{note_id}.md",
-        raw=raw,
-    )
-    return note_id
 
 
 @mcp.tool

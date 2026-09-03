@@ -275,7 +275,7 @@ def drain_lane_status() -> dict:
     from agent.api import list_jobs, load_drainer_settings
 
     settings = load_drainer_settings()
-    jobs = list_jobs(kind=settings.job_kind)
+    jobs = list_jobs(kinds=settings.job_kinds)
     # This mirrors the due-and-claimable predicate swarm.health computes in
     # SQL for the drainer health component; keep the two in agreement.
     now = datetime.now(timezone.utc)
@@ -316,7 +316,7 @@ def drain_lane_status() -> dict:
     )
     return {
         "enabled": settings.enabled,
-        "kind": settings.job_kind,
+        "kinds": settings.job_kinds,
         "running": running,
         "due_count": due_count,
         "last": last,

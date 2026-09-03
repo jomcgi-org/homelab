@@ -19,7 +19,7 @@ class TestSlugify:
 
 class TestSurvivingConstants:
     def test_gardener_version_stamp(self):
-        assert GARDENER_VERSION == "claude-sonnet-4-6@v1"
+        assert GARDENER_VERSION == "kg-drain/luna@v1"
 
     def test_max_retries_ceiling(self):
         assert MAX_GARDENER_RETRIES == 3

@@ -50,7 +50,8 @@ def _drainer_settings(**overrides) -> DrainerSettings:
         "max_jobs_per_cycle": 3,
         "turn_timeout_seconds": 1800,
         "stall_threshold_seconds": 2700,
-        "job_kind": "qwen-drain",
+        "job_kinds": ("qwen-drain", "kg-drain"),
+        "kg_max_jobs_per_day": 40,
         "repo": "jomcgi-org/homelab",
         "branch": "main",
         "reasoning": True,
@@ -97,11 +98,11 @@ def _register_health_job(
 
 
 def _health(session: Session) -> dict:
-    return health._drainer_health_core(session, "qwen-drain", 2700)
+    return health._drainer_health_core(session, ["qwen-drain", "kg-drain"], 2700)
 
 
 def test_module_registers_private_drainer_advisory():
-    assert MODULE.register_health_advisory == {"drainer": health.drainer_health}
+    assert set(MODULE.register_health_advisory) == {"drainer", "kg"}
     assert MODULE.register_public is None
 
 
@@ -296,7 +297,8 @@ def test_errored_one_shot_finishes_once_and_stays_not_due(
         "enabled": True,
         "max_jobs_per_cycle": 3,
         "turn_timeout_seconds": 1800,
-        "job_kind": "qwen-drain",
+        "job_kinds": ("qwen-drain", "kg-drain"),
+        "kg_max_jobs_per_day": 40,
         "repo": "jomcgi-org/homelab",
         "branch": "main",
         "reasoning": True,

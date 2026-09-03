@@ -163,20 +163,21 @@ def test_drain_lane_classifies_running_due_and_last(client, monkeypatch):
             max_jobs_per_cycle=3,
             turn_timeout_seconds=1800,
             stall_threshold_seconds=2700,
-            job_kind="qwen-drain",
+            job_kinds=("qwen-drain", "kg-drain"),
+            kg_max_jobs_per_day=40,
             repo="acme/repo",
             branch="main",
             reasoning=True,
         ),
     )
-    monkeypatch.setattr(routine_jobs, "list_jobs", lambda *, kind: jobs)
+    monkeypatch.setattr(routine_jobs, "list_jobs", lambda *, kinds: jobs)
 
     response = client.get("/api/agents/drain-lane")
 
     assert response.status_code == 200
     assert response.json() == {
         "enabled": True,
-        "kind": "qwen-drain",
+        "kinds": ["qwen-drain", "kg-drain"],
         "running": [{"name": "running-job", "locked_at": running_at.isoformat()}],
         "due_count": 2,
         "last": {
@@ -196,20 +197,21 @@ def test_drain_lane_empty(client, monkeypatch):
             max_jobs_per_cycle=3,
             turn_timeout_seconds=1800,
             stall_threshold_seconds=2700,
-            job_kind="qwen-drain",
+            job_kinds=("qwen-drain", "kg-drain"),
+            kg_max_jobs_per_day=40,
             repo="acme/repo",
             branch="main",
             reasoning=True,
         ),
     )
-    monkeypatch.setattr(routine_jobs, "list_jobs", lambda *, kind: [])
+    monkeypatch.setattr(routine_jobs, "list_jobs", lambda *, kinds: [])
 
     response = client.get("/api/agents/drain-lane")
 
     assert response.status_code == 200
     assert response.json() == {
         "enabled": False,
-        "kind": "qwen-drain",
+        "kinds": ["qwen-drain", "kg-drain"],
         "running": [],
         "due_count": 0,
         "last": None,

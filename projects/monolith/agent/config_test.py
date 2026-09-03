@@ -34,7 +34,9 @@ def test_drainer_defaults(monkeypatch):
         "DRAINER_MAX_JOBS_PER_CYCLE",
         "DRAINER_TURN_TIMEOUT_SECONDS",
         "DRAINER_STALL_THRESHOLD_SECONDS",
+        "DRAINER_JOB_KINDS",
         "DRAINER_JOB_KIND",
+        "DRAINER_KG_MAX_JOBS_PER_DAY",
         "DRAINER_REPO",
         "DRAINER_BRANCH",
         "DRAINER_REASONING",
@@ -47,7 +49,8 @@ def test_drainer_defaults(monkeypatch):
     assert settings.max_jobs_per_cycle == 3
     assert settings.turn_timeout_seconds == 1800
     assert settings.stall_threshold_seconds == 2700
-    assert settings.job_kind == "qwen-drain"
+    assert settings.job_kinds == ("qwen-drain", "kg-drain")
+    assert settings.kg_max_jobs_per_day == 40
     assert settings.repo == GITHUB_REPO
     assert settings.repo in REPO_CATALOG
     assert settings.branch == "main"
@@ -61,7 +64,9 @@ def test_drainer_environment_overrides(monkeypatch):
     monkeypatch.setenv("DRAINER_MAX_JOBS_PER_CYCLE", "5")
     monkeypatch.setenv("DRAINER_TURN_TIMEOUT_SECONDS", "42")
     monkeypatch.setenv("DRAINER_STALL_THRESHOLD_SECONDS", "84")
-    monkeypatch.setenv("DRAINER_JOB_KIND", "custom-drain")
+    monkeypatch.setenv("DRAINER_JOB_KINDS", "custom-drain, kg-drain")
+    monkeypatch.setenv("DRAINER_JOB_KIND", "legacy-ignored")
+    monkeypatch.setenv("DRAINER_KG_MAX_JOBS_PER_DAY", "12")
     monkeypatch.setenv("DRAINER_REPO", "weave-hand/loom")
     monkeypatch.setenv("DRAINER_BRANCH", "work")
     monkeypatch.setenv("DRAINER_REASONING", "false")
@@ -74,6 +79,14 @@ def test_drainer_environment_overrides(monkeypatch):
     assert settings.max_jobs_per_cycle == 5
     assert settings.turn_timeout_seconds == 42
     assert settings.stall_threshold_seconds == 84
-    assert settings.job_kind == "custom-drain"
+    assert settings.job_kinds == ("custom-drain", "kg-drain")
+    assert settings.kg_max_jobs_per_day == 12
     assert settings.repo == "weave-hand/loom"
     assert settings.branch == "work"
+
+
+def test_drainer_legacy_kind_fallback(monkeypatch):
+    monkeypatch.delenv("DRAINER_JOB_KINDS", raising=False)
+    monkeypatch.setenv("DRAINER_JOB_KIND", "legacy-drain,with-comma")
+
+    assert load_drainer_settings().job_kinds == ("legacy-drain,with-comma",)
