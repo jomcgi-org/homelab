@@ -11,6 +11,13 @@ DEFAULT_ALLOWLIST = {
     "jomcgi/homelab": "repo:jomcgi-org/homelab",
 }
 
+DEFAULT_PATH_ALLOWLIST = {
+    Path("/tmp/claude-worktrees"): "jomcgi-org/homelab",
+    Path("/private/tmp/claude-worktrees"): "jomcgi-org/homelab",
+    Path.home() / "repos/ft-worktrees": "jomcgi-org/homelab",
+    Path.home() / "repos/homelab": "jomcgi-org/homelab",
+}
+
 
 def normalize_origin(origin: str) -> str | None:
     value = origin.strip()
@@ -41,6 +48,18 @@ def parse_allowlist(values: list[str] | None) -> dict[str, str]:
     return result
 
 
+def parse_path_allowlist(values: list[str] | None) -> dict[Path, str]:
+    if not values:
+        return dict(DEFAULT_PATH_ALLOWLIST)
+    result: dict[Path, str] = {}
+    for value in values:
+        prefix, separator, repo = value.partition("=")
+        if not separator or not prefix or not repo:
+            raise ValueError(f"invalid --allow-path value: {value}")
+        result[Path(prefix).expanduser()] = repo
+    return result
+
+
 def allowed_scope(repo: str | None, allowlist: dict[str, str]) -> str | None:
     return allowlist.get(repo or "")
 
@@ -52,7 +71,11 @@ def _remembered_repo(cwd: str, state: dict[str, dict[str, object]]) -> str | Non
     return None
 
 
-def discover_repo(cwd: str, state: dict[str, dict[str, object]]) -> str | None:
+def discover_repo(
+    cwd: str,
+    state: dict[str, dict[str, object]],
+    path_allowlist: dict[Path, str] | None = None,
+) -> str | None:
     directory = Path(cwd).expanduser()
     if cwd and directory.is_dir():
         result = subprocess.run(
@@ -69,6 +92,10 @@ def discover_repo(cwd: str, state: dict[str, dict[str, object]]) -> str | None:
     remembered = _remembered_repo(cwd, state)
     if remembered:
         return remembered
-    if "homelab" in Path(cwd).parts:
-        return "jomcgi-org/homelab"
+    allowed_paths = DEFAULT_PATH_ALLOWLIST if path_allowlist is None else path_allowlist
+    for prefix, repo in sorted(
+        allowed_paths.items(), key=lambda item: len(item[0].parts), reverse=True
+    ):
+        if directory.is_relative_to(prefix.expanduser()):
+            return repo
     return None

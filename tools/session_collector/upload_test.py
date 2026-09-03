@@ -1,6 +1,8 @@
 import json
 import os
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
@@ -51,6 +53,7 @@ def _run(tmp_path, transport, **overrides):
         "codex_dir": codex_dir,
         "state_file": tmp_path / "state.json",
         "allowlist": ALLOW,
+        "path_allowlist": {tmp_path: "jomcgi-org/homelab"},
         "quiet_minutes": 0,
         "max_uploads": 20,
         "client": httpx.Client(transport=httpx.MockTransport(transport)),
@@ -160,3 +163,83 @@ def test_outside_allowlist_is_recorded_as_skipped(tmp_path):
     entry = load(options["state_file"])[str(transcript.resolve())]
     assert entry["status"] == "skipped"
     assert entry["reason"] == "outside allowlist"
+
+
+def test_deleted_discovered_file_does_not_abort_other_uploads(tmp_path, monkeypatch):
+    calls = 0
+
+    def transport(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(201, json={"raw_id": "raw", "created": True})
+
+    claude_dir, options = _run(tmp_path, transport)
+    deleted = _session(claude_dir, "one", str(tmp_path / "homelab"))
+    uploaded = _session(claude_dir, "two", str(tmp_path / "homelab"))
+
+    def discover_then_delete(*args):
+        deleted.unlink()
+        return [deleted.resolve(), uploaded.resolve()]
+
+    monkeypatch.setattr(
+        "tools.session_collector.collector.discover", discover_then_delete
+    )
+    assert run_collection(**options) == 0
+    assert calls == 1
+    assert str(deleted.resolve()) not in load(options["state_file"])
+    assert load(options["state_file"])[str(uploaded.resolve())]["status"] == "uploaded"
+
+
+def test_three_failures_park_sessions_and_release_budget(tmp_path):
+    attempts = []
+
+    def transport(request):
+        attempts.append(json.loads(request.content)["original_url"])
+        return httpx.Response(500)
+
+    claude_dir, options = _run(tmp_path, transport, max_uploads=2)
+    one = _session(claude_dir, "a", str(tmp_path / "homelab"))
+    two = _session(claude_dir, "b", str(tmp_path / "homelab"))
+    three = _session(claude_dir, "c", str(tmp_path / "homelab"))
+    for _ in range(4):
+        assert run_collection(**options) == 0
+    state = load(options["state_file"])
+    assert state[str(one.resolve())]["failures"] == 3
+    assert state[str(two.resolve())]["failures"] == 3
+    assert state[str(three.resolve())]["failures"] == 1
+    assert attempts[-1] == "claude-session:c"
+
+
+def test_git_probe_timeout_is_skipped_and_collection_continues(tmp_path, monkeypatch):
+    calls = 0
+
+    def transport(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(201, json={"raw_id": "raw-two", "created": True})
+
+    claude_dir, options = _run(tmp_path, transport, path_allowlist={})
+    first_repo = tmp_path / "first-repo"
+    second_repo = tmp_path / "second-repo"
+    first_repo.mkdir()
+    second_repo.mkdir()
+    first = _session(claude_dir, "one", str(first_repo))
+    second = _session(claude_dir, "two", str(second_repo))
+    probes = 0
+
+    def git_probe(*args, **kwargs):
+        nonlocal probes
+        probes += 1
+        if probes == 1:
+            raise subprocess.TimeoutExpired("git", 10)
+        return SimpleNamespace(
+            returncode=0, stdout="git@github.com:jomcgi-org/homelab.git\n"
+        )
+
+    monkeypatch.setattr("tools.session_collector.scope.subprocess.run", git_probe)
+    assert run_collection(**options) == 0
+    state = load(options["state_file"])
+    assert state[str(first.resolve())]["status"] == "skipped"
+    assert state[str(first.resolve())]["reason"] == "scope_error"
+    assert state[str(second.resolve())]["status"] == "uploaded"
+    assert calls == 1

@@ -9,6 +9,11 @@ from typing import Any
 from .models import Block, Session, Turn
 
 FORMAT_VERSION = "claude-v1"
+IGNORED_USER_PREFIXES = (
+    "<command-name>",
+    "<local-command-stdout>",
+    "[Request interrupted",
+)
 
 
 def _texts(content: object) -> list[str]:
@@ -78,7 +83,11 @@ def parse(path: Path) -> Session:
 
         content = message.get("content")
         if record_type == "user":
-            user_texts = _texts(content)
+            user_texts = [
+                text
+                for text in _texts(content)
+                if not text.startswith(IGNORED_USER_PREFIXES)
+            ]
             if user_texts:
                 current = Turn()
                 turns.append(current)

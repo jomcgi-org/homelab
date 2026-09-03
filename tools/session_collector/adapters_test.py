@@ -18,6 +18,29 @@ def test_claude_fixture_turns_and_drops_records():
     assert "private chain of thought" not in output.markdown
     assert "must disappear" not in output.markdown
     assert "DROP_" not in output.markdown
+    assert output.markdown.count("## Turn ") == 2
+    assert "<command-name>" not in output.markdown
+    assert "<local-command-stdout>" not in output.markdown
+    assert "[Request interrupted" not in output.markdown
+
+
+def test_claude_command_boilerplate_is_not_a_title_or_turn(tmp_path):
+    path = tmp_path / "commands.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                '{"type":"user","message":{"content":"<command-name>/compact</command-name>"}}',
+                '{"type":"user","message":{"content":"<local-command-stdout>done</local-command-stdout>"}}',
+                '{"type":"user","message":{"content":"[Request interrupted by user]"}}',
+                '{"type":"user","message":{"content":"Real request"}}',
+            ]
+        )
+        + "\n"
+    )
+    session = claude_v1.parse(path)
+    assert session.title == "Real request"
+    assert len(session.turns) == 1
+    assert session.turns[0].blocks == [Block("user", "Real request")]
 
 
 def test_codex_fixture_turns_and_drops_records():
