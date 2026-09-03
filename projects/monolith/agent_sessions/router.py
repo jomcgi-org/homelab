@@ -31,6 +31,7 @@ from agent_sessions.constants import (
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.mcp import (
     _append_rationale_trailer,
+    _activate_session_after_enqueue,
     _clear_ember_bindings_for,
     _load_session_row,
     _mark_ui_originated,
@@ -177,6 +178,9 @@ def _session_payload(
         "triggered_by": row.triggered_by,
         "model": row.model,
         "status": row.status,
+        "recovery_workspace_loss": (
+            row.recovery_workspace_loss if row.status == "recovering" else None
+        ),
         "title": row.title or _fallback_title(first_turn_prompt, first_pending_prompt),
         "ember_session_id": row.ember_session_id,
         "created_at": _iso(row.created_at),
@@ -688,7 +692,12 @@ def get_session_detail(
     ).all()
     return {
         "session": _session_payload(
-            row, turn_count, total_cost_usd, pending_count, first_turn, first_pending
+            row,
+            turn_count,
+            total_cost_usd,
+            pending_count,
+            first_turn,
+            first_pending,
         ),
         "turns": [
             {
@@ -999,11 +1008,30 @@ async def send_message(session_id: int, request: MessageRequest) -> dict:
             ),
         }
     effective_model = requested_model or session_model
-    turn = await asyncio.to_thread(
-        _persist_pending_message, session_id, request.prompt, effective_model
-    )
+    try:
+        await mcp.recover_zombie_session_if_needed(session_id)
+    except Exception:  # noqa: BLE001 - recovery cannot reject or lose a send
+        logger.exception("Recovery check failed for session %s", session_id)
+    try:
+        turn = await asyncio.to_thread(
+            _persist_pending_message, session_id, request.prompt, effective_model
+        )
+    except Exception:  # noqa: BLE001 - send gates return structured failures
+        logger.exception("Could not persist message for session %s", session_id)
+        return {
+            "accepted": False,
+            "error": "Could not queue message",
+            "session_id": session_id,
+        }
     # Queued from the UI, so its result does not get echoed to Discord.
     _mark_ui_originated(session_id, turn)
+    try:
+        activated = await asyncio.to_thread(_activate_session_after_enqueue, session_id)
+    except Exception:  # noqa: BLE001 - the durable queue remains the backstop
+        logger.exception("Could not activate queued session %s", session_id)
+        activated = False
+    if not activated:
+        return {"accepted": True, "session_id": session_id, "turn": turn}
     login = await codex_login_gate(effective_model)
     if login is not None:
         await asyncio.to_thread(_set_session_status, session_id, "awaiting_login")
@@ -1019,7 +1047,6 @@ async def send_message(session_id: int, request: MessageRequest) -> dict:
             "session_id": session_id,
             "turn": turn,
         }
-    await asyncio.to_thread(_set_session_status, session_id, "running")
     _schedule_next_message(session_id)
     return {"accepted": True, "session_id": session_id, "turn": turn}
 

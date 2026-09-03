@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
-from sqlmodel.pool import StaticPool
 
 from agent_sessions import mcp, model_family, store, voice
-from agent_sessions.models import AgentSession, AgentTurn
+from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
 from agent_sessions.transport import EmberSession, EmberSessionGone, Turn
 from faas.embervm_client import EmberVMTransportError
 
@@ -462,6 +462,136 @@ def test_concurrent_executors_on_first_turn_run_once(monkeypatch, session):
     assert executions == ["hello"]
     assert store.get_turn(session, result["session_id"], 1) is not None
     assert store.get_pending_message(session, result["session_id"], 1) is None
+
+
+def test_zombie_recovery_cas_has_one_winner(session):
+    now = datetime.now(timezone.utc)
+    row = store.create_session(session, "zombie-cas", "<guest>", "main")
+    session.add_all(
+        [
+            PendingMessage(
+                session_id=row.id,
+                seq=1,
+                message_text="original",
+                created_at=now - timedelta(seconds=181),
+            )
+        ]
+    )
+    session.commit()
+    cutoff = now - timedelta(seconds=180)
+
+    async def claim_twice():
+        return await asyncio.gather(
+            asyncio.to_thread(
+                mcp._claim_zombie_session_recovery_sync, row.id, cutoff, now
+            ),
+            asyncio.to_thread(
+                mcp._claim_zombie_session_recovery_sync, row.id, cutoff, now
+            ),
+        )
+
+    claims = asyncio.run(claim_twice())
+
+    assert sum(claim is not None for claim in claims) == 1
+    session.expire_all()
+    assert store.get_session(session, row.id).status == "recovering"
+
+
+def test_zombie_recovery_surfaces_status_and_retries_prompt(monkeypatch, session):
+    now = datetime.now(timezone.utc)
+    row = store.create_session(
+        session,
+        "zombie-flow",
+        "<guest>",
+        "main",
+        model="luna",
+        repo="jomcgi/homelab",
+    )
+    row.ember_session_id = "ember-dead"
+    row.ember_session_token = "token-dead"
+    session.add_all(
+        [
+            row,
+            PendingMessage(
+                session_id=row.id,
+                seq=1,
+                message_text="keep the original prompt",
+                model="luna",
+                claimed_by_replica="dead-pod",
+                claimed_at=now - timedelta(seconds=181),
+                created_at=now - timedelta(seconds=181),
+            ),
+            PendingMessage(
+                session_id=row.id,
+                seq=2,
+                message_text="queued follow-up",
+                model="luna",
+            ),
+        ]
+    )
+    session.commit()
+    scheduled = []
+    destroy_started = asyncio.Event()
+    finish_destroy = asyncio.Event()
+
+    async def destroy(ember_session_id):
+        assert ember_session_id == "ember-dead"
+        destroy_started.set()
+        await finish_destroy.wait()
+        return {"status": "destroyed"}
+
+    monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
+    monkeypatch.setattr(mcp, "_schedule_next_message", scheduled.append)
+
+    async def recover():
+        task = asyncio.create_task(
+            mcp.recover_zombie_session_if_needed(row.id, now=now)
+        )
+        await destroy_started.wait()
+        recovering = await asyncio.to_thread(mcp._load_session_row, row.id)
+        finish_destroy.set()
+        result = await task
+        return recovering, result
+
+    recovering, result = asyncio.run(recover())
+
+    assert recovering.status == "recovering"
+    assert recovering.recovery_workspace_loss is True
+    assert result["retry_seq"] == 1
+    session.expire_all()
+    pending = session.exec(
+        select(PendingMessage)
+        .where(PendingMessage.session_id == row.id)
+        .order_by(PendingMessage.seq)
+    ).all()
+    assert [(message.seq, message.message_text) for message in pending] == [
+        (1, "keep the original prompt"),
+        (2, "queued follow-up"),
+    ]
+    recovered_session = store.get_session(session, row.id)
+    assert recovered_session.status == "running"
+    assert recovered_session.ember_session_id is None
+    assert recovered_session.recovery_workspace_loss is None
+    assert recovered_session.recovery_completed_at is not None
+    assert scheduled == [row.id]
+
+    executions = []
+
+    async def deliver(_ember, _cli, message, _model, **_kwargs):
+        executions.append(message)
+        return _completed_turn(message), EmberSession("ember-new", "token-new", None)
+
+    async def no_notify(*_args):
+        return None
+
+    monkeypatch.setattr(mcp._transport, "deliver", deliver)
+    monkeypatch.setattr(mcp, "_notify_terminal", no_notify)
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+
+    asyncio.run(mcp._execute_pending_message(row.id))
+    asyncio.run(mcp._execute_pending_message(row.id))
+
+    assert executions == ["keep the original prompt", "queued follow-up"]
 
 
 def _completed_turn(message: str) -> Turn:
@@ -982,12 +1112,15 @@ def test_send_with_live_binding_ignores_prior_lineage(monkeypatch, session):
     assert store.get_pending_message(session, row.id, pending_seq) is None
 
 
-def test_startup_sweep_skips_sessions_awaiting_login(session):
+def test_startup_sweep_skips_paused_and_recovering_sessions(session):
     running = store.create_session(session, "sid-running", "/workspace", "main")
     awaiting = store.create_session(session, "sid-awaiting", "/workspace", "main")
+    recovering = store.create_session(session, "sid-recovering", "/workspace", "main")
     store.update_session_status(session, awaiting.id, "awaiting_login")
+    store.update_session_status(session, recovering.id, "recovering")
     store.create_pending_message(session, running.id, "ready message")
     store.create_pending_message(session, awaiting.id, "paused message")
+    store.create_pending_message(session, recovering.id, "recovery message")
 
     orphaned = store.get_all_pending_messages_sync()
 
@@ -1092,8 +1225,6 @@ def test_actively_refreshed_claim_is_not_reclaimed(session):
     claimed_at timestamp fresh, preventing reclaim_stale_claims_sync from
     reclaiming the message even though time has passed conceptually.
     """
-    from datetime import datetime, timezone
-
     row = store.create_session(session, "sid-456", "/workspace", "main")
     pending = store.create_pending_message(session, row.id, "test")
 
@@ -1108,7 +1239,7 @@ def test_actively_refreshed_claim_is_not_reclaimed(session):
 
     # After multiple refreshes, run the sweep with 30s lease
     # The claim should NOT be reclaimed because it's been refreshed
-    reclaimed_count = store.reclaim_stale_claims_sync(lease_interval_seconds=30)
+    reclaimed_count = store.reclaim_stale_claims_sync()
     assert reclaimed_count == 0, "Active claim should not be reclaimed"
 
     # Verify the message is still claimed
@@ -1118,14 +1249,12 @@ def test_actively_refreshed_claim_is_not_reclaimed(session):
     assert pending_row.claimed_by_replica == "monolith"
 
 
-def test_stale_claim_is_reclaimed(session):
+def test_stale_claim_is_reclaimed(session, monkeypatch):
     """Test that a claim that is not refreshed is reclaimed by sweep.
 
     This test verifies that reclaim_stale_claims_sync correctly reclaims
     claims whose refresh heartbeat has stopped (crashed replica).
     """
-    from datetime import datetime, timedelta, timezone
-
     row = store.create_session(session, "sid-789", "/workspace", "main")
     pending = store.create_pending_message(session, row.id, "test")
 
@@ -1139,7 +1268,8 @@ def test_stale_claim_is_reclaimed(session):
     # here both fights the design and fails outright.
 
     # Run the sweep, which should reclaim the stale claim
-    reclaimed_count = store.reclaim_stale_claims_sync(lease_interval_seconds=0)
+    monkeypatch.setattr(store, "RECLAIM_LEASE", timedelta(0))
+    reclaimed_count = store.reclaim_stale_claims_sync()
     assert reclaimed_count == 1, "Stale claim should be reclaimed"
 
     # Verify the message is no longer claimed
@@ -1178,7 +1308,7 @@ def test_heartbeat_refresh_with_real_replica_id(session, monkeypatch):
 
     # After multiple refreshes, run the sweep
     # The claim should NOT be reclaimed
-    reclaimed_count = store.reclaim_stale_claims_sync(lease_interval_seconds=30)
+    reclaimed_count = store.reclaim_stale_claims_sync()
     assert reclaimed_count == 0, "Actively refreshed claim should not be reclaimed"
 
     # Verify the claim is still active

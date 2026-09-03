@@ -86,6 +86,14 @@ class AgentSession(SQLModel, table=True):
     # Highest turn sequence exported to the knowledge raw feed. A later turn
     # makes a finished session eligible for another incremental export.
     kg_extracted_turn_seq: int | None = Field(default=None)
+    # Set before automatic recovery clears the guest binding, so status polling
+    # can report whether workspace state may be lost while recovery is active.
+    recovery_workspace_loss: bool | None = Field(default=None)
+    # Session-level audit marker for the deliberately one-shot recovery. A
+    # completed recovery is not attempted again until #5601 adds dispatch counts.
+    recovery_completed_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
 
 
 class AgentTurn(SQLModel, table=True):
