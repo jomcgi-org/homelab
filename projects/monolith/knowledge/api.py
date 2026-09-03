@@ -83,6 +83,7 @@ def ingest_raw_with_status(
     source: str,
     original_url: str | None = None,
     extra: dict | None = None,
+    commit: bool = True,
 ):
     """Persist raw content and return its row plus a created flag."""
     from knowledge.ingest_queue import ingest_raw_with_status as _ingest_with_status
@@ -93,6 +94,7 @@ def ingest_raw_with_status(
         source=source,
         original_url=original_url,
         extra=extra,
+        commit=commit,
     )
 
 

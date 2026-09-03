@@ -321,7 +321,7 @@ class Dispute(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fac
     note_id: str = Field(sa_column=Column(String, nullable=False))
     raw_id: str | None = None
     reason: str = Field(sa_column=Column(String, nullable=False))
-    evidence: list[dict[str, Any]] = Field(
+    evidence: list[str] = Field(
         default_factory=list, sa_column=Column(_JSONB, nullable=False)
     )
     reporter_subject: str | None = None

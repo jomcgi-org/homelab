@@ -170,6 +170,7 @@ def ingest_raw_with_status(
     source: str,
     original_url: str | None = None,
     extra: dict | None = None,
+    commit: bool = True,
 ) -> tuple[RawInput, bool]:
     """Persist raw content and report whether a new row was created."""
     raw_id = compute_raw_id(content)
@@ -211,7 +212,8 @@ def ingest_raw_with_status(
             logger.exception("ingest_queue: failed to enqueue raw %s", raw_id)
         else:
             enqueue_savepoint.commit()
-    session.commit()
+    if commit:
+        session.commit()
     logger.info("ingest_queue: ingested raw %s (source=%s)", raw_id, source)
     return raw, True
 
