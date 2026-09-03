@@ -37,6 +37,14 @@ class SwarmTask(SQLModel, table=True):
     budget_usd: float | None = None
     workflow_id: str | None = Field(default=None, index=True)
     session_id: int | None = Field(default=None, index=True)
+    start_state: str = Field(default="classifying", index=True)
+    start_model: str | None = None
+    start_payload_json: str | None = None
+    start_triggered_by: str | None = None
+    start_claim_token: str | None = None
+    start_updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
     settled_at: datetime | None = None
 
 
@@ -168,9 +176,16 @@ def create_task(
     budget_usd: float | None,
     workflow_id: str | None = None,
     session_id: int | None = None,
+    start_model: str | None = None,
+    start_triggered_by: str | None = None,
+    start_state: str | None = None,
     *,
     session: Session | None = None,
 ) -> SwarmTask:
+    if start_state is None:
+        start_state = (
+            "run" if workflow_id else "session" if session_id else "classifying"
+        )
     row = SwarmTask(
         id=task_id,
         task_text=task_text,
@@ -180,29 +195,11 @@ def create_task(
         budget_usd=budget_usd,
         workflow_id=workflow_id,
         session_id=session_id,
+        start_state=start_state,
+        start_model=start_model,
+        start_triggered_by=start_triggered_by,
     )
     with _session(session) as db:
-        db.add(row)
-        db.commit()
-        db.refresh(row)
-    return row
-
-
-def update_task_links(
-    task_id: str,
-    *,
-    workflow_id: str | None = None,
-    session_id: int | None = None,
-    session: Session | None = None,
-) -> SwarmTask:
-    with _session(session) as db:
-        row = db.get(SwarmTask, task_id)
-        if row is None:
-            raise ValueError(f"Unknown swarm task {task_id}")
-        if workflow_id is not None:
-            row.workflow_id = workflow_id
-        if session_id is not None:
-            row.session_id = session_id
         db.add(row)
         db.commit()
         db.refresh(row)

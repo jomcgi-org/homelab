@@ -1,3 +1,6 @@
+import asyncio
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from types import SimpleNamespace
 from fastapi import FastAPI, HTTPException
@@ -6,7 +9,13 @@ from sqlmodel import Session, create_engine, select
 
 import swarm.router as swarm_router
 from swarm import store as swarm_store
-from swarm.models import SwarmDecision
+from swarm.models import (
+    SwarmConductorCall,
+    SwarmDecision,
+    SwarmPlanNode,
+    SwarmPlanVersion,
+    SwarmTask,
+)
 
 
 def client():
@@ -71,6 +80,32 @@ def decision_api(monkeypatch, decision_engine):
     monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
     monkeypatch.setattr(swarm_router, "_compose_run_view", compose)
     return client(), dbos
+
+
+@pytest.fixture
+def start_engine(monkeypatch, tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'swarm_router_start_test.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    tables = [
+        SwarmTask.__table__,
+        SwarmPlanVersion.__table__,
+        SwarmPlanNode.__table__,
+        SwarmConductorCall.__table__,
+    ]
+    schemas = {table: table.schema for table in tables}
+    for table in tables:
+        table.schema = None
+    try:
+        for table in tables:
+            table.create(engine)
+        monkeypatch.setattr("core.db.get_engine", lambda: engine)
+        monkeypatch.setattr(swarm_router, "_CLASSIFICATION_TASKS", {})
+        yield engine
+    finally:
+        for table, schema in schemas.items():
+            table.schema = schema
 
 
 def _open_decision(engine, *, options=None):
@@ -174,33 +209,49 @@ def test_start_run_passes_budget(monkeypatch):
     assert captured[0][1:] == ("fix", "jomcgi-org/homelab", "main", 2.0, None)
 
 
-def test_planned_run_with_explicit_model(monkeypatch):
-    monkeypatch.setenv("SWARM_ENABLED", "true")
-    captured = []
+def _submit_and_capture(monkeypatch, payload):
+    scheduled = []
+    monkeypatch.setattr(swarm_router, "_schedule_classification", scheduled.append)
+    response = client().post("/api/swarm/classify-and-start", json=payload)
+    assert response.status_code == 200
+    assert response.json() == {
+        "task_id": response.json()["task_id"],
+        "kind": "classifying",
+    }
+    assert len(scheduled) == 1
+    return response.json()["task_id"], scheduled[0]
 
-    class Handle:
-        workflow_id = "wf-planned"
 
-    class FakeDBOS:
-        def start_workflow(self, *args):
-            captured.append(args)
-            return Handle()
+def test_classify_and_start_returns_before_classifier(monkeypatch, start_engine):
+    task_id, context = _submit_and_capture(
+        monkeypatch,
+        {
+            "task": "fix",
+            "repo": "jomcgi-org/homelab",
+            "branch": "main",
+            "model": "terra",
+        },
+    )
+    assert context.task_id == task_id
+    assert client().get(f"/api/swarm/tasks/{task_id}/start-status").json() == {
+        "kind": "classifying"
+    }
 
+
+def test_planned_run_resolves_through_status(monkeypatch, start_engine):
     async def classify(_task):
         return "planned", 1, "success", None
 
-    monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: FakeDBOS())
-    monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
+    started = []
     monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
-    monkeypatch.setattr(swarm_router, "_create_task_sync", lambda *args: None)
-    monkeypatch.setattr(swarm_router, "_record_classification_sync", lambda *args: None)
     monkeypatch.setattr(
-        swarm_router, "_set_task_link_sync", lambda *args, **kwargs: None
+        swarm_router,
+        "start_run",
+        lambda request: started.append(request) or {"workflow_id": "wf-planned"},
     )
-
-    response = client().post(
-        "/api/swarm/classify-and-start",
-        json={
+    task_id, context = _submit_and_capture(
+        monkeypatch,
+        {
             "task": "fix",
             "repo": "jomcgi-org/homelab",
             "branch": "main",
@@ -208,176 +259,99 @@ def test_planned_run_with_explicit_model(monkeypatch):
         },
     )
 
-    assert response.status_code == 200
-    assert captured[0][1:] == (
-        "fix",
-        "jomcgi-org/homelab",
-        "main",
-        None,
-        "terra",
-    )
+    asyncio.run(swarm_router._classify_and_resolve(context))
+
+    status = client().get(f"/api/swarm/tasks/{task_id}/start-status").json()
+    assert status["kind"] == "run"
+    assert status["run_id"] == "wf-planned"
+    assert started[0].idempotency_key == task_id
+    assert started[0].model == "terra"
 
 
-def test_planned_run_rejects_unknown_model(monkeypatch):
-    monkeypatch.setenv("SWARM_ENABLED", "true")
-
-    async def classify(_task):
-        return "planned", 1, "success", None
-
-    monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
-    monkeypatch.setattr(swarm_router, "_create_task_sync", lambda *args: None)
-    monkeypatch.setattr(swarm_router, "_record_classification_sync", lambda *args: None)
-
+def test_planned_run_rejects_unknown_model(monkeypatch, start_engine):
     response = client().post(
         "/api/swarm/classify-and-start",
-        json={
-            "task": "fix",
-            "repo": "jomcgi-org/homelab",
-            "branch": "main",
-            "model": "invalid",
-        },
+        json={"task": "fix", "model": "invalid"},
     )
-
     assert response.status_code == 400
     assert "Unknown model" in response.json()["detail"]
 
 
-def test_planned_without_repo_returns_needs_input(monkeypatch):
-    monkeypatch.setenv("SWARM_ENABLED", "true")
-    recorded = []
-
+def test_planned_without_repo_resolves_needs_input(monkeypatch, start_engine):
     async def classify(_task):
         return "planned", 1, "success", None
 
     monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
-    monkeypatch.setattr("swarm.models.mint_task_id", lambda: "task-1")
-    monkeypatch.setattr(swarm_router, "_create_task_sync", lambda *args: None)
-    monkeypatch.setattr(
-        swarm_router, "_record_classification_sync", lambda *args: recorded.append(args)
+    task_id, context = _submit_and_capture(
+        monkeypatch, {"task": "fix", "model": "terra"}
     )
-    monkeypatch.setattr(
-        swarm_router,
-        "start_run",
-        lambda _request: (_ for _ in ()).throw(AssertionError("run must not start")),
-    )
+    asyncio.run(swarm_router._classify_and_resolve(context))
 
-    response = client().post(
-        "/api/swarm/classify-and-start",
-        json={"task": "fix", "model": "terra"},
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "task_id": "task-1",
-        "classification": "planned",
-        "session_id": None,
-        "workflow_id": None,
-        "kind": "needs_input",
-        "needs_input": {"repo": True, "branch": True},
-        "login_required": False,
-        "verification_url": None,
-        "user_code": None,
-        "grant": None,
-        "login_message": None,
-    }
-    assert recorded
+    status = client().get(f"/api/swarm/tasks/{task_id}/start-status").json()
+    assert status["kind"] == "needs_input"
+    assert status["needs_input"] == {"repo": True, "branch": True}
 
 
-def test_planned_resubmission_reuses_task_id(monkeypatch):
-    monkeypatch.setenv("SWARM_ENABLED", "true")
-    started = []
-    updated = []
+def test_planned_resubmission_reuses_task_id(monkeypatch, start_engine):
+    with Session(start_engine) as session:
+        row = SwarmTask(
+            id="task-1",
+            task_text="fix the original wording",
+            conductor_model="spark",
+            start_state="needs_input",
+        )
+        session.add(row)
+        session.add(
+            SwarmConductorCall(
+                task_id="task-1",
+                conductor_model="spark",
+                tool="classify_task",
+                args_json='{"task":"fix the original wording"}',
+                outcome="success",
+                latency_ms=1,
+            )
+        )
+        session.add(
+            SwarmPlanVersion(
+                task_id="task-1",
+                version=1,
+                op="bootstrap",
+                author_kind="system",
+                author="classifier",
+                change_json='{"classification":"planned"}',
+                cause_kind="classification",
+            )
+        )
+        session.commit()
 
-    async def classify(_task):
-        return "planned", 1, "success", None
-
-    monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
-    monkeypatch.setattr("swarm.models.mint_task_id", lambda: "task-1")
-    monkeypatch.setattr(swarm_router, "_create_task_sync", lambda *args: None)
-    monkeypatch.setattr(
-        swarm_router,
-        "_update_task_inputs_sync",
-        lambda *args: updated.append(args),
-    )
-    monkeypatch.setattr(swarm_router, "_record_classification_sync", lambda *args: None)
-    monkeypatch.setattr(
-        swarm_router,
-        "start_run",
-        lambda request: started.append(request) or {"workflow_id": "wf-1"},
-    )
-    monkeypatch.setattr(
-        swarm_router, "_set_task_link_sync", lambda *args, **kwargs: None
-    )
-
-    first = client().post(
-        "/api/swarm/classify-and-start",
-        json={"task": "fix", "model": "terra"},
-    )
-    second = client().post(
-        "/api/swarm/classify-and-start",
-        json={
-            "task": "fix",
-            "task_id": first.json()["task_id"],
-            "repo": "jomcgi/homelab",
+    task_id, context = _submit_and_capture(
+        monkeypatch,
+        {
+            "task": "fix the edited wording",
+            "task_id": "task-1",
+            "repo": "jomcgi-org/homelab",
             "branch": "main",
             "model": "terra",
         },
     )
+    assert task_id == "task-1"
+    assert context.record_plan is False
+    assert context.has_classification is True
+    assert context.classification == "planned"
+    assert context.task == "fix the edited wording"
+    with Session(start_engine) as session:
+        row = session.get(SwarmTask, task_id)
+        assert row.repo == "jomcgi-org/homelab"
+        assert row.start_state == "classifying"
+        assert row.task_text == "fix the edited wording"
 
-    assert first.json()["task_id"] == "task-1"
-    assert second.status_code == 200
-    assert second.json()["task_id"] == "task-1"
-    assert second.json()["kind"] == "run"
-    assert len(updated) == 1
-    assert len(started) == 1
 
-
-def test_one_shot_without_repo_starts_session(monkeypatch):
-    monkeypatch.setenv("SWARM_ENABLED", "true")
-
+def test_one_shot_resolves_session_and_login_payload(monkeypatch, start_engine):
     async def classify(_task):
         return "one_shot", 1, "success", None
 
-    async def start_session(_request, _body):
-        return {"session_id": 42}
-
-    monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
-    monkeypatch.setattr("swarm.models.mint_task_id", lambda: "task-session")
-    monkeypatch.setattr(swarm_router, "_create_task_sync", lambda *args: None)
-    monkeypatch.setattr(swarm_router, "_record_classification_sync", lambda *args: None)
-    monkeypatch.setattr("agent_sessions.router.start_session", start_session)
-    monkeypatch.setattr(
-        swarm_router, "_set_task_link_sync", lambda *args, **kwargs: None
-    )
-
-    response = client().post(
-        "/api/swarm/classify-and-start",
-        json={"task": "explain", "model": "terra"},
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "task_id": "task-session",
-        "classification": "one_shot",
-        "session_id": 42,
-        "workflow_id": None,
-        "kind": "session",
-        "needs_input": None,
-        "login_required": False,
-        "verification_url": None,
-        "user_code": None,
-        "grant": None,
-        "login_message": None,
-    }
-
-
-def test_one_shot_preserves_codex_login_payload(monkeypatch):
-    async def classify(_task):
-        return "one_shot", 1, "success", None
-
-    async def start_session(_request, _body):
+    async def start_session(_triggered_by, _task_id, _body):
         return {
-            "accepted": False,
             "session_id": 42,
             "login_required": True,
             "verification_url": "https://example.test/device",
@@ -387,33 +361,229 @@ def test_one_shot_preserves_codex_login_payload(monkeypatch):
         }
 
     monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
-    monkeypatch.setattr("swarm.models.mint_task_id", lambda: "task-login")
-    monkeypatch.setattr(swarm_router, "_create_task_sync", lambda *args: None)
-    monkeypatch.setattr(swarm_router, "_record_classification_sync", lambda *args: None)
-    monkeypatch.setattr("agent_sessions.router.start_session", start_session)
-    monkeypatch.setattr(
-        swarm_router, "_set_task_link_sync", lambda *args, **kwargs: None
+    monkeypatch.setattr("agent_sessions.router.start_session_for_task", start_session)
+    task_id, context = _submit_and_capture(
+        monkeypatch, {"task": "explain", "model": "luna"}
     )
+    asyncio.run(swarm_router._classify_and_resolve(context))
 
-    response = client().post(
-        "/api/swarm/classify-and-start",
-        json={"task": "explain", "model": "luna"},
+    status = client().get(f"/api/swarm/tasks/{task_id}/start-status").json()
+    assert status["kind"] == "session"
+    assert status["session_id"] == 42
+    assert status["login_required"] is True
+    assert status["user_code"] == "CODE-123"
+
+
+def test_classifier_refusal_never_starts_session(monkeypatch, start_engine):
+    async def classify(_task):
+        return "one_shot", 1, "success", "policy refusal"
+
+    async def start_session(*_args):
+        raise AssertionError("a refusal must not start a session")
+
+    monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
+    monkeypatch.setattr("agent_sessions.router.start_session_for_task", start_session)
+    task_id, context = _submit_and_capture(
+        monkeypatch, {"task": "refuse this", "model": "terra"}
     )
+    asyncio.run(swarm_router._classify_and_resolve(context))
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "task_id": "task-login",
-        "classification": "one_shot",
-        "session_id": 42,
-        "workflow_id": None,
+    status = client().get(f"/api/swarm/tasks/{task_id}/start-status").json()
+    assert status["kind"] == "refused"
+    assert status["refusal_code"] == "policy refusal"
+    assert status["message"] == "policy refusal"
+
+
+def test_classifier_timeout_falls_back_to_session(monkeypatch, start_engine):
+    async def classify(_task):
+        return "one_shot", 1, "timeout", "classifier timeout"
+
+    async def start_session(*_args):
+        return {"session_id": 73}
+
+    monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
+    monkeypatch.setattr("agent_sessions.router.start_session_for_task", start_session)
+    task_id, context = _submit_and_capture(
+        monkeypatch, {"task": "explain", "model": "terra"}
+    )
+    asyncio.run(swarm_router._classify_and_resolve(context))
+
+    status = client().get(f"/api/swarm/tasks/{task_id}/start-status").json()
+    assert status["kind"] == "session"
+    assert status["session_id"] == 73
+    with Session(start_engine) as session:
+        call = session.exec(select(SwarmConductorCall)).one()
+        assert call.outcome == "timeout_fallback"
+
+
+def test_unparseable_classifier_reply_falls_back_to_session(monkeypatch, start_engine):
+    async def classify(_task):
+        return "one_shot", 1, "unparseable", "unparseable response"
+
+    async def start_session(*_args):
+        return {"session_id": 74}
+
+    monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
+    monkeypatch.setattr("agent_sessions.router.start_session_for_task", start_session)
+    task_id, context = _submit_and_capture(
+        monkeypatch, {"task": "explain", "model": "terra"}
+    )
+    asyncio.run(swarm_router._classify_and_resolve(context))
+
+    status = client().get(f"/api/swarm/tasks/{task_id}/start-status").json()
+    assert status["kind"] == "session"
+    assert status["session_id"] == 74
+    with Session(start_engine) as session:
+        call = session.exec(select(SwarmConductorCall)).one()
+        assert call.outcome == "unparseable_fallback"
+
+
+def test_stuck_status_reuses_classification_with_compare_and_set(
+    monkeypatch, start_engine
+):
+    old = datetime.now(timezone.utc) - timedelta(minutes=2)
+    with Session(start_engine) as session:
+        task = SwarmTask(
+            id="task-stuck",
+            task_text="explain",
+            conductor_model="spark",
+            start_model="terra",
+            start_updated_at=old,
+        )
+        session.add(task)
+        session.add(
+            SwarmConductorCall(
+                task_id="task-stuck",
+                conductor_model="spark",
+                tool="classify_task",
+                args_json='{"task":"explain"}',
+                outcome="success",
+                latency_ms=1,
+            )
+        )
+        session.add(
+            SwarmPlanVersion(
+                task_id="task-stuck",
+                version=1,
+                op="bootstrap",
+                author_kind="system",
+                author="classifier",
+                change_json='{"classification":"one_shot"}',
+                cause_kind="classification",
+            )
+        )
+        session.commit()
+    scheduled = []
+    monkeypatch.setattr(swarm_router, "_schedule_classification", scheduled.append)
+
+    first = client().get("/api/swarm/tasks/task-stuck/start-status")
+    second = client().get("/api/swarm/tasks/task-stuck/start-status")
+
+    assert first.json()["kind"] == "classifying"
+    assert second.json()["kind"] == "classifying"
+    assert len(scheduled) == 1
+    assert scheduled[0].has_classification is True
+    assert scheduled[0].classification == "one_shot"
+
+    async def classify(_task):
+        raise AssertionError("a re-kick must not call the classifier")
+
+    async def start_session(*_args):
+        return {"session_id": 75}
+
+    monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
+    monkeypatch.setattr("agent_sessions.router.start_session_for_task", start_session)
+    asyncio.run(swarm_router._classify_and_resolve(scheduled[0]))
+    assert client().get("/api/swarm/tasks/task-stuck/start-status").json() == {
         "kind": "session",
-        "needs_input": None,
-        "login_required": True,
-        "verification_url": "https://example.test/device",
-        "user_code": "CODE-123",
-        "grant": "codex-cluster",
-        "login_message": "Approve the Codex login in your browser.",
+        "session_id": 75,
     }
+
+
+def test_dbos_follower_start_failure_remains_retryable(monkeypatch, start_engine):
+    async def classify(_task):
+        return "planned", 1, "success", None
+
+    def start_run(_request):
+        raise HTTPException(
+            status_code=503,
+            detail="Swarm DBOS is not launched on this replica",
+        )
+
+    monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
+    monkeypatch.setattr(swarm_router, "start_run", start_run)
+    task_id, context = _submit_and_capture(
+        monkeypatch,
+        {
+            "task": "fix",
+            "repo": "jomcgi-org/homelab",
+            "branch": "main",
+            "model": "terra",
+        },
+    )
+
+    asyncio.run(swarm_router._classify_and_resolve(context))
+
+    assert client().get(f"/api/swarm/tasks/{task_id}/start-status").json() == {
+        "kind": "classifying"
+    }
+    with Session(start_engine) as session:
+        row = session.get(SwarmTask, task_id)
+        assert row.start_state == "starting_run"
+        assert row.settled_at is None
+        assert "not launched on this replica" in row.start_payload_json
+
+
+def test_resolution_timeout_persists_terminal_error(monkeypatch, start_engine):
+    async def classify(_task):
+        return "one_shot", 1, "success", None
+
+    async def start_session(*_args):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("swarm.classifier.classify_task_with_outcome", classify)
+    monkeypatch.setattr("agent_sessions.router.start_session_for_task", start_session)
+    monkeypatch.setattr(swarm_router, "_CLASSIFY_RESOLUTION_TIMEOUT_SECONDS", 0.01)
+    task_id, context = _submit_and_capture(
+        monkeypatch, {"task": "explain", "model": "terra"}
+    )
+
+    asyncio.run(swarm_router._classify_and_resolve(context))
+
+    assert client().get(f"/api/swarm/tasks/{task_id}/start-status").json() == {
+        "kind": "error",
+        "message": "task start timed out",
+    }
+
+
+def test_hard_stuck_status_cancels_local_task_and_rekicks(monkeypatch, start_engine):
+    old = datetime.now(timezone.utc) - timedelta(minutes=6)
+    with Session(start_engine) as session:
+        session.add(
+            SwarmTask(
+                id="task-hard-stuck",
+                task_text="explain",
+                conductor_model="spark",
+                start_model="terra",
+                start_updated_at=old,
+            )
+        )
+        session.commit()
+    scheduled = []
+    monkeypatch.setattr(swarm_router, "_schedule_classification", scheduled.append)
+
+    async def check_status():
+        live_task = asyncio.create_task(asyncio.Event().wait())
+        swarm_router._CLASSIFICATION_TASKS["task-hard-stuck"] = live_task
+        response = await swarm_router.task_start_status("task-hard-stuck")
+        await asyncio.sleep(0)
+        return response, live_task
+
+    response, live_task = asyncio.run(check_status())
+
+    assert response.kind == "classifying"
+    assert live_task.cancelled()
+    assert len(scheduled) == 1
 
 
 def test_promote_session_carries_model(monkeypatch):
@@ -1025,18 +1195,23 @@ def test_list_runs_clamps_limit_query_parameter(monkeypatch):
 def test_update_task_inputs_refuses_a_task_not_awaiting_inputs(monkeypatch):
     """`task_id` comes from the client, so the row it names has to be checked.
 
-    A resubmission may only fill in a task still waiting for its inputs.
-    Anything already carrying a repo, a workflow or a session is somebody
-    else's started work, and naming its id must fail rather than silently
-    rewrite it.
+    A resubmission may only fill in a task waiting for inputs or retrying a
+    terminal error. A workflow or session link still makes the task ineligible
+    even if its state is stale.
     """
 
     class Row:
         def __init__(self, **kwargs):
+            self.task_text = kwargs.get("task_text", "original task")
             self.repo = kwargs.get("repo")
             self.base_branch = None
             self.workflow_id = kwargs.get("workflow_id")
             self.session_id = kwargs.get("session_id")
+            self.start_state = kwargs.get("start_state", "needs_input")
+            self.start_model = None
+            self.start_triggered_by = None
+            self.start_payload_json = None
+            self.start_updated_at = None
 
     class FakeSession:
         def __init__(self, row):
@@ -1061,10 +1236,17 @@ def test_update_task_inputs_refuses_a_task_not_awaiting_inputs(monkeypatch):
         monkeypatch.setattr(
             "sqlmodel.Session", lambda *args, **kwargs: FakeSession(row)
         )
-        swarm_router._update_task_inputs_sync("task-1", "jomcgi/homelab", "main")
+        swarm_router._update_task_inputs_sync(
+            "task-1",
+            "edited task",
+            "jomcgi/homelab",
+            "main",
+            "terra",
+            "joe@example.com",
+        )
 
     for started in (
-        Row(repo="jomcgi/homelab"),
+        Row(start_state="session"),
         Row(workflow_id="wf-1"),
         Row(session_id=7),
     ):
@@ -1072,7 +1254,11 @@ def test_update_task_inputs_refuses_a_task_not_awaiting_inputs(monkeypatch):
             run_with(started)
 
     # The awaiting case still writes.
-    awaiting = Row()
-    run_with(awaiting)
-    assert awaiting.repo == "jomcgi/homelab"
-    assert awaiting.base_branch == "main"
+    for awaiting in (Row(), Row(start_state="error")):
+        run_with(awaiting)
+        assert awaiting.task_text == "edited task"
+        assert awaiting.repo == "jomcgi/homelab"
+        assert awaiting.base_branch == "main"
+        assert awaiting.start_model == "terra"
+        assert awaiting.start_triggered_by == "joe@example.com"
+        assert awaiting.start_state == "classifying"

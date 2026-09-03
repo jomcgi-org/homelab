@@ -7,7 +7,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from agent import config as agent_config
 from agent import routine_jobs
@@ -74,11 +74,13 @@ def reset_vm_state_cache():
     cache.generation = 0
     cache.initialized = False
     cache.last_error = None
+    agent_router._BRANCH_LIST_CACHE.clear()
     agent_router._prewarm_timestamps.clear()
     yield
     cache.cache_map = {}
     cache.task = None
     cache.subscriber_count = 0
+    agent_router._BRANCH_LIST_CACHE.clear()
     agent_router._prewarm_timestamps.clear()
 
 
@@ -1081,6 +1083,7 @@ def test_list_repos_success_cache_hit_and_expiry(client, monkeypatch):
 
 def test_list_repo_branches_success_with_pagination(client, monkeypatch):
     monkeypatch.setenv("GITHUB_API_TOKEN", "test-token")
+    monkeypatch.setattr("agent_sessions.router._BRANCH_LIST_CACHE", {})
     page_one = [{"name": f"branch-{index:03d}"} for index in range(100)]
     page_two = [{"name": "main"}] + [
         {"name": f"branch-{index:03d}"} for index in range(100, 120)
@@ -1114,6 +1117,43 @@ def test_list_repo_branches_success_with_pagination(client, monkeypatch):
     )
     assert len(calls) == 3
     assert "page=2" in calls[-1]
+
+    cached = client.get("/api/agents/repos/jomcgi-org/homelab/branches")
+    assert cached.json() == body
+    assert len(calls) == 3
+
+
+def test_list_repo_branches_cache_expires_and_failures_are_shorter(client, monkeypatch):
+    monkeypatch.setenv("GITHUB_API_TOKEN", "test-token")
+    monkeypatch.setattr("agent_sessions.router._BRANCH_LIST_CACHE", {})
+    now = 1000.0
+    calls = []
+
+    async def github_get(url):
+        calls.append(url)
+        if len(calls) == 1:
+            raise httpx.ConnectError("offline")
+        if url.endswith("/jomcgi-org/homelab"):
+            return httpx.Response(200, json={"default_branch": "main"})
+        return httpx.Response(200, json=[{"name": "main"}])
+
+    monkeypatch.setattr("agent_sessions.router.time.monotonic", lambda: now)
+    monkeypatch.setattr("agent_sessions.router._github_get", github_get)
+
+    first = client.get("/api/agents/repos/jomcgi-org/homelab/branches")
+    second = client.get("/api/agents/repos/jomcgi-org/homelab/branches")
+    assert first.status_code == second.status_code == 502
+    assert len(calls) == 1
+
+    monkeypatch.setattr("agent_sessions.router.time.monotonic", lambda: now + 11)
+    recovered = client.get("/api/agents/repos/jomcgi-org/homelab/branches")
+    assert recovered.status_code == 200
+    assert len(calls) == 3
+
+    monkeypatch.setattr("agent_sessions.router.time.monotonic", lambda: now + 72)
+    refreshed = client.get("/api/agents/repos/jomcgi-org/homelab/branches")
+    assert refreshed.status_code == 200
+    assert len(calls) == 5
 
 
 def test_list_repo_branches_requires_catalog_and_token(client, monkeypatch):
@@ -1663,6 +1703,39 @@ def test_start_session_marks_message_ui_originated(client, session, monkeypatch)
     assert persisted.system_prompt is None
     assert persisted.reasoning is True
     assert mcp._consume_ui_originated(body["session_id"], body["turn"]) is True
+    mcp._ui_originated.clear()
+
+
+def test_task_session_start_is_idempotent_and_ui_originated(session, monkeypatch):
+    """A recovered classifier task reuses its session and Discord marker."""
+
+    async def no_login(_model):
+        return None
+
+    scheduled = []
+    engine = session.get_bind()
+    mcp._ui_originated.clear()
+    monkeypatch.setattr("core.db.get_engine", lambda: engine)
+    monkeypatch.setattr(agent_router, "codex_login_gate", no_login)
+    monkeypatch.setattr(agent_router, "_schedule_next_message", scheduled.append)
+    request = agent_router.StartRequest(prompt="Hello", model="terra")
+
+    first = asyncio.run(
+        agent_router.start_session_for_task("Joe@Example.com", "task-1", request)
+    )
+    second = asyncio.run(
+        agent_router.start_session_for_task("Joe@Example.com", "task-1", request)
+    )
+
+    assert second["session_id"] == first["session_id"]
+    persisted = session.get(AgentSession, first["session_id"])
+    assert persisted.triggered_by == "joe@example.com"
+    pending = session.exec(
+        select(PendingMessage).where(PendingMessage.session_id == first["session_id"])
+    ).all()
+    assert len(pending) == 1
+    assert scheduled == [first["session_id"], first["session_id"]]
+    assert mcp._consume_ui_originated(first["session_id"], first["turn"]) is True
     mcp._ui_originated.clear()
 
 

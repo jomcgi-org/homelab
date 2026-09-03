@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import json
-from datetime import datetime, timezone
+import logging
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from goosecracker.api import REPO_CATALOG
+from framework import log_task_exception
 import shared.inference
 from swarm import config, runtime
 from swarm.compare_router import router as compare_router
@@ -55,18 +59,54 @@ class ClassifyAndStartRequest(BaseModel):
     budget_usd: float | None = None
 
 
-class ClassifyAndStartResponse(BaseModel):
+class ClassifyAndStartAccepted(BaseModel):
     task_id: str
-    classification: str
-    session_id: int | None = None
-    workflow_id: str | None = None
     kind: str
+
+
+class StartStatusResponse(BaseModel):
+    kind: str
+    session_id: int | None = None
+    run_id: str | None = None
     needs_input: dict[str, bool] | None = None
-    login_required: bool = False
+    refusal_code: str | None = None
+    message: str | None = None
+    login_required: bool | None = None
     verification_url: str | None = None
     user_code: str | None = None
     grant: str | None = None
     login_message: str | None = None
+
+
+@dataclass(frozen=True)
+class _StartContext:
+    task_id: str
+    task: str
+    repo: str | None
+    branch: str | None
+    model: str
+    budget_usd: float | None
+    triggered_by: str | None
+    record_plan: bool = True
+    has_classification: bool = False
+    classification: str | None = None
+    classification_outcome: str | None = None
+    classification_refusal_code: str | None = None
+    classification_latency_ms: int = 0
+
+
+_CLASSIFIER_DEADLINE_SECONDS = 60.0
+_CLASSIFY_STUCK_SECONDS = 90.0
+_CLASSIFY_RESOLUTION_TIMEOUT_SECONDS = 180.0
+_CLASSIFY_HARD_STUCK_SECONDS = 300.0
+_CLASSIFICATION_TASKS: dict[str, asyncio.Task[None]] = {}
+_IN_PROGRESS_STATES = {
+    "classifying",
+    "starting_session",
+    "starting_run",
+    "settling_needs_input",
+    "settling_refused",
+}
 
 
 class PromoteSessionRequest(BaseModel):
@@ -305,7 +345,9 @@ def _create_task_sync(
     task: str,
     repo: str | None,
     branch: str | None,
+    model: str,
     budget_usd: float | None,
+    triggered_by: str | None,
 ) -> None:
     """Create task record, managing its own session."""
     from core.db import get_engine
@@ -320,6 +362,8 @@ def _create_task_sync(
             branch,
             shared.inference.META_SPARK_MODEL,
             budget_usd,
+            start_model=model,
+            start_triggered_by=triggered_by,
             session=db,
         )
 
@@ -332,6 +376,7 @@ def _record_classification_sync(
     outcome: str,
     refusal_code: str | None,
     budget_usd: float | None,
+    record_plan: bool = True,
 ) -> None:
     """Record classification and plan, managing its own session."""
     from core.db import get_engine
@@ -351,6 +396,8 @@ def _record_classification_sync(
             latency_ms=latency_ms,
             session=db,
         )
+        if not record_plan:
+            return
         models.append_plan_version(
             task_id,
             1,
@@ -378,27 +425,232 @@ def _record_classification_sync(
             )
 
 
-def _set_task_link_sync(task_id: str, **links) -> None:
-    """Update task links, managing its own session."""
+def _claim_resolution_sync(task_id: str, state: str) -> str | None:
+    """Claim the only side-effecting resolution for a classified task."""
     from core.db import get_engine
+    from sqlalchemy import update
     from sqlmodel import Session
-    from swarm.models import update_task_links
+    from swarm.models import SwarmTask
+
+    claim_token = str(uuid4())
+    with Session(get_engine()) as db:
+        result = db.execute(
+            update(SwarmTask)
+            .where(SwarmTask.id == task_id, SwarmTask.start_state == "classifying")
+            .values(
+                start_state=state,
+                start_claim_token=claim_token,
+                start_updated_at=datetime.now(timezone.utc),
+            )
+        )
+        db.commit()
+        return claim_token if result.rowcount == 1 else None
+
+
+def _finish_task_sync(
+    task_id: str,
+    expected_state: str,
+    state: str,
+    *,
+    claim_token: str | None = None,
+    session_id: int | None = None,
+    workflow_id: str | None = None,
+    payload: dict | None = None,
+) -> bool:
+    """Persist a terminal start result if this worker still owns the task."""
+    from core.db import get_engine
+    from sqlalchemy import update
+    from sqlmodel import Session
+    from swarm.models import SwarmTask
+
+    values = {
+        "start_state": state,
+        "start_payload_json": json.dumps(payload) if payload else None,
+        "start_claim_token": None,
+        "start_updated_at": datetime.now(timezone.utc),
+        "settled_at": datetime.now(timezone.utc),
+    }
+    if session_id is not None:
+        values["session_id"] = session_id
+    if workflow_id is not None:
+        values["workflow_id"] = workflow_id
+    conditions = [
+        SwarmTask.id == task_id,
+        SwarmTask.start_state == expected_state,
+    ]
+    if claim_token is not None:
+        conditions.append(SwarmTask.start_claim_token == claim_token)
+    with Session(get_engine()) as db:
+        result = db.execute(update(SwarmTask).where(*conditions).values(**values))
+        db.commit()
+        return result.rowcount == 1
+
+
+def _record_retryable_start_error_sync(
+    task_id: str,
+    expected_state: str,
+    claim_token: str | None,
+    message: str,
+) -> bool:
+    """Record a retryable start error without making the task terminal."""
+    from core.db import get_engine
+    from sqlalchemy import update
+    from sqlmodel import Session
+    from swarm.models import SwarmTask
+
+    conditions = [
+        SwarmTask.id == task_id,
+        SwarmTask.start_state == expected_state,
+    ]
+    if claim_token is not None:
+        conditions.append(SwarmTask.start_claim_token == claim_token)
+    with Session(get_engine()) as db:
+        result = db.execute(
+            update(SwarmTask)
+            .where(*conditions)
+            .values(start_payload_json=json.dumps({"message": message}))
+        )
+        db.commit()
+        return result.rowcount == 1
+
+
+def _task_start_snapshot_sync(task_id: str) -> dict | None:
+    """Load persisted launcher state using a fresh session."""
+    from core.db import get_engine
+    from sqlmodel import Session, select
+    from swarm.models import SwarmConductorCall, SwarmPlanVersion, SwarmTask
 
     with Session(get_engine()) as db:
-        update_task_links(task_id, session=db, **links)
+        row = db.get(SwarmTask, task_id)
+        if row is None:
+            return None
+        classification_call = db.exec(
+            select(SwarmConductorCall)
+            .where(
+                SwarmConductorCall.task_id == task_id,
+                SwarmConductorCall.tool == "classify_task",
+            )
+            .order_by(SwarmConductorCall.id.desc())
+        ).first()
+        classification_version = db.exec(
+            select(SwarmPlanVersion)
+            .where(
+                SwarmPlanVersion.task_id == task_id,
+                SwarmPlanVersion.cause_kind == "classification",
+            )
+            .order_by(SwarmPlanVersion.version.desc())
+        ).first()
+        classification = None
+        if classification_version is not None:
+            try:
+                classification = json.loads(classification_version.change_json).get(
+                    "classification"
+                )
+            except (AttributeError, TypeError, ValueError):
+                logger.warning(
+                    "invalid stored classification for task %s", task_id, exc_info=True
+                )
+        has_classification = classification_call is not None
+        classification_outcome = (
+            classification_call.outcome if classification_call is not None else None
+        )
+        classification_refusal_code = (
+            classification_call.refusal_code
+            if classification_call is not None
+            else None
+        )
+        classification_latency_ms = (
+            classification_call.latency_ms
+            if classification_call is not None
+            and classification_call.latency_ms is not None
+            else 0
+        )
+        return {
+            "task_id": row.id,
+            "task": row.task_text,
+            "repo": row.repo,
+            "branch": row.base_branch,
+            "model": row.start_model,
+            "budget_usd": row.budget_usd,
+            "triggered_by": row.start_triggered_by,
+            "state": row.start_state,
+            "payload": json.loads(row.start_payload_json)
+            if row.start_payload_json
+            else {},
+            "session_id": row.session_id,
+            "workflow_id": row.workflow_id,
+            "updated_at": row.start_updated_at,
+            "has_classification": has_classification,
+            "classification": classification,
+            "classification_outcome": classification_outcome,
+            "classification_refusal_code": classification_refusal_code,
+            "classification_latency_ms": classification_latency_ms,
+        }
+
+
+def _start_context_from_snapshot(snapshot: dict) -> _StartContext:
+    has_classification = bool(snapshot.get("has_classification"))
+    return _StartContext(
+        task_id=snapshot["task_id"],
+        task=snapshot["task"],
+        repo=snapshot["repo"],
+        branch=snapshot["branch"],
+        model=snapshot["model"],
+        budget_usd=snapshot["budget_usd"],
+        triggered_by=snapshot["triggered_by"],
+        record_plan=not has_classification,
+        has_classification=has_classification,
+        classification=snapshot.get("classification"),
+        classification_outcome=snapshot.get("classification_outcome"),
+        classification_refusal_code=snapshot.get("classification_refusal_code"),
+        classification_latency_ms=snapshot.get("classification_latency_ms") or 0,
+    )
+
+
+def _reclaim_stuck_task_sync(task_id: str, cutoff: datetime) -> dict | None:
+    """Atomically renew a stale task lease and return its persisted inputs."""
+    from core.db import get_engine
+    from sqlalchemy import update
+    from sqlmodel import Session
+    from swarm.models import SwarmTask
+
+    now = datetime.now(timezone.utc)
+    with Session(get_engine()) as db:
+        result = db.execute(
+            update(SwarmTask)
+            .where(
+                SwarmTask.id == task_id,
+                SwarmTask.start_state.in_(_IN_PROGRESS_STATES),
+                SwarmTask.start_updated_at <= cutoff,
+            )
+            .values(
+                start_state="classifying",
+                start_claim_token=None,
+                start_updated_at=now,
+            )
+        )
+        db.commit()
+        if result.rowcount != 1:
+            return None
+    return _task_start_snapshot_sync(task_id)
 
 
 def _update_task_inputs_sync(
-    task_id: str, repo: str | None, branch: str | None
+    task_id: str,
+    task: str,
+    repo: str | None,
+    branch: str | None,
+    model: str,
+    triggered_by: str | None,
 ) -> None:
     """Fill in the repository inputs on a task being resubmitted.
 
     `task_id` arrives from the client, so this narrows what a resubmission
-    may touch rather than trusting the id. Only a task that is still
-    awaiting its inputs qualifies: one with no repo recorded and nothing
-    started against it. That keeps the field editable for exactly the
-    round trip it exists for, and makes a stale or wrong id a 400 instead
-    of a silent write to somebody else's row.
+    may touch rather than trusting the id. Only a task that is still awaiting
+    inputs or ended in an error, with nothing started against it, qualifies.
+    It may already have a repo when only the branch was missing. That keeps the
+    fields editable for the retry round trip and makes a stale or wrong id a
+    400 instead of a silent write to somebody else's row.
     """
     from core.db import get_engine
     from sqlmodel import Session
@@ -408,15 +660,277 @@ def _update_task_inputs_sync(
         row = db.get(SwarmTask, task_id)
         if row is None:
             raise ValueError(f"Unknown swarm task {task_id}")
-        if row.repo or row.workflow_id or row.session_id:
+        if (
+            row.start_state not in {"needs_input", "error"}
+            or row.workflow_id
+            or row.session_id
+        ):
             raise ValueError(f"Swarm task {task_id} is not awaiting inputs")
+        row.task_text = task
         row.repo = repo
         row.base_branch = branch
+        row.start_model = model
+        row.start_triggered_by = triggered_by
+        row.start_state = "classifying"
+        row.start_payload_json = None
+        row.start_claim_token = None
+        row.start_updated_at = datetime.now(timezone.utc)
+        row.settled_at = None
         db.add(row)
         db.commit()
 
 
-@router.post("/classify-and-start", response_model=ClassifyAndStartResponse)
+def _start_status_response(snapshot: dict) -> StartStatusResponse:
+    state = snapshot["state"]
+    payload = snapshot["payload"]
+    if state in _IN_PROGRESS_STATES:
+        return StartStatusResponse(kind="classifying")
+    return StartStatusResponse(
+        kind=state,
+        session_id=snapshot["session_id"],
+        run_id=snapshot["workflow_id"],
+        needs_input=payload.get("needs_input"),
+        refusal_code=payload.get("refusal_code"),
+        message=payload.get("message"),
+        login_required=True if payload.get("login_required") else None,
+        verification_url=payload.get("verification_url"),
+        user_code=payload.get("user_code"),
+        grant=payload.get("grant"),
+        login_message=payload.get("login_message"),
+    )
+
+
+async def _classify_and_resolve_body(context: _StartContext, progress: dict) -> None:
+    """Classify and start one persisted launcher task."""
+    if context.has_classification:
+        classification = context.classification or "one_shot"
+        latency_ms = context.classification_latency_ms
+        outcome = context.classification_outcome or "error_fallback"
+        refusal_code = context.classification_refusal_code
+        record_classification = False
+    else:
+        from swarm import classifier
+
+        started = time.monotonic()
+        try:
+            classification, latency_ms, outcome, refusal_code = await asyncio.wait_for(
+                classifier.classify_task_with_outcome(context.task),
+                timeout=_CLASSIFIER_DEADLINE_SECONDS,
+            )
+        except TimeoutError:
+            classification = "one_shot"
+            latency_ms = round((time.monotonic() - started) * 1000)
+            outcome = "timeout"
+            refusal_code = "classifier deadline exceeded"
+        except Exception as exc:  # noqa: BLE001 - transport failure falls back
+            classification = "one_shot"
+            latency_ms = round((time.monotonic() - started) * 1000)
+            outcome = "error"
+            refusal_code = str(exc) or "classifier transport error"
+        record_classification = True
+
+    fallback = outcome != "success"
+    if fallback:
+        classification = "one_shot"
+    recorded_outcome = (
+        outcome
+        if outcome == "success" or outcome.endswith("_fallback")
+        else f"{outcome}_fallback"
+    )
+    if outcome == "success" and refusal_code:
+        progress["resolution_state"] = "settling_refused"
+    elif classification == "planned" and (not context.repo or not context.branch):
+        progress["resolution_state"] = "settling_needs_input"
+    elif classification == "planned":
+        progress["resolution_state"] = "starting_run"
+    else:
+        progress["resolution_state"] = "starting_session"
+
+    progress["claim_token"] = await asyncio.to_thread(
+        _claim_resolution_sync, context.task_id, progress["resolution_state"]
+    )
+    if progress["claim_token"] is None:
+        return
+    if record_classification:
+        await asyncio.to_thread(
+            _record_classification_sync,
+            context.task_id,
+            context.task,
+            classification,
+            latency_ms,
+            recorded_outcome,
+            refusal_code,
+            context.budget_usd,
+            context.record_plan,
+        )
+
+    if outcome == "success" and refusal_code:
+        await asyncio.to_thread(
+            _finish_task_sync,
+            context.task_id,
+            "settling_refused",
+            "refused",
+            claim_token=progress["claim_token"],
+            payload={"refusal_code": refusal_code, "message": refusal_code},
+        )
+        return
+
+    if classification == "planned":
+        if not context.repo or not context.branch:
+            await asyncio.to_thread(
+                _finish_task_sync,
+                context.task_id,
+                "settling_needs_input",
+                "needs_input",
+                claim_token=progress["claim_token"],
+                payload={
+                    "needs_input": {
+                        "repo": not bool(context.repo),
+                        "branch": not bool(context.branch),
+                    }
+                },
+            )
+            return
+        result = await asyncio.to_thread(
+            start_run,
+            RunRequest(
+                task=context.task,
+                repo=context.repo,
+                branch=context.branch,
+                idempotency_key=context.task_id,
+                budget_usd=context.budget_usd,
+                model=context.model,
+            ),
+        )
+        await asyncio.to_thread(
+            _finish_task_sync,
+            context.task_id,
+            "starting_run",
+            "run",
+            claim_token=progress["claim_token"],
+            workflow_id=result["workflow_id"],
+        )
+        return
+
+    from agent_sessions.router import StartRequest, start_session_for_task
+
+    result = await start_session_for_task(
+        context.triggered_by,
+        context.task_id,
+        StartRequest(
+            prompt=context.task,
+            model=context.model,
+            repo=context.repo,
+            branch=context.branch or "main",
+        ),
+    )
+    if result.get("session_id") is None:
+        raise RuntimeError(result.get("error", "session unavailable"))
+    payload = {}
+    if result.get("login_required"):
+        payload = {
+            "login_required": True,
+            "verification_url": result.get("verification_url"),
+            "user_code": result.get("user_code"),
+            "grant": result.get("grant"),
+            "login_message": result.get("message"),
+        }
+    await asyncio.to_thread(
+        _finish_task_sync,
+        context.task_id,
+        "starting_session",
+        "session",
+        claim_token=progress["claim_token"],
+        session_id=result["session_id"],
+        payload=payload,
+    )
+
+
+def _is_retryable_dbos_replica_error(exc: HTTPException) -> bool:
+    return (
+        exc.status_code == 503
+        and isinstance(exc.detail, str)
+        and "DBOS is not launched on this replica" in exc.detail
+    )
+
+
+async def _classify_and_resolve(context: _StartContext) -> None:
+    """Resolve a persisted launcher task within one bounded background task."""
+    progress = {"resolution_state": "classifying", "claim_token": None}
+    try:
+        await asyncio.wait_for(
+            _classify_and_resolve_body(context, progress),
+            timeout=_CLASSIFY_RESOLUTION_TIMEOUT_SECONDS,
+        )
+    except asyncio.CancelledError:
+        logger.warning(
+            "async classify-and-start cancelled for task %s", context.task_id
+        )
+        raise
+    except TimeoutError:
+        logger.error("async classify-and-start timed out for task %s", context.task_id)
+        await asyncio.to_thread(
+            _finish_task_sync,
+            context.task_id,
+            progress["resolution_state"],
+            "error",
+            claim_token=progress["claim_token"],
+            payload={"message": "task start timed out"},
+        )
+    except HTTPException as exc:
+        if _is_retryable_dbos_replica_error(exc):
+            logger.warning(
+                "async classify-and-start reached a DBOS follower for task %s",
+                context.task_id,
+            )
+            await asyncio.to_thread(
+                _record_retryable_start_error_sync,
+                context.task_id,
+                progress["resolution_state"],
+                progress["claim_token"],
+                str(exc.detail),
+            )
+            return
+        logger.exception("async classify-and-start failed for task %s", context.task_id)
+        await asyncio.to_thread(
+            _finish_task_sync,
+            context.task_id,
+            progress["resolution_state"],
+            "error",
+            claim_token=progress["claim_token"],
+            payload={"message": str(exc.detail) or "task could not be started"},
+        )
+    except Exception as exc:  # noqa: BLE001 - background failures become status
+        logger.exception("async classify-and-start failed for task %s", context.task_id)
+        await asyncio.to_thread(
+            _finish_task_sync,
+            context.task_id,
+            progress["resolution_state"],
+            "error",
+            claim_token=progress["claim_token"],
+            payload={"message": str(exc) or "task could not be started"},
+        )
+
+
+def _schedule_classification(context: _StartContext) -> None:
+    current = _CLASSIFICATION_TASKS.get(context.task_id)
+    if current is not None and not current.done():
+        return
+    task = asyncio.create_task(
+        _classify_and_resolve(context),
+        name=f"classify-and-start:{context.task_id}",
+    )
+    _CLASSIFICATION_TASKS[context.task_id] = task
+
+    def forget(completed: asyncio.Task[None]) -> None:
+        if _CLASSIFICATION_TASKS.get(context.task_id) is completed:
+            _CLASSIFICATION_TASKS.pop(context.task_id, None)
+
+    task.add_done_callback(forget)
+    task.add_done_callback(log_task_exception)
+
+
+@router.post("/classify-and-start", response_model=ClassifyAndStartAccepted)
 async def classify_and_start(request: Request, body: ClassifyAndStartRequest):
     task = body.task.strip()
     model = body.model.strip()
@@ -424,113 +938,110 @@ async def classify_and_start(request: Request, body: ClassifyAndStartRequest):
         raise HTTPException(status_code=400, detail="task and model are required")
     if body.budget_usd is not None and body.budget_usd <= 0:
         raise HTTPException(status_code=400, detail="budget_usd must be positive")
+    if body.repo is not None and body.repo not in REPO_CATALOG:
+        raise HTTPException(status_code=400, detail=f"unknown repo {body.repo}")
 
-    from swarm import classifier, models
+    from agent_sessions import model_family, normalize_model
+
+    try:
+        model = normalize_model(model)
+        model_family(model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    from swarm import models
 
     is_resubmission = body.task_id is not None
     task_id = body.task_id or models.mint_task_id()
+    triggered_by = request.headers.get("x-auth-email")
+    triggered_by = triggered_by.strip().lower() or None if triggered_by else None
     if is_resubmission:
         try:
             await asyncio.to_thread(
-                _update_task_inputs_sync, task_id, body.repo, body.branch
+                _update_task_inputs_sync,
+                task_id,
+                task,
+                body.repo,
+                body.branch,
+                model,
+                triggered_by,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        snapshot = await asyncio.to_thread(_task_start_snapshot_sync, task_id)
+        assert snapshot is not None
+        context = _start_context_from_snapshot(snapshot)
     else:
         await asyncio.to_thread(
-            _create_task_sync, task_id, task, body.repo, body.branch, body.budget_usd
-        )
-    (
-        classification,
-        latency_ms,
-        outcome,
-        refusal_code,
-    ) = await classifier.classify_task_with_outcome(task)
-    if not is_resubmission:
-        await asyncio.to_thread(
-            _record_classification_sync,
+            _create_task_sync,
             task_id,
             task,
-            classification,
-            latency_ms,
-            outcome,
-            refusal_code,
+            body.repo,
+            body.branch,
+            model,
             body.budget_usd,
+            triggered_by,
         )
-
-    if classification == "planned":
-        if not body.repo or not body.branch:
-            return ClassifyAndStartResponse(
-                task_id=task_id,
-                classification=classification,
-                kind="needs_input",
-                needs_input={
-                    "repo": not bool(body.repo),
-                    "branch": not bool(body.branch),
-                },
-            )
-        try:
-            result = start_run(
-                RunRequest(
-                    task=task,
-                    repo=body.repo,
-                    branch=body.branch,
-                    budget_usd=body.budget_usd,
-                    model=model,
-                )
-            )
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503, detail="swarm service unavailable"
-            ) from exc
-        await asyncio.to_thread(
-            _set_task_link_sync, task_id, workflow_id=result["workflow_id"]
-        )
-        return ClassifyAndStartResponse(
+        context = _StartContext(
             task_id=task_id,
-            classification=classification,
-            workflow_id=result["workflow_id"],
-            kind="run",
+            task=task,
+            repo=body.repo,
+            branch=body.branch,
+            model=model,
+            budget_usd=body.budget_usd,
+            triggered_by=triggered_by,
         )
+    _schedule_classification(context)
+    return ClassifyAndStartAccepted(task_id=task_id, kind="classifying")
 
-    from agent_sessions.router import StartRequest, start_session
 
-    try:
-        result = await start_session(
-            request,
-            StartRequest(
-                prompt=task,
-                model=model,
-                repo=body.repo,
-                branch=body.branch or "main",
-            ),
+@router.get(
+    "/tasks/{task_id}/start-status",
+    response_model=StartStatusResponse,
+    response_model_exclude_none=True,
+)
+async def task_start_status(task_id: str) -> StartStatusResponse:
+    snapshot = await asyncio.to_thread(_task_start_snapshot_sync, task_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Swarm task not found")
+
+    state = snapshot["state"]
+    task = _CLASSIFICATION_TASKS.get(task_id)
+    has_live_task = task is not None and not task.done()
+    updated_at = snapshot["updated_at"]
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    soft_cutoff = now - timedelta(seconds=_CLASSIFY_STUCK_SECONDS)
+    hard_cutoff = now - timedelta(seconds=_CLASSIFY_HARD_STUCK_SECONDS)
+    hard_stuck = state in _IN_PROGRESS_STATES and updated_at <= hard_cutoff
+    if hard_stuck and has_live_task:
+        task.cancel()
+        _CLASSIFICATION_TASKS.pop(task_id, None)
+        has_live_task = False
+    if (
+        state in _IN_PROGRESS_STATES
+        and updated_at <= soft_cutoff
+        and (not has_live_task or hard_stuck)
+    ):
+        reclaim_cutoff = hard_cutoff if hard_stuck else soft_cutoff
+        reclaimed = await asyncio.to_thread(
+            _reclaim_stuck_task_sync, task_id, reclaim_cutoff
         )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503, detail="session service unavailable"
-        ) from exc
-    if result.get("session_id") is None:
-        raise HTTPException(
-            status_code=503, detail=result.get("error", "session unavailable")
-        )
-    await asyncio.to_thread(
-        _set_task_link_sync, task_id, session_id=result["session_id"]
-    )
-    response = ClassifyAndStartResponse(
-        task_id=task_id,
-        classification=classification,
-        session_id=result["session_id"],
-        kind="session",
-    )
-    if result.get("login_required"):
-        response.login_required = True
-        response.verification_url = result.get("verification_url")
-        response.user_code = result.get("user_code")
-        response.grant = result.get("grant")
-        response.login_message = result.get("message")
-    return response
+        if reclaimed is not None:
+            if not reclaimed["model"]:
+                await asyncio.to_thread(
+                    _finish_task_sync,
+                    task_id,
+                    "classifying",
+                    "error",
+                    payload={"message": "task is missing its requested model"},
+                )
+            else:
+                _schedule_classification(_start_context_from_snapshot(reclaimed))
+            snapshot = await asyncio.to_thread(_task_start_snapshot_sync, task_id)
+            assert snapshot is not None
+    return _start_status_response(snapshot)
 
 
 @router.put("/promote-session", response_model=PromoteSessionResponse)
