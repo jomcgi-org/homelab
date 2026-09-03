@@ -135,10 +135,11 @@ def _post_internal(path: str, name: str, timeout: int = 180) -> None:
         raise RuntimeError("MONOLITH_INTERNAL_URL is not set")
     logger.info("%s: POST %s%s", name, url, path)
     # The internal URL is the plain Service, so with two replicas about half
-    # the calls land on the follower, which answers 503 (DBOS is launched on
-    # the leader only). Each attempt is a fresh connection, so a retry lands
-    # on another backend; six attempts make a follower-only streak
-    # vanishingly rare (#5590).
+    # the calls land on the follower. The drain endpoint now answers from any
+    # replica, while the other _post_internal endpoints still answer 503 from
+    # followers because DBOS is launched on the leader only. Each attempt is a
+    # fresh connection, so a retry lands on another backend; six attempts make
+    # a follower-only streak vanishingly rare (#5590).
     resp = None
     for attempt in range(_INTERNAL_POST_ATTEMPTS):
         resp = httpx.post(f"{url}{path}", timeout=timeout)

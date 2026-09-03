@@ -163,16 +163,16 @@ def _current_app_version() -> str:
 
 
 def _reap_version_stranded_cycles(dbos) -> int:
-    """Cancel ENQUEUED cycles stamped with a version nothing will dequeue.
+    """Cancel ENQUEUED cycles that no running worker can dequeue.
 
-    A queued workflow carries the app_version of the process that enqueued it,
-    and the dequeue query filters on application_version equalling the worker's
-    own. So an ENQUEUED row left behind by a previous image is undequeuable:
-    no PENDING row exists for the staleness reaper to find, yet
-    _has_live_drain_cycle counts it regardless of version, so every tick
-    returns already_queued forever. Silent permanent stall, and the only other
-    exit is editing the row by hand, since resume re-enqueues without changing
-    the version.
+    DBOS dequeues an explicitly versioned row only when application_version
+    equals the worker's own version. It dequeues a NULL-version row only when
+    the worker is running the latest registered application version. Therefore
+    an explicit mismatch is stranded, and a NULL-version row is stranded when
+    this leader is a previously registered version after a rollback. Neither
+    produces a PENDING row for the staleness reaper to find, yet
+    _has_live_drain_cycle counts both, so every tick would otherwise return
+    already_queued forever.
 
     Chaining widens the window that produces one of these. A cycle that
     finishes during the pod's termination grace period still enqueues its
@@ -202,8 +202,23 @@ def _reap_version_stranded_cycles(dbos) -> int:
             version = getattr(workflow, "app_version", None) or getattr(
                 workflow, "application_version", None
             )
-            if not version or version == current_version:
+            if version == current_version:
                 continue
+            if not version:
+                try:
+                    latest_version = dbos.get_latest_application_version()[
+                        "version_name"
+                    ]
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "Luna drainer could not resolve the latest DBOS version, "
+                        "skipping NULL-version cycle %s",
+                        workflow.workflow_id,
+                        exc_info=True,
+                    )
+                    continue
+                if not latest_version or latest_version == current_version:
+                    continue
             try:
                 dbos.cancel_workflow(workflow.workflow_id, cancel_children=True)
                 logger.warning(
@@ -226,7 +241,7 @@ def _reap_version_stranded_cycles(dbos) -> int:
     return reaped
 
 
-def _has_live_drain_cycle() -> bool:
+def _has_live_drain_cycle(dbos) -> bool:
     """Check if a PENDING or ENQUEUED drain_cycle exists.
 
     Returns False on database errors to fail open: a spurious duplicate enqueue
@@ -234,9 +249,6 @@ def _has_live_drain_cycle() -> bool:
     the drainer permanently.
     """
     try:
-        dbos = runtime.init_dbos()
-        if dbos is None:
-            return False
         workflows = dbos.list_workflows(
             name="drain_cycle",
             queue_name=_DRAINER_QUEUE_NAME,
@@ -262,35 +274,72 @@ def trigger_drain(response: Response) -> dict:
     if not drainer_enabled():
         response.status_code = 200
         return {"status": "disabled"}
-    if not runtime.is_launched():
-        raise HTTPException(
-            status_code=503, detail="DBOS is not launched on this replica"
-        )
-    dbos = runtime.init_dbos()
-    if dbos is None:
-        raise HTTPException(status_code=503, detail="DBOS is not configured")
+    launched = runtime.is_launched()
+    if launched:
+        dbos = runtime.init_dbos()
+        if dbos is None:
+            raise HTTPException(status_code=503, detail="DBOS is not configured")
 
-    # Resolve the queue BEFORE any early return. drainer_queue() is what
-    # constructs the DBOS Queue object and so registers it in the DBOS
-    # registry; the queue thread only polls queues that are registered on this
-    # process. If the "already_queued" return below skipped this call, a pod
-    # that rolled with a backlog would never register the queue, never dequeue
-    # the backlog, and therefore keep seeing a live cycle forever. That is a
-    # self-reinforcing stall, and it is the same failure this endpoint exists
-    # to prevent.
-    queue = drainer_queue()
+        # Resolve the queue BEFORE any early return. drainer_queue() is what
+        # constructs the DBOS Queue object and so registers it in the DBOS
+        # registry; the queue thread only polls queues that are registered on
+        # this process. If the "already_queued" return below skipped this call,
+        # a pod that rolled with a backlog would never register the queue,
+        # never dequeue the backlog, and therefore keep seeing a live cycle
+        # forever. That is a self-reinforcing stall, and it is the same failure
+        # this endpoint exists to prevent.
+        queue = drainer_queue()
 
-    # Reap stale PENDING cycles that will never advance.
-    _reap_stale_drain_cycles(dbos)
+        submitter = dbos
+    else:
+        try:
+            submitter = runtime.read_client()
+        except Exception as error:  # noqa: BLE001
+            logger.warning("could not connect a follower DBOS client", exc_info=True)
+            raise HTTPException(
+                status_code=503,
+                detail="DBOS is temporarily unavailable",
+                headers={"Retry-After": "2"},
+            ) from error
+        if submitter is None:
+            raise HTTPException(status_code=503, detail="DBOS is not configured")
+
+    # Every replica runs the staleness reaper through its DBOS or DBOSClient
+    # handle, preserving one reap attempt per tick. The version-stranded reaper
+    # remains leader-only because _current_app_version() returns "" on a
+    # follower, and its cannot-tell rule declines to cancel anything.
+    _reap_stale_drain_cycles(submitter)
 
     # Make enqueue idempotent: do not stack another cycle if one is already live.
     # The CronWorkflow fires every 15 minutes regardless of whether the previous
     # cycle finished, so without this guard every tick during a slow-but-healthy
     # cycle would stack another workflow that contends for the single concurrency
     # slot, creating the 52-deep pileup that blocked draining for hours.
-    if _has_live_drain_cycle():
+    if _has_live_drain_cycle(submitter):
         response.status_code = 200
         return {"status": "already_queued"}
 
-    queue.enqueue(drain_cycle)
+    if launched:
+        queue.enqueue(drain_cycle)
+    else:
+        try:
+            # DBOSClient 2.29.0 accepts workflow metadata rather than the
+            # decorated function object accepted by Queue.enqueue().
+            latest_version = submitter.get_latest_application_version()["version_name"]
+            if not latest_version:
+                raise RuntimeError("DBOS has no latest application version")
+            submitter.enqueue(
+                {
+                    "workflow_name": "drain_cycle",
+                    "queue_name": _DRAINER_QUEUE_NAME,
+                    "app_version": latest_version,
+                }
+            )
+        except Exception as error:  # noqa: BLE001
+            logger.warning("follower failed to enqueue a drain cycle", exc_info=True)
+            raise HTTPException(
+                status_code=503,
+                detail="DBOS is temporarily unavailable",
+                headers={"Retry-After": "2"},
+            ) from error
     return {"status": "started"}

@@ -21,14 +21,22 @@ def test_disabled_returns_200(monkeypatch):
     assert response.json() == {"status": "disabled"}
 
 
-def test_dbos_not_launched_returns_503(monkeypatch):
+def test_dbos_not_configured_returns_503(monkeypatch):
     monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
-    monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: False)
+    monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: None)
+    monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(
+        drainer_router.runtime,
+        "read_client",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("the leader must not construct a DBOSClient")
+        ),
+    )
 
     response = _client().post("/internal/agent/drain")
 
     assert response.status_code == 503
-    assert "not launched" in response.json()["detail"]
+    assert "not configured" in response.json()["detail"]
 
 
 class _FakeWorkflow:
@@ -76,6 +84,13 @@ def test_launched_enqueues_workflow_on_drainer_queue(monkeypatch):
 
     monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
     monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(
+        drainer_router.runtime,
+        "read_client",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("the leader must not construct a DBOSClient")
+        ),
+    )
     monkeypatch.setattr(drainer_router, "drainer_queue", lambda: FakeQueue())
 
     response = _client().post("/internal/agent/drain")
@@ -83,6 +98,200 @@ def test_launched_enqueues_workflow_on_drainer_queue(monkeypatch):
     assert response.status_code == 202
     assert response.json() == {"status": "started"}
     assert enqueued == [drainer_router.drain_cycle]
+
+
+def test_follower_enqueues_workflow_through_dbos_client(monkeypatch):
+    enqueued = []
+    list_calls = []
+
+    class FakeDBOSClient:
+        def list_workflows(self, **kwargs):
+            list_calls.append(kwargs)
+            return []
+
+        def get_latest_application_version(self):
+            return {"version_name": "v-current"}
+
+        def enqueue(self, options):
+            enqueued.append(options)
+
+    def no_queue():
+        raise AssertionError("a follower must not resolve the leader queue")
+
+    monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
+    monkeypatch.setattr(
+        drainer_router.runtime,
+        "init_dbos",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("a follower must not construct the DBOS singleton")
+        ),
+    )
+    monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: False)
+    monkeypatch.setattr(drainer_router.runtime, "read_client", lambda: FakeDBOSClient())
+    monkeypatch.setattr(drainer_router, "drainer_queue", no_queue)
+    monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "")
+
+    response = _client().post("/internal/agent/drain")
+
+    assert response.status_code == 202
+    assert response.json() == {"status": "started"}
+    assert list_calls == [
+        {
+            "name": "drain_cycle",
+            "queue_name": "drainer",
+            "status": "PENDING",
+            "load_input": False,
+            "load_output": False,
+        },
+        {
+            "name": "drain_cycle",
+            "queue_name": "drainer",
+            "status": ["PENDING", "ENQUEUED"],
+            "limit": 1,
+            "load_input": False,
+            "load_output": False,
+        },
+    ]
+    assert enqueued == [
+        {
+            "workflow_name": "drain_cycle",
+            "queue_name": "drainer",
+            "app_version": "v-current",
+        }
+    ]
+
+
+def test_follower_returns_already_queued_for_live_cycle(monkeypatch):
+    class FakeDBOSClient:
+        def list_workflows(self, status=None, **_kwargs):
+            if status == "PENDING":
+                return []
+            return [_FakeWorkflow("live-wf", int(time.time() * 1000))]
+
+        def enqueue(self, _options):
+            raise AssertionError("a live cycle must prevent a second enqueue")
+
+    monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
+    monkeypatch.setattr(
+        drainer_router.runtime,
+        "init_dbos",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("a follower must not construct the DBOS singleton")
+        ),
+    )
+    monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: False)
+    monkeypatch.setattr(drainer_router.runtime, "read_client", lambda: FakeDBOSClient())
+    monkeypatch.setattr(
+        drainer_router,
+        "drainer_queue",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("a follower must not resolve the leader queue")
+        ),
+    )
+    monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "")
+
+    response = _client().post("/internal/agent/drain")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "already_queued"}
+
+
+def test_follower_enqueue_failure_returns_retry_after(monkeypatch):
+    class FakeDBOSClient:
+        def list_workflows(self, **_kwargs):
+            return []
+
+        def get_latest_application_version(self):
+            return {"version_name": "v-current"}
+
+        def enqueue(self, _options):
+            raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
+    monkeypatch.setattr(
+        drainer_router.runtime,
+        "init_dbos",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("a follower must not construct the DBOS singleton")
+        ),
+    )
+    monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: False)
+    monkeypatch.setattr(drainer_router.runtime, "read_client", lambda: FakeDBOSClient())
+    monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "")
+
+    response = _client().post("/internal/agent/drain")
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "2"
+
+
+def test_follower_without_dbos_client_returns_503(monkeypatch):
+    monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
+    monkeypatch.setattr(
+        drainer_router.runtime,
+        "init_dbos",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("a follower must not construct the DBOS singleton")
+        ),
+    )
+    monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: False)
+    monkeypatch.setattr(drainer_router.runtime, "read_client", lambda: None)
+
+    response = _client().post("/internal/agent/drain")
+
+    assert response.status_code == 503
+    assert "not configured" in response.json()["detail"]
+
+
+def test_follower_reaps_stale_pending_cycle(monkeypatch):
+    cancelled = []
+    enqueued = []
+
+    class FakeDBOSClient:
+        def list_workflows(self, status=None, **_kwargs):
+            if status == "PENDING":
+                return [_FakeWorkflow("stale-follower-wf", 1000)]
+            return []
+
+        def list_workflow_steps(self, _workflow_id, load_output=False):
+            return []
+
+        def cancel_workflow(self, workflow_uuid, *, cancel_children=False):
+            cancelled.append((workflow_uuid, cancel_children))
+
+        def get_latest_application_version(self):
+            return {"version_name": "v-current"}
+
+        def enqueue(self, options):
+            enqueued.append(options)
+
+    def close_coro(coro):
+        coro.close()
+
+    monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: False)
+    monkeypatch.setattr(
+        drainer_router.runtime,
+        "init_dbos",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("a follower must not construct the DBOS singleton")
+        ),
+    )
+    monkeypatch.setattr(drainer_router.runtime, "read_client", lambda: FakeDBOSClient())
+    monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "")
+    monkeypatch.setattr(drainer_router.asyncio, "run", close_coro)
+
+    response = _client().post("/internal/agent/drain")
+
+    assert response.status_code == 202
+    assert cancelled == [("stale-follower-wf", True)]
+    assert enqueued == [
+        {
+            "workflow_name": "drain_cycle",
+            "queue_name": "drainer",
+            "app_version": "v-current",
+        }
+    ]
 
 
 def test_drainer_flag_enables_shared_dbos_runtime(monkeypatch):
@@ -142,6 +351,7 @@ def test_stale_pending_reaper_then_enqueue(monkeypatch):
 def test_fresh_pending_not_reaped_returns_already_queued(monkeypatch):
     """A fresh PENDING row is left alone and NO new cycle is enqueued."""
     enqueued = []
+    queue_resolutions = []
 
     class FakeDBOS:
         def list_workflows(
@@ -169,15 +379,27 @@ def test_fresh_pending_not_reaped_returns_already_queued(monkeypatch):
         def enqueue(self, workflow):
             enqueued.append(workflow)
 
+    def resolve_queue():
+        queue_resolutions.append(True)
+        return FakeQueue()
+
     monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
     monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
     monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
-    monkeypatch.setattr(drainer_router, "drainer_queue", lambda: FakeQueue())
+    monkeypatch.setattr(
+        drainer_router.runtime,
+        "read_client",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("the leader must not construct a DBOSClient")
+        ),
+    )
+    monkeypatch.setattr(drainer_router, "drainer_queue", resolve_queue)
 
     response = _client().post("/internal/agent/drain")
 
     assert response.status_code == 200
     assert response.json() == {"status": "already_queued"}
+    assert queue_resolutions == [True]
     assert enqueued == []
 
 
@@ -451,7 +673,7 @@ def test_queue_is_resolved_even_when_a_cycle_is_already_live(monkeypatch):
     assert resolved == [True], "the queue must still be resolved, to register it"
 
 
-def _stranded_dbos(monkeypatch, enqueued_version, cancelled):
+def _stranded_dbos(monkeypatch, enqueued_version, cancelled, latest_version="v-new"):
     """A DBOS whose only live row is an ENQUEUED cycle at some app version."""
     now_ms = int(time.time() * 1000)
 
@@ -466,6 +688,9 @@ def _stranded_dbos(monkeypatch, enqueued_version, cancelled):
 
         def cancel_workflow(self, workflow_uuid, cancel_children=False):
             cancelled.append(workflow_uuid)
+
+        def get_latest_application_version(self):
+            return {"version_name": latest_version}
 
     monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
     monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
@@ -504,6 +729,17 @@ def test_matching_version_enqueued_cycle_is_left_alone(monkeypatch):
     _client().post("/internal/agent/drain")
 
     assert cancelled == []
+
+
+def test_null_version_enqueued_cycle_is_cancelled_after_rollback(monkeypatch):
+    """A NULL-version row is stranded when this leader is not the latest."""
+    cancelled = []
+    monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "v-old")
+    _stranded_dbos(monkeypatch, None, cancelled, latest_version="v-new")
+
+    _client().post("/internal/agent/drain")
+
+    assert cancelled == ["stranded-wf"]
 
 
 def test_unresolvable_app_version_cancels_nothing(monkeypatch):
