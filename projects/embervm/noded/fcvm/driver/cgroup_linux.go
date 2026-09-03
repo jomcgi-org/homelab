@@ -4,9 +4,11 @@ package driver
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,11 +26,12 @@ const (
 // and create VM leaves as siblings of that daemon child. Every leaf therefore
 // remains below the kubelet-owned pod/container hierarchy.
 type cgroupManager struct {
-	once      sync.Once
-	initErr   error
-	mount     string
-	parentDir string
-	parentArg string
+	mu           sync.Mutex
+	mount        string
+	parentDir    string
+	parentArg    string
+	failures     map[string]struct{}
+	initializeFn func() error
 }
 
 type vmCgroup struct {
@@ -37,12 +40,21 @@ type vmCgroup struct {
 	oomKillStart uint64
 }
 
-func newCgroupManager() *cgroupManager { return &cgroupManager{} }
+func newCgroupManager() *cgroupManager {
+	return &cgroupManager{failures: make(map[string]struct{})}
+}
 
 func (m *cgroupManager) Create(vmID string, limitBytes int64) (*vmCgroup, error) {
-	m.once.Do(func() { m.initErr = m.initialize() })
-	if m.initErr != nil {
-		return nil, m.initErr
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.parentDir == "" {
+		initialize := m.initialize
+		if m.initializeFn != nil {
+			initialize = m.initializeFn
+		}
+		if err := initialize(); err != nil {
+			return nil, err
+		}
 	}
 	dir := filepath.Join(m.parentDir, vmID)
 	if err := os.Mkdir(dir, 0o755); err != nil && !os.IsExist(err) {
@@ -69,6 +81,27 @@ func (m *cgroupManager) Create(vmID string, limitBytes int64) (*vmCgroup, error)
 	}, nil
 }
 
+// shouldLogFailure suppresses repeated log spam for the same failure while
+// retaining per-launch retries. A repaired brick can recover without a daemon
+// redeploy because no initialization error is memoized.
+func (m *cgroupManager) shouldLogFailure(err error) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cause := err.Error()
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		cause = pathErr.Op + ":" + pathErr.Err.Error()
+	}
+	if m.failures == nil {
+		m.failures = make(map[string]struct{})
+	}
+	if _, ok := m.failures[cause]; ok {
+		return false
+	}
+	m.failures[cause] = struct{}{}
+	return true
+}
+
 func (m *cgroupManager) initialize() error {
 	mount, err := cgroup2Mount()
 	if err != nil {
@@ -89,11 +122,11 @@ func (m *cgroupManager) initialize() error {
 	if err := writeCgroupFile(filepath.Join(current, "cgroup.subtree_control"), "+memory"); err != nil {
 		return fmt.Errorf("delegate memory controller: %w", err)
 	}
-	m.parentDir = filepath.Join(current, cgroupVMParent)
-	if err := os.Mkdir(m.parentDir, 0o755); err != nil && !os.IsExist(err) {
+	parentDir := filepath.Join(current, cgroupVMParent)
+	if err := os.Mkdir(parentDir, 0o755); err != nil && !os.IsExist(err) {
 		return fmt.Errorf("mkdir VM cgroup parent: %w", err)
 	}
-	if err := writeCgroupFile(filepath.Join(m.parentDir, "cgroup.subtree_control"), "+memory"); err != nil {
+	if err := writeCgroupFile(filepath.Join(parentDir, "cgroup.subtree_control"), "+memory"); err != nil {
 		return fmt.Errorf("delegate memory controller to VM leaves: %w", err)
 	}
 	relCurrent, err := filepath.Rel(mount, current)
@@ -104,6 +137,7 @@ func (m *cgroupManager) initialize() error {
 		relCurrent = ""
 	}
 	m.mount = mount
+	m.parentDir = parentDir
 	m.parentArg = filepath.ToSlash(filepath.Join(relCurrent, cgroupVMParent))
 	return nil
 }
@@ -192,8 +226,27 @@ func (c *vmCgroup) OOMKilled() (bool, error) {
 }
 
 func (c *vmCgroup) Remove() error {
-	if err := os.Remove(c.dir); err != nil && !os.IsNotExist(err) {
+	var dirs []string
+	err := filepath.WalkDir(c.dir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if os.IsNotExist(walkErr) {
+				return nil
+			}
+			return walkErr
+		}
+		if entry.IsDir() {
+			dirs = append(dirs, path)
+		}
+		return nil
+	})
+	if err != nil {
 		return err
+	}
+	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
+	for _, dir := range dirs {
+		if err := os.Remove(dir); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	return nil
 }

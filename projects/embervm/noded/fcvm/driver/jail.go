@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -24,15 +25,17 @@ const jailResourcesName = "jail-resources.json"
 // Firecracker device model. Persisting this beside a snapshot lets a later jail
 // stage exactly the files that snapshot will reopen.
 type JailResource struct {
-	Role     string `json:"role"`
-	HostPath string `json:"host_path"`
-	JailPath string `json:"jail_path"`
-	Writable bool   `json:"writable,omitempty"`
+	Role        string `json:"role"`
+	HostPath    string `json:"host_path"`
+	JailPath    string `json:"jail_path"`
+	Writable    bool   `json:"writable,omitempty"`
+	PrivateCopy bool   `json:"private_copy,omitempty"`
 }
 
 // Jail maps noded-visible paths to the private filesystem seen by Firecracker.
 type Jail struct {
 	BaseDir string
+	Dir     string
 	RootDir string
 	uid     int
 	gid     int
@@ -45,16 +48,24 @@ type Jail struct {
 func prepareJail(bundleDir, execFile, vmID string, uid, gid int, hostSocket string) (*Jail, error) {
 	base := filepath.Join(bundleDir, "jailer")
 	root := filepath.Join(base, filepath.Base(execFile), vmID, "root")
+	ready := false
+	defer func() {
+		if !ready {
+			_ = os.Remove(hostSocket)
+			_ = os.RemoveAll(filepath.Dir(root))
+		}
+	}()
 	if err := os.MkdirAll(root, 0o750); err != nil {
 		return nil, fmt.Errorf("driver: create jail root: %w", err)
 	}
-	j := &Jail{BaseDir: base, RootDir: root, uid: uid, gid: gid, resources: make(map[string]JailResource)}
+	j := &Jail{BaseDir: base, Dir: filepath.Dir(root), RootDir: root, uid: uid, gid: gid, resources: make(map[string]JailResource)}
 	if err := j.ensureDir("/"); err != nil {
 		return nil, err
 	}
 	if err := j.aliasSocket(hostSocket, j.APISocketPath()); err != nil {
 		return nil, fmt.Errorf("driver: stage jailed API socket: %w", err)
 	}
+	ready = true
 	return j, nil
 }
 
@@ -107,20 +118,32 @@ func (j *Jail) aliasSocket(hostAlias, jailPath string) error {
 	return os.Symlink(target, hostAlias)
 }
 
+// aliasSocketPort stages one guest-initiated vsock connect target. Firecracker
+// connects to <uds_path>_<port> inside its chroot, so aliasing only the base UDS
+// cannot make a host listener reachable from the guest.
+func (j *Jail) aliasSocketPort(hostBase, jailBase string, port uint32) error {
+	suffix := fmt.Sprintf("_%d", port)
+	return j.aliasSocket(hostBase+suffix, jailBase+suffix)
+}
+
 func (j *Jail) stageResource(r JailResource) (string, error) {
 	if r.HostPath == "" || r.JailPath == "" {
 		return "", fmt.Errorf("empty jail resource path")
 	}
 	j.mu.Lock()
+	if existing, ok := j.resources[r.Role]; ok && existing.HostPath == r.HostPath && existing.JailPath == r.JailPath && existing.Writable == r.Writable {
+		j.mu.Unlock()
+		return existing.JailPath, nil
+	}
 	for _, existing := range j.resources {
-		if existing.HostPath == r.HostPath && existing.JailPath == r.JailPath && existing.Writable == r.Writable {
+		if existing.HostPath == r.HostPath && existing.JailPath == r.JailPath && existing.Writable == r.Writable && existing.PrivateCopy == r.PrivateCopy {
 			j.resources[r.Role] = r
 			j.mu.Unlock()
 			return r.JailPath, nil
 		}
 	}
 	j.mu.Unlock()
-	if err := j.stageFile(r.HostPath, r.JailPath, false, r.Writable); err != nil {
+	if err := j.stageFile(r.Role, r.HostPath, r.JailPath, false, r.Writable, r.PrivateCopy); err != nil {
 		return "", err
 	}
 	j.mu.Lock()
@@ -134,13 +157,13 @@ func (j *Jail) stageInput(role, hostPath, jailPath string, writable bool) (strin
 }
 
 func (j *Jail) stageOutput(hostPath, jailPath string) (string, error) {
-	if err := j.stageFile(hostPath, jailPath, true, true); err != nil {
+	if err := j.stageFile("output", hostPath, jailPath, true, true, false); err != nil {
 		return "", err
 	}
 	return jailPath, nil
 }
 
-func (j *Jail) stageFile(hostPath, jailPath string, create, writable bool) error {
+func (j *Jail) stageFile(role, hostPath, jailPath string, create, writable, privateCopy bool) error {
 	if !filepath.IsAbs(hostPath) {
 		return fmt.Errorf("host path must be absolute: %q", hostPath)
 	}
@@ -163,6 +186,18 @@ func (j *Jail) stageFile(hostPath, jailPath string, create, writable bool) error
 	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	if privateCopy {
+		if err := copyJailFile(hostPath, target); err != nil {
+			return fmt.Errorf("copy %q into jail: %w", hostPath, err)
+		}
+		if err := os.Chown(target, j.uid, j.gid); err != nil {
+			return fmt.Errorf("chown private jail resource %q: %w", target, err)
+		}
+		if err := os.Chmod(target, 0o600); err != nil {
+			return fmt.Errorf("chmod private jail resource %q: %w", target, err)
+		}
+		return nil
+	}
 	if err := os.Link(hostPath, target); err != nil {
 		if !errors.Is(err, fs.ErrInvalid) && !errors.Is(err, os.ErrPermission) && !isCrossDevice(err) {
 			return fmt.Errorf("hard link %q into jail: %w", hostPath, err)
@@ -174,27 +209,63 @@ func (j *Jail) stageFile(hostPath, jailPath string, create, writable bool) error
 		j.mounts = append(j.mounts, target)
 		j.mu.Unlock()
 	}
-	if writable {
+	if writable && !strings.HasPrefix(filepath.Clean(hostPath), "/dev/") {
 		if err := os.Chown(hostPath, j.uid, j.gid); err != nil {
 			return fmt.Errorf("chown writable jail resource %q: %w", hostPath, err)
 		}
 		if err := os.Chmod(hostPath, 0o600); err != nil {
 			return fmt.Errorf("chmod writable jail resource %q: %w", hostPath, err)
 		}
-	} else {
+	} else if !writable && role != "rootfs" && role != "kernel" {
 		info, err := os.Stat(hostPath)
 		if err != nil {
 			return err
 		}
 		if err := os.Chmod(hostPath, info.Mode().Perm()|0o444); err != nil {
-			return fmt.Errorf("make jail resource readable %q: %w", hostPath, err)
+			return fmt.Errorf("make immutable jail resource readable %q: %w", hostPath, err)
 		}
 	}
 	return nil
 }
 
+func copyJailFile(source, target string) error {
+	in, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}
+
 func isCrossDevice(err error) bool {
 	return errors.Is(err, syscall.EXDEV)
+}
+
+// jailResourceGID preserves device-node ownership. Device permissions are
+// managed by devmapper and udev, not per VM, so a jailed process joins that
+// existing group instead of chowning the shared node to its transient uid.
+func jailResourceGID(resources []JailResource, fallback int) int {
+	for _, resource := range resources {
+		if !strings.HasPrefix(filepath.Clean(resource.HostPath), "/dev/") {
+			continue
+		}
+		info, err := os.Stat(resource.HostPath)
+		if err != nil {
+			continue
+		}
+		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+			return int(stat.Gid)
+		}
+	}
+	return fallback
 }
 
 func (j *Jail) Resources() []JailResource {
@@ -208,14 +279,26 @@ func (j *Jail) Resources() []JailResource {
 	return out
 }
 
-func (j *Jail) CleanupMounts() {
+func (j *Jail) CleanupMounts() error {
 	j.mu.Lock()
 	mounts := append([]string(nil), j.mounts...)
 	j.mounts = nil
 	j.mu.Unlock()
+	var cleanupErr error
 	for i := len(mounts) - 1; i >= 0; i-- {
-		_ = unmountFile(mounts[i])
+		if err := unmountFile(mounts[i]); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("unmount %q: %w", mounts[i], err))
+		}
 	}
+	return cleanupErr
+}
+
+// Cleanup unmounts bind-mounted fallbacks before removing the complete per-VM
+// jail tree. The ordering prevents RemoveAll from failing with EBUSY.
+func (j *Jail) Cleanup() error {
+	unmountErr := j.CleanupMounts()
+	removeErr := os.RemoveAll(j.Dir)
+	return errors.Join(unmountErr, removeErr)
 }
 
 func writeJailResources(dir string, resources []JailResource) error {
@@ -229,16 +312,22 @@ func writeJailResources(dir string, resources []JailResource) error {
 	return os.WriteFile(filepath.Join(dir, jailResourcesName), b, 0o600)
 }
 
-func readJailResources(dir string) []JailResource {
+func readJailResources(dir string) ([]JailResource, bool, error) {
 	b, err := os.ReadFile(filepath.Join(dir, jailResourcesName))
 	if err != nil {
-		return nil
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, true, err
 	}
 	var resources []JailResource
-	if json.Unmarshal(b, &resources) != nil {
-		return nil
+	if err := json.Unmarshal(b, &resources); err != nil {
+		return nil, true, fmt.Errorf("decode %s: %w", jailResourcesName, err)
 	}
-	return resources
+	if len(resources) == 0 {
+		return nil, true, fmt.Errorf("%s contains no resources", jailResourcesName)
+	}
+	return resources, true, nil
 }
 
 func snapshotJailPath(hostPath, kind string) string {

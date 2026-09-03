@@ -29,6 +29,7 @@ type LaunchSpec struct {
 	SocketPath string
 	MemMib     int
 	Resources  []JailResource
+	DirectExec bool
 }
 
 // ExecLauncher launches real Firecracker processes. It is the production
@@ -60,6 +61,13 @@ type ExecLauncher struct {
 	// trampoline subcommand (via ExecMountTrampoline). Required iff VsockBindTarget
 	// is set.
 	Self string
+	// cgroups is an injected cgroup hierarchy for tests. Production uses the
+	// process-wide manager so all launches share one delegated parent.
+	cgroups *cgroupManager
+	// createCgroup is the narrow launch seam used by lifecycle tests.
+	createCgroup func(vmID string, limitBytes int64) (*vmCgroup, error)
+	// allocateJailUID is the narrow uid-allocation seam used by lifecycle tests.
+	allocateJailUID func() (int, func(), error)
 }
 
 var productionLaunchState = struct {
@@ -110,7 +118,9 @@ func (p *execProcess) wait() error {
 func (p *execProcess) cleanup() {
 	p.cleanOnce.Do(func() {
 		if p.jail != nil {
-			p.jail.CleanupMounts()
+			if err := p.jail.Cleanup(); err != nil {
+				slog.Warn("driver: remove firecracker jail", "vm", p.vmID, "jail", p.jail.Dir, "err", err)
+			}
 		}
 		if p.cgroup != nil {
 			if killed, err := p.cgroup.OOMKilled(); err == nil && killed {
@@ -156,28 +166,53 @@ func (l *ExecLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, er
 		cg        *vmCgroup
 		releaseID func()
 	)
-	if l.JailerEnabled {
-		uid, release := l.allocateUID()
+	if l.JailerEnabled && !spec.DirectExec {
+		allocateUID := l.allocateUID
+		if l.allocateJailUID != nil {
+			allocateUID = l.allocateJailUID
+		}
+		uid, release, err := allocateUID()
+		if err != nil {
+			return nil, err
+		}
+		gid := jailResourceGID(spec.Resources, uid)
 		releaseID = release
-		var err error
-		jail, err = prepareJail(filepath.Dir(spec.SocketPath), l.Bin, spec.VMID, uid, uid, spec.SocketPath)
+		jail, err = prepareJail(filepath.Dir(spec.SocketPath), l.Bin, spec.VMID, uid, gid, spec.SocketPath)
 		if err != nil {
 			releaseID()
 			return nil, err
 		}
 		for _, resource := range spec.Resources {
 			if _, err := jail.stageResource(resource); err != nil {
-				jail.CleanupMounts()
+				_ = jail.Cleanup()
+				_ = os.Remove(spec.SocketPath)
 				releaseID()
 				return nil, fmt.Errorf("driver: stage VM resource %q: %w", resource.Role, err)
 			}
 		}
-		cg, err = productionLaunchState.cgroups.Create(spec.VMID, memoryLimitBytes(spec.MemMib))
-		if err != nil {
-			releaseID()
-			return nil, fmt.Errorf("driver: create VM cgroup: %w", err)
+		cgroups := l.cgroups
+		if cgroups == nil {
+			cgroups = productionLaunchState.cgroups
 		}
-		cmd = exec.Command(l.jailerBin(), buildJailerArgs(l.Bin, spec.VMID, uid, uid, jail.BaseDir, cg.ParentArg(), jail.APISocketPath())...)
+		createCgroup := cgroups.Create
+		if l.createCgroup != nil {
+			createCgroup = l.createCgroup
+		}
+		cg, err = createCgroup(spec.VMID, memoryLimitBytes(spec.MemMib))
+		if err != nil {
+			_ = jail.Cleanup()
+			_ = os.Remove(spec.SocketPath)
+			releaseID()
+			jail = nil
+			releaseID = nil
+			if cgroups.shouldLogFailure(err) {
+				slog.Error("driver: jailer disabled for launch after cgroup setup failure",
+					"vm", spec.VMID, "err", err)
+			}
+			cmd = exec.Command(l.Bin, buildDirectArgs(spec.VMID, spec.SocketPath)...)
+		} else {
+			cmd = exec.Command(l.jailerBin(), buildJailerArgs(l.Bin, spec.VMID, uid, gid, jail.BaseDir, cg.ParentArg(), jail.APISocketPath())...)
+		}
 	} else if l.VsockBindTarget != "" {
 		// Per-instance vsock isolation: re-exec our own __fcmount trampoline in a
 		// fresh mount namespace, bind-mounting this VM's bundle dir (the api socket's
@@ -203,11 +238,12 @@ func (l *ExecLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, er
 			_ = cg.Remove()
 		}
 		if jail != nil {
-			jail.CleanupMounts()
+			_ = jail.Cleanup()
 		}
 		if releaseID != nil {
 			releaseID()
 		}
+		_ = os.Remove(spec.SocketPath)
 		return nil, fmt.Errorf("driver: start firecracker: %w", err)
 	}
 	proc := &execProcess{cmd: cmd, vmID: spec.VMID, cgroup: cg, jail: jail, releaseID: releaseID}
@@ -226,6 +262,7 @@ func (l *ExecLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, er
 	}
 	if err := waitForSocket(ctx, spec.SocketPath, timeout); err != nil {
 		_ = proc.Kill()
+		_ = os.Remove(spec.SocketPath)
 		return nil, err
 	}
 	return proc, nil
@@ -238,10 +275,10 @@ func (l *ExecLauncher) jailerBin() string {
 	return "/opt/fc/jailer"
 }
 
-func (l *ExecLauncher) allocateUID() (int, func()) {
+func (l *ExecLauncher) allocateUID() (int, func(), error) {
 	productionLaunchState.Lock()
 	defer productionLaunchState.Unlock()
-	for {
+	for range vmUIDCount {
 		uid := vmUIDBase + productionLaunchState.nextUID%vmUIDCount
 		productionLaunchState.nextUID = (productionLaunchState.nextUID + 1) % vmUIDCount
 		if !productionLaunchState.usedUIDs[uid] {
@@ -250,9 +287,10 @@ func (l *ExecLauncher) allocateUID() (int, func()) {
 				productionLaunchState.Lock()
 				delete(productionLaunchState.usedUIDs, uid)
 				productionLaunchState.Unlock()
-			}
+			}, nil
 		}
 	}
+	return 0, nil, fmt.Errorf("driver: jailer uid pool exhausted (%d concurrent VMs)", vmUIDCount)
 }
 
 func memoryLimitBytes(guestMemMib int) int64 {

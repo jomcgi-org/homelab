@@ -31,7 +31,11 @@ func egressListenPath(udsPath string) string {
 // request the guest's HTTP client opens) gets its own tunnel to sidecarAddr.
 // Returns nil on ctx cancellation.
 func ServeEgress(ctx context.Context, logger *slog.Logger, udsPath, sidecarAddr string) error {
-	path := egressListenPath(udsPath)
+	alias := egressListenPath(udsPath)
+	path := alias
+	if target, err := os.Readlink(alias); err == nil {
+		path = target
+	}
 	_ = os.Remove(path)
 	ln, err := net.Listen("unix", path)
 	if err != nil {
