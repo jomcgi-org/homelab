@@ -1576,7 +1576,8 @@ cfIngress:
       onepassword:
         itemPath: ""
 
-# Cilium policies for this chart. See templates/cilium-policy.yaml.
+# Cilium policies for the k3s cluster only. GKE has no Cilium CRDs. See
+# templates/cilium-policy.yaml and templates/cilium-ingress-policy.yaml.
 ciliumPolicy:
   # Deny monolith -> Context Forge egress, so a forwarded multi-audience
   # identity token cannot be replayed back at the gateway. Uses egressDeny, so

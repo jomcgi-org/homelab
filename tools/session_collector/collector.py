@@ -23,6 +23,7 @@ from .upload import upload_raw
 
 MIN_BODY_BYTES = 2 * 1024
 TOKEN_MESSAGE = "token expired: run cloudflared access login https://private.jomcgi.dev"
+TAILNET_CONNECT_TIMEOUT_SECONDS = 10
 
 
 def parse_session(path: Path) -> Session:
@@ -167,7 +168,10 @@ def _run_collection_locked(
     auth_mode = resolve_auth_mode(auth, base_url)
     owned_client = client is None
     if client is None:
-        client = httpx.Client(timeout=60, follow_redirects=False)
+        client = httpx.Client(
+            timeout=httpx.Timeout(60, connect=TAILNET_CONNECT_TIMEOUT_SECONDS),
+            follow_redirects=False,
+        )
 
     attempted = 0
     try:
@@ -220,22 +224,16 @@ def _run_collection_locked(
                         _payload(session, rendered, path.stat().st_size),
                         cloudflare=auth_mode == "cloudflare",
                     )
-                except httpx.RequestError:
+                except (
+                    httpx.ConnectError,
+                    httpx.ConnectTimeout,
+                    httpx.RemoteProtocolError,
+                ):
                     if auth_mode != "none":
                         raise
-                    reason = "unreachable"
-                    state_value[key] = _entry(
-                        path,
-                        session,
-                        repo,
-                        "failed",
-                        reason,
-                        None,
-                        _next_failure_count(path, state_value.get(key)),
-                    )
-                    save(state_file, state_value)
-                    print(f"failed {path}: {reason}", file=sys.stderr)
-                    continue
+                    hostname = urlparse(base_url).hostname or base_url
+                    print(f"tailnet unreachable: {hostname}", file=sys.stderr)
+                    return 0
                 if result.status == "expired":
                     print(TOKEN_MESSAGE, file=sys.stderr)
                     return 0

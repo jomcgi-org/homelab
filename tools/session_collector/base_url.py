@@ -37,7 +37,10 @@ def _tailnet_base_url() -> str | None:
         )
         if result.returncode != 0:
             return None
-        suffix = json.loads(result.stdout).get("MagicDNSSuffix")
+        status = json.loads(result.stdout)
+        if status.get("BackendState") != "Running":
+            return None
+        suffix = status.get("MagicDNSSuffix")
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, AttributeError):
         return None
     if not isinstance(suffix, str) or not suffix.strip("."):

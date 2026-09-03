@@ -162,9 +162,9 @@ def test_install_assets_use_durable_state_and_bootstrap_delay():
     durable = "Library/Application Support/homelab/session-collector"
     assert durable in install
     assert durable in plist
-    assert "tools.session_collector.base_url" in install
-    assert "--base-url" in plist
-    assert "__BASE_URL__" in plist
+    assert "tools.session_collector.base_url" not in install
+    assert "--base-url" not in plist
+    assert "__BASE_URL__" not in plist
     assert "bootout" in install
     assert "sleep 1" in install
     assert (
