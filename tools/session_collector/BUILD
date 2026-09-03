@@ -64,6 +64,10 @@ py_test(
 py_test(
     name = "state_test",
     srcs = ["state_test.py"],
+    data = [
+        "install.sh",
+        "launchd/dev.jomcgi.session-collector.plist",
+    ],
     imports = ["../.."],
     deps = [
         ":session_collector",

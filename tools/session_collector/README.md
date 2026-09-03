@@ -4,6 +4,10 @@ This cron-run tool uploads finished local Claude Code and Codex sessions to the
 private monolith knowledge API. It emits one Markdown raw per session. The
 server deduplicates content, while a local JSON state file avoids routine
 re-uploads and permits a session to resume when its transcript grows.
+The default state file is
+`~/Library/Application Support/homelab/session-collector/state.json`. On first
+use, the collector moves an existing state file from the former
+`~/.cache/homelab-tools/session-collector/state.json` location.
 
 Before upload, the collector removes model thinking and unsupported records,
 caps large fragments and documents, and redacts AWS credentials, GitHub tokens,
@@ -47,7 +51,11 @@ Use `python3 -m tools.session_collector status` to inspect state counts, or
 their per-class redaction counts.
 
 When a transcript's working directory is gone or has no Git origin, the
-collector uses path-prefix mappings for known homelab worktree locations. Pass
-`--allow-path /absolute/prefix=owner/repo` more than once to replace those
-defaults with custom mappings. An origin discovered from an existing checkout
-always takes precedence over path mappings.
+collector uses path-prefix mappings for known homelab worktree locations. A
+path-prefix match is accepted only when the path is inside a worktree listed by
+the allowlisted homelab repository. This invariant prevents an arbitrary
+deleted directory under a shared worktree parent from being treated as
+homelab. Pass `--allow-path /absolute/prefix=owner/repo` more than once to
+replace those defaults with custom mappings. A transcript-provided origin takes
+precedence over an origin discovered from an existing checkout, which in turn
+takes precedence over path mappings.

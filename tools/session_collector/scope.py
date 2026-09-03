@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from functools import cache
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -14,6 +15,7 @@ DEFAULT_ALLOWLIST = {
 DEFAULT_PATH_ALLOWLIST = {
     Path("/tmp/claude-worktrees"): "jomcgi-org/homelab",
     Path("/private/tmp/claude-worktrees"): "jomcgi-org/homelab",
+    Path("/tmp/codex-worktrees"): "jomcgi-org/homelab",
     Path.home() / "repos/ft-worktrees": "jomcgi-org/homelab",
     Path.home() / "repos/homelab": "jomcgi-org/homelab",
 }
@@ -71,11 +73,48 @@ def _remembered_repo(cwd: str, state: dict[str, dict[str, object]]) -> str | Non
     return None
 
 
+@cache
+def _load_homelab_worktrees() -> frozenset[Path]:
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(Path.home() / "repos/homelab"),
+            "worktree",
+            "list",
+            "--porcelain",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        return frozenset()
+    return frozenset(
+        Path(line.removeprefix("worktree ")).expanduser().resolve(strict=False)
+        for line in result.stdout.splitlines()
+        if line.startswith("worktree ")
+    )
+
+
+def homelab_worktrees() -> frozenset[Path]:
+    return _load_homelab_worktrees()
+
+
+def reset_worktree_cache() -> None:
+    _load_homelab_worktrees.cache_clear()
+
+
 def discover_repo(
     cwd: str,
     state: dict[str, dict[str, object]],
     path_allowlist: dict[Path, str] | None = None,
+    transcript_origin: str | None = None,
 ) -> str | None:
+    repo = normalize_origin(transcript_origin or "")
+    if repo:
+        return repo
     directory = Path(cwd).expanduser()
     if cwd and directory.is_dir():
         result = subprocess.run(
@@ -93,9 +132,16 @@ def discover_repo(
     if remembered:
         return remembered
     allowed_paths = DEFAULT_PATH_ALLOWLIST if path_allowlist is None else path_allowlist
+    registered = homelab_worktrees()
+    fallback_directory = directory.resolve(strict=False)
     for prefix, repo in sorted(
         allowed_paths.items(), key=lambda item: len(item[0].parts), reverse=True
     ):
-        if directory.is_relative_to(prefix.expanduser()):
+        if fallback_directory.is_relative_to(
+            prefix.expanduser().resolve(strict=False)
+        ) and any(
+            fallback_directory.is_relative_to(worktree.resolve(strict=False))
+            for worktree in registered
+        ):
             return repo
     return None

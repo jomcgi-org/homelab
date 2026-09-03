@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -17,7 +16,7 @@ from tools.cli.auth import read_cached_cf_token
 from . import claude_v1, codex_v1
 from .models import Session
 from .render import RenderedSession, render
-from .scope import allowed_scope, discover_repo
+from .scope import allowed_scope, discover_repo, reset_worktree_cache
 from .state import eligible, load, locked, save
 from .upload import upload_raw
 
@@ -120,6 +119,7 @@ def run_collection(
     now: float | None = None,
 ) -> int:
     state_file = state_file.expanduser()
+    reset_worktree_cache()
     with locked(state_file):
         return _run_collection_locked(
             claude_dir=claude_dir,
@@ -170,9 +170,13 @@ def _run_collection_locked(
             if attempted >= max_uploads:
                 break
             key = str(path)
+            session: Session | None = None
+            repo: str | None = None
             try:
                 session = parse_session(path)
-                repo = discover_repo(session.cwd, state_value, path_allowlist)
+                repo = discover_repo(
+                    session.cwd, state_value, path_allowlist, session.git_origin
+                )
                 scope = allowed_scope(repo, allowlist)
                 if scope is None:
                     if not dry_run:
@@ -230,33 +234,26 @@ def _run_collection_locked(
                     )
                     print(f"failed {path}: {reason}", file=sys.stderr)
                 save(state_file, state_value)
-            except (
-                OSError,
-                ValueError,
-                httpx.HTTPError,
-                subprocess.SubprocessError,
-            ) as error:
-                scope_error = isinstance(error, subprocess.SubprocessError)
-                reason = "scope_error" if scope_error else type(error).__name__
-                stat = path.stat()
+            except Exception as error:
+                reason = type(error).__name__
+                try:
+                    stat = path.stat()
+                except OSError:
+                    print(f"failed {path}: {reason}", file=sys.stderr)
+                    continue
                 state_value[key] = {
                     "size": stat.st_size,
                     "mtime": stat.st_mtime,
                     "raw_id": None,
-                    "status": "skipped" if scope_error else "failed",
+                    "status": "failed",
                     "reason": reason,
-                    "failures": (
-                        0
-                        if scope_error
-                        else _next_failure_count(path, state_value.get(key))
-                    ),
-                    "cwd": "",
-                    "repo": None,
+                    "failures": _next_failure_count(path, state_value.get(key)),
+                    "cwd": session.cwd if session is not None else "",
+                    "repo": repo,
                     "uploaded_at": datetime.now(timezone.utc).isoformat(),
                 }
                 save(state_file, state_value)
-                outcome = "skipped" if scope_error else "failed"
-                print(f"{outcome} {path}: {reason}", file=sys.stderr)
+                print(f"failed {path}: {reason}", file=sys.stderr)
     finally:
         if owned_client:
             client.close()

@@ -31,3 +31,4 @@ class Session:
     records_kept: int
     collector_version: str
     turns: list[Turn]
+    git_origin: str | None = None

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from tools.session_collector import claude_v1, codex_v1
@@ -53,6 +54,181 @@ def test_codex_fixture_turns_and_drops_records():
     assert "base_instructions" not in output.markdown
     assert "must disappear" not in output.markdown
     assert "DROP_" not in output.markdown
+
+
+def test_codex_uses_transcript_git_and_event_title(tmp_path):
+    planted = "injected-title-must-not-appear"
+    path = tmp_path / "codex.jsonl"
+    records = [
+        {
+            "type": "session_meta",
+            "payload": {
+                "cwd": "/deleted/worktree",
+                "git": {
+                    "repository_url": "git@github.com:owner/transcript.git",
+                    "branch": "feat/transcript",
+                },
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": f"<recommended_plugins>{planted}</recommended_plugins>",
+                    }
+                ],
+            },
+        },
+        {
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "Actual request"},
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Visible request"}],
+            },
+        },
+    ]
+    path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+    session = codex_v1.parse(path)
+    output = render(session, "owner/transcript", "repo:owner/transcript")
+    assert session.git_branch == "feat/transcript"
+    assert session.git_origin == "git@github.com:owner/transcript.git"
+    assert session.title == "Actual request"
+    assert planted not in output.markdown
+
+
+def test_codex_whitespace_user_text_does_not_crash_or_leak(tmp_path):
+    planted = "whitespace-fallback-secret"
+    path = tmp_path / "whitespace.jsonl"
+    records = [
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "   \n  "}],
+            },
+        },
+        {
+            "type": "event_msg",
+            "payload": {"type": "token_count", "secret": planted},
+        },
+    ]
+    path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+    output = render(codex_v1.parse(path), None, "repo:unknown")
+    assert planted not in output.markdown
+
+
+def test_titles_are_redacted_before_truncation_in_both_adapters(tmp_path):
+    planted = "ghp_abcdefghijklmnopqrstuvwxyz"
+    title = "x" * 75 + planted
+    claude_path = tmp_path / "claude-title.jsonl"
+    claude_path.write_text(
+        json.dumps({"type": "user", "message": {"content": title}}) + "\n"
+    )
+    codex_path = tmp_path / "codex-title.jsonl"
+    codex_path.write_text(
+        json.dumps(
+            {
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": title},
+            }
+        )
+        + "\n"
+    )
+    for session in (claude_v1.parse(claude_path), codex_v1.parse(codex_path)):
+        output = render(session, None, "repo:unknown")
+        assert planted not in output.markdown
+        assert "ghp_a" not in output.markdown
+
+
+def test_claude_task_notification_and_bash_stdout_attach_as_results(tmp_path):
+    planted = "bashstdoutsecretvalue"
+    path = tmp_path / "notifications.jsonl"
+    records = [
+        {"type": "user", "message": {"content": "Real request"}},
+        {
+            "type": "user",
+            "message": {
+                "content": "<task-notification>background work finished</task-notification>"
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": (
+                    "<bash-stdout>PATH=/bin\nHOME=/tmp\nSHELL=/bin/zsh\n"
+                    f"SECRET={planted}</bash-stdout>"
+                )
+            },
+        },
+    ]
+    path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+    session = claude_v1.parse(path)
+    output = render(session, None, "repo:unknown")
+    assert len(session.turns) == 1
+    assert "[task notification]" in output.markdown
+    assert planted not in output.markdown
+    assert "[REDACTED:env_dump]" in output.markdown
+
+
+def test_sensitive_command_replaces_following_result_value():
+    planted = "c2Vuc2l0aXZlLWt1YmUtZGF0YQ=="
+    commands = (
+        "kubectl get secret -o yaml",
+        "kubectl get secrets/example -o json",
+        "cat ~/.kube/config",
+        "cat ~/.netrc",
+        "cat ~/.npmrc",
+        "cat ~/.pypirc",
+        "cat ~/.pgpass",
+        "cat ~/.cloudflared/cert.pem",
+        "cat ~/.ssh/id_rsa",
+        "cat ~/.ssh/id_ed25519",
+        "cat .env",
+        "op read op://vault/item/password",
+        "op item get example",
+        "base64 -d token.txt",
+        "security find-generic-password -s example -w",
+        "gh auth token",
+        "aws configure get aws_secret_access_key",
+        "gcloud auth print-access-token",
+        "vault read secret/example",
+        "cloudflared access token -app example.test",
+    )
+    for command in commands:
+        session = Session(
+            "claude",
+            "id",
+            "/tmp",
+            None,
+            None,
+            "start",
+            "end",
+            "title",
+            2,
+            2,
+            "test-v1",
+            [
+                Turn(
+                    [
+                        Block("tool", json.dumps({"command": command}), "Bash"),
+                        Block("result", f"data:\n  planted: {planted}"),
+                    ]
+                )
+            ],
+        )
+        output = render(session, None, "repo:unknown")
+        assert planted not in output.markdown
+        assert "[REDACTED:sensitive_output]" in output.markdown
 
 
 def test_fragment_caps_apply():

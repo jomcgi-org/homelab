@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 from .models import Block, Session
@@ -12,6 +13,23 @@ TOOL_INPUT_LIMIT = 1024
 TOOL_RESULT_LIMIT = 2 * 1024
 TEXT_LIMIT = 8 * 1024
 DOCUMENT_LIMIT = 400 * 1024
+
+SENSITIVE_COMMANDS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\bkubectl\b.*\bsecret(?:s)?\b",
+        r"\bcat\b[^\n]*(?:\.kube/config|\.netrc|\.npmrc|\.pypirc|\.pgpass|"
+        r"\.cloudflared|id_rsa|id_ed25519|(?:^|[/\s])\.env(?:[/\s\"']|$))",
+        r"\bop\s+(?:read|item\s+get)\b",
+        r"\bbase64\s+(?:-d|--decode)\b",
+        r"\bsecurity\s+find-generic-password\b",
+        r"\bgh\s+auth\s+token\b",
+        r"\baws\s+configure\s+get\b",
+        r"\bgcloud\s+auth\s+print-access-token\b",
+        r"\bvault\s+(?:read|kv\s+get)\b",
+        r"\bcloudflared\s+access\s+token\b",
+    )
+)
 
 
 @dataclass
@@ -49,6 +67,10 @@ def _render_block(block: Block, redactor: Redactor) -> tuple[str, bool]:
     if block.kind == "assistant":
         return f"**Assistant:** {value}", capped
     return f"`tool: {redactor.text(block.name or 'unknown')}` input\n{value}", capped
+
+
+def _sensitive_command(value: str) -> bool:
+    return any(pattern.search(value) for pattern in SENSITIVE_COMMANDS)
 
 
 def _frontmatter(metadata: dict[str, object], redactions: int, truncated: bool) -> str:
@@ -107,8 +129,19 @@ def render(session: Session, repo: str | None, scope: str) -> RenderedSession:
     fragment_capped = metadata_capped
     for number, turn in enumerate(session.turns, 1):
         blocks: list[str] = []
+        sensitive_result = False
         for block in turn.blocks:
-            rendered_block, capped = _render_block(block, redactor)
+            if block.kind == "tool":
+                sensitive_result = _sensitive_command(block.text)
+            if block.kind == "result" and sensitive_result:
+                rendered_block, capped = _render_block(
+                    Block("result", redactor.sensitive_output()), redactor
+                )
+                sensitive_result = False
+            else:
+                rendered_block, capped = _render_block(block, redactor)
+                if block.kind == "result":
+                    sensitive_result = False
             blocks.append(rendered_block)
             fragment_capped = fragment_capped or capped
         rendered_turns.append(f"## Turn {number}\n" + "\n\n".join(blocks))
