@@ -8,12 +8,19 @@ the compatibility seam for the separate Grimoire extraction providers.
 
 from __future__ import annotations
 
+import logging
 import os
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
 
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
+
 META_SPARK_MODEL = "muse-spark-1.3-contributor"
 META_SPARK_API_KEY_ENV = "META_SPARK_API_KEY"
+
+logger = logging.getLogger(__name__)
 
 # Decode-slot policy for the shared in-cluster engine.
 #
@@ -35,6 +42,35 @@ META_SPARK_API_KEY_ENV = "META_SPARK_API_KEY"
 # slots. chat_public solves the cross-pod version with Postgres advisory locks
 # if this ever needs to be enforced globally rather than by convention.
 ASYNC_SLOT_BUDGET = 1
+
+
+def record_usage(usage_dict: Mapping[str, Any] | None, model: str, caller: str) -> None:
+    """Emit a usage span and decorate an ambient recording span when present."""
+    try:
+        if not isinstance(usage_dict, Mapping):
+            return
+        token_fields = ("prompt_tokens", "completion_tokens", "total_tokens")
+        if any(field not in usage_dict for field in token_fields):
+            return
+
+        attributes = {
+            "llm.usage.prompt_tokens": int(usage_dict["prompt_tokens"]),
+            "llm.usage.completion_tokens": int(usage_dict["completion_tokens"]),
+            "llm.usage.total_tokens": int(usage_dict["total_tokens"]),
+            "llm.model": model,
+            "llm.caller": caller,
+        }
+        ambient_span = trace.get_current_span()
+        tracer = trace.get_tracer(__name__)
+        with tracer.start_as_current_span(
+            "llm.completion", kind=SpanKind.CLIENT
+        ) as usage_span:
+            usage_span.set_attributes(attributes)
+
+        if ambient_span is not None and ambient_span.is_recording():
+            ambient_span.set_attributes(attributes)
+    except Exception:
+        logger.debug("Failed to record inference token usage", exc_info=True)
 
 
 def auth_headers(base_url: str | None = None) -> dict[str, str]:

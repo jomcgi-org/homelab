@@ -107,6 +107,7 @@ async def stream_chat(
     prompt_tokens = 0
     completion_tokens = 0
     usage_seen = False
+    usage_dict = None
     text_parts: list[str] = []
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -129,6 +130,7 @@ async def stream_chat(
                         continue
                     usage = chunk.get("usage")
                     if usage:
+                        usage_dict = usage
                         prompt_tokens = int(usage.get("prompt_tokens") or 0)
                         completion_tokens = int(usage.get("completion_tokens") or 0)
                         usage_seen = True
@@ -140,6 +142,7 @@ async def stream_chat(
     except httpx.HTTPError as exc:
         raise InferenceError(f"inference request failed: {type(exc).__name__}") from exc
 
+    shared.inference.record_usage(usage_dict, MODEL, "chat_public")
     if usage_seen:
         yield Usage(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
         return
@@ -175,6 +178,7 @@ async def complete(messages: list[dict[str, str]], *, max_tokens: int) -> str:
     except httpx.HTTPError as exc:
         raise InferenceError(f"inference request failed: {type(exc).__name__}") from exc
     try:
+        shared.inference.record_usage(data.get("usage"), MODEL, "chat_public")
         return data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError, ValueError) as exc:
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError) as exc:
         raise InferenceError(f"unexpected LLM response shape: {exc}") from exc

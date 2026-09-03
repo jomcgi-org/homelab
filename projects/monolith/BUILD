@@ -2611,6 +2611,7 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_shared",
+        "@pip//opentelemetry_sdk",
         "@pip//pytest",
     ],
 )

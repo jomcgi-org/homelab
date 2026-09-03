@@ -71,7 +71,9 @@ async def classify_task_with_outcome(text: str) -> tuple[str, int, str, str | No
                 },
             )
         response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
+        response_data = response.json()
+        shared.inference.record_usage(response_data.get("usage"), _MODEL, "classifier")
+        content = response_data["choices"][0]["message"]["content"]
         classification = _parse_classification(content)
         if classification is None:
             return (

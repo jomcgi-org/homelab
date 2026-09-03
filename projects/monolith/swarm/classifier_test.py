@@ -1,18 +1,59 @@
-import pytest
-import httpx
+from unittest.mock import Mock
 
+import httpx
+import pytest
+
+import shared.inference
 from swarm.classifier import classify_task_with_outcome
 
 
 class FakeResponse:
-    def __init__(self, content):
+    def __init__(self, content, usage=None):
         self.content = content
+        self.usage = usage
 
     def raise_for_status(self):
         return None
 
     def json(self):
-        return {"choices": [{"message": {"content": self.content}}]}
+        return {
+            "choices": [{"message": {"content": self.content}}],
+            "usage": self.usage,
+        }
+
+
+@pytest.mark.asyncio
+async def test_records_response_usage(monkeypatch):
+    usage = {
+        "prompt_tokens": 21,
+        "completion_tokens": 4,
+        "total_tokens": 25,
+    }
+    record_usage = Mock()
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def post(self, *args, **kwargs):
+            return FakeResponse("CLASSIFICATION: planned", usage)
+
+    monkeypatch.setattr("httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("shared.inference.record_usage", record_usage)
+
+    classification, _, outcome, _ = await classify_task_with_outcome("build it")
+
+    assert classification == "planned"
+    assert outcome == "success"
+    record_usage.assert_called_once_with(
+        usage, shared.inference.META_SPARK_MODEL, "classifier"
+    )
 
 
 @pytest.mark.asyncio

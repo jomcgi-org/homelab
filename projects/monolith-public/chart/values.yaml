@@ -13,6 +13,9 @@ nameOverride: ""
 fullnameOverride: ""
 maintenanceBanner: ""
 
+# OTLP/HTTP traces endpoint for the public backend. Empty disables the exporter.
+otelEndpoint: ""
+
 imagePullSecret:
   enabled: false
 imagePullSecrets: []
@@ -765,6 +768,12 @@ ciliumPolicy:
           app.kubernetes.io/name: inference
           app.kubernetes.io/component: embeddings
         port: 8080
+      otelCollector:
+        namespace: otel-collector
+        matchLabels:
+          app.kubernetes.io/name: otel-collector
+          app.kubernetes.io/instance: otel-collector
+        port: 4318
       seaweedfs:
         namespace: seaweedfs
         matchLabels:

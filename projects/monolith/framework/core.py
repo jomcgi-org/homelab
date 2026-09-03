@@ -7,8 +7,8 @@ endpoints. Entrypoints reduce to one ``build_app`` call over a module list.
 
 Import discipline: this file must stay importable inside the pruned PUBLIC
 binary, whose file set excludes the private domains and ``app/mcp_app.py``.
-Anything private-tier-only (MCP instance, OTel, leadership, DB engine) is
-imported lazily inside the code paths that a public profile never takes.
+Profile-gated integrations are imported lazily inside the code paths that use
+them so disabled capabilities do not expand a binary's runtime surface.
 """
 
 from __future__ import annotations
@@ -102,7 +102,8 @@ PUBLIC_PROFILE = Profile(
     service_name="monolith-public",
     allowed_secrets=frozenset(),
     mcp_enabled=False,
-    otel_enabled=False,
+    # Set this flag to False to disable public-tier tracing without code changes.
+    otel_enabled=True,
     static_frontend=False,
     deep_health=True,
     leader_singletons=False,
@@ -509,8 +510,8 @@ def build_app(profile: Profile, modules: Sequence[Module]) -> FastAPI:
     """Compose ``modules`` into a FastAPI app for ``profile``. The one root.
 
     PUBLIC tier keeps its historical shape exactly: no lifespan side effects,
-    no MCP, no OTel, no static mount; importing a public entrypoint stays
-    cheap and side-effect-free (the route-table guard test relies on that).
+    no MCP, and no static mount. OpenTelemetry is installed only when its
+    profile flag and endpoint env are both set.
     """
     _validate(profile, modules)
     configure_logging()
@@ -520,6 +521,10 @@ def build_app(profile: Profile, modules: Sequence[Module]) -> FastAPI:
         for m in modules:
             m.register_public(app)
         _add_health(app, profile, modules)
+        if profile.otel_enabled and os.environ.get(
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+        ):
+            _setup_otel(app, profile.service_name)
         return app
 
     # ---- PRIVATE tier ----

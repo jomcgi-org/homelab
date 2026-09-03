@@ -57,10 +57,8 @@
 #             timeout. Finally Cloudflare Turnstile siteverify
 #             (challenges.cloudflare.com) on 443, the only OFF-CLUSTER
 #             destination, IP-pinned to Cloudflare's published CIDR list.
-#             There is deliberately NO otel-collector rule: the public binary
-#             never initialises OpenTelemetry (framework/core.py build_app
-#             returns for Tier.PUBLIC before _setup_otel) and no OTEL_* env is
-#             set on these pods, so a collector allow would be dead surface.
+#             OpenTelemetry export via OTEL_EXPORTER_OTLP_TRACES_ENDPOINT to the
+#             in-cluster collector on its OTLP/HTTP port.
 #   frontend  the backend only (API_BASE / CHAT_API_BASE).
 #   imgproxy  Cloudflare R2 S3 via IMGPROXY_S3_ENDPOINT and CIDR allow.
 #
@@ -108,7 +106,7 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-    {{- range $dep := list $t.postgres $t.inference $t.embeddings $t.embervm $t.embervmServing }}
+    {{- range $dep := list $t.postgres $t.inference $t.embeddings $t.otelCollector $t.embervm $t.embervmServing }}
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: {{ $dep.namespace }}

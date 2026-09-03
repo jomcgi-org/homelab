@@ -504,11 +504,17 @@ def build_llm_caller(base_url: str | None = None) -> Callable[[str], Awaitable[s
                 )
                 resp.raise_for_status()
                 try:
-                    content = resp.json()["choices"][0]["message"]["content"]
+                    response_data = resp.json()
+                    content = response_data["choices"][0]["message"]["content"]
                 except (KeyError, IndexError, ValueError) as e:
                     raise RuntimeError(f"unexpected LLM response shape: {e}") from e
                 if not content:
                     raise RuntimeError("LLM returned empty content")
+                shared.inference.record_usage(
+                    response_data.get("usage"),
+                    shared.inference.META_SPARK_MODEL,
+                    "summarizer",
+                )
                 return content
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code not in _RETRYABLE_STATUS_CODES:

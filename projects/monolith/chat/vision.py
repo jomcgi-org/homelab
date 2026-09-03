@@ -85,13 +85,19 @@ class VisionClient:
                     )
                     resp.raise_for_status()
                     try:
-                        content = resp.json()["choices"][0]["message"]["content"]
+                        response_data = resp.json()
+                        content = response_data["choices"][0]["message"]["content"]
                     except (KeyError, IndexError) as e:
                         raise ValueError(
                             f"unexpected vision response shape: {e}"
                         ) from e
                     if not content:
                         raise ValueError("vision response returned empty content")
+                    shared.inference.record_usage(
+                        response_data.get("usage"),
+                        shared.inference.META_SPARK_MODEL,
+                        "vision",
+                    )
                     return content
             except Exception as exc:
                 last_exc = exc

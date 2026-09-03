@@ -1,3 +1,6 @@
+{{- if .Values.otelEndpoint }}
+{{- $_ := set .Values.web "env" (append .Values.web.env (dict "name" "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" "value" .Values.otelEndpoint)) }}
+{{- end }}
 {{- include "homelab.deployment" (dict "context" . "component" "web") }}
 ---
 {{- range $env := .Values.frontend.env }}

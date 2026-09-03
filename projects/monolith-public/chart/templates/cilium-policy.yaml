@@ -138,7 +138,8 @@ spec:
 # Backend egress: default-deny OFF-cluster (replaces the namespace EgressNetwork
 # deny) while allowing all in-cluster calls, plus the ONE sanctioned external
 # host. The backend fans out in-cluster to Postgres RO (public_reader) and RW
-# (public_writer), vLLM inference, embeddings, and SeaweedFS S3.
+# (public_writer), vLLM inference, embeddings, SeaweedFS S3, and the OTLP
+# collector.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -152,7 +153,8 @@ spec:
       app.kubernetes.io/component: web
   egress:
     # All in-cluster egress (Postgres RO/RW, vLLM inference, embeddings,
-    # SeaweedFS S3) PLUS DNS, resolved at plain L4 through this same rule.
+    # SeaweedFS S3, OTLP collector) PLUS DNS, resolved at plain L4 through this
+    # same rule.
     # `cluster` covers pod endpoints; `host` + `remote-node` cover host-networked
     # in-cluster dependencies the `cluster` entity does not (the Linkerd
     # EgressNetwork only denied OFF-cluster, so node-local traffic must stay

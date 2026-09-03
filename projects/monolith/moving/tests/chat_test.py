@@ -172,6 +172,7 @@ def test_stream_endpoint_emits_sse_frames(
         async def aiter_lines(self):
             yield 'data: {"choices":[{"delta":{"content":"Pack "}}]}'
             yield 'data: {"choices":[{"delta":{"content":"boxes."}}]}'
+            yield 'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}'
             yield "data: [DONE]"
 
     class StreamContext:
@@ -196,6 +197,12 @@ def test_stream_endpoint_emits_sse_frames(
             return StreamContext()
 
     monkeypatch.setattr(chat.httpx, "AsyncClient", FakeClient)
+    usage_calls = []
+    monkeypatch.setattr(
+        chat.shared.inference,
+        "record_usage",
+        lambda usage, model, caller: usage_calls.append((usage, model, caller)),
+    )
 
     response = client.post(
         "/api/moving/chat",
@@ -222,9 +229,16 @@ def test_stream_endpoint_emits_sse_frames(
     assert captured["body"]["model"] == "muse-spark-1.3-contributor"
     assert captured["body"]["model"] == chat.MOVING_CHAT_MODEL
     assert captured["body"]["max_tokens"] == chat.MAX_TOKENS
-    assert "stream_options" not in captured["body"]
+    assert captured["body"]["stream_options"] == {"include_usage": True}
     assert "tools" not in captured["body"]
     assert "Pack boxes" in captured["body"]["messages"][1]["content"]
+    assert usage_calls == [
+        (
+            {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+            chat.MOVING_CHAT_MODEL,
+            "moving",
+        )
+    ]
 
 
 def test_midstream_exception_emits_error_frame(

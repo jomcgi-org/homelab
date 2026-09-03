@@ -295,6 +295,7 @@ def test_enforced_web_policy_pins_exactly_the_audited_destinations():
                 "postgres",
                 "inference",
                 "embeddings",
+                "otelCollector",
                 "embervm",
                 "embervmServing",
             )
@@ -320,6 +321,15 @@ def test_enforced_web_policy_pins_exactly_the_audited_destinations():
                 ("app.kubernetes.io/name", "inference"),
             ),
             (("8080", "TCP"),),
+        ),
+        # OTLP/HTTP exporter destination.
+        (
+            "otel-collector",
+            (
+                ("app.kubernetes.io/instance", "otel-collector"),
+                ("app.kubernetes.io/name", "otel-collector"),
+            ),
+            (("4318", "TCP"),),
         ),
         (
             "inference",
@@ -374,6 +384,23 @@ def test_enforced_web_policy_pins_exactly_the_audited_destinations():
     assert "enableDefaultDeny" not in doc["spec"], (
         "enforce mode must not render enableDefaultDeny.egress: false"
     )
+
+
+def test_public_web_renders_otel_traces_endpoint():
+    deployments = [doc for doc in _render() if doc.get("kind") == "Deployment"]
+    web = [
+        doc
+        for doc in deployments
+        if doc["spec"]["template"]["metadata"]["labels"].get(
+            "app.kubernetes.io/component"
+        )
+        == "web"
+    ]
+    assert len(web) == 1
+    container = web[0]["spec"]["template"]["spec"]["containers"][0]
+    env = {item["name"]: item.get("value") for item in container["env"]}
+    endpoint = env.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+    assert endpoint.endswith(":4318/v1/traces")
 
 
 def test_enforced_frontend_and_imgproxy_policies_pin_their_shapes():

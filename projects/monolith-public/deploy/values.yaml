@@ -4,6 +4,8 @@
 
 maintenanceBanner: "Infrastructure migration in progress: some features are temporarily unavailable."
 
+otelEndpoint: "http://otel-collector.otel-collector.svc:4318/v1/traces"
+
 # Sync the public_reader DB credential from 1Password into the
 # monolith-public-db Secret (key "uri" = full postgresql:// connection string
 # to monolith-pg-ro as public_reader).
