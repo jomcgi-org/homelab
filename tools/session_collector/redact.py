@@ -33,19 +33,22 @@ PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.DOTALL,
         ),
     ),
+    ("basic_auth_url", re.compile(r":\/\/[^/\s:]+:[^@\s]+@")),
+    ("cf_cookie", re.compile(r"CF_Authorization=[A-Za-z0-9._-]{20,}")),
+    (
+        "kv_secret",
+        re.compile(
+            r"(?i)(?:^|[^A-Za-z0-9])"
+            r"(?:password|pgpassword|passwd|secret|token|api[_-]?key|api[_-]?secret|"
+            r"client[_-]?secret|private[_-]?key|access[_-]?key|"
+            r"auth(?:orization)?)"
+            r"[\"']?\s*[=:]\s*[\"']?(?:token\s+)?[^\s\"']{8,}"
+        ),
+    ),
     (
         "bearer_header",
         re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{16,}"),
     ),
-    ("basic_auth_url", re.compile(r":\/\/[^/\s:]+:[^@\s]+@")),
-    (
-        "kv_secret",
-        re.compile(
-            r"(?i)\b(?:password|passwd|secret|token|api[_-]?key|access[_-]?key)"
-            r"\s*[=:]\s*[\"']?[^\s\"']{8,}"
-        ),
-    ),
-    ("cf_cookie", re.compile(r"CF_Authorization=[A-Za-z0-9._-]{20,}")),
     ("onepassword", re.compile(r"ops_[A-Za-z0-9]{20,}")),
 )
 

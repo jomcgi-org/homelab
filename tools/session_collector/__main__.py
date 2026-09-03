@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .collector import parse_session, run_collection
 from .render import render
-from .scope import discover_repo, parse_allowlist
+from .scope import discover_repo, parse_allowlist, parse_path_allowlist
 from .state import forget, load
 
 DEFAULT_STATE = Path("~/.cache/homelab-tools/session-collector/state.json")
@@ -24,6 +24,7 @@ def _run_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--max-uploads", type=int, default=20)
     parser.add_argument("--base-url", default="https://private.jomcgi.dev")
     parser.add_argument("--allow", action="append")
+    parser.add_argument("--allow-path", action="append")
     parser.add_argument("--claude-dir", type=Path, default=DEFAULT_CLAUDE)
     parser.add_argument("--codex-dir", type=Path, default=DEFAULT_CODEX)
     parser.add_argument("--state-file", type=Path, default=DEFAULT_STATE)
@@ -53,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run":
         try:
             allowlist = parse_allowlist(args.allow)
+            path_allowlist = parse_path_allowlist(args.allow_path)
         except ValueError as error:
             parser.error(str(error))
         return run_collection(
@@ -60,18 +62,22 @@ def main(argv: list[str] | None = None) -> int:
             codex_dir=args.codex_dir,
             state_file=args.state_file,
             allowlist=allowlist,
+            path_allowlist=path_allowlist,
             quiet_minutes=args.quiet_minutes,
             max_uploads=args.max_uploads,
             base_url=args.base_url,
             dry_run=args.dry_run,
         )
     if args.command == "status":
-        counts = Counter(
-            entry.get("status", "unknown")
-            for entry in load(args.state_file.expanduser()).values()
-        )
+        entries = load(args.state_file.expanduser()).values()
+        counts = Counter(entry.get("status", "unknown") for entry in entries)
         for status in ("uploaded", "skipped", "failed"):
             print(f"{status}: {counts[status]}")
+        parked = sum(
+            entry.get("status") == "failed" and int(entry.get("failures", 0)) >= 3
+            for entry in entries
+        )
+        print(f"failed (parked): {parked}")
         if counts["unknown"]:
             print(f"unknown: {counts['unknown']}")
         return 0

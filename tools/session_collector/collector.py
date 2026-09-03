@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -17,7 +18,7 @@ from . import claude_v1, codex_v1
 from .models import Session
 from .render import RenderedSession, render
 from .scope import allowed_scope, discover_repo
-from .state import eligible, load, save
+from .state import eligible, load, locked, save
 from .upload import upload_raw
 
 MIN_BODY_BYTES = 2 * 1024
@@ -53,6 +54,7 @@ def _entry(
     status: str,
     reason: str | None,
     raw_id: str | None,
+    failures: int = 0,
 ) -> dict[str, object]:
     stat = path.stat()
     return {
@@ -61,6 +63,7 @@ def _entry(
         "raw_id": raw_id,
         "status": status,
         "reason": reason,
+        "failures": failures,
         "cwd": session.cwd,
         "repo": repo,
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
@@ -107,6 +110,7 @@ def run_collection(
     codex_dir: Path,
     state_file: Path,
     allowlist: dict[str, str],
+    path_allowlist: dict[Path, str] | None = None,
     quiet_minutes: float = 30,
     max_uploads: int = 20,
     base_url: str = "https://private.jomcgi.dev",
@@ -116,6 +120,38 @@ def run_collection(
     now: float | None = None,
 ) -> int:
     state_file = state_file.expanduser()
+    with locked(state_file):
+        return _run_collection_locked(
+            claude_dir=claude_dir,
+            codex_dir=codex_dir,
+            state_file=state_file,
+            allowlist=allowlist,
+            path_allowlist=path_allowlist,
+            quiet_minutes=quiet_minutes,
+            max_uploads=max_uploads,
+            base_url=base_url,
+            dry_run=dry_run,
+            client=client,
+            token_reader=token_reader,
+            now=now,
+        )
+
+
+def _run_collection_locked(
+    *,
+    claude_dir: Path,
+    codex_dir: Path,
+    state_file: Path,
+    allowlist: dict[str, str],
+    path_allowlist: dict[Path, str] | None,
+    quiet_minutes: float,
+    max_uploads: int,
+    base_url: str,
+    dry_run: bool,
+    client: httpx.Client | None,
+    token_reader: Callable[[str], str | None] | None,
+    now: float | None,
+) -> int:
     state_value = load(state_file)
     candidates = [
         path
@@ -136,7 +172,7 @@ def run_collection(
             key = str(path)
             try:
                 session = parse_session(path)
-                repo = discover_repo(session.cwd, state_value)
+                repo = discover_repo(session.cwd, state_value, path_allowlist)
                 scope = allowed_scope(repo, allowlist)
                 if scope is None:
                     if not dry_run:
@@ -184,26 +220,50 @@ def run_collection(
                 else:
                     reason = f"HTTP {result.status_code}"
                     state_value[key] = _entry(
-                        path, session, repo, "failed", reason, None
+                        path,
+                        session,
+                        repo,
+                        "failed",
+                        reason,
+                        None,
+                        _next_failure_count(path, state_value.get(key)),
                     )
                     print(f"failed {path}: {reason}", file=sys.stderr)
                 save(state_file, state_value)
-            except (OSError, ValueError, httpx.HTTPError) as error:
-                reason = type(error).__name__
+            except (
+                OSError,
+                ValueError,
+                httpx.HTTPError,
+                subprocess.SubprocessError,
+            ) as error:
+                scope_error = isinstance(error, subprocess.SubprocessError)
+                reason = "scope_error" if scope_error else type(error).__name__
                 stat = path.stat()
                 state_value[key] = {
                     "size": stat.st_size,
                     "mtime": stat.st_mtime,
                     "raw_id": None,
-                    "status": "failed",
+                    "status": "skipped" if scope_error else "failed",
                     "reason": reason,
+                    "failures": (
+                        0
+                        if scope_error
+                        else _next_failure_count(path, state_value.get(key))
+                    ),
                     "cwd": "",
                     "repo": None,
                     "uploaded_at": datetime.now(timezone.utc).isoformat(),
                 }
                 save(state_file, state_value)
-                print(f"failed {path}: {reason}", file=sys.stderr)
+                outcome = "skipped" if scope_error else "failed"
+                print(f"{outcome} {path}: {reason}", file=sys.stderr)
     finally:
         if owned_client:
             client.close()
     return 0
+
+
+def _next_failure_count(path: Path, entry: dict[str, object] | None) -> int:
+    if not entry or path.stat().st_size > int(entry.get("size", -1)):
+        return 1
+    return int(entry.get("failures", 0)) + 1
