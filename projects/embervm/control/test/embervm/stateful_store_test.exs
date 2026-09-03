@@ -12,6 +12,21 @@ defmodule Embervm.StatefulStoreTest do
   alias Embervm.OpLog.SQLite
   alias Embervm.StatefulStore
 
+  defmodule FailableOpLog do
+    def append(agent, op) do
+      Agent.get_and_update(agent, fn
+        %{fail: true} = state -> {{:error, :forced_append_failure}, state}
+        state -> {{:ok, length(state.ops) + 1}, %{state | ops: [op | state.ops]}}
+      end)
+    end
+
+    def load_stateful_instances(_agent), do: {:ok, []}
+    def load_volumes(_agent), do: {:ok, []}
+    def load_volume_blessing(_agent), do: {:ok, []}
+    def load_checkpoint_dispatches(_agent), do: {:ok, []}
+    def load_blessing_leases(_agent), do: {:ok, []}
+  end
+
   setup do
     path =
       Path.join(
@@ -33,6 +48,33 @@ defmodule Embervm.StatefulStoreTest do
   defp sequential_clock do
     {:ok, counter} = Agent.start_link(fn -> 1_000 end)
     fn -> Agent.get_and_update(counter, fn n -> {n, n + 1} end) end
+  end
+
+  test "adopt_exported_generation does not expose a failed durable projection" do
+    {:ok, op_log} = Agent.start_link(fn -> %{fail: false, ops: []} end)
+
+    {:ok, store} =
+      StatefulStore.start_link(
+        name: nil,
+        op_log: op_log,
+        op_log_mod: FailableOpLog,
+        clock: sequential_clock()
+      )
+
+    assert {:ok, _volume} =
+             StatefulStore.create_volume(store, "wl-a", %{
+               node_id: "node-dead",
+               generation: 7,
+               exported_generation: 0
+             })
+
+    Agent.update(op_log, &%{&1 | fail: true})
+
+    assert {:error, :forced_append_failure} =
+             StatefulStore.adopt_exported_generation(store, "wl-a", "node-dead", 7)
+
+    assert %{node_id: "node-dead", exported_generation: 0} =
+             StatefulStore.get_volume(store, "wl-a")
   end
 
   test "blessing leases burn ranges durably and next generation skips them", %{path: path} do

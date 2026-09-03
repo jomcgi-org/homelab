@@ -924,7 +924,8 @@ defmodule Embervm.Application do
     |> Enum.reject(&(&1 == ""))
   end
 
-  defp store_bucket do
+  @doc false
+  def store_bucket do
     case trimmed_env("EMBERVM_STORE_BUCKET") do
       "" -> "embervm"
       bucket -> bucket
@@ -939,7 +940,8 @@ defmodule Embervm.Application do
     end
   end
 
-  defp artifact_store_client do
+  @doc false
+  def artifact_store_client do
     Embervm.S3Client.new(
       trimmed_env("EMBERVM_STORE_ENDPOINT"),
       store_bucket(),

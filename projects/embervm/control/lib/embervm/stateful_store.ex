@@ -429,6 +429,18 @@ defmodule Embervm.StatefulStore do
   end
 
   @doc """
+  Durably adopts an object-store export for a volume still anchored to
+  `anchor_node_id`. The readable ETS projection changes only after the durable
+  append succeeds, so readers can never observe recovery authority that would
+  disappear on a control-plane restart.
+  """
+  @spec adopt_exported_generation(GenServer.server(), String.t(), String.t(), pos_integer()) ::
+          {:ok, map()} | {:error, term()}
+  def adopt_exported_generation(store \\ __MODULE__, workload, anchor_node_id, generation) do
+    GenServer.call(store, {:adopt_exported_generation, workload, anchor_node_id, generation})
+  end
+
+  @doc """
   The next generation this control plane should bless for `workload`'s volume:
   one past the blessing ledger's durable `blessed_generation` (absent reads as
   0, so the very first blessing for a never-blessed workload is 1). A PURE ETS
@@ -1059,6 +1071,57 @@ defmodule Embervm.StatefulStore do
       end
 
     {:reply, merged, state}
+  end
+
+  def handle_call(
+        {:adopt_exported_generation, workload, anchor_node_id, generation},
+        _from,
+        state
+      )
+      when is_binary(anchor_node_id) and is_integer(generation) and generation > 0 do
+    case fetch_volume(state, workload) do
+      %{node_id: ^anchor_node_id} = volume ->
+        if (Map.get(volume, :exported_generation, 0) || 0) > 0 do
+          {:reply, {:ok, volume}, state}
+        else
+          ts = state.clock.()
+          adopted = volume |> Map.put(:exported_generation, generation) |> Map.put(:updated_at, ts)
+
+          op = %Op{
+            kind: :volume_recovery_updated,
+            tenant: "homelab",
+            principal: "system:stateful:#{workload}",
+            workload: workload,
+            ts: ts,
+            payload: %{
+              node_id: anchor_node_id,
+              exported_generation: generation,
+              generation: Map.get(adopted, :generation, 0),
+              size_bytes: Map.get(adopted, :size_bytes),
+              allocated_bytes: Map.get(adopted, :allocated_bytes)
+            }
+          }
+
+          case state.op_log_mod.append(state.op_log, op) do
+            {:ok, _seq} ->
+              # Publish only after the durable append. There is no rollback
+              # window in which a reader can act on an ETS-only export proof.
+              adopted =
+                adopted
+                |> Map.delete(:volume_projection_dirty)
+                |> Map.delete(:volume_projection_node_id)
+
+              :ets.insert(state.volumes, {workload, adopted})
+              {:reply, {:ok, adopted}, state}
+
+            {:error, reason} ->
+              {:reply, {:error, reason}, state}
+          end
+        end
+
+      _ ->
+        {:reply, {:error, :volume_changed_during_store_consult}, state}
+    end
   end
 
   defp volume_projection_changed?(base, merged, fields) do

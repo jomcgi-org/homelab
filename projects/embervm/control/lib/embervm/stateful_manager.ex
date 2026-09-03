@@ -15,12 +15,13 @@ defmodule Embervm.StatefulManager do
   ## single-flight wake (exactly one StartStateful per concurrent connect burst)
 
   N concurrent inbound connections for one workload must produce exactly ONE
-  StartStateful and N spliced sessions. `waking` maps `workload -> [{from,
-  principal}]`, the same shape as `ServingManager.waking` minus the request
-  envelope (a stateful miss carries no HTTP request to replay, only the raw
-  socket the activator already holds). The FIRST connection for a workload
-  registers its caller AND kicks one wake worker; every concurrent connection
-  finds the workload already in `waking` and only appends. When the wake
+  StartStateful and N spliced sessions. `waking` maps each workload to a wake
+  identity token and its `[{from, principal}]` waiters. The waiter shape matches
+  `ServingManager.waking` minus the request envelope (a stateful miss carries no
+  HTTP request to replay, only the raw socket the activator already holds). The
+  FIRST connection for a workload registers its caller AND kicks one wake
+  worker; every concurrent connection finds the workload already in `waking`
+  and only appends. When the wake
   completes, every parked caller is resolved to the fresh endpoint.
 
   Because the class is a SINGLETON (decision 3, `StatefulStore.start/2` refuses
@@ -146,7 +147,7 @@ defmodule Embervm.StatefulManager do
 
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{Brick, EndpointPublisher, NodeCapacity, StatefulState, StatefulStore, WorkloadCatalog}
+  alias Embervm.{ArtifactPrefix, Brick, EndpointPublisher, NodeCapacity, StatefulState, StatefulStore, WorkloadCatalog}
 
   alias Embervm.Node.V1.{
     ArtifactRef,
@@ -195,6 +196,17 @@ defmodule Embervm.StatefulManager do
   # Fallback wakeTimeoutSeconds when the catalog entry carries none (matches
   # WorkloadWatcher's @stateful_defaults.wake_timeout_seconds).
   @default_wake_timeout_seconds 60
+
+  # A confirmed unusable store export should not trigger a fresh object-store
+  # listing on every wake tick. Monotonic time keeps the memo independent of
+  # wall-clock adjustments.
+  @negative_store_truth_ttl_ms 10 * 60_000
+
+  @volume_meta_object "meta.json"
+  @volume_data_object "vol.img"
+  @volume_generation_object "gen"
+  @volume_blessed_object "genblessed"
+  @volume_lease_object ".blessing-lease"
 
   # -- Client API ------------------------------------------------------------
 
@@ -331,6 +343,10 @@ defmodule Embervm.StatefulManager do
       # relights/cold-boots on a TRUE local miss. Injected for tests; production
       # dials the real NodeService stub.
       restore_artifact_fun: Keyword.get(opts, :restore_artifact_fun, &default_restore_artifact/2),
+      # Direct object-store read seam used only after the anchor has been absent
+      # for the full expiry window and the durable export projection is missing.
+      # The lookup runs in the wake worker, never on this GenServer.
+      volume_store: volume_store(opts),
       # Remote artifact eviction seam (R6, Task 9): (channel, %EvictArtifactRequest{})
       # -> {:ok, %EvictArtifactResponse{}} | {:error, _}. Fired alongside DeleteVolume
       # so the store copy of a workload's VOLUME is dropped on the same workload-
@@ -350,11 +366,13 @@ defmodule Embervm.StatefulManager do
       # Injected so tests can fake the K8s round-trip; production defaults to
       # the real Embervm.K8s client.
       get_secret_fun: Keyword.get(opts, :get_secret_fun, &Embervm.K8s.get_secret/2),
-      # workload -> [{from, principal}] parked behind an in-flight wake
-      # (single-flight). An empty list reserves an unattended auto-wake. No
-      # request envelope: a stateful miss carries no HTTP request to replay,
-      # only the raw socket the activator already holds.
+      # workload -> %{token: monotonic integer, waiters: [{from, principal}]}
+      # parked behind an in-flight wake (single-flight). An empty waiter list
+      # reserves an unattended auto-wake. The token identifies async results
+      # and timers belonging to this exact wake, not merely this workload.
       waking: %{},
+      # workload -> monotonic expiry for a definitive unusable store consult.
+      negative_store_truth: %{},
       # workload -> per-miss tracing bundle (Task 10), the stateful counterpart of
       # ServingManager's wake_traces. UNLIKE serving, a raw TCP accept carries no
       # HTTP request and so no router-issued traceparent to nest phases under: the
@@ -414,7 +432,7 @@ defmodule Embervm.StatefulManager do
   end
 
   def handle_call({:parked?, workload}, _from, state) do
-    {:reply, Map.get(state.waking, workload, []) != [], state}
+    {:reply, wake_waiters(state, workload) != [], state}
   end
 
   def handle_call(:reconcile, _from, state) do
@@ -438,15 +456,44 @@ defmodule Embervm.StatefulManager do
     {:noreply, finish_wake(state, workload, outcome)}
   end
 
+  def handle_info({:volume_store_consulted, workload, wake_token, anchor_node_id, result}, state) do
+    if current_wake_token(state, workload) == wake_token do
+      case adopt_exported_generation(state, workload, anchor_node_id, result) do
+        {:ok, generation} ->
+          Logger.info("embervm stateful: adopted store volume generation",
+            workload: workload,
+            generation: generation
+          )
+
+          state = clear_negative_store_truth(state, workload)
+          {:noreply, resume_wake_after_store_consult(state, workload)}
+
+        {:error, reason} ->
+          Logger.warning("embervm stateful: store export discovery failed closed",
+            workload: workload,
+            reason: inspect(reason)
+          )
+
+          state = maybe_memoize_negative_store_truth(state, workload, reason)
+          send(self(), {:wake_done, workload, {:error, :volume_node_gone}})
+          {:noreply, state}
+      end
+    else
+      Logger.debug("embervm stateful: dropped stale store volume consult", workload: workload)
+
+      {:noreply, state}
+    end
+  end
+
   # The wake-worker bound (Task 10) elapsed. If the wake for THIS workload is still in
   # flight (the worker never reported a {:wake_done}, the wedged-boot case), fail it:
   # finish_wake releases single-flight and errs the parked callers, leaving the banked
   # bundle re-wakeable (adoption heals a stranded :relighting mark back to :banked on
   # the next reconcile). A stale timer for a wake that already finished (or a newer
-  # wake replaced it) is a no-op: `waking` no longer has the workload, so finish_wake
-  # pops an empty waiter list and touches nothing.
-  def handle_info({:wake_timeout, workload}, state) do
-    if Map.has_key?(state.waking, workload) do
+  # wake replaced it) is a no-op because the token no longer matches the current
+  # `waking` entry.
+  def handle_info({:wake_timeout, workload, wake_token}, state) do
+    if current_wake_token(state, workload) == wake_token do
       Logger.warning("embervm stateful wake timed out at bound", workload: workload)
       {:noreply, finish_wake(state, workload, {:error, {:wake_timeout, workload}})}
     else
@@ -563,7 +610,7 @@ defmodule Embervm.StatefulManager do
   # re-seeding a later one. Never kicks a wake worker: the sweeper's
   # {:checkpoint_resolved} cast is what resolves these callers.
   defp park_during_checkpoint(state, workload, principal, from) do
-    waiters = Map.get(state.waking, workload, [])
+    waiters = wake_waiters(state, workload)
 
     if length(waiters) >= state.park_cap do
       audit_denial(state, principal, workload, :park_full)
@@ -576,11 +623,11 @@ defmodule Embervm.StatefulManager do
           # (park_start), exactly like park_new_wake but WITHOUT kicking a wake.
           %{
             state
-            | waking: Map.put(state.waking, workload, [{from, principal}]),
+            | waking: Map.put(state.waking, workload, new_wake_entry([{from, principal}])),
               wake_traces: Map.put(state.wake_traces, workload, %{park_start: :opentelemetry.timestamp()})
           }
         else
-          %{state | waking: Map.put(state.waking, workload, waiters ++ [{from, principal}])}
+          put_wake_waiters(state, workload, waiters ++ [{from, principal}])
         end
 
       {:noreply, state}
@@ -593,7 +640,7 @@ defmodule Embervm.StatefulManager do
   # plans the relight/cold off the resolved instance and finish_wake replies to
   # the parked callers already sitting in state.waking.
   defp resolve_parked_via_wake(state, workload) do
-    if Map.has_key?(state.waking, workload) and Map.get(state.waking, workload) != [] do
+    if Map.has_key?(state.waking, workload) and wake_waiters(state, workload) != [] do
       start_wake(state, workload)
     else
       state
@@ -601,14 +648,14 @@ defmodule Embervm.StatefulManager do
   end
 
   defp park_behind_wake(state, workload, principal, from) do
-    waiters = Map.get(state.waking, workload, [])
+    waiters = wake_waiters(state, workload)
 
     if length(waiters) >= state.park_cap do
       audit_denial(state, principal, workload, :park_full)
       log_park_full(state, workload, length(waiters))
       {:reply, {:error, {:park_full, "parked-connection cap exceeded for workload"}}, state}
     else
-      state = %{state | waking: Map.put(state.waking, workload, waiters ++ [{from, principal}])}
+      state = put_wake_waiters(state, workload, waiters ++ [{from, principal}])
       {:noreply, state}
     end
   end
@@ -644,9 +691,32 @@ defmodule Embervm.StatefulManager do
 
     %{
       state
-      | waking: Map.put(state.waking, workload, [{from, principal}]),
+      | waking: Map.put(state.waking, workload, new_wake_entry([{from, principal}])),
         wake_traces: Map.put(state.wake_traces, workload, trace)
     }
+  end
+
+  defp new_wake_entry(waiters) do
+    %{token: System.unique_integer([:monotonic, :positive]), waiters: waiters}
+  end
+
+  defp wake_waiters(state, workload) do
+    case Map.get(state.waking, workload) do
+      %{waiters: waiters} -> waiters
+      nil -> []
+    end
+  end
+
+  defp put_wake_waiters(state, workload, waiters) do
+    entry = Map.fetch!(state.waking, workload)
+    %{state | waking: Map.put(state.waking, workload, %{entry | waiters: waiters})}
+  end
+
+  defp current_wake_token(state, workload) do
+    case Map.get(state.waking, workload) do
+      %{token: token} -> token
+      nil -> nil
+    end
   end
 
   # -- wake worker -------------------------------------------------------------
@@ -673,9 +743,40 @@ defmodule Embervm.StatefulManager do
     # worth its own child span at this granularity).
     wake_start = :opentelemetry.timestamp()
     plan = plan_wake(state, workload)
-    cold = match?({:cold, _, _, _, _}, plan) or match?({:cold, _, _, _, _, _}, plan) or match?({:restore_volume_then_cold, _, _, _}, plan)
+    cold = match?({:cold, _, _, _, _}, plan) or match?({:cold, _, _, _, _, _}, plan) or match?({:restore_volume_then_cold, _, _, _}, plan) or match?({:consult_volume_store, _, _}, plan)
     state = stamp_wake_trace(state, workload, %{wake_start: wake_start, cold: cold})
 
+    continue_wake_plan(state, workload, entry, plan, true)
+  end
+
+  defp continue_wake_plan(state, workload, _entry, {:consult_volume_store, volume, anchor_node_id}, true) do
+    owner = self()
+    wake_token = current_wake_token(state, workload)
+
+    schedule_wake_timeout(workload, wake_token, wake_bound_ms(state, workload))
+
+    state = %{
+      state
+      | wake_started: Map.put(state.wake_started, workload, state.mono_clock.())
+    }
+
+    spawn(fn ->
+      result = fetch_exported_generation_from_store(state, volume)
+      send(owner, {:volume_store_consulted, workload, wake_token, anchor_node_id, result})
+    end)
+
+    state
+  end
+
+  defp continue_wake_plan(state, workload, _entry, {:consult_volume_store, _volume, _anchor_node_id}, false) do
+    # A successful consult must durably change the projection before replanning.
+    # Re-deriving another consult here means that invariant was lost. Fail closed
+    # before blessing a generation or dispatching a writable attach.
+    send(self(), {:wake_done, workload, {:error, :volume_node_gone}})
+    state
+  end
+
+  defp continue_wake_plan(state, workload, entry, plan, arm_timeout?) do
     # Generation blessing (R7, ADR embervm/011, standing decision 4): every plan
     # that will dispatch a WRITABLE attach (every arm except a bare {:error, _})
     # gets the next blessed generation issued and durably recorded HERE, on this
@@ -688,15 +789,21 @@ defmodule Embervm.StatefulManager do
     # rather than dispatching an unblessed attach.
     case bless_wake_generation(state, workload, plan) do
       {:ok, blessed_generation} ->
-        start_wake_dispatch(state, workload, entry, plan, blessed_generation)
+        start_wake_dispatch(state, workload, entry, plan, blessed_generation, arm_timeout?)
 
       :none ->
-        start_wake_dispatch(state, workload, entry, plan, 0)
+        start_wake_dispatch(state, workload, entry, plan, 0, arm_timeout?)
 
       {:error, reason} ->
         send(self(), {:wake_done, workload, {:error, {:bless_generation, reason}}})
         state
     end
+  end
+
+  defp resume_wake_after_store_consult(state, workload) do
+    entry = catalog_entry(state, workload)
+    plan = plan_wake(state, workload)
+    continue_wake_plan(state, workload, entry, plan, false)
   end
 
   # Whether `plan` will dispatch a writable attach at all (every arm except
@@ -749,14 +856,19 @@ defmodule Embervm.StatefulManager do
   # Dispatches the wake worker for `plan`, threading `blessed_generation` (0 for
   # the {:error, _} arm, which never reaches a request builder) into every
   # StartStatefulRequest this wake sends.
-  defp start_wake_dispatch(state, workload, entry, plan, blessed_generation) do
+  defp start_wake_dispatch(state, workload, entry, plan, blessed_generation, arm_timeout?) do
     owner = self()
 
     # Stamp the wake's start (for the adoption stuck-check + park_full age) and arm the
     # wake-worker bound: if the worker has not reported a {:wake_done} by then,
     # {:wake_timeout} fails the wake so single-flight releases (Task 10).
-    schedule_wake_timeout(workload, wake_bound_ms(state, workload))
-    state = %{state | wake_started: Map.put(state.wake_started, workload, state.mono_clock.())}
+    state =
+      if arm_timeout? do
+        schedule_wake_timeout(workload, current_wake_token(state, workload), wake_bound_ms(state, workload))
+        %{state | wake_started: Map.put(state.wake_started, workload, state.mono_clock.())}
+      else
+        state
+      end
 
     case plan do
       {:relight, instance, node_id, snapshot_ref} ->
@@ -926,11 +1038,12 @@ defmodule Embervm.StatefulManager do
     end
   end
 
-  defp schedule_wake_timeout(workload, bound_ms) when is_integer(bound_ms) and bound_ms > 0 do
-    Process.send_after(self(), {:wake_timeout, workload}, bound_ms)
+  defp schedule_wake_timeout(workload, wake_token, bound_ms)
+       when is_integer(wake_token) and is_integer(bound_ms) and bound_ms > 0 do
+    Process.send_after(self(), {:wake_timeout, workload, wake_token}, bound_ms)
   end
 
-  defp schedule_wake_timeout(_workload, _bound_ms), do: :ok
+  defp schedule_wake_timeout(_workload, _wake_token, _bound_ms), do: :ok
 
   # -- placement (relight vs cold, volume-anchored) ---------------------------
 
@@ -1074,6 +1187,9 @@ defmodule Embervm.StatefulManager do
             {:error, reason}
         end
 
+      store_truth_candidate?(state, volume) ->
+        {:consult_volume_store, volume, volume.node_id}
+
       true ->
         cold_plan(state, workload, volume, cold_reason(volume))
     end
@@ -1119,8 +1235,224 @@ defmodule Embervm.StatefulManager do
 
   defp volume_restorable?(_state, _volume), do: false
 
+  defp store_truth_candidate?(state, %{node_id: node_id} = volume)
+       when is_binary(node_id) and node_id != "" do
+    exported_generation(volume) == 0 and
+      not negative_store_truth_memoized?(state, volume.workload) and
+      match?({:error, :volume_node_gone}, anchor_node(state, volume)) and
+      confirmed_anchor_gone?({state, volume})
+  end
+
+  defp store_truth_candidate?(_state, _volume), do: false
+
+  defp negative_store_truth_memoized?(state, workload) do
+    case Map.get(state.negative_store_truth, workload) do
+      expires_at when is_integer(expires_at) -> state.mono_clock.() < expires_at
+      _ -> false
+    end
+  end
+
+  defp maybe_memoize_negative_store_truth(state, workload, reason)
+       when reason in [
+              :generation_not_blessed,
+              :incomplete_volume_export,
+              :invalid_generation,
+              :invalid_volume_metadata,
+              :invalid_volume_prefix,
+              :generation_mismatch,
+              :store_unconfigured
+            ] do
+    expires_at = state.mono_clock.() + @negative_store_truth_ttl_ms
+    %{state | negative_store_truth: Map.put(state.negative_store_truth, workload, expires_at)}
+  end
+
+  defp maybe_memoize_negative_store_truth(state, _workload, _reason), do: state
+
+  defp clear_negative_store_truth(state, workload) do
+    %{state | negative_store_truth: Map.delete(state.negative_store_truth, workload)}
+  end
+
   defp exported_generation(nil), do: 0
   defp exported_generation(volume), do: Map.get(volume, :exported_generation, 0) || 0
+
+  # A durable row created before volume_recovery_updated existed can have no
+  # export projection even though the object store has the complete pair. Read
+  # only the singleton volume prefix, require the same meta.json completeness
+  # marker as noded, corroborate its generation, and require that generation to
+  # have been blessed directly or through a durable lease.
+  defp fetch_exported_generation_from_store(%{volume_store: nil}, _volume),
+    do: {:error, :store_unconfigured}
+
+  defp fetch_exported_generation_from_store(state, volume) do
+    workload = Map.get(volume, :workload)
+    prefix = ArtifactPrefix.prefix(:ARTIFACT_KIND_VOLUME, workload, "", "", nil)
+
+    try do
+      with prefix when is_binary(prefix) <- prefix,
+           {:ok, entries} <- state.volume_store.list.(prefix <> "/"),
+           keys <- listed_keys(entries),
+           :ok <- require_listed_volume_objects(keys, prefix),
+           {:ok, meta_body} <- state.volume_store.get.(prefix <> "/" <> @volume_meta_object),
+           {:ok, meta} <- Jason.decode(meta_body),
+           {:ok, generation} <- complete_volume_generation(state, volume, prefix, keys, meta) do
+        {:ok, generation}
+      else
+        nil -> {:error, :invalid_volume_prefix}
+        {:error, reason} -> {:error, reason}
+      end
+    rescue
+      error -> {:error, {:store_consult_raised, error}}
+    catch
+      kind, reason -> {:error, {:store_consult_raised, {kind, reason}}}
+    end
+  end
+
+  defp listed_keys(entries) when is_list(entries) do
+    Enum.reduce(entries, MapSet.new(), fn
+      %{key: key}, acc when is_binary(key) -> MapSet.put(acc, key)
+      _entry, acc -> acc
+    end)
+  end
+
+  defp require_listed_volume_objects(keys, prefix) do
+    required = [@volume_meta_object, @volume_data_object, @volume_generation_object]
+
+    if Enum.all?(required, &MapSet.member?(keys, prefix <> "/" <> &1)) do
+      :ok
+    else
+      {:error, :incomplete_volume_export}
+    end
+  end
+
+  defp complete_volume_generation(state, volume, prefix, keys, %{"files" => files, "generation" => generation})
+       when is_map(files) and is_integer(generation) and generation > 0 do
+    with true <- Map.has_key?(files, @volume_data_object),
+         true <- Map.has_key?(files, @volume_generation_object),
+         :ok <- verify_plain_generation(state.volume_store, prefix, files, generation),
+         :ok <- require_exported_generation_blessed(state, volume, prefix, keys, files, generation) do
+      {:ok, generation}
+    else
+      false -> {:error, :incomplete_volume_export}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp complete_volume_generation(_state, _volume, _prefix, _keys, _meta),
+    do: {:error, :invalid_volume_metadata}
+
+  # Encrypted or compressed ledgers cannot be decoded by the control plane.
+  # Their generation remains bound by meta.json plus the durable blessing check.
+  # Plaintext ledgers are cheap to read and must agree exactly with the marker.
+  defp verify_plain_generation(store, prefix, files, generation) do
+    file_meta = Map.get(files, @volume_generation_object, %{})
+
+    if encoded_file?(file_meta) do
+      :ok
+    else
+      with {:ok, body} <- store.get.(prefix <> "/" <> @volume_generation_object),
+           {:ok, ^generation} <- parse_positive_generation(body) do
+        :ok
+      else
+        {:ok, _other} -> {:error, :generation_mismatch}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp encoded_file?(meta) when is_map(meta) do
+    present_string?(Map.get(meta, "compression")) or present_string?(Map.get(meta, "encryption"))
+  end
+
+  defp encoded_file?(_meta), do: false
+  defp present_string?(value), do: is_binary(value) and value != ""
+
+  defp parse_positive_generation(body) when is_binary(body) do
+    case Integer.parse(String.trim(body)) do
+      {generation, ""} when generation > 0 -> {:ok, generation}
+      _ -> {:error, :invalid_generation}
+    end
+  end
+
+  defp parse_positive_generation(_body), do: {:error, :invalid_generation}
+
+  defp require_exported_generation_blessed(state, volume, prefix, keys, files, generation) do
+    cond do
+      generation <= StatefulStore.blessing_watermark(state.store, volume.workload) ->
+        :ok
+
+      generation_covered_by_lease?(state, volume, prefix, keys, files, generation) ->
+        :ok
+
+      true ->
+        case matching_plain_blessed_marker?(state.volume_store, prefix, keys, files, generation) do
+          {:ok, true} -> :ok
+          {:ok, false} -> {:error, :generation_not_blessed}
+          {:error, _reason} -> {:error, :blessing_read_failed}
+        end
+    end
+  end
+
+  defp matching_plain_blessed_marker?(store, prefix, keys, files, generation) do
+    key = prefix <> "/" <> @volume_blessed_object
+    meta = Map.get(files, @volume_blessed_object)
+
+    if MapSet.member?(keys, key) and is_map(meta) and not encoded_file?(meta) do
+      case store.get.(key) |> unwrap_generation() do
+        {:ok, ^generation} -> {:ok, true}
+        {:ok, _other} -> {:ok, false}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:ok, false}
+    end
+  end
+
+  defp unwrap_generation({:ok, body}), do: parse_positive_generation(body)
+  defp unwrap_generation({:error, reason}), do: {:error, reason}
+
+  defp generation_covered_by_lease?(state, volume, prefix, keys, files, generation) do
+    key = prefix <> "/" <> @volume_lease_object
+
+    if MapSet.member?(keys, key) and is_map(Map.get(files, @volume_lease_object)) do
+      StatefulStore.blessing_leases_for_node(state.store, volume.node_id)
+      |> Enum.any?(fn lease ->
+        lease.workload_name == volume.workload and
+          generation >= lease.next_generation and
+          generation < lease.lease_end
+      end)
+    else
+      false
+    end
+  end
+
+  defp adopt_exported_generation(state, workload, anchor_node_id, {:ok, generation})
+       when is_integer(generation) and generation > 0 do
+    case StatefulStore.get_volume(state.store, workload) do
+      %{node_id: ^anchor_node_id} = volume ->
+        cond do
+          exported_generation(volume) > 0 ->
+            {:ok, exported_generation(volume)}
+
+          not store_truth_candidate?(state, volume) ->
+            {:error, :anchor_no_longer_confirmed_gone}
+
+          true ->
+            case StatefulStore.adopt_exported_generation(state.store, workload, anchor_node_id, generation) do
+              {:ok, %{exported_generation: adopted_generation}} -> {:ok, adopted_generation}
+              {:error, reason} -> {:error, {:volume_projection_not_durable, reason}}
+            end
+        end
+
+      _ ->
+        {:error, :volume_changed_during_store_consult}
+    end
+  end
+
+  defp adopt_exported_generation(_state, _workload, _anchor_node_id, {:error, reason}),
+    do: {:error, reason}
+
+  defp adopt_exported_generation(_state, _workload, _anchor_node_id, _result),
+    do: {:error, :invalid_store_result}
 
   # Store reachability is a property of the shared object store, not of the node
   # that happens to anchor this volume. Accept a positive report from any live
@@ -1727,7 +2059,7 @@ defmodule Embervm.StatefulManager do
   end
 
   defp pop_waiters(state, workload) do
-    waiters = Map.get(state.waking, workload, [])
+    waiters = wake_waiters(state, workload)
     {waiters, %{state | waking: Map.delete(state.waking, workload), wake_started: Map.delete(state.wake_started, workload)}}
   end
 
@@ -1821,6 +2153,8 @@ defmodule Embervm.StatefulManager do
   # override, mirroring ServingSweeper.force_roll's forced-destroy semantics
   # (accepts the in-flight drop).
   defp do_destroy_instance(state, workload) do
+    state = clear_negative_store_truth(state, workload)
+
     # The `forced_roll` span (Task 10): a ROOT span around the whole operator-
     # override destroy (no caller trace, timer/API-driven, mirrors
     # ServingSweeper.force_roll's span shape). Bounds the StopStateful(DESTROY)
@@ -1996,6 +2330,7 @@ defmodule Embervm.StatefulManager do
       else
         case StatefulStore.delete_volume(state.store, workload) do
           :ok ->
+            state = clear_negative_store_truth(state, workload)
             Logger.info("embervm stateful: volume deleted", workload: workload)
             {{:ok, %{deleted: true, unreachable: unreachable_node_ids}}, state}
 
@@ -2432,7 +2767,7 @@ defmodule Embervm.StatefulManager do
   # starts a competing RPC. Its real caller is appended to this list by
   # park_behind_wake/4 and receives the shared result through finish_wake/3.
   defp start_unattended_wake(state, workload) do
-    state = %{state | waking: Map.put(state.waking, workload, [])}
+    state = %{state | waking: Map.put(state.waking, workload, new_wake_entry([]))}
     start_wake(state, workload)
   end
 
@@ -3080,6 +3415,23 @@ defmodule Embervm.StatefulManager do
   end
 
   defp evict_remote_volume(_state, _volume, _workload), do: :ok
+
+  defp volume_store(opts) do
+    Keyword.get_lazy(opts, :volume_store, &default_volume_store/0)
+  end
+
+  defp default_volume_store do
+    case Embervm.Application.artifact_store_client() do
+      nil ->
+        nil
+
+      client ->
+        %{
+          list: fn prefix -> Embervm.S3Client.list_all(client, prefix) end,
+          get: fn key -> Embervm.S3Client.get(client, key) end
+        }
+    end
+  end
 
   defp default_start_stateful(channel, req) do
     Embervm.Node.V1.NodeService.Stub.start_stateful(channel, req)
