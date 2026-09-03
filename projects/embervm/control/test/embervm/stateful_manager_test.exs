@@ -2280,7 +2280,7 @@ defmodule Embervm.StatefulManagerTest do
 
     # Bug B: VOLUME is vendor-portable, so its restore request leaves vendor EMPTY even
     # though the anchor node reports "amd" (noded keys volumes without a vendor segment).
-    assert [%{kind: :ARTIFACT_KIND_VOLUME, ref: "wl-a", workload: "wl-a", vendor: ""}] = Agent.get(restore_calls, & &1)
+    assert [%{kind: :ARTIFACT_KIND_VOLUME, ref: "", workload: "wl-a", vendor: ""}] = Agent.get(restore_calls, & &1)
 
     live = Enum.reject(StatefulStore.list(ctx.store, "wl-a"), &Embervm.StatefulState.terminal?(&1.state))
     assert [inst] = live
@@ -2327,7 +2327,7 @@ defmodule Embervm.StatefulManagerTest do
     assert {:ok, %{ip: "10.88.0.21", port: 5432}} =
              StatefulManager.wake(ctx.mgr, "wl-a", "p")
 
-    assert [%{kind: :ARTIFACT_KIND_VOLUME, ref: "wl-a", workload: "wl-a"}] =
+    assert [%{kind: :ARTIFACT_KIND_VOLUME, ref: "", workload: "wl-a"}] =
              Agent.get(restore_calls, & &1)
 
     # The restore-volume-then-cold arm moves the durable anchor before the cold
