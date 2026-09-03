@@ -8,7 +8,8 @@ import json
 import logging
 import os
 
-from sqlalchemy import exists
+from sqlalchemy import exists, text
+from sqlalchemy.orm import defer
 from sqlmodel import Session, func, select
 
 from agent_sessions.constants import KG_NODE_KEY, SYNTHETIC_SESSION_PREFIX
@@ -27,6 +28,7 @@ KG_FEED_QUIET_SECONDS = 1800
 PROMPT_CAP = 8 * 1024
 RESULT_CAP = 12 * 1024
 DOCUMENT_CAP = 400 * 1024
+PROCESS_STARTED_AT = datetime.now(timezone.utc)
 
 _kg_feed_task: asyncio.Task | None = None
 
@@ -38,6 +40,16 @@ def _enabled() -> bool:
         "yes",
         "on",
     }
+
+
+def _since_floor() -> datetime:
+    configured = os.environ.get("KG_FEED_SINCE", "").strip()
+    if not configured:
+        return PROCESS_STARTED_AT
+    floor = datetime.fromisoformat(configured.replace("Z", "+00:00"))
+    if floor.tzinfo is None:
+        raise ValueError("KG_FEED_SINCE must be an RFC3339 timestamp with timezone")
+    return floor.astimezone(timezone.utc)
 
 
 def _clip_text(value: str | None, limit: int) -> str:
@@ -67,6 +79,7 @@ def pick_finished_sessions(
         .join(max_seq, max_seq.c.session_id == AgentSession.id)
         .where(AgentSession.status.in_(("completed", "warn")))
         .where(~pending)
+        .where(AgentSession.created_at >= _since_floor())
         .where(AgentSession.last_turn_at < quiet_before)
         .where(AgentSession.node_key.is_distinct_from(KG_NODE_KEY))
         .where(~AgentSession.local_session_id.startswith(SYNTHETIC_SESSION_PREFIX))
@@ -208,7 +221,39 @@ def render_session_raw(session_row: AgentSession, turns: list[AgentTurn]) -> str
     return content
 
 
-def _feed_once_sync(ingest, enqueue) -> int:
+def _raw_is_queued_or_handled(session: Session, raw_id: str) -> bool:
+    dialect = session.get_bind().dialect.name
+    jobs_table = "routine_jobs" if dialect == "sqlite" else "claude_agent.routine_jobs"
+    raw_table = "raw_inputs" if dialect == "sqlite" else "knowledge.raw_inputs"
+    provenance_table = (
+        "atom_raw_provenance"
+        if dialect == "sqlite"
+        else "knowledge.atom_raw_provenance"
+    )
+    queued = session.execute(
+        text(f"SELECT 1 FROM {jobs_table} WHERE name = :name LIMIT 1"),
+        {"name": f"kg:{raw_id}"},
+    ).first()
+    if queued is not None:
+        return True
+    handled = session.execute(
+        text(
+            f"""
+            SELECT 1
+              FROM {provenance_table} AS provenance
+              JOIN {raw_table} AS raw ON raw.id = provenance.raw_fk
+             WHERE raw.raw_id = :raw_id
+               AND (provenance.derived_note_id IS NULL
+                    OR provenance.derived_note_id <> 'failed')
+             LIMIT 1
+            """
+        ),
+        {"raw_id": raw_id},
+    ).first()
+    return handled is not None
+
+
+def _feed_once_sync(ingest, enqueue, is_handled) -> int:
     with Session(get_engine()) as session:
         candidates = pick_finished_sessions(session, KG_FEED_BATCH)
         fed = 0
@@ -218,6 +263,10 @@ def _feed_once_sync(ingest, enqueue) -> int:
                 turns = list(
                     session.exec(
                         select(AgentTurn)
+                        .options(
+                            defer(AgentTurn.diff_blob),
+                            defer(AgentTurn.artifact_blob),
+                        )
                         .where(AgentTurn.session_id == candidate.id)
                         .where(AgentTurn.seq > watermark)
                         .where(AgentTurn.seq <= latest_seq)
@@ -246,14 +295,27 @@ def _feed_once_sync(ingest, enqueue) -> int:
                         "redactions": redactions,
                         "truncated": truncated,
                     },
+                    commit=False,
                 )
                 # New ember-session raws are enqueued by ingest. If an earlier
                 # attempt wrote the raw but missed the watermark, make sure its
                 # idempotent retry is queued too.
-                if not created:
-                    enqueue(session, raw.raw_id)
+                handled = is_handled(session, raw.raw_id)
+                if not created and not handled:
+                    enqueue(session, raw.raw_id, commit=False)
+                    handled = is_handled(session, raw.raw_id)
+                if not handled:
+                    session.rollback()
+                    logger.warning(
+                        "KG feed left watermark unchanged for session %s: "
+                        "raw %s is not queued or handled",
+                        candidate.id,
+                        raw.raw_id,
+                    )
+                    continue
                 current = session.get(AgentSession, candidate.id)
                 if current is None:
+                    session.rollback()
                     continue
                 current.kg_extracted_turn_seq = latest_seq
                 session.add(current)
@@ -265,12 +327,21 @@ def _feed_once_sync(ingest, enqueue) -> int:
         return fed
 
 
-async def feed_once(ingest=ingest_raw_with_status, enqueue=enqueue_extraction) -> int:
+async def feed_once(
+    ingest=ingest_raw_with_status,
+    enqueue=enqueue_extraction,
+    is_handled=None,
+) -> int:
     """Export up to KG_FEED_BATCH finished sessions."""
     if not _enabled():
         return 0
     try:
-        return await asyncio.to_thread(_feed_once_sync, ingest, enqueue)
+        return await asyncio.to_thread(
+            _feed_once_sync,
+            ingest,
+            enqueue,
+            is_handled or _raw_is_queued_or_handled,
+        )
     except Exception:
         logger.exception("KG feed pass failed")
         return 0

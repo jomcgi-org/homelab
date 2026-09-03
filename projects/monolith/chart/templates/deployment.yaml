@@ -393,6 +393,8 @@ spec:
               value: {{ .Values.whatsapp.calendar.tz | quote }}
             {{- end }}
             {{- if .Values.knowledge.enabled }}
+            - name: KG_FEED_SINCE
+              value: {{ .Values.knowledge.feeds.emberSessions.since | quote }}
             - name: KNOWLEDGE_DEFAULT_REPO_SCOPE
               value: {{ .Values.knowledge.defaultRepoScope | quote }}
             - name: KG_FEED_ENABLED

@@ -26,7 +26,8 @@ from pydantic import BaseModel, Field, field_validator
 from sqlmodel import Session, select
 
 from core.db import get_session
-from knowledge.api import ingest_raw_with_status
+from knowledge.api import enqueue_extraction, ingest_raw_with_status
+from knowledge.extraction import EXTRACTABLE_SOURCES
 from knowledge.gaps import (
     GapError,
     answer_gap,
@@ -414,7 +415,10 @@ def replay_dead_letter(
         raise HTTPException(status_code=404, detail="raw is not dead-lettered")
 
     session.delete(prov)
-    session.commit()
+    if raw.source in EXTRACTABLE_SOURCES:
+        enqueue_extraction(session, raw.raw_id)
+    else:
+        session.commit()
     return {"replayed": True}
 
 

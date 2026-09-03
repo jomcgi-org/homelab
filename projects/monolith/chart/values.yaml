@@ -1074,7 +1074,10 @@ knowledge:
   feeds:
     emberSessions:
       # Export finished Ember sessions only after this dark feed is verified.
+      # Empty starts at process startup, so enabling the feed does not backfill
+      # history. Set an RFC3339 timestamp to backfill sessions created since it.
       enabled: false
+      since: ""
   gaps:
     # When true, the gardener rewrites [[X]] -> bare text in source notes
     # whose stub is marked `triaged: discardable`, then tombstones the gap

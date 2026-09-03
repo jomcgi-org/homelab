@@ -12,6 +12,13 @@ from sqlmodel import Session
 from knowledge.extraction import EXTRACTION_VERSION, KG_JOB_KIND, KG_NODE_KEY
 
 _STALE_SECONDS = 6 * 60 * 60
+_DISPUTE_STALE_SECONDS = 48 * 60 * 60
+_swept_last_cycle = 0
+
+
+def set_swept_last_cycle(count: int) -> None:
+    global _swept_last_cycle
+    _swept_last_cycle = count
 
 
 def _iso(value) -> str | None:
@@ -65,11 +72,28 @@ def _kg_health_core(session: Session, cap: int) -> dict:
         ),
         {"node_key": KG_NODE_KEY},
     ).scalar_one()
+    disputes = session.execute(
+        text(
+            """
+            SELECT count(*) AS open_disputes,
+                   EXTRACT(EPOCH FROM (now() - MIN(created_at)))
+                       AS oldest_open_dispute_seconds
+              FROM knowledge.disputes
+             WHERE state = 'open'
+            """
+        ),
+        {},
+    ).one()
     oldest = max(0.0, float(queue.oldest_seconds or 0.0))
+    oldest_dispute = max(0.0, float(disputes.oldest_open_dispute_seconds or 0.0))
     failed_24h = int(provenance.failed_24h)
     atoms_24h = int(provenance.atoms_24h)
     return {
-        "ok": oldest <= _STALE_SECONDS and not (failed_24h > 0 and atoms_24h == 0),
+        "ok": (
+            oldest <= _STALE_SECONDS
+            and oldest_dispute <= _DISPUTE_STALE_SECONDS
+            and not (failed_24h > 0 and atoms_24h == 0)
+        ),
         "queued": int(queue.queued),
         "oldest_queued_seconds": oldest,
         "failed_24h": failed_24h,
@@ -77,6 +101,9 @@ def _kg_health_core(session: Session, cap: int) -> dict:
         "last_success_at": _iso(provenance.last_success_at),
         "jobs_today": int(jobs_today),
         "cap": cap,
+        "swept_last_cycle": _swept_last_cycle,
+        "open_disputes": int(disputes.open_disputes),
+        "oldest_open_dispute_seconds": oldest_dispute,
     }
 
 

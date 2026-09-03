@@ -37,8 +37,9 @@ class FakeDBOS:
 
 
 @pytest.fixture(autouse=True)
-def _clear_spans():
+def _clear_spans(monkeypatch):
     _EXPORTER.clear()
+    monkeypatch.setattr(drainer, "sweep_kg_raws", lambda: 0)
     yield
 
 
@@ -216,7 +217,7 @@ def test_kg_daily_cap_defers_without_processing_or_notification(monkeypatch):
     assert destroys == []
 
 
-def test_invalid_kg_output_completes_error_without_notification(monkeypatch):
+def test_invalid_kg_output_defers_on_bounded_retry_path(monkeypatch):
     monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
     monkeypatch.setattr(drainer, "build_kg_prompt", lambda _raw_id: "kg prompt")
 
@@ -224,6 +225,18 @@ def test_invalid_kg_output_completes_error_without_notification(monkeypatch):
         raise drainer.ExtractionOutputInvalid("invalid extraction")
 
     monkeypatch.setattr(drainer, "apply_kg_extraction", invalid)
+    payload_updates = []
+    deferrals = []
+    monkeypatch.setattr(
+        drainer,
+        "update_drainer_job_payload",
+        lambda name, payload: payload_updates.append((name, payload)) or True,
+    )
+    monkeypatch.setattr(
+        drainer,
+        "defer_drainer_job",
+        lambda name, seconds: deferrals.append((name, seconds)) or True,
+    )
     job = {
         "name": "kg:raw-1",
         "routine_kind": "kg-drain",
@@ -232,8 +245,10 @@ def test_invalid_kg_output_completes_error_without_notification(monkeypatch):
 
     _, _, _, completions, notifications, destroys = _run(monkeypatch, [job])
 
-    assert completions == [("kg:raw-1", "error", "invalid extraction", True)]
-    assert notifications == []
+    assert payload_updates == [("kg:raw-1", {"raw_id": "raw-1", "attempts": 1})]
+    assert deferrals == [("kg:raw-1", 900)]
+    assert completions == []
+    assert notifications == [("kg:raw-1", "invalid extraction")]
     assert destroys == [(101, "workflow-1:kg-drain:kg:raw-1")]
 
 
@@ -305,6 +320,21 @@ def test_empty_queue_exits_immediately(monkeypatch):
     assert completions == []
     assert notifications == []
     assert destroys == []
+
+
+def test_kg_sweep_runs_at_cycle_start_and_updates_health_value(monkeypatch):
+    health_updates = []
+    monkeypatch.setattr(drainer, "sweep_kg_raws", lambda: 4)
+    monkeypatch.setattr(
+        drainer,
+        "set_kg_swept_last_cycle",
+        lambda count: health_updates.append(count),
+    )
+
+    result, *_ = _run(monkeypatch, [])
+
+    assert result == {"status": "complete", "processed": 0}
+    assert health_updates == [4]
 
 
 def test_empty_job_kinds_pause_claims(monkeypatch):
@@ -441,7 +471,7 @@ def _run_transient_kg_failure(monkeypatch, attempts):
     monkeypatch.setattr(
         drainer,
         "record_kg_failure",
-        lambda raw_id, error: failures.append((raw_id, error)),
+        lambda raw_id, error, attempt: failures.append((raw_id, error, attempt)),
     )
     monkeypatch.setattr(drainer, "notify_drainer_failure", lambda *_args: None)
     monkeypatch.setattr(drainer, "destroy_drainer_session", lambda *_args: True)
@@ -463,13 +493,13 @@ def test_transient_kg_failure_defers_with_incremented_attempt(monkeypatch):
 
 def test_transient_kg_failure_gives_up_after_retry_ceiling(monkeypatch):
     payload_updates, deferrals, completions, failures = _run_transient_kg_failure(
-        monkeypatch, 3
+        monkeypatch, 2
     )
 
-    assert payload_updates == [("kg:raw-1", {"raw_id": "raw-1", "attempts": 4})]
+    assert payload_updates == [("kg:raw-1", {"raw_id": "raw-1", "attempts": 3})]
     assert deferrals == []
     assert completions == [("kg:raw-1", "error", "ember unavailable", True)]
-    assert failures == [("raw-1", "ember unavailable")]
+    assert failures == [("raw-1", "ember unavailable", 3)]
 
 
 @pytest.mark.parametrize(

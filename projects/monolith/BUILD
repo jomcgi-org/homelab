@@ -6261,6 +6261,16 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_redact_test",
+    srcs = ["knowledge/redact_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "knowledge_notes_crud_test",
     srcs = ["knowledge/notes_crud_test.py"],
     imports = ["."],
@@ -7198,6 +7208,7 @@ py_test(
     deps = [
         ":pkg_agent_sessions",
         "@pip//pytest",
+        "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
 )

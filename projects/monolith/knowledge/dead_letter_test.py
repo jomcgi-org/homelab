@@ -2,8 +2,10 @@
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine
 
+from knowledge.extraction import record_extraction_failure
 from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.models import AtomRawProvenance, RawInput
 
@@ -88,6 +90,24 @@ def _make_dead_letter(
     return prov
 
 
+def _create_routine_jobs(session: Session) -> None:
+    session.execute(
+        text(
+            """
+            CREATE TABLE routine_jobs (
+                name TEXT PRIMARY KEY,
+                routine_kind TEXT NOT NULL,
+                interval_secs INTEGER,
+                next_run_at TIMESTAMP,
+                payload TEXT,
+                created_by TEXT
+            )
+            """
+        )
+    )
+    session.commit()
+
+
 class TestListDeadLetters:
     def test_returns_exhausted_raws(self, client, session):
         raw = _make_raw(session)
@@ -119,6 +139,21 @@ class TestListDeadLetters:
         data = resp.json()
         assert data["items"] == []
 
+    def test_final_extraction_failure_is_listed_at_retry_ceiling(self, client, session):
+        raw = _make_raw(session, source="agent-report")
+        record_extraction_failure(
+            session,
+            raw.raw_id,
+            "invalid extraction output",
+            MAX_GARDENER_RETRIES,
+        )
+
+        response = client.get("/api/knowledge/dead-letter")
+
+        assert response.status_code == 200
+        assert response.json()["items"][0]["retry_count"] == 3
+        assert response.json()["items"][0]["error"] == "invalid extraction output"
+
 
 class TestReplayDeadLetter:
     def test_replay_deletes_provenance(self, client, session):
@@ -142,6 +177,19 @@ class TestReplayDeadLetter:
         # Raw exists but has no dead-letter provenance
         resp = client.post(f"/api/knowledge/dead-letter/{raw.id}/replay")
         assert resp.status_code == 404
+
+    def test_replay_requeues_extractable_raw(self, client, session):
+        _create_routine_jobs(session)
+        raw = _make_raw(session, source="agent-report")
+        prov = _make_dead_letter(session, raw)
+
+        response = client.post(f"/api/knowledge/dead-letter/{raw.id}/replay")
+
+        assert response.status_code == 200
+        assert session.get(AtomRawProvenance, prov.id) is None
+        job = session.execute(text("SELECT * FROM routine_jobs")).one()
+        assert job.name == f"kg:{raw.raw_id}"
+        assert job.routine_kind == "kg-drain"
 
 
 class TestReplayDeadLetterIntegration:

@@ -107,3 +107,37 @@ def test_create_raw_persists_extra(client, session):
     ).one()
     assert raw.extra == {"collector": "unit-test", "sequence": 3}
     assert raw.original_path == "https://example.com/evidence"
+
+
+def test_create_extractable_raw_redacts_before_storage(client, session):
+    token = "ghp_abcdefghijklmnopqrstuvwxyz123456"
+    with patch("knowledge.ingest_queue.upload_raw") as upload:
+        response = client.post(
+            "/api/knowledge/raws",
+            json={"content": f"reported token {token}", "source": "agent-report"},
+        )
+
+    assert response.status_code == 201
+    stored_body = upload.call_args.args[1]
+    assert token not in stored_body
+    assert "[REDACTED:github_token]" in stored_body
+    raw = session.exec(
+        select(RawInput).where(RawInput.raw_id == response.json()["raw_id"])
+    ).one()
+    assert raw.extra["server_redactions"] == {"github_token": 1}
+
+
+def test_create_capture_raw_does_not_redact(client, session):
+    token = "ghp_abcdefghijklmnopqrstuvwxyz123456"
+    with patch("knowledge.ingest_queue.upload_raw") as upload:
+        response = client.post(
+            "/api/knowledge/raws",
+            json={"content": f"captured token {token}", "source": "capture"},
+        )
+
+    assert response.status_code == 201
+    assert upload.call_args.args[1] == f"captured token {token}"
+    raw = session.exec(
+        select(RawInput).where(RawInput.raw_id == response.json()["raw_id"])
+    ).one()
+    assert "server_redactions" not in raw.extra
