@@ -4317,6 +4317,16 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_health_test",
+    srcs = ["knowledge/health_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "swarm_drain_console_test",
     srcs = ["swarm/drain_console_test.py"],
     imports = ["."],

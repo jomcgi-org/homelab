@@ -112,8 +112,7 @@ agents:
     # moving.
     stallThresholdSeconds: 2700
     # Claim the existing general-purpose lane and the knowledge extraction lane.
-    # DRAINER_JOB_KIND remains wired to the first entry for one compatibility
-    # release while health and console readers move to the full list.
+    # Set jobKinds: [] to pause all claims while leaving the drainer enabled.
     jobKinds: ["qwen-drain", "kg-drain"]
     # Bound knowledge extraction turns independently of the general queue.
     kgMaxJobsPerDay: 40

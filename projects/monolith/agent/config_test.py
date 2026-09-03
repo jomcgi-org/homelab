@@ -90,3 +90,10 @@ def test_drainer_legacy_kind_fallback(monkeypatch):
     monkeypatch.setenv("DRAINER_JOB_KIND", "legacy-drain,with-comma")
 
     assert load_drainer_settings().job_kinds == ("legacy-drain,with-comma",)
+
+
+def test_drainer_empty_kinds_pause_all_claims(monkeypatch):
+    monkeypatch.setenv("DRAINER_JOB_KINDS", "")
+    monkeypatch.setenv("DRAINER_JOB_KIND", "legacy-must-not-win")
+
+    assert load_drainer_settings().job_kinds == ()

@@ -157,7 +157,7 @@ def test_kg_job_builds_prompt_uses_kg_session_and_applies(monkeypatch):
     assert starts[0][1] == "kg prompt"
     assert starts[0][6] == "kg-drain"
     assert applied == [("raw-1", "finished")]
-    assert completions == [("kg:raw-1", "ok", "atoms=2 dispute=narrowed")]
+    assert completions == [("kg:raw-1", "ok", "atoms=2 dispute=narrowed", True)]
     assert notifications == []
     assert destroys == [(101, "workflow-1:kg-drain:kg:raw-1")]
 
@@ -232,7 +232,7 @@ def test_invalid_kg_output_completes_error_without_notification(monkeypatch):
 
     _, _, _, completions, notifications, destroys = _run(monkeypatch, [job])
 
-    assert completions == [("kg:raw-1", "error", "invalid extraction")]
+    assert completions == [("kg:raw-1", "error", "invalid extraction", True)]
     assert notifications == []
     assert destroys == [(101, "workflow-1:kg-drain:kg:raw-1")]
 
@@ -305,6 +305,171 @@ def test_empty_queue_exits_immediately(monkeypatch):
     assert completions == []
     assert notifications == []
     assert destroys == []
+
+
+def test_empty_job_kinds_pause_claims(monkeypatch):
+    claims = []
+    monkeypatch.setattr(
+        drainer,
+        "pin_drainer_settings",
+        lambda: SETTINGS | {"job_kinds": ()},
+    )
+    monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
+    monkeypatch.setattr(
+        drainer,
+        "claim_drainer_job",
+        lambda *_args: claims.append(True),
+    )
+
+    assert drainer.drain_cycle.__wrapped__() == {
+        "status": "complete",
+        "processed": 0,
+    }
+    assert claims == []
+
+
+def test_kg_cap_defers_once_then_drains_qwen_jobs(monkeypatch):
+    settings = SETTINGS | {"max_jobs_per_cycle": 15, "kg_max_jobs_per_day": 40}
+    queue = [
+        {
+            "name": f"kg:raw-{index}",
+            "routine_kind": "kg-drain",
+            "payload": {"raw_id": f"raw-{index}"},
+        }
+        for index in range(20)
+    ] + [
+        {
+            "name": f"qwen-{index}",
+            "routine_kind": "qwen-drain",
+            "payload": {"prompt": "work"},
+        }
+        for index in range(2)
+    ]
+    claims = []
+    deferred = []
+    completions = []
+    starts = []
+
+    def claim(_ttl, kinds):
+        claims.append(tuple(kinds))
+        return next((job for job in queue if job["routine_kind"] in kinds), None)
+
+    def remove_claimed(*args):
+        starts.append(args)
+        name = args[0].split(":qwen-drain:", 1)[1]
+        queue[:] = [job for job in queue if job["name"] != name]
+        return len(starts)
+
+    monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: settings)
+    monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
+    monkeypatch.setattr(drainer, "claim_drainer_job", claim)
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 40)
+    monkeypatch.setattr(
+        drainer,
+        "finish_drainer_job",
+        lambda *args: completions.append(args) or True,
+    )
+    monkeypatch.setattr(
+        drainer,
+        "defer_drainer_job",
+        lambda name, seconds: (
+            (
+                deferred.append((name, seconds)),
+                queue.remove(next(job for job in queue if job["name"] == name)),
+            )
+            and True
+        ),
+    )
+    monkeypatch.setattr(drainer, "start_agent_session", remove_claimed)
+    monkeypatch.setattr(
+        drainer,
+        "_await_turn",
+        lambda *_args: {"result_text": "done", "terminal_reason": "stop"},
+    )
+    monkeypatch.setattr(drainer, "destroy_drainer_session", lambda *_args: True)
+    monkeypatch.setattr(drainer, "chain_next_cycle", lambda: None)
+
+    result = drainer.drain_cycle.__wrapped__()
+
+    assert result == {"status": "complete", "processed": 2}
+    assert deferred == [("kg:raw-0", 3600)]
+    assert [args[0] for args in starts] == [
+        "workflow-1:qwen-drain:qwen-0",
+        "workflow-1:qwen-drain:qwen-1",
+    ]
+    assert claims[0] == ("qwen-drain", "kg-drain")
+    assert all(kinds == ("qwen-drain",) for kinds in claims[1:])
+
+
+def _run_transient_kg_failure(monkeypatch, attempts):
+    job = {
+        "name": "kg:raw-1",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-1", "attempts": attempts},
+    }
+    queue = iter([job, None])
+    payload_updates = []
+    deferrals = []
+    completions = []
+    failures = []
+    monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: SETTINGS.copy())
+    monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
+    monkeypatch.setattr(drainer, "claim_drainer_job", lambda *_args: next(queue))
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _raw_id: "kg prompt")
+    monkeypatch.setattr(drainer, "start_agent_session", lambda *_args: 101)
+    monkeypatch.setattr(
+        drainer,
+        "_await_turn",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("ember unavailable")),
+    )
+    monkeypatch.setattr(
+        drainer,
+        "update_drainer_job_payload",
+        lambda name, payload: payload_updates.append((name, payload)) or True,
+    )
+    monkeypatch.setattr(
+        drainer,
+        "defer_drainer_job",
+        lambda name, seconds: deferrals.append((name, seconds)) or True,
+    )
+    monkeypatch.setattr(
+        drainer,
+        "finish_drainer_job",
+        lambda *args: completions.append(args) or True,
+    )
+    monkeypatch.setattr(
+        drainer,
+        "record_kg_failure",
+        lambda raw_id, error: failures.append((raw_id, error)),
+    )
+    monkeypatch.setattr(drainer, "notify_drainer_failure", lambda *_args: None)
+    monkeypatch.setattr(drainer, "destroy_drainer_session", lambda *_args: True)
+
+    drainer.drain_cycle.__wrapped__()
+    return payload_updates, deferrals, completions, failures
+
+
+def test_transient_kg_failure_defers_with_incremented_attempt(monkeypatch):
+    payload_updates, deferrals, completions, failures = _run_transient_kg_failure(
+        monkeypatch, 0
+    )
+
+    assert payload_updates == [("kg:raw-1", {"raw_id": "raw-1", "attempts": 1})]
+    assert deferrals == [("kg:raw-1", 900)]
+    assert completions == []
+    assert failures == []
+
+
+def test_transient_kg_failure_gives_up_after_retry_ceiling(monkeypatch):
+    payload_updates, deferrals, completions, failures = _run_transient_kg_failure(
+        monkeypatch, 3
+    )
+
+    assert payload_updates == [("kg:raw-1", {"raw_id": "raw-1", "attempts": 4})]
+    assert deferrals == []
+    assert completions == [("kg:raw-1", "error", "ember unavailable", True)]
+    assert failures == [("raw-1", "ember unavailable")]
 
 
 @pytest.mark.parametrize(

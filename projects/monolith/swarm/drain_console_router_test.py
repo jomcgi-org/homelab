@@ -53,7 +53,7 @@ def _job(**overrides):
 
 def _patch_common(monkeypatch, jobs, sessions=None, cycles=None, stats=None):
     monkeypatch.setattr(drain_console_router, "load_drainer_settings", _settings)
-    monkeypatch.setattr(drain_console_router, "list_jobs", lambda *, kinds: jobs)
+    monkeypatch.setattr(drain_console_router, "list_jobs", lambda **_kwargs: jobs)
     monkeypatch.setattr(
         drain_console_router, "_load_drainer_sessions", lambda limit=0: sessions or []
     )
@@ -96,6 +96,27 @@ def test_console_composes_jobs_and_lane(monkeypatch):
     assert body["queue"]["error"] == 1
     assert body["jobs"][0]["name"] == "qd-a"
     assert body["jobs"][0]["state"] == "error"
+
+
+def test_console_bounds_job_history_newest_first(monkeypatch):
+    calls = []
+    _patch_common(monkeypatch, [_job()])
+    monkeypatch.setattr(
+        drain_console_router,
+        "list_jobs",
+        lambda **kwargs: calls.append(kwargs) or [_job()],
+    )
+
+    response = _client().get("/api/agents/drain/console")
+
+    assert response.status_code == 200
+    assert calls == [
+        {
+            "kinds": ("qwen-drain", "kg-drain"),
+            "limit": 500,
+            "newest_first": True,
+        }
+    ]
 
 
 def test_console_survives_dbos_read_failure(monkeypatch):
@@ -237,8 +258,7 @@ def test_job_detail_caches_successful_pr_enrichment(monkeypatch):
     assert len(calls) == 1
     assert second.json()["job"]["pr"] == first.json()["job"]["pr"]
     assert calls == [
-        f"{drain_console_router.GITHUB_API}/repos/"
-        f"{drain_console_router.GITHUB_REPO}/pulls/456"
+        f"{drain_console_router.GITHUB_API}/repos/jomcgi-org/homelab/pulls/456"
     ]
     assert first.json()["job"]["pr"]["title"] == "Classify drain outcomes"
     assert first.json()["job"]["pr"]["merged"] is True

@@ -44,9 +44,15 @@ def list_jobs(
     due_only: bool = False,
     kind: str | None = None,
     kinds: tuple[str, ...] | list[str] | None = None,
+    limit: int | None = None,
+    newest_first: bool = False,
 ) -> list[dict]:
     """Return routine_jobs rows, optionally filtered to due-only and/or by kind."""
-    kind_filter = "routine_kind = ANY(:kinds)" if kinds else "TRUE"
+    kind_filter = "routine_kind = ANY(:kinds)" if kinds is not None else "TRUE"
+    order_clause = (
+        "created_at DESC, name" if newest_first else "next_run_at NULLS LAST, name"
+    )
+    limit_clause = "LIMIT :limit" if limit is not None else ""
     sql = text(
         """
         SELECT name, routine_kind, interval_secs, next_run_at, last_run_at,
@@ -62,11 +68,20 @@ def list_jobs(
            AND ("""
         + kind_filter
         + """)
-         ORDER BY next_run_at NULLS LAST, name
+         ORDER BY """
+        + order_clause
+        + "\n         "
+        + limit_clause
+        + """
         """
     )
     with Session(get_engine()) as session:
-        params = {"due_only": due_only, "kind": kind, "kinds": list(kinds or [])}
+        params = {
+            "due_only": due_only,
+            "kind": kind,
+            "kinds": list(kinds or []),
+            "limit": limit,
+        }
         rows = session.execute(sql, params).fetchall()
     return [_row_to_dict(r) for r in rows]
 
@@ -299,5 +314,18 @@ def defer_job(name: str, seconds: int) -> bool:
     )
     with Session(get_engine()) as session:
         result = session.execute(sql, {"name": name, "seconds": seconds})
+        session.commit()
+    return result.rowcount > 0
+
+
+def update_job_payload(name: str, payload: dict) -> bool:
+    """Replace a job payload, preserving the rest of its claim state."""
+    engine = get_engine()
+    sqlite = engine.dialect.name == "sqlite"
+    table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
+    payload_expr = ":payload" if sqlite else "CAST(:payload AS JSONB)"
+    sql = text(f"UPDATE {table} SET payload = {payload_expr} WHERE name = :name")
+    with Session(engine) as session:
+        result = session.execute(sql, {"name": name, "payload": json.dumps(payload)})
         session.commit()
     return result.rowcount > 0
