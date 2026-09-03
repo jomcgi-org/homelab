@@ -79,10 +79,7 @@ py_test(
         "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
         "GKE_VALUES": "$(rootpath //projects/monolith/deploy:gke_values)",
     },
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
+    deps = ["@pip//pyyaml"],
 )
 
 py_test(
@@ -258,6 +255,19 @@ semgrep_test(
 semgrep_test(
     name = "cilium_ingress_allowlist_test_semgrep_test",
     srcs = ["cilium_ingress_allowlist_test.py"],
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "tailnet_service_test_semgrep_test",
+    srcs = ["tailnet_service_test.py"],
     exclude_rules = [
         "avoid-sqlalchemy-text",
         "sqlmodel-datetime-without-factory",
