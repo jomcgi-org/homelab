@@ -24,6 +24,7 @@
   import { partitionRuns, relativeTime } from "./run-history.js";
   import {
     arrivalSelection,
+    classifyChangedItems,
     runAsk,
     inboxGroups,
     jumpTotal,
@@ -95,11 +96,10 @@
   let manualRail = $state(null);
   const voiceFold = $derived(voiceMode);
   let searchOpensRail = $state(false);
-  // True only after /agents/runs has succeeded at least once. Before that the
-  // inbox is empty for the wrong reason (not fetched, or the fetch failed), so
-  // it must not count as a quiet day: no auto-fold, no override reset. This
-  // makes first paint open-then-fold on a quiet day, chosen over
-  // folded-then-open on a busy one.
+  // True only after /agents/runs has succeeded at least once. A deep-link
+  // (session or run query param) starts folded because the user is already
+  // looking at their target; the rail resolves after the first poll based on
+  // inbox activity.
   let runsLoaded = $state(Boolean(fixture));
   if (typeof window !== "undefined") {
     try {
@@ -202,6 +202,12 @@
   let vmFallbackArmed = false;
   let turnsEl = $state(null);
   let consoleEl = $state(null);
+  let automaticRailMode = $state(
+    selectedId != null || selectedRunId != null ? "folded" : "open",
+  );
+  let inboxActivityCue = $state(false);
+  let inboxActivityCueTimeout = null;
+  const inboxRowElements = new Map();
 
   const selectedSession = $derived(
     sessions.find((session) => String(session.id) === String(selectedId)) ??
@@ -236,14 +242,6 @@
   const inbox = $derived(inboxGroups(runs, sessions, vms));
   const inboxEmpty = $derived(
     inbox.needsYou.length === 0 && inbox.running.length === 0,
-  );
-  const automaticRailMode = $derived(
-    runsLoaded
-      ? railState({
-          needsYou: inbox.needsYou.length,
-          running: inbox.running.length,
-        })
-      : "open",
   );
   const railMode = $derived(
     voiceFold
@@ -766,6 +764,74 @@
     if (manualRail === "folded") clearTurnSearch();
   }
 
+  function inboxItemKey(item) {
+    return `${item.kind}:${String(item.id)}`;
+  }
+
+  function registerInboxRow(node, item) {
+    let key = inboxItemKey(item);
+    inboxRowElements.set(key, node);
+    return {
+      update(nextItem) {
+        inboxRowElements.delete(key);
+        key = inboxItemKey(nextItem);
+        inboxRowElements.set(key, node);
+      },
+      destroy() {
+        inboxRowElements.delete(key);
+      },
+    };
+  }
+
+  function rowIsVisible(item) {
+    const node = inboxRowElements.get(inboxItemKey(item));
+    if (!node?.isConnected) return false;
+    const rect = node.getBoundingClientRect();
+    const scrollRect = node.closest(".inbox-body")?.getBoundingClientRect();
+    const top = Math.max(0, scrollRect?.top ?? 0);
+    const bottom = Math.min(
+      window.innerHeight,
+      scrollRect?.bottom ?? window.innerHeight,
+    );
+    return rect.height > 0 && rect.bottom > top && rect.top < bottom;
+  }
+
+  function itemIsVisible(item, sessionId, runId, includeRows = true) {
+    if (
+      item.kind === "session" &&
+      sessionId != null &&
+      String(item.id) === String(sessionId)
+    ) {
+      return true;
+    }
+    if (
+      item.kind === "run" &&
+      runId != null &&
+      String(item.id) === String(runId)
+    ) {
+      return true;
+    }
+    return includeRows && rowIsVisible(item);
+  }
+
+  function clearInboxActivityCue(event) {
+    if (event && event.animationName !== "inbox-attention") return;
+    inboxActivityCue = false;
+    if (inboxActivityCueTimeout !== null) {
+      clearTimeout(inboxActivityCueTimeout);
+      inboxActivityCueTimeout = null;
+    }
+  }
+
+  function showInboxActivityCue() {
+    clearInboxActivityCue();
+    inboxActivityCue = true;
+    inboxActivityCueTimeout = setTimeout(() => {
+      inboxActivityCue = false;
+      inboxActivityCueTimeout = null;
+    }, 1500);
+  }
+
   async function runSearch(value = searchQuery) {
     const query = value.trim();
     if (!query) {
@@ -1281,6 +1347,10 @@
 
   $effect(() => () => {
     searchController?.abort();
+    if (inboxActivityCueTimeout !== null) {
+      clearTimeout(inboxActivityCueTimeout);
+      inboxActivityCueTimeout = null;
+    }
   });
 
   let previousInboxEmpty = null;
@@ -1295,6 +1365,81 @@
       manualRail = null;
     }
     previousInboxEmpty = empty;
+  });
+
+  let previousInboxActivity = null;
+  let inboxResolutionSequence = 0;
+  // Resolve on meaningful activity changes, not every poll or geometry update.
+  // Once unseen activity opens the rail, its newly visible row must not fold it.
+  $effect(() => {
+    const loaded = runsLoaded;
+    const needsYou = inbox.needsYou;
+    const running = inbox.running;
+    if (!loaded) return;
+
+    const currentActivityMap = Object.fromEntries(
+      [...needsYou, ...running]
+        .map((item) => [inboxItemKey(item), item.activityAt ?? null])
+        .sort(([a], [b]) => a.localeCompare(b)),
+    );
+    const activity = JSON.stringify(currentActivityMap);
+    if (activity === previousInboxActivity) return;
+    const initialResolution = previousInboxActivity === null;
+    const previousActivityMap = initialResolution
+      ? {}
+      : JSON.parse(previousInboxActivity);
+    const changedItems = classifyChangedItems(
+      previousActivityMap,
+      currentActivityMap,
+    );
+    previousInboxActivity = activity;
+    const sequence = ++inboxResolutionSequence;
+    clearInboxActivityCue();
+
+    const total = needsYou.length + running.length;
+    if (total === 0) {
+      automaticRailMode = railState();
+      return;
+    }
+
+    const sessionId = selectedId;
+    const runId = selectedRunId;
+    const keepOpen = !initialResolution && automaticRailMode === "open";
+    const changedNeedsYou = needsYou.filter((item) =>
+      changedItems.has(inboxItemKey(item)),
+    );
+    const changedRunning = running.filter((item) =>
+      changedItems.has(inboxItemKey(item)),
+    );
+    const changedTotal = changedNeedsYou.length + changedRunning.length;
+
+    tick().then(async () => {
+      if (sequence !== inboxResolutionSequence) return;
+      // Before the first resolution, the open rail is a loading placeholder.
+      // Its rows were not visible before the activity arrived.
+      const visibleNeedsYou = changedNeedsYou.filter((item) =>
+        itemIsVisible(item, sessionId, runId, !initialResolution),
+      ).length;
+      const visibleRunning = changedRunning.filter((item) =>
+        itemIsVisible(item, sessionId, runId, !initialResolution),
+      ).length;
+      if (!keepOpen) {
+        automaticRailMode = railState({
+          needsYou: changedNeedsYou.length,
+          running: changedRunning.length,
+          outOfViewNeedsYou: changedNeedsYou.length - visibleNeedsYou,
+          outOfViewRunning: changedRunning.length - visibleRunning,
+        });
+      }
+      if (
+        initialResolution ||
+        changedTotal === 0 ||
+        visibleNeedsYou + visibleRunning !== changedTotal
+      )
+        return;
+      await tick();
+      if (sequence === inboxResolutionSequence) showInboxActivityCue();
+    });
   });
 
   let previousAutomaticRailMode = null;
@@ -1525,7 +1670,7 @@
   class="console"
 >
   <header class="topbar">
-    <a class="wordmark" href="/">Agents</a>
+    <a class="wordmark" href="/agents">Agents</a>
     {#if voiceMode}
       <span class="mode-pill">
         <span class="level-bars" aria-hidden="true"
@@ -1606,12 +1751,14 @@
     <aside class="inbox" aria-label={P.labels.sessionsRegion}>
       <div class="fold-rail">
         <button
+          class:activity-cue={inboxActivityCue}
           class="fold-button"
           type="button"
           aria-label={P.labels.expandInbox}
           aria-expanded="false"
           title={P.labels.expandInbox}
           onclick={toggleSidebar}
+          onanimationend={clearInboxActivityCue}
         >
           <svg viewBox="0 0 16 16" aria-hidden="true">
             <path d="m6 3 5 5-5 5"></path>
@@ -1619,19 +1766,23 @@
         </button>
         <span class="rail-hairline"></span>
         <button
+          class:activity-cue={inboxActivityCue && inbox.needsYou.length > 0}
           class:attention={inbox.needsYou.length > 0}
           class:idle={inboxEmpty}
           class="rail-badge"
           type="button"
           aria-label={`${inbox.needsYou.length} ${P.labels.needsYouExpandInbox}`}
-          onclick={toggleSidebar}>{inbox.needsYou.length}</button
+          onclick={toggleSidebar}
+          onanimationend={clearInboxActivityCue}>{inbox.needsYou.length}</button
         >
         <button
+          class:activity-cue={inboxActivityCue && inbox.running.length > 0}
           class:idle={inboxEmpty}
           class="rail-badge running"
           type="button"
           aria-label={`${inbox.running.length} ${P.labels.runningExpandInbox}`}
           onclick={toggleSidebar}
+          onanimationend={clearInboxActivityCue}
         >
           <span class="awake-dot" aria-hidden="true"></span>
           {inbox.running.length}
@@ -1642,12 +1793,14 @@
         <div class="inbox-head">
           <h1>{P.labels.inbox}</h1>
           <button
+            class:activity-cue={inboxActivityCue}
             class="fold-button"
             type="button"
             aria-label={P.labels.collapseInbox}
             aria-expanded="true"
             title={P.labels.collapseInbox}
             onclick={toggleSidebar}
+            onanimationend={clearInboxActivityCue}
           >
             <svg viewBox="0 0 16 16" aria-hidden="true">
               <path d="m10 3-5 5 5 5"></path>
@@ -2243,6 +2396,7 @@
       : String(selectedId) === String(item.id)}
     class:attn={attention}
     class="row"
+    use:registerInboxRow={item}
     id={item.kind === "session"
       ? `agent-session-${String(item.id)}`
       : undefined}
@@ -3195,6 +3349,17 @@
     .level-bars i:nth-child(even) {
       animation: voice-level 700ms ease-in-out infinite alternate-reverse;
     }
+    .fold-button.activity-cue,
+    .rail-badge.activity-cue {
+      animation: inbox-attention 600ms ease-in-out 2;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .fold-button.activity-cue,
+    .rail-badge.activity-cue {
+      color: var(--attn-text);
+      background: var(--attn-soft);
+    }
   }
   /* The static shell applies a manual fold before hydration. The component
      class also covers the automatic empty-inbox state. */
@@ -3242,6 +3407,13 @@
   @keyframes pulse {
     50% {
       opacity: 0.35;
+    }
+  }
+  @keyframes -global-inbox-attention {
+    50% {
+      color: var(--attn-text);
+      background: var(--attn-soft);
+      box-shadow: 0 0 0 3px var(--attn-soft);
     }
   }
   @keyframes voice-level {

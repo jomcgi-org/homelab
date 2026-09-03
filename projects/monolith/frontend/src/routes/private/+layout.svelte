@@ -38,8 +38,7 @@
   let showBack = $derived.by(() => {
     const path = $page.url.pathname.replace(/^\/private(?=\/|$)/, "") || "/";
     if (path === "/") return false;
-    if (/^\/(app|demos|review|chat|notes|agents)(\/|$)/.test(path))
-      return false;
+    if (/^\/(app|demos|review|chat|notes)(\/|$)/.test(path)) return false;
     return true;
   });
 </script>
