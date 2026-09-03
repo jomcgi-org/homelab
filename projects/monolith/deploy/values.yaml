@@ -156,6 +156,11 @@ knowledge:
   # there is no sidecar, no vault volume, and no git-sync backup left to wire.
   gaps:
     rewriteDiscardable: true
+  feeds:
+    emberSessions:
+      # Dark feed verified in the 0.412 templates (#5527); no backfill because
+      # since is empty, so only sessions after the pod start are exported.
+      enabled: true
 
 chat:
   enabled: true
