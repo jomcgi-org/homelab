@@ -3241,13 +3241,15 @@ defmodule Embervm.StatefulManager do
     end
   end
 
-  # Restore the VOLUME for `workload` (kind VOLUME, ref is the workload's own name,
-  # per the ArtifactRef contract for a singleton volume) from the exported
+  # Restore the VOLUME for `workload` (kind VOLUME, ref EMPTY: the exporter
+  # enqueues volume artifacts with no ref, so noded stores them at
+  # volume/<workload>/ and a non-empty ref here composes the doomed
+  # volume/<workload>/<ref> prefix, the 22:19Z NotFound loop) from the exported
   # (vol.img, gen) pair, then record :artifact_restored. Best-effort, same as
   # restore_bundle: a failure degrades to a plain cold boot (which the daemon fails
   # closed on for a truly-absent volume).
   defp restore_volume(state, dial_id, node_id, workload, volume) do
-    ref = %ArtifactRef{kind: :ARTIFACT_KIND_VOLUME, workload: workload, ref: workload}
+    ref = %ArtifactRef{kind: :ARTIFACT_KIND_VOLUME, workload: workload}
     ctx = %{
       principal: wake_principal(workload),
       lineage: workload,
@@ -3393,7 +3395,9 @@ defmodule Embervm.StatefulManager do
   # bundle still pairs (its own generation guard), and here delete was already
   # refused while any instance existed, so the guard is doubly held.
   defp evict_remote_volume(state, %{node_id: node_id}, workload) when is_binary(node_id) do
-    artifact = %ArtifactRef{kind: :ARTIFACT_KIND_VOLUME, workload: workload, ref: workload}
+    # Ref EMPTY for the same reason as restore_volume: the export lives at
+    # volume/<workload>/, so a ref-bearing evict silently deleted nothing.
+    artifact = %ArtifactRef{kind: :ARTIFACT_KIND_VOLUME, workload: workload}
     req = %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}
 
     with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
