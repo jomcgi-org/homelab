@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   arrivalSelection,
+  classifyChangedItems,
   inboxGroups,
   jumpTotal,
   railState,
@@ -164,6 +165,47 @@ describe("arrival selection", () => {
   });
 });
 
+describe("changed-item classification", () => {
+  test("detects new items", () => {
+    const changed = classifyChangedItems(
+      { "session:existing": "2026-08-21T10:00:00Z" },
+      {
+        "session:existing": "2026-08-21T10:00:00Z",
+        "run:new": "2026-08-21T11:00:00Z",
+      },
+    );
+
+    expect(changed).toEqual(new Set(["run:new"]));
+  });
+
+  test("detects moved activityAt", () => {
+    const changed = classifyChangedItems(
+      { "session:moved": "2026-08-21T10:00:00Z" },
+      { "session:moved": "2026-08-21T11:00:00Z" },
+    );
+
+    expect(changed).toEqual(new Set(["session:moved"]));
+  });
+
+  test("keeps unchanged items", () => {
+    const changed = classifyChangedItems(
+      { "run:steady": "2026-08-21T10:00:00Z" },
+      { "run:steady": "2026-08-21T10:00:00Z" },
+    );
+
+    expect(changed).toEqual(new Set());
+  });
+
+  test("ignores removed items", () => {
+    const changed = classifyChangedItems(
+      { "run:removed": "2026-08-21T10:00:00Z" },
+      {},
+    );
+
+    expect(changed).toEqual(new Set());
+  });
+});
+
 describe("rail state", () => {
   test.each([
     [{ needsYou: 0, running: 0, manual: null }, "folded"],
@@ -179,6 +221,71 @@ describe("rail state", () => {
       "folded",
     );
     expect(railState({ needsYou: 0, running: 0, manual: "open" })).toBe("open");
+  });
+
+  test.each([
+    [
+      {
+        needsYou: 1,
+        running: 0,
+        outOfViewNeedsYou: 0,
+        outOfViewRunning: 0,
+      },
+      "folded",
+    ],
+    [
+      {
+        needsYou: 0,
+        running: 1,
+        outOfViewNeedsYou: 0,
+        outOfViewRunning: 0,
+      },
+      "folded",
+    ],
+    [
+      {
+        needsYou: 2,
+        running: 1,
+        outOfViewNeedsYou: 1,
+        outOfViewRunning: 0,
+      },
+      "open",
+    ],
+    [
+      {
+        needsYou: 1,
+        running: 2,
+        outOfViewNeedsYou: 0,
+        outOfViewRunning: 1,
+      },
+      "open",
+    ],
+  ])(
+    "only opens automatically for out-of-view activity %o",
+    (input, expected) => {
+      expect(railState(input)).toBe(expected);
+    },
+  );
+
+  test("manual override wins over visibility-aware counts", () => {
+    expect(
+      railState({
+        needsYou: 2,
+        running: 1,
+        outOfViewNeedsYou: 2,
+        outOfViewRunning: 1,
+        manual: "folded",
+      }),
+    ).toBe("folded");
+    expect(
+      railState({
+        needsYou: 1,
+        running: 0,
+        outOfViewNeedsYou: 0,
+        outOfViewRunning: 0,
+        manual: "open",
+      }),
+    ).toBe("open");
   });
 });
 

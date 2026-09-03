@@ -107,9 +107,31 @@ export function arrivalSelection(needsYou = [], running = []) {
   return { kind: item.kind, id: item.id };
 }
 
-export function railState({ needsYou = 0, running = 0, manual = null } = {}) {
+export function classifyChangedItems(previousActivity, currentActivity) {
+  const changed = new Set();
+  for (const [key, activityAt] of Object.entries(currentActivity ?? {})) {
+    if (
+      !Object.hasOwn(previousActivity ?? {}, key) ||
+      previousActivity[key] !== activityAt
+    ) {
+      changed.add(key);
+    }
+  }
+  return changed;
+}
+
+export function railState({
+  needsYou = 0,
+  running = 0,
+  outOfViewNeedsYou = needsYou,
+  outOfViewRunning = running,
+  manual = null,
+} = {}) {
   if (manual === "folded" || manual === "open") return manual;
-  return Number(needsYou) === 0 && Number(running) === 0 ? "folded" : "open";
+  if (Number(needsYou) === 0 && Number(running) === 0) return "folded";
+  return Number(outOfViewNeedsYou) === 0 && Number(outOfViewRunning) === 0
+    ? "folded"
+    : "open";
 }
 
 export function jumpTotal(sessions = [], runs = [], terminalRuns = []) {
