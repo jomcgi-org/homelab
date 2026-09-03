@@ -13,6 +13,7 @@ can override it with a deterministic fake via ``app.dependency_overrides``.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from email.utils import format_datetime
@@ -25,6 +26,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlmodel import Session, select
 
 from core.db import get_session
+from knowledge.api import ingest_raw_with_status
 from knowledge.gaps import (
     GapError,
     answer_gap,
@@ -39,7 +41,7 @@ from knowledge.gaps import (
 from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.http_cache import _as_utc, _graph_etag, _GRAPH_CACHE_CONTROL
 from knowledge.indexing import reindex_note_with_edits
-from knowledge.ingest_queue import IngestQueueItem, ingest_raw, ingest_raw_with_status
+from knowledge.ingest_queue import IngestQueueItem, ingest_raw
 from knowledge.models import AtomRawProvenance, RawInput
 from knowledge.notes import (
     _note_to_review_dict,
@@ -243,6 +245,7 @@ class IngestRequest(BaseModel):
 
 _RAW_SOURCE_RE = re.compile(r"^[a-z][a-z0-9-]{1,40}$")
 _MAX_RAW_BYTES = 2 * 1024 * 1024
+_MAX_RAW_EXTRA_BYTES = 64 * 1024
 
 
 class CreateRawRequest(BaseModel):
@@ -265,6 +268,16 @@ class CreateRawRequest(BaseModel):
             raise ValueError("source must match ^[a-z][a-z0-9-]{1,40}$")
         return value
 
+    @field_validator("extra")
+    @classmethod
+    def _extra_is_bounded(cls, value: dict[str, Any]) -> dict[str, Any]:
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        if len(encoded) > _MAX_RAW_EXTRA_BYTES:
+            raise ValueError("extra must not exceed 64 KiB when serialized")
+        return value
+
 
 @router.post("/raws", status_code=201)
 def create_raw(
@@ -273,9 +286,9 @@ def create_raw(
 ) -> JSONResponse:
     content_bytes = len(data.content.encode("utf-8"))
     if content_bytes > _MAX_RAW_BYTES:
-        return JSONResponse(
+        raise HTTPException(
             status_code=413,
-            content={"error": "content exceeds the 2 MiB limit"},
+            detail="content exceeds the 2 MiB limit",
         )
     raw, created = ingest_raw_with_status(
         session,

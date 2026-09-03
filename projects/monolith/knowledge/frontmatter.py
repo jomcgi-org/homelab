@@ -73,7 +73,7 @@ _PROMOTED_KEYS = {
     "updated",
 }
 
-_VERIFICATION_STATES = frozenset(
+VERIFICATION_STATES = frozenset(
     {"legacy", "unverified", "verified", "disputed", "invalidated"}
 )
 
@@ -170,7 +170,7 @@ def _build(data: dict[str, Any]) -> ParsedFrontmatter:
     meta.source = _str_or_none(data.get("source"))
     meta.scope = _str_or_none(data.get("scope"))
     raw_verification_state = _str_or_none(data.get("verification_state"))
-    if raw_verification_state in _VERIFICATION_STATES:
+    if raw_verification_state in VERIFICATION_STATES:
         meta.verification_state = raw_verification_state
     elif raw_verification_state is not None:
         logger.warning(

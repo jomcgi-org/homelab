@@ -301,6 +301,12 @@ class AtomRawProvenance(SQLModel, table=True):
 
 
 class Dispute(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+    """Dispute writers arrive with ``dispute_fact`` (#5566).
+
+    Until then, ``disputed`` derives from open rows plus
+    ``verification_state == 'disputed'``.
+    """
+
     __tablename__ = "disputes"
     __table_args__ = (
         CheckConstraint(

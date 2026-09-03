@@ -2,13 +2,14 @@
 ALTER TABLE knowledge.notes
     ADD COLUMN scope              TEXT,
     ADD COLUMN verification_state TEXT NOT NULL DEFAULT 'legacy',
-    ADD COLUMN confidence         REAL,
+    ADD COLUMN confidence         DOUBLE PRECISION,
     ADD COLUMN valid_from         TIMESTAMPTZ,
     ADD COLUMN valid_until        TIMESTAMPTZ,
     ADD COLUMN observed_at        TIMESTAMPTZ,
     ADD CONSTRAINT notes_verification_state_chk CHECK (
         verification_state IN ('legacy','unverified','verified','disputed','invalidated')),
     ADD CONSTRAINT notes_confidence_chk CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1));
+-- Scoped retrieval arrives with #5573.
 CREATE INDEX notes_scope_idx ON knowledge.notes (scope) WHERE deleted_at IS NULL;
 
 CREATE TABLE knowledge.disputes (

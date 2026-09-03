@@ -56,13 +56,29 @@ def test_create_raw_returns_created_then_deduplicated(client):
 
 
 def test_create_raw_rejects_content_over_two_mib(client):
+    content = "é" * (1024 * 1024 + 1)
+    assert len(content) < 2 * 1024 * 1024
+    assert len(content.encode("utf-8")) > 2 * 1024 * 1024
     response = client.post(
         "/api/knowledge/raws",
-        json={"content": "x" * (2 * 1024 * 1024 + 1), "source": "test-source"},
+        json={"content": content, "source": "test-source"},
     )
 
     assert response.status_code == 413
-    assert response.json() == {"error": "content exceeds the 2 MiB limit"}
+    assert response.json() == {"detail": "content exceeds the 2 MiB limit"}
+
+
+def test_create_raw_rejects_extra_over_64_kib(client):
+    response = client.post(
+        "/api/knowledge/raws",
+        json={
+            "content": "evidence",
+            "source": "test-source",
+            "extra": {"context": "x" * (64 * 1024)},
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_create_raw_rejects_bad_source(client):

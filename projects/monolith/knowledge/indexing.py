@@ -192,7 +192,7 @@ async def reindex_note_with_edits(
         fm_dict["source"] = row.source
     if row.scope is not None:
         fm_dict["scope"] = row.scope
-    if row.verification_state is not None:
+    if row.verification_state and row.verification_state != "legacy":
         fm_dict["verification_state"] = row.verification_state
     if row.confidence is not None:
         fm_dict["confidence"] = row.confidence

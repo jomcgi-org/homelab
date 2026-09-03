@@ -8,7 +8,8 @@ frontmatter parsing run for real.
 from __future__ import annotations
 
 import hashlib
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -17,6 +18,7 @@ from knowledge.indexing import (
     index_note_best_effort,
     index_note_from_raw,
     index_parsed_note,
+    reindex_note_with_edits,
 )
 
 
@@ -113,3 +115,36 @@ class TestIndexNoteBestEffort:
         )
         assert ok is False
         store.upsert_note.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reindex_omits_legacy_verification_state():
+    row = SimpleNamespace(
+        note_id="legacy",
+        title="Legacy",
+        content="Body",
+        path="legacy.md",
+        type="fact",
+        status=None,
+        visibility="private",
+        source=None,
+        scope=None,
+        verification_state="legacy",
+        confidence=None,
+        valid_from=None,
+        valid_until=None,
+        observed_at=None,
+        tags=[],
+        aliases=[],
+        created_at=None,
+        updated_at=None,
+        extra={},
+    )
+    store = MagicMock()
+    store.session.exec.return_value.one_or_none.return_value = row
+    store.get_note_links.return_value = []
+
+    with patch("knowledge.indexing.index_note_from_raw", new=AsyncMock()) as index:
+        await reindex_note_with_edits(store, _embed(), note_id="legacy")
+
+    assert "verification_state" not in index.await_args.kwargs["raw"]
