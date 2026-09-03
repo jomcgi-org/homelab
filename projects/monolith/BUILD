@@ -4319,6 +4319,76 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_extraction_gates_test",
+    srcs = ["knowledge/extraction_gates_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "knowledge_gate_calibration_test",
+    srcs = ["knowledge/gate_calibration_test.py"],
+    data = [
+        "knowledge/testdata/atoms-all.tsv",
+        "knowledge/testdata/atoms-graded.tsv",
+    ],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "knowledge_lens_test",
+    srcs = ["knowledge/lens_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "knowledge_docfix_test",
+    srcs = ["knowledge/docfix_test.py"],
+    data = [
+        "//projects/monolith/chart:docfix_review_test_data",
+        "//projects/monolith/deploy:deploy_values",
+        "@multitool//tools/helm",
+    ],
+    env = {
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        ":pkg_swarm",
+        "@pip//opentelemetry_sdk",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "knowledge_extraction_repo_diff_test",
+    srcs = ["knowledge/extraction_repo_diff_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "knowledge_health_test",
     srcs = ["knowledge/health_test.py"],
     imports = ["."],
@@ -7083,6 +7153,18 @@ py_test(
         ":pkg_core",
         ":pkg_cyclegroup",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "agent_routine_jobs_test",
+    srcs = ["agent/routine_jobs_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_cyclegroup",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
     ],
 )
 

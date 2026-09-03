@@ -230,6 +230,18 @@ def start_agent_session(
 
 
 @DBOS.step()
+def send_agent_session_message(session_id: int, message: str) -> int:
+    """Queue a follow-up turn on a live swarm session."""
+    from agent_sessions.api import send_to_swarm_session
+
+    with tracer.start_as_current_span("swarm.send_agent_session_message") as span:
+        set_attributes(span, {"swarm.session_id": session_id})
+        turn_seq = send_to_swarm_session(session_id, message)
+        set_attributes(span, {"swarm.turn_seq": turn_seq})
+        return turn_seq
+
+
+@DBOS.step()
 def poll_turn(session_id: int, after_seq: int) -> dict | None:
     """One non-blocking look for the next turn of a session.
 

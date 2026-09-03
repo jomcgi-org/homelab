@@ -37,7 +37,10 @@ __all__ = [
     "enqueue_extraction",
     "sweep_unqueued_raws",
     "apply_extraction",
+    "apply_repo_diff",
     "build_extraction_prompt",
+    "build_repo_diff_prompt",
+    "render_correction_prompt",
     "record_extraction_failure",
     "kg_health",
     "count_notes_review_queue",
@@ -111,16 +114,40 @@ def enqueue_extraction(session: "Session", raw_id: str, *, commit: bool = True) 
     return _enqueue_extraction(session, raw_id, commit=commit)
 
 
-def apply_extraction(session: "Session", raw_id: str, result_text: str) -> dict:
+def apply_extraction(
+    session: "Session",
+    raw_id: str,
+    result_text: str,
+    *,
+    correction: bool = False,
+) -> dict:
     from knowledge.extraction import apply_extraction as _apply_extraction
 
-    return _apply_extraction(session, raw_id, result_text)
+    return _apply_extraction(session, raw_id, result_text, correction=correction)
+
+
+def render_correction_prompt(rejected: list[dict]) -> str:
+    from knowledge.extraction import render_correction_prompt as _render_prompt
+
+    return _render_prompt(rejected)
+
+
+def apply_repo_diff(session: "Session", job_name: str, result_text: str) -> dict:
+    from knowledge.extraction import apply_repo_diff as _apply_repo_diff
+
+    return _apply_repo_diff(session, job_name, result_text)
 
 
 def build_extraction_prompt(session: "Session", raw) -> str:
     from knowledge.extraction import build_extraction_prompt as _build_prompt
 
     return _build_prompt(session, raw)
+
+
+def build_repo_diff_prompt(last_sha: str | None) -> str:
+    from knowledge.extraction import build_repo_diff_prompt as _build_repo_diff_prompt
+
+    return _build_repo_diff_prompt(last_sha)
 
 
 def sweep_unqueued_raws(session: "Session", limit: int = 50) -> int:

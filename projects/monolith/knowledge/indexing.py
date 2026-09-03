@@ -60,6 +60,7 @@ async def index_parsed_note(
     title: str,
     meta: ParsedFrontmatter,
     authored_body: str,
+    vectors: list[list[float]] | None = None,
     commit: bool = True,
 ) -> None:
     """Chunk, embed, extract links, and upsert a non-gap note.
@@ -72,7 +73,8 @@ async def index_parsed_note(
     chunks = chunk_markdown(authored_body)
     if not chunks:
         chunks = [{"index": 0, "section_header": "", "text": authored_body or title}]
-    vectors = await embed_client.embed_batch([c["text"] for c in chunks])
+    if vectors is None:
+        vectors = await embed_client.embed_batch([c["text"] for c in chunks])
     note_links = links.extract(authored_body)
     store.upsert_note(
         note_id=note_id,
@@ -95,6 +97,7 @@ async def index_note_from_raw(
     note_id: str,
     rel_path: str,
     raw: str,
+    vectors: list[list[float]] | None = None,
     commit: bool = True,
 ) -> None:
     """Parse a raw markdown file and index it under ``note_id``.
@@ -117,6 +120,7 @@ async def index_note_from_raw(
         title=title,
         meta=meta,
         authored_body=authored_body,
+        vectors=vectors,
         commit=commit,
     )
 

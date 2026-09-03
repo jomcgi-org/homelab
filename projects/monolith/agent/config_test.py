@@ -41,6 +41,8 @@ def test_drainer_defaults(monkeypatch):
         "DRAINER_JOB_KINDS",
         "DRAINER_JOB_KIND",
         "DRAINER_KG_MAX_JOBS_PER_DAY",
+        "DRAINER_DOCFIX_AUTO_MERGE",
+        "KG_DOCFIX_REVIEW_ENABLED",
         "DRAINER_REPO",
         "DRAINER_BRANCH",
         "DRAINER_REASONING",
@@ -56,6 +58,8 @@ def test_drainer_defaults(monkeypatch):
     assert settings.stall_threshold_seconds == 2700
     assert settings.job_kinds == ("qwen-drain", "kg-drain")
     assert settings.kg_max_jobs_per_day == 40
+    assert settings.docfix_auto_merge is False
+    assert settings.docfix_review_enabled is False
     assert settings.repo == GITHUB_REPO
     assert settings.repo in REPO_CATALOG
     assert settings.branch == "main"
@@ -73,6 +77,8 @@ def test_drainer_environment_overrides(monkeypatch):
     monkeypatch.setenv("DRAINER_JOB_KINDS", "custom-drain, kg-drain")
     monkeypatch.setenv("DRAINER_JOB_KIND", "legacy-ignored")
     monkeypatch.setenv("DRAINER_KG_MAX_JOBS_PER_DAY", "12")
+    monkeypatch.setenv("DRAINER_DOCFIX_AUTO_MERGE", "true")
+    monkeypatch.setenv("KG_DOCFIX_REVIEW_ENABLED", "true")
     monkeypatch.setenv("DRAINER_REPO", "weave-hand/loom")
     monkeypatch.setenv("DRAINER_BRANCH", "work")
     monkeypatch.setenv("DRAINER_REASONING", "false")
@@ -88,6 +94,8 @@ def test_drainer_environment_overrides(monkeypatch):
     assert settings.stall_threshold_seconds == 84
     assert settings.job_kinds == ("custom-drain", "kg-drain")
     assert settings.kg_max_jobs_per_day == 12
+    assert settings.docfix_auto_merge is True
+    assert settings.docfix_review_enabled is True
     assert settings.repo == "weave-hand/loom"
     assert settings.branch == "work"
     assert settings.notify_failures is True

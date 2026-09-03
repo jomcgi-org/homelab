@@ -1,0 +1,185 @@
+main-is-clean-and-synchronized-with-origin-main	drop-event	Session bookkeeping: working tree clean at that moment. Zero validity tomorrow.
+macos-session-collector-supports-claude-and-codex-transcripts	drop-value	Restates tools/session_collector/README.md and a commit message.
+session-collector-cli-was-separated-for-gazelle-packaging	drop-value	Restates a commit message about a file move.
+knowledge-evidence-lanes-were-hardened-against-stpa-logic-hazards	drop-value	Restates a commit message; lists feature names with no behaviour or failure mode.
+the-ember-session-knowledge-feed-is-enabled-with-a-pinned-floor	keep-borderline	Config state with a real reason (pinned floor stops chart rolls resetting the export), but the reason deserves to be the claim.
+session-collector-jsonl-fixtures-are-excluded-from-prettier	drop-value	Restates .prettierignore.
+the-reported-a196c473b-commit-is-not-current-head	drop-event	Bookkeeping about which SHA was HEAD during one verification pass.
+knowledge-graph-feed-timing-and-batch-settings	drop-value	Three constants copied from kg_feed.py:25-27.
+knowledge-graph-feed-watermark-column	drop-value	Names a column; one grep answers it.
+knowledge-extraction-version	drop-value	Restates a single string constant.
+knowledge-extraction-limits	drop-value	Two constants copied from extraction.py:35-36.
+extractable-knowledge-sources	drop-value	Restates a set literal.
+qwen-session-start-returned-session-id-23	drop-event	One session-start returned an id. No reusable content.
+session-23-transitioned-from-running-to-warn	drop-event	One session's status poll sequence.
+warned-session-detail-reported-an-embervm-http-500	drop-event	One session's HTTP 500. The failure class is worth an atom; this instance is not.
+ci-test-requires-positive-test-evidence	keep-behavioural	Constraint plus failure mode: zero exit is not evidence, a test summary is. Verified at bazel/tools/ci/ci:327-359.
+ci-test-cleans-temporary-output-on-interruption	keep-borderline	True behaviour (trap on RETURN/INT/TERM) but thin and low consequence.
+pipe-masking-is-blocked-for-ci-and-bb-remote-commands	keep-behavioural	Hook blocks piped ci output and allows tee. Names what is forbidden and the one escape.
+the-pipe-mask-hook-is-registered-and-bazel-tested	drop-value	Restates .claude/settings.json and a BUILD target; derivable by opening one file.
+ci-test-uses-affected-targets-by-default-and-explicit-targets-when-supplied	keep-behavioural	Dispatch rule: no targets means affected-only, targets means explicit bb remote with locked flags.
+ci-test-mirrors-ci-runner-resource-requests	drop-value	Copies three resource numbers out of the script.
+deployment-completion-requires-live-rollout-verification	drop-value	Restates the pr-workflow skill's completion checklist verbatim.
+qwen-monolith-session-29-was-accepted	drop-duplicate	Same shape as 13 (qwen-session-start-returned-session-id-23), different id.
+completed-monolith-session-can-report-warn-status	drop-duplicate	Same shape as 14 (session-23-transitioned-from-running-to-warn).
+qwen-answered-jupiter-as-the-largest-planet	drop-event	Records that a model answered a trivia question in one turn.
+the-meaning-of-warn-status-was-not-established	drop-event	An explicit non-finding: the session could not establish what warn means. Atom 166 answers it from code.
+manifest-generators-read-tracked-paths-from-the-working-tree	keep-behavioural	Causal with a failure path: generators list tracked paths but read the working tree, so uncommitted edits leak into manifests and untracked files vanish.
+repository-changes-must-be-made-in-a-dedicated-worktree	drop-value	Restates AGENTS.md:7-15.
+buildbuddy-remote-success-requires-test-summary-evidence	drop-duplicate	Same claim as 16 (ci-test-requires-positive-test-evidence), same lines of ci.
+github-pull-request-diff-retrieval-fails-for-very-large-diffs	keep-behavioural	Hard limit with a workaround: gh pr diff rejects over 20000 lines, use git diff from merge-base.
+unpushed-binary-deletions-can-prevent-buildbuddy-repository-setup	keep-behavioural	Failure mode and avoidance: unpushed branch plus tracked binary deletion breaks BuildBuddy repo setup before Bazel runs.
+homelab-merge-queue-uses-a-stateless-dbos-reconciler	drop-value	Restates ADR platform/014 Decision section.
+merge-queue-ordering-is-based-on-ready-to-merge-label-age	drop-value	Restates ADR platform/014.
+merge-reconciler-removes-readiness-on-failed-checks	drop-value	Restates ADR platform/014.
+dirty-rebases-deterministically-escalate-to-sol	drop-value	Restates ADR platform/014.
+sol-rebase-resolutions-require-re-review-before-merging	drop-value	Restates ADR platform/014 Escalation and Security sections.
+monolith-authentication-exposes-immutable-principal-objects	drop-value	Describes a dataclass shape; open principal.py.
+present-invalid-bearer-tokens-never-downgrade-to-anonymous	keep-behavioural	Security behaviour of the X-does-not-do-Y form: absent bearer means anonymous, present-but-invalid raises, never downgrades.
+monolith-mcp-authentication-runs-in-the-application-middleware	keep-behavioural	Explains why auth is in middleware: Context Forge reaches the mount over ClusterIP, bypassing the private ingress gate.
+agent-sandbox-credentials-use-egress-placeholder-substitution	drop-value	Restates ADR agents/023 Decision 1.
+architecture-rollups-reconcile-current-state-before-deleting-adrs	drop-value	Restates docs/runbooks/rollup-architecture-docs.md.
+architecture-documents-are-warranted-for-stale-decision-or-distributed-configuration-domains	drop-value	Restates section 5a of the same runbook.
+the-monolith-has-a-current-state-architecture-document	drop-value	Asserts a file exists and lists its contents page.
+the-embervm-grpc-sweeper-emits-a-heartbeat-after-every-pass	keep-borderline	Real observable behaviour (heartbeat fields, strikes before reaping) useful when debugging a silent sweeper, but close to a code read.
+the-rules-apko-apk-fetch-workaround-avoids-conflicting-range-headers	keep-behavioural	Root cause plus fix: two merged Range headers break Bazel resume, so the patch downloads once and splits locally.
+context-forge-team-mappings-are-reconciled-from-chart-values	drop-value	Narrates what a reconcile job's code does.
+embervm-conformance-runner-is-dev-only	keep-behavioural	Constraint with an enforced failure: the runner refuses to render in production when enabled.
+conformance-runner-exercises-embervm-lifecycle-paths	drop-value	Enumerates the scenario functions in scenarios.go.
+conformance-verdicts-require-positive-invariant-coverage	keep-behavioural	False-pass guard: empty or all-vacuous results fail, and a minimum count of positively covered invariants is required.
+kargo-conformance-gate-is-chart-version-aware	keep-behavioural	Gate semantics: only a pass whose chart_version equals the promoted revision counts, stale results keep polling.
+conformance-runner-exposes-health-verdict-and-metrics-endpoints	drop-value	Lists three HTTP routes.
+conformance-runner-authenticates-control-plane-requests-with-a-kubernetes-service-account-token	drop-value	Describes a standard service-account token read.
+adr-048-uses-a-single-owner-codex-oauth-broker	drop-value	Restates ADR agents/048 Decision.
+codex-broker-login-defaults-to-codex-cluster	drop-value	Restates a default constant and a validation call.
+broker-login-start-returns-device-authorization-details-and-polls-asynchronously	keep-borderline	Protocol behaviour with a bound (async poll up to 15 minutes) but reads mostly as an API shape.
+pending-broker-login-reports-approval-required	keep-behavioural	Three distinct states from one endpoint: pending, 409 on repeat start, login_starting on a concurrent racer.
+observed-mcp-login-start-schema-failure	drop-event	One dated tool-call validation error.
+voice-ui-mcp-calls-degrade-safely-without-a-companion	keep-behavioural	Degradation behaviour: calls succeed and write nothing when no companion is open, so callers cannot detect absence by error.
+voice-companion-state-is-represented-by-a-durable-pollable-ledger	drop-value	Restates the voice_ui_ledger table columns.
+voice-ui-attachment-is-idempotent-for-bare-attaches-and-rebinding-for-explicit-attaches	keep-behavioural	Non-obvious asymmetry: bare attach is idempotent or creates a zero-turn session, explicit attach rebinds.
+the-companion-supports-four-display-surface-types	drop-value	Enumerates four enum values.
+voice-ui-questions-are-recorded-without-waiting-for-an-answer	keep-behavioural	Surprising for an ask: it records and returns immediately rather than blocking for an answer.
+voice-summaries-are-extracted-from-tagged-output-with-a-sentence-fallback	keep-borderline	Extraction rule with a fallback and a 200-char cap; verified in voice.py, but mostly a code read.
+agents-console-selection-is-url-derived	keep-borderline	Architectural rule (selection derives from URL, handlers navigate) that prevents parallel state, but thin without the failure.
+agents-url-state-uses-query-parameters-for-run-and-session-navigation	drop-value	Restates the query-parameter encoding in url-state.js.
+url-state-navigation-must-use-real-navigation-updates	keep-behavioural	Names the trap: shallow history updates do not refresh page.url-derived selections, so goto with the real pathname is required.
+chart-version-computation-refuses-shallow-git-histories	keep-behavioural	Refuses to compute from a shallow clone because depth would silently change the version. Verified at chart-version.sh:28-40.
+chart-serial-versions-are-derived-from-qualifying-commit-position	keep-behavioural	Explains why the serial is race-free: it is a function of history, not read-then-increment.
+chart-versioning-can-count-repository-wide-when-digest-comparison-already-proves-content-changed	keep-behavioural	Escape hatch with its tradeoff: CHART_VERSION_ALL_PATHS overcounts on purpose to avoid undercounting.
+the-monolith-argo-application-has-separate-chart-and-values-sources	drop-value	Restates application.yaml source blocks.
+knowledge-notes-support-scoped-verifiable-assertions	drop-value	Restates a migration's column list and enum.
+extraction-downgrades-unsupported-verified-claims	keep-behavioural	Pipeline behaviour: a verified assertion with no evidence is silently downgraded to unverified.
+knowledge-disputes-retain-evidence-and-resolution-history	drop-value	Restates a migration's column list.
+agent-sessions-can-feed-the-knowledge-graph	drop-value	Narrates what kg_feed.py does, in the order the code does it.
+knowledge-notes-support-typed-contradiction-and-supersession-edges	keep-borderline	Edge types are a schema read, but the dangling-until-ingested property is real behaviour worth keeping.
+noderegistry-tests-require-an-initial-status-barrier	keep-behavioural	Test race with a concrete trigger: a concurrent initial NodeStatus restamps the advanced clock unless health is awaited first.
+apko-arm64-disabling-must-use-per-architecture-tar-targets	keep-behavioural	Failure after green CI: arm64=False with multiarch_tars fails at push time on a layer blob.
+the-cluster-nodes-observed-during-ci-optimization-were-all-amd64	drop-event	Dated kubectl output; also already an invariant in CLAUDE.md and now stale given the GKE hub.
+the-ci-test-remote-runner-mirrors-8-cpu-and-10-gb-memory	drop-duplicate	Same three resource numbers as 21 (ci-test-mirrors-ci-runner-resource-requests).
+duplicate-range-apk-download-failures-are-classified-separately	keep-borderline	Useful diagnostic mapping from a Bazel downloader error to an apk cause, but overlaps 45.
+a-persistent-unknown-merge-state-with-green-checks-indicates-pr-desynchronization	keep-behavioural	Diagnostic rule: mergeable UNKNOWN with green checks means the PR head SHA diverged from the branch ref; a fresh PR clears it.
+buildbuddy-parent-invocation-timestamps-do-not-prove-child-progress	keep-behavioural	Anti-signal: a parent invocation timestamp stays frozen while children run, so it cannot be used as a progress probe.
+the-reported-apko-optimization-removed-substantial-aarch64-cold-build-downloads	keep-borderline	A measured saving (465 packages, ~0.90 GB) worth keeping, but it rests on session testimony with no measurement output.
+inference-production-uses-ninfer-on-the-rtx-4090	drop-value	Restates the header comment of projects/inference/deploy/values.yaml.
+ninfer-deployment-serves-full-native-context-with-e8-kv	drop-value	Copies two values keys.
+ninfer-concurrency-is-configured-for-two-lanes	drop-value	Copies three values keys.
+ninfer-production-enables-mtp-and-vision	drop-value	Copies three values keys.
+benchmark-mode-intentionally-disrupts-in-cluster-inference-access	keep-behavioural	One boolean with a destructive blast radius: renames the Service, breaks consumer DNS, exposes an unauthenticated LAN NodePort.
+session-reported-tokenizer-and-concurrency-concerns-in-candidate-awq-quants	keep-borderline	Third-party reports on candidate quants that would shape a swap decision, honestly marked unverified.
+authentik-server-restart-count-stabilized	drop-event	A dated pod listing with restart counts.
+firecracker-boot-contention-was-proposed-as-the-restart-storm-cause	drop-event	A hypothesis the session never tested; the evidence line says no causal measurement was made.
+authentik-liveness-settings-may-convert-dependency-slowness-into-restarts	flag-wrong-or-unsupported	Confidence 0.88 on specific numbers (3s timeout, 3 failures) while its own evidence says the probe configuration was never located.
+tailscale-subnet-routing-to-the-homelab-was-verified-end-to-end	keep-behavioural	Reusable capability with the exact path: laptop accepts 192.168.1.0/24 via node-1, giving off-LAN SSH and API access on 6443.
+the-kubernetes-kubeconfig-remained-unchanged-while-using-tailscale-routing	keep-borderline	True and useful corollary (no kubeconfig change needed) but largely contained in 93.
+qwen-session-8-turn-1-failed-with-an-embervm-422	drop-event	One session's 422 from the invoke endpoint.
+qwen-session-8-turn-2-failed-with-an-embervm-429	drop-event	One session's 429 from the workload sessions endpoint.
+luna-session-9-failed-with-an-embervm-429	drop-duplicate	Identical 429 signature to 96 (qwen-session-8-turn-2-failed-with-an-embervm-429).
+qwen-is-a-deprecated-alias-for-the-spark-pi-model	keep-borderline	The qwen-to-spark-to-pi-runtime mapping is worth one atom; this is the fullest of four copies.
+routine-jobs-use-postgresql-json-payloads-and-skip-locked-claims	drop-value	Restates a migration and a SKIP LOCKED query.
+the-agent-drainer-is-a-bounded-dbos-workflow	keep-borderline	The chaining condition (successor only when the bound is hit and one job succeeded) is behaviour; the rest is code narration.
+swarm-defaults-use-luna-for-implementation-and-opus-for-review	drop-value	Two default strings from swarm/config.py.
+qwen-is-a-deprecated-alias-for-the-spark-pi-family	drop-duplicate	Same claim as 98 (qwen-is-a-deprecated-alias-for-the-spark-pi-model).
+the-pi-runtime-workload-has-a-900-second-invocation-ceiling	drop-value	A single constant. The reusable content, the ordering shim 600 < CP 900 < monolith 1800, sits in the same comment and was skipped.
+the-swarm-drainer-waits-up-to-1800-seconds-per-turn-by-default	drop-value	One default timeout constant.
+the-swarm-master-view-excludes-non-run-dbos-workflows	keep-borderline	Filter behaviour that prevents drain_cycle workflows being read as swarm runs; useful but narrow.
+a-first-drainer-batch-exposed-a-dispatch-to-turn-persistence-gap	keep-behavioural	Concrete failure path: a dispatch completes or parks with no AgentTurn row, so the DBOS wait never resolves.
+walkthrough-view-eligibility-uses-durable-turn-inputs	drop-value	Restates a boolean predicate from session-view.js.
+walkthrough-presentation-deduplicates-authored-and-unexplained-twins	keep-borderline	Real deduplication rule, but only matters inside one view model.
+walkthrough-accounting-alerts-are-conditional	drop-value	Restates a template conditional.
+unified-diff-parsing-operates-on-supplied-diff-text	keep-borderline	The boundary (parses supplied text, never touches git) is useful; the rest is a signature.
+workspace-recovery-metadata-is-persisted-in-usage-json	drop-value	Describes a key added to a payload dict.
+artifact-inspection-is-required-to-verify-frontend-deployment-behavior	keep-behavioural	Green CI does not establish that behaviour reached the artifact; verification means inspecting the running image for markers and removals.
+kargo-promotion-state-is-authoritative-over-git-chart-version-for-live-deployment	keep-behavioural	Live deployment state is Kargo's Application target revision, not the git chart version; names both jsonpaths.
+qwen-monolith-session-32-was-accepted	drop-duplicate	Same shape as 13, session 32.
+session-32-progressed-from-running-to-warn	drop-duplicate	Same shape as 14, session 32.
+session-32-failed-during-embervm-session-creation	drop-duplicate	Same 500-on-session-create signature as 15 (warned-session-detail-reported-an-embervm-http-500).
+postgres-status-polling-does-not-wake-the-demo-vm	keep-behavioural	X-does-not-do-Y with consequence: status reads go through the control plane, so polling can neither wake nor keep the VM awake.
+stateful-workloads-distinguish-relight-and-cold-boot-from-the-banked-state	keep-behavioural	State machine branch with its condition: banked pair intact means relight, broken means cold boot, both via starting.
+the-stateful-activator-bounds-wake-concurrency-and-burst-rate	keep-borderline	Three operational bounds you can actually hit in production, but presented as constants rather than as what happens at the limit.
+postgres-demo-queries-use-a-non-blocking-global-concurrency-gate	keep-behavioural	Fails acquisition immediately instead of queueing, so callers get an in-band busy answer rather than an invisible wait.
+bazel-disk-cache-policy-is-capped-and-aged-in-the-repository	drop-value	Copies .bazelrc cache flags; also says 10 GiB where the flag is 10G.
+s3-warmth-gc-now-parses-member-suffixed-group-set-keys	flag-wrong-or-unsupported	Marked verified 0.98, but the evidence is a sweep log reporting zero ambiguous keys, which does not establish that the parser now handles member-suffixed keys.
+group-set-gc-deletion-reclaimed-approximately-18-gib	drop-event	A one-off reclamation figure from one armed sweep.
+embervm-bricks-run-as-deployments	keep-borderline	Non-obvious topology fact (bricks are Deployments, not StatefulSets) that changes how you reason about identity.
+longhorn-is-the-available-kubernetes-storage-provisioner	drop-value	Derivable from one kubectl get storageclass, and already narrower than the current two-cluster reality.
+node-4-has-substantially-more-local-storage-than-the-other-observed-nodes	keep-borderline	Measured asymmetry that drives placement decisions, though the numbers will drift.
+embervm-scratch-storage-is-isolated-on-masters-but-shares-nvme-on-node-4	keep-behavioural	Observed asymmetry with consequences: loopback isolation on node-1 versus direct NVMe on node-4.
+host-scoped-storage-managed-by-brick-scoped-logic-creates-conflicting-failure-modes	keep-behavioural	Defect class with both failure directions: brick-scoped identity over host-scoped storage strands data and risks deleting a sibling's.
+device-boundaries-and-per-brick-mount-scoping-address-different-isolation-problems	keep-borderline	A clean design distinction between two isolation mechanisms, but it is analysis rather than observed behaviour.
+qwen3-8-flash-next-is-configured-as-an-experimental-local-benchmark-model	drop-value	Restates three fields of a registry entry.
+the-local-qwen3-8-flash-next-benchmark-uses-a-qwen3-6-27b-api-alias	keep-borderline	Matters because the leaderboard name and the API model differ, which is a measurement trap, but it is written as a config restatement.
+qwen3-8-flash-next-leads-the-recorded-qualified-agentic-leaderboard	drop-value	Copies a leaderboard row out of reports/leaderboard.md.
+freetoken-uses-heterogeneous-cpu-gpu-moe-execution	drop-value	Restates the FreeToken README About section.
+freetoken-exposes-openai-and-anthropic-compatible-apis	drop-value	Restates a README bullet.
+freetoken-supports-qwen3-8-flash-next	drop-value	Restates a supported-models table row.
+qwen3-8-flash-next-requires-a-large-host-memory-n-gram-table	keep-behavioural	Hard deployment constraint: a 47.7 GiB pinned host-RAM table decides whether this model can run on a given node at all.
+freetoken-host-memory-offload-streams-expert-misses-over-pcie	keep-borderline	Explains where the cost lands (PCIe on expert miss, overlapped in hybrid), but it is upstream documentation.
+freetoken-has-no-upstream-container-deployment-artifacts	keep-behavioural	Negative fact that sizes the integration work: no chart, manifests, Dockerfile, or deploy directory upstream.
+freetoken-is-apache-2-0-licensed	drop-value	A license field.
+qwen-agent-session-start-was-accepted	drop-duplicate	Same shape as 13, session 18.
+qwen-session-entered-warn-state-after-an-embervm-422	drop-duplicate	Same 422 signature as 95 (qwen-session-8-turn-1-failed-with-an-embervm-422).
+qwen-turn-detail-reported-an-embervm-invoke-422-before-model-output	drop-duplicate	Restates 141, which itself duplicates 95.
+the-gated-qwen-follow-up-turn-was-not-attempted	drop-event	Records that a follow-up call was not made.
+swarm-runs-use-a-hardcoded-three-node-chain	keep-behavioural	Names what does not exist: a fixed implement, push_gate, review chain with no runtime graph composition.
+rebase-merging-invalidates-commit-ancestry-as-a-landed-turn-signal	keep-behavioural	Rebase merges break ancestry as a landed-work signal, so is-ancestor checks misclassify merged PRs. Concrete SHAs given.
+public-knowledge-sql-views-do-not-isolate-agent-derived-atoms	keep-behavioural	Security boundary: the public SQL views filter on visibility only, so a Python-side source filter cannot stop public-tier leakage.
+large-turn-diffs-are-discarded-wholesale-at-configured-size-limits	keep-behavioural	Silent-loss behaviour at a threshold: over 5 MiB raw or 1 MiB compressed yields no diff and a truncated flag.
+agent-derived-atoms-can-enter-human-review-and-gap-discovery-flows	keep-behavioural	Overload path: machine-generated atoms default to unreviewed and gap discovery scans everything, so agent output floods human queues.
+qwen-monolith-session-24-was-accepted	drop-duplicate	Same shape as 13, session 24.
+qwen-session-24-terminated-with-a-warning	drop-duplicate	Same shape as 14, session 24.
+qwen-session-24-failed-during-embervm-session-creation	drop-duplicate	Same 500-on-session-create signature as 15.
+qwen-session-11-was-accepted	drop-duplicate	Same shape as 13, session 11.
+qwen-session-11-turn-1-failed-with-embervm-422	drop-duplicate	Same 422 signature as 95.
+updates-redesign-pr-was-merged	drop-event	A merged PR with its SHA; git log answers it.
+gke-monolith-application-was-synced-and-healthy	drop-event	A dated Synced and Healthy reading.
+running-gke-frontend-image-contained-the-updates-redesign	drop-event	One image digest contained expected markers on one day. The method is the value, and 112 already carries it.
+private-updates-page-requires-cloudflare-access	keep-borderline	Verification constraint worth knowing (private pages 302 to Cloudflare Access, so no curl check without a cookie) but stated as an incident.
+public-health-endpoint-was-unhealthy	drop-event	A dated 503 with three failing components.
+local-kubernetes-cluster-was-unreachable	drop-event	The LAN cluster was down at that moment.
+agent-session-start-accepts-and-pins-a-model-family	drop-value	Restates a function signature.
+session-sends-permit-only-same-family-model-overrides	keep-behavioural	Constraint plus rejection point plus exact error text: cross-family overrides are refused before a pending turn exists.
+qwen-is-a-deprecated-alias-for-spark	drop-duplicate	Same alias claim as 98.
+session-status-reports-the-pinned-session-model	keep-behavioural	Subtle trap: status returns the session model and detail returns the turn model, so a per-turn override makes them disagree.
+the-qwen-model-alias-is-normalized-to-spark	drop-duplicate	Same alias claim as 98, plus a log line.
+session-status-aggregates-activity-and-cost	drop-value	Lists the fields of one response.
+warn-status-indicates-a-non-clean-agent-turn	keep-behavioural	Defines warn against its alternative: error or non-clean terminal reason, while permission denials surface as needs_input.
+context-forge-is-the-sole-mcp-front-door	drop-value	Restates the architecture doc, and carries no evidence list at all despite confidence 0.99.
+context-forge-currently-has-one-enabled-live-upstream	keep-borderline	Live gateway state (GitHub disabled, monolith enabled over SSE) but no evidence list and it decays quickly.
+context-forge-tool-visibility-currently-resolves-to-all-or-nothing	keep-behavioural	Security-relevant live state: all 62 monolith tools are public, so the virtual-server split is all-or-nothing today.
+context-forge-logs-request-durations-without-emitting-otel-spans	keep-borderline	Useful observability gap (durations in logs, no tracing service) but no evidence list.
+context-forge-adds-substantial-per-call-latency	keep-behavioural	Measured overhead that had to be observed: about 776 ms gateway time against 15 ms of sandbox work, plus three repeat samples.
+context-forge-repeatedly-refetches-jwks-despite-a-configured-cache	keep-behavioural	Measured contradiction: a 300 s JWKS cache configured, yet three consecutive calls each hit the network.
+context-forge-s-jwks-override-omits-the-pyjwt-cache-write	keep-behavioural	Root cause for 172: the fetch_data override returns without calling jwk_set_cache.put, so nothing is ever cached.
+the-gateway-hairpins-authentik-requests-through-cloudflare	keep-behavioural	Traffic path defect: in-pod resolution of auth.jomcgi.dev goes out to Cloudflare and back, costing about 318 ms per JWKS fetch.
+the-configured-authentik-provider-does-not-advertise-dynamic-client-registration	keep-behavioural	Capability gap that blocks a client class: registration_endpoint is null, so dynamic client registration is unavailable.
+adr-020-accepts-deprecating-context-forge	drop-value	Restates the status line and decision of ADR agents/020.
+context-forge-deprecation-work-remains-open	drop-event	A dated list of open issue numbers.
+embervm-diff-banking-is-disabled-by-default	keep-behavioural	Default plus the reason it stays off: merging diffs requires copying the prior full snapshot on ext4 scratch, raising bank latency.
+embervm-diff-banking-archives-only-merged-full-snapshots	keep-borderline	Mechanism description (rebase onto a temp copy, publish merged full) that is accurate but reads as an implementation walkthrough.
+embervm-diff-banking-has-a-full-snapshot-fallback	keep-behavioural	Failure handling with the full list of triggers: any diff-path failure degrades to a full snapshot with a warning.
+embervm-dirty-page-tracking-is-workload-allowlisted	keep-behavioural	Gating with its consequence: dirty tracking needs both diff banking on and an allowlist match, so task and park workloads never enter the path.
+the-gke-hub-root-application-is-intentionally-manual	keep-behavioural	Deliberately inert artifact and the reason: excluded from the kustomization so the root cannot self-manage its own recovery path.
+gke-monolith-workloads-are-staged-but-dormant-for-cutover	keep-borderline	Staged-but-dormant state with the reason, useful during cutover but it expires when the cutover completes.
+gke-embervm-uses-gcs-for-its-base-snapshot-store	drop-value	Restates two keys of values-gke.yaml.
+gke-overlays-disable-cilium-policy-resources	keep-behavioural	Config disabled for a cause: Cilium CRDs are absent on the GKE hub, so the policy settings would fail to render.

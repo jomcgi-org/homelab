@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
+import json
 import logging
+import re
 
 from dbos import DBOS
 from opentelemetry.context import Context
@@ -20,7 +22,12 @@ from knowledge.api import (
     MAX_GARDENER_RETRIES,
     set_kg_swept_last_cycle,
 )
-from swarm.steps import start_agent_session
+from knowledge.docfix import (
+    find_reviewable_docfix_prs,
+    prune_completed_docfix_reviews,
+    schedule_docfix_review,
+)
+from swarm.steps import send_agent_session_message, start_agent_session
 from swarm.tracing import set_attributes, tracer
 
 logger = logging.getLogger(__name__)
@@ -29,6 +36,10 @@ CLAIM_HOLDER = "luna-drainer"
 CLAIM_TTL_MARGIN_SECONDS = 300
 SPAN_SUMMARY_MAX_CHARS = 200
 SUMMARY_MAX_CHARS = 2000
+DOCFIX_PR_URL_RE = re.compile(r"github\.com/jomcgi-org/homelab/pull/(\d+)")
+DOCFIX_REVIEW_SUMMARY_RE = re.compile(
+    r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE
+)
 
 
 class MalformedPayload(ValueError):
@@ -46,6 +57,10 @@ def pin_drainer_settings() -> dict:
                 "drain.job_kinds": ",".join(settings["job_kinds"]),
                 "drain.max_jobs_per_cycle": settings["max_jobs_per_cycle"],
                 "drain.kg_max_jobs_per_day": settings["kg_max_jobs_per_day"],
+                "drain.docfix_auto_merge": settings.get("docfix_auto_merge", False),
+                "drain.docfix_review_enabled": settings.get(
+                    "docfix_review_enabled", False
+                ),
                 "drain.turn_timeout_seconds": settings["turn_timeout_seconds"],
                 "drain.reasoning": settings["reasoning"],
             },
@@ -100,7 +115,30 @@ def sweep_kg_raws(limit: int = 50) -> int:
     from sqlmodel import Session
 
     with Session(get_engine()) as session:
-        return sweep_unqueued_raws(session, limit)
+        swept = sweep_unqueued_raws(session, limit)
+        try:
+            prune_completed_docfix_reviews(session)
+            pr_numbers = find_reviewable_docfix_prs(session)
+            if pr_numbers:
+                schedule_docfix_review(session, pr_numbers=pr_numbers, delay_seconds=0)
+        except Exception:  # noqa: BLE001 - review sweep must not stop extraction
+            logger.warning("docfix-review sweep failed", exc_info=True)
+        return swept
+
+
+@DBOS.step()
+def schedule_docfix_review_for_completion(result_text: str) -> bool:
+    """Queue a delayed review when a successful docfix turn returns a PR URL."""
+    from core.db import get_engine
+    from sqlmodel import Session
+
+    match = DOCFIX_PR_URL_RE.search(result_text)
+    if match is None:
+        return False
+    with Session(get_engine()) as session:
+        return schedule_docfix_review(
+            session, pr_numbers=[int(match.group(1))], delay_seconds=600
+        )
 
 
 @DBOS.step()
@@ -118,12 +156,44 @@ def update_drainer_job_payload(name: str, payload: dict) -> bool:
 
 
 @DBOS.step()
-def build_kg_prompt(raw_id: str) -> str:
+def increment_kg_job_attempt(name: str) -> int:
+    """Increment attempts on the current persisted payload and return the count."""
     from core.db import get_engine
-    from knowledge.api import build_extraction_prompt
+    from sqlalchemy import text
+    from sqlmodel import Session
+
+    engine = get_engine()
+    sqlite = engine.dialect.name == "sqlite"
+    table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
+    payload_expr = ":payload" if sqlite else "CAST(:payload AS JSONB)"
+    with Session(engine) as session:
+        row = session.execute(
+            text(f"SELECT payload FROM {table} WHERE name = :name"), {"name": name}
+        ).first()
+        if row is None:
+            raise MalformedPayload(f"job not found: {name}")
+        current = row.payload
+        if isinstance(current, str):
+            current = json.loads(current)
+        payload, attempt = _incremented_kg_payload(current)
+        session.execute(
+            text(f"UPDATE {table} SET payload = {payload_expr} WHERE name = :name"),
+            {"name": name, "payload": json.dumps(payload)},
+        )
+        session.commit()
+    return attempt
+
+
+@DBOS.step()
+def build_kg_prompt(payload: dict) -> str:
+    from core.db import get_engine
+    from knowledge.api import build_extraction_prompt, build_repo_diff_prompt
     from knowledge.models import RawInput
     from sqlmodel import Session, select
 
+    if payload.get("mode") == "repo-diff":
+        return build_repo_diff_prompt(payload.get("last_sha"))
+    raw_id = _kg_raw_id(payload)
     with Session(get_engine()) as session:
         raw = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
         if raw is None:
@@ -132,13 +202,33 @@ def build_kg_prompt(raw_id: str) -> str:
 
 
 @DBOS.step()
-def apply_kg_extraction(raw_id: str, result_text: str) -> dict:
+def apply_kg_extraction(
+    name: str,
+    payload: dict,
+    result_text: str,
+    correction: bool = False,
+) -> dict:
     from core.db import get_engine
-    from knowledge.api import apply_extraction
+    from knowledge.api import apply_extraction, apply_repo_diff
     from sqlmodel import Session
 
     with Session(get_engine()) as session:
-        return apply_extraction(session, raw_id, result_text)
+        if payload.get("mode") == "repo-diff":
+            return apply_repo_diff(session, name, result_text)
+        raw_id = _kg_raw_id(payload)
+        return apply_extraction(
+            session,
+            raw_id,
+            result_text,
+            correction=correction,
+        )
+
+
+@DBOS.step()
+def build_kg_correction_prompt(rejected: list[dict]) -> str:
+    from knowledge.api import render_correction_prompt
+
+    return render_correction_prompt(rejected)
 
 
 @DBOS.step()
@@ -343,6 +433,10 @@ def _kg_raw_id(payload: object) -> str:
     return raw_id.strip()
 
 
+def _is_repo_diff(payload: object) -> bool:
+    return isinstance(payload, dict) and payload.get("mode") == "repo-diff"
+
+
 def _job_kinds(settings: dict) -> tuple[str, ...]:
     if "job_kinds" in settings:
         return tuple(settings["job_kinds"])
@@ -365,16 +459,51 @@ def _summary(value: object) -> str:
     return str(value or "")[:SUMMARY_MAX_CHARS]
 
 
+def _docfix_review_summary(result_text: str) -> str:
+    """Keep the reviewer's final machine-readable outcome in the job summary."""
+    required = {
+        "reviewed",
+        "queued",
+        "verified",
+        "needs_human",
+        "skipped_pending",
+    }
+    for match in reversed(DOCFIX_REVIEW_SUMMARY_RE.findall(result_text)):
+        try:
+            candidate = json.loads(match)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, dict) and required.issubset(candidate):
+            return json.dumps(
+                {
+                    key: candidate[key]
+                    for key in (
+                        "reviewed",
+                        "queued",
+                        "verified",
+                        "needs_human",
+                        "skipped_pending",
+                    )
+                },
+                separators=(",", ":"),
+            )
+    return _summary(result_text)
+
+
 def _retry_or_dead_letter_kg(
-    name: str, raw_id: str, job_payload: object, error: str
+    name: str,
+    raw_id: str | None,
+    error: str,
+    *,
+    recurring: bool,
 ) -> None:
-    payload, attempt = _incremented_kg_payload(job_payload)
-    update_drainer_job_payload(name, payload)
+    attempt = increment_kg_job_attempt(name)
     if attempt < MAX_GARDENER_RETRIES:
         defer_drainer_job(name, 900 * attempt)
     else:
-        record_kg_failure(raw_id, error, attempt)
-        finish_drainer_job(name, "error", error, True)
+        if raw_id is not None:
+            record_kg_failure(raw_id, error, attempt)
+        finish_drainer_job(name, "error", error, not recurring)
 
 
 def _completed_output(turn: dict) -> str:
@@ -468,10 +597,16 @@ def drain_cycle() -> dict:
                 # Outcome deliberately belongs on drain.finish_job, the
                 # non-replaying step, to avoid double-counting on recovery.
                 start_attempted = False
+                raw_id = None
+                recurring = job.get("interval_secs") is not None
                 try:
                     if job_kind == KG_JOB_KIND:
-                        raw_id = _kg_raw_id(job.get("payload"))
-                        prompt = build_kg_prompt(raw_id)
+                        job_payload = job.get("payload")
+                        if not isinstance(job_payload, dict):
+                            raise MalformedPayload("missing kg payload")
+                        if not _is_repo_diff(job_payload):
+                            raw_id = _kg_raw_id(job_payload)
+                        prompt = build_kg_prompt(job_payload)
                         repo = settings["repo"]
                         branch = settings["branch"]
                         reasoning = settings.get("reasoning", False)
@@ -509,33 +644,103 @@ def drain_cycle() -> dict:
                     output = _completed_output(turn)
                     if job_kind == KG_JOB_KIND:
                         result_text = str(turn.get("result_text") or "")
-                        applied = apply_kg_extraction(raw_id, result_text)
+                        applied = apply_kg_extraction(name, job_payload, result_text)
+                        if _is_repo_diff(job_payload):
+                            summary = applied["summary"]
+                        else:
+                            rejected = list(applied.get("rejected") or [])
+                            corrected = 0
+                            if (
+                                job_payload.get("mode") is None
+                                and rejected
+                                and len(applied["atoms"]) < 3
+                                and not applied.get("replayed", False)
+                            ):
+                                correction_prompt = build_kg_correction_prompt(rejected)
+                                send_agent_session_message(
+                                    session_id, correction_prompt
+                                )
+                                first_seq = int(turn.get("seq") or 0)
+                                correction_turn = _await_turn(
+                                    session_id,
+                                    first_seq,
+                                    settings["turn_timeout_seconds"],
+                                )
+                                if correction_turn is None:
+                                    raise TimeoutError(
+                                        "correction turn timed out after "
+                                        f"{settings['turn_timeout_seconds']} seconds"
+                                    )
+                                _completed_output(correction_turn)
+                                correction_result = apply_kg_extraction(
+                                    name,
+                                    job_payload,
+                                    str(correction_turn.get("result_text") or ""),
+                                    correction=True,
+                                )
+                                corrected = len(correction_result["atoms"])
+                                applied["atoms"].extend(correction_result["atoms"])
+                                rejected.extend(correction_result.get("rejected") or [])
+                                if correction_result.get("dispute") is not None:
+                                    applied["dispute"] = correction_result["dispute"]
+                                applied["doc_drift"] += correction_result.get(
+                                    "doc_drift", 0
+                                )
+                                applied["docfix_jobs"] += correction_result.get(
+                                    "docfix_jobs", 0
+                                )
+                            summary = (
+                                f"atoms={len(applied['atoms'])} "
+                                f"rejected={len(rejected)} "
+                                f"corrected={corrected} "
+                                f"dispute={applied['dispute']} "
+                                f"doc_drift={applied['doc_drift']} "
+                                f"docfix_jobs={applied['docfix_jobs']}"
+                            )
+                    else:
+                        result_text = str(turn.get("result_text") or "")
                         summary = (
-                            f"atoms={len(applied['atoms'])} "
-                            f"dispute={applied['dispute']}"
+                            _docfix_review_summary(result_text)
+                            if name.startswith("docfix-review:")
+                            else output
                         )
-                    else:
-                        summary = output
                     if job_kind == KG_JOB_KIND:
-                        finish_drainer_job(name, "ok", summary, True)
+                        finish_drainer_job(name, "ok", summary, not recurring)
                     else:
-                        finish_drainer_job(name, "ok", summary)
+                        completed = finish_drainer_job(name, "ok", summary)
+                        if completed and name.startswith("docfix:"):
+                            try:
+                                schedule_docfix_review_for_completion(result_text)
+                            except Exception:  # noqa: BLE001 - review is best effort
+                                logger.warning(
+                                    "could not schedule review after docfix job %s",
+                                    name,
+                                    exc_info=True,
+                                )
                     succeeded += 1
                 except MalformedPayload as exc:
                     error = _summary(exc)
                     if job_kind == KG_JOB_KIND:
-                        finish_drainer_job(name, "error", error, True)
+                        finish_drainer_job(name, "error", error, not recurring)
                     else:
                         finish_drainer_job(name, "error", error)
                 except ExtractionOutputInvalid as exc:
                     error = _summary(exc)
-                    _retry_or_dead_letter_kg(name, raw_id, job.get("payload"), error)
+                    _retry_or_dead_letter_kg(
+                        name,
+                        raw_id,
+                        error,
+                        recurring=recurring,
+                    )
                     _report_drainer_failure(settings, name, error)
                 except Exception as exc:  # noqa: BLE001 - one job must not stop the cycle
                     error = _summary(exc)
                     if job_kind == KG_JOB_KIND:
                         _retry_or_dead_letter_kg(
-                            name, raw_id, job.get("payload"), error
+                            name,
+                            raw_id,
+                            error,
+                            recurring=recurring,
                         )
                     else:
                         finish_drainer_job(name, "error", error)

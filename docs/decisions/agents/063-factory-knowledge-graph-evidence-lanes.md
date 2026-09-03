@@ -258,6 +258,23 @@ Cloudflare URL with the cached token, and logs a skip if that token is not
 available. Tailnet membership is network admission only; per-caller identity
 remains tracked by #4944.
 
+The repo-diff feed uses a read-only scout job followed by the normal extraction
+path with a supersession lens. Doc drift is a fourth extraction output that
+queues human-reviewed documentation PRs through the existing routine queue. The
+knowledge lane itself never edits documentation.
+
+Session facts are behavioural: they preserve causes, constraints, operational
+state with validity, and observed measurements, while rejecting values that can
+be recovered by opening one file. The repo-diff feed owns constants, defaults,
+and settings, including supersession when those values change.
+
+Documentation review is demand-driven rather than scheduled. A successful
+docfix job or a sweep that finds eligible open PRs queues one bounded
+`docfix-review` turn. The turn checks scope, size, current evidence, text, and CI
+against main before marking a PR verified or, only when the explicit merge
+switch is enabled, adding it to the rebase merge queue. Agent instructions,
+skills, runbooks, and ADRs always remain human-merged.
+
 The tailnet Service exposes the whole API port at L4, not only the raws
 endpoint. Tailnet HTTPS certificates are not enabled because the Service has no
 `CertDomains`, and path-scoped Tailscale Ingress requires HTTPS. The

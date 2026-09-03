@@ -123,6 +123,12 @@ agents:
     jobKinds: ["qwen-drain", "kg-drain"]
     # Bound knowledge extraction turns independently of the general queue.
     kgMaxJobsPerDay: 40
+    # Permit repo-diff extraction to queue human-reviewed documentation PRs.
+    docFixEnabled: false
+    # This is the only agent-merged path. It applies only after docfix-review
+    # rejects .claude/**, AGENTS.md, **/skills/**, docs/runbooks/**, and
+    # docs/decisions/**, which always remain human-merged.
+    docFixAutoMerge: false
     repo: "jomcgi-org/homelab"
     branch: "main"
     # High reasoning for every Luna drain job unless the payload overrides it.
@@ -1096,6 +1102,12 @@ knowledge:
       # history. Set an RFC3339 timestamp to backfill sessions created since it.
       enabled: false
       since: ""
+    repoDiff:
+      # Hourly read-only scout feeding the normal knowledge extraction lane.
+      enabled: false
+    docFixReview:
+      # Demand-driven only. There is no schedule, so an idle queue costs nothing.
+      enabled: false
   gaps:
     # When true, the gardener rewrites [[X]] -> bare text in source notes
     # whose stub is marked `triaged: discardable`, then tombstones the gap

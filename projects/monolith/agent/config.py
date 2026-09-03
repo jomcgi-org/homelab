@@ -34,6 +34,8 @@ class DrainerSettings:
     branch: str
     reasoning: bool
     notify_failures: bool = False
+    docfix_auto_merge: bool = False
+    docfix_review_enabled: bool = False
 
 
 AgentSessionsChannelNotify = Literal["needs-input", "all", "none"]
@@ -85,6 +87,12 @@ def load_drainer_settings() -> DrainerSettings:
         ),
         job_kinds=job_kinds,
         kg_max_jobs_per_day=int(os.environ.get("DRAINER_KG_MAX_JOBS_PER_DAY", "40")),
+        docfix_auto_merge=(
+            os.environ.get("DRAINER_DOCFIX_AUTO_MERGE", "false").lower() == "true"
+        ),
+        docfix_review_enabled=(
+            os.environ.get("KG_DOCFIX_REVIEW_ENABLED", "false").lower() == "true"
+        ),
         repo=os.environ.get("DRAINER_REPO", GITHUB_REPO),
         branch=os.environ.get("DRAINER_BRANCH", "main"),
         # Drain jobs are usually multi-step repo audits, so Luna uses high

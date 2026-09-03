@@ -37,6 +37,7 @@ async def index_atom(
     _store_factory=None,
     _embedding_client_factory=None,
     _indexer=None,
+    _vectors: list[list[float]] | None = None,
 ) -> str:
     """Build and index a fileless atom, returning its stable note id."""
     store_factory = _store_factory or KnowledgeStore
@@ -85,12 +86,13 @@ async def index_atom(
 
     fm_str = yaml.dump(fm_dict, default_flow_style=False, sort_keys=False)
     raw = f"---\n{fm_str}---\n\n{body.strip()}\n"
-    await indexer(
-        store,
-        embedding_client_factory(),
-        note_id=note_id,
-        rel_path=f"_processed/{note_id}.md",
-        raw=raw,
-        commit=commit,
-    )
+    index_kwargs = {
+        "note_id": note_id,
+        "rel_path": f"_processed/{note_id}.md",
+        "raw": raw,
+        "commit": commit,
+    }
+    if _vectors is not None:
+        index_kwargs["vectors"] = _vectors
+    await indexer(store, embedding_client_factory(), **index_kwargs)
     return note_id

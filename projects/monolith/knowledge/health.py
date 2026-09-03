@@ -61,6 +61,35 @@ def _kg_health_core(session: Session, cap: int) -> dict:
         ),
         {"version": EXTRACTION_VERSION},
     ).one()
+    quality = session.execute(
+        text(
+            """
+            SELECT COALESCE(
+                       sum(jsonb_array_length(
+                           CASE
+                               WHEN jsonb_typeof(extra -> 'extraction_rejected')
+                                    = 'array'
+                               THEN extra -> 'extraction_rejected'
+                               ELSE '[]'::jsonb
+                           END
+                       )),
+                       0
+                   ) AS rejected_24h,
+                   count(*) FILTER (
+                       WHERE COALESCE(extra ->> 'extraction_passes', '0') = '2'
+                   ) AS corrected_24h
+              FROM knowledge.raw_inputs AS raw
+             WHERE raw.created_at >= now() - interval '24 hours'
+               AND EXISTS (
+                    SELECT 1
+                      FROM knowledge.atom_raw_provenance AS provenance
+                     WHERE provenance.raw_fk = raw.id
+                       AND provenance.gardener_version = :version
+               )
+            """
+        ),
+        {"version": EXTRACTION_VERSION},
+    ).one()
     jobs_today = session.execute(
         text(
             """
@@ -84,6 +113,17 @@ def _kg_health_core(session: Session, cap: int) -> dict:
         ),
         {},
     ).one()
+    repo_diff = session.execute(
+        text(
+            """
+            SELECT max(payload ->> 'last_sha') AS last_sha,
+                   max(last_run_at) AS last_run_at
+              FROM claude_agent.routine_jobs
+             WHERE name = 'kg-repo-diff'
+            """
+        ),
+        {},
+    ).one()
     oldest = max(0.0, float(queue.oldest_seconds or 0.0))
     oldest_dispute = max(0.0, float(disputes.oldest_open_dispute_seconds or 0.0))
     failed_24h = int(provenance.failed_24h)
@@ -98,12 +138,16 @@ def _kg_health_core(session: Session, cap: int) -> dict:
         "oldest_queued_seconds": oldest,
         "failed_24h": failed_24h,
         "atoms_24h": atoms_24h,
+        "rejected_24h": int(quality.rejected_24h),
+        "corrected_24h": int(quality.corrected_24h),
         "last_success_at": _iso(provenance.last_success_at),
         "jobs_today": int(jobs_today),
         "cap": cap,
         "swept_last_cycle": _swept_last_cycle,
         "open_disputes": int(disputes.open_disputes),
         "oldest_open_dispute_seconds": oldest_dispute,
+        "repo_diff_last_sha": repo_diff.last_sha,
+        "repo_diff_last_run_at": _iso(repo_diff.last_run_at),
     }
 
 
