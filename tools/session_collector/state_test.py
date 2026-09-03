@@ -3,7 +3,7 @@ import os
 import threading
 from pathlib import Path
 
-from tools.session_collector.__main__ import main
+from tools.session_collector.cli import main
 from tools.session_collector.state import eligible, forget, load, locked, save
 
 
