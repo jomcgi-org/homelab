@@ -55,3 +55,8 @@ whatsapp:
   # This singleton holds an external WhatsApp session and must not connect from
   # the cutover destination while the home deployment is active.
   enabled: false
+
+# Expose the API port on the tailnet through the Tailscale operator (#5527,
+# ADR agents/063 amendment). GKE only: the operator runs here, not on k3s.
+tailnet:
+  enabled: true
