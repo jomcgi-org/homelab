@@ -1307,6 +1307,7 @@ py_library(
         ":pkg_cyclegroup",
         ":pkg_faas",
         ":pkg_framework",
+        ":pkg_knowledge",
         ":pkg_shared",
         "@pip//certifi",
         "@pip//fastapi",
@@ -7185,6 +7186,17 @@ py_test(
     deps = [
         ":pkg_agent_sessions",
         "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "agent_sessions_kg_feed_test",
+    srcs = ["agent_sessions/kg_feed_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
         "@pip//pytest",
         "@pip//sqlmodel",
     ],

@@ -395,6 +395,8 @@ spec:
             {{- if .Values.knowledge.enabled }}
             - name: KNOWLEDGE_DEFAULT_REPO_SCOPE
               value: {{ .Values.knowledge.defaultRepoScope | quote }}
+            - name: KG_FEED_ENABLED
+              value: {{ .Values.knowledge.feeds.emberSessions.enabled | quote }}
             {{- if .Values.knowledge.gaps.rewriteDiscardable }}
             - name: KNOWLEDGE_GAPS_REWRITE_DISCARDABLE
               value: "1"

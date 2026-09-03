@@ -139,12 +139,12 @@ class TestChatStartupHook:
             await _start_singletons(app)
 
         # Tasks: bot, outbox drain, ships ingest, message lock sweep, the
-        # agent_sessions pending-message sweep, and the agent_sessions title
-        # refresh. The scheduler dispatch loop was removed (batch jobs run as
-        # Argo CronWorkflows).
-        # 7 not 6: cd-probe (cluster) writes the platform_probe latch,
+        # agent_sessions pending-message sweep, title refresh, and KG feed.
+        # The scheduler dispatch loop was removed (batch jobs run as Argo
+        # CronWorkflows).
+        # 8 not 7: cd-probe (cluster) writes the platform_probe latch,
         # see core/platform_probe.py
-        assert len(task_mocks) == 7
+        assert len(task_mocks) == 8
         # Assert the invariant rather than indexing a hand-numbered list: what
         # matters is that EVERY singleton gets the done callback, so a task that
         # crashes is logged. Indexing meant this broke whenever a singleton was
