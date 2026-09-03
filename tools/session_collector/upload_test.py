@@ -10,9 +10,18 @@ import pytest
 
 from tools.cli.auth import read_cached_cf_token
 from tools.session_collector.collector import run_collection
+from tools.session_collector.scope import discover_repo
 from tools.session_collector.state import load
 
 ALLOW = {"jomcgi-org/homelab": "repo:jomcgi-org/homelab"}
+
+
+@pytest.fixture(autouse=True)
+def _register_test_worktree(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "tools.session_collector.scope.homelab_worktrees",
+        lambda: frozenset({tmp_path}),
+    )
 
 
 def _session(claude_dir: Path, name: str, cwd: str) -> Path:
@@ -210,7 +219,7 @@ def test_three_failures_park_sessions_and_release_budget(tmp_path):
     assert attempts[-1] == "claude-session:c"
 
 
-def test_git_probe_timeout_is_skipped_and_collection_continues(tmp_path, monkeypatch):
+def test_git_probe_timeout_is_failed_and_collection_continues(tmp_path, monkeypatch):
     calls = 0
 
     def transport(request):
@@ -239,7 +248,45 @@ def test_git_probe_timeout_is_skipped_and_collection_continues(tmp_path, monkeyp
     monkeypatch.setattr("tools.session_collector.scope.subprocess.run", git_probe)
     assert run_collection(**options) == 0
     state = load(options["state_file"])
-    assert state[str(first.resolve())]["status"] == "skipped"
-    assert state[str(first.resolve())]["reason"] == "scope_error"
+    assert state[str(first.resolve())]["status"] == "failed"
+    assert state[str(first.resolve())]["reason"] == "TimeoutExpired"
+    assert state[str(second.resolve())]["status"] == "uploaded"
+    assert calls == 1
+
+
+def test_unexpected_session_error_is_recorded_and_collection_continues(
+    tmp_path, monkeypatch
+):
+    calls = 0
+
+    def transport(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(201, json={"raw_id": "raw-two", "created": True})
+
+    claude_dir, options = _run(tmp_path, transport)
+    cwd = str(tmp_path / "homelab")
+    first = _session(claude_dir, "one", cwd)
+    second = _session(claude_dir, "two", cwd)
+    from tools.session_collector import collector
+
+    original_render = collector.render
+    renders = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal renders
+        renders += 1
+        if renders == 1:
+            raise RuntimeError("planted value must not abort collection")
+        return original_render(*args, **kwargs)
+
+    monkeypatch.setattr(collector, "render", fail_once)
+    assert run_collection(**options) == 0
+    state = load(options["state_file"])
+    assert state[str(first.resolve())]["status"] == "failed"
+    assert state[str(first.resolve())]["reason"] == "RuntimeError"
+    assert state[str(first.resolve())]["cwd"] == cwd
+    assert state[str(first.resolve())]["repo"] == "jomcgi-org/homelab"
+    assert discover_repo(cwd, state, {}) == "jomcgi-org/homelab"
     assert state[str(second.resolve())]["status"] == "uploaded"
     assert calls == 1

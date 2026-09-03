@@ -7,8 +7,16 @@ from pathlib import Path
 from typing import Any
 
 from .models import Block, Session, Turn
+from .redact import Redactor
 
 FORMAT_VERSION = "codex-v1"
+IGNORED_USER_PREFIXES = (
+    "<environment_context>",
+    "<recommended_plugins>",
+    "<user_instructions>",
+    "<turn_aborted>",
+    "# AGENTS.md",
+)
 
 
 def parse(path: Path) -> Session:
@@ -32,6 +40,9 @@ def parse(path: Path) -> Session:
     cwd = ""
     model: str | None = None
     first_user = ""
+    event_user = ""
+    branch: str | None = None
+    origin: str | None = None
 
     for record in records:
         record_type = record.get("type")
@@ -42,6 +53,17 @@ def parse(path: Path) -> Session:
             kept += 1
             session_id = str(payload.get("id") or session_id)
             cwd = str(payload.get("cwd") or cwd)
+            git = payload.get("git")
+            if isinstance(git, dict):
+                if isinstance(git.get("branch"), str):
+                    branch = git["branch"]
+                if isinstance(git.get("repository_url"), str):
+                    origin = git["repository_url"]
+            continue
+        if record_type == "event_msg" and payload.get("type") == "user_message":
+            message = payload.get("message")
+            if isinstance(message, str) and message.strip() and not event_user:
+                event_user = message.strip().splitlines()[0]
             continue
         if record_type == "turn_context":
             kept += 1
@@ -65,12 +87,27 @@ def parse(path: Path) -> Session:
             ]
             if not texts:
                 continue
+            if role == "user":
+                texts = [
+                    text
+                    for text in texts
+                    if not text.lstrip().startswith(IGNORED_USER_PREFIXES)
+                ]
+                if not texts:
+                    continue
             kept += 1
             if role == "user":
                 current = Turn([Block("user", text) for text in texts])
                 turns.append(current)
                 if not first_user:
-                    first_user = texts[0].strip().splitlines()[0]
+                    first_user = next(
+                        (
+                            text.strip().splitlines()[0]
+                            for text in texts
+                            if text.strip()
+                        ),
+                        "",
+                    )
             elif current is not None:
                 current.blocks.extend(Block("assistant", text) for text in texts)
         elif item_type in {"custom_tool_call", "function_call"}:
@@ -96,13 +133,14 @@ def parse(path: Path) -> Session:
         provider="codex",
         session_id=session_id,
         cwd=cwd,
-        git_branch=None,
+        git_branch=branch,
         model=model,
         started_at=timestamps[0] if timestamps else "",
         ended_at=timestamps[-1] if timestamps else "",
-        title=first_user[:80],
+        title=Redactor().text(event_user or first_user)[:80],
         records_total=len(records),
         records_kept=kept,
         collector_version=FORMAT_VERSION,
         turns=turns,
+        git_origin=origin,
     )

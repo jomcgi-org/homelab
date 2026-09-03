@@ -1,5 +1,7 @@
+import json
 import os
 import threading
+from pathlib import Path
 
 from tools.session_collector.__main__ import main
 from tools.session_collector.state import eligible, forget, load, locked, save
@@ -94,3 +96,74 @@ def test_status_reports_parked_failures(tmp_path, capsys):
     output = capsys.readouterr().out
     assert "failed: 2" in output
     assert "failed (parked): 1" in output
+
+
+def test_default_state_migrates_from_cache_once(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    old = tmp_path / ".cache/homelab-tools/session-collector/state.json"
+    old.parent.mkdir(parents=True)
+    old.write_text('{"session": {"status": "uploaded"}}\n')
+    assert main(["status"]) == 0
+    capsys.readouterr()
+    new = tmp_path / "Library/Application Support/homelab/session-collector/state.json"
+    assert new.is_file()
+    assert not old.exists()
+    assert load(new)["session"]["status"] == "uploaded"
+    assert main(["status"]) == 0
+    assert new.is_file()
+
+
+def test_render_subcommand_prints_redacted_output(tmp_path, capsys):
+    planted = "ghp_rendercommandsubcommandsecret"
+    transcript = tmp_path / "render.jsonl"
+    records = [
+        {
+            "type": "session_meta",
+            "payload": {
+                "id": "render-test",
+                "cwd": "/deleted",
+                "git": {"repository_url": "https://github.com/owner/repo.git"},
+            },
+        },
+        {
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": f"Inspect {planted}"},
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": f"Inspect {planted}"}],
+            },
+        },
+    ]
+    transcript.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+    assert (
+        main(
+            [
+                "render",
+                str(transcript),
+                "--state-file",
+                str(tmp_path / "state.json"),
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert planted not in output
+    assert "[REDACTED:github_token]" in output
+
+
+def test_install_assets_use_durable_state_and_bootstrap_delay():
+    root = Path(__file__).parent
+    install = (root / "install.sh").read_text()
+    plist = (root / "launchd/dev.jomcgi.session-collector.plist").read_text()
+    durable = "Library/Application Support/homelab/session-collector"
+    assert durable in install
+    assert durable in plist
+    assert "bootout" in install
+    assert "sleep 1" in install
+    assert (
+        install.index("bootout") < install.index("sleep 1") < install.index("bootstrap")
+    )

@@ -34,6 +34,10 @@ PLANTED = (
     "AWS_SESSION_TOKEN=FwoGZXIvYXdzEP//////////wEaDL0123456789abcdef",
     '{"token": "s3cr3tvaluehere123"}',
     "Authorization: token abcdef0123456789abcdef",
+    "Authorization: Basic dXNlcjpwYXNzd29yZDEyMw==",
+    "--token commandlinesecret",
+    "password netrcsecretvalue",
+    "tskey-abcdefghijklmnop",
 )
 
 PLANTED_VALUES = (
@@ -44,7 +48,93 @@ PLANTED_VALUES = (
     "FwoGZXIvYXdzEP//////////wEaDL0123456789abcdef",
     "s3cr3tvaluehere123",
     "abcdef0123456789abcdef",
+    "dXNlcjpwYXNzd29yZDEyMw==",
+    "commandlinesecret",
+    "netrcsecretvalue",
+    "tskey-abcdefghijklmnop",
 )
+
+
+def _session_with_text(text: str):
+    from tools.session_collector.models import Block, Session, Turn
+
+    return Session(
+        "test",
+        "id",
+        "/tmp",
+        None,
+        None,
+        "start",
+        "end",
+        "title",
+        1,
+        1,
+        "test-v1",
+        [Turn([Block("assistant", text)])],
+    )
+
+
+def test_json_escaped_kv_secret_is_removed_end_to_end(tmp_path):
+    import json
+
+    planted = "hunter2escaped"
+    path = tmp_path / "escaped.jsonl"
+    records = [
+        {"type": "user", "message": {"content": "Run it"}},
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Bash",
+                        "input": {
+                            "command": f'curl -d \'{{"password": "{planted}"}}\' example.test'
+                        },
+                    }
+                ]
+            },
+        },
+    ]
+    path.write_text("\n".join(json.dumps(record) for record in records) + "\n")
+    output = render(claude_v1.parse(path), None, "repo:unknown")
+    assert planted not in output.markdown
+
+
+def test_common_secret_shapes_are_absent_from_rendered_output():
+    planted = (
+        "basicheaderc2VjcmV0MTIzNDU2Nzg5MA==",
+        "curluserpassword",
+        "spaceflagpassword",
+        "spaceflagtokensecret",
+        "emptyurlpassword",
+        "netrcpasswordvalue",
+        "tskey-abcdefghijklmnop",
+        "AIza12345678901234567890123456789012345",
+        "npm_123456789012345678901234567890123456",
+        "glpat-12345678901234567890",
+        "discordwebhooksecret",
+        "two words planted",
+    )
+    text = "\n".join(
+        (
+            f"Authorization: Basic {planted[0]}",
+            f"curl -u user:{planted[1]} https://example.test",
+            f"tool --password {planted[2]}",
+            f"tool --token {planted[3]}",
+            f"redis://:{planted[4]}@host/0",
+            f"machine example.test login user password {planted[5]}",
+            planted[6],
+            planted[7],
+            planted[8],
+            planted[9],
+            f"https://discordapp.com/api/webhooks/123/{planted[10]}",
+            f'password = "{planted[11]}"',
+        )
+    )
+    output = render(_session_with_text(text), None, "repo:unknown")
+    for value in planted:
+        assert value not in output.markdown
 
 
 def test_every_pattern_is_replaced_and_counted_in_each_fixture():

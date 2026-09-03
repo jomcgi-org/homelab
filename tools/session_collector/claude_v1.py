@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import Block, Session, Turn
+from .redact import Redactor
 
 FORMAT_VERSION = "claude-v1"
 IGNORED_USER_PREFIXES = (
@@ -14,6 +15,8 @@ IGNORED_USER_PREFIXES = (
     "<local-command-stdout>",
     "[Request interrupted",
 )
+TASK_NOTIFICATION = "<task-notification>"
+BASH_STDOUT = "<bash-stdout>"
 
 
 def _texts(content: object) -> list[str]:
@@ -83,10 +86,12 @@ def parse(path: Path) -> Session:
 
         content = message.get("content")
         if record_type == "user":
+            raw_texts = _texts(content)
             user_texts = [
                 text
-                for text in _texts(content)
+                for text in raw_texts
                 if not text.startswith(IGNORED_USER_PREFIXES)
+                and not text.startswith((TASK_NOTIFICATION, BASH_STDOUT))
             ]
             if user_texts:
                 current = Turn()
@@ -99,6 +104,15 @@ def parse(path: Path) -> Session:
                 for item in content:
                     if isinstance(item, dict) and item.get("type") == "tool_result":
                         current.blocks.append(Block("result", _tool_result(item)))
+            if current is not None:
+                if any(text.startswith(TASK_NOTIFICATION) for text in raw_texts):
+                    current.blocks.append(Block("result", "[task notification]"))
+                for text in raw_texts:
+                    if text.startswith(BASH_STDOUT):
+                        value = text.removeprefix(BASH_STDOUT).removesuffix(
+                            "</bash-stdout>"
+                        )
+                        current.blocks.append(Block("result", value))
         elif isinstance(content, list):
             if isinstance(message.get("model"), str):
                 model = message["model"]
@@ -119,7 +133,8 @@ def parse(path: Path) -> Session:
                         )
                     )
 
-    title = title_records[-1] if title_records else first_user[:80]
+    title_value = title_records[-1] if title_records else first_user
+    title = Redactor().text(title_value)[:80]
     return Session(
         provider="claude",
         session_id=session_id,

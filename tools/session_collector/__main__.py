@@ -12,7 +12,10 @@ from .render import render
 from .scope import discover_repo, parse_allowlist, parse_path_allowlist
 from .state import forget, load
 
-DEFAULT_STATE = Path("~/.cache/homelab-tools/session-collector/state.json")
+DEFAULT_STATE = Path(
+    "~/Library/Application Support/homelab/session-collector/state.json"
+)
+LEGACY_STATE = Path("~/.cache/homelab-tools/session-collector/state.json")
 DEFAULT_CLAUDE = Path("~/.claude/projects")
 DEFAULT_CODEX = Path("~/.codex/sessions")
 
@@ -45,12 +48,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _state_file(path: Path) -> Path:
+    expanded = path.expanduser()
+    if expanded == DEFAULT_STATE.expanduser():
+        expanded.parent.mkdir(parents=True, exist_ok=True)
+        legacy = LEGACY_STATE.expanduser()
+        if not expanded.exists() and legacy.is_file():
+            legacy.replace(expanded)
+    return expanded
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if not arguments or arguments[0].startswith("-"):
         arguments.insert(0, "run")
     parser = build_parser()
     args = parser.parse_args(arguments)
+    args.state_file = _state_file(args.state_file)
     if args.command == "run":
         try:
             allowlist = parse_allowlist(args.allow)
@@ -69,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
         )
     if args.command == "status":
-        entries = load(args.state_file.expanduser()).values()
+        entries = load(args.state_file).values()
         counts = Counter(entry.get("status", "unknown") for entry in entries)
         for status in ("uploaded", "skipped", "failed"):
             print(f"{status}: {counts[status]}")
@@ -83,14 +97,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "render":
         path = args.path.expanduser().resolve()
-        state_value = load(args.state_file.expanduser())
+        state_value = load(args.state_file)
         session = parse_session(path)
-        repo = discover_repo(session.cwd, state_value)
+        repo = discover_repo(
+            session.cwd, state_value, transcript_origin=session.git_origin
+        )
         scope = f"repo:{repo}" if repo else "repo:unknown"
         print(render(session, repo, scope).markdown, end="")
         return 0
     if args.command == "forget":
-        removed = forget(args.state_file.expanduser(), args.path)
+        removed = forget(args.state_file, args.path)
         print("forgotten" if removed else "not found")
         return 0
     parser.error("unknown command")

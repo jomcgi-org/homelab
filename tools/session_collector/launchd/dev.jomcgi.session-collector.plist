@@ -10,6 +10,8 @@
     <string>-m</string>
     <string>tools.session_collector</string>
     <string>run</string>
+    <string>--state-file</string>
+    <string>__HOME__/Library/Application Support/homelab/session-collector/state.json</string>
   </array>
   <key>WorkingDirectory</key>
   <string>__REPO__</string>
