@@ -62,8 +62,13 @@ def ember_codex_synthetic_trigger() -> None:
 @app.command("ember-spark-synthetic-trigger")
 def ember_spark_synthetic_trigger() -> None:
     """Trigger the Spark session synthetic in the monolith API pod."""
+    # The probe runs a whole Spark session turn synchronously, and the interim
+    # Meta Spark contributor tier answers at ~14s per completion, so a cold
+    # probe legitimately takes several minutes. 180s read-timed-out every run.
     _post_internal(
-        "/internal/ember/spark-session-probe", "ember-spark-synthetic-trigger"
+        "/internal/ember/spark-session-probe",
+        "ember-spark-synthetic-trigger",
+        timeout=420,
     )
 
 
