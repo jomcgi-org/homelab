@@ -132,7 +132,7 @@ defmodule Embervm.StatefulManagerTest do
   # manager's `waking` map directly so a test can poll for a wake to register as
   # in-flight instead of guessing with a fixed Process.sleep.
   defp waiter_count(ctx, workload),
-    do: length(Map.get(:sys.get_state(ctx.mgr).waking, workload, []))
+    do: length(get_in(:sys.get_state(ctx.mgr), [:waking, workload, :waiters]) || [])
 
   defp poll_mgr(ctx, fun, tries \\ 50) do
     flush_mgr(ctx)
