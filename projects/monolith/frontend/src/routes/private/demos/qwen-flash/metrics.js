@@ -18,15 +18,45 @@ export function deriveModelState(inFlight, firstTokenSeen) {
   return firstTokenSeen ? "generating" : "prefilling";
 }
 
-export function calculateTurnMetrics(startedAt, chunks) {
-  if (!chunks.length) return { ttftMs: null, tokensPerSecond: 0 };
+function hasText(value) {
+  return typeof value === "string" && value.length > 0;
+}
 
-  const first = chunks[0];
-  const last = chunks[chunks.length - 1];
-  const tokenCount = chunks.reduce(
-    (total, chunk) => total + (Number(chunk.tokens) || 0),
-    0,
+export function countTurnTokens(chunks) {
+  return chunks.reduce(
+    (counts, chunk) => ({
+      reasoningTokens:
+        counts.reasoningTokens + (hasText(chunk.reasoning_content) ? 1 : 0),
+      answerTokens: counts.answerTokens + (hasText(chunk.content) ? 1 : 0),
+    }),
+    { reasoningTokens: 0, answerTokens: 0 },
   );
+}
+
+export function calculateTurnMetrics(startedAt, chunks) {
+  const outputChunks = chunks.filter(
+    (chunk) => hasText(chunk.reasoning_content) || hasText(chunk.content),
+  );
+  const { reasoningTokens, answerTokens } = countTurnTokens(chunks);
+  const firstReasoning = chunks.find((chunk) =>
+    hasText(chunk.reasoning_content),
+  );
+  const firstAnswer = chunks.find((chunk) => hasText(chunk.content));
+
+  if (!outputChunks.length) {
+    return {
+      ttftMs: null,
+      tokensPerSecond: 0,
+      timeToFirstReasoningMs: null,
+      timeToFirstAnswerMs: null,
+      reasoningTokens,
+      answerTokens,
+    };
+  }
+
+  const first = outputChunks[0];
+  const last = outputChunks[outputChunks.length - 1];
+  const tokenCount = reasoningTokens + answerTokens;
   const generationMs = last.at - first.at;
 
   return {
@@ -35,6 +65,14 @@ export function calculateTurnMetrics(startedAt, chunks) {
       tokenCount > 1 && generationMs > 0
         ? ((tokenCount - 1) * 1000) / generationMs
         : 0,
+    timeToFirstReasoningMs: firstReasoning
+      ? Math.max(0, firstReasoning.at - startedAt)
+      : null,
+    timeToFirstAnswerMs: firstAnswer
+      ? Math.max(0, firstAnswer.at - startedAt)
+      : null,
+    reasoningTokens,
+    answerTokens,
   };
 }
 
