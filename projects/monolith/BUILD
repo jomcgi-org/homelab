@@ -1884,9 +1884,9 @@ py_library(
         "@pip//psycopg_binary",
         "@pip//pydantic",
         "@pip//pydantic_ai_slim",
+        "@pip//pyjwt",
         "@pip//python_multipart",
         "@pip//pyyaml",
-        "@pip//pyjwt",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
         "@pip//starlette",
@@ -7864,4 +7864,17 @@ semgrep_test(
         "tainted-path-traversal-stdlib-fastapi",
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_target_test(
+    name = "main_agents_semgrep_test",
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    target = ":main_agents",
 )
