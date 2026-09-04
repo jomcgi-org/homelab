@@ -261,3 +261,25 @@ def test_chat_provider_pin_is_rendered(chart_context):
     rendered = chart_context["rendered"]
 
     assert re.search(r'- name: CHAT_PROVIDER\n\s+value: "groq"', rendered)
+
+
+def test_backend_carries_both_authentik_issuers(chart_context):
+    """The monolith validates tokens from two authentik providers.
+
+    The browser provider (mcp-friends) and the agent provider (mcp-agents) have
+    different issuers, and `build_default_resolver` only registers the second
+    verifier when all three agent settings are present. A missing one is silent:
+    the resolver simply declines agent tokens and every agent call resolves
+    anonymous, so assert the wiring rather than trusting it.
+    """
+
+    rendered = chart_context["rendered"]
+    for name in (
+        "AUTH_AUTHENTIK_JWKS_URL",
+        "AUTH_AUTHENTIK_ISSUER",
+        "AUTH_AUTHENTIK_AUDIENCE",
+        "AUTH_AUTHENTIK_AGENT_JWKS_URL",
+        "AUTH_AUTHENTIK_AGENT_ISSUER",
+        "AUTH_AUTHENTIK_AGENT_AUDIENCE",
+    ):
+        assert f"name: {name}" in rendered, f"{name} missing from the rendered chart"
