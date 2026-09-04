@@ -4,15 +4,22 @@
   // beside the post, not as part of the private dashboard design system.
   import "$lib/public/styles/technical-drawing.css";
   import {
+    calculateTierSummary,
     calculateTurnMetrics,
+    classifyLayerTier,
+    decayActivity,
     deriveModelState,
+    diffExpertHits,
     formatBytes,
     formatRate,
-    trackPeaks,
   } from "./metrics.js";
 
   const CHAT_URL = "/private/demos/qwen-flash/chat";
   const STATS_URL = "/private/demos/qwen-flash/stats";
+  const PROFILE_URL = "/private/demos/qwen-flash/profile";
+  const CACHE_STATUS_URL = "/private/demos/qwen-flash/cache-status";
+  const DEFAULT_LAYER_COUNT = 48;
+  const DEFAULT_EXPERT_COUNT = 512;
   const EMPTY_TURN_METRICS = {
     ttftMs: null,
     tokensPerSecond: 0,
@@ -26,48 +33,52 @@
   let inputText = $state("");
   let isInFlight = $state(false);
   let firstTokenSeen = $state(false);
-  // Drives GENERATION, not just display: the server reads enableThinking and
-  // passes it to the model, so flipping this mid-demo shows the contrast
-  // between a reasoned answer and a direct one.
   let thinkingEnabled = $state(true);
   let stats = $state(null);
+  let cacheStatus = $state(null);
   let statsError = $state("");
-  let peaks = $state({ decodeTps: 0, prefillTps: 0 });
+  let profileError = $state("");
+  let cacheError = $state("");
+  let turnMetrics = $state({ ...EMPTY_TURN_METRICS });
   let turnStartedAt = 0;
   let turnChunks = [];
-  let turnMetrics = $state({ ...EMPTY_TURN_METRICS });
   let controller;
   let chatLog;
+  let expertCanvas;
+  let canvasContext;
+  let canvasFrame;
+  let canvasResizeObserver;
+  let themeObserver;
+  let profileSnapshot;
+  let activity = new Float32Array(DEFAULT_LAYER_COUNT * DEFAULT_EXPERT_COUNT);
+  let gridLayers = $state(DEFAULT_LAYER_COUNT);
+  let gridExperts = $state(DEFAULT_EXPERT_COUNT);
   let statsTimer;
-  let pollGeneration = 0;
+  let profileTimer;
+  let statsPollGeneration = 0;
+  let profilePollGeneration = 0;
+  let profileRequestPending = false;
+  let cacheRequestPending = false;
   let mounted = false;
 
   let modelState = $derived(deriveModelState(isInFlight, firstTokenSeen));
+  let tierSummary = $derived(calculateTierSummary(cacheStatus?.geometry));
+  let telemetryError = $derived(profileError || cacheError || statsError);
 
   function formatCount(value) {
-    return Math.max(0, Number(value) || 0).toLocaleString("en-US");
+    return value === null || value === undefined
+      ? "--"
+      : Math.max(0, Number(value) || 0).toLocaleString("en-US");
   }
 
-  function formatUptime(seconds) {
-    const total = Math.max(0, Math.floor(Number(seconds) || 0));
-    const hours = Math.floor(total / 3600);
-    const minutes = Math.floor((total % 3600) / 60);
-    const remaining = total % 60;
-    return `${String(hours).padStart(3, "0")}:${String(minutes).padStart(2, "0")}:${String(remaining).padStart(2, "0")}`;
+  function formatOptionalBytes(value) {
+    return value === null || value === undefined ? "--" : formatBytes(value);
   }
 
   function formatDuration(milliseconds) {
     return milliseconds === null
       ? "--.- s"
       : `${(milliseconds / 1000).toFixed(1)} s`;
-  }
-
-  function formatReasoningRatio(reasoningTokens, answerTokens) {
-    if (!reasoningTokens && !answerTokens) return "-- / --";
-    if (reasoningTokens < 10 || answerTokens < 10) {
-      return `${reasoningTokens} / ${answerTokens}`;
-    }
-    return `${(reasoningTokens / answerTokens).toFixed(1)}x`;
   }
 
   function scrollToBottom() {
@@ -80,25 +91,188 @@
     try {
       const response = await fetch(STATS_URL, { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const next = await response.json();
-      stats = next;
-      peaks = trackPeaks(peaks, next);
+      stats = await response.json();
       statsError = "";
-    } catch (error) {
-      statsError = `Live stats unavailable (${error.message})`;
+    } catch {
+      statsError = "Stats offline";
     }
   }
 
   function scheduleStats(delay) {
     if (!mounted) return;
     clearTimeout(statsTimer);
-    const generation = ++pollGeneration;
+    const generation = ++statsPollGeneration;
     statsTimer = setTimeout(async () => {
       await pollStats();
-      if (mounted && generation === pollGeneration) {
+      if (mounted && generation === statsPollGeneration) {
         scheduleStats(isInFlight ? 1000 : 5000);
       }
     }, delay);
+  }
+
+  function profileDimensions(profile) {
+    const configuredLayers = cacheStatus?.geometry?.num_moe_layers;
+    const configuredExperts = cacheStatus?.geometry?.num_experts;
+    const layerKeys = Object.keys(profile?.expert_hits ?? {})
+      .map(Number)
+      .filter((value) => Number.isInteger(value) && value >= 0);
+    const inferredLayers = layerKeys.length ? Math.max(...layerKeys) + 1 : 0;
+    const inferredExperts = Object.values(profile?.expert_hits ?? {}).reduce(
+      (largest, hits) =>
+        Array.isArray(hits) ? Math.max(largest, hits.length) : largest,
+      0,
+    );
+    return {
+      layers:
+        Number.isInteger(configuredLayers) && configuredLayers > 0
+          ? configuredLayers
+          : inferredLayers || DEFAULT_LAYER_COUNT,
+      experts:
+        Number.isInteger(configuredExperts) && configuredExperts > 0
+          ? configuredExperts
+          : inferredExperts || DEFAULT_EXPERT_COUNT,
+    };
+  }
+
+  function updateGridDimensions(profile) {
+    const next = profileDimensions(profile);
+    if (next.layers === gridLayers && next.experts === gridExperts) return;
+    gridLayers = next.layers;
+    gridExperts = next.experts;
+    activity = new Float32Array(gridLayers * gridExperts);
+  }
+
+  function canvasColor(property) {
+    return getComputedStyle(expertCanvas).getPropertyValue(property).trim();
+  }
+
+  function drawExpertGrid() {
+    if (!canvasContext || !expertCanvas) return;
+    const width = expertCanvas.clientWidth;
+    const height = expertCanvas.clientHeight;
+    canvasContext.clearRect(0, 0, width, height);
+    canvasContext.fillStyle = canvasColor("--card-bg") || "transparent";
+    canvasContext.fillRect(0, 0, width, height);
+    if (!profileSnapshot) return;
+
+    const cellWidth = width / gridExperts;
+    const cellHeight = height / gridLayers;
+    const gapX = Math.min(0.55, cellWidth * 0.2);
+    const gapY = Math.min(0.7, cellHeight * 0.18);
+    const residentColor = canvasColor("--accent");
+    const diskColor = canvasColor("--ink-3");
+    const activeColor = canvasColor("--tone-gpu");
+
+    for (let layer = 0; layer < gridLayers; layer += 1) {
+      const baselineColor =
+        classifyLayerTier(profileSnapshot.layers, layer) === "disk"
+          ? diskColor
+          : residentColor;
+      for (let expert = 0; expert < gridExperts; expert += 1) {
+        const x = expert * cellWidth + gapX / 2;
+        const y = layer * cellHeight + gapY / 2;
+        const width = Math.max(0.35, cellWidth - gapX);
+        const height = Math.max(0.35, cellHeight - gapY);
+        canvasContext.globalAlpha = 0.72;
+        canvasContext.fillStyle = baselineColor;
+        canvasContext.fillRect(x, y, width, height);
+        const intensity = activity[layer * gridExperts + expert];
+        if (intensity > 0) {
+          canvasContext.globalAlpha = 0.35 + intensity * 0.65;
+          canvasContext.fillStyle = activeColor;
+          canvasContext.fillRect(x, y, width, height);
+        }
+      }
+    }
+    canvasContext.globalAlpha = 1;
+  }
+
+  function animateActivity() {
+    let hasActivity = false;
+    for (let index = 0; index < activity.length; index += 1) {
+      activity[index] = decayActivity(activity[index]);
+      if (activity[index] > 0) hasActivity = true;
+    }
+    drawExpertGrid();
+    if (hasActivity) {
+      canvasFrame = requestAnimationFrame(animateActivity);
+    } else {
+      canvasFrame = undefined;
+    }
+  }
+
+  function pulseExperts(fired) {
+    for (const { layer, expert, delta } of fired) {
+      if (layer >= gridLayers || expert >= gridExperts) continue;
+      const index = layer * gridExperts + expert;
+      const strength = Math.min(1, 0.55 + Math.log2(delta + 1) * 0.12);
+      activity[index] = Math.max(activity[index], strength);
+    }
+    if (fired.length && !canvasFrame) {
+      canvasFrame = requestAnimationFrame(animateActivity);
+    } else {
+      drawExpertGrid();
+    }
+  }
+
+  function resizeCanvas() {
+    if (!expertCanvas || !canvasContext) return;
+    const ratio = window.devicePixelRatio || 1;
+    const width = expertCanvas.clientWidth;
+    const height = expertCanvas.clientHeight;
+    expertCanvas.width = Math.max(1, Math.round(width * ratio));
+    expertCanvas.height = Math.max(1, Math.round(height * ratio));
+    canvasContext.setTransform(ratio, 0, 0, ratio, 0, 0);
+    drawExpertGrid();
+  }
+
+  async function pollProfile() {
+    if (profileRequestPending) return;
+    profileRequestPending = true;
+    try {
+      const response = await fetch(PROFILE_URL, { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const next = await response.json();
+      updateGridDimensions(next);
+      const fired = diffExpertHits(profileSnapshot, next);
+      profileSnapshot = next;
+      pulseExperts(fired);
+      profileError = "";
+    } catch {
+      profileError = "Expert profile offline";
+    } finally {
+      profileRequestPending = false;
+    }
+  }
+
+  function scheduleProfile(delay) {
+    if (!mounted) return;
+    clearTimeout(profileTimer);
+    const generation = ++profilePollGeneration;
+    profileTimer = setTimeout(async () => {
+      await pollProfile();
+      if (!cacheStatus) void pollCacheStatus();
+      if (mounted && generation === profilePollGeneration) {
+        scheduleProfile(isInFlight ? 1000 : 3000);
+      }
+    }, delay);
+  }
+
+  async function pollCacheStatus() {
+    if (cacheRequestPending) return;
+    cacheRequestPending = true;
+    try {
+      const response = await fetch(CACHE_STATUS_URL, { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      cacheStatus = await response.json();
+      updateGridDimensions(profileSnapshot);
+      drawExpertGrid();
+      cacheError = "";
+    } catch {
+      cacheError = "Cache status offline";
+    } finally {
+      cacheRequestPending = false;
+    }
   }
 
   function appendDelta(delta) {
@@ -159,6 +333,7 @@
     turnMetrics = { ...EMPTY_TURN_METRICS };
     controller = new AbortController();
     scheduleStats(0);
+    scheduleProfile(0);
     scrollToBottom();
 
     try {
@@ -204,6 +379,7 @@
       isInFlight = false;
       controller = undefined;
       scheduleStats(0);
+      scheduleProfile(0);
       scrollToBottom();
     }
   }
@@ -221,10 +397,26 @@
 
   onMount(() => {
     mounted = true;
+    canvasContext = expertCanvas.getContext("2d");
+    canvasResizeObserver = new ResizeObserver(resizeCanvas);
+    canvasResizeObserver.observe(expertCanvas);
+    themeObserver = new MutationObserver(drawExpertGrid);
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    resizeCanvas();
     scheduleStats(0);
+    scheduleProfile(0);
+    void pollCacheStatus();
+
     return () => {
       mounted = false;
       clearTimeout(statsTimer);
+      clearTimeout(profileTimer);
+      if (canvasFrame) cancelAnimationFrame(canvasFrame);
+      canvasResizeObserver.disconnect();
+      themeObserver.disconnect();
       controller?.abort();
     };
   });
@@ -240,75 +432,84 @@
 
 <main class="td demo-page">
   <header class="page-header">
-    <div>
-      <p class="kicker">/ Live inference experiment</p>
-      <h1>125B parameters.<br /><span>One RTX 4090.</span></h1>
+    <h1>125B parameters. <span>One RTX 4090.</span></h1>
+    <div class="state" data-state={modelState} aria-live="polite">
+      <span class="state-dot"></span>
+      {modelState}
     </div>
-    <p class="lede">
-      Qwen3.8-Flash-Next pages mixture-of-experts weights from NVMe while a
-      single 24 GB card handles the active working set.
-    </p>
   </header>
 
-  <div class="demo-grid">
-    <section class="chat-card" aria-label="Chat with Qwen3.8-Flash-Next">
-      <header class="card-heading">
-        <div>
-          <p class="section-label">01 / Chat</p>
-          <h2>Ask the 125B model</h2>
-        </div>
-        <div class="heading-controls">
-          <label class="thinking-toggle">
-            <input type="checkbox" bind:checked={thinkingEnabled} />
-            <span>Thinking</span>
-          </label>
-          <div class="state" data-state={modelState} aria-live="polite">
-            <span class="state-dot"></span>
-            {modelState}
+  <div class="demo-stack">
+    <section class="expert-card" aria-labelledby="expert-heading">
+      <header class="expert-heading">
+        <div class="expert-title">
+          <p class="section-label">01 / Expert residency</p>
+          <h2 id="expert-heading">
+            {formatCount(tierSummary.totalExperts)} experts
+          </h2>
+          <div class="legend" aria-label="Expert grid legend">
+            <span><i class="resident"></i>Resident layer</span>
+            <span><i class="disk"></i>NVMe layer</span>
+            <span><i class="active"></i>Active</span>
           </div>
         </div>
+
+        <dl class="tier-summary">
+          <div>
+            <dt>GPU cache</dt>
+            <dd>{formatCount(tierSummary.gpuExperts)}</dd>
+          </div>
+          <div>
+            <dt>NVMe</dt>
+            <dd>{formatCount(tierSummary.nvmeExperts)}</dd>
+          </div>
+          <div>
+            <dt>GPU weights</dt>
+            <dd>{formatOptionalBytes(tierSummary.gpuBytes)}</dd>
+          </div>
+          <div>
+            <dt>NVMe weights</dt>
+            <dd>{formatOptionalBytes(tierSummary.nvmeBytes)}</dd>
+          </div>
+        </dl>
       </header>
 
-      <div class="turn-strip">
-        <div>
-          <span>Time to first token</span>
-          <strong>{formatDuration(turnMetrics.ttftMs)}</strong>
-        </div>
-        <div>
-          <span>This turn</span>
-          <strong>{formatRate(turnMetrics.tokensPerSecond)} tok/s</strong>
-        </div>
-        <div>
-          <span>First reasoning</span>
-          <strong>{formatDuration(turnMetrics.timeToFirstReasoningMs)}</strong>
-        </div>
-        <div>
-          <span>First answer</span>
-          <strong>{formatDuration(turnMetrics.timeToFirstAnswerMs)}</strong>
-        </div>
-        <div>
-          <span>Reasoning / answer</span>
-          <strong>
-            {formatReasoningRatio(
-              turnMetrics.reasoningTokens,
-              turnMetrics.answerTokens,
-            )}
-          </strong>
-        </div>
+      <div class="canvas-wrap">
+        <canvas
+          bind:this={expertCanvas}
+          aria-label={`${gridLayers} mixture-of-experts layers with ${gridExperts} experts in each row`}
+        >
+          {gridLayers} layers with {gridExperts} experts in each layer
+        </canvas>
+        {#if telemetryError}
+          <span class="telemetry-error" role="status">{telemetryError}</span>
+        {/if}
       </div>
+    </section>
+
+    <section class="chat-card" aria-label="Chat with Qwen3.8-Flash-Next">
+      <header class="chat-heading">
+        <div>
+          <p class="section-label">02 / Chat</p>
+          <h2>Ask Qwen</h2>
+        </div>
+        <dl class="turn-metrics">
+          <div>
+            <dt>Decode</dt>
+            <dd>{formatRate(stats?.throughput?.decode_tps)} tok/s</dd>
+          </div>
+          <div>
+            <dt>First token</dt>
+            <dd>{formatDuration(turnMetrics.ttftMs)}</dd>
+          </div>
+        </dl>
+        <label class="thinking-toggle">
+          <input type="checkbox" bind:checked={thinkingEnabled} />
+          <span>Thinking</span>
+        </label>
+      </header>
 
       <div class="messages" bind:this={chatLog} aria-live="polite">
-        {#if messages.length === 0}
-          <div class="empty-state">
-            <p class="empty-index">125B / 24GB</p>
-            <h3>The model is larger than VRAM.</h3>
-            <p>
-              Ask a question and watch the live panel while the prompt is
-              prefilling and the experts are paged from NVMe.
-            </p>
-          </div>
-        {/if}
-
         {#each messages as message, index}
           <article
             class:assistant={message.role === "assistant"}
@@ -316,11 +517,7 @@
           >
             <p class="message-role">{message.role}</p>
             {#if message.role === "assistant" && !message.content && !message.reasoningContent && isInFlight && index === messages.length - 1}
-              <p class="waiting">
-                <span class="waiting-mark"></span>
-                Waiting for first token. Cold expert pages can take tens of seconds
-                to reach the GPU.
-              </p>
+              <p class="waiting"><span></span>Waiting for first token</p>
             {:else if message.role === "assistant"}
               {#if message.reasoningContent}
                 <details
@@ -346,267 +543,272 @@
           void sendMessage();
         }}
       >
-        <label for="qwen-prompt">Message</label>
+        <label class="sr-only" for="qwen-prompt">Message</label>
         <textarea
           id="qwen-prompt"
           bind:value={inputText}
           onkeydown={onInputKeydown}
-          placeholder="Ask something worth 125 billion parameters..."
-          rows="3"
+          placeholder="Ask Qwen..."
+          rows="2"
           disabled={isInFlight}></textarea>
-        <div class="composer-actions">
-          <p>Enter to send · Shift+Enter for a new line</p>
-          {#if isInFlight}
-            <button class="stop-button" type="button" onclick={stopGeneration}>
-              Stop generation
-            </button>
-          {:else}
-            <button
-              class="send-button"
-              type="submit"
-              disabled={!inputText.trim()}
-            >
-              Send
-            </button>
-          {/if}
-        </div>
+        {#if isInFlight}
+          <button class="stop-button" type="button" onclick={stopGeneration}>
+            Stop
+          </button>
+        {:else}
+          <button
+            class="send-button"
+            type="submit"
+            disabled={!inputText.trim()}
+          >
+            Send
+          </button>
+        {/if}
       </form>
     </section>
-
-    <aside class="metrics-card" aria-label="Live model and hardware metrics">
-      <header class="hardware-header">
-        <div class="hardware-topline">
-          <p class="section-label">02 / Hardware</p>
-          <span class="live-tag">Live</span>
-        </div>
-        <p class="setup-callout">
-          A 125B-parameter model fits on one 24 GB card only because its weights
-          live on NVMe. The server pages experts on demand.
-        </p>
-        <p class="gpu-name">{stats?.gpus?.[0]?.name ?? "GPU stats loading"}</p>
-        <div class="vram-hero">
-          <strong>{stats ? formatBytes(stats.vram_bytes) : "--.- GB"}</strong>
-          <span>VRAM in use</span>
-        </div>
-        <p class="vram-total">
-          of {stats ? formatBytes(stats.gpus?.[0]?.total_bytes) : "--.- GB"}
-          available
-        </p>
-        <dl class="hardware-facts">
-          <div>
-            <dt>Presented model</dt>
-            <dd>Qwen3.8-Flash-Next</dd>
-          </div>
-          <div>
-            <dt>Parameters</dt>
-            <dd>125B</dd>
-          </div>
-          <div>
-            <dt>Server model ID</dt>
-            <dd>{stats?.model?.id ?? "qwen3.6-27b"}</dd>
-          </div>
-          <div>
-            <dt>Context</dt>
-            <dd>{formatCount(stats?.model?.ctx)} tokens</dd>
-          </div>
-          <div>
-            <dt>Architecture</dt>
-            <dd>{stats?.model?.moe ? "Mixture of experts" : "Loading"}</dd>
-          </div>
-          <div>
-            <dt>Expert storage</dt>
-            <dd>NVMe paging</dd>
-          </div>
-        </dl>
-      </header>
-
-      {#if statsError}
-        <p class="stats-error" role="status">{statsError}</p>
-      {/if}
-
-      <section class="metric-group current-group">
-        <h3><span>Current</span> Right now</h3>
-        <dl class="metric-grid">
-          <div>
-            <dt>Decode</dt>
-            <dd>
-              {formatRate(stats?.throughput?.decode_tps)} <small>tok/s</small>
-            </dd>
-          </div>
-          <div>
-            <dt>Prefill</dt>
-            <dd>
-              {formatRate(stats?.throughput?.prefill_tps)} <small>tok/s</small>
-            </dd>
-          </div>
-          <div>
-            <dt>Active requests</dt>
-            <dd>{formatCount(stats?.requests?.active)}</dd>
-          </div>
-          <div>
-            <dt>KV pages</dt>
-            <dd>
-              {formatCount(stats?.kv?.used_pages)}
-              <small>/ {formatCount(stats?.kv?.total_pages)}</small>
-            </dd>
-          </div>
-        </dl>
-      </section>
-
-      <section class="metric-group">
-        <h3><span>Peak</span> Since page load</h3>
-        <dl class="metric-grid two-up">
-          <div>
-            <dt>Decode</dt>
-            <dd>{formatRate(peaks.decodeTps)} <small>tok/s</small></dd>
-          </div>
-          <div>
-            <dt>Prefill</dt>
-            <dd>{formatRate(peaks.prefillTps)} <small>tok/s</small></dd>
-          </div>
-        </dl>
-      </section>
-
-      <section class="metric-group">
-        <h3><span>Total</span> Server lifetime</h3>
-        <dl class="metric-grid">
-          <div>
-            <dt>Completed</dt>
-            <dd>{formatCount(stats?.requests?.completed)}</dd>
-          </div>
-          <div>
-            <dt>Prompt tokens</dt>
-            <dd>{formatCount(stats?.requests?.prompt_tokens_total)}</dd>
-          </div>
-          <div>
-            <dt>Completion tokens</dt>
-            <dd>{formatCount(stats?.requests?.completion_tokens_total)}</dd>
-          </div>
-          <div>
-            <dt>Uptime</dt>
-            <dd>{formatUptime(stats?.uptime_s)}</dd>
-          </div>
-        </dl>
-      </section>
-
-      <p class="panel-note">
-        Current values come from the server. Peak values are retained in this
-        browser. Turn timing starts when you press Send.
-      </p>
-    </aside>
   </div>
 </main>
 
 <style>
   .demo-page {
-    min-height: 100vh;
-    padding: clamp(1.25rem, 3vw, 3rem);
+    box-sizing: border-box;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 0.8rem;
+    width: 100%;
+    height: 100dvh;
+    overflow: hidden;
+    padding: clamp(0.8rem, 1.8vw, 1.5rem);
     background: var(--sheet);
     color: var(--ink);
     font-family: var(--font-ui);
   }
 
-  .page-header {
-    display: grid;
-    grid-template-columns: minmax(0, 1.2fr) minmax(18rem, 0.8fr);
-    align-items: end;
-    gap: 2rem;
+  .page-header,
+  .demo-stack {
+    width: 100%;
     max-width: 90rem;
-    margin: 0 auto clamp(1.5rem, 4vw, 3.5rem);
-    padding-bottom: 1.5rem;
+    margin: 0 auto;
+  }
+
+  .page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding-bottom: 0.65rem;
     border-bottom: 1px solid var(--stroke);
   }
 
-  .kicker,
-  .section-label,
-  .message-role,
-  .live-tag,
-  .state,
-  .composer label {
-    margin: 0;
-    color: var(--ink-3);
-    font-family: var(--font-code);
-    font-size: 0.68rem;
-    font-weight: 600;
-    letter-spacing: 0.13em;
-    text-transform: uppercase;
-  }
-
   .page-header h1 {
-    max-width: 12ch;
-    margin: 0.55rem 0 0;
-    font-size: clamp(2.7rem, 6vw, 6.8rem);
+    margin: 0;
+    font-size: clamp(2.2rem, 4vw, 4rem);
     font-weight: 500;
-    letter-spacing: -0.065em;
-    line-height: 0.84;
+    letter-spacing: -0.06em;
+    line-height: 0.95;
+    white-space: nowrap;
   }
 
   .page-header h1 span {
     color: var(--accent-ink);
   }
 
-  .lede {
-    max-width: 38rem;
+  .section-label,
+  .state,
+  .message-role,
+  .tier-summary dt,
+  .turn-metrics dt {
     margin: 0;
+    color: var(--ink-3);
+    font-family: var(--font-code);
+    font-size: 0.64rem;
+    font-weight: 600;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+  }
+
+  .state {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 0.45rem;
+    min-height: 2rem;
+    padding: 0 0.65rem;
+    border: 1px solid var(--line);
+    background: var(--card-bg);
     color: var(--ink-2);
-    font-size: clamp(1rem, 1.4vw, 1.3rem);
-    line-height: 1.55;
   }
 
-  .demo-grid {
+  .state-dot {
+    width: 0.48rem;
+    height: 0.48rem;
+    border-radius: 50%;
+    background: var(--ink-3);
+  }
+
+  .state[data-state="prefilling"] .state-dot,
+  .state[data-state="generating"] .state-dot {
+    background: var(--tone-gpu);
+    animation: pulse 1s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    50% {
+      opacity: 0.25;
+    }
+  }
+
+  .demo-stack {
     display: grid;
-    grid-template-columns: minmax(0, 1.25fr) minmax(24rem, 0.75fr);
-    gap: clamp(1rem, 2vw, 2rem);
-    max-width: 90rem;
-    margin: 0 auto;
-    align-items: start;
+    grid-template-rows: minmax(20rem, 1.25fr) minmax(16rem, 0.75fr);
+    gap: 0.8rem;
+    min-height: 0;
   }
 
-  .chat-card,
-  .metrics-card {
+  .expert-card,
+  .chat-card {
+    min-height: 0;
     border: 1px solid var(--stroke);
     background: var(--card-bg);
   }
 
-  .chat-card {
+  .expert-card {
     display: grid;
-    grid-template-rows: auto auto minmax(24rem, 1fr) auto;
-    min-height: min(48rem, calc(100vh - 8rem));
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
-  .card-heading {
+  .expert-heading {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
-    gap: 1rem;
-    padding: 1.25rem 1.4rem;
+    gap: 2rem;
+    padding: 0.8rem 1rem;
     border-bottom: 1px solid var(--line);
   }
 
-  .card-heading h2 {
-    margin: 0.25rem 0 0;
-    font-size: 1.35rem;
+  .expert-title h2,
+  .chat-heading h2 {
+    margin: 0.18rem 0 0;
+    font-size: 1.25rem;
     font-weight: 550;
-    letter-spacing: -0.025em;
+    letter-spacing: -0.03em;
   }
 
-  .heading-controls {
+  .legend {
     display: flex;
+    gap: 1rem;
+    margin-top: 0.45rem;
+    color: var(--ink-2);
+    font-family: var(--font-code);
+    font-size: 0.62rem;
+  }
+
+  .legend span {
+    display: inline-flex;
     align-items: center;
-    gap: 0.65rem;
+    gap: 0.32rem;
+  }
+
+  .legend i {
+    display: block;
+    width: 0.55rem;
+    height: 0.55rem;
+    background: var(--accent);
+  }
+
+  .legend .disk {
+    background: var(--ink-3);
+  }
+
+  .legend .active {
+    background: var(--tone-gpu);
+  }
+
+  .tier-summary,
+  .turn-metrics {
+    display: grid;
+    margin: 0;
+  }
+
+  .tier-summary {
+    grid-template-columns: repeat(4, minmax(7rem, 1fr));
+    border-left: 1px solid var(--line);
+  }
+
+  .tier-summary > div {
+    padding: 0.25rem 0.8rem;
+    border-right: 1px solid var(--line);
+  }
+
+  .tier-summary dd,
+  .turn-metrics dd {
+    margin: 0.18rem 0 0;
+    color: var(--ink);
+    font-family: var(--font-code);
+    font-size: 1rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .canvas-wrap {
+    position: relative;
+    min-height: 0;
+    padding: 0.75rem 1rem 0.9rem;
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .telemetry-error {
+    position: absolute;
+    right: 1rem;
+    bottom: 0.9rem;
+    padding: 0.3rem 0.45rem;
+    background: var(--card-bg);
+    color: var(--tone-disk);
+    font-family: var(--font-code);
+    font-size: 0.62rem;
+  }
+
+  .chat-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 0.38fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .chat-heading {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: minmax(10rem, 1fr) auto auto;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.65rem 1rem;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .turn-metrics {
+    grid-template-columns: repeat(2, minmax(8rem, auto));
+    border-left: 1px solid var(--line);
+  }
+
+  .turn-metrics > div {
+    padding: 0.1rem 0.9rem;
+    border-right: 1px solid var(--line);
   }
 
   .thinking-toggle {
     display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: 0.42rem;
     min-height: 2rem;
-    padding: 0 0.55rem;
+    padding: 0 0.6rem;
     border: 1px solid var(--line);
     color: var(--ink-2);
     font-family: var(--font-code);
     font-size: 0.67rem;
-    white-space: nowrap;
     cursor: pointer;
   }
 
@@ -617,133 +819,19 @@
     accent-color: var(--accent-ink);
   }
 
-  .state {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.45rem;
-    padding: 0.4rem 0.55rem;
-    border: 1px solid var(--line);
-    color: var(--ink-2);
-  }
-
-  .state-dot {
-    width: 0.5rem;
-    height: 0.5rem;
-    background: var(--ink-3);
-    border-radius: 50%;
-  }
-
-  .state[data-state="prefilling"] .state-dot {
-    background: var(--tone-disk);
-    animation: pulse 1.2s ease-in-out infinite;
-  }
-
-  .state[data-state="generating"] .state-dot {
-    background: var(--ok);
-    animation: pulse 1.2s ease-in-out infinite;
-  }
-
-  @keyframes pulse {
-    50% {
-      opacity: 0.35;
-    }
-  }
-
-  .turn-strip {
-    display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-    border-bottom: 1px solid var(--line);
-    background: var(--band);
-  }
-
-  .turn-strip > div:nth-child(-n + 2) {
-    grid-column: span 3;
-  }
-
-  .turn-strip > div:nth-child(n + 3) {
-    grid-column: span 2;
-    border-top: 1px solid var(--line);
-  }
-
-  .turn-strip > div {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 0.7rem;
-    padding: 0.7rem 1.4rem;
-  }
-
-  .turn-strip > div + div {
-    border-left: 1px solid var(--line);
-  }
-
-  .turn-strip > div:nth-child(3) {
-    border-left: 0;
-  }
-
-  .turn-strip span {
-    color: var(--ink-3);
-    font-size: 0.72rem;
-  }
-
-  .turn-strip strong,
-  .metric-grid dd,
-  .vram-hero strong,
-  .hardware-facts dd {
-    font-family: var(--font-code);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .turn-strip strong {
-    min-width: 5.5ch;
-    text-align: right;
-    white-space: nowrap;
-    font-size: 0.9rem;
-  }
-
   .messages {
     min-height: 0;
-    max-height: 54vh;
     overflow-y: auto;
-    padding: 1.4rem;
+    padding: 0.8rem 1rem;
+    border-right: 1px solid var(--line);
     scrollbar-color: var(--ink-3) transparent;
   }
 
-  .empty-state {
-    display: grid;
-    place-content: center;
-    min-height: 100%;
-    max-width: 34rem;
-    margin: auto;
-    text-align: center;
-  }
-
-  .empty-index {
-    margin: 0 0 0.8rem;
-    color: var(--accent-ink);
-    font-family: var(--font-code);
-    font-size: 0.75rem;
-    letter-spacing: 0.14em;
-  }
-
-  .empty-state h3 {
-    margin: 0;
-    font-size: clamp(1.5rem, 3vw, 2.5rem);
-    font-weight: 500;
-    letter-spacing: -0.045em;
-  }
-
-  .empty-state p:last-child {
-    margin: 0.75rem 0 0;
-    color: var(--ink-2);
-    line-height: 1.6;
-  }
-
   .message {
-    max-width: 86%;
-    margin: 0 0 1.35rem auto;
-    padding: 0.9rem 1rem;
-    border: 1px solid var(--stroke);
+    max-width: 88%;
+    margin: 0 0 0.65rem auto;
+    padding: 0.55rem 0.7rem;
+    border: 1px solid var(--line);
     background: var(--band);
   }
 
@@ -754,86 +842,79 @@
   }
 
   .message-role {
-    margin-bottom: 0.45rem;
+    margin-bottom: 0.25rem;
   }
 
   .message pre,
   .waiting {
     margin: 0;
-    white-space: pre-wrap;
     overflow-wrap: anywhere;
     color: var(--ink);
     font-family: var(--font-ui);
-    font-size: 0.95rem;
-    line-height: 1.58;
+    font-size: 0.86rem;
+    line-height: 1.42;
+    white-space: pre-wrap;
   }
 
   .thinking-region {
-    margin: 0 0 0.8rem;
-    padding: 0.55rem 0.65rem 0.65rem;
-    border: 1px solid var(--line);
-    background: var(--band);
+    margin-bottom: 0.45rem;
+    padding: 0.4rem 0.5rem;
+    border-left: 2px solid var(--line);
     color: var(--ink-3);
   }
 
   .thinking-region summary {
-    color: var(--ink-2);
+    color: var(--ink-3);
     font-family: var(--font-code);
-    font-size: 0.67rem;
-    font-weight: 600;
-    letter-spacing: 0.08em;
+    font-size: 0.62rem;
     text-transform: uppercase;
     cursor: pointer;
   }
 
   .thinking-region pre {
-    margin-top: 0.5rem;
+    margin-top: 0.35rem;
     color: var(--ink-3);
-    font-size: 0.8rem;
-    line-height: 1.5;
-  }
-
-  .answer-region {
-    color: var(--ink);
+    font-size: 0.76rem;
   }
 
   .waiting {
     color: var(--ink-2);
   }
 
-  .waiting-mark {
+  .waiting span {
     display: inline-block;
-    width: 0.48rem;
-    height: 0.48rem;
+    width: 0.42rem;
+    height: 0.42rem;
     margin-right: 0.4rem;
     border-radius: 50%;
-    background: var(--tone-disk);
-    animation: pulse 1.2s ease-in-out infinite;
+    background: var(--tone-gpu);
+    animation: pulse 1s ease-in-out infinite;
   }
 
   .composer {
-    padding: 1rem 1.4rem 1.2rem;
-    border-top: 1px solid var(--line);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: stretch;
+    gap: 0.6rem;
+    min-height: 0;
+    padding: 0.8rem;
     background: var(--sheet);
-  }
-
-  .composer label {
-    display: block;
-    margin-bottom: 0.45rem;
   }
 
   .composer textarea {
     display: block;
     width: 100%;
-    resize: vertical;
-    padding: 0.8rem;
+    min-height: 0;
+    resize: none;
+    padding: 0.65rem;
     border: 1px solid var(--stroke);
     border-radius: 0;
     outline: none;
     background: var(--card-bg);
     color: var(--ink);
     font: inherit;
-    line-height: 1.45;
+    font-size: 0.88rem;
+    line-height: 1.4;
   }
 
   .composer textarea:focus {
@@ -841,35 +922,16 @@
     box-shadow: inset 0 -2px 0 var(--accent-ink);
   }
 
-  .composer textarea:disabled {
-    color: var(--ink-3);
-  }
-
-  .composer-actions {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    margin-top: 0.7rem;
-  }
-
-  .composer-actions p {
-    margin: 0;
-    color: var(--ink-3);
-    font-family: var(--font-code);
-    font-size: 0.65rem;
-  }
-
   .send-button,
   .stop-button {
-    min-width: 7rem;
-    padding: 0.65rem 0.9rem;
-    border: 1px solid var(--ink);
+    min-width: 4.8rem;
+    padding: 0.55rem 0.7rem;
+    border: 1px solid var(--accent-ink);
     border-radius: 0;
-    background: var(--ink);
+    background: var(--accent-ink);
     color: var(--sheet);
     font-family: var(--font-code);
-    font-size: 0.7rem;
+    font-size: 0.68rem;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -889,281 +951,71 @@
     color: var(--tone-disk);
   }
 
-  .metrics-card {
-    position: sticky;
-    top: 1rem;
-  }
-
-  .hardware-header {
-    padding: 1.3rem 1.4rem 1.4rem;
-    border-bottom: 1px solid var(--stroke);
-    background: var(--ink);
-    color: var(--sheet);
-  }
-
-  .hardware-topline {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  .hardware-header .section-label {
-    color: var(--ink-3);
-  }
-
-  .setup-callout {
-    margin: 0.9rem 0 1.1rem;
-    padding: 0.85rem 0;
-    border-top: 1px solid var(--accent-ink);
-    border-bottom: 1px solid var(--accent-ink);
-    color: var(--sheet);
-    font-size: clamp(1rem, 1.7vw, 1.25rem);
-    font-weight: 650;
-    line-height: 1.35;
-  }
-
-  .live-tag {
-    color: var(--ok);
-  }
-
-  .live-tag::before {
-    content: "";
-    display: inline-block;
-    width: 0.42rem;
-    height: 0.42rem;
-    margin-right: 0.4rem;
-    border-radius: 50%;
-    background: currentColor;
-    vertical-align: 0.05rem;
-  }
-
-  .gpu-name {
-    margin: 0.9rem 0 0;
-    color: var(--ink-3);
-    font-family: var(--font-code);
-    font-size: 0.72rem;
-  }
-
-  .vram-hero {
-    display: flex;
-    align-items: baseline;
-    gap: 0.8rem;
-    margin-top: 0.2rem;
-  }
-
-  .vram-hero strong {
-    font-size: clamp(2.8rem, 5vw, 4.5rem);
-    font-weight: 500;
-    letter-spacing: -0.07em;
-    line-height: 1;
-    white-space: nowrap;
-  }
-
-  .vram-hero span,
-  .vram-total {
-    color: var(--ink-3);
-    font-size: 0.72rem;
-  }
-
-  .vram-total {
-    margin: 0.25rem 0 1.2rem;
-    font-family: var(--font-code);
-  }
-
-  .hardware-facts {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0;
-    margin: 0;
-    border-top: 1px solid var(--ink-2);
-    border-left: 1px solid var(--ink-2);
-  }
-
-  .hardware-facts > div {
-    min-width: 0;
-    padding: 0.55rem 0.65rem;
-    border-right: 1px solid var(--ink-2);
-    border-bottom: 1px solid var(--ink-2);
-  }
-
-  .hardware-facts dt,
-  .metric-grid dt {
-    color: var(--ink-3);
-    font-size: 0.62rem;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .hardware-facts dd {
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
     overflow: hidden;
-    margin: 0.18rem 0 0;
-    font-size: 0.72rem;
-    text-overflow: ellipsis;
+    clip: rect(0, 0, 0, 0);
     white-space: nowrap;
   }
 
-  .stats-error {
-    margin: 0;
-    padding: 0.7rem 1.4rem;
-    border-bottom: 1px solid var(--line);
-    color: var(--tone-disk);
-    font-family: var(--font-code);
-    font-size: 0.68rem;
-  }
-
-  .metric-group {
-    border-bottom: 1px solid var(--stroke);
-  }
-
-  .metric-group h3 {
-    display: flex;
-    justify-content: space-between;
-    margin: 0;
-    padding: 0.65rem 1.4rem;
-    border-bottom: 1px solid var(--line);
-    color: var(--ink-3);
-    font-family: var(--font-code);
-    font-size: 0.62rem;
-    font-weight: 500;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .metric-group h3 span {
-    color: var(--ink);
-    font-weight: 700;
-  }
-
-  .current-group h3 span {
-    color: var(--accent-ink);
-  }
-
-  .metric-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    margin: 0;
-  }
-
-  .metric-grid > div {
-    min-width: 0;
-    padding: 0.72rem 1.4rem 0.85rem;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .metric-grid > div:nth-child(odd) {
-    border-right: 1px solid var(--line);
-  }
-
-  .metric-grid > div:nth-last-child(-n + 2) {
-    border-bottom: 0;
-  }
-
-  .metric-grid dd {
-    margin: 0.1rem 0 0;
-    font-size: 1.15rem;
-    font-weight: 600;
-    white-space: nowrap;
-  }
-
-  .metric-grid small {
-    color: var(--ink-3);
-    font-size: 0.62rem;
-    font-weight: 400;
-  }
-
-  .panel-note {
-    margin: 0;
-    padding: 0.85rem 1.4rem;
-    color: var(--ink-3);
-    font-size: 0.65rem;
-    line-height: 1.5;
-  }
-
-  button:focus-visible,
-  textarea:focus-visible {
-    outline: 2px solid var(--accent-ink);
-    outline-offset: 2px;
-  }
-
-  @media (max-width: 1000px) {
-    .page-header,
-    .demo-grid {
-      grid-template-columns: 1fr;
+  @media (max-width: 900px) {
+    .demo-page {
+      height: auto;
+      min-height: 100dvh;
+      overflow: visible;
     }
 
     .page-header h1 {
-      max-width: none;
+      white-space: normal;
     }
 
-    .metrics-card {
-      position: static;
-    }
-  }
-
-  @media (max-width: 600px) {
-    .demo-page {
-      padding: 1rem;
+    .demo-stack {
+      grid-template-rows: 26rem minmax(28rem, auto);
     }
 
-    .page-header {
-      gap: 1rem;
+    .expert-heading {
+      align-items: flex-start;
+    }
+
+    .tier-summary {
+      grid-template-columns: repeat(2, minmax(7rem, 1fr));
     }
 
     .chat-card {
-      grid-template-rows: auto auto minmax(20rem, 1fr) auto;
-    }
-
-    .card-heading,
-    .composer,
-    .messages {
-      padding-right: 1rem;
-      padding-left: 1rem;
-    }
-
-    .turn-strip {
       grid-template-columns: 1fr;
+      grid-template-rows: auto minmax(16rem, 1fr) auto;
     }
 
-    .turn-strip > div:nth-child(n) {
-      grid-column: span 1;
-    }
-
-    .turn-strip > div + div {
-      border-top: 1px solid var(--line);
-      border-left: 0;
-    }
-
-    .heading-controls {
-      align-items: flex-end;
-      flex-direction: column-reverse;
-    }
-
-    .message {
-      max-width: 94%;
-    }
-
-    .composer-actions {
-      align-items: flex-end;
-    }
-
-    .composer-actions p {
-      max-width: 12rem;
-    }
-
-    .vram-hero {
-      display: block;
-    }
-
-    .vram-hero span {
-      display: block;
-      margin-top: 0.25rem;
+    .messages {
+      border-right: 0;
+      border-bottom: 1px solid var(--line);
     }
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .state-dot,
-    .waiting-mark {
-      animation: none;
+  @media (max-width: 620px) {
+    .page-header {
+      align-items: flex-end;
+    }
+
+    .page-header h1 {
+      font-size: 2rem;
+    }
+
+    .expert-heading,
+    .chat-heading {
+      display: flex;
+      flex-wrap: wrap;
+    }
+
+    .tier-summary {
+      width: 100%;
+      border-top: 1px solid var(--line);
+    }
+
+    .turn-metrics {
+      margin-left: auto;
     }
   }
 </style>

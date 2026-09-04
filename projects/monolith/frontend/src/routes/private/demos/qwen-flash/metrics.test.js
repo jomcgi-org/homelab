@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  calculateTierSummary,
   calculateTurnMetrics,
+  classifyLayerTier,
   countTurnTokens,
+  decayActivity,
   deriveModelState,
+  diffExpertHits,
   formatBytes,
   formatRate,
   trackPeaks,
@@ -114,5 +118,76 @@ describe("metric formatting", () => {
     expect(formatRate(18)).toBe("18.0");
     expect(formatRate(18.26)).toBe("18.3");
     expect(formatRate(undefined)).toBe("0.0");
+  });
+});
+
+describe("classifyLayerTier", () => {
+  it("treats only finite positive profile values as disk-backed", () => {
+    const layers = { 0: 0, 1: 2.9, 2: -1, 3: "3.6", 4: null };
+
+    expect(classifyLayerTier(layers, 0)).toBe("resident");
+    expect(classifyLayerTier(layers, 1)).toBe("disk");
+    expect(classifyLayerTier(layers, 2)).toBe("resident");
+    expect(classifyLayerTier(layers, 3)).toBe("resident");
+    expect(classifyLayerTier(layers, 4)).toBe("resident");
+    expect(classifyLayerTier(layers, 5)).toBe("resident");
+  });
+});
+
+describe("diffExpertHits", () => {
+  it("does not report existing cumulative counts on the first poll", () => {
+    expect(diffExpertHits(null, { expert_hits: { 0: [10, 20, 30] } })).toEqual(
+      [],
+    );
+  });
+
+  it("reports only counters that increased and includes their deltas", () => {
+    expect(
+      diffExpertHits(
+        { expert_hits: { 0: [10, 20, 30], 1: [5, 6] } },
+        { expert_hits: { 0: [10, 23, 29], 1: [7, 6] } },
+      ),
+    ).toEqual([
+      { layer: 0, expert: 1, delta: 3 },
+      { layer: 1, expert: 0, delta: 2 },
+    ]);
+  });
+});
+
+describe("decayActivity", () => {
+  it("decays active cells and settles small values at zero", () => {
+    expect(decayActivity(1)).toBeCloseTo(0.82);
+    expect(decayActivity(0.035)).toBe(0);
+    expect(decayActivity(0)).toBe(0);
+    expect(decayActivity(Number.NaN)).toBe(0);
+  });
+});
+
+describe("calculateTierSummary", () => {
+  it("derives expert counts and byte totals from cache geometry", () => {
+    expect(
+      calculateTierSummary({
+        num_experts: 512,
+        num_moe_layers: 48,
+        moe_cache_size: 3_753,
+        unit_bytes: { moe_per_expert: 2_772_480 },
+      }),
+    ).toEqual({
+      totalExperts: 24_576,
+      gpuExperts: 3_753,
+      nvmeExperts: 20_823,
+      gpuBytes: 10_405_117_440,
+      nvmeBytes: 57_731_351_040,
+    });
+  });
+
+  it("returns unknown totals when required geometry is missing", () => {
+    expect(calculateTierSummary({ num_experts: 512 })).toEqual({
+      totalExperts: null,
+      gpuExperts: null,
+      nvmeExperts: null,
+      gpuBytes: null,
+      nvmeBytes: null,
+    });
   });
 });
