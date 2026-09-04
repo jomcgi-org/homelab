@@ -244,6 +244,17 @@ py_venv_binary(
     deps = [":monolith_backend"],  # keep
 )
 
+# Authenticated Ember agent MCP entrypoint: an isolated three-tool catalogue on
+# :8092. It deliberately does not import or serve the shared Surface A server.
+py_venv_binary(
+    name = "agent_mcp",
+    srcs = _BACKEND_SRCS,  # keep
+    imports = ["."],  # keep
+    main = "app/agent_mcp_main.py",
+    visibility = ["//:__subpackages__"],
+    deps = [":monolith_backend"],  # keep
+)
+
 # Phase-1 vault-mutation script: walk a vault and inject `visibility:` lines
 # into note frontmatter that lacks the key. Run via `bazel run`:
 #   bazel run //projects/monolith:add_visibility_field -- \
@@ -1643,6 +1654,18 @@ py3_image(
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/progress",
 )
 
+# Isolated Ember agent MCP image, serving only its authenticated catalogue on
+# port 8092 from app/agent_mcp_main.py.
+py3_image(
+    name = "agent_mcp_image",
+    binary = "//projects/monolith:agent_mcp",
+    env = {
+        "PYTHONPATH": "/projects/monolith/agent_mcp.runfiles/_main:/projects/monolith/agent_mcp.runfiles/_main/projects/monolith",
+    },
+    main = "app/agent_mcp_main.py",
+    repository = "ghcr.io/jomcgi/homelab/projects/monolith/agent-mcp",
+)
+
 # ---------------------------------------------------------------------------
 # Public service (ADR 004 Phase 5): a pruned, read-only binary/image that runs
 # app/main_public.py. It deliberately excludes every private write-path domain
@@ -1957,6 +1980,19 @@ py_test(
     deps = [
         ":pkg_auth",
         "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "agent_mcp_main_test",
+    srcs = ["app/agent_mcp_main_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//fastmcp",
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
@@ -7765,6 +7801,19 @@ semgrep_target_test(
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":progress",
+)
+
+semgrep_target_test(
+    name = "agent_mcp_semgrep_test",
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    target = ":agent_mcp",
 )
 
 semgrep_test(

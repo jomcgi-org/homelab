@@ -46,6 +46,7 @@ helm_chart(
         "frontend.image": "//projects/monolith/frontend:image.info",
         "jobs.image": "//projects/monolith:jobs_image.info",
         "progress.image": "//projects/monolith:progress_image.info",
+        "agent_mcp.image": "//projects/monolith:agent_mcp_image.info",
         "whatsapp.image": "//projects/monolith/whatsapp:image.info",
     },
     lint = False,
@@ -92,6 +93,27 @@ py_test(
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
         "GKE_VALUES": "$(rootpath //projects/monolith/deploy:gke_values)",
+    },
+    deps = ["@pip//pyyaml"],
+)
+
+py_test(
+    name = "agent_mcp_chart_test",
+    srcs = ["agent_mcp_chart_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/monolith/deploy:deploy_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "migrations/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
     },
     deps = ["@pip//pyyaml"],
 )
@@ -282,6 +304,19 @@ semgrep_test(
 semgrep_test(
     name = "tailnet_service_test_semgrep_test",
     srcs = ["tailnet_service_test.py"],
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "agent_mcp_chart_test_semgrep_test",
+    srcs = ["agent_mcp_chart_test.py"],
     exclude_rules = [
         "avoid-sqlalchemy-text",
         "sqlmodel-datetime-without-factory",

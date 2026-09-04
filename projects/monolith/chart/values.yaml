@@ -81,6 +81,15 @@ progress:
     digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
     pullPolicy: IfNotPresent
 
+# Authenticated Ember agent MCP surface. agent_mcp.image is injected
+# (digest-pinned) at build time by helm_images_values.
+agent_mcp:
+  image:
+    repository: ghcr.io/jomcgi/homelab/projects/monolith/agent-mcp
+    tag: main
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    pullPolicy: IfNotPresent
+
 # Offered model catalogue for the agents console picker and the Discord
 # /agent slash command (issue #4859). Comma-separated subset of
 # agent_sessions.SUPPORTED_MODELS, served by GET /api/agents/models and read
