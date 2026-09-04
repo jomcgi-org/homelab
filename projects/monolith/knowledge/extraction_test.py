@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -23,7 +24,7 @@ from knowledge.extraction import (
     record_extraction_failure,
     sweep_unqueued_raws,
 )
-from knowledge.models import AtomRawProvenance, Dispute, Note, NoteLink, RawInput
+from knowledge.models import AtomRawProvenance, Chunk, Dispute, Note, NoteLink, RawInput
 
 
 @pytest.fixture(name="session")
@@ -170,6 +171,44 @@ def _patch_prompt(monkeypatch, body: str, related=None):
     )
 
 
+def _patch_filtered_note_search(session, monkeypatch) -> None:
+    def search_notes(
+        _store,
+        _vector,
+        *,
+        scope_filter=None,
+        exclude_invalidated=False,
+        **_kwargs,
+    ):
+        chunks = {chunk.note_fk: chunk for chunk in session.exec(select(Chunk)).all()}
+        notes = [note for note in session.exec(select(Note)).all() if note.id in chunks]
+        if scope_filter is not None:
+            notes = [note for note in notes if note.scope == scope_filter]
+        if exclude_invalidated:
+            notes = [
+                note
+                for note in notes
+                if note.valid_until is None and note.verification_state != "invalidated"
+            ]
+        return [
+            {
+                "note_id": note.note_id,
+                "title": note.title,
+                "scope": note.scope,
+                "verification_state": note.verification_state,
+                "snippet": chunks[note.id].chunk_text,
+            }
+            for note in notes
+        ]
+
+    monkeypatch.setattr(
+        "knowledge.extraction.raw_store.fetch_raw", lambda _hash: "raw body"
+    )
+    monkeypatch.setattr(
+        "knowledge.store.KnowledgeStore.search_notes_with_context", search_notes
+    )
+
+
 @pytest.mark.parametrize(
     ("source", "phrase"),
     [
@@ -226,6 +265,79 @@ def test_prompt_caps_body_in_the_middle(session, monkeypatch):
     assert re.search(r"\[\.\.\. \d+ chars elided \.\.\.\]", prompt)
     assert "a" * 200 in prompt
     assert prompt.count("b" * 200) >= 1
+
+
+def test_related_notes_excludes_out_of_scope_notes(session, monkeypatch):
+    """Notes outside repo scope must not appear in related block."""
+    raw = _raw(session, "agent-report")
+
+    out_of_scope_note = Note(
+        note_id="out-of-scope",
+        path="personal/note.md",
+        content_hash="hash-out",
+        title="Personal Note",
+        type="atom",
+        scope="personal",
+        verification_state="verified",
+    )
+    session.add(out_of_scope_note)
+    session.commit()
+    session.refresh(out_of_scope_note)
+
+    chunk = Chunk(
+        note_fk=out_of_scope_note.id,
+        chunk_index=0,
+        section_header="",
+        chunk_text="personal content",
+        embedding=[0.0] * 1024,
+    )
+    session.add(chunk)
+    session.commit()
+
+    _patch_filtered_note_search(session, monkeypatch)
+
+    prompt = build_extraction_prompt(session, raw)
+
+    assert "out-of-scope" not in prompt
+    assert "Personal Note" not in prompt
+    assert "Related notes:\n- none" in prompt
+
+
+def test_related_notes_excludes_invalidated_notes(session, monkeypatch):
+    """Invalidated notes must not appear in related block."""
+    raw = _raw(session, "agent-report")
+
+    invalidated_note = Note(
+        note_id="invalidated",
+        path="docs/old-info.md",
+        content_hash="hash-invalid",
+        title="Invalidated Note",
+        type="atom",
+        scope="repo:jomcgi-org/homelab",
+        verification_state="invalidated",
+        valid_until=datetime.now(timezone.utc),
+    )
+    session.add(invalidated_note)
+    session.commit()
+    session.refresh(invalidated_note)
+
+    chunk = Chunk(
+        note_fk=invalidated_note.id,
+        chunk_index=0,
+        section_header="",
+        chunk_text="invalidated content",
+        embedding=[0.0] * 1024,
+    )
+    session.add(chunk)
+    session.commit()
+
+    _patch_filtered_note_search(session, monkeypatch)
+
+    prompt = build_extraction_prompt(session, raw)
+
+    assert "invalidated" not in prompt
+    assert "Invalidated Note" not in prompt
+    assert "Related notes:\n- none" in prompt
 
 
 def test_prompt_rejects_missing_body(session, monkeypatch):
