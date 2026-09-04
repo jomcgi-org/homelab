@@ -1,3 +1,4 @@
+{{- if .Values.agents.enabled }}
 {{- $env := list
   (dict "name" "DATABASE_URL" "valueFrom" (dict "secretKeyRef" (dict "name" .Values.database.secretName "key" .Values.database.secretKey)))
   (dict "name" "EMBEDDING_URL" "value" .Values.embeddingUrl)
@@ -20,3 +21,4 @@
 {{- end }}
 {{- $_ := set .Values.agents "env" $env }}
 {{- include "homelab.deployment" (dict "context" . "component" "agents") }}
+{{- end }}
