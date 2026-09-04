@@ -117,6 +117,7 @@ Top-level projects/ directories:
 - mcp
 - model-bench
 - monolith
+- monolith-agents
 - monolith-public
 - operators
 - platform
