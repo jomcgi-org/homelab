@@ -31,7 +31,7 @@ describe("/private/demos/qwen-flash/chat POST", () => {
       messages: [{ role: "user", content: "Think carefully" }],
       model: "qwen3.6-27b",
       stream: true,
-      max_tokens: 400,
+      max_tokens: 8192,
       chat_template_kwargs: { enable_thinking: true },
     });
   });

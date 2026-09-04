@@ -1,25 +1,23 @@
 <script>
   import { onMount } from "svelte";
+  import { marked } from "marked";
   // This demo deliberately uses the public blog tokens because it is presented
   // beside the post, not as part of the private dashboard design system.
   import "$lib/public/styles/technical-drawing.css";
   import {
+    addSessionTurn,
+    attributeExpertActivity,
     calculateTierSummary,
     calculateTurnMetrics,
-    classifyLayerTier,
-    decayActivity,
     deriveModelState,
-    diffExpertHits,
     formatBytes,
     formatRate,
+    trackSessionPeaks,
   } from "./metrics.js";
 
   const CHAT_URL = "/private/demos/qwen-flash/chat";
-  const STATS_URL = "/private/demos/qwen-flash/stats";
   const PROFILE_URL = "/private/demos/qwen-flash/profile";
   const CACHE_STATUS_URL = "/private/demos/qwen-flash/cache-status";
-  const DEFAULT_LAYER_COUNT = 48;
-  const DEFAULT_EXPERT_COUNT = 512;
   const EMPTY_TURN_METRICS = {
     ttftMs: null,
     tokensPerSecond: 0,
@@ -28,15 +26,25 @@
     reasoningTokens: 0,
     answerTokens: 0,
   };
+  const EMPTY_ACTIVITY = {
+    hotHits: 0,
+    warmHits: 0,
+    coldHits: 0,
+    unknownHits: 0,
+    totalHits: 0,
+  };
 
   let messages = $state([]);
   let inputText = $state("");
   let isInFlight = $state(false);
   let firstTokenSeen = $state(false);
+  // This drives generation. It is not only a display preference.
   let thinkingEnabled = $state(true);
-  let stats = $state(null);
+  let displayProfile = $state(null);
   let cacheStatus = $state(null);
-  let statsError = $state("");
+  let activity = $state({ ...EMPTY_ACTIVITY });
+  let sessionPeaks = $state({ decodeTps: 0, ttftMs: null });
+  let sessionTotals = $state({ turns: 0, tokens: 0, generationMs: 0 });
   let profileError = $state("");
   let cacheError = $state("");
   let turnMetrics = $state({ ...EMPTY_TURN_METRICS });
@@ -44,26 +52,23 @@
   let turnChunks = [];
   let controller;
   let chatLog;
-  let expertCanvas;
-  let canvasContext;
-  let canvasFrame;
-  let canvasResizeObserver;
-  let themeObserver;
   let profileSnapshot;
-  let activity = new Float32Array(DEFAULT_LAYER_COUNT * DEFAULT_EXPERT_COUNT);
-  let gridLayers = $state(DEFAULT_LAYER_COUNT);
-  let gridExperts = $state(DEFAULT_EXPERT_COUNT);
-  let statsTimer;
+  let cacheSnapshot;
+  let profileLayerSignature = "";
+  let cacheGeometrySignature = "";
+  let pendingVisual = {};
+  let visualFrame;
   let profileTimer;
-  let statsPollGeneration = 0;
   let profilePollGeneration = 0;
   let profileRequestPending = false;
   let cacheRequestPending = false;
   let mounted = false;
 
   let modelState = $derived(deriveModelState(isInFlight, firstTokenSeen));
-  let tierSummary = $derived(calculateTierSummary(cacheStatus?.geometry));
-  let telemetryError = $derived(profileError || cacheError || statsError);
+  let tierSummary = $derived(
+    calculateTierSummary(displayProfile, cacheStatus?.geometry),
+  );
+  let telemetryError = $derived(profileError || cacheError);
 
   function formatCount(value) {
     return value === null || value === undefined
@@ -81,149 +86,56 @@
       : `${(milliseconds / 1000).toFixed(1)} s`;
   }
 
+  function formatTotalDuration(milliseconds) {
+    const seconds = Math.max(0, Number(milliseconds) || 0) / 1000;
+    return `${seconds.toFixed(1)} s`;
+  }
+
+  function percentage(value, total) {
+    if (
+      value === null ||
+      total === null ||
+      !Number.isFinite(value) ||
+      !Number.isFinite(total) ||
+      total <= 0
+    ) {
+      return 0;
+    }
+    return Math.max(0, Math.min(100, (value / total) * 100));
+  }
+
+  function formatPercentage(value, total) {
+    return total > 0 ? `${percentage(value, total).toFixed(0)}%` : "--";
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "").replace(
+      /[&<>]/g,
+      (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[character],
+    );
+  }
+
+  function renderMarkdown(value) {
+    return marked.parse(escapeHtml(value));
+  }
+
   function scrollToBottom() {
     requestAnimationFrame(() => {
       if (chatLog) chatLog.scrollTop = chatLog.scrollHeight;
     });
   }
 
-  async function pollStats() {
-    try {
-      const response = await fetch(STATS_URL, { cache: "no-store" });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      stats = await response.json();
-      statsError = "";
-    } catch {
-      statsError = "Stats offline";
-    }
-  }
-
-  function scheduleStats(delay) {
-    if (!mounted) return;
-    clearTimeout(statsTimer);
-    const generation = ++statsPollGeneration;
-    statsTimer = setTimeout(async () => {
-      await pollStats();
-      if (mounted && generation === statsPollGeneration) {
-        scheduleStats(isInFlight ? 1000 : 5000);
-      }
-    }, delay);
-  }
-
-  function profileDimensions(profile) {
-    const configuredLayers = cacheStatus?.geometry?.num_moe_layers;
-    const configuredExperts = cacheStatus?.geometry?.num_experts;
-    const layerKeys = Object.keys(profile?.expert_hits ?? {})
-      .map(Number)
-      .filter((value) => Number.isInteger(value) && value >= 0);
-    const inferredLayers = layerKeys.length ? Math.max(...layerKeys) + 1 : 0;
-    const inferredExperts = Object.values(profile?.expert_hits ?? {}).reduce(
-      (largest, hits) =>
-        Array.isArray(hits) ? Math.max(largest, hits.length) : largest,
-      0,
-    );
-    return {
-      layers:
-        Number.isInteger(configuredLayers) && configuredLayers > 0
-          ? configuredLayers
-          : inferredLayers || DEFAULT_LAYER_COUNT,
-      experts:
-        Number.isInteger(configuredExperts) && configuredExperts > 0
-          ? configuredExperts
-          : inferredExperts || DEFAULT_EXPERT_COUNT,
-    };
-  }
-
-  function updateGridDimensions(profile) {
-    const next = profileDimensions(profile);
-    if (next.layers === gridLayers && next.experts === gridExperts) return;
-    gridLayers = next.layers;
-    gridExperts = next.experts;
-    activity = new Float32Array(gridLayers * gridExperts);
-  }
-
-  function canvasColor(property) {
-    return getComputedStyle(expertCanvas).getPropertyValue(property).trim();
-  }
-
-  function drawExpertGrid() {
-    if (!canvasContext || !expertCanvas) return;
-    const width = expertCanvas.clientWidth;
-    const height = expertCanvas.clientHeight;
-    canvasContext.clearRect(0, 0, width, height);
-    canvasContext.fillStyle = canvasColor("--card-bg") || "transparent";
-    canvasContext.fillRect(0, 0, width, height);
-    if (!profileSnapshot) return;
-
-    const cellWidth = width / gridExperts;
-    const cellHeight = height / gridLayers;
-    const gapX = Math.min(0.55, cellWidth * 0.2);
-    const gapY = Math.min(0.7, cellHeight * 0.18);
-    const residentColor = canvasColor("--accent");
-    const diskColor = canvasColor("--ink-3");
-    const activeColor = canvasColor("--tone-gpu");
-
-    for (let layer = 0; layer < gridLayers; layer += 1) {
-      const baselineColor =
-        classifyLayerTier(profileSnapshot.layers, layer) === "disk"
-          ? diskColor
-          : residentColor;
-      for (let expert = 0; expert < gridExperts; expert += 1) {
-        const x = expert * cellWidth + gapX / 2;
-        const y = layer * cellHeight + gapY / 2;
-        const width = Math.max(0.35, cellWidth - gapX);
-        const height = Math.max(0.35, cellHeight - gapY);
-        canvasContext.globalAlpha = 0.72;
-        canvasContext.fillStyle = baselineColor;
-        canvasContext.fillRect(x, y, width, height);
-        const intensity = activity[layer * gridExperts + expert];
-        if (intensity > 0) {
-          canvasContext.globalAlpha = 0.35 + intensity * 0.65;
-          canvasContext.fillStyle = activeColor;
-          canvasContext.fillRect(x, y, width, height);
-        }
-      }
-    }
-    canvasContext.globalAlpha = 1;
-  }
-
-  function animateActivity() {
-    let hasActivity = false;
-    for (let index = 0; index < activity.length; index += 1) {
-      activity[index] = decayActivity(activity[index]);
-      if (activity[index] > 0) hasActivity = true;
-    }
-    drawExpertGrid();
-    if (hasActivity) {
-      canvasFrame = requestAnimationFrame(animateActivity);
-    } else {
-      canvasFrame = undefined;
-    }
-  }
-
-  function pulseExperts(fired) {
-    for (const { layer, expert, delta } of fired) {
-      if (layer >= gridLayers || expert >= gridExperts) continue;
-      const index = layer * gridExperts + expert;
-      const strength = Math.min(1, 0.55 + Math.log2(delta + 1) * 0.12);
-      activity[index] = Math.max(activity[index], strength);
-    }
-    if (fired.length && !canvasFrame) {
-      canvasFrame = requestAnimationFrame(animateActivity);
-    } else {
-      drawExpertGrid();
-    }
-  }
-
-  function resizeCanvas() {
-    if (!expertCanvas || !canvasContext) return;
-    const ratio = window.devicePixelRatio || 1;
-    const width = expertCanvas.clientWidth;
-    const height = expertCanvas.clientHeight;
-    expertCanvas.width = Math.max(1, Math.round(width * ratio));
-    expertCanvas.height = Math.max(1, Math.round(height * ratio));
-    canvasContext.setTransform(ratio, 0, 0, ratio, 0, 0);
-    drawExpertGrid();
+  function scheduleVisual(update) {
+    pendingVisual = { ...pendingVisual, ...update };
+    if (visualFrame) return;
+    visualFrame = requestAnimationFrame(() => {
+      const next = pendingVisual;
+      pendingVisual = {};
+      visualFrame = undefined;
+      if ("profile" in next) displayProfile = next.profile;
+      if ("cache" in next) cacheStatus = next.cache;
+      if ("activity" in next) activity = next.activity;
+    });
   }
 
   async function pollProfile() {
@@ -233,10 +145,21 @@
       const response = await fetch(PROFILE_URL, { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const next = await response.json();
-      updateGridDimensions(next);
-      const fired = diffExpertHits(profileSnapshot, next);
+      const nextActivity = attributeExpertActivity(
+        profileSnapshot,
+        next,
+        cacheSnapshot?.geometry,
+      );
       profileSnapshot = next;
-      pulseExperts(fired);
+
+      const nextLayerSignature = JSON.stringify(next?.layers ?? null);
+      const visualUpdate = {};
+      if (nextLayerSignature !== profileLayerSignature) {
+        profileLayerSignature = nextLayerSignature;
+        visualUpdate.profile = next;
+      }
+      if (nextActivity.totalHits > 0) visualUpdate.activity = nextActivity;
+      if (Object.keys(visualUpdate).length) scheduleVisual(visualUpdate);
       profileError = "";
     } catch {
       profileError = "Expert profile offline";
@@ -251,7 +174,7 @@
     const generation = ++profilePollGeneration;
     profileTimer = setTimeout(async () => {
       await pollProfile();
-      if (!cacheStatus) void pollCacheStatus();
+      if (!cacheSnapshot) void pollCacheStatus();
       if (mounted && generation === profilePollGeneration) {
         scheduleProfile(isInFlight ? 1000 : 3000);
       }
@@ -264,9 +187,13 @@
     try {
       const response = await fetch(CACHE_STATUS_URL, { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      cacheStatus = await response.json();
-      updateGridDimensions(profileSnapshot);
-      drawExpertGrid();
+      const next = await response.json();
+      cacheSnapshot = next;
+      const nextSignature = JSON.stringify(next?.geometry ?? null);
+      if (nextSignature !== cacheGeometrySignature) {
+        cacheGeometrySignature = nextSignature;
+        scheduleVisual({ cache: next });
+      }
       cacheError = "";
     } catch {
       cacheError = "Cache status offline";
@@ -287,17 +214,18 @@
     if (delta.role === "assistant") assistant.role = delta.role;
     if (reasoningContent) assistant.reasoningContent += reasoningContent;
     if (content) assistant.content += content;
+    if (!reasoningContent && !content) return;
 
     turnChunks = [
       ...turnChunks,
       {
         at: now,
-        role: delta.role,
         reasoning_content: reasoningContent,
         content,
       },
     ];
     turnMetrics = calculateTurnMetrics(turnStartedAt, turnChunks);
+    sessionPeaks = trackSessionPeaks(sessionPeaks, turnMetrics);
     firstTokenSeen = turnMetrics.ttftMs !== null;
     scrollToBottom();
   }
@@ -312,8 +240,14 @@
 
     try {
       const event = JSON.parse(data);
-      const delta = event.choices?.[0]?.delta;
-      if (delta && typeof delta === "object") appendDelta(delta);
+      const choice = event.choices?.[0];
+      const assistant = messages[messages.length - 1];
+      if (typeof choice?.finish_reason === "string") {
+        assistant.finishReason = choice.finish_reason;
+      }
+      if (choice?.delta && typeof choice.delta === "object") {
+        appendDelta(choice.delta);
+      }
     } catch {
       // A malformed upstream event is ignored without interrupting the stream.
     }
@@ -325,14 +259,18 @@
 
     inputText = "";
     messages.push({ role: "user", content: text, reasoningContent: "" });
-    messages.push({ role: "assistant", content: "", reasoningContent: "" });
+    messages.push({
+      role: "assistant",
+      content: "",
+      reasoningContent: "",
+      finishReason: "",
+    });
     isInFlight = true;
     firstTokenSeen = false;
     turnStartedAt = performance.now();
     turnChunks = [];
     turnMetrics = { ...EMPTY_TURN_METRICS };
     controller = new AbortController();
-    scheduleStats(0);
     scheduleProfile(0);
     scrollToBottom();
 
@@ -371,14 +309,20 @@
     } catch (error) {
       const assistant = messages[messages.length - 1];
       if (error.name === "AbortError") {
+        assistant.finishReason = "stopped";
         if (!assistant.content) assistant.content = "Generation stopped.";
       } else {
+        assistant.finishReason = "error";
         assistant.content += `${assistant.content ? "\n\n" : ""}Connection error: ${error.message}`;
       }
     } finally {
+      sessionTotals = addSessionTurn(
+        sessionTotals,
+        turnMetrics,
+        performance.now() - turnStartedAt,
+      );
       isInFlight = false;
       controller = undefined;
-      scheduleStats(0);
       scheduleProfile(0);
       scrollToBottom();
     }
@@ -397,26 +341,13 @@
 
   onMount(() => {
     mounted = true;
-    canvasContext = expertCanvas.getContext("2d");
-    canvasResizeObserver = new ResizeObserver(resizeCanvas);
-    canvasResizeObserver.observe(expertCanvas);
-    themeObserver = new MutationObserver(drawExpertGrid);
-    themeObserver.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["data-theme"],
-    });
-    resizeCanvas();
-    scheduleStats(0);
     scheduleProfile(0);
     void pollCacheStatus();
 
     return () => {
       mounted = false;
-      clearTimeout(statsTimer);
       clearTimeout(profileTimer);
-      if (canvasFrame) cancelAnimationFrame(canvasFrame);
-      canvasResizeObserver.disconnect();
-      themeObserver.disconnect();
+      if (visualFrame) cancelAnimationFrame(visualFrame);
       controller?.abort();
     };
   });
@@ -439,70 +370,13 @@
     </div>
   </header>
 
-  <div class="demo-stack">
-    <section class="expert-card" aria-labelledby="expert-heading">
-      <header class="expert-heading">
-        <div class="expert-title">
-          <p class="section-label">01 / Expert residency</p>
-          <h2 id="expert-heading">
-            {formatCount(tierSummary.totalExperts)} experts
-          </h2>
-          <div class="legend" aria-label="Expert grid legend">
-            <span><i class="resident"></i>Resident layer</span>
-            <span><i class="disk"></i>NVMe layer</span>
-            <span><i class="active"></i>Active</span>
-          </div>
-        </div>
-
-        <dl class="tier-summary">
-          <div>
-            <dt>GPU cache</dt>
-            <dd>{formatCount(tierSummary.gpuExperts)}</dd>
-          </div>
-          <div>
-            <dt>NVMe</dt>
-            <dd>{formatCount(tierSummary.nvmeExperts)}</dd>
-          </div>
-          <div>
-            <dt>GPU weights</dt>
-            <dd>{formatOptionalBytes(tierSummary.gpuBytes)}</dd>
-          </div>
-          <div>
-            <dt>NVMe weights</dt>
-            <dd>{formatOptionalBytes(tierSummary.nvmeBytes)}</dd>
-          </div>
-        </dl>
-      </header>
-
-      <div class="canvas-wrap">
-        <canvas
-          bind:this={expertCanvas}
-          aria-label={`${gridLayers} mixture-of-experts layers with ${gridExperts} experts in each row`}
-        >
-          {gridLayers} layers with {gridExperts} experts in each layer
-        </canvas>
-        {#if telemetryError}
-          <span class="telemetry-error" role="status">{telemetryError}</span>
-        {/if}
-      </div>
-    </section>
-
+  <div class="demo-grid">
     <section class="chat-card" aria-label="Chat with Qwen3.8-Flash-Next">
-      <header class="chat-heading">
+      <header class="card-heading chat-heading">
         <div>
-          <p class="section-label">02 / Chat</p>
-          <h2>Ask Qwen</h2>
+          <p class="section-label">01 / Live chat</p>
+          <h2>Ask the 125B model</h2>
         </div>
-        <dl class="turn-metrics">
-          <div>
-            <dt>Decode</dt>
-            <dd>{formatRate(stats?.throughput?.decode_tps)} tok/s</dd>
-          </div>
-          <div>
-            <dt>First token</dt>
-            <dd>{formatDuration(turnMetrics.ttftMs)}</dd>
-          </div>
-        </dl>
         <label class="thinking-toggle">
           <input type="checkbox" bind:checked={thinkingEnabled} />
           <span>Thinking</span>
@@ -510,6 +384,12 @@
       </header>
 
       <div class="messages" bind:this={chatLog} aria-live="polite">
+        {#if messages.length === 0}
+          <div class="empty-state">
+            <p>Ready for the first question.</p>
+            <span>Thinking uses the model's own generation profile.</span>
+          </div>
+        {/if}
         {#each messages as message, index}
           <article
             class:assistant={message.role === "assistant"}
@@ -528,7 +408,12 @@
                   <pre>{message.reasoningContent}</pre>
                 </details>
               {/if}
-              <pre class="answer-region">{message.content}</pre>
+              <div class="answer-region">
+                {@html renderMarkdown(message.content)}
+              </div>
+              {#if message.finishReason}
+                <p class="finish-reason">finish: {message.finishReason}</p>
+              {/if}
             {:else}
               <pre>{message.content}</pre>
             {/if}
@@ -549,7 +434,7 @@
           bind:value={inputText}
           onkeydown={onInputKeydown}
           placeholder="Ask Qwen..."
-          rows="2"
+          rows="3"
           disabled={isInFlight}></textarea>
         {#if isInFlight}
           <button class="stop-button" type="button" onclick={stopGeneration}>
@@ -566,11 +451,173 @@
         {/if}
       </form>
     </section>
+
+    <aside class="side-column" aria-label="Model telemetry">
+      <section class="residency-card" aria-labelledby="residency-heading">
+        <header class="card-heading">
+          <div>
+            <p class="section-label">02 / Expert residency</p>
+            <h2 id="residency-heading">
+              {formatCount(tierSummary.totalExperts)} experts
+            </h2>
+          </div>
+          {#if telemetryError}
+            <span class="telemetry-error" role="status">{telemetryError}</span>
+          {/if}
+        </header>
+
+        <div
+          class="capacity-bar"
+          aria-label="Expert capacity split between hot, warm, and cold tiers"
+        >
+          <span
+            class="hot"
+            style:width={`${percentage(tierSummary.hotExperts, tierSummary.totalExperts)}%`}
+          ></span>
+          <span
+            class="warm"
+            style:width={`${percentage(tierSummary.warmExperts, tierSummary.totalExperts)}%`}
+          ></span>
+          <span
+            class="cold"
+            style:width={`${percentage(tierSummary.coldExperts, tierSummary.totalExperts)}%`}
+          ></span>
+        </div>
+
+        <dl class="tier-list">
+          <div class="hot">
+            <dt><i></i><strong>Hot</strong><span>VRAM</span></dt>
+            <dd>
+              <strong>{formatCount(tierSummary.hotExperts)}</strong>
+              <span>{formatOptionalBytes(tierSummary.hotBytes)}</span>
+            </dd>
+          </div>
+          <div class="warm">
+            <dt><i></i><strong>Warm</strong><span>RAM</span></dt>
+            <dd>
+              <strong>{formatCount(tierSummary.warmExperts)}</strong>
+              <span>{formatOptionalBytes(tierSummary.warmBytes)}</span>
+            </dd>
+          </div>
+          <div class="cold">
+            <dt><i></i><strong>Cold</strong><span>NVMe</span></dt>
+            <dd>
+              <strong>{formatCount(tierSummary.coldExperts)}</strong>
+              <span>{formatOptionalBytes(tierSummary.coldBytes)}</span>
+            </dd>
+          </div>
+        </dl>
+
+        <div class="activity-heading">
+          <div>
+            <p class="section-label">Latest routing sample</p>
+            <h3>{formatCount(activity.totalHits)} activations</h3>
+          </div>
+          {#if activity.unknownHits > 0}
+            <span>{formatCount(activity.unknownHits)} unclassified</span>
+          {/if}
+        </div>
+        <div
+          class="activity-bar"
+          aria-label="Latest expert activations by tier"
+        >
+          <span
+            class="hot"
+            style:width={`${percentage(activity.hotHits, activity.totalHits)}%`}
+          ></span>
+          <span
+            class="warm"
+            style:width={`${percentage(activity.warmHits, activity.totalHits)}%`}
+          ></span>
+          <span
+            class="cold"
+            style:width={`${percentage(activity.coldHits, activity.totalHits)}%`}
+          ></span>
+        </div>
+        <div class="activity-values" aria-hidden="true">
+          <span class="hot"
+            >Hot {formatPercentage(activity.hotHits, activity.totalHits)}</span
+          >
+          <span class="warm"
+            >Warm {formatPercentage(
+              activity.warmHits,
+              activity.totalHits,
+            )}</span
+          >
+          <span class="cold"
+            >Cold {formatPercentage(
+              activity.coldHits,
+              activity.totalHits,
+            )}</span
+          >
+        </div>
+        <p class="method-note">
+          Hot activity is estimated from routing frequency.
+        </p>
+      </section>
+
+      <section class="stats-card" aria-labelledby="stats-heading">
+        <header class="card-heading">
+          <div>
+            <p class="section-label">03 / This page session</p>
+            <h2 id="stats-heading">Performance</h2>
+          </div>
+        </header>
+        <div class="stats-groups">
+          <section>
+            <h3>Live</h3>
+            <dl>
+              <div>
+                <dt>Decode</dt>
+                <dd>{formatRate(turnMetrics.tokensPerSecond)} tok/s</dd>
+              </div>
+              <div>
+                <dt>First token</dt>
+                <dd>{formatDuration(turnMetrics.ttftMs)}</dd>
+              </div>
+            </dl>
+          </section>
+          <section>
+            <h3>Peak</h3>
+            <dl>
+              <div>
+                <dt>Best decode</dt>
+                <dd>{formatRate(sessionPeaks.decodeTps)} tok/s</dd>
+              </div>
+              <div>
+                <dt>Best first token</dt>
+                <dd>{formatDuration(sessionPeaks.ttftMs)}</dd>
+              </div>
+            </dl>
+          </section>
+          <section>
+            <h3>Totals</h3>
+            <dl>
+              <div>
+                <dt>Turns</dt>
+                <dd>{formatCount(sessionTotals.turns)}</dd>
+              </div>
+              <div>
+                <dt>Tokens</dt>
+                <dd>{formatCount(sessionTotals.tokens)}</dd>
+              </div>
+              <div>
+                <dt>Generating</dt>
+                <dd>{formatTotalDuration(sessionTotals.generationMs)}</dd>
+              </div>
+            </dl>
+          </section>
+        </div>
+      </section>
+    </aside>
   </div>
 </main>
 
 <style>
   .demo-page {
+    --tier-hot: var(--st-err);
+    --tier-warm: var(--yellow);
+    --tier-cold: var(--tone-gpu);
     box-sizing: border-box;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
@@ -585,7 +632,7 @@
   }
 
   .page-header,
-  .demo-stack {
+  .demo-grid {
     width: 100%;
     max-width: 90rem;
     margin: 0 auto;
@@ -602,7 +649,7 @@
 
   .page-header h1 {
     margin: 0;
-    font-size: clamp(2.2rem, 4vw, 4rem);
+    font-size: clamp(2rem, 3.7vw, 3.7rem);
     font-weight: 500;
     letter-spacing: -0.06em;
     line-height: 0.95;
@@ -616,14 +663,16 @@
   .section-label,
   .state,
   .message-role,
-  .tier-summary dt,
-  .turn-metrics dt {
+  .tier-list dt span,
+  .stats-groups h3,
+  .stats-groups dt,
+  .finish-reason {
     margin: 0;
     color: var(--ink-3);
     font-family: var(--font-code);
-    font-size: 0.64rem;
+    font-size: 0.68rem;
     font-weight: 600;
-    letter-spacing: 0.11em;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
   }
 
@@ -648,7 +697,7 @@
 
   .state[data-state="prefilling"] .state-dot,
   .state[data-state="generating"] .state-dot {
-    background: var(--tone-gpu);
+    background: var(--tier-hot);
     animation: pulse 1s ease-in-out infinite;
   }
 
@@ -658,163 +707,65 @@
     }
   }
 
-  .demo-stack {
+  .demo-grid {
     display: grid;
-    grid-template-rows: minmax(20rem, 1.25fr) minmax(16rem, 0.75fr);
+    grid-template-columns: minmax(0, 1.9fr) minmax(22rem, 0.82fr);
     gap: 0.8rem;
     min-height: 0;
   }
 
-  .expert-card,
-  .chat-card {
+  .chat-card,
+  .residency-card,
+  .stats-card {
     min-height: 0;
     border: 1px solid var(--stroke);
     background: var(--card-bg);
   }
 
-  .expert-card {
+  .chat-card {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
   }
 
-  .expert-heading {
+  .side-column {
+    display: grid;
+    grid-template-rows: minmax(0, 1.12fr) minmax(0, 0.88fr);
+    gap: 0.8rem;
+    min-height: 0;
+  }
+
+  .card-heading {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 2rem;
-    padding: 0.8rem 1rem;
+    gap: 1rem;
+    padding: 0.78rem 0.9rem;
     border-bottom: 1px solid var(--line);
   }
 
-  .expert-title h2,
-  .chat-heading h2 {
+  .card-heading h2 {
     margin: 0.18rem 0 0;
-    font-size: 1.25rem;
+    font-size: 1.28rem;
     font-weight: 550;
     letter-spacing: -0.03em;
-  }
-
-  .legend {
-    display: flex;
-    gap: 1rem;
-    margin-top: 0.45rem;
-    color: var(--ink-2);
-    font-family: var(--font-code);
-    font-size: 0.62rem;
-  }
-
-  .legend span {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.32rem;
-  }
-
-  .legend i {
-    display: block;
-    width: 0.55rem;
-    height: 0.55rem;
-    background: var(--accent);
-  }
-
-  .legend .disk {
-    background: var(--ink-3);
-  }
-
-  .legend .active {
-    background: var(--tone-gpu);
-  }
-
-  .tier-summary,
-  .turn-metrics {
-    display: grid;
-    margin: 0;
-  }
-
-  .tier-summary {
-    grid-template-columns: repeat(4, minmax(7rem, 1fr));
-    border-left: 1px solid var(--line);
-  }
-
-  .tier-summary > div {
-    padding: 0.25rem 0.8rem;
-    border-right: 1px solid var(--line);
-  }
-
-  .tier-summary dd,
-  .turn-metrics dd {
-    margin: 0.18rem 0 0;
-    color: var(--ink);
-    font-family: var(--font-code);
-    font-size: 1rem;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-
-  .canvas-wrap {
-    position: relative;
-    min-height: 0;
-    padding: 0.75rem 1rem 0.9rem;
-  }
-
-  canvas {
-    display: block;
-    width: 100%;
-    height: 100%;
-  }
-
-  .telemetry-error {
-    position: absolute;
-    right: 1rem;
-    bottom: 0.9rem;
-    padding: 0.3rem 0.45rem;
-    background: var(--card-bg);
-    color: var(--tone-disk);
-    font-family: var(--font-code);
-    font-size: 0.62rem;
-  }
-
-  .chat-card {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(18rem, 0.38fr);
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-
-  .chat-heading {
-    display: grid;
-    grid-column: 1 / -1;
-    grid-template-columns: minmax(10rem, 1fr) auto auto;
-    align-items: center;
-    gap: 1rem;
-    padding: 0.65rem 1rem;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .turn-metrics {
-    grid-template-columns: repeat(2, minmax(8rem, auto));
-    border-left: 1px solid var(--line);
-  }
-
-  .turn-metrics > div {
-    padding: 0.1rem 0.9rem;
-    border-right: 1px solid var(--line);
   }
 
   .thinking-toggle {
     display: inline-flex;
     align-items: center;
-    gap: 0.42rem;
-    min-height: 2rem;
-    padding: 0 0.6rem;
+    gap: 0.45rem;
+    min-height: 2.2rem;
+    padding: 0 0.7rem;
     border: 1px solid var(--line);
     color: var(--ink-2);
     font-family: var(--font-code);
-    font-size: 0.67rem;
+    font-size: 0.72rem;
     cursor: pointer;
   }
 
   .thinking-toggle input {
-    width: 0.85rem;
-    height: 0.85rem;
+    width: 0.9rem;
+    height: 0.9rem;
     margin: 0;
     accent-color: var(--accent-ink);
   }
@@ -822,15 +773,33 @@
   .messages {
     min-height: 0;
     overflow-y: auto;
-    padding: 0.8rem 1rem;
-    border-right: 1px solid var(--line);
+    padding: 1rem;
     scrollbar-color: var(--ink-3) transparent;
+  }
+
+  .empty-state {
+    display: grid;
+    place-content: center;
+    height: 100%;
+    color: var(--ink-2);
+    text-align: center;
+  }
+
+  .empty-state p {
+    margin: 0 0 0.25rem;
+    font-size: 1.15rem;
+  }
+
+  .empty-state span {
+    color: var(--ink-3);
+    font-family: var(--font-code);
+    font-size: 0.72rem;
   }
 
   .message {
     max-width: 88%;
-    margin: 0 0 0.65rem auto;
-    padding: 0.55rem 0.7rem;
+    margin: 0 0 0.85rem auto;
+    padding: 0.72rem 0.82rem;
     border: 1px solid var(--line);
     background: var(--band);
   }
@@ -842,23 +811,46 @@
   }
 
   .message-role {
-    margin-bottom: 0.25rem;
+    margin-bottom: 0.35rem;
   }
 
   .message pre,
-  .waiting {
+  .waiting,
+  .answer-region {
     margin: 0;
     overflow-wrap: anywhere;
     color: var(--ink);
     font-family: var(--font-ui);
-    font-size: 0.86rem;
-    line-height: 1.42;
+    font-size: 1rem;
+    line-height: 1.52;
     white-space: pre-wrap;
   }
 
+  .answer-region :global(p),
+  .answer-region :global(ul),
+  .answer-region :global(ol),
+  .answer-region :global(pre),
+  .answer-region :global(blockquote) {
+    margin: 0 0 0.65em;
+  }
+
+  .answer-region :global(:last-child) {
+    margin-bottom: 0;
+  }
+
+  .answer-region :global(ul),
+  .answer-region :global(ol) {
+    padding-left: 1.25rem;
+  }
+
+  .answer-region :global(code) {
+    font-family: var(--font-code);
+    font-size: 0.9em;
+  }
+
   .thinking-region {
-    margin-bottom: 0.45rem;
-    padding: 0.4rem 0.5rem;
+    margin-bottom: 0.6rem;
+    padding: 0.45rem 0.55rem;
     border-left: 2px solid var(--line);
     color: var(--ink-3);
   }
@@ -866,15 +858,19 @@
   .thinking-region summary {
     color: var(--ink-3);
     font-family: var(--font-code);
-    font-size: 0.62rem;
+    font-size: 0.68rem;
     text-transform: uppercase;
     cursor: pointer;
   }
 
   .thinking-region pre {
-    margin-top: 0.35rem;
+    margin-top: 0.4rem;
     color: var(--ink-3);
-    font-size: 0.76rem;
+    font-size: 0.86rem;
+  }
+
+  .finish-reason {
+    margin-top: 0.55rem;
   }
 
   .waiting {
@@ -883,11 +879,11 @@
 
   .waiting span {
     display: inline-block;
-    width: 0.42rem;
-    height: 0.42rem;
-    margin-right: 0.4rem;
+    width: 0.45rem;
+    height: 0.45rem;
+    margin-right: 0.45rem;
     border-radius: 50%;
-    background: var(--tone-gpu);
+    background: var(--tier-hot);
     animation: pulse 1s ease-in-out infinite;
   }
 
@@ -895,26 +891,26 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: stretch;
-    gap: 0.6rem;
-    min-height: 0;
-    padding: 0.8rem;
+    gap: 0.65rem;
+    padding: 0.85rem;
+    border-top: 1px solid var(--line);
     background: var(--sheet);
   }
 
   .composer textarea {
     display: block;
     width: 100%;
-    min-height: 0;
+    min-height: 4.6rem;
     resize: none;
-    padding: 0.65rem;
+    padding: 0.7rem;
     border: 1px solid var(--stroke);
     border-radius: 0;
     outline: none;
     background: var(--card-bg);
     color: var(--ink);
     font: inherit;
-    font-size: 0.88rem;
-    line-height: 1.4;
+    font-size: 0.98rem;
+    line-height: 1.45;
   }
 
   .composer textarea:focus {
@@ -924,14 +920,14 @@
 
   .send-button,
   .stop-button {
-    min-width: 4.8rem;
-    padding: 0.55rem 0.7rem;
+    min-width: 5.2rem;
+    padding: 0.6rem 0.8rem;
     border: 1px solid var(--accent-ink);
     border-radius: 0;
     background: var(--accent-ink);
     color: var(--sheet);
     font-family: var(--font-code);
-    font-size: 0.68rem;
+    font-size: 0.72rem;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -946,9 +942,182 @@
   }
 
   .stop-button {
-    border-color: var(--tone-disk);
+    border-color: var(--tier-hot);
     background: transparent;
-    color: var(--tone-disk);
+    color: var(--tier-hot);
+  }
+
+  .telemetry-error {
+    color: var(--tier-hot);
+    font-family: var(--font-code);
+    font-size: 0.64rem;
+  }
+
+  .capacity-bar,
+  .activity-bar {
+    display: flex;
+    width: calc(100% - 1.8rem);
+    height: 1.1rem;
+    margin: 1rem 0.9rem 0;
+    overflow: hidden;
+    background: var(--band);
+  }
+
+  .capacity-bar span,
+  .activity-bar span {
+    display: block;
+    height: 100%;
+  }
+
+  .hot {
+    --tier-color: var(--tier-hot);
+  }
+  .warm {
+    --tier-color: var(--tier-warm);
+  }
+  .cold {
+    --tier-color: var(--tier-cold);
+  }
+  .capacity-bar .hot,
+  .capacity-bar .warm,
+  .capacity-bar .cold,
+  .activity-bar .hot,
+  .activity-bar .warm,
+  .activity-bar .cold {
+    background: var(--tier-color);
+  }
+
+  .tier-list {
+    display: grid;
+    gap: 0;
+    margin: 0.65rem 0.9rem 0;
+  }
+
+  .tier-list > div {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.7rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .tier-list dt,
+  .tier-list dd {
+    display: flex;
+    align-items: baseline;
+    gap: 0.45rem;
+    margin: 0;
+  }
+
+  .tier-list dt i {
+    align-self: center;
+    width: 0.65rem;
+    height: 0.65rem;
+    background: var(--tier-color);
+  }
+
+  .tier-list dt strong {
+    font-size: 0.92rem;
+    text-transform: uppercase;
+  }
+
+  .tier-list dd strong,
+  .tier-list dd span {
+    font-family: var(--font-code);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tier-list dd strong {
+    font-size: 0.92rem;
+  }
+  .tier-list dd span {
+    color: var(--ink-3);
+    font-size: 0.7rem;
+  }
+
+  .activity-heading {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 0.6rem;
+    margin: 0.9rem 0.9rem 0;
+  }
+
+  .activity-heading h3 {
+    margin: 0.12rem 0 0;
+    font-size: 1rem;
+  }
+
+  .activity-heading > span {
+    color: var(--ink-3);
+    font-family: var(--font-code);
+    font-size: 0.65rem;
+  }
+
+  .activity-bar {
+    height: 0.78rem;
+    margin-top: 0.5rem;
+  }
+
+  .activity-values {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.4rem;
+    margin: 0.4rem 0.9rem 0;
+    font-family: var(--font-code);
+    font-size: 0.66rem;
+  }
+
+  .activity-values span::before {
+    display: inline-block;
+    width: 0.45rem;
+    height: 0.45rem;
+    margin-right: 0.25rem;
+    background: var(--tier-color);
+    content: "";
+  }
+
+  .method-note {
+    margin: 0.75rem 0.9rem 0;
+    color: var(--ink-3);
+    font-family: var(--font-code);
+    font-size: 0.62rem;
+    line-height: 1.4;
+  }
+
+  .stats-groups {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    height: calc(100% - 3.8rem);
+  }
+
+  .stats-groups section {
+    min-width: 0;
+    padding: 0.6rem 0.6rem;
+    border-right: 1px solid var(--line);
+  }
+
+  .stats-groups section:last-child {
+    border-right: 0;
+  }
+  .stats-groups h3 {
+    margin-bottom: 0.45rem;
+  }
+  .stats-groups dl {
+    margin: 0;
+  }
+
+  .stats-groups dl > div {
+    margin-bottom: 0.45rem;
+  }
+
+  .stats-groups dd {
+    margin: 0.18rem 0 0;
+    font-family: var(--font-code);
+    font-size: 0.82rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
 
   .sr-only {
@@ -970,52 +1139,35 @@
     .page-header h1 {
       white-space: normal;
     }
-
-    .demo-stack {
-      grid-template-rows: 26rem minmax(28rem, auto);
-    }
-
-    .expert-heading {
-      align-items: flex-start;
-    }
-
-    .tier-summary {
-      grid-template-columns: repeat(2, minmax(7rem, 1fr));
-    }
-
-    .chat-card {
+    .demo-grid {
       grid-template-columns: 1fr;
-      grid-template-rows: auto minmax(16rem, 1fr) auto;
     }
-
-    .messages {
-      border-right: 0;
-      border-bottom: 1px solid var(--line);
+    .chat-card {
+      min-height: 36rem;
+    }
+    .side-column {
+      grid-template-rows: auto auto;
+    }
+    .residency-card,
+    .stats-card {
+      min-height: 20rem;
     }
   }
 
-  @media (max-width: 620px) {
+  @media (max-width: 540px) {
     .page-header {
       align-items: flex-end;
     }
-
     .page-header h1 {
       font-size: 2rem;
     }
-
-    .expert-heading,
-    .chat-heading {
-      display: flex;
-      flex-wrap: wrap;
+    .stats-groups {
+      grid-template-columns: 1fr;
+      height: auto;
     }
-
-    .tier-summary {
-      width: 100%;
-      border-top: 1px solid var(--line);
-    }
-
-    .turn-metrics {
-      margin-left: auto;
+    .stats-groups section {
+      border-right: 0;
+      border-bottom: 1px solid var(--line);
     }
   }
 </style>
