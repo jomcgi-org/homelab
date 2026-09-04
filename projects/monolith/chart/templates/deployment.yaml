@@ -592,6 +592,14 @@ spec:
               value: {{ .Values.auth.authentik.issuer | quote }}
             - name: AUTH_AUTHENTIK_AUDIENCE
               value: {{ .Values.auth.authentik.audience | quote }}
+            {{- if .Values.auth.authentik.agentIssuer }}
+            - name: AUTH_AUTHENTIK_AGENT_JWKS_URL
+              value: {{ .Values.auth.authentik.agentJwksUrl | quote }}
+            - name: AUTH_AUTHENTIK_AGENT_ISSUER
+              value: {{ .Values.auth.authentik.agentIssuer | quote }}
+            - name: AUTH_AUTHENTIK_AGENT_AUDIENCE
+              value: {{ .Values.auth.authentik.agentAudience | quote }}
+            {{- end }}
             - name: AUTH_JWKS_CACHE_TTL_S
               value: {{ .Values.auth.jwksCacheTtlSeconds | quote }}
           livenessProbe:
@@ -681,6 +689,14 @@ spec:
               value: {{ .Values.auth.authentik.issuer | quote }}
             - name: AUTH_AUTHENTIK_AUDIENCE
               value: {{ .Values.auth.authentik.audience | quote }}
+            {{- if .Values.auth.authentik.agentIssuer }}
+            - name: AUTH_AUTHENTIK_AGENT_JWKS_URL
+              value: {{ .Values.auth.authentik.agentJwksUrl | quote }}
+            - name: AUTH_AUTHENTIK_AGENT_ISSUER
+              value: {{ .Values.auth.authentik.agentIssuer | quote }}
+            - name: AUTH_AUTHENTIK_AGENT_AUDIENCE
+              value: {{ .Values.auth.authentik.agentAudience | quote }}
+            {{- end }}
             - name: AUTH_JWKS_CACHE_TTL_S
               value: {{ .Values.auth.jwksCacheTtlSeconds | quote }}
             {{- if .Values.stars }}

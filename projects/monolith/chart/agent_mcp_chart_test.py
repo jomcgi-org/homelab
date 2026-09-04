@@ -72,6 +72,9 @@ def test_agent_mcp_container_has_isolated_port_and_liveness_only():
         "AUTH_AUTHENTIK_JWKS_URL",
         "AUTH_AUTHENTIK_ISSUER",
         "AUTH_AUTHENTIK_AUDIENCE",
+        "AUTH_AUTHENTIK_AGENT_JWKS_URL",
+        "AUTH_AUTHENTIK_AGENT_ISSUER",
+        "AUTH_AUTHENTIK_AGENT_AUDIENCE",
         "AUTH_JWKS_CACHE_TTL_S",
         # Object storage for raw bodies; see the dedicated test below for why
         # their absence would be a silent loss rather than a visible failure.
@@ -80,6 +83,26 @@ def test_agent_mcp_container_has_isolated_port_and_liveness_only():
         "S3_ACCESS_KEY_ID",
         "S3_SECRET_ACCESS_KEY",
     }
+
+
+def test_auth_env_vars_present_on_both_containers():
+    deployment = _app_deployment(_render())
+    containers = {
+        container["name"]: container
+        for container in deployment["spec"]["template"]["spec"]["containers"]
+    }
+
+    expected = {
+        "AUTH_AUTHENTIK_JWKS_URL",
+        "AUTH_AUTHENTIK_ISSUER",
+        "AUTH_AUTHENTIK_AUDIENCE",
+        "AUTH_AUTHENTIK_AGENT_JWKS_URL",
+        "AUTH_AUTHENTIK_AGENT_ISSUER",
+        "AUTH_AUTHENTIK_AGENT_AUDIENCE",
+    }
+    for name in ("backend", "agent-mcp"):
+        env_names = {item["name"] for item in containers[name]["env"]}
+        assert expected <= env_names
 
 
 def test_service_exposes_agent_mcp_port():

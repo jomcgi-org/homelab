@@ -68,6 +68,9 @@ auth:
     jwksUrl: "http://authentik-server.authentik.svc.cluster.local/application/o/mcp-friends/jwks/"
     issuer: "https://auth.jomcgi.dev/application/o/mcp-friends/"
     audience: "https://private.jomcgi.dev"
+    agentJwksUrl: "http://authentik-server.authentik.svc.cluster.local/application/o/mcp-agents/jwks/"
+    agentIssuer: "https://auth.jomcgi.dev/application/o/mcp-agents/"
+    agentAudience: "https://private.jomcgi.dev"
   jwksCacheTtlSeconds: 300
 
 # Progress-ingest listener (ADR agents/051): its own container and port so the

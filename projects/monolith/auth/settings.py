@@ -15,6 +15,9 @@ class AuthSettings:
     authentik_issuer: str
     authentik_audience: str
     jwks_cache_ttl_s: float
+    authentik_agent_jwks_url: str = ""
+    authentik_agent_issuer: str = ""
+    authentik_agent_audience: str = ""
 
     @classmethod
     def from_env(cls) -> AuthSettings:
@@ -32,6 +35,9 @@ class AuthSettings:
             authentik_issuer=os.getenv("AUTH_AUTHENTIK_ISSUER", ""),
             authentik_audience=os.getenv("AUTH_AUTHENTIK_AUDIENCE", ""),
             jwks_cache_ttl_s=parse_ttl(os.getenv("AUTH_JWKS_CACHE_TTL_S", "300")),
+            authentik_agent_jwks_url=os.getenv("AUTH_AUTHENTIK_AGENT_JWKS_URL", ""),
+            authentik_agent_issuer=os.getenv("AUTH_AUTHENTIK_AGENT_ISSUER", ""),
+            authentik_agent_audience=os.getenv("AUTH_AUTHENTIK_AGENT_AUDIENCE", ""),
         )
 
     @property
@@ -41,5 +47,15 @@ class AuthSettings:
                 self.authentik_jwks_url,
                 self.authentik_issuer,
                 self.authentik_audience,
+            )
+        )
+
+    @property
+    def agent_provider_is_configured(self) -> bool:
+        return all(
+            (
+                self.authentik_agent_jwks_url,
+                self.authentik_agent_issuer,
+                self.authentik_agent_audience,
             )
         )
