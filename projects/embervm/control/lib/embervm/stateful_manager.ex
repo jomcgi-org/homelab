@@ -1167,6 +1167,12 @@ defmodule Embervm.StatefulManager do
             {:restore_volume_then_cold, workload, node_id, volume}
 
           {:error, :volume_node_gone} ->
+            # Three distinct refusals below all returned a bare :volume_node_gone,
+            # identical to the ordinary dead-anchor case. On 2026-09-04 that cost
+            # hours: a workload with a complete export sitting in the store looped
+            # on this error for 142 minutes and the logs could not say which
+            # precondition was refusing. Name the refusal; the decision itself is
+            # unchanged and still fails closed.
             if confirmed_anchor_gone?({state, volume}) do
               # Reuse the nil-volume cold planner only to select a live target.
               # Its serving-subnet, base-readiness, slot, and memory gates are
@@ -1186,13 +1192,34 @@ defmodule Embervm.StatefulManager do
                     # Unknown reachability remains fail-closed. Preserve the old
                     # dead-anchor error because no restore was dispatched and the
                     # durable anchor has not moved.
+                    Logger.warning(
+                      "embervm stateful: volume restore refused, no node reports a reachable store",
+                      workload: workload,
+                      anchor: volume.node_id,
+                      restore_target: target,
+                      exported_generation: exported_generation(volume)
+                    )
+
                     {:error, :volume_node_gone}
                   end
 
                 {:error, reason} ->
+                  Logger.warning("embervm stateful: volume restore refused, no cold target",
+                    workload: workload,
+                    anchor: volume.node_id,
+                    reason: inspect(reason)
+                  )
+
                   {:error, reason}
               end
             else
+              Logger.warning(
+                "embervm stateful: volume restore refused, anchor loss not yet confirmed",
+                workload: workload,
+                anchor: volume.node_id,
+                exported_generation: exported_generation(volume)
+              )
+
               {:error, :volume_node_gone}
             end
 
