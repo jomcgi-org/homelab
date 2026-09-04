@@ -32,6 +32,8 @@ defmodule Embervm.StatefulSweeperTest do
     WorkloadCatalog
   }
 
+  alias Embervm.Application, as: App
+
   alias Embervm.OpLog.SQLite
 
   alias Embervm.Node.V1.{
@@ -287,6 +289,13 @@ defmodule Embervm.StatefulSweeperTest do
           Keyword.get(opts, :session_pressure_idle_floor_ms, 60_000),
         sweep_interval_ms: 0
       ]
+
+    sweeper_opts =
+      if Keyword.get(opts, :omit_pressure_banking_enabled, false) do
+        Keyword.delete(sweeper_opts, :pressure_banking_enabled)
+      else
+        sweeper_opts
+      end
 
     # The status.stateful writer seam (Task 10): records every {namespace, name,
     # status_map} the sweep patches, so a test asserts the debounce (one write
@@ -1702,6 +1711,42 @@ defmodule Embervm.StatefulSweeperTest do
   end
 
   describe "brick memory-pressure banking" do
+    test "pressure banking defaults disabled when the environment variable is unset" do
+      previous_system_env = System.get_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED")
+      previous_application_env = Application.fetch_env(:embervm, :stateful_pressure_banking_enabled)
+
+      on_exit(fn ->
+        restore_system_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", previous_system_env)
+        restore_application_env(:stateful_pressure_banking_enabled, previous_application_env)
+      end)
+
+      System.delete_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED")
+      Application.delete_env(:embervm, :stateful_pressure_banking_enabled)
+
+      assert App.boolean_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", false) == false
+
+      ctx = start_stack(omit_pressure_banking_enabled: true)
+      assert :sys.get_state(ctx.sweeper).pressure_banking_enabled == false
+    end
+
+    test "pressure banking defaults disabled when the environment variable is empty" do
+      previous_system_env = System.get_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED")
+      previous_application_env = Application.fetch_env(:embervm, :stateful_pressure_banking_enabled)
+
+      on_exit(fn ->
+        restore_system_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", previous_system_env)
+        restore_application_env(:stateful_pressure_banking_enabled, previous_application_env)
+      end)
+
+      System.put_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", "")
+      Application.delete_env(:embervm, :stateful_pressure_banking_enabled)
+
+      assert App.boolean_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", false) == false
+
+      ctx = start_stack(omit_pressure_banking_enabled: true)
+      assert :sys.get_state(ctx.sweeper).pressure_banking_enabled == false
+    end
+
     test "invalid_low_ge_high_logs_and_disables" do
       log =
         ExUnit.CaptureLog.capture_log(fn ->
@@ -2626,4 +2671,10 @@ defmodule Embervm.StatefulSweeperTest do
       assert stop_calls(ctx) == []
     end
   end
+
+  defp restore_system_env(key, nil), do: System.delete_env(key)
+  defp restore_system_env(key, value), do: System.put_env(key, value)
+
+  defp restore_application_env(key, :error), do: Application.delete_env(:embervm, key)
+  defp restore_application_env(key, {:ok, value}), do: Application.put_env(:embervm, key, value)
 end

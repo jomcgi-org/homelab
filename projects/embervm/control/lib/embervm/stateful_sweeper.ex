@@ -368,7 +368,7 @@ defmodule Embervm.StatefulSweeper do
         Keyword.get(
           opts,
           :pressure_banking_enabled,
-          Application.get_env(:embervm, :stateful_pressure_banking_enabled, true)
+          Application.get_env(:embervm, :stateful_pressure_banking_enabled, false)
         ),
       high_water_fraction:
         Keyword.get(
