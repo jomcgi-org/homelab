@@ -212,7 +212,7 @@ jobs:
       schedule: "0 4 * * 0" # weekly, Sunday 04:00 UTC
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 600
-      suspend: false
+      suspend: true
       resources:
         requests:
           cpu: "1"
@@ -364,7 +364,7 @@ jobs:
       schedule: "0 */6 * * *" # every 6h (was 21600s)
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 900
-      suspend: false
+      suspend: true
       resources:
         requests:
           cpu: 250m
@@ -419,7 +419,7 @@ jobs:
       schedule: "*/5 * * * *" # every 5 min (was 300s)
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 600
-      suspend: false
+      suspend: true
       resources:
         requests:
           cpu: 250m
@@ -432,7 +432,7 @@ jobs:
       schedule: "2-59/5 * * * *" # every 5 min, offset from ingest
       concurrencyPolicy: Forbid
       activeDeadlineSeconds: 600
-      suspend: false
+      suspend: true
       resources:
         requests:
           cpu: 250m
