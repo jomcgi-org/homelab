@@ -255,6 +255,24 @@ Command failed: exit status 3
 Action failed: exit status 1
 EOF
 
+cat >"$TMP/verification_genrule_failed" <<'EOF'
+ci-local-affected: running bazel test on 3 affected target(s)
+ERROR: /repo/bazel/erlang/BUILD:91:8: Executing genrule //bazel/erlang:mix_test_smoke failed: (Exit 1)
+     1) test the sweeper terminalizes (Embervm.StatefulSweeperTest)
+1637 tests, 1 failure
+FAILED: Build did NOT complete successfully
+EOF
+cat >"$TMP/executed_zero_with_verification" <<'EOF'
+ci-local-affected: running bazel test on 138 affected target(s)
+affected-targets: 138 affected targets, 1 of them verification genrules
+Executed 0 out of 137 tests: 137 tests pass.
+EOF
+cat >"$TMP/executed_zero_without_verification" <<'EOF'
+ci-local-affected: running bazel test on 137 affected target(s)
+affected-targets: 137 affected targets, 0 of them verification genrules
+Executed 0 out of 137 tests: 137 tests pass.
+EOF
+
 run_behavioral_case() {
 	local name="$1"
 	local fixture="$2"
@@ -291,6 +309,28 @@ run_behavioral_case "summary_reports_failures_caught" "$TMP/summary_reports_fail
 run_behavioral_case "ansi_prefixed_markers_caught" "$TMP/ansi_prefixed_markers_caught" 0 1
 run_behavioral_case "midline_marker_not_infra" "$TMP/midline_marker_not_infra" 0 0
 run_behavioral_case "bb_status_3_propagates" "$TMP/bb_status_3_propagates" 3 3
+run_behavioral_case "verification_genrule_failure_caught" "$TMP/verification_genrule_failed" 0 1
+run_behavioral_case "executed_zero_with_verification_passes" "$TMP/executed_zero_with_verification" 0 0
+run_behavioral_case "executed_zero_without_verification_passes" "$TMP/executed_zero_without_verification" 0 0
+
+# A red verification genrule must read as a red suite, not as the #4118 infra arm.
+if grep -qF "a build action failed" "$TMP/verification_genrule_failure_caught.out" &&
+	! grep -qF "no bazel test summary was found" "$TMP/verification_genrule_failure_caught.out"; then
+	pass "verification_genrule_failure_reads_as_red"
+else
+	fail "verification_genrule_failure_reads_as_red" \
+		"$(tr '\n' ' ' <"$TMP/verification_genrule_failure_caught.out")"
+fi
+
+# The Executed-0 note is about cache hits. A run carrying a verification genrule
+# executed a suite that never enters the test count, so the note would be a lie.
+if ! grep -qF "issue #5538" "$TMP/executed_zero_with_verification_passes.out" &&
+	grep -qF "issue #5538" "$TMP/executed_zero_without_verification_passes.out"; then
+	pass "executed_zero_note_skips_verification_runs"
+else
+	fail "executed_zero_note_skips_verification_runs" \
+		"with=$(tr '\n' ' ' <"$TMP/executed_zero_with_verification_passes.out") without=$(tr '\n' ' ' <"$TMP/executed_zero_without_verification_passes.out")"
+fi
 
 if grep -qxF -- "--env=CI_BASE_REF=origin/main" "$TMP/green_run_passes.bb.log" &&
 	grep -qF -- "--script=#!/usr/bin/env bash" "$TMP/green_run_passes.bb.log" &&

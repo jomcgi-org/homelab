@@ -343,10 +343,12 @@ if [[ $verification_rc -eq 124 ]]; then
 	exit 0
 fi
 
-# Fail CLOSED here too. An empty list from a broken query is exactly the silent
-# under-test this clause exists to end, so anything but a clean exit (or a
-# --keep_going partial that still produced labels) takes the full suite.
-if [[ $verification_rc -ne 0 ]] && { [[ $verification_rc -ne 3 ]] || [[ -z "$verification_output" ]]; }; then
+# Fail CLOSED here too, and STRICTLY: unlike the test-universe query above, a
+# --keep_going partial is not good enough. That query lists many targets, so a
+# partial still tests most of the change; this one usually resolves to a single
+# suite, and a partial that dropped it is indistinguishable from "nothing to
+# run", which is the silent skip this whole clause exists to end.
+if [[ $verification_rc -ne 0 ]]; then
 	echo "affected-targets: fallback to //... because verification-genrule query failed (exit $verification_rc)" >&2
 	echo "//..."
 	exit 0
