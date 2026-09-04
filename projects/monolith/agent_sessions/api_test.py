@@ -101,7 +101,73 @@ def test_run_synthetic_session_does_not_deliver_when_claim_lost(monkeypatch):
 
     assert result is None
     assert delivered == []
-    assert deleted == [(42, 1)]
+    assert deleted == []
+
+
+def test_run_synthetic_session_aborts_when_claim_stolen_mid_deliver(monkeypatch):
+    row = AgentSession(
+        id=45,
+        local_session_id="codex-synthetic-test",
+        workspace="<guest>",
+        branch="main",
+    )
+    turn = _completed_synthetic_turn()
+    delivered = []
+    deleted = []
+    persisted = []
+    refresh_calls = []
+    real_sleep = asyncio.sleep
+
+    async def sleep(delay):
+        assert delay == 10
+        await real_sleep(0)
+
+    async def to_thread(function, *args):
+        return function(*args)
+
+    def refresh_claim(session_id, turn_seq, claim_owner):
+        refresh_calls.append((session_id, turn_seq, claim_owner))
+        return False
+
+    async def deliver(*args, **kwargs):
+        delivered.append((args, kwargs))
+        while not refresh_calls:
+            await real_sleep(0)
+        await real_sleep(0)
+        return turn, None
+
+    monkeypatch.setattr(api, "_persist_session", lambda *args, **kwargs: row)
+    monkeypatch.setattr(api, "_persist_pending_message", lambda *args: 1)
+    monkeypatch.setattr(
+        api, "_claim_pending_message_sync", lambda session_id, claim_owner: 1
+    )
+    monkeypatch.setattr(api, "_refresh_claim_sync", refresh_claim)
+    monkeypatch.setattr(api.asyncio, "sleep", sleep)
+    monkeypatch.setattr(api.asyncio, "to_thread", to_thread)
+    monkeypatch.setattr(api._transport, "deliver", deliver)
+    monkeypatch.setattr(
+        api,
+        "_persist_turn_from_pending_sync",
+        lambda *args: persisted.append(args),
+    )
+    monkeypatch.setattr(
+        api,
+        "_delete_pending_message_sync",
+        lambda session_id, turn_seq: deleted.append((session_id, turn_seq)),
+    )
+    monkeypatch.setattr(
+        api,
+        "_release_pending_message_claim_sync",
+        lambda session_id, turn_seq, claim_owner: None,
+    )
+
+    result = asyncio.run(api.run_synthetic_session("probe"))
+
+    assert result is None
+    assert len(delivered) == 1
+    assert len(refresh_calls) == 1
+    assert persisted == []
+    assert deleted == [(45, 1)]
 
 
 def test_run_synthetic_session_tolerates_duplicate_turn_insert(monkeypatch):

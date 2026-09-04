@@ -178,6 +178,19 @@ async def test_probe_codex_success(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_probe_codex_handles_none_from_run_synthetic_session(monkeypatch):
+    async def run_session(*_, **__):
+        return None
+
+    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
+
+    result = await probe.probe_codex()
+
+    assert result["ok"] is True
+    assert result["detail"] == "another replica delivered this run"
+
+
+@pytest.mark.asyncio
 async def test_probe_codex_bad_terminal_reason(monkeypatch):
     class Turn:
         terminal_reason = "pending"
