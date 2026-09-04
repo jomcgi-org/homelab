@@ -24,6 +24,14 @@ tailscale-operator:
   apiServerProxyConfig:
     mode: "true"
 
+# Tailnet identities the API server proxy may impersonate into cluster-admin.
+# The proxy authenticates each as a Kubernetes USER of this exact name, so a
+# typo here fails closed: the request authenticates and then matches no
+# binding. Empty list renders no binding at all, leaving the proxy reachable
+# and authorized for nothing.
+apiServerProxyAdmins:
+  - joe@jomcgi.dev
+
 egressNamespace: tailscale
 
 # The node-4 inference bridge (#5457): the GKE workloads reach the bare-metal

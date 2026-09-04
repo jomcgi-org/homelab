@@ -1,0 +1,37 @@
+{{- if .Values.apiServerProxyAdmins }}
+# Authorization for kubectl arriving through the operator's API server proxy
+# (APISERVER_PROXY=true, set in values.yaml).
+#
+# The proxy authenticates the tailnet identity and impersonates it as a
+# Kubernetes USER, not a group. Confirmed from the first request rather than
+# assumed, because a binding written against the wrong subject kind matches
+# nothing and fails silently:
+#
+#   Error from server (Forbidden): namespaces is forbidden:
+#   User "joe@jomcgi.dev" cannot list resource "namespaces" at the cluster scope
+#
+# Reaching the proxy authorizes nothing on its own; this binding is what makes
+# the path usable, and deleting it disables the path while leaving it reachable.
+#
+# SCOPE: this grants over the tailnet exactly what the same person already holds
+# through Google, so it adds no privilege. It does add a second CREDENTIAL that
+# reaches it: a compromised tailnet device now reaches the API server without a
+# Google login. The tailnet ACL is the other half of that control.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tailscale-apiserver-proxy-admins
+  labels:
+    app.kubernetes.io/component: apiserver-proxy
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+subjects:
+{{- range .Values.apiServerProxyAdmins }}
+  - kind: User
+    name: {{ . | quote }}
+    apiGroup: rbac.authorization.k8s.io
+{{- end }}
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
