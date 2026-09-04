@@ -173,6 +173,11 @@ defmodule Embervm.StatefulManager do
   # the same finite bound as the registry's registration-lapse policy.
   @resident_health_grace_ms 90_000
   @anchor_expire_after_ms @resident_health_grace_ms
+  # Keep this equal to NodeRegistry's @expire_after_ms (90_000). Used to distinguish
+  # temporary disconnects (blips within this window) from permanent disconnects
+  # (longer than this window). A node silent for less than this bound must be
+  # treated as a retryable failure, not as permanently gone.
+  @delete_quiet_window_ms @resident_health_grace_ms
 
   # A 2x bound on the StopStateful checkpoint worst case: a fresh atomic bank
   # owns its row until the bank completion records the bundle facts.
@@ -292,8 +297,8 @@ defmodule Embervm.StatefulManager do
   always an explicit, unambiguous act against a workload with nothing left
   attached. Synchronous; returns `{:ok, %{deleted: true, unreachable: nodes}}`
   or the refusal. `unreachable` names anchors absent from current capacity facts
-  and therefore deliberately skipped rather than treated as retryable RPC
-  failures.
+  for the registry expiry window, or never observed during this process lifetime,
+  and therefore skipped rather than treated as retryable RPC failures.
   """
   @spec delete_volume(GenServer.server(), String.t()) ::
           {:ok, %{deleted: true, unreachable: [String.t()]}} | {:error, term()}
@@ -323,6 +328,11 @@ defmodule Embervm.StatefulManager do
       # manager booted. A later capacity retraction is handled by registry
       # liveness, not by the durable-only endpoint grace.
       seen_reporting_nodes: MapSet.new(),
+      # node_id -> manager clock millisecond when the node last reported capacity.
+      # Used to distinguish temporary disconnects (within @delete_quiet_window_ms)
+      # from permanent disconnects. This is deliberately process-local: after a CP
+      # restart the full window must elapse again.
+      node_last_reported_at_ms: %{},
       # node_id -> first manager-clock millisecond at which a durable volume's
       # anchor was absent from NodeCapacity. Presence clears the observation.
       # This is deliberately process-local: after a CP restart the full expiry
@@ -2305,31 +2315,31 @@ defmodule Embervm.StatefulManager do
         |> Enum.filter(&is_binary/1)
         |> Enum.uniq()
 
-      # Capacity facts are the dispatchability registry. An absent anchor cannot
-      # be dialed, and that absence is the manual recovery condition this delete
-      # resolves, not an RPC failure worth retrying forever. Keep it visible in
-      # the success result, while nodes still present in facts retain the strict
-      # current behavior: any daemon error leaves the durable row in place.
-      {reachable_node_ids, unreachable_node_ids} =
+      # Capacity facts are the dispatchability registry. Reporting nodes require
+      # a successful daemon RPC. Nodes missing within the quiet window remain
+      # retryable failures. Nodes absent beyond the window, or never observed,
+      # may be skipped and must remain visible in the success result.
+      {reachable_node_ids, not_reporting} =
         Enum.split_with(node_ids, &node_reporting?(state, &1))
+
+      {quiet_window_node_ids, unreachable_node_ids} =
+        Enum.split_with(not_reporting, &node_in_quiet_window?(state, &1))
 
       unreachable_node_ids = Enum.sort(unreachable_node_ids)
       outcomes = Enum.map(reachable_node_ids, &{&1, safe_delete_volume(state, &1, workload)})
       failed_node_ids =
-        (for {node_id, :error} <- outcomes, do: node_id)
+        ((for {node_id, :error} <- outcomes, do: node_id) ++ quiet_window_node_ids)
         |> Enum.sort()
-
-      # R6, Task 9: the store copy of the volume follows the local deletion. Safe
-      # without a further pairing guard: delete was refused above while any
-      # non-terminal instance existed, so no banked bundle still pairs with this
-      # volume's generation (standing decision 8). Best-effort.
-      _ = evict_remote_volume(state, volume, workload)
 
       if failed_node_ids != [] do
         {{:error, {:delete_incomplete, failed_node_ids}}, state}
       else
         case StatefulStore.delete_volume(state.store, workload) do
           :ok ->
+            # Remote eviction is permitted only after the durable delete succeeds;
+            # a quiet-window retry must preserve the recovery copy.
+            _ = evict_remote_volume(state, volume, workload)
+
             state = clear_negative_store_truth(state, workload)
             Logger.info("embervm stateful: volume deleted", workload: workload)
             {{:ok, %{deleted: true, unreachable: unreachable_node_ids}}, state}
@@ -2400,7 +2410,11 @@ defmodule Embervm.StatefulManager do
 
     state = %{
       state
-      | seen_reporting_nodes: MapSet.union(state.seen_reporting_nodes, reporting_nodes)
+      | seen_reporting_nodes: MapSet.union(state.seen_reporting_nodes, reporting_nodes),
+        node_last_reported_at_ms:
+          Enum.reduce(reporting_nodes, state.node_last_reported_at_ms, fn node_id, acc ->
+            Map.put(acc, node_id, state.clock.())
+          end)
     }
     state = observe_missing_volume_anchors(state)
     live_vms = index_stateful_vms(facts)
@@ -3008,6 +3022,15 @@ defmodule Embervm.StatefulManager do
   end
 
   defp node_reporting?(_state, _node_id), do: false
+
+  defp node_in_quiet_window?(state, node_id) when is_binary(node_id) do
+    case Map.get(state.node_last_reported_at_ms, node_id) do
+      nil -> false
+      last_reported_at -> state.clock.() - last_reported_at < @delete_quiet_window_ms
+    end
+  end
+
+  defp node_in_quiet_window?(_state, _node_id), do: false
 
   # -- stuck-wake recovery (Task 10) -----------------------------------------
 
