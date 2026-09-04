@@ -197,6 +197,16 @@ def test_chat_reasoning_effort_defaults_to_empty_env(chart_context):
     )
 
 
+def test_chat_max_tokens_defaults_to_empty_env(chart_context):
+    """The chart lets the Discord output ceiling use the code default."""
+    rendered = chart_context["rendered"]
+
+    assert re.search(
+        r"- name: CHAT_MAX_TOKENS\n\s+value: \"\"",
+        rendered,
+    )
+
+
 def test_migrations_configmap_uses_server_side_apply(chart_context):
     """The migrations ConfigMap must opt into server-side apply (#5150).
 

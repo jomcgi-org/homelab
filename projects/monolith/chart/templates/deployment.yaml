@@ -273,6 +273,8 @@ spec:
               value: {{ .Values.whatsapp.model | quote }}
             - name: CHAT_REASONING_EFFORT
               value: {{ .Values.chat.reasoningEffort | quote }}
+            - name: CHAT_MAX_TOKENS
+              value: {{ .Values.chat.maxTokens | quote }}
             # Gate the WhatsApp heavy-agent path (goose household dispatch for
             # charts/artifacts/full tasks). Off -> a heavy request gets the "not
             # wired up yet" reply; on -> it dispatches the household goose agent.

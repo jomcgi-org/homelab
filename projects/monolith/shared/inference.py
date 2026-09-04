@@ -61,6 +61,32 @@ def chat_reasoning_effort() -> str:
     )
 
 
+CHAT_MAX_TOKENS_ENV = "CHAT_MAX_TOKENS"
+_DEFAULT_CHAT_MAX_TOKENS = 512
+
+
+def chat_max_tokens() -> int | None:
+    """Output ceiling for the synchronous Discord paths.
+
+    Discord truncates at 2000 chars (roughly 512 tokens). Tokens past that
+    ceiling are billed by the provider and then discarded unread by the client,
+    pure waste. This env var gates the cap without reverting commit cf57ba20b:
+    that removed a hardcoded max_tokens=16384 against a small context window
+    because prompt + max_tokens overflowed. Spark has a 1M token context, so
+    512 is safe. A value of 0 or negative returns None, disabling the cap
+    entirely (the pre-cf57ba20b baseline); this is values-only so a small-context
+    local model can clear it without a code change.
+    """
+    val = os.environ.get(CHAT_MAX_TOKENS_ENV, "").strip()
+    if not val:
+        return _DEFAULT_CHAT_MAX_TOKENS
+    try:
+        num = int(val)
+        return None if num <= 0 else num
+    except ValueError:
+        return _DEFAULT_CHAT_MAX_TOKENS
+
+
 def record_usage(usage_dict: Mapping[str, Any] | None, model: str, caller: str) -> None:
     """Emit a usage span and decorate an ambient recording span when present."""
     try:
@@ -84,6 +110,9 @@ def record_usage(usage_dict: Mapping[str, Any] | None, model: str, caller: str) 
             attributes["llm.usage.reasoning_tokens"] = int(
                 completion_details["reasoning_tokens"]
             )
+        prompt_details = usage_dict.get("prompt_tokens_details")
+        if isinstance(prompt_details, Mapping) and ("cached_tokens" in prompt_details):
+            attributes["llm.usage.cached_tokens"] = int(prompt_details["cached_tokens"])
         ambient_span = trace.get_current_span()
         tracer = trace.get_tracer(__name__)
         with tracer.start_as_current_span(

@@ -1169,6 +1169,10 @@ chat:
   # high, and xhigh. Meta rejects none with a 400 because Spark always reasons.
   # Empty uses the code default (minimal).
   reasoningEffort: ""
+  # Output ceiling for Discord truncation. 2000 chars (roughly 512 tokens).
+  # Empty uses the code default (512). Set to 0 to disable the cap entirely.
+  # Raise it if answers start getting cut mid-sentence (check logs for warnings).
+  maxTokens: ""
   # The compare proxy reads this field from the existing chat 1Password item.
   githubApiTokenSecretKey: GITHUB_TOKEN
   llamaCppUrl: ""
