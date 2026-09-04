@@ -68,3 +68,21 @@ class TestAgentMaxTokens:
             "presence_penalty": 1.5,
             "openai_reasoning_effort": "low",
         }
+
+    def test_spark_profile_never_drops_sampling_parameters(self):
+        """Pin the profile assumption the Discord sampling tuning rests on.
+
+        PydanticAI strips temperature, top_p and presence_penalty at request
+        time when reasoning is on, but only for profiles with
+        openai_supports_reasoning, which openai_model_profile sets solely for
+        o-series and gpt-5 name prefixes. Spark matches neither, so the persona
+        tuning survives alongside openai_reasoning_effort. If a model rename or
+        a pydantic-ai upgrade ever flips this, the sampling params vanish with
+        nothing louder than a UserWarning, so assert it rather than trust it.
+        """
+        from pydantic_ai.profiles.openai import openai_model_profile
+
+        import shared.inference
+
+        profile = openai_model_profile(shared.inference.META_SPARK_MODEL)
+        assert profile.openai_supports_reasoning is False
