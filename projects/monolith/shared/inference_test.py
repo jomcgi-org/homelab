@@ -321,3 +321,22 @@ def test_record_usage_exports_span_and_decorates_ambient_span():
     assert spans["request"].attributes == _expected_usage_attributes()
     assert spans["llm.completion"].attributes == _expected_usage_attributes()
     provider.shutdown()
+
+
+def test_chat_provider_returns_configured_name(monkeypatch):
+    monkeypatch.setenv(shared.inference.CHAT_PROVIDER_ENV, "groq")
+
+    assert shared.inference.chat_provider() == "groq"
+
+
+def test_chat_provider_returns_none_when_missing(monkeypatch):
+    monkeypatch.delenv(shared.inference.CHAT_PROVIDER_ENV, raising=False)
+
+    assert shared.inference.chat_provider() is None
+
+
+@pytest.mark.parametrize("provider", ["", "   "])
+def test_chat_provider_returns_none_when_empty(monkeypatch, provider):
+    monkeypatch.setenv(shared.inference.CHAT_PROVIDER_ENV, provider)
+
+    assert shared.inference.chat_provider() is None

@@ -175,6 +175,9 @@ chat:
   # to revert to Spark (llama.cpp) without a code deploy.
   model: "openai/gpt-oss-20b"
   baseUrl: "https://openrouter.ai/api/v1"
+  # Pin the route to Groq; the 507 tok/s was measured on Groq specifically and
+  # an unpinned OpenRouter request can be served by a much slower host.
+  provider: "groq"
   searxngUrl: "http://monolith-searxng:8080"
   changelogs:
     - name: "homelab"

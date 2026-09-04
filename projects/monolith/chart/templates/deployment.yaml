@@ -279,6 +279,8 @@ spec:
               value: {{ .Values.chat.model | quote }}
             - name: CHAT_BASE_URL
               value: {{ .Values.chat.baseUrl | quote }}
+            - name: CHAT_PROVIDER
+              value: {{ .Values.chat.provider | quote }}
             # Gate the WhatsApp heavy-agent path (goose household dispatch for
             # charts/artifacts/full tasks). Off -> a heavy request gets the "not
             # wired up yet" reply; on -> it dispatches the household goose agent.
