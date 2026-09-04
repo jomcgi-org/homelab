@@ -925,6 +925,7 @@ tokenBroker:
 
 frontend:
   otelCollectorUrl: ""
+  qwenFlashApiBase: "http://inference-bridge-freetoken.tailscale.svc.cluster.local:8090"
   image:
     repository: ghcr.io/jomcgi/homelab/projects/monolith/frontend
     tag: latest

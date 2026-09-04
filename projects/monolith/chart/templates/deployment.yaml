@@ -676,6 +676,8 @@ spec:
           env:
             - name: API_BASE
               value: "http://localhost:8000"
+            - name: QWEN_FLASH_API_BASE
+              value: {{ required "frontend.qwenFlashApiBase is required" .Values.frontend.qwenFlashApiBase | quote }}
             {{- if .Values.frontend.otelCollectorUrl }}
             - name: OTEL_COLLECTOR_HTTP_URL
               value: {{ .Values.frontend.otelCollectorUrl | quote }}

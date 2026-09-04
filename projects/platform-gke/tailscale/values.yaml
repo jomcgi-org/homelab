@@ -46,6 +46,9 @@ egressServices:
   - name: inference-bridge-embeddings
     tailnetFqdn: "node-4.tail33e678.ts.net"
     port: 8081
+  - name: inference-bridge-freetoken
+    tailnetFqdn: "node-4.tail33e678.ts.net"
+    port: 8090
 
 # Add this entry when node-4 joins the tailnet. The target namespace must
 # already exist. The tailscale-gke 1Password item fields must be named exactly
