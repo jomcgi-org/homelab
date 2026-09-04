@@ -56,6 +56,7 @@ projects/             # All services, operators, websites, colocated with deploy
 ├── platform/         #   Cluster-critical infrastructure (ArgoCD, Cilium, SigNoz, etc.)
 ├── monolith/         #   Knowledge graph, Discord bot, task management, public apps, frontend
 ├── monolith-public/  #   Read-only public replica of the monolith
+├── monolith-agents/  #   Agent-facing MCP tier, pruned and with no cluster RBAC
 ├── mcp/              #   Context Forge gateway + MCP servers
 ├── inference/        #   On-cluster llama.cpp (Qwen3.8-27B) + llama.cpp embeddings
 ├── operators/        #   Custom Kubernetes operators
