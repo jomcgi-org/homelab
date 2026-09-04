@@ -581,6 +581,21 @@ discardable (ADR embervm/006, ADR embervm/014).
   actions. The debug-gated SpecTrace implementation (#4770) ships and runs
   in dev with `specTrace.enabled`; production keeps it off. ADR embervm/034
   records the full delivery path and is still a draft.
+- **Invoke start stamp**: `maybe_start_next` appends a
+  `session_invoke_started` op and waits for it before spawning the invoke
+  worker. A failed append refuses the invoke
+  (`{:error, {:invoke_start_not_recorded, reason}}`) rather than running work
+  no durable record admits to. The projected `invoke_started_at` is
+  monotonic and never cleared: projection takes the greater of the stored and
+  incoming value, `session_invoked` seeds it for a start that was never
+  recorded, and the schema migration backfills it from `last_invoke_at`.
+  `session_view` exposes it. It exists because `last_invoke_at` is stamped
+  when an invoke COMPLETES, which makes a healthy long first turn
+  indistinguishable from a guest that never started. The monolith's
+  zombie-session recovery destroys guests on that read, so keying it to a
+  completion timestamp would have reaped live turns
+  (`projects/embervm/control/lib/embervm/session.ex`,
+  `projects/embervm/control/lib/embervm/session_store.ex`).
 - **Scratch generation**: with `scratchPrep.enabled`, preparation publishes
   `.scratch-generation` with an atomic rename as its final step; readiness
   and every size-classed brick pod's first init container require a nonempty
