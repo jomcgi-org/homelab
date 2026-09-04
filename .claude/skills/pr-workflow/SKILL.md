@@ -45,9 +45,20 @@ not land. Fetch, rebase, and push again.
 ## Merging
 
 This repo allows **rebase merges only**. Squash and merge commits are disabled,
-so always `gh pr merge --rebase` (or `--auto --rebase`).
+but **do not pass a strategy flag**: since the queue cutover, `gh pr merge
+--rebase` is refused with "The merge strategy for main is set by the merge
+queue". Use bare `gh pr merge <n> --auto`.
 
-**Merges go through the GitHub merge queue.** `gh pr merge --auto --rebase`
+Two traps that follow from that refusal:
+
+- **The refused command still enqueues.** A `--auto --rebase` that prints the
+  strategy error has usually already put the PR in the queue; re-running says
+  "already queued to merge". Check the queue before assuming it failed.
+- **`autoMergeRequest` reads null for a PR that IS queued.** `gh pr view --json
+  autoMergeRequest` says "not armed" while the PR sits in the queue. Read the
+  real state with GraphQL `repository.mergeQueue(branch:"main").entries`.
+
+**Merges go through the GitHub merge queue.** `gh pr merge --auto`
 ("merge when ready") enqueues the PR once it is green and reviewed; the queue
 rebases it onto current main, runs `pr-checks` on the candidate (a push to a
 `gh-readonly-queue/main/pr-<n>-<sha>` branch), and merges. **Never
@@ -55,13 +66,17 @@ rebases it onto current main, runs `pr-checks` on the candidate (a push to a
 that, and a local rebase only changes the head and restarts CI.
 
 `mergeStateStatus: BEHIND` is no longer a blocker; the required check is not
-strict. The queue is what guarantees a PR was tested against **current** main,
+strict. **`DIRTY` / `CONFLICTING` is a different state and the queue cannot
+resolve it**: a real conflict is the one case you must rebase yourself. Worse,
+`gh pr merge --auto` no-ops SILENTLY on a conflicted PR, printing nothing and
+enqueuing nothing, so an enqueue that seems to vanish means checking
+`mergeStateStatus` rather than re-running the command. The queue is what guarantees a PR was tested against **current** main,
 so a semantic conflict between two individually green PRs cannot break main.
 
 Each merge still moves main twice (the merge, then the chart write-back), and
 the queue re-tests the candidates behind it on each move. That is the queue's
 churn, not yours. A red queue run ejects the PR: re-enqueue with the same
-`gh pr merge --auto --rebase` after checking whether the failure was the flaky
+`gh pr merge --auto` after checking whether the failure was the flaky
 Elixir suite (#4828) or real.
 
 This rationale used to be about chart versions: the re-run let the
@@ -72,13 +87,13 @@ tested-against-current-main reason is the live one.
 ## Auto-merge
 
 Small focused fixes (a one-line config change, a typo) can go straight to
-`gh pr merge --auto --rebase`. Having enabled it, follow through rather than
+`gh pr merge --auto`. Having enabled it, follow through rather than
 walking away:
 
 1. Poll `gh pr view <number> --json state,mergeStateStatus` until it merges.
 2. Poll the rollout to confirm the fix is actually live.
 
-`gh pr merge --rebase` without `--auto` also enqueues rather than merging
+`gh pr merge` without `--auto` also enqueues rather than merging
 directly; there is no bypass and none should be used.
 
 Use background Bash or `Monitor` for CI waits. Sleep-chained polling is blocked.
