@@ -222,14 +222,7 @@ receive no NIC.
 (see: /projects/embervm/chart/templates/workload-pi-runtime.yaml)
 (see: /projects/embervm/ARCHITECTURE.md)
 
-There are two separate scheduling planes. Repository files under
-`claude_routines` describe account-hosted Claude.ai routines and are reconciled
-to that service. Monolith batch work is rendered as Argo CronWorkflows, whose
-controller owns cadence, concurrency, deadlines, and history.
-(see: /projects/monolith/claude_routines/README.md)
-(see: /projects/monolith/chart/values.yaml)
-(see: /projects/monolith/chart/templates/cronworkflows.yaml)
-
+Monolith batch work is rendered as Argo CronWorkflows, whose controller owns cadence, concurrency, deadlines, and history.
 Suspended entries remain available for manual submission without reactivating
 an in-process loop.
 
@@ -331,7 +324,6 @@ distillation, and gardening run as account-hosted Claude.ai routines that reach
 the graph through MCP; the in-process gardener is disabled in production.
 (see: /projects/monolith/chart/values.yaml)
 (see: /projects/monolith/app/jobs_main.py)
-(see: /projects/monolith/claude_routines)
 
 Knowledge RAG embeds a query, performs cosine retrieval over HNSW-indexed
 chunks, ranks matching notes, and returns note, section, snippet, and edge
