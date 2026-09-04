@@ -249,16 +249,45 @@ defmodule Embervm.GrpcConnectionSweeperTest do
       )
 
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
-    assert :sys.get_state(sweeper).strikes == %{child_pid => 1}
+    assert :sys.get_state(sweeper).strikes == %{{:target, target} => 1}
     assert Agent.get(calls, & &1) == []
 
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
-    assert :sys.get_state(sweeper).strikes == %{child_pid => 2}
+    assert :sys.get_state(sweeper).strikes == %{{:target, target} => 2}
     assert Agent.get(calls, & &1) == []
 
     assert [{^child_pid, reason}] = GrpcConnectionSweeper.sweep_now(sweeper)
     assert reason =~ "reapable for 3 consecutive sweeps"
     assert Agent.get(calls, & &1) == [child_pid]
+  end
+
+  test "child with the same target across restart is reaped on the third strike" do
+    supervisor = mock_supervisor()
+    target = "10.42.9.99:9090"
+    first_pid = mock_child(target)
+    MockSupervisor.set_children(supervisor, [child(first_pid)])
+    {terminate_fun, calls} = terminate_child_collector()
+
+    sweeper =
+      start_sweeper(
+        status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
+        supervisor: supervisor,
+        terminate_child_fun: terminate_fun,
+        sweep_enabled: true
+      )
+
+    assert GrpcConnectionSweeper.sweep_now(sweeper) == []
+    assert :sys.get_state(sweeper).strikes == %{{:target, target} => 1}
+
+    second_pid = mock_child(target)
+    refute second_pid == first_pid
+    MockSupervisor.set_children(supervisor, [child(second_pid)])
+
+    assert GrpcConnectionSweeper.sweep_now(sweeper) == []
+    assert :sys.get_state(sweeper).strikes == %{{:target, target} => 2}
+    assert [{^second_pid, reason}] = GrpcConnectionSweeper.sweep_now(sweeper)
+    assert reason =~ "reapable for 3 consecutive sweeps"
+    assert Agent.get(calls, & &1) == [second_pid]
   end
 
   test "armed sweeper logs accumulating strikes before it reaps (#4419)" do
@@ -281,7 +310,8 @@ defmodule Embervm.GrpcConnectionSweeperTest do
       )
 
     log = ExUnit.CaptureLog.capture_log(fn -> GrpcConnectionSweeper.sweep_now(sweeper) end)
-    assert log =~ "pass complete (children=1, keep_set=1, reaped=0, pending=1)"
+    assert log =~
+             "pass complete (children=1, keep_set=1, reaped=0, pending=1, under_threshold=1)"
     assert log =~ "1 orchestrator(s) accumulating strikes"
     assert log =~ "#{inspect(child_pid)}: target #{inspect(target)} not in live set (strike 1 of 3)"
     refute log =~ "DRY RUN"
@@ -300,7 +330,8 @@ defmodule Embervm.GrpcConnectionSweeperTest do
       )
 
     log = ExUnit.CaptureLog.capture_log(fn -> GrpcConnectionSweeper.sweep_now(sweeper) end)
-    assert log =~ "(DRY RUN, gate off): pass complete (children=1, keep_set=1, reaped=0, pending=0)"
+    assert log =~
+             "(DRY RUN, gate off): pass complete (children=1, keep_set=1, reaped=0, pending=0, under_threshold=0)"
   end
 
   test "timeout/wedged branch is protected by strikes" do
@@ -348,14 +379,14 @@ defmodule Embervm.GrpcConnectionSweeperTest do
       )
 
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
-    assert :sys.get_state(sweeper).strikes[wedged_pid] == 1
+    assert :sys.get_state(sweeper).strikes[{:unreadable_pid, wedged_pid}] == 1
     assert Agent.get(calls, & &1) == []
     assert elem(:erlang.process_info(wedged_pid, :current_function), 1) == {:proc_lib, :sync_start, 2},
       "wedged classification must be stable across sweep 1"
 
     # Sweep 2: strike becomes 2; verify still wedged
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
-    assert :sys.get_state(sweeper).strikes[wedged_pid] == 2
+    assert :sys.get_state(sweeper).strikes[{:unreadable_pid, wedged_pid}] == 2
     assert Agent.get(calls, & &1) == []
     assert elem(:erlang.process_info(wedged_pid, :current_function), 1) == {:proc_lib, :sync_start, 2},
       "wedged classification must be stable across sweep 2"
@@ -363,6 +394,41 @@ defmodule Embervm.GrpcConnectionSweeperTest do
     # Sweep 3: strike reaches threshold (3), child terminated
     assert [{^wedged_pid, reason}] = GrpcConnectionSweeper.sweep_now(sweeper)
     assert reason =~ "reapable for 3 consecutive sweeps"
+    assert Agent.get(calls, & &1) == [wedged_pid]
+  end
+
+  test "timeout/wedged branch uses the target from start args when available" do
+    supervisor = mock_supervisor()
+
+    init_task = Task.async(fn ->
+      :proc_lib.start_link(
+        __MODULE__,
+        :wedged_init_never_acks,
+        [],
+        :infinity,
+        []
+      )
+    end)
+
+    Process.sleep(100)
+    wedged_pid = init_task.pid
+    target = "10.42.9.99:9090"
+    MockSupervisor.set_children(supervisor, [child(wedged_pid)])
+    {terminate_fun, calls} = terminate_child_collector()
+
+    sweeper =
+      start_sweeper(
+        status_fun: fn -> %{"node-0" => %{address: "10.42.3.34:9090"}} end,
+        supervisor: supervisor,
+        terminate_child_fun: terminate_fun,
+        start_args_target_fun: fn ^wedged_pid -> {:ok, "ipv4:#{target}"} end,
+        strikes_required: 1,
+        sweep_enabled: true
+      )
+
+    assert [{^wedged_pid, reason}] = GrpcConnectionSweeper.sweep_now(sweeper)
+    assert reason =~ "reapable for 1 consecutive sweeps"
+    assert :sys.get_state(sweeper).strikes == %{{:target, target} => 1}
     assert Agent.get(calls, & &1) == [wedged_pid]
   end
 
@@ -399,8 +465,8 @@ defmodule Embervm.GrpcConnectionSweeperTest do
       )
 
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
-    assert :sys.get_state(sweeper).strikes[child_a] == 1
-    assert :sys.get_state(sweeper).strikes[child_b] == nil
+    assert :sys.get_state(sweeper).strikes[{:target, "10.42.9.99:9090"}] == 1
+    assert :sys.get_state(sweeper).strikes[{:target, "10.42.3.34:9090"}] == nil
 
     MockChild.set_target(child_a, "10.42.3.34:9090")
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
@@ -408,7 +474,7 @@ defmodule Embervm.GrpcConnectionSweeperTest do
 
     MockChild.set_target(child_a, "10.42.9.99:9090")
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
-    assert :sys.get_state(sweeper).strikes[child_a] == 1
+    assert :sys.get_state(sweeper).strikes[{:target, "10.42.9.99:9090"}] == 1
     assert Agent.get(calls, & &1) == []
   end
 
@@ -428,7 +494,7 @@ defmodule Embervm.GrpcConnectionSweeperTest do
 
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
-    assert :sys.get_state(sweeper).strikes[child_pid] == 2
+    assert :sys.get_state(sweeper).strikes[{:target, "10.42.9.99:9090"}] == 2
     assert Agent.get(calls, & &1) == []
   end
 
@@ -453,7 +519,31 @@ defmodule Embervm.GrpcConnectionSweeperTest do
     assert Agent.get(calls, & &1) == []
   end
 
-  test "strike entries are pruned for pids that disappear from supervisor's child list" do
+  test "keep-set target never accumulates strikes across pid changes" do
+    supervisor = mock_supervisor()
+    target = "10.42.3.34:9090"
+    first_pid = mock_child(target)
+    MockSupervisor.set_children(supervisor, [child(first_pid)])
+
+    sweeper =
+      start_sweeper(
+        status_fun: fn -> %{"node-0" => %{address: target}} end,
+        supervisor: supervisor,
+        sweep_enabled: false
+      )
+
+    assert GrpcConnectionSweeper.sweep_now(sweeper) == []
+    assert :sys.get_state(sweeper).strikes == %{}
+
+    second_pid = mock_child(target)
+    refute second_pid == first_pid
+    MockSupervisor.set_children(supervisor, [child(second_pid)])
+
+    assert GrpcConnectionSweeper.sweep_now(sweeper) == []
+    assert :sys.get_state(sweeper).strikes == %{}
+  end
+
+  test "strike entries are pruned for targets that disappear from supervisor's child list" do
     supervisor = mock_supervisor()
     child_a = mock_child("10.42.9.99:9090")
     child_b = mock_child("10.42.9.98:9090")
@@ -467,14 +557,17 @@ defmodule Embervm.GrpcConnectionSweeperTest do
       )
 
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
-    assert map_size(:sys.get_state(sweeper).strikes) == 2
+    assert :sys.get_state(sweeper).strikes == %{
+             {:target, "10.42.9.99:9090"} => 1,
+             {:target, "10.42.9.98:9090"} => 1
+           }
 
     MockSupervisor.set_children(supervisor, [child(child_b)])
     assert GrpcConnectionSweeper.sweep_now(sweeper) == []
-    assert :sys.get_state(sweeper).strikes == %{child_b => 2}
+    assert :sys.get_state(sweeper).strikes == %{{:target, "10.42.9.98:9090"} => 2}
 
     assert [{^child_b, reason}] = GrpcConnectionSweeper.sweep_now(sweeper)
     assert reason =~ "reapable for 3 consecutive sweeps"
-    assert :sys.get_state(sweeper).strikes == %{child_b => 3}
+    assert :sys.get_state(sweeper).strikes == %{{:target, "10.42.9.98:9090"} => 3}
   end
 end

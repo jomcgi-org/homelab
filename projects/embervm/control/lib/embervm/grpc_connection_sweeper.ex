@@ -115,6 +115,11 @@ defmodule Embervm.GrpcConnectionSweeper do
     supervisor = Keyword.get(opts, :supervisor, GRPC.Client.Supervisor)
     terminate_child_fun = Keyword.get(opts, :terminate_child_fun, &DynamicSupervisor.terminate_child/2)
 
+    start_args_target_fun =
+      Keyword.get(opts, :start_args_target_fun, fn pid ->
+        target_from_supervisor_start_args(supervisor, pid)
+      end)
+
     # 0 disables the timer (unit-test default); production uses the module
     # default.
     sweep_interval_ms = Keyword.get(opts, :sweep_interval_ms, @sweep_interval_ms)
@@ -130,6 +135,7 @@ defmodule Embervm.GrpcConnectionSweeper do
       status_fun: status_fun,
       supervisor: supervisor,
       terminate_child_fun: terminate_child_fun,
+      start_args_target_fun: start_args_target_fun,
       sweep_interval_ms: sweep_interval_ms,
       sweep_enabled: sweep_enabled,
       strikes_required: strikes_required,
@@ -188,19 +194,32 @@ defmodule Embervm.GrpcConnectionSweeper do
 
     classifications = Enum.map(children, &classify_child(&1, keep_set, state))
 
-    strikes =
+    represented_keys =
       classifications
-      |> Enum.reduce(state.strikes, fn
-        {pid, :keep}, strikes -> Map.delete(strikes, pid)
-        {pid, _reason}, strikes -> Map.update(strikes, pid, 1, &(&1 + 1))
+      |> Enum.map(fn {_pid, strike_key, _classification} -> strike_key end)
+      |> MapSet.new()
+
+    keep_keys =
+      classifications
+      |> Enum.flat_map(fn
+        {_pid, strike_key, :keep} -> [strike_key]
+        {_pid, _strike_key, _reason} -> []
       end)
-      |> Map.take(Enum.map(children, fn {:undefined, pid, _type, _modules} -> pid end))
+      |> MapSet.new()
+
+    reapable_keys = MapSet.difference(represented_keys, keep_keys)
+
+    strikes =
+      state.strikes
+      |> Map.drop(MapSet.to_list(keep_keys))
+      |> increment_strikes(reapable_keys)
+      |> Map.take(MapSet.to_list(represented_keys))
 
     reapable =
       classifications
       |> Enum.filter(&should_reap?/1)
-      |> Enum.map(fn {pid, reason} ->
-        strike_count = Map.fetch!(strikes, pid)
+      |> Enum.map(fn {pid, strike_key, reason} ->
+        strike_count = Map.fetch!(strikes, strike_key)
 
         strike_reason =
           if strike_count >= state.strikes_required do
@@ -209,13 +228,15 @@ defmodule Embervm.GrpcConnectionSweeper do
             "#{reason} (strike #{strike_count} of #{state.strikes_required})"
           end
 
-        {pid, strike_reason}
+        {pid, strike_key, strike_reason}
       end)
 
     reaped =
       reapable
-      |> Enum.filter(fn {pid, _reason} -> Map.fetch!(strikes, pid) >= state.strikes_required end)
-      |> Enum.map(fn {pid, reason} -> maybe_reap(state, pid, reason) end)
+      |> Enum.filter(fn {_pid, strike_key, _reason} ->
+        Map.fetch!(strikes, strike_key) >= state.strikes_required
+      end)
+      |> Enum.map(fn {pid, _strike_key, reason} -> maybe_reap(state, pid, reason) end)
       |> Enum.filter(&(not is_nil(&1)))
 
     new_state = %{state | strikes: strikes}
@@ -223,34 +244,109 @@ defmodule Embervm.GrpcConnectionSweeper do
     {reaped, new_state}
   end
 
-  # Classify a child as reapable or keep-able. Returns {pid, reason} where
-  # reason describes why it should be reaped, or {pid, :keep}.
-  defp classify_child({:undefined, pid, :worker, _modules}, keep_set, _state) do
+  defp increment_strikes(strikes, strike_keys) do
+    Enum.reduce(strike_keys, strikes, fn strike_key, acc ->
+      Map.update(acc, strike_key, 1, &(&1 + 1))
+    end)
+  end
+
+  # Different process incarnations for one target must share a strike key.
+  defp classify_child({:undefined, pid, :worker, _modules}, keep_set, state) do
     # Try to read the child's state to determine its target address
     case read_child_state(pid) do
       {:ok, target} when is_binary(target) and target != "" ->
-        # Successfully read a target; check against keep-set
-        normalized_target = normalize_address(target)
-
-        if address_in_set?(normalized_target, keep_set) do
-          {pid, :keep}
-        else
-          {pid, "target #{inspect(normalized_target)} not in live set"}
-        end
+        classify_target(pid, target, keep_set)
 
       :timeout ->
-        # State read timed out; check if the process looks wedged in init
-        if process_looks_wedged?(pid) do
-          {pid, "unreadable and wedged (likely stuck in proc_lib.sync_start)"}
-        else
-          {pid, :keep}
+        case read_start_args_target(state, pid) do
+          {:ok, target} -> classify_unreadable_child(pid, {:target, target}, target, keep_set)
+          :error -> classify_unreadable_child(pid, {:unreadable_pid, pid}, nil, keep_set)
         end
 
       _other ->
         # Cannot determine state or target; err on the side of caution
-        {pid, :keep}
+        {pid, {:unreadable_pid, pid}, :keep}
     end
   end
+
+  defp classify_target(pid, target, keep_set) do
+    normalized_target = normalize_address(target)
+    strike_key = {:target, normalized_target}
+
+    if address_in_set?(normalized_target, keep_set) do
+      {pid, strike_key, :keep}
+    else
+      {pid, strike_key, "target #{inspect(normalized_target)} not in live set"}
+    end
+  end
+
+  defp classify_unreadable_child(pid, strike_key, target, keep_set) do
+    cond do
+      address_in_set?(target, keep_set) ->
+        {pid, strike_key, :keep}
+
+      process_looks_wedged?(pid) ->
+        {pid, strike_key, "unreadable and wedged (likely stuck in proc_lib.sync_start)"}
+
+      true ->
+        {pid, strike_key, :keep}
+    end
+  end
+
+  defp read_start_args_target(state, pid) do
+    try do
+      case state.start_args_target_fun.(pid) do
+        {:ok, target} when is_binary(target) and target != "" ->
+          normalized_target = normalize_address(target)
+
+          if normalized_target == "", do: :error, else: {:ok, normalized_target}
+
+        target when is_binary(target) and target != "" ->
+          normalized_target = normalize_address(target)
+
+          if normalized_target == "", do: :error, else: {:ok, normalized_target}
+
+        _other ->
+          :error
+      end
+    rescue
+      _e -> :error
+    catch
+      :exit, _reason -> :error
+    end
+  end
+
+  defp target_from_supervisor_start_args(supervisor, pid) do
+    try do
+      supervisor
+      |> :sys.get_state(@state_read_timeout_ms)
+      |> extract_supervisor_child_target(pid)
+    rescue
+      _e -> :error
+    catch
+      :exit, _reason -> :error
+    end
+  end
+
+  defp extract_supervisor_child_target(%{children: children}, pid) when is_map(children) do
+    case Map.get(children, pid) do
+      {{GRPC.Client.Connection, :start_link, [target, _opts]}, _restart, _shutdown, _type, _modules}
+      when is_binary(target) and target != "" ->
+        {:ok, target}
+
+      {{GRPC.Client.Connection, :start_link, [opts]}, _restart, _shutdown, _type, _modules}
+      when is_list(opts) ->
+        case Keyword.fetch(opts, :target) do
+          {:ok, target} when is_binary(target) and target != "" -> {:ok, target}
+          _other -> :error
+        end
+
+      _other ->
+        :error
+    end
+  end
+
+  defp extract_supervisor_child_target(_supervisor_state, _pid), do: :error
 
   # Read a child's current state via :sys.get_state with a short timeout.
   # Returns {:ok, target} on success (target is extracted from the state),
@@ -333,8 +429,8 @@ defmodule Embervm.GrpcConnectionSweeper do
   end
 
   # Predicate: should this child be reaped?
-  defp should_reap?({_pid, :keep}), do: false
-  defp should_reap?({_pid, _reason}), do: true
+  defp should_reap?({_pid, _strike_key, :keep}), do: false
+  defp should_reap?({_pid, _strike_key, _reason}), do: true
 
   # Maybe reap a child. If the gate is enabled, terminate it; always return
   # {pid, reason} for logging.
@@ -411,13 +507,15 @@ defmodule Embervm.GrpcConnectionSweeper do
     prefix = log_prefix(state)
 
     pending =
-      Enum.filter(reapable, fn {pid, _reason} ->
-        Map.fetch!(state.strikes, pid) < state.strikes_required
+      Enum.filter(reapable, fn {_pid, strike_key, _reason} ->
+        Map.fetch!(state.strikes, strike_key) < state.strikes_required
       end)
+
+    under_threshold = length(pending)
 
     Logger.info(
       "#{prefix}: pass complete (children=#{length(children)}, keep_set=#{MapSet.size(keep_set)}, " <>
-        "reaped=#{length(reaped)}, pending=#{length(pending)})"
+        "reaped=#{length(reaped)}, pending=#{length(pending)}, under_threshold=#{under_threshold})"
     )
 
     if reaped != [] do
@@ -428,7 +526,10 @@ defmodule Embervm.GrpcConnectionSweeper do
 
     if pending != [] do
       Logger.info("#{prefix}: #{length(pending)} orchestrator(s) accumulating strikes")
-      Enum.each(pending, fn {pid, reason} -> Logger.info("  pid #{inspect(pid)}: #{reason}") end)
+
+      Enum.each(pending, fn {pid, _strike_key, reason} ->
+        Logger.info("  pid #{inspect(pid)}: #{reason}")
+      end)
     end
 
     :ok
