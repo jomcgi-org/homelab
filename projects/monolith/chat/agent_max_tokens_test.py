@@ -95,7 +95,10 @@ class TestChatMaxTokens:
             agent = create_agent(base_url="http://fake:8080")
 
         assert agent.model_settings is not None
-        assert agent.model_settings.get("max_tokens") is None
+        # Key ABSENT, not present-and-None: PydanticAI reads it as
+        # model_settings.get("max_tokens", OMIT), so a None value would be
+        # forwarded to the provider as an explicit null instead of dropped.
+        assert "max_tokens" not in agent.model_settings
 
     def test_explicit_model_settings_pass_through_untouched(self):
         """Hosted household and WhatsApp settings do not gain the cap."""

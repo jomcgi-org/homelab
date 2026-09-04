@@ -456,6 +456,27 @@ def format_context_messages(
     return "\n".join(lines)
 
 
+def _sync_chat_settings() -> OpenAIChatModelSettings:
+    """Default model settings for the synchronous Discord paths.
+
+    max_tokens is OMITTED rather than set to None when uncapped. PydanticAI
+    reads it as model_settings.get("max_tokens", OMIT), so the OMIT default only
+    applies when the key is absent: a present-but-None key is forwarded to the
+    provider as an explicit null instead of being dropped. Uncapped mode is the
+    revert lever for a small-context local engine, so it has to actually work.
+    """
+    settings = OpenAIChatModelSettings(
+        temperature=1.0,
+        top_p=0.95,
+        presence_penalty=1.5,
+        openai_reasoning_effort=shared.inference.chat_reasoning_effort(),
+    )
+    max_tokens = shared.inference.chat_max_tokens()
+    if max_tokens is not None:
+        settings["max_tokens"] = max_tokens
+    return settings
+
+
 def create_agent(
     base_url: str | None = None,
     *,
@@ -507,14 +528,7 @@ def create_agent(
     agent: Agent[ChatDeps] = Agent(
         model,
         system_prompt=build_system_prompt(channel),
-        model_settings=model_settings
-        or OpenAIChatModelSettings(
-            temperature=1.0,
-            top_p=0.95,
-            presence_penalty=1.5,
-            openai_reasoning_effort=shared.inference.chat_reasoning_effort(),
-            max_tokens=shared.inference.chat_max_tokens(),
-        ),
+        model_settings=model_settings or _sync_chat_settings(),
         prepare_tools=inject_signposts,
     )
 
@@ -1074,13 +1088,7 @@ def create_fact_check_agent(base_url: str | None = None) -> "Agent[None]":
             "specifics that actually matter. Hard ceiling of about 120 words -- skip the "
             "throat-clearing, the recap of your own response, and the section headers."
         ),
-        model_settings=OpenAIChatModelSettings(
-            temperature=1.0,
-            top_p=0.95,
-            presence_penalty=1.5,
-            openai_reasoning_effort=shared.inference.chat_reasoning_effort(),
-            max_tokens=shared.inference.chat_max_tokens(),
-        ),
+        model_settings=_sync_chat_settings(),
     )
 
     @fact_agent.system_prompt
