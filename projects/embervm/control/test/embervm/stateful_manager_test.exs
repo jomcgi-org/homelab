@@ -1866,7 +1866,6 @@ defmodule Embervm.StatefulManagerTest do
         start_stack(
           node_confirmed_destroy: true,
           clock: fn -> Agent.get(manager_clock, & &1) end,
-          destroying_escape_ms: 100,
           stop_stateful_fun: fn _ch, _req -> {:ok, %{teardown_confirmed: false}} end
         )
 
@@ -1877,17 +1876,20 @@ defmodule Embervm.StatefulManagerTest do
       assert [instance] = StatefulStore.list(ctx.store, "wl-a")
       NodeCapacity.drop(ctx.cap_table, "node-4")
 
-      # Model the demo's connection cadence with injected Erlang process clocks.
-      # Every touch advances updated_at, but none may rewrite the FSM entry time.
-      Enum.each(1..6, fn _cycle ->
-        Agent.update(manager_clock, &(&1 + 15))
+      # The incident at its real scale: the shipped 600s escape against the 15
+      # second connection cadence that kept demo-postgres alive in destroying
+      # (the */5 probe plus exhibit traffic). Scaled constants cannot show that a
+      # touch no longer moves the deadline, because a few hundred milliseconds of
+      # postponement looks the same either way.
+      Enum.each(1..39, fn _cycle ->
+        Agent.update(manager_clock, &(&1 + 15_000))
         now = Agent.get(manager_clock, & &1)
         assert {:ok, _} = StatefulStore.touch_active(ctx.store, instance.instance_id, now)
         :ok = StatefulManager.reconcile(ctx.mgr)
         assert {:ok, %{state: :destroying}} = StatefulStore.get(ctx.store, instance.instance_id)
       end)
 
-      Agent.update(manager_clock, &(&1 + 10))
+      Agent.update(manager_clock, &(&1 + 15_000))
       now = Agent.get(manager_clock, & &1)
       assert {:ok, _} = StatefulStore.touch_active(ctx.store, instance.instance_id, now)
       :ok = StatefulManager.reconcile(ctx.mgr)
@@ -1904,8 +1906,6 @@ defmodule Embervm.StatefulManagerTest do
         start_stack(
           node_confirmed_destroy: true,
           clock: fn -> Agent.get(manager_clock, & &1) end,
-          destroying_alarm_ms: 100,
-          destroying_escape_ms: 10_000,
           stop_stateful_fun: fn _ch, _req -> {:ok, %{teardown_confirmed: false}} end
         )
 
@@ -1916,20 +1916,20 @@ defmodule Embervm.StatefulManagerTest do
       assert [instance] = StatefulStore.list(ctx.store, "wl-a")
       NodeCapacity.drop(ctx.cap_table, "node-4")
 
-      Enum.each(1..6, fn _cycle ->
-        Agent.update(manager_clock, &(&1 + 15))
+      Enum.each(1..19, fn _cycle ->
+        Agent.update(manager_clock, &(&1 + 15_000))
         now = Agent.get(manager_clock, & &1)
         assert {:ok, _} = StatefulStore.touch_active(ctx.store, instance.instance_id, now)
         :ok = StatefulManager.reconcile(ctx.mgr)
         refute :sys.get_state(ctx.mgr).destroying_alarmed[instance.instance_id]
       end)
 
-      Agent.update(manager_clock, &(&1 + 10))
+      Agent.update(manager_clock, &(&1 + 15_000))
       now = Agent.get(manager_clock, & &1)
       assert {:ok, _} = StatefulStore.touch_active(ctx.store, instance.instance_id, now)
       :ok = StatefulManager.reconcile(ctx.mgr)
 
-      assert :sys.get_state(ctx.mgr).destroying_alarmed[instance.instance_id] == 1_100
+      assert :sys.get_state(ctx.mgr).destroying_alarmed[instance.instance_id] == 301_000
       assert {:ok, %{state: :destroying}} = StatefulStore.get(ctx.store, instance.instance_id)
     end
   end
