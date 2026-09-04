@@ -296,9 +296,12 @@ defmodule Embervm.StatefulManager do
   volume out from under it would silently orphan the bundle) so deletion is
   always an explicit, unambiguous act against a workload with nothing left
   attached. Synchronous; returns `{:ok, %{deleted: true, unreachable: nodes}}`
-  or the refusal. `unreachable` names anchors absent from current capacity facts
-  for the registry expiry window, or never observed during this process lifetime,
-  and therefore skipped rather than treated as retryable RPC failures.
+  or the refusal. `unreachable` names anchors skipped rather than treated as
+  retryable RPC failures: those absent from capacity facts BEYOND the registry
+  expiry window, and those never observed by a manager that has itself been up
+  for longer than that window. An anchor quiet for less than the window, or
+  unobserved by a manager younger than it, is a retryable failure instead, so
+  the durable row survives an ordinary node blip or a control-plane restart.
   """
   @spec delete_volume(GenServer.server(), String.t()) ::
           {:ok, %{deleted: true, unreachable: [String.t()]}} | {:error, term()}
@@ -2338,6 +2341,14 @@ defmodule Embervm.StatefulManager do
           :ok ->
             # Remote eviction is permitted only after the durable delete succeeds;
             # a quiet-window retry must preserve the recovery copy.
+            #
+            # KNOWN RESIDUE (#5632): eviction dials a node through NodeChannel,
+            # which serves a cached channel without consulting capacity. So a
+            # node skipped as `unreachable` on absent capacity can still be
+            # dialable, and the eviction then destroys the off-node copy through
+            # the very node that was never asked to delete its local vol.img.
+            # Deciding when the control plane may abandon an anchor belongs to
+            # the anchorLossPolicy ADR, not here.
             _ = evict_remote_volume(state, volume, workload)
 
             state = clear_negative_store_truth(state, workload)
@@ -2408,12 +2419,23 @@ defmodule Embervm.StatefulManager do
       |> Enum.reject(&is_nil/1)
       |> MapSet.new()
 
+    # Keyed on configured_id, NOT the fact's node_id, because every lookup is a
+    # configured_id: nodes_with_volume/2 maps facts through configured_id and a
+    # durable volume row's node_id is written from configured_id by
+    # refresh_volume_facts. The two fields coincide today only because noded
+    # reports its configured name, so keying on the wrong one would leave every
+    # quiet-window lookup missing and silently restore the 15 second skip.
+    reporting_configured_ids =
+      facts
+      |> Enum.map(&Map.get(&1, :configured_id))
+      |> Enum.reject(&is_nil/1)
+
     # One clock read for the whole sweep, so every node seen in this pass shares
     # a timestamp and the quiet-window comparison cannot straddle two readings.
     reported_at = state.clock.()
 
     last_reported =
-      Enum.reduce(reporting_nodes, state.node_last_reported_at_ms, fn node_id, acc ->
+      Enum.reduce(reporting_configured_ids, state.node_last_reported_at_ms, fn node_id, acc ->
         Map.put(acc, node_id, reported_at)
       end)
 

@@ -2084,6 +2084,64 @@ defmodule Embervm.StatefulManagerTest do
     assert %{node_id: "node-1", generation: 1} = StatefulStore.get_volume(ctx.store, "wl-a")
   end
 
+  # The bound itself: quiet for exactly the window is OUTSIDE it, matching
+  # confirmed_anchor_gone?'s `>=` so the two oracles agree on the shared edge.
+  test "delete_volume treats a node quiet for exactly the window as gone" do
+    {:ok, now} = Agent.start_link(fn -> 1_000 end)
+    clock = fn -> Agent.get(now, & &1) end
+    ctx = start_stack(clock: clock, channel_fun: fn node_id -> {:ok, node_id} end)
+
+    stateful_workload(ctx, "wl-a")
+
+    stateful_node(ctx, "node-1",
+      volumes: [%{workload: "wl-a", generation: 1, size_bytes: 10, allocated_bytes: 1}]
+    )
+
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-1", generation: 1})
+    :ok = StatefulManager.reconcile(ctx.mgr)
+
+    NodeCapacity.drop(ctx.cap_table, "node-1")
+    Agent.update(now, &(&1 + 90_000))
+
+    assert {:ok, %{deleted: true, unreachable: ["node-1"]}} =
+             StatefulManager.delete_volume(ctx.mgr, "wl-a")
+
+    assert StatefulStore.get_volume(ctx.store, "wl-a") == nil
+  end
+
+  # The distinguishing case: boot long enough ago that the boot-relative floor
+  # has expired, so ONLY the per-node last-reported map can still classify this
+  # node as quiet. Without it every other quiet-window test also passes on the
+  # floor alone, and deleting the map's maintenance would leave them all green
+  # while the 15 second skip from #5545 came back.
+  test "delete_volume uses the node's last report, not the manager's boot time" do
+    {:ok, now} = Agent.start_link(fn -> 1_000 end)
+    clock = fn -> Agent.get(now, & &1) end
+    ctx = start_stack(clock: clock)
+
+    stateful_workload(ctx, "wl-a")
+
+    stateful_node(ctx, "node-1",
+      volumes: [%{workload: "wl-a", generation: 1, size_bytes: 10, allocated_bytes: 1}]
+    )
+
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-1", generation: 1})
+
+    # Well past the boot floor, then the node reports.
+    Agent.update(now, &(&1 + 200_000))
+    :ok = StatefulManager.reconcile(ctx.mgr)
+
+    # Quiet for 50s: inside the window by its last report, far outside it by
+    # boot time, which is 250s ago.
+    NodeCapacity.drop(ctx.cap_table, "node-1")
+    Agent.update(now, &(&1 + 50_000))
+
+    assert {:error, {:delete_incomplete, ["node-1"]}} =
+             StatefulManager.delete_volume(ctx.mgr, "wl-a")
+
+    assert %{node_id: "node-1", generation: 1} = StatefulStore.get_volume(ctx.store, "wl-a")
+  end
+
   test "delete_volume preserves the remote copy while its node is within the quiet window" do
     {:ok, now} = Agent.start_link(fn -> 1_000 end)
     {:ok, evicted} = Agent.start_link(fn -> [] end)
