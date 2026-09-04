@@ -318,8 +318,13 @@ defmodule Embervm.SessionStoreTest do
     {:ok, a} = create(store)
     usage = %{cpu_ms: 100, peak_rss_mib: 64, wall_ms: 200}
 
+    {:ok, started} = SessionStore.record_invoke_started(store, a.session_id)
+    assert is_integer(started.invoke_started_at)
+    assert started.last_invoke_at == nil
+
     {:ok, updated} = SessionStore.record_invoke(store, a.session_id, usage)
     assert updated.state == :running
+    assert updated.invoke_started_at == started.invoke_started_at
     assert is_integer(updated.last_invoke_at)
 
     # The usage projection accumulated (D12.1): vcpu_seconds = 100/1000.
@@ -327,9 +332,26 @@ defmodule Embervm.SessionStoreTest do
     [row] = page.items
     assert_in_delta row.vcpu_seconds, 0.1, 0.0001
 
-    # A session_invoked op is in the journal, after session_created.
+    # Both hot-path stamps are durable and ordered around the guest work.
     {:ok, ops} = SQLite.read_from(op_log, 0)
-    assert Enum.map(ops, & &1.kind) == [:session_created, :session_invoked]
+
+    assert Enum.map(ops, & &1.kind) == [
+             :session_created,
+             :session_invoke_started,
+             :session_invoked
+           ]
+
+    {:ok, _} = SessionStore.mark(store, a.session_id, :park)
+
+    {:ok, parked} =
+      SessionStore.transition(store, a.session_id, :park_complete, :session_parked, %{}, %{})
+
+    assert parked.invoke_started_at == started.invoke_started_at
+
+    {:ok, relighting} =
+      SessionStore.transition(store, a.session_id, :relight, :session_relit, %{}, %{})
+
+    assert relighting.invoke_started_at == started.invoke_started_at
   end
 
   test "record_invoke on a non-running session is rejected", %{path: path} do
@@ -351,6 +373,7 @@ defmodule Embervm.SessionStoreTest do
     {:ok, b} = create(store, workload: "wl-a", vm_id: "vm-b")
     {:ok, c} = create(store, workload: "wl-b", vm_id: "vm-c")
     {:ok, d} = create(store, workload: "wl-a", vm_id: "vm-d")
+    {:ok, a_started} = SessionStore.record_invoke_started(store, a.session_id)
 
     # Take one to a terminal state so the rebuild must reproduce a terminal row too.
     {:ok, _} = SessionStore.transition(store, c.session_id, :fail, :session_failed, %{reason: :failed}, %{})
@@ -371,6 +394,7 @@ defmodule Embervm.SessionStoreTest do
     {:ok, sd} = SessionStore.get(store2, d.session_id)
 
     assert sa.state == :running
+    assert sa.invoke_started_at == a_started.invoke_started_at
     assert sb.state == :running
     assert sc.state == :failed
     assert sc.terminal_reason == "failed"

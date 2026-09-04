@@ -692,6 +692,32 @@ def test_list_session_vms_follows_pagination(client, monkeypatch):
     assert body["vms"]["s-tail"]["state"] == "awake"
 
 
+def test_fresh_binding_absence_rejects_capped_paginated_listing(monkeypatch):
+    calls = []
+
+    async def fake_list_sessions(limit=500, offset=0, workload=None):
+        if workload == transport.PI_WORKLOAD:
+            return {"total": 0, "items": []}
+        calls.append(offset)
+        return {
+            "total": 2500,
+            "items": [
+                {"session_id": f"other-{offset + i}", "state": "parked"}
+                for i in range(500)
+            ],
+        }
+
+    monkeypatch.setattr(mcp._transport, "list_sessions", fake_list_sessions)
+
+    complete, vm_state = asyncio.run(
+        agent_router._fresh_vm_state_for_binding("missing-binding")
+    )
+
+    assert calls == [0, 500, 1000, 1500]
+    assert complete is False
+    assert vm_state is None
+
+
 def test_refresh_cp_state_polls_every_lane(client, monkeypatch):
     """The VM map must cover the pi lane as well as the claude one.
 

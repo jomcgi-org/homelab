@@ -199,6 +199,7 @@ defmodule Embervm.OpLog.Postgres do
       snapshot_size_bytes BIGINT,
       token_sha256 TEXT,
       created_at BIGINT NOT NULL,
+      invoke_started_at BIGINT,
       last_invoke_at BIGINT,
       expires_at BIGINT,
       updated_at BIGINT NOT NULL,
@@ -221,6 +222,8 @@ defmodule Embervm.OpLog.Postgres do
     # retention compaction of a terminal session frees the key. The index sits
     # AFTER the ALTER here so the column exists on upgraded DBs too.
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS idempotency_key TEXT",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS invoke_started_at BIGINT",
+    "UPDATE sessions SET invoke_started_at=last_invoke_at WHERE invoke_started_at IS NULL AND last_invoke_at IS NOT NULL",
     """
     CREATE UNIQUE INDEX IF NOT EXISTS sessions_idem_idx
       ON sessions(principal, idempotency_key)
@@ -737,6 +740,7 @@ defmodule Embervm.OpLog.Postgres do
     :quota_enforced,
     :drain,
     :session_created,
+    :session_invoke_started,
     :session_invoked,
     :session_banked,
     :session_parked,
@@ -943,9 +947,9 @@ defmodule Embervm.OpLog.Postgres do
     INSERT INTO sessions
       (session_id, tenant, principal, workload, state, node_id, volume_node_id,
        base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
-       token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason,
+       token_sha256, created_at, invoke_started_at, last_invoke_at, expires_at, updated_at, terminal_reason,
        lineage_id, idempotency_key)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, NULL, NULL, $10, $11, NULL, $12, $13, NULL, $14, $15)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, NULL, NULL, $10, $11, NULL, NULL, $12, $13, NULL, $14, $15)
     ON CONFLICT (session_id) DO NOTHING
     """
 
@@ -989,13 +993,23 @@ defmodule Embervm.OpLog.Postgres do
 
   defp project(conn, %Op{kind: :session_invoked} = op, _seq) do
     with :ok <-
-           exec(conn, "UPDATE sessions SET last_invoke_at=$1, updated_at=$2 WHERE session_id=$3", [
-             op.ts,
-             op.ts,
-             op.session_id
-           ]) do
+           exec(
+             conn,
+             "UPDATE sessions SET last_invoke_at=$1, invoke_started_at=COALESCE(invoke_started_at, $2), updated_at=$3 WHERE session_id=$4",
+             [op.ts, op.ts, op.ts, op.session_id]
+           ) do
       project_usage(conn, op)
     end
+  end
+
+  # Durable invoke dispatch evidence. It is intentionally separate from
+  # session_invoked, which is emitted only after successful completion.
+  defp project(conn, %Op{kind: :session_invoke_started} = op, _seq) do
+    exec(
+      conn,
+      "UPDATE sessions SET invoke_started_at=GREATEST(COALESCE(invoke_started_at, $1), $1), updated_at=$2 WHERE session_id=$3",
+      [op.ts, op.ts, op.session_id]
+    )
   end
 
   defp project(conn, %Op{kind: :session_banked} = op, _seq) do
@@ -1999,7 +2013,7 @@ defmodule Embervm.OpLog.Postgres do
     sql = """
     SELECT session_id, tenant, principal, workload, state, node_id, volume_node_id,
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
-           token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason,
+           token_sha256, created_at, invoke_started_at, last_invoke_at, expires_at, updated_at, terminal_reason,
            COALESCE(lineage_id, session_id), idempotency_key
     FROM sessions
     """
@@ -2025,6 +2039,7 @@ defmodule Embervm.OpLog.Postgres do
           snapshot_size_bytes,
           token_sha256,
           created_at,
+          invoke_started_at,
           last_invoke_at,
           expires_at,
           updated_at,
@@ -2047,6 +2062,7 @@ defmodule Embervm.OpLog.Postgres do
       snapshot_size_bytes: snapshot_size_bytes,
       token_sha256: token_sha256,
       created_at: created_at,
+      invoke_started_at: invoke_started_at,
       last_invoke_at: last_invoke_at,
       expires_at: expires_at,
       updated_at: updated_at,

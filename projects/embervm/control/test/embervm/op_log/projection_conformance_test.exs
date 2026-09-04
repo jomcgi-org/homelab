@@ -248,13 +248,28 @@ defmodule Embervm.OpLog.ProjectionConformance do
     assert_eq(s.lineage_id, "s-1", "lineage_id defaults to session_id")
 
     {:ok, _} =
+      append(server, backend, :session_invoke_started, 140,
+        principal: "p1",
+        workload: "wl-session",
+        session_id: "s-1"
+      )
+
+    assert_eq(
+      one(backend, server, :load_sessions).invoke_started_at,
+      140,
+      "invoke start is projected explicitly"
+    )
+
+    {:ok, _} =
       append(server, backend, :session_invoked, 150,
         principal: "p1",
         workload: "wl-session",
         session_id: "s-1"
       )
 
-    assert_eq(one(backend, server, :load_sessions).last_invoke_at, 150, "invoked stamps last_invoke_at")
+    invoked = one(backend, server, :load_sessions)
+    assert_eq(invoked.last_invoke_at, 150, "invoked stamps last_invoke_at")
+    assert_eq(invoked.invoke_started_at, 140, "completion preserves invoke start")
 
     {:ok, _} =
       append(server, backend, :session_banked, 200,

@@ -222,6 +222,7 @@ defmodule Embervm.OpLog.SQLite do
       snapshot_size_bytes INTEGER,
       token_sha256 TEXT,
       created_at INTEGER NOT NULL,
+      invoke_started_at INTEGER,
       last_invoke_at INTEGER,
       expires_at INTEGER,
       updated_at INTEGER NOT NULL,
@@ -928,6 +929,7 @@ defmodule Embervm.OpLog.SQLite do
     :quota_enforced,
     :drain,
     :session_created,
+    :session_invoke_started,
     :session_invoked,
     :session_banked,
     :session_parked,
@@ -1171,9 +1173,9 @@ defmodule Embervm.OpLog.SQLite do
     INSERT OR IGNORE INTO sessions
       (session_id, tenant, principal, workload, state, node_id, volume_node_id,
        base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
-       token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason,
+       token_sha256, created_at, invoke_started_at, last_invoke_at, expires_at, updated_at, terminal_reason,
        lineage_id, idempotency_key)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, NULL, ?, ?, NULL, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, NULL, NULL, ?, ?, NULL, ?, ?)
     """
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
@@ -1233,13 +1235,28 @@ defmodule Embervm.OpLog.SQLite do
   # bodies in the payload (at-most-once, data minimization). Charges the same
   # (principal, day) usage projection tasks do (D12.1), in this same transaction.
   defp project(conn, %Op{kind: :session_invoked} = op, _seq) do
-    sql = "UPDATE sessions SET last_invoke_at=?, updated_at=? WHERE session_id=?"
+    sql =
+      "UPDATE sessions SET last_invoke_at=?, invoke_started_at=COALESCE(invoke_started_at, ?), updated_at=? WHERE session_id=?"
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
-         :ok <- Sqlite3.bind(stmt, [op.ts, op.ts, op.session_id]),
+         :ok <- Sqlite3.bind(stmt, [op.ts, op.ts, op.ts, op.session_id]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
       project_usage(conn, op)
+    end
+  end
+
+  # Durable invoke dispatch evidence. It is intentionally separate from
+  # session_invoked, which is emitted only after successful completion.
+  defp project(conn, %Op{kind: :session_invoke_started} = op, _seq) do
+    sql =
+      "UPDATE sessions SET invoke_started_at=MAX(COALESCE(invoke_started_at, ?), ?), updated_at=? WHERE session_id=?"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [op.ts, op.ts, op.ts, op.session_id]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
     end
   end
 
@@ -2737,7 +2754,7 @@ defmodule Embervm.OpLog.SQLite do
     sql = """
     SELECT session_id, tenant, principal, workload, state, node_id, volume_node_id,
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
-           token_sha256, created_at, last_invoke_at, expires_at, updated_at, terminal_reason,
+           token_sha256, created_at, invoke_started_at, last_invoke_at, expires_at, updated_at, terminal_reason,
            COALESCE(lineage_id, session_id), idempotency_key
     FROM sessions
     """
@@ -2767,6 +2784,7 @@ defmodule Embervm.OpLog.SQLite do
          snapshot_size_bytes,
          token_sha256,
          created_at,
+         invoke_started_at,
          last_invoke_at,
          expires_at,
          updated_at,
@@ -2789,6 +2807,7 @@ defmodule Embervm.OpLog.SQLite do
           snapshot_size_bytes: snapshot_size_bytes,
           token_sha256: token_sha256,
           created_at: created_at,
+          invoke_started_at: invoke_started_at,
           last_invoke_at: last_invoke_at,
           expires_at: expires_at,
           updated_at: updated_at,
@@ -3710,6 +3729,7 @@ defmodule Embervm.OpLog.SQLite do
          :ok <- migrate_sessions_volume_node_id(conn),
          :ok <- migrate_sessions_lineage_id(conn),
          :ok <- migrate_sessions_idempotency_key(conn),
+         :ok <- migrate_sessions_invoke_started_at(conn),
          :ok <- migrate_ops_session_id(conn),
          :ok <- migrate_ops_serving_instance_id(conn),
          :ok <- migrate_usage_request_count(conn),
@@ -3717,6 +3737,22 @@ defmodule Embervm.OpLog.SQLite do
          :ok <- migrate_volumes_exported_generation(conn),
          :ok <- migrate_ops_group_instance_id(conn) do
       :ok
+    end
+  end
+
+  defp migrate_sessions_invoke_started_at(conn) do
+    with {:ok, cols} <- table_columns(conn, "sessions"),
+         :ok <-
+           add_column_if_missing(
+             conn,
+             cols,
+             "invoke_started_at",
+             "ALTER TABLE sessions ADD COLUMN invoke_started_at INTEGER"
+           ) do
+      Sqlite3.execute(
+        conn,
+        "UPDATE sessions SET invoke_started_at=last_invoke_at WHERE invoke_started_at IS NULL AND last_invoke_at IS NOT NULL"
+      )
     end
   end
 

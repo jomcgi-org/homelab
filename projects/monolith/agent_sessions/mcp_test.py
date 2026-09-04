@@ -13,6 +13,13 @@ from agent_sessions.transport import EmberSession, EmberSessionGone, Turn
 from faas.embervm_client import EmberVMTransportError
 
 
+@pytest.fixture(autouse=True)
+def clear_negative_oracle_memo():
+    mcp._negative_oracle_verdicts.clear()
+    yield
+    mcp._negative_oracle_verdicts.clear()
+
+
 @pytest.mark.parametrize(
     ("model", "family"),
     [
@@ -594,6 +601,190 @@ def test_zombie_recovery_surfaces_status_and_retries_prompt(monkeypatch, session
     assert executions == ["keep the original prompt", "queued follow-up"]
 
 
+def _hung_claim(session, now, *, dispatch_count=1):
+    row = store.create_session(
+        session,
+        f"hung-{dispatch_count}",
+        "<guest>",
+        "main",
+        repo="jomcgi/homelab",
+    )
+    row.ember_session_id = f"ember-hung-{dispatch_count}"
+    row.ember_session_token = "token"
+    session.add_all(
+        [
+            row,
+            PendingMessage(
+                session_id=row.id,
+                seq=1,
+                message_text="never reached the guest",
+                claimed_by_replica="hung-pod",
+                claimed_at=now,
+                dispatch_count=dispatch_count,
+                last_dispatch_at=now
+                - timedelta(seconds=mcp.HUNG_CLAIM_THRESHOLD_SECONDS + 1),
+                created_at=now
+                - timedelta(seconds=mcp.HUNG_CLAIM_THRESHOLD_SECONDS + 1),
+            ),
+        ]
+    )
+    session.commit()
+    return row
+
+
+def test_hung_claim_never_invoked_fresh_cp_answer_fires_recovery(monkeypatch, session):
+    assert mcp.HUNG_CLAIM_THRESHOLD_SECONDS == 600
+    now = datetime.now(timezone.utc)
+    row = _hung_claim(session, now)
+    scheduled = []
+    destroyed = []
+
+    async def list_sessions(limit=500, offset=0, workload=None):
+        return {
+            "total": 1,
+            "items": [
+                {
+                    "session_id": row.ember_session_id,
+                    "state": "running",
+                    "invoke_started_at": None,
+                    "last_invoke_at": None,
+                }
+            ],
+        }
+
+    async def destroy(ember_session_id):
+        destroyed.append(ember_session_id)
+        return {"status": "destroyed"}
+
+    monkeypatch.setattr(mcp._transport, "list_sessions", list_sessions)
+    monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
+    monkeypatch.setattr(mcp, "_schedule_next_message", scheduled.append)
+
+    result = asyncio.run(mcp.recover_zombie_session_if_needed(row.id, now=now))
+
+    assert result is not None
+    assert result["retry_seq"] == 1
+    assert destroyed == ["ember-hung-1"]
+    assert scheduled == [row.id]
+    session.expire_all()
+    pending = store.get_pending_message(session, row.id, 1)
+    assert pending.claimed_by_replica is None
+    assert store.get_session(session, row.id).status == "running"
+
+
+def test_hung_claim_in_flight_first_turn_never_fires(monkeypatch, session):
+    now = datetime.now(timezone.utc)
+    row = _hung_claim(session, now)
+    destroyed = []
+
+    async def list_sessions(limit=500, offset=0, workload=None):
+        return {
+            "total": 1,
+            "items": [
+                {
+                    "session_id": row.ember_session_id,
+                    "state": "running",
+                    "invoke_started_at": 1,
+                    "last_invoke_at": None,
+                }
+            ],
+        }
+
+    async def destroy(ember_session_id):
+        destroyed.append(ember_session_id)
+
+    monkeypatch.setattr(mcp._transport, "list_sessions", list_sessions)
+    monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
+
+    result = asyncio.run(mcp.recover_zombie_session_if_needed(row.id, now=now))
+
+    assert result is None
+    session.expire_all()
+    pending = store.get_pending_message(session, row.id, 1)
+    assert pending.claimed_by_replica == "hung-pod"
+    assert store.get_session(session, row.id).status == "running"
+    assert destroyed == []
+
+
+def test_hung_claim_cp_unreachable_never_fires(monkeypatch, session):
+    now = datetime.now(timezone.utc)
+    row = _hung_claim(session, now)
+
+    async def unavailable(limit=500, offset=0, workload=None):
+        raise EmberVMTransportError("control plane unreachable")
+
+    monkeypatch.setattr(mcp._transport, "list_sessions", unavailable)
+
+    result = asyncio.run(mcp.recover_zombie_session_if_needed(row.id, now=now))
+
+    assert result is None
+    session.expire_all()
+    pending = store.get_pending_message(session, row.id, 1)
+    assert pending.claimed_by_replica == "hung-pod"
+    assert store.get_session(session, row.id).status == "running"
+
+
+def test_negative_hung_oracle_verdict_is_memoized_for_two_minutes(monkeypatch, session):
+    assert mcp.NEGATIVE_ORACLE_TTL_SECONDS == 120
+    now = datetime.now(timezone.utc)
+    row = _hung_claim(session, now)
+    monotonic_now = [1000.0]
+    oracle_calls = []
+
+    async def in_flight(_ember_session_id):
+        oracle_calls.append(True)
+        return True, {"invoke_started_at": 1}
+
+    monkeypatch.setattr(mcp.time, "monotonic", lambda: monotonic_now[0])
+    monkeypatch.setattr(mcp, "_fresh_bound_guest_state", in_flight)
+
+    assert asyncio.run(mcp.recover_zombie_session_if_needed(row.id, now=now)) is None
+    assert asyncio.run(mcp.recover_zombie_session_if_needed(row.id, now=now)) is None
+    assert len(oracle_calls) == 1
+
+    monotonic_now[0] += 121
+    assert asyncio.run(mcp.recover_zombie_session_if_needed(row.id, now=now)) is None
+    assert len(oracle_calls) == 2
+
+
+def test_hung_claim_dispatch_bound_marks_session_failed(monkeypatch, session):
+    now = datetime.now(timezone.utc)
+    row = _hung_claim(session, now, dispatch_count=4)
+    destroyed = []
+    scheduled = []
+
+    async def binding_missing(_ember_session_id):
+        return True, None
+
+    async def destroy(ember_session_id):
+        destroyed.append(ember_session_id)
+
+    monkeypatch.setattr(mcp, "_fresh_bound_guest_state", binding_missing)
+    monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
+    monkeypatch.setattr(mcp, "_schedule_next_message", scheduled.append)
+
+    result = asyncio.run(mcp.recover_zombie_session_if_needed(row.id, now=now))
+
+    assert result is not None
+    assert result["recovery_declined"] is True
+    assert destroyed == ["ember-hung-4"]
+    assert scheduled == []
+    session.expire_all()
+    failed = store.get_session(session, row.id)
+    pending = store.get_pending_message(session, row.id, 1)
+    assert failed.status == "failed"
+    assert "4 dispatch attempts" in failed.voice_summary
+    assert failed.ember_session_id is None
+    assert pending is None
+
+    follow_up = store.create_pending_message(session, row.id, "try a fresh lane")
+    assert follow_up.seq == 1
+    assert store.activate_session_after_enqueue(session, row.id) is True
+    session.refresh(failed)
+    assert failed.status == "running"
+    assert store.claim_pending_message_for_session_sync(row.id, "fresh-pod") == 1
+
+
 def _completed_turn(message: str) -> Turn:
     return Turn(
         result=f"Done: {message}",
@@ -814,6 +1005,71 @@ def test_failed_guest_delivery_does_not_clear_reused_session(monkeypatch, sessio
     assert unchanged.ember_session_token == "token-1"
     assert unchanged.ember_session_expires_at == 1754035200000
     assert unchanged.cli_session_id == "cli-1"
+
+
+@pytest.mark.parametrize("failure_mode", ["persist_callback", "gone", "generic"])
+def test_stolen_executor_error_paths_write_nothing(
+    monkeypatch, session, caplog, failure_mode
+):
+    row = store.create_session(session, f"stolen-{failure_mode}", "/workspace", "main")
+    if failure_mode != "persist_callback":
+        store.set_ember_session(session, row.id, "ember-owned", "token-owned", None)
+    pending = store.create_pending_message(session, row.id, "hello")
+    pending_seq = pending.seq
+    original_sleep = asyncio.sleep
+
+    async def scenario():
+        steal_now = asyncio.Event()
+        refresh_seen = []
+
+        async def controlled_sleep(seconds):
+            if seconds == 10:
+                await steal_now.wait()
+                return
+            await original_sleep(seconds)
+
+        def stolen_refresh(session_id, turn_seq, _claim_owner):
+            with Session(mcp.get_engine()) as stealing_session:
+                stolen = store.get_pending_message(
+                    stealing_session, session_id, turn_seq
+                )
+                stolen.claimed_by_replica = "retry-owner"
+                stealing_session.add(stolen)
+                stealing_session.commit()
+            refresh_seen.append(True)
+            return False
+
+        async def deliver(*_args, **kwargs):
+            steal_now.set()
+            while not refresh_seen:
+                await original_sleep(0)
+            if failure_mode == "persist_callback":
+                await kwargs["on_create"](
+                    EmberSession("ember-heir", "token-heir", None), "cli-heir"
+                )
+                return _completed_delivery("hello")
+            if failure_mode == "gone":
+                raise EmberSessionGone("guest disappeared")
+            raise EmberVMTransportError("delivery failed")
+
+        monkeypatch.setattr(mcp.asyncio, "sleep", controlled_sleep)
+        monkeypatch.setattr(mcp, "_refresh_claim_sync", stolen_refresh)
+        monkeypatch.setattr(mcp._transport, "deliver", deliver)
+        await mcp._execute_pending_message(row.id)
+
+    asyncio.run(scenario())
+
+    session.expire_all()
+    unchanged = store.get_session(session, row.id)
+    assert unchanged.status == "running"
+    still_pending = store.get_pending_message(session, row.id, pending_seq)
+    assert still_pending.claimed_by_replica == "retry-owner"
+    assert store.get_turn(session, row.id, pending_seq) is None
+    if failure_mode == "persist_callback":
+        assert unchanged.ember_session_id is None
+    else:
+        assert unchanged.ember_session_id == "ember-owned"
+    assert caplog.text.count("executor writes nothing") == 1
 
 
 def test_recreated_ember_session_adopts_new_cli_session_id(monkeypatch, session):

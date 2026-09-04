@@ -450,14 +450,15 @@ def _coarse_vm_map(items: list[dict]) -> dict[str, dict]:
         vms[item.get("session_id")] = {
             "state": coarse,
             "cp_state": state,
+            "invoke_started_at": item.get("invoke_started_at"),
             "last_invoke_at": item.get("last_invoke_at"),
             "expires_at": item.get("expires_at"),
         }
     return vms
 
 
-async def _lane_sessions(workload: str) -> list:
-    """Every session the control plane reports for one workload lane."""
+async def _lane_sessions(workload: str) -> tuple[list, bool]:
+    """Return one lane's sessions and whether its listing was complete."""
     items = []
     offset = 0
     for _ in range(4):
@@ -467,12 +468,17 @@ async def _lane_sessions(workload: str) -> list:
         batch = page.get("items", [])
         items.extend(batch)
         offset += len(batch)
-        if not batch or offset >= int(page.get("total") or 0):
-            break
-    return items
+        if page.get("total") is None:
+            return items, False
+        total = int(page["total"])
+        if offset >= total:
+            return items, True
+        if not batch:
+            return items, False
+    return items, False
 
 
-async def _refresh_cp_state() -> None:
+async def _refresh_cp_state() -> tuple[dict[str, dict], bool] | None:
     # EVERY lane, not just the claude runtime. list_sessions is workload
     # scoped, so a single-lane poll would leave persisted qwen sessions out of
     # the published map entirely. The console reads an absent session_id as
@@ -485,9 +491,12 @@ async def _refresh_cp_state() -> None:
     # and wants the union.
     lanes = list(dict.fromkeys([_transport.workload, transport_module.PI_WORKLOAD]))
     items = []
+    complete = True
     try:
         for lane in lanes:
-            items.extend(await _lane_sessions(lane))
+            lane_items, lane_complete = await _lane_sessions(lane)
+            items.extend(lane_items)
+            complete = complete and lane_complete
     except EmberVMTransportError as exc:
         # Drop the map rather than serving the last known one. A stale entry
         # renders as a confident "awake" chip for a guest that may be long
@@ -497,9 +506,39 @@ async def _refresh_cp_state() -> None:
         # one the console already had.
         logger.warning("failed to refresh agent VM state: %s", exc)
         _publish_vm_map({}, error=str(exc))
-        return
+        return None
 
-    _publish_vm_map(_coarse_vm_map(items), error=None)
+    vm_map = _coarse_vm_map(items)
+    _publish_vm_map(vm_map, error=None)
+    return vm_map, complete
+
+
+async def _fresh_vm_state_for_binding(
+    ember_session_id: str,
+) -> tuple[bool, dict | None]:
+    """Return a fresh CP answer for one binding.
+
+    The boolean is true when the binding is present or a complete listing
+    confirms its absence. Zombie recovery must fail closed for partial listings
+    and outages.
+    """
+    try:
+        snapshot = await _refresh_cp_state()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - every oracle failure is fail closed
+        logger.exception("fresh agent VM state lookup failed")
+        _publish_vm_map({}, error=str(exc))
+        return False, None
+    if snapshot is None:
+        return False, None
+    vm_map, complete = snapshot
+    vm_state = vm_map.get(ember_session_id)
+    if vm_state is not None:
+        return True, vm_state
+    # Absence is authoritative only after every workload lane exhausted all
+    # pages against an explicit total. A capped or legacy response is partial.
+    return complete, None
 
 
 def _publish_vm_map(new_map: dict[str, dict], error: str | None) -> None:

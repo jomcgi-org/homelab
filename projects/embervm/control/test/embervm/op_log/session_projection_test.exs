@@ -207,6 +207,7 @@ defmodule Embervm.OpLog.SessionProjectionTest do
 
     # last_invoke_at advanced; state unchanged by an invoke.
     s = session_by_id(server)["s-u"]
+    assert s.invoke_started_at == day5 + 10
     assert s.last_invoke_at == day5 + 10
     assert s.state == "running"
 

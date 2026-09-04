@@ -2193,7 +2193,7 @@
               {#if formatRepoContext(selectedSession)}
                 <span class="pill">{formatRepoContext(selectedSession)}</span>
               {/if}
-              {#if ["needs_input", "warn", "awaiting_login", "recovering"].includes(statusClass(selectedSession))}
+              {#if ["needs_input", "warn", "failed", "awaiting_login", "recovering"].includes(statusClass(selectedSession))}
                 <span class={`pill state-pill ${statusClass(selectedSession)}`}
                   >{statusClass(selectedSession) === "awaiting_login"
                     ? P.labels.awaitingLogin
@@ -3079,7 +3079,8 @@
   .dot.recovering {
     background: var(--attn);
   }
-  .dot.warn {
+  .dot.warn,
+  .dot.failed {
     background: var(--err);
   }
   .run-shape-strip {
@@ -3266,7 +3267,8 @@
   .state-pill.recovering {
     color: var(--attn-text);
   }
-  .state-pill.warn {
+  .state-pill.warn,
+  .state-pill.failed {
     color: var(--err);
   }
   .session-recovery-banner {
