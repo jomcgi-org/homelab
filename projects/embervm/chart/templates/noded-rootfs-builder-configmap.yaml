@@ -303,16 +303,29 @@ data:
         fi
       fi
       rm -f "$mkfs_output"
-      if ! mv -f "$cache_tmp" "$cache" 2>/dev/null; then
-        if [ -f "$cache" ]; then
-          echo "rootfs cache created by sibling pod"
-          rm -f "$cache_tmp"
+      # A sibling brick on this node bakes the same digest to the same shared
+      # scratch, so by the time we finish it may already be published. That is a
+      # WIN, not a failure: same digest means byte-identical content, and
+      # renaming over it would swap the inode under any hardlink or open handle
+      # already taken against it (see the ln -f below, and the banked-session
+      # note in the reclaim comment) for no gain.
+      if [ -f "$cache" ]; then
+        echo "rootfs $short published by a sibling while this bake ran"
+        rm -f "$cache_tmp"
+      else
+        mv_error="$(mktemp)"
+        if mv -f "$cache_tmp" "$cache" 2>"$mv_error"; then
+          echo "rootfs baked at $cache ($size)"
+          rm -f "$mv_error"
         else
-          echo "failed to move $cache_tmp to $cache, cache file not found" >&2
+          # Say what actually happened. This used to surface as one bare
+          # "mv: cannot stat" line with the mkfs output swallowed, which is why
+          # #5630 read as a mystery twice.
+          cat "$mv_error" >&2
+          echo "rootfs bake produced no file at $cache_tmp and $cache does not exist" >&2
+          rm -f "$mv_error" "$cache_tmp"
           exit 1
         fi
-      else
-        echo "rootfs baked at $cache ($size)"
       fi
     fi
     # Materialize the template-time path noded attaches as a hardlink to the cache
