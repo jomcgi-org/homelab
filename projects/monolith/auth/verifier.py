@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Protocol
 
 import jwt
@@ -182,4 +183,14 @@ def build_default_resolver(settings: AuthSettings | None = None) -> TokenResolve
     configured = settings or AuthSettings.from_env()
     # Delegation verification from #4944 registers after the standing verifier.
     verifiers: list[TokenVerifier] = [AuthentikStandingVerifier(configured)]
+
+    if configured.agent_provider_is_configured:
+        agent_settings = replace(
+            configured,
+            authentik_jwks_url=configured.authentik_agent_jwks_url,
+            authentik_issuer=configured.authentik_agent_issuer,
+            authentik_audience=configured.authentik_agent_audience,
+        )
+        verifiers.append(AuthentikStandingVerifier(agent_settings))
+
     return TokenResolver(verifiers)

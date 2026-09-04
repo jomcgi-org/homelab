@@ -14,11 +14,18 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from auth.errors import AuthError, AuthErrorReason
 from auth.principal import Authority, Principal, PrincipalKind
 from auth.settings import AuthSettings
-from auth.verifier import AuthentikStandingVerifier, TokenResolver
+from auth.verifier import (
+    AuthentikStandingVerifier,
+    TokenResolver,
+    build_default_resolver,
+)
 
 ISSUER = "https://auth.example/application/o/mcp-friends/"
 AUDIENCE = "https://private.example"
 JWKS_URL = f"{ISSUER}jwks/"
+AGENT_ISSUER = "https://auth.example/application/o/mcp-agents/"
+AGENT_AUDIENCE = AUDIENCE
+AGENT_JWKS_URL = f"{AGENT_ISSUER}jwks/"
 
 
 class Clock:
@@ -336,6 +343,104 @@ async def test_ordered_chain_second_verifier_reached_on_first_decline():
     assert stub.calls == [delegation_token]
 
 
+def _two_provider_resolver():
+    standing_key, standing_jwk = _key_and_jwk("standing-key")
+    agent_key, agent_jwk = _key_and_jwk("agent-key")
+    standing_fetch, standing_calls = _fetcher({"keys": [standing_jwk]})
+    agent_fetch, agent_calls = _fetcher({"keys": [agent_jwk]})
+    configured = _settings(
+        authentik_agent_jwks_url=AGENT_JWKS_URL,
+        authentik_agent_issuer=AGENT_ISSUER,
+        authentik_agent_audience=AGENT_AUDIENCE,
+    )
+    return (
+        TokenResolver(
+            [
+                AuthentikStandingVerifier(configured, fetch=standing_fetch),
+                AuthentikStandingVerifier(
+                    replace(
+                        configured,
+                        authentik_jwks_url=AGENT_JWKS_URL,
+                        authentik_issuer=AGENT_ISSUER,
+                        authentik_audience=AGENT_AUDIENCE,
+                    ),
+                    fetch=agent_fetch,
+                ),
+            ]
+        ),
+        standing_key,
+        agent_key,
+        standing_calls,
+        agent_calls,
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_issuer_resolves_through_second_verifier():
+    resolver, _, agent_key, standing_calls, agent_calls = _two_provider_resolver()
+    token = _token(
+        agent_key,
+        kid="agent-key",
+        iss=AGENT_ISSUER,
+        aud=[AGENT_AUDIENCE],
+        email=None,
+        sub="kg-agent-sa",
+        groups=["kg-agents"],
+    )
+
+    principal = await resolver.resolve(token)
+
+    assert principal is not None
+    assert principal.subject == "kg-agent-sa"
+    assert principal.groups == ("kg-agents",)
+    assert standing_calls == []
+    assert agent_calls == [AGENT_JWKS_URL]
+
+
+@pytest.mark.asyncio
+async def test_existing_issuer_still_resolves_through_first_verifier():
+    resolver, standing_key, _, standing_calls, agent_calls = _two_provider_resolver()
+
+    principal = await resolver.resolve(_token(standing_key, kid="standing-key"))
+
+    assert principal.subject == "user-123"
+    assert principal.groups == ("friends", "operators")
+    assert standing_calls == [JWKS_URL]
+    assert agent_calls == []
+
+
+@pytest.mark.asyncio
+async def test_unknown_issuer_raises_unrecognized_not_declined():
+    resolver, _, _, standing_calls, agent_calls = _two_provider_resolver()
+    unknown_key, _ = _key_and_jwk("unknown-key")
+    token = _token(
+        unknown_key,
+        kid="unknown-key",
+        iss="https://unknown.example/application/o/unknown/",
+    )
+
+    with pytest.raises(AuthError) as raised:
+        await resolver.resolve(token)
+
+    assert raised.value.reason is AuthErrorReason.UNRECOGNIZED
+    assert standing_calls == []
+    assert agent_calls == []
+
+
+def test_unconfigured_agent_provider_creates_single_verifier():
+    single = build_default_resolver(_settings())
+    configured = build_default_resolver(
+        _settings(
+            authentik_agent_jwks_url=AGENT_JWKS_URL,
+            authentik_agent_issuer=AGENT_ISSUER,
+            authentik_agent_audience=AGENT_AUDIENCE,
+        )
+    )
+
+    assert len(single._verifiers) == 1
+    assert len(configured._verifiers) == 2
+
+
 @pytest.mark.asyncio
 async def test_ordered_chain_stops_when_first_verifier_raises():
     first = StubVerifier(error=AuthError(AuthErrorReason.BAD_SIGNATURE))
@@ -604,14 +709,6 @@ async def test_unparseable_ttl_falls_back_to_default(caplog):
     import logging
 
     caplog.set_level(logging.WARNING, logger="monolith.auth")
-
-    # Create a settings object with unparseable TTL
-    settings = AuthSettings(
-        authentik_jwks_url=JWKS_URL,
-        authentik_issuer=ISSUER,
-        authentik_audience=AUDIENCE,
-        jwks_cache_ttl_s=300,  # We'll test via from_env
-    )
 
     # Test from_env behavior with monkeypatch
     import os

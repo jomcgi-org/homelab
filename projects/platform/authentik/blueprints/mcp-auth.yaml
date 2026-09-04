@@ -185,3 +185,65 @@ entries:
             [managed, goauthentik.io/providers/oauth2/scope-profile],
           ]
         - !KeyOf mcp-audience
+
+  # This confidential client is for the kg-agent-sa service account and uses
+  # the client_credentials flow only. It is gated to kg-agents below.
+  # Issuer: https://auth.jomcgi.dev/application/o/mcp-agents/
+  # JWKS: http://authentik-server.authentik.svc.cluster.local/application/o/mcp-agents/jwks/
+  # The secret comes from the 1Password item authentik field
+  # AGENT_MCP_OIDC_CLIENT_SECRET and is never stored in this blueprint.
+  - model: authentik_providers_oauth2.oauth2provider
+    id: mcp-agents-provider
+    identifiers:
+      name: mcp-agents
+    attrs:
+      client_type: confidential
+      client_id: mcp-agents
+      client_secret: !Env AGENT_MCP_OIDC_CLIENT_SECRET
+      grant_types:
+        - client_credentials
+      signing_key:
+        !Find [
+          authentik_crypto.certificatekeypair,
+          [name, authentik Self-signed Certificate],
+        ]
+      redirect_uris: []
+      authorization_flow:
+        !Find [
+          authentik_flows.flow,
+          [slug, default-provider-authorization-implicit-consent],
+        ]
+      invalidation_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      property_mappings:
+        - !Find [
+            authentik_providers_oauth2.scopemapping,
+            [managed, goauthentik.io/providers/oauth2/scope-openid],
+          ]
+        - !Find [
+            authentik_providers_oauth2.scopemapping,
+            [managed, goauthentik.io/providers/oauth2/scope-email],
+          ]
+        - !Find [
+            authentik_providers_oauth2.scopemapping,
+            [managed, goauthentik.io/providers/oauth2/scope-profile],
+          ]
+        - !KeyOf mcp-audience
+
+  - model: authentik_core.application
+    id: mcp-agents-app
+    identifiers:
+      slug: mcp-agents
+    attrs:
+      name: Ember agents
+      provider: !KeyOf mcp-agents-provider
+
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !KeyOf mcp-agents-app
+      group: !Find [authentik_core.group, [name, kg-agents]]
+      order: 0
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30
