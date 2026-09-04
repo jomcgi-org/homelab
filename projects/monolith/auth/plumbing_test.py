@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -132,6 +133,145 @@ async def test_fastapi_and_mounted_asgi_paths_have_principal_parity(human_princi
 
 
 @pytest.mark.asyncio
+async def test_middleware_logs_anonymous_principal_without_authorization(caplog):
+    caplog.set_level(logging.INFO, logger="monolith.auth")
+    app = PrincipalMiddleware(_successful_asgi_app, TokenResolver([]))
+
+    await _call_middleware(app, path="/mcp/anonymous")
+
+    record = _principal_resolution_record(caplog)
+    assert record.subject == "anonymous"
+    assert record.kind == PrincipalKind.HUMAN.value
+    assert record.authority == Authority.ANONYMOUS.value
+    assert record.groups == ""
+    assert record.authorization_present is False
+    assert record.path == "/mcp/anonymous"
+
+
+@pytest.mark.asyncio
+async def test_principal_log_message_renders_fields_for_the_pod_log(caplog):
+    """The root formatter emits only %(message)s, so extra= alone reaches nobody.
+
+    This asserts on the RENDERED message rather than the record attributes,
+    because the rendered message is the whole artifact in `kubectl logs`, and
+    telling "no token arrived" from "a token arrived" is the point of the task.
+    """
+
+    caplog.set_level(logging.INFO, logger="monolith.auth")
+    app = PrincipalMiddleware(_successful_asgi_app, TokenResolver([]))
+
+    await _call_middleware(app, path="/mcp/anonymous")
+
+    rendered = _principal_resolution_record(caplog).getMessage()
+    assert "authorization_present=False" in rendered
+    assert f"authority={Authority.ANONYMOUS.value}" in rendered
+    assert "subject=anonymous" in rendered
+    assert "path=/mcp/anonymous" in rendered
+
+
+@pytest.mark.asyncio
+async def test_middleware_logs_and_traces_resolved_bearer_principal(
+    caplog,
+):
+    token = "valid-observability-token"
+    principal = Principal(
+        subject="workload-1",
+        actor=(),
+        scope=("tools:read",),
+        groups=("agents", "operators"),
+        email=None,
+        kind=PrincipalKind.WORKLOAD,
+        authority=Authority.DELEGATED,
+    )
+    resolver = TokenResolver([MappingVerifier(token, principal)])
+    app = PrincipalMiddleware(_successful_asgi_app, resolver)
+    span = MagicMock()
+    span.is_recording.return_value = True
+    caplog.set_level(logging.INFO, logger="monolith.auth")
+
+    with patch("auth.middleware.trace.get_current_span", return_value=span):
+        await _call_middleware(
+            app,
+            headers=[(b"authorization", f"Bearer {token}".encode())],
+            path="/mcp/tools",
+        )
+
+    record = _principal_resolution_record(caplog)
+    assert record.subject == principal.subject
+    assert record.kind == PrincipalKind.WORKLOAD.value
+    assert record.authority == Authority.DELEGATED.value
+    assert record.groups == "agents,operators"
+    assert record.authorization_present is True
+    assert record.path == "/mcp/tools"
+    span.set_attributes.assert_called_once_with(
+        {
+            "monolith.auth.subject": principal.subject,
+            "monolith.auth.kind": PrincipalKind.WORKLOAD.value,
+            "monolith.auth.authority": Authority.DELEGATED.value,
+            "monolith.auth.groups": "agents,operators",
+            "monolith.auth.authorization_present": True,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_middleware_instrumentation_preserves_response_and_principal(
+    human_principal,
+):
+    token = "instrumentation-failure-token"
+    captured = {}
+
+    async def downstream(scope, receive, send):
+        captured["state"] = scope["state"]["principal"]
+        captured["context"] = current_principal()
+        await _successful_asgi_app(scope, receive, send)
+
+    app = PrincipalMiddleware(
+        downstream,
+        TokenResolver([MappingVerifier(token, human_principal)]),
+    )
+    span = MagicMock()
+    span.is_recording.return_value = True
+    span.set_attributes.side_effect = RuntimeError("otel unavailable")
+
+    with patch("auth.middleware.trace.get_current_span", return_value=span):
+        messages = await _call_middleware(
+            app,
+            headers=[(b"authorization", f"Bearer {token}".encode())],
+        )
+
+    assert messages == [
+        {"type": "http.response.start", "status": 200, "headers": []},
+        {"type": "http.response.body", "body": b'{"ok":true}'},
+    ]
+    assert captured["state"] == human_principal
+    assert captured["context"] == human_principal
+    span.set_attributes.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_middleware_principal_log_never_contains_token(caplog, human_principal):
+    secret_token = "highly-secret-middleware-token-material-4942"
+    app = PrincipalMiddleware(
+        _successful_asgi_app,
+        TokenResolver([MappingVerifier(secret_token, human_principal)]),
+    )
+    caplog.set_level(logging.INFO, logger="monolith.auth")
+
+    await _call_middleware(
+        app,
+        headers=[(b"authorization", f"Bearer {secret_token}".encode())],
+    )
+
+    _principal_resolution_record(caplog)
+    assert all(secret_token not in record.getMessage() for record in caplog.records)
+    assert all(secret_token not in repr(record.__dict__) for record in caplog.records)
+    assert all(
+        human_principal.email not in repr(record.__dict__) for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
 async def test_fastapi_dependency_does_not_trust_proxy_identity_headers():
     app = FastAPI()
     app.state.auth_resolver = TokenResolver([])
@@ -210,6 +350,45 @@ def _principal_json(principal: Principal) -> dict:
         "kind": principal.kind.value,
         "authority": principal.authority.value,
     }
+
+
+async def _successful_asgi_app(scope, receive, send):
+    await send({"type": "http.response.start", "status": 200, "headers": []})
+    await send({"type": "http.response.body", "body": b'{"ok":true}'})
+
+
+async def _call_middleware(app, *, headers=(), path="/mcp") -> list[dict]:
+    messages = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        messages.append(message)
+
+    await app(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": path,
+            "headers": list(headers),
+        },
+        receive,
+        send,
+    )
+    return messages
+
+
+def _principal_resolution_record(caplog):
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "monolith.auth"
+        and record.getMessage().startswith("principal resolved ")
+    ]
+    assert len(records) == 1
+    assert records[0].levelno == logging.INFO
+    return records[0]
 
 
 @pytest.mark.asyncio
