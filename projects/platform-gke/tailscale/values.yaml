@@ -7,6 +7,23 @@ tailscale-operator:
       limits:
         memory: 64Mi
 
+  # kubectl over the tailnet, so cluster access does not die with a gcloud
+  # token (it did on 2026-09-04 06:33, mid autonomous run). "true" means the
+  # proxy AUTHENTICATES: it impersonates the tailnet identity and Kubernetes
+  # RBAC then decides. Reaching the proxy grants nothing on its own, per
+  # Tailscale's own contract: "Access to the proxy over the tailnet does not
+  # grant users any default permissions to the Kubernetes API."
+  #
+  # NOT "noauth", which forwards requests with no identity attached and leaves
+  # the operator's own permissions as the only thing standing between a tailnet
+  # peer and the API server.
+  #
+  # This is a SECOND authentication path to the API server; Google's is the
+  # other. The RBAC binding that makes it usable is deliberately absent until
+  # the first request tells us which subject the proxy impersonates.
+  apiServerProxyConfig:
+    mode: "true"
+
 egressNamespace: tailscale
 
 # The node-4 inference bridge (#5457): the GKE workloads reach the bare-metal
