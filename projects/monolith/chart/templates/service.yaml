@@ -19,6 +19,10 @@ spec:
       port: 8091
       targetPort: progress
       protocol: TCP
+    - name: agent-mcp
+      port: 8092
+      targetPort: agent-mcp
+      protocol: TCP
   selector:
     {{- include "monolith.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: app
