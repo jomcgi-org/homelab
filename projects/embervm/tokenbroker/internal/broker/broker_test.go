@@ -43,6 +43,31 @@ type testAdapter struct {
 	onFirst      func()
 }
 
+type testMinter struct {
+	mu    sync.Mutex
+	calls int
+	token provider.TokenResponse
+}
+
+func (m *testMinter) Mint(context.Context) (provider.TokenResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls++
+	return m.token, nil
+}
+
+type testDualAdapter struct {
+	*testAdapter
+	mintCalls int
+}
+
+func (a *testDualAdapter) Mint(context.Context) (provider.TokenResponse, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.mintCalls++
+	return provider.TokenResponse{}, errors.New("unexpected mint")
+}
+
 func (a *testAdapter) StartDeviceFlow(context.Context) (provider.DeviceCodeResponse, error) {
 	return provider.DeviceCodeResponse{}, nil
 }
@@ -83,7 +108,7 @@ func TestInvalidGrantMarksNeedsLoginUntilSuccessfulRefresh(t *testing.T) {
 	now := time.Now().UTC()
 	st := &testStore{grants: map[string]store.Grant{"one": {Name: "one", ProviderName: "test", LastRefresh: now, TokenBundle: store.TokenBundle{RefreshToken: "old"}}}}
 	adapter := &testAdapter{refreshErr: fmt.Errorf("provider rejected grant: %w", provider.ErrInvalidGrant)}
-	b := New(st, map[string]provider.Adapter{"test": adapter}, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+	b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
 	if _, _, err := b.RefreshAccessToken("one", context.Background()); !errors.Is(err, provider.ErrInvalidGrant) {
 		t.Fatalf("refresh error = %v, want ErrInvalidGrant", err)
 	}
@@ -112,7 +137,7 @@ func TestGetAccessTokenSingleFlightPerGrant(t *testing.T) {
 	// ExpiresAt one minute out is inside the refresh margin, so every caller
 	// wants a refresh and the single-flight is what keeps it to one per grant.
 	st := &testStore{grants: map[string]store.Grant{"one": {Name: "one", ProviderName: "test", LastRefresh: now, TokenBundle: store.TokenBundle{AccessToken: jwt(now.Add(time.Minute)), RefreshToken: "old", ExpiresAt: now.Add(time.Minute)}}, "two": {Name: "two", ProviderName: "test", LastRefresh: now, TokenBundle: store.TokenBundle{AccessToken: jwt(now.Add(time.Minute)), RefreshToken: "old", ExpiresAt: now.Add(time.Minute)}}}}
-	b := New(st, map[string]provider.Adapter{"test": adapter}, []GrantConfig{{Name: "one", ProviderName: "test"}, {Name: "two", ProviderName: "test"}}, nil, nil)
+	b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}, {Name: "two", ProviderName: "test"}}, nil, nil)
 	var wg sync.WaitGroup
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
@@ -149,7 +174,7 @@ func TestRefreshTokenReusedRereadsStoreAndRetriesOnce(t *testing.T) {
 		st.grants["one"] = grant
 		st.mu.Unlock()
 	}}
-	b := New(st, map[string]provider.Adapter{"test": adapter}, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+	b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
 	if _, _, err := b.RefreshAccessToken("one", context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -160,11 +185,26 @@ func TestRefreshTokenReusedRereadsStoreAndRetriesOnce(t *testing.T) {
 	}
 }
 
+func TestRefreshAccessTokenUsesRefreshTokenWhenAvailable(t *testing.T) {
+	st := &testStore{grants: map[string]store.Grant{"one": {Name: "one", ProviderName: "test", TokenBundle: store.TokenBundle{RefreshToken: "old"}}}}
+	adapter := &testDualAdapter{testAdapter: &testAdapter{}}
+	b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+
+	if _, _, err := b.RefreshAccessToken("one", context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	if adapter.calls != 1 || adapter.mintCalls != 0 {
+		t.Fatalf("RefreshToken calls = %d, Mint calls = %d, want 1 and 0", adapter.calls, adapter.mintCalls)
+	}
+}
+
 func TestGetAccessTokenProactiveSevenDayRefresh(t *testing.T) {
 	now := time.Now().UTC()
 	st := &testStore{grants: map[string]store.Grant{"one": {Name: "one", ProviderName: "test", LastRefresh: now.Add(-8 * 24 * time.Hour), TokenBundle: store.TokenBundle{AccessToken: jwt(now.Add(2 * time.Hour)), RefreshToken: "old", ExpiresAt: now.Add(2 * time.Hour)}}}}
 	adapter := &testAdapter{}
-	b := New(st, map[string]provider.Adapter{"test": adapter}, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+	b := New(st, map[string]provider.Adapter{"test": adapter}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
 	if _, _, err := b.GetAccessToken("one", context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -177,8 +217,56 @@ func TestGetAccessTokenProactiveSevenDayRefresh(t *testing.T) {
 
 func TestGetAccessTokenEmptyStore(t *testing.T) {
 	st := &testStore{grants: map[string]store.Grant{"one": {Name: "one"}}}
-	b := New(st, map[string]provider.Adapter{}, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
+	b := New(st, map[string]provider.Adapter{}, nil, []GrantConfig{{Name: "one", ProviderName: "test"}}, nil, nil)
 	if _, _, err := b.GetAccessToken("one", context.Background()); !errors.Is(err, ErrNoGrant) {
 		t.Fatalf("error = %v, want ErrNoGrant", err)
+	}
+}
+
+func TestRefreshAccessTokenMintsWithoutRefreshToken(t *testing.T) {
+	now := time.Now().UTC()
+	st := &testStore{grants: map[string]store.Grant{"one": {Name: "one", ProviderName: "minter"}}}
+	minter := &testMinter{token: provider.TokenResponse{AccessToken: "minted", ExpiresAt: now.Add(time.Hour)}}
+	b := New(st, nil, map[string]provider.Minter{"minter": minter}, []GrantConfig{{Name: "one", ProviderName: "minter"}}, nil, nil)
+
+	access, expiry, err := b.RefreshAccessToken("one", context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if access != "minted" {
+		t.Fatal("refresh access token does not match minted token")
+	}
+	if !expiry.Equal(minter.token.ExpiresAt) {
+		t.Fatalf("refresh expiry = %v, want %v", expiry, minter.token.ExpiresAt)
+	}
+	minter.mu.Lock()
+	defer minter.mu.Unlock()
+	if minter.calls != 1 {
+		t.Fatalf("Mint calls = %d, want 1", minter.calls)
+	}
+}
+
+func TestGetAccessTokenCachesMintedToken(t *testing.T) {
+	now := time.Now().UTC()
+	st := &testStore{grants: map[string]store.Grant{"one": {Name: "one", ProviderName: "minter"}}}
+	minter := &testMinter{token: provider.TokenResponse{AccessToken: "minted", ExpiresAt: now.Add(time.Hour)}}
+	b := New(st, nil, map[string]provider.Minter{"minter": minter}, []GrantConfig{{Name: "one", ProviderName: "minter"}}, nil, nil)
+
+	for i := 0; i < 2; i++ {
+		access, expiry, err := b.GetAccessToken("one", context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if access != "minted" {
+			t.Fatal("GetAccessToken result does not match minted token")
+		}
+		if !expiry.Equal(minter.token.ExpiresAt) {
+			t.Fatalf("GetAccessToken expiry = %v, want %v", expiry, minter.token.ExpiresAt)
+		}
+	}
+	minter.mu.Lock()
+	defer minter.mu.Unlock()
+	if minter.calls != 1 {
+		t.Fatalf("Mint calls = %d, want 1", minter.calls)
 	}
 }

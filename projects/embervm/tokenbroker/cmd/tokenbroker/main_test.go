@@ -96,7 +96,7 @@ func newTestServer(st *fakeStore, adapter *fakeAdapter) *server {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	adapters := map[string]provider.Adapter{"test": adapter}
 	configs := map[string]grantConfig{"codex-cluster": {Name: "codex-cluster", ProviderName: "test"}}
-	b := broker.New(st, adapters, []broker.GrantConfig{{Name: "codex-cluster", ProviderName: "test"}}, logger, nil)
+	b := broker.New(st, adapters, nil, []broker.GrantConfig{{Name: "codex-cluster", ProviderName: "test"}}, logger, nil)
 	return &server{broker: b, store: st, adapters: adapters, configs: configs, logger: logger, startWaitTimeout: loginStartWaitTimeout}
 }
 

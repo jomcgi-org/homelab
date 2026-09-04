@@ -60,3 +60,9 @@ type Adapter interface {
 	ExchangeCode(context.Context, AuthorizationCodeResponse) (TokenResponse, error)
 	RefreshToken(context.Context, string) (TokenResponse, error)
 }
+
+// Minter mints a fresh access token directly, for grant types with no
+// refresh token and no interactive step (OAuth2 client_credentials).
+type Minter interface {
+	Mint(context.Context) (TokenResponse, error)
+}

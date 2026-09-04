@@ -44,6 +44,17 @@ spec:
             - { name: KUBERNETES_NAMESPACE, value: {{ .Release.Namespace | quote }} }
             - { name: TOKENBROKER_GRANTS, value: {{ toJson .Values.tokenBroker.grants | quote }} }
             - { name: BROKER_LISTEN_ADDR, value: ":8080" }
+            {{- if .Values.tokenBroker.authentik.enabled }}
+            - { name: AUTHENTIK_TOKEN_ENDPOINT, value: {{ required "tokenBroker.authentik.tokenEndpoint is required when authentik is enabled" .Values.tokenBroker.authentik.tokenEndpoint | quote }} }
+            - { name: AUTHENTIK_CLIENT_ID, value: {{ required "tokenBroker.authentik.clientID is required when authentik is enabled" .Values.tokenBroker.authentik.clientID | quote }} }
+            - { name: AUTHENTIK_SCOPE, value: {{ .Values.tokenBroker.authentik.scope | quote }} }
+            - { name: AUTHENTIK_USERNAME, value: {{ required "tokenBroker.authentik.username is required when authentik is enabled" .Values.tokenBroker.authentik.username | quote }} }
+            - name: AUTHENTIK_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "tokenBroker.authentik.appPasswordRef.name is required when authentik is enabled" .Values.tokenBroker.authentik.appPasswordRef.name | quote }}
+                  key: {{ required "tokenBroker.authentik.appPasswordRef.key is required when authentik is enabled" .Values.tokenBroker.authentik.appPasswordRef.key | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.tokenBroker.resources | nindent 12 }}
           livenessProbe: { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 10, periodSeconds: 30 }
