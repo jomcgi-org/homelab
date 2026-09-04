@@ -2,34 +2,36 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sqlmodel import Session, SQLModel, create_engine, select
-from sqlmodel.pool import StaticPool
+from sqlmodel import Session, select
 
-from knowledge.models import AtomRawProvenance, Note
+from knowledge.models import Note
 from knowledge.mcp import (
-    create_atom,
-    create_note,
-    delete_note,
-    edit_note,
     get_daily_tasks,
     get_note,
-    get_raw,
     get_weekly_tasks,
-    list_raws_needing_decomposition,
     list_tasks,
-    record_provenance,
     search_knowledge,
     search_tasks,
     update_task,
 )
-from knowledge.store import KnowledgeStore
 
 FAKE_EMBEDDING = [0.1] * 1024
+
+CANNED_TASKS = [
+    {
+        "note_id": "t1",
+        "title": "Fix auth bug",
+        "tags": ["backend"],
+        "status": "todo",
+        "due": "2026-04-20",
+        "size": "small",
+        "blocked_by": [],
+        "task_completed": None,
+    },
+]
 
 CANNED_RESULTS = [
     {
@@ -52,74 +54,6 @@ SAMPLE_NOTE = {
     "type": "paper",
     "tags": ["ml", "transformers"],
 }
-
-
-@pytest.fixture(name="db_engine")
-def db_engine_fixture():
-    """In-memory SQLite engine for the fileless create/edit write paths.
-
-    ADR 006: create_note/edit_note index straight into Postgres, so these
-    tools must run against a real DB rather than a mocked store. Strips the
-    Postgres ``schema=`` overrides so ``create_all`` lands every table in the
-    default SQLite schema, then restores them so the shared SQLModel.metadata
-    isn't poisoned for other tests. StaticPool keeps a single connection so
-    rows committed by the tool are visible to assertion sessions.
-    """
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    original_schemas = {}
-    for table in SQLModel.metadata.tables.values():
-        if table.schema is not None:
-            original_schemas[table.name] = table.schema
-            table.schema = None
-    try:
-        SQLModel.metadata.create_all(engine)
-        yield engine
-    finally:
-        for table in SQLModel.metadata.tables.values():
-            if table.name in original_schemas:
-                table.schema = original_schemas[table.name]
-
-
-def _fake_embedder() -> AsyncMock:
-    """Embedder whose ``embed_batch`` returns deterministic 1024-dim vectors.
-
-    The fileless write paths call ``EmbeddingClient().embed_batch`` during
-    indexing; mocking it keeps the tests off the network.
-    """
-    client = AsyncMock()
-    client.embed_batch.side_effect = lambda texts: [[0.1] * 1024 for _ in texts]
-    return client
-
-
-def _insert_note(
-    engine,
-    *,
-    note_id: str,
-    title: str = "Original",
-    content: str | None = "Old body",
-    path: str | None = None,
-    type: str = "atom",
-    visibility: str | None = None,
-) -> None:
-    """Insert a live Note row used by the edit/collision write-path tests."""
-    with Session(engine) as session:
-        session.add(
-            Note(
-                note_id=note_id,
-                path=path or f"_processed/{note_id}.md",
-                title=title,
-                content_hash=f"hash-{note_id}",
-                content=content,
-                type=type,
-                visibility=visibility,
-                created_at=datetime.now(timezone.utc),
-            )
-        )
-        session.commit()
 
 
 def _get_note_row(engine, note_id: str) -> Note:
