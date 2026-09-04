@@ -52,6 +52,8 @@ function inferredExpertCount(profile) {
   return widths[0];
 }
 
+const MIN_RATE_MS = 250;
+
 export function trackSessionPeaks(peaks = EMPTY_PEAKS, turnMetrics) {
   const decodeTps = finiteNonNegative(turnMetrics?.tokensPerSecond);
   const ttft = finiteNonNegative(turnMetrics?.ttftMs);
@@ -128,8 +130,11 @@ export function calculateTurnMetrics(startedAt, chunks) {
 
   return {
     ttftMs: Math.max(0, first.at - startedAt),
+    // Require a real time window before quoting a rate. Two chunks a fraction
+    // of a millisecond apart yield thousands of tokens per second, which then
+    // sticks as the session peak and is plainly wrong on screen.
     tokensPerSecond:
-      tokenCount > 1 && generationMs > 0
+      tokenCount > 1 && generationMs >= MIN_RATE_MS
         ? ((tokenCount - 1) * 1000) / generationMs
         : 0,
     timeToFirstReasoningMs: firstReasoning

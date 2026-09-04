@@ -18,6 +18,7 @@
   const CHAT_URL = "/private/demos/qwen-flash/chat";
   const PROFILE_URL = "/private/demos/qwen-flash/profile";
   const CACHE_STATUS_URL = "/private/demos/qwen-flash/cache-status";
+  const STATS_URL = "/private/demos/qwen-flash/stats";
   const EMPTY_TURN_METRICS = {
     ttftMs: null,
     tokensPerSecond: 0,
@@ -174,11 +175,30 @@
     const generation = ++profilePollGeneration;
     profileTimer = setTimeout(async () => {
       await pollProfile();
+      void pollStats();
       if (!cacheSnapshot) void pollCacheStatus();
       if (mounted && generation === profilePollGeneration) {
         scheduleProfile(isInFlight ? 1000 : 3000);
       }
     }, delay);
+  }
+
+  let serverStats = $state(null);
+  let statsRequestPending = false;
+
+  async function pollStats() {
+    if (statsRequestPending) return;
+    statsRequestPending = true;
+    try {
+      const response = await fetch(STATS_URL, { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      serverStats = await response.json();
+    } catch {
+      // Leave the last good sample in place: a dropped poll should not blank
+      // the panel mid-demo.
+    } finally {
+      statsRequestPending = false;
+    }
   }
 
   async function pollCacheStatus() {
@@ -343,6 +363,7 @@
     mounted = true;
     scheduleProfile(0);
     void pollCacheStatus();
+    void pollStats();
 
     return () => {
       mounted = false;
@@ -363,7 +384,7 @@
 
 <main class="td demo-page">
   <header class="page-header">
-    <h1>125B parameters. <span>One RTX 4090.</span></h1>
+    <h1>Qwen 3.8 Flash</h1>
     <div class="state" data-state={modelState} aria-live="polite">
       <span class="state-dot"></span>
       {modelState}
@@ -372,17 +393,6 @@
 
   <div class="demo-grid">
     <section class="chat-card" aria-label="Chat with Qwen3.8-Flash-Next">
-      <header class="card-heading chat-heading">
-        <div>
-          <p class="section-label">01 / Live chat</p>
-          <h2>Ask the 125B model</h2>
-        </div>
-        <label class="thinking-toggle">
-          <input type="checkbox" bind:checked={thinkingEnabled} />
-          <span>Thinking</span>
-        </label>
-      </header>
-
       <div class="messages" bind:this={chatLog} aria-live="polite">
         {#if messages.length === 0}
           <div class="empty-state">
@@ -411,8 +421,8 @@
               <div class="answer-region">
                 {@html renderMarkdown(message.content)}
               </div>
-              {#if message.finishReason}
-                <p class="finish-reason">finish: {message.finishReason}</p>
+              {#if false}
+                <p class="finish-reason"></p>
               {/if}
             {:else}
               <pre>{message.content}</pre>
@@ -429,6 +439,10 @@
         }}
       >
         <label class="sr-only" for="qwen-prompt">Message</label>
+        <label class="thinking-toggle">
+          <input type="checkbox" bind:checked={thinkingEnabled} />
+          <span>Thinking</span>
+        </label>
         <textarea
           id="qwen-prompt"
           bind:value={inputText}
@@ -453,61 +467,13 @@
     </section>
 
     <aside class="side-column" aria-label="Model telemetry">
-      <section class="residency-card" aria-labelledby="residency-heading">
+      <section class="activity-card" aria-labelledby="activity-heading">
         <header class="card-heading">
-          <div>
-            <p class="section-label">02 / Expert residency</p>
-            <h2 id="residency-heading">
-              {formatCount(tierSummary.totalExperts)} experts
-            </h2>
-          </div>
+          <h2 id="activity-heading">Routing</h2>
           {#if telemetryError}
             <span class="telemetry-error" role="status">{telemetryError}</span>
           {/if}
         </header>
-
-        <div
-          class="capacity-bar"
-          aria-label="Expert capacity split between hot, warm, and cold tiers"
-        >
-          <span
-            class="hot"
-            style:width={`${percentage(tierSummary.hotExperts, tierSummary.totalExperts)}%`}
-          ></span>
-          <span
-            class="warm"
-            style:width={`${percentage(tierSummary.warmExperts, tierSummary.totalExperts)}%`}
-          ></span>
-          <span
-            class="cold"
-            style:width={`${percentage(tierSummary.coldExperts, tierSummary.totalExperts)}%`}
-          ></span>
-        </div>
-
-        <dl class="tier-list">
-          <div class="hot">
-            <dt><i></i><strong>Hot</strong><span>VRAM</span></dt>
-            <dd>
-              <strong>{formatCount(tierSummary.hotExperts)}</strong>
-              <span>{formatOptionalBytes(tierSummary.hotBytes)}</span>
-            </dd>
-          </div>
-          <div class="warm">
-            <dt><i></i><strong>Warm</strong><span>RAM</span></dt>
-            <dd>
-              <strong>{formatCount(tierSummary.warmExperts)}</strong>
-              <span>{formatOptionalBytes(tierSummary.warmBytes)}</span>
-            </dd>
-          </div>
-          <div class="cold">
-            <dt><i></i><strong>Cold</strong><span>NVMe</span></dt>
-            <dd>
-              <strong>{formatCount(tierSummary.coldExperts)}</strong>
-              <span>{formatOptionalBytes(tierSummary.coldBytes)}</span>
-            </dd>
-          </div>
-        </dl>
-
         <div class="activity-heading">
           <div>
             <p class="section-label">Latest routing sample</p>
@@ -558,56 +524,101 @@
 
       <section class="stats-card" aria-labelledby="stats-heading">
         <header class="card-heading">
-          <div>
-            <p class="section-label">03 / This page session</p>
-            <h2 id="stats-heading">Performance</h2>
-          </div>
+          <h2 id="stats-heading">Perf</h2>
         </header>
-        <div class="stats-groups">
-          <section>
-            <h3>Live</h3>
-            <dl>
-              <div>
-                <dt>Decode</dt>
-                <dd>{formatRate(turnMetrics.tokensPerSecond)} tok/s</dd>
-              </div>
-              <div>
-                <dt>First token</dt>
-                <dd>{formatDuration(turnMetrics.ttftMs)}</dd>
-              </div>
-            </dl>
-          </section>
-          <section>
-            <h3>Peak</h3>
-            <dl>
-              <div>
-                <dt>Best decode</dt>
-                <dd>{formatRate(sessionPeaks.decodeTps)} tok/s</dd>
-              </div>
-              <div>
-                <dt>Best first token</dt>
-                <dd>{formatDuration(sessionPeaks.ttftMs)}</dd>
-              </div>
-            </dl>
-          </section>
-          <section>
-            <h3>Totals</h3>
-            <dl>
-              <div>
-                <dt>Turns</dt>
-                <dd>{formatCount(sessionTotals.turns)}</dd>
-              </div>
-              <div>
-                <dt>Tokens</dt>
-                <dd>{formatCount(sessionTotals.tokens)}</dd>
-              </div>
-              <div>
-                <dt>Generating</dt>
-                <dd>{formatTotalDuration(sessionTotals.generationMs)}</dd>
-              </div>
-            </dl>
-          </section>
+        <table class="perf-table">
+          <tbody>
+            <tr class="group"><th colspan="2" scope="rowgroup">Live</th></tr>
+            <tr>
+              <th scope="row">Decode</th>
+              <td>{formatRate(turnMetrics.tokensPerSecond)} tok/s</td>
+            </tr>
+            <tr>
+              <th scope="row">KV pages</th>
+              <td
+                >{formatCount(serverStats?.kv?.used_pages ?? 0)} / {formatCount(
+                  serverStats?.kv?.total_pages ?? 0,
+                )}</td
+              >
+            </tr>
+            <tr>
+              <th scope="row">First token</th>
+              <td>{formatDuration(turnMetrics.ttftMs)}</td>
+            </tr>
+            <tr>
+              <th scope="row">In flight</th>
+              <td>{formatCount(serverStats?.requests?.active ?? 0)}</td>
+            </tr>
+            <tr class="group"><th colspan="2" scope="rowgroup">Peak</th></tr>
+            <tr>
+              <th scope="row">Decode</th>
+              <td>{formatRate(sessionPeaks.decodeTps)} tok/s</td>
+            </tr>
+            <tr>
+              <th scope="row">First token</th>
+              <td>{formatDuration(sessionPeaks.ttftMs)}</td>
+            </tr>
+            <tr class="group"><th colspan="2" scope="rowgroup">Session</th></tr>
+            <tr>
+              <th scope="row">Turns</th>
+              <td>{formatCount(sessionTotals.turns)}</td>
+            </tr>
+            <tr>
+              <th scope="row">Tokens</th>
+              <td>{formatCount(sessionTotals.tokens)}</td>
+            </tr>
+            <tr>
+              <th scope="row">Generating</th>
+              <td>{formatTotalDuration(sessionTotals.generationMs)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+      <section class="storage-card" aria-labelledby="storage-heading">
+        <header class="card-heading">
+          <h2 id="storage-heading">Storage</h2>
+        </header>
+        <div
+          class="capacity-bar"
+          aria-label="Expert capacity split between hot, warm, and cold tiers"
+        >
+          <span
+            class="hot"
+            style:width={`${percentage(tierSummary.hotExperts, tierSummary.totalExperts)}%`}
+          ></span>
+          <span
+            class="warm"
+            style:width={`${percentage(tierSummary.warmExperts, tierSummary.totalExperts)}%`}
+          ></span>
+          <span
+            class="cold"
+            style:width={`${percentage(tierSummary.coldExperts, tierSummary.totalExperts)}%`}
+          ></span>
         </div>
+
+        <dl class="tier-list">
+          <div class="hot">
+            <dt><i></i><strong>Hot</strong><span>VRAM</span></dt>
+            <dd>
+              <strong>{formatCount(tierSummary.hotExperts)}</strong>
+              <span>{formatOptionalBytes(tierSummary.hotBytes)}</span>
+            </dd>
+          </div>
+          <div class="warm">
+            <dt><i></i><strong>Warm</strong><span>RAM</span></dt>
+            <dd>
+              <strong>{formatCount(tierSummary.warmExperts)}</strong>
+              <span>{formatOptionalBytes(tierSummary.warmBytes)}</span>
+            </dd>
+          </div>
+          <div class="cold">
+            <dt><i></i><strong>Cold</strong><span>NVMe</span></dt>
+            <dd>
+              <strong>{formatCount(tierSummary.coldExperts)}</strong>
+              <span>{formatOptionalBytes(tierSummary.coldBytes)}</span>
+            </dd>
+          </div>
+        </dl>
       </section>
     </aside>
   </div>
@@ -615,9 +626,14 @@
 
 <style>
   .demo-page {
-    --tier-hot: var(--st-err);
-    --tier-warm: var(--yellow);
-    --tier-cold: var(--tone-gpu);
+    /* Haynes-manual primaries: saturated and unambiguous at projector distance,
+       rather than the muted UI tones the rest of the private tier uses. */
+    --tier-hot: #e10600;
+    --tier-warm: #ffc400;
+    --tier-cold: #0057d9;
+    /* Cards sit on white. The sheet tone stays as the page ground, so panels
+       read as drawn-on-paper rather than washing into it. */
+    --panel: #ffffff;
     box-sizing: border-box;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
@@ -684,7 +700,7 @@
     min-height: 2rem;
     padding: 0 0.65rem;
     border: 1px solid var(--line);
-    background: var(--card-bg);
+    background: var(--panel);
     color: var(--ink-2);
   }
 
@@ -715,21 +731,23 @@
   }
 
   .chat-card,
-  .residency-card,
+  .activity-card,
+  .storage-card,
   .stats-card {
     min-height: 0;
     border: 1px solid var(--stroke);
-    background: var(--card-bg);
+    background: var(--panel);
   }
 
   .chat-card {
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-rows: minmax(0, 1fr) auto;
   }
 
   .side-column {
     display: grid;
-    grid-template-rows: minmax(0, 1.12fr) minmax(0, 0.88fr);
+    grid-template-rows: auto auto auto;
+    align-content: start;
     gap: 0.8rem;
     min-height: 0;
   }
@@ -739,8 +757,13 @@
     align-items: center;
     justify-content: space-between;
     gap: 1rem;
-    padding: 0.78rem 0.9rem;
-    border-bottom: 1px solid var(--line);
+    padding: 0.4rem 0.9rem;
+    border-bottom: 1px solid var(--stroke);
+  }
+
+  .side-column .card-heading h2 {
+    font-size: 0.95rem;
+    margin: 0;
   }
 
   .card-heading h2 {
@@ -887,9 +910,15 @@
     animation: pulse 1s ease-in-out infinite;
   }
 
+  .composer .thinking-toggle {
+    align-self: center;
+    margin-right: 0.6rem;
+    white-space: nowrap;
+  }
+
   .composer {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: stretch;
     gap: 0.65rem;
     padding: 0.85rem;
@@ -900,13 +929,13 @@
   .composer textarea {
     display: block;
     width: 100%;
-    min-height: 4.6rem;
+    min-height: 3.2rem;
     resize: none;
     padding: 0.7rem;
     border: 1px solid var(--stroke);
     border-radius: 0;
     outline: none;
-    background: var(--card-bg);
+    background: var(--panel);
     color: var(--ink);
     font: inherit;
     font-size: 0.98rem;
@@ -915,7 +944,7 @@
 
   .composer textarea:focus {
     border-color: var(--accent-ink);
-    box-shadow: inset 0 -2px 0 var(--accent-ink);
+    box-shadow: inset 0 -1px 0 var(--accent-ink);
   }
 
   .send-button,
@@ -1079,6 +1108,9 @@
   }
 
   .method-note {
+    font-size: 0.66rem;
+    line-height: 1.3;
+    margin: 0.25rem 0 0;
     margin: 0.75rem 0.9rem 0;
     color: var(--ink-3);
     font-family: var(--font-code);
@@ -1089,7 +1121,7 @@
   .stats-groups {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    height: calc(100% - 3.8rem);
+    align-content: start;
   }
 
   .stats-groups section {
@@ -1148,7 +1180,8 @@
     .side-column {
       grid-template-rows: auto auto;
     }
-    .residency-card,
+    .activity-card,
+    .storage-card,
     .stats-card {
       min-height: 20rem;
     }
@@ -1169,5 +1202,88 @@
       border-right: 0;
       border-bottom: 1px solid var(--line);
     }
+  }
+
+  .storage-card .capacity-bar {
+    height: 0.5rem;
+  }
+  .storage-card .tier-list dt strong,
+  .storage-card .tier-list dd strong {
+    font-size: 0.86rem;
+  }
+  .storage-card .tier-list > div {
+    padding: 0.18rem 0;
+  }
+
+  .perf-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+  }
+  .perf-table th,
+  .perf-table td {
+    padding: 0.16rem 0.9rem;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+  }
+  .perf-table tr.group th {
+    font-family: var(--font-code);
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted-ink);
+    background: var(--sheet);
+    border-bottom: 1px solid var(--stroke);
+  }
+  .perf-table tr:not(.group) th {
+    font-weight: 400;
+    color: var(--muted-ink);
+  }
+  .perf-table td {
+    text-align: right;
+    font-family: var(--font-code);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .perf-table tr:last-child th,
+  .perf-table tr:last-child td {
+    border-bottom: 0;
+  }
+
+  /* The tier stylesheet resets list markers globally, which strips the bullets
+     from model-authored markdown. Restore them inside the rendered answer only,
+     and keep long items wrapping rather than running past the card. */
+  .answer-region :global(ul),
+  .answer-region :global(ol) {
+    margin: 0.5rem 0;
+    padding-left: 1.35rem;
+    list-style-position: outside;
+  }
+  .answer-region :global(ul) {
+    list-style-type: disc;
+  }
+  .answer-region :global(ol) {
+    list-style-type: decimal;
+  }
+  .answer-region :global(li) {
+    margin: 0.18rem 0;
+  }
+  .answer-region :global(li)::marker {
+    color: var(--muted-ink);
+  }
+  .answer-region :global(p),
+  .answer-region :global(li) {
+    overflow-wrap: anywhere;
+  }
+  .answer-region :global(pre) {
+    overflow-x: auto;
+    max-width: 100%;
+  }
+  /* A stray heading from the model must not blow up the layout. */
+  .answer-region :global(h1),
+  .answer-region :global(h2),
+  .answer-region :global(h3) {
+    font-size: 1rem;
+    margin: 0.6rem 0 0.3rem;
   }
 </style>
