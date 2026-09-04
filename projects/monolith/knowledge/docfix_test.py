@@ -335,7 +335,7 @@ def test_docfix_review_summary_is_preserved_as_json():
     }
 
 
-def test_helm_deploy_values_render_both_review_flags_false():
+def test_helm_deploy_values_keep_docfix_auto_merge_off():
     root = next(
         parent
         for parent in Path(__file__).resolve().parents
@@ -363,9 +363,12 @@ def test_helm_deploy_values_render_both_review_flags_false():
         check=True,
     )
 
+    # Auto-merge is the gate that matters: a docfix PR must land only after a
+    # human has read it. Review itself is on (#5616), so it comments on PRs
+    # rather than merging them.
     assert (
         'name: DRAINER_DOCFIX_AUTO_MERGE\n              value: "false"' in result.stdout
     )
     assert (
-        'name: KG_DOCFIX_REVIEW_ENABLED\n              value: "false"' in result.stdout
+        'name: KG_DOCFIX_REVIEW_ENABLED\n              value: "true"' in result.stdout
     )
