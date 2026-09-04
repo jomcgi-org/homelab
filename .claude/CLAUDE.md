@@ -148,13 +148,39 @@ rebase.
 Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
 `crane`, `kind`, `go`, `python`, `pnpm`, `node`, `bb`, and the formatters on PATH.
 
-## Knowledge reporting
+## Knowledge: two stores, different in kind
 
-- Use `report_knowledge` for reusable assertions and cite supporting evidence.
+There are two memory stores and they are not interchangeable.
+
+**The KG** (monolith, over MCP) is the only shared one. Atomic facts with
+provenance, `scope`, `verification_state`, and `disputed`, gardened by the
+`knowledge-*` routines. Anything another agent, another session, or a future
+you needs to know belongs here.
+
+**Claude Code's local memory** (`~/.claude/projects/<path-slug>/memory/`) is
+private to this machine, keyed by the checkout path, unversioned, and never
+reviewed. Nothing else can read it: not Codex workers, not the cloud routines,
+not the `cv` or `loom` checkouts, which keep their own separate stores. Treat
+it as a scratchpad of operational leads with a short half-life.
+
+- **Search the KG before investigating.** `search_knowledge` first on anything
+  that smells like it has been hit before: a deploy that will not roll, a red
+  gate, a wedged control plane. The KG is write-heavy and read-cold, and
+  re-deriving a fact someone already verified is the expensive failure.
+- **A local memory is a lead, not a fact.** Before acting on one that names a
+  file, function, flag, or number, grep the artifact. A memory records what was
+  true when it was written.
+- **Durable facts go to the KG.** If a finding will matter to another agent or
+  in a month, `report_knowledge` it with the evidence that supports it. Writing
+  it only to local memory buries it on one laptop.
 - Reports are unverified until extraction checks and classifies them.
-- Use `dispute_fact` to mark a fact disputed immediately without deleting it.
-- Use `report_distress` to request intervention, not for routine logging.
-- Search results include `scope`, `verification_state`, `disputed`, and `provenance`.
+- Use `dispute_fact` to mark a fact disputed immediately without deleting it,
+  and `report_distress` to request intervention, not for routine logging.
+
+**Codex workers have no memory at all.** Their `~/.codex` memory store is
+provisioned but empty, so every dispatch starts from `AGENTS.md` plus your
+spec. Guest drainers cannot reach MCP either, so the KG is invisible to them.
+Anything a worker must know goes in `AGENTS.md` or in the spec you hand it.
 
 ## Gotchas
 

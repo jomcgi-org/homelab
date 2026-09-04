@@ -56,8 +56,15 @@ leave a clean, reviewable diff.
   are asserted somewhere. Grep the tests and update the assertions in the
   same change.
 
-## Knowledge reporting
+## Knowledge
 
+- You have no persistent memory between tasks. Everything you know is this
+  file, the repo, and the spec you were handed. Do not assume a previous task
+  left you anything.
+- The knowledge graph is the shared store, and it is searchable whenever an
+  MCP client is available: run `search_knowledge` before investigating a
+  problem that looks previously hit. Guest runners have no MCP client, so skip
+  this when the tools are absent rather than treating it as a blocker.
 - Use `report_knowledge` for reusable assertions and cite supporting evidence.
 - Reports are unverified until extraction checks and classifies them.
 - Use `dispute_fact` to mark a fact disputed immediately without deleting it.
