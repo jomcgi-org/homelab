@@ -57,7 +57,13 @@ kubectl kustomize "$CLUSTER_PATH" >"$rendered/all.yaml"
 #                           promoted app and is the one thing this check must not
 #                           shout about. Everything else in `sources` is fair
 #                           game, which is precisely the blind spot being closed.
-python3 - "$rendered/all.yaml" "$CONTEXT" <<'PY'
+# The root Application is committed but deliberately absent from that
+# kustomization: it must not manage itself. Without this it would be the one
+# object outside its own check, and its apply is manual, which is exactly the
+# way git and the cluster drift apart unnoticed.
+ROOT_APPLICATION="${ROOT_APPLICATION:-$CLUSTER_PATH/root-application.yaml}"
+
+python3 - "$rendered/all.yaml" "$CONTEXT" "$ROOT_APPLICATION" <<'PY'
 import json
 import os
 import subprocess
@@ -65,15 +71,29 @@ import sys
 
 import yaml
 
-rendered_path, context = sys.argv[1], sys.argv[2]
+rendered_path, context, root_path = sys.argv[1], sys.argv[2], sys.argv[3]
 
 declared = {}
 self_managed = []
+missing_root = None
 with open(rendered_path) as fh:
     for doc in yaml.safe_load_all(fh):
         if not doc or doc.get("kind") != "Application":
             continue
         declared[doc["metadata"]["name"]] = doc
+
+# The root is loaded from its file, not from the render, because it is left out
+# of the kustomization on purpose (it would otherwise manage itself). A missing
+# file is reported rather than skipped: skipping is how the root ended up
+# outside its own drift check in the first place.
+if os.path.exists(root_path):
+    with open(root_path) as fh:
+        for doc in yaml.safe_load_all(fh):
+            if not doc or doc.get("kind") != "Application":
+                continue
+            declared[doc["metadata"]["name"]] = doc
+else:
+    missing_root = root_path
 
 
 def resolve(name, doc):
@@ -99,6 +119,11 @@ def resolve(name, doc):
     # answer: the wrapper is authoritative on this cluster.
     if src.get("helm"):
         return doc
+    # Edge worth knowing before it bites: a helm-less wrapper pointing at a
+    # kustomize directory whose kustomization.yaml does not list its own
+    # application.yaml would be followed to a file that is never applied, and
+    # report phantom drift. No such wrapper exists today, and it fails noisy
+    # rather than silent, so it is not guarded here.
     nested_path = os.path.join(path, "application.yaml")
     if not os.path.exists(nested_path):
         return doc
@@ -136,6 +161,11 @@ live_raw = subprocess.run(
 live = {a["metadata"]["name"]: a for a in json.loads(live_raw)["items"]}
 
 problems = []
+if missing_root:
+    problems.append(
+        f"{missing_root}: the root Application file is missing, so the root was "
+        "not compared"
+    )
 for name, doc in sorted(declared.items()):
     if name not in live:
         problems.append(f"{name}: declared in git, ABSENT from the cluster")
