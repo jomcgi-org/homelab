@@ -513,6 +513,7 @@ def create_agent(
             top_p=0.95,
             presence_penalty=1.5,
             openai_reasoning_effort=shared.inference.chat_reasoning_effort(),
+            max_tokens=shared.inference.chat_max_tokens(),
         ),
         prepare_tools=inject_signposts,
     )
@@ -1078,6 +1079,7 @@ def create_fact_check_agent(base_url: str | None = None) -> "Agent[None]":
             top_p=0.95,
             presence_penalty=1.5,
             openai_reasoning_effort=shared.inference.chat_reasoning_effort(),
+            max_tokens=shared.inference.chat_max_tokens(),
         ),
     )
 

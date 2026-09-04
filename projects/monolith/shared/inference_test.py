@@ -117,6 +117,22 @@ def test_record_usage_includes_reasoning_tokens_when_present():
     assert span.set_attributes.call_args.args[0]["llm.usage.reasoning_tokens"] == 3
 
 
+def test_record_usage_includes_cached_tokens_when_present():
+    span = MagicMock()
+    span.is_recording.return_value = True
+    usage = {
+        "prompt_tokens": 12,
+        "completion_tokens": 5,
+        "total_tokens": 17,
+        "prompt_tokens_details": {"cached_tokens": 8},
+    }
+
+    with patch("shared.inference.trace.get_current_span", return_value=span):
+        shared.inference.record_usage(usage, "spark", "chat")
+
+    assert span.set_attributes.call_args.args[0]["llm.usage.cached_tokens"] == 8
+
+
 @pytest.mark.parametrize(
     "completion_details",
     [None, "not-a-mapping", {}, {"accepted_prediction_tokens": 2}],
