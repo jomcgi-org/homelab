@@ -335,6 +335,7 @@ py_library(
     deps = [
         "@pip//fastapi",
         "@pip//httpx",
+        "@pip//opentelemetry_sdk",
         # PyJWT is currently locked transitively through mcp and semgrep.
         "@pip//pyjwt",
         "@pip//starlette",
