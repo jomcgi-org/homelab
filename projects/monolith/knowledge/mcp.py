@@ -22,7 +22,9 @@ from sqlmodel import Session, select
 from auth.api import current_principal
 from core.db import get_engine
 from core.mcp_app import mcp
-from knowledge import frontmatter
+from knowledge.api import ingest_raw_with_status
+from knowledge.atoms import index_atom
+from knowledge.indexing import index_note_from_raw
 from knowledge.models import Dispute
 from knowledge.notes import resolve_note_body
 from knowledge.redact import redact_text
@@ -30,6 +32,23 @@ from knowledge.store import KnowledgeStore
 from shared.embedding import EmbeddingClient
 
 logger = logging.getLogger(__name__)
+
+
+async def _index_atom(session: Session, **kwargs) -> str:
+    """Compatibility seam around the shared atom core for existing callers.
+
+    Retained after the MCP CRUD tools were retired: knowledge/gaps.py imports
+    it for the gap-answer endpoint, so it is shared production code rather
+    than tool-only scaffolding.
+    """
+    return await index_atom(
+        session,
+        **kwargs,
+        _store_factory=KnowledgeStore,
+        _embedding_client_factory=EmbeddingClient,
+        _indexer=index_note_from_raw,
+    )
+
 
 DEFAULT_REPO_SCOPE = os.getenv(
     "KNOWLEDGE_DEFAULT_REPO_SCOPE", "repo:jomcgi-org/homelab"
