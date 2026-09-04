@@ -4940,15 +4940,6 @@ py_test(
     ],
 )
 
-py_test(
-    name = "knowledge_repo_docs_test",
-    srcs = ["knowledge/repo_docs_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pytest",
-    ],
-)
 
 py_test(
     name = "knowledge_gardener_test",
@@ -6091,18 +6082,6 @@ py_test(
     ],
 )
 
-py_test(
-    name = "knowledge_gap_discover_fileless_test",
-    srcs = ["knowledge/gap_discover_fileless_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
 
 py_test(
     name = "knowledge_gap_set_class_test",
@@ -6131,44 +6110,8 @@ py_test(
     ],
 )
 
-py_test(
-    name = "knowledge_deleted_at_filter_test",
-    srcs = ["knowledge/deleted_at_filter_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
 
-py_test(
-    name = "knowledge_gap_logic_test",
-    srcs = ["knowledge/gap_logic_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
 
-py_test(
-    name = "knowledge_gap_slug_resolution_test",
-    srcs = ["knowledge/gap_slug_resolution_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
 
 py_test(
     name = "knowledge_store_gap_queries_test",
@@ -6502,19 +6445,6 @@ py_test(
     ],
 )
 
-py_test(
-    name = "knowledge_ingest_queue_test",
-    srcs = ["knowledge/ingest_queue_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
 
 py_test(
     name = "knowledge_raw_store_test",
@@ -6539,16 +6469,6 @@ py_test(
     ],
 )
 
-py_test(
-    name = "knowledge_ingest_queue_extra_test",
-    srcs = ["knowledge/ingest_queue_extra_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
-)
 
 py_test(
     name = "knowledge_ingest_queue_claim_test",

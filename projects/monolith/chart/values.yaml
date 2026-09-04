@@ -215,19 +215,6 @@ jobs:
     # Workflow by hand after a bulk note import if an immediate relayout is
     # needed. Forbid so a slow layout never overlaps; 4Gi request==limit covers
     # the 2.7GiB peak with growth headroom; cpu:1 (single-threaded FA2).
-    - name: knowledge-layout
-      replaces: knowledge.layout
-      args: ["knowledge-layout"]
-      schedule: "0 4 * * 0" # weekly, Sunday 04:00 UTC
-      concurrencyPolicy: Forbid
-      activeDeadlineSeconds: 600
-      suspend: true
-      resources:
-        requests:
-          cpu: "1"
-          memory: 4Gi
-        limits:
-          memory: 4Gi
     # stats_rollup counts cluster resources via the in-cluster K8s API, so it
     # runs under the dedicated least-privilege monolith-stats SA (defined in the
     # argo-workflows platform chart) instead of the shared executor SA. Also
@@ -367,19 +354,6 @@ jobs:
           memory: 1Gi
         limits:
           memory: 1Gi
-    - name: knowledge-repo-docs-reconcile
-      replaces: knowledge.repo_docs_reconcile
-      args: ["knowledge-repo-docs-reconcile"]
-      schedule: "0 */6 * * *" # every 6h (was 21600s)
-      concurrencyPolicy: Forbid
-      activeDeadlineSeconds: 900
-      suspend: true
-      resources:
-        requests:
-          cpu: 250m
-          memory: 512Mi
-        limits:
-          memory: 512Mi
     # Phase A: remaining Postgres / HTTP jobs. All small; cadences match the
     # in-process intervals. Per-run pod overhead is ~10s (measured), trivial
     # even at the 5-min cadences.
@@ -422,32 +396,6 @@ jobs:
           memory: 256Mi
         limits:
           memory: 256Mi
-    - name: knowledge-ingest
-      replaces: knowledge.ingest
-      args: ["knowledge-ingest"]
-      schedule: "*/5 * * * *" # every 5 min (was 300s)
-      concurrencyPolicy: Forbid
-      activeDeadlineSeconds: 600
-      suspend: true
-      resources:
-        requests:
-          cpu: 250m
-          memory: 512Mi
-        limits:
-          memory: 512Mi
-    - name: knowledge-discover-gaps
-      replaces: knowledge.discover-gaps
-      args: ["knowledge-discover-gaps"]
-      schedule: "2-59/5 * * * *" # every 5 min, offset from ingest
-      concurrencyPolicy: Forbid
-      activeDeadlineSeconds: 600
-      suspend: true
-      resources:
-        requests:
-          cpu: 250m
-          memory: 512Mi
-        limits:
-          memory: 512Mi
     # calendar_poll fetches the iCal feed and snapshots today's events to
     # home.calendar_snapshot (so all API replicas read one shared row instead of
     # each warming an in-memory cache). Needs ICAL_FEED_URL from the cloned
