@@ -1301,7 +1301,7 @@ defmodule Embervm.Application do
     end
   end
 
-  defp boolean_env(name, default) do
+  def boolean_env(name, default) do
     case trimmed_env(name) do
       "" -> default
       value when value in ["1", "true", "TRUE", "True"] -> true
@@ -1372,7 +1372,7 @@ defmodule Embervm.Application do
       stats_base: sweeper_stats_base(),
       bank_concurrency: int_env_or_nil("EMBERVM_STATEFUL_BANK_CONCURRENCY"),
       lifetime_drain_max_ms: int_env_or_nil("EMBERVM_STATEFUL_LIFETIME_DRAIN_MAX_MS"),
-      pressure_banking_enabled: boolean_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", true),
+      pressure_banking_enabled: boolean_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", false),
       high_water_fraction: float_env("EMBERVM_STATEFUL_PRESSURE_HIGH_WATER_FRACTION", 0.85),
       low_water_fraction: float_env("EMBERVM_STATEFUL_PRESSURE_LOW_WATER_FRACTION", 0.70),
       pressure_idle_floor_ms: int_env_or_nil("EMBERVM_STATEFUL_PRESSURE_IDLE_FLOOR_MS"),
