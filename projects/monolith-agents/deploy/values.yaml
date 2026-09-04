@@ -30,3 +30,14 @@ auth:
 
 discord:
   defaultChannelId: "1501965852969402517"
+
+# The workload stays OFF until its database credential exists. Secrets are
+# namespaced, so this tier cannot read the monolith's monolith-pg-app: it needs
+# its own synced copy, and the scoped Postgres role that credential should use
+# is a later slice. Rendering a Deployment now would CrashLoop on a secretKeyRef
+# that resolves to nothing.
+#
+# To arm, in order: create the scoped role, put its uri in 1Password, set
+# onepassword.itemPath here, then flip this to true.
+agents:
+  enabled: false

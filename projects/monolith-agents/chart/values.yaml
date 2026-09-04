@@ -41,9 +41,12 @@ tolerations: []
 affinity: {}
 
 database:
-  # This Secret must be available in the monolith-agents namespace. It carries
-  # the CNPG app credential in the same "uri" shape as monolith-pg-app.
-  secretName: monolith-pg-app
+  # Secrets are namespaced, so this tier cannot read the monolith's own
+  # monolith-pg-app: it needs its own copy in monolith-agents, synced by the
+  # 1Password operator from onepassword.itemPath below. monolith-public does
+  # the same for public_reader. The item carries a "uri" field holding the full
+  # postgresql:// string.
+  secretName: monolith-agents-db
   secretKey: uri
 
 embeddingUrl: "http://inference-embeddings.inference.svc.cluster.local:8080"
@@ -79,6 +82,13 @@ ciliumPolicy:
   enabled: true
   objectStorageFqdn: "7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
 
+# The tier's own database credential, synced into this namespace by the
+# 1Password operator. Unset by default: the scoped Postgres role it points at
+# is a later slice, and the workload stays disabled until it exists.
+databaseSecretName: monolith-agents-db
+onepassword:
+  itemPath: ""
+
 agents:
   enabled: true
   replicas: 1
@@ -97,7 +107,7 @@ agents:
     - name: DATABASE_URL
       valueFrom:
         secretKeyRef:
-          name: monolith-pg-app
+          name: monolith-agents-db
           key: uri
     - name: EMBEDDING_URL
       value: "http://inference-embeddings.inference.svc.cluster.local:8080"

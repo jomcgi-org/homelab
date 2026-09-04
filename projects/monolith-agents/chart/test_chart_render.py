@@ -53,6 +53,12 @@ def documents() -> list[dict]:
             "monolith-agents",
             "--values",
             str(deploy_values),
+            # Render ARMED. deploy/values.yaml keeps agents.enabled false until
+            # the tier's database credential exists, but these tests are about
+            # what the workload looks like once it runs, so they must not
+            # silently pass by rendering no Deployment at all.
+            "--set",
+            "agents.enabled=true",
         ],
         check=True,
         capture_output=True,
