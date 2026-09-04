@@ -3252,6 +3252,15 @@ class PiProcess:
             process_was_unbound = not self.session_id
             model = _canonical_pi_model(model)
             model_name = PI_MODELS.get(model, PI_MODELS[DEFAULT_PI_MODEL])
+            workspace_identity = _workspace_identity(self.workspace)
+            cwd_changed = process is not None and (
+                self._process_workspace_identity is not None
+                and workspace_identity != self._process_workspace_identity
+            )
+            if process is not None and process.poll() is None and cwd_changed:
+                self._close_process(kill=False)
+                process = self._spawn(model, system_prompt=system_prompt)
+                cli_ready_path = "workspace_swap_respawn"
             if process is None or process.poll() is not None:
                 self._close_process(kill=False)
                 process = self._spawn(model, system_prompt=system_prompt)

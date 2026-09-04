@@ -714,6 +714,87 @@ def test_pi_turn_without_tools_reports_zero_tool_time(tmp_path, monkeypatch):
     assert record["usage"]["tools_by_name"] == {}
 
 
+def test_pi_turn_workspace_swap_closes_and_respawns(tmp_path, monkeypatch, capsys):
+    manager = _pi_manager(tmp_path, monkeypatch)
+    original_spawn = manager._spawn
+    spawn_calls = []
+
+    def spawn(model, system_prompt=None):
+        spawn_calls.append((model, system_prompt))
+        return original_spawn(model, system_prompt=system_prompt)
+
+    monkeypatch.setattr(manager, "_spawn", spawn)
+    manager.turn("first", model="spark")
+    old_process = manager.process
+    capsys.readouterr()
+    manager._process_workspace_identity = (0, 0)
+
+    manager.turn("second", model="spark")
+    timing = capsys.readouterr().err
+
+    assert len(spawn_calls) == 2
+    assert old_process.poll() is not None
+    assert manager.process is not old_process
+    assert "phase=cli_ready path=workspace_swap_respawn ms=" in timing
+    manager._close_process()
+
+
+def test_pi_turn_unchanged_workspace_identity_reuses_process(
+    tmp_path, monkeypatch, capsys
+):
+    manager = _pi_manager(tmp_path, monkeypatch)
+    original_spawn = manager._spawn
+    spawn_calls = []
+
+    def spawn(model, system_prompt=None):
+        spawn_calls.append((model, system_prompt))
+        return original_spawn(model, system_prompt=system_prompt)
+
+    monkeypatch.setattr(manager, "_spawn", spawn)
+    manager.turn("first", model="spark")
+    parked_process = manager.process
+    capsys.readouterr()
+
+    manager.turn("second", model="spark")
+    timing = capsys.readouterr().err
+
+    assert len(spawn_calls) == 1
+    assert manager.process is parked_process
+    assert "phase=cli_ready path=reuse ms=" in timing
+    assert "path=workspace_swap_respawn" not in timing
+    manager._close_process()
+
+
+def test_pi_turn_dead_process_and_system_prompt_paths_unchanged(
+    tmp_path, monkeypatch, capsys
+):
+    manager = _pi_manager(tmp_path, monkeypatch)
+    original_spawn = manager._spawn
+    spawn_calls = []
+
+    def spawn(model, system_prompt=None):
+        spawn_calls.append((model, system_prompt))
+        return original_spawn(model, system_prompt=system_prompt)
+
+    monkeypatch.setattr(manager, "_spawn", spawn)
+    manager.turn("first", model="spark")
+    capsys.readouterr()
+    manager.process.terminate()
+    manager.process.wait(timeout=5)
+
+    manager.turn("after exit", model="spark")
+    lazy_spawn = capsys.readouterr().err
+    manager.turn("new prompt", model="spark", system_prompt="CALLER-MARKER")
+    remediation = capsys.readouterr().err
+
+    assert len(spawn_calls) == 3
+    assert "phase=cli_ready path=lazy_spawn ms=" in lazy_spawn
+    assert "path=workspace_swap_respawn" not in lazy_spawn
+    assert "phase=cli_ready path=remediation_respawn ms=" in remediation
+    assert "path=workspace_swap_respawn" not in remediation
+    manager._close_process()
+
+
 def test_pi_repeated_tool_calls_raises(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_PI_MODE", "repeated-tool-calls")
     monkeypatch.setenv("FAKE_PI_REPEAT_LIMIT", str(shim.PI_MAX_IDENTICAL_TOOL_CALLS))
