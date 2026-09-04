@@ -1301,6 +1301,10 @@ defmodule Embervm.Application do
     end
   end
 
+  # Public only so a test can pin the empty-value fall-through: an env var that
+  # renders empty must take the caller's default, and which default that is
+  # decides whether a lane lands armed.
+  @doc false
   def boolean_env(name, default) do
     case trimmed_env(name) do
       "" -> default

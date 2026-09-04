@@ -1711,40 +1711,40 @@ defmodule Embervm.StatefulSweeperTest do
   end
 
   describe "brick memory-pressure banking" do
-    test "pressure banking defaults disabled when the environment variable is unset" do
-      previous_system_env = System.get_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED")
+    test "the sweeper's own default leaves pressure banking disabled" do
       previous_application_env = Application.fetch_env(:embervm, :stateful_pressure_banking_enabled)
 
       on_exit(fn ->
-        restore_system_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", previous_system_env)
         restore_application_env(:stateful_pressure_banking_enabled, previous_application_env)
       end)
 
-      System.delete_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED")
       Application.delete_env(:embervm, :stateful_pressure_banking_enabled)
-
-      assert App.boolean_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", false) == false
 
       ctx = start_stack(omit_pressure_banking_enabled: true)
       assert :sys.get_state(ctx.sweeper).pressure_banking_enabled == false
     end
 
-    test "pressure banking defaults disabled when the environment variable is empty" do
+    # A sentinel, not a boolean: asserting the default comes back would pass just
+    # as happily if boolean_env parsed "" as false instead of falling through,
+    # and the fall-through is the property that decides what an empty env value
+    # arms. Both call sites pass false today, so this is what keeps an empty
+    # EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED from meaning something else.
+    test "an unset or empty env value falls through to the caller's default" do
       previous_system_env = System.get_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED")
-      previous_application_env = Application.fetch_env(:embervm, :stateful_pressure_banking_enabled)
 
       on_exit(fn ->
         restore_system_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", previous_system_env)
-        restore_application_env(:stateful_pressure_banking_enabled, previous_application_env)
       end)
 
+      System.delete_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED")
+
+      assert App.boolean_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", :fell_through) ==
+               :fell_through
+
       System.put_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", "")
-      Application.delete_env(:embervm, :stateful_pressure_banking_enabled)
 
-      assert App.boolean_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", false) == false
-
-      ctx = start_stack(omit_pressure_banking_enabled: true)
-      assert :sys.get_state(ctx.sweeper).pressure_banking_enabled == false
+      assert App.boolean_env("EMBERVM_STATEFUL_PRESSURE_BANKING_ENABLED", :fell_through) ==
+               :fell_through
     end
 
     test "invalid_low_ge_high_logs_and_disables" do
