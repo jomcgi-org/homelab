@@ -165,6 +165,13 @@ knowledge:
       # chart roll resets, so sessions that finish across a roll were never
       # exported. Persisting the floor is tracked in #5587.
       since: "2026-09-03T17:00:00Z"
+    # Hourly scout over the main diff since the last processed SHA (#5570).
+    repoDiff:
+      enabled: true
+    # Demand-driven verification of docfix PRs against main; comments only
+    # while docFixAutoMerge is off.
+    docFixReview:
+      enabled: true
 
 chat:
   enabled: true
@@ -271,6 +278,15 @@ swarm:
 agents:
   drainer:
     enabled: true
+    # Raised from the chart default of 40 for the session backlog (about 430
+    # queued raws on 2026-09-04), now that the behavioural lens and the
+    # extraction gates are live (#5608). Re-grade the next batch before
+    # touching it again.
+    kgMaxJobsPerDay: 150
+    # Doc drift found by the repo-diff feed opens human-reviewed docs PRs on
+    # the routine lane. docFixAutoMerge stays at the chart default (false)
+    # until a few docfix-review verdicts have been read.
+    docFixEnabled: true
 
 # Taken offline 2026-06-14 for the ADR 006 Phase 4 transition: with the
 # gardener paused, the raw export / file moves can be done as a controlled
