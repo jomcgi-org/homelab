@@ -330,6 +330,13 @@ cmd_test() {
 			err "the run reported test failures, so this is a red run, not an infra failure"
 			return 1
 		fi
+		# "Executed 0 out of N tests: N tests pass" is true and misleading: every
+		# one was a cache hit, so a tree whose sources just changed either did not
+		# reach those targets or is not in the affected set at all (#5538). Say so
+		# rather than leaving the reader to know that tell.
+		if grep -qE 'Executed 0 out of [1-9][0-9]* tests?' "$out"; then
+			dim "note: Executed 0 means every affected test was a cache hit, so this run re-proved a tree that was already green. If you just changed code, check that the changed targets are in the affected set (issue #5538)."
+		fi
 	fi
 	if grep -qE "(^|${esc}\[[0-9;]*m)(Action failed:|Command failed: exit status)" "$out"; then
 		err "remote runner failed before or while running tests (see output above, issue #4118)"

@@ -61,5 +61,8 @@ genrule(
     ],
     outs = ["release_boot_smoke.txt"],
     cmd = "$(location //bazel/erlang:release_boot.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location :release_tar)\" \"$@\"",
+    # See #5538: a boot regression guard that tests() cannot see is a guard the
+    # affected-target runs skip. "verification" is how the CI query finds it.
+    tags = ["verification"],
     tools = ["//bazel/erlang:release_boot.sh"],
 )

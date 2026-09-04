@@ -33,7 +33,10 @@
 #      on the labels. Exclude Semgrep tests from dependency traversal, then add
 #      them back conservatively so platform-specific Semgrep engines are not
 #      loaded by the query.
-#   6. Filter out external repos (@) and output sorted results
+#   6. Separately find affected verification genrules: targets tagged
+#      "verification" that run a real suite without being Bazel test rules, so
+#      tests() is blind to them (#5538)
+#   7. Filter out external repos (@) and output sorted results
 #
 # The fallback set covers changes that invalidate a reverse dependency walk over
 # source files. Graph-shape mutations (new BUILD files, imports, deps changes,
@@ -322,20 +325,49 @@ if [[ $query_rc -ne 0 ]] && { [[ $query_rc -ne 3 ]] || [[ -z "$query_output" ]];
 	exit 0
 fi
 
-if [[ -n "$query_output" ]]; then
-	# Keep main-repo labels only (drops @external repos and any stray line)
-	filtered=$(printf '%s\n' "$query_output" | grep "^//" | grep -v '\.venv$' | sort -u || true)
-	target_count=$(printf '%s\n' "$filtered" | grep -c . || true)
-
-	if [[ $unreferenced -gt 0 ]]; then
-		echo "affected-targets: $target_count affected tests ($unreferenced files unreferenced)" >&2
-	else
-		echo "affected-targets: $target_count affected tests" >&2
-	fi
-
-	printf '%s\n' "$filtered"
-else
-	echo "affected-targets: test-universe query returned no tests" >&2
+# Verification genrules run real suites without being Bazel test rules, so
+# tests() cannot see them and the walk above can never reach them however the
+# dependency edges run. That is #5538: 1580 EmberVM control-plane tests sat out
+# every PR that changed the control plane, and the run still printed green.
+# They are found by tag rather than by name so a new one is covered by
+# declaring itself, and queried separately so a failure here cannot discard the
+# test set already computed above.
+verification_query="let verified = attr(tags, \"[\[ ]verification[,\]]\", //...) in \$verified intersect rdeps(deps(\$verified), set($(printf '"%s" ' "${valid_labels[@]}")))"
+echo "affected-targets: verification-genrule query (timeout ${QUERY_TIMEOUT}s)" >&2
+verification_output=$(timeout "$QUERY_TIMEOUT" "${BAZEL:-bazel}" query "$verification_query" --keep_going --output=label "${bazel_args[@]}") || verification_rc=$?
+verification_rc=${verification_rc:-0}
+if [[ $verification_rc -eq 124 ]]; then
+	echo "affected-targets: fallback to //... because the verification-genrule query timed out after ${QUERY_TIMEOUT}s" >&2
+	recover_bazel
+	echo "//..."
+	exit 0
 fi
+
+# Fail CLOSED here too. An empty list from a broken query is exactly the silent
+# under-test this clause exists to end, so anything but a clean exit (or a
+# --keep_going partial that still produced labels) takes the full suite.
+if [[ $verification_rc -ne 0 ]] && { [[ $verification_rc -ne 3 ]] || [[ -z "$verification_output" ]]; }; then
+	echo "affected-targets: fallback to //... because verification-genrule query failed (exit $verification_rc)" >&2
+	echo "//..."
+	exit 0
+fi
+
+# Keep main-repo labels only (drops @external repos and any stray line)
+filtered=$(printf '%s\n' "$query_output" "$verification_output" | grep "^//" | grep -v '\.venv$' | sort -u || true)
+target_count=$(printf '%s\n' "$filtered" | grep -c . || true)
+verification_count=$(printf '%s\n' "$verification_output" | grep -c "^//" || true)
+
+if [[ $target_count -eq 0 ]]; then
+	echo "affected-targets: test-universe query returned no tests" >&2
+	exit 0
+fi
+
+if [[ $unreferenced -gt 0 ]]; then
+	echo "affected-targets: $target_count affected targets, $verification_count of them verification genrules ($unreferenced files unreferenced)" >&2
+else
+	echo "affected-targets: $target_count affected targets, $verification_count of them verification genrules" >&2
+fi
+
+printf '%s\n' "$filtered"
 
 exit 0
