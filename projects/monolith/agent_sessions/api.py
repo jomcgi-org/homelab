@@ -76,7 +76,6 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
             turn_seq,
             row.id,
         )
-        await asyncio.to_thread(_delete_pending_message_sync, row.id, turn_seq)
         return None
 
     # The claim lease is 30 seconds. An observed run on 2026-09-02 06:00:27 took
