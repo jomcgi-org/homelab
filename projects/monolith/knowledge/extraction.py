@@ -48,6 +48,12 @@ REPO_DIFF_PATCH_CAP = 60_000
 DOC_DRIFT_CAP = 10
 DEFAULT_REPO_SCOPE = "repo:jomcgi-org/homelab"
 
+
+def _get_repo_scope() -> str:
+    """Get the scope to use for repo-scoped knowledge operations."""
+    return os.environ.get("KNOWLEDGE_DEFAULT_REPO_SCOPE", DEFAULT_REPO_SCOPE)
+
+
 _SCOPE_PATTERN = r"^(personal|org|repo|environment|session):.+$"
 _FENCED_BLOCK_RE = re.compile(
     r"^```(?:[A-Za-z0-9_-]+)?[ \t]*\r?\n(.*?)^```[ \t]*$",
@@ -385,7 +391,10 @@ def build_extraction_prompt(session: Session, raw: RawInput) -> str:
     from knowledge.store import KnowledgeStore
 
     related = KnowledgeStore(session).search_notes_with_context(
-        vector, limit=RELATED_NOTES
+        vector,
+        limit=RELATED_NOTES,
+        scope_filter=_get_repo_scope(),
+        exclude_invalidated=True,
     )
     related_lines = []
     for item in related:
