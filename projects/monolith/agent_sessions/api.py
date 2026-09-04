@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 import logging
 from uuid import uuid4
 
@@ -128,12 +129,18 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
                 row.id,
             )
             return None
+        # Match the executor's deliver shape (#5607): the synthetic previously
+        # omitted progress_token, and its progress-quiet connection was the one
+        # whose reply kept arriving on a severed pipe while interactive turns
+        # (which always carry one) came back fine.
+        progress_token = secrets.token_urlsafe(32)
         turn, _returned_ember = await _transport.deliver(
             None,
             None,
             prompt,
             model,
             on_create=persist_callback,
+            progress_token=progress_token,
         )
         ember = _returned_ember
         if claim_stolen:
