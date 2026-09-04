@@ -608,7 +608,7 @@ def _changed_files(diff_stat: str, diff: str) -> int:
 
 def _repo_diff_markdown(parsed: _RepoDiffResult, changed_files: int) -> str:
     assert parsed.base_sha is not None
-    scope = os.environ.get("KNOWLEDGE_DEFAULT_REPO_SCOPE", DEFAULT_REPO_SCOPE)
+    scope = _get_repo_scope()
     frontmatter = yaml.safe_dump(
         {
             "title": f"main diff {parsed.base_sha[:7]}..{parsed.head_sha[:7]}",
