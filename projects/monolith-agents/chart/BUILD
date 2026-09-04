@@ -72,4 +72,3 @@ semgrep_test(
     srcs = ["chart_render_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
-
