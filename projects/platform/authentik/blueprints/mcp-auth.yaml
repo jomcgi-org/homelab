@@ -19,6 +19,13 @@ entries:
     attrs:
       is_superuser: false
 
+  - model: authentik_core.group
+    id: kg-agents
+    identifiers:
+      name: kg-agents
+    attrs:
+      is_superuser: false
+
   # ── 2. Membership ───────────────────────────────────────────────────────
   # `attrs` REPLACES a many-to-many rather than merging into it, so the
   # existing "authentik Admins" membership has to be restated here or applying
@@ -50,6 +57,20 @@ entries:
         # over their membership.
         - !Find [authentik_core.group, [name, family]]
 
+  - model: authentik_core.user
+    id: kg-agent-sa
+    identifiers:
+      username: kg-agent-sa
+    attrs:
+      name: Ember agent MCP service account
+      type: service_account
+      is_active: true
+      # user.groups and group.users are the SAME many-to-many relation. A
+      # blueprint replaces the whole list rather than appending to it, so this
+      # user entry is the service account membership's exactly ONE writer.
+      groups:
+        - !KeyOf kg-agents
+
   # ── 3. Gate the MCP application ─────────────────────────────────────────
   # Until this exists the application has ZERO policy bindings, which in
   # authentik means every authenticated account may authorize it. That was
@@ -60,6 +81,16 @@ entries:
       target: !Find [authentik_core.application, [slug, mcp-friends]]
       group: !KeyOf homelab-admin
       order: 0
+    attrs:
+      enabled: true
+      negate: false
+      timeout: 30
+
+  - model: authentik_policies.policybinding
+    identifiers:
+      target: !Find [authentik_core.application, [slug, mcp-friends]]
+      group: !KeyOf kg-agents
+      order: 1
     attrs:
       enabled: true
       negate: false
