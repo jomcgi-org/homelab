@@ -8,6 +8,7 @@ import os
 import platform
 import re
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -58,6 +59,39 @@ logger = logging.getLogger(__name__)
 # leaves ample room for broker and scheduler jitter while bounding how long a
 # session can remain behind a workflow owned by a dead application version.
 ZOMBIE_SESSION_THRESHOLD_SECONDS = 180
+# A claim heartbeat updates every 10 seconds. If the same dispatch is still
+# live after 600 seconds and its bound guest was never invoked, the executor is
+# hung before delivery and recovery may steal the claim.
+HUNG_CLAIM_THRESHOLD_SECONDS = 600
+# A negative control-plane oracle result suppresses repeated full listings from
+# both sends and the five-second sweep. This cache is advisory and process-local.
+NEGATIVE_ORACLE_TTL_SECONDS = 120
+_negative_oracle_verdicts: dict[int, float] = {}
+
+
+class _ClaimStolen(RuntimeError):
+    """Abort a delivery callback after its pending-message lease is stolen."""
+
+
+def _negative_oracle_verdict_is_fresh(session_id: int) -> bool:
+    expires_at = _negative_oracle_verdicts.get(session_id)
+    if expires_at is None:
+        return False
+    if expires_at <= time.monotonic():
+        _negative_oracle_verdicts.pop(session_id, None)
+        return False
+    return True
+
+
+def _memoize_negative_oracle_verdict(session_id: int) -> None:
+    _negative_oracle_verdicts[session_id] = (
+        time.monotonic() + NEGATIVE_ORACLE_TTL_SECONDS
+    )
+
+
+def _clear_negative_oracle_verdict(session_id: int) -> None:
+    _negative_oracle_verdicts.pop(session_id, None)
+
 
 # Messages queued by the /agents UI, so their terminal Discord post can be
 # suppressed: someone watching the UI is already looking at the result and does
@@ -108,6 +142,8 @@ def _load_session_row(session_id: int) -> AgentSession | None:
 def _set_session_status(session_id: int, status: str) -> None:
     with Session(get_engine()) as db_session:
         store.update_session_status(db_session, session_id, status)
+    if status in {"completed", "failed"}:
+        _clear_negative_oracle_verdict(session_id)
 
 
 def _activate_session_after_enqueue(session_id: int) -> bool:
@@ -314,7 +350,9 @@ def _get_pending_message_sync(session_id: int, turn_seq: int):
     return store.get_pending_message_sync(session_id, turn_seq)
 
 
-def _claim_pending_message_sync(session_id: int) -> int | None:
+def _claim_pending_message_sync(
+    session_id: int, claim_owner: str | None = None
+) -> int | None:
     """Claim this session's next queued message, returning its seq.
 
     The database picks the message, not the caller: it claims the lowest
@@ -322,11 +360,17 @@ def _claim_pending_message_sync(session_id: int) -> int | None:
     ordering hold across replicas, so nothing outside this call may choose
     which message runs next.
     """
-    return store.claim_pending_message_for_session_sync(session_id, _REPLICA_ID)
+    return store.claim_pending_message_for_session_sync(
+        session_id, claim_owner or _REPLICA_ID
+    )
 
 
-def _release_pending_message_claim_sync(session_id: int, turn_seq: int) -> None:
-    store.release_pending_message_claim_sync(session_id, turn_seq, _REPLICA_ID)
+def _release_pending_message_claim_sync(
+    session_id: int, turn_seq: int, claim_owner: str | None = None
+) -> None:
+    store.release_pending_message_claim_sync(
+        session_id, turn_seq, claim_owner or _REPLICA_ID
+    )
 
 
 def _persist_turn_from_pending_sync(
@@ -375,11 +419,51 @@ def _find_zombie_session_ids_sync(
         return store.find_zombie_session_ids(db_session, cutoff, now, limit)
 
 
+def _find_hung_claim_session_ids_sync(
+    cutoff: datetime, now: datetime, limit: int = 5
+) -> list[int]:
+    with Session(get_engine()) as db_session:
+        return store.find_hung_claim_session_ids(db_session, cutoff, now, limit)
+
+
+def _get_hung_claim_binding_sync(
+    session_id: int, cutoff: datetime, now: datetime
+) -> str | None:
+    with Session(get_engine()) as db_session:
+        return store.get_hung_claim_binding(db_session, session_id, cutoff, now)
+
+
 def _claim_zombie_session_recovery_sync(
     session_id: int, cutoff: datetime, now: datetime
 ) -> dict | None:
     with Session(get_engine()) as db_session:
         return store.claim_zombie_session_recovery(db_session, session_id, cutoff, now)
+
+
+def _claim_hung_zombie_session_recovery_sync(
+    session_id: int,
+    cutoff: datetime,
+    now: datetime,
+    expected_ember_session_id: str,
+) -> dict | None:
+    with Session(get_engine()) as db_session:
+        return store.claim_hung_zombie_session_recovery(
+            db_session,
+            session_id,
+            cutoff,
+            now,
+            expected_ember_session_id,
+        )
+
+
+async def _fresh_bound_guest_state(
+    ember_session_id: str,
+) -> tuple[bool, dict | None]:
+    # router owns the shared all-lane VM cache. Import lazily because router
+    # imports this module for execution helpers.
+    from agent_sessions import router as agent_router
+
+    return await agent_router._fresh_vm_state_for_binding(ember_session_id)
 
 
 def _finalize_zombie_session_recovery_sync(claim: dict, now: datetime) -> int | None:
@@ -437,16 +521,62 @@ async def _execute_pending_message(session_id: int) -> None:
     (30s, three missed refreshes).
     """
 
-    claimed_seq = await asyncio.to_thread(_claim_pending_message_sync, session_id)
+    claim_owner = f"{_REPLICA_ID}:{uuid4()}"
+    claimed_seq = await asyncio.to_thread(
+        _claim_pending_message_sync, session_id, claim_owner
+    )
     if claimed_seq is None:
         return
+    _clear_negative_oracle_verdict(session_id)
 
     ui_originated = _consume_ui_originated(session_id, claimed_seq)
 
     # Set once the claim is lost to another replica; checked before starting and
     # again after deliver, so a stolen claim never persists a duplicate turn.
     claim_stolen = False
+    stolen_exit_logged = False
     refresh_task = None
+
+    def _abort_stolen_executor(stage: str) -> bool:
+        nonlocal stolen_exit_logged
+        if not claim_stolen:
+            return False
+        if not stolen_exit_logged:
+            _log_stolen_exit(stage)
+        return True
+
+    async def _abort_stolen_executor_confirmed(stage: str) -> bool:
+        """DB-confirmed barrier for WRITE paths.
+
+        The local claim_stolen flag lags a steal by up to one heartbeat
+        (10s), which is exactly the window a stolen executor could use to
+        persist a binding or an error turn over the retry's work. Before any
+        write that survives the executor, confirm ownership against the
+        claim row itself.
+        """
+        nonlocal claim_stolen
+        if claim_stolen:
+            _log_stolen_exit(stage)
+            return True
+        still_held = await asyncio.to_thread(
+            _refresh_claim_sync, session_id, claimed_seq, claim_owner
+        )
+        if still_held:
+            return False
+        claim_stolen = True
+        _log_stolen_exit(stage)
+        return True
+
+    def _log_stolen_exit(stage: str) -> None:
+        nonlocal stolen_exit_logged
+        if not stolen_exit_logged:
+            logger.warning(
+                "Claim was stolen for turn %s in session %s during %s; executor writes nothing",
+                claimed_seq,
+                session_id,
+                stage,
+            )
+            stolen_exit_logged = True
 
     async def _refresh_heartbeat() -> None:
         """Keep the claim alive while the turn runs."""
@@ -455,15 +585,10 @@ async def _execute_pending_message(session_id: int) -> None:
             try:
                 await asyncio.sleep(10)  # one third of the 30s lease
                 still_held = await asyncio.to_thread(
-                    _refresh_claim_sync, session_id, claimed_seq, _REPLICA_ID
+                    _refresh_claim_sync, session_id, claimed_seq, claim_owner
                 )
                 if not still_held:
                     claim_stolen = True
-                    logger.warning(
-                        "Claim for turn %s in session %s was reclaimed, aborting execution",
-                        claimed_seq,
-                        session_id,
-                    )
                     break
             except Exception:
                 # A transient refresh failure must not kill an otherwise healthy
@@ -475,7 +600,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 )
 
     async def _do_execute() -> None:
-        if claim_stolen:
+        if _abort_stolen_executor("startup"):
             return
 
         row = await asyncio.to_thread(
@@ -486,12 +611,17 @@ async def _execute_pending_message(session_id: int) -> None:
         # Load session to get workspace and stored session_id for resumption
         session_row, _ = await asyncio.to_thread(_load_session, session_id)
         if not session_row:
+            if _abort_stolen_executor("missing-session error"):
+                return
             await asyncio.to_thread(
                 _mark_turn_error_sync, session_id, claimed_seq, "Session not found"
             )
+            _clear_negative_oracle_verdict(session_id)
             return
         if session_row.progress_token is None:
             session_row.progress_token = secrets.token_urlsafe(32)
+            if _abort_stolen_executor("progress-token persistence"):
+                return
             await asyncio.to_thread(
                 store._persist_progress_token_sync,
                 session_id,
@@ -505,6 +635,8 @@ async def _execute_pending_message(session_id: int) -> None:
                 ember: EmberSession, cli_for_binding: str | None
             ) -> None:
                 nonlocal fresh_binding_persisted
+                if await _abort_stolen_executor_confirmed("binding persistence"):
+                    raise _ClaimStolen
                 await asyncio.to_thread(
                     _persist_ember_session_and_cli,
                     session_id,
@@ -547,33 +679,38 @@ async def _execute_pending_message(session_id: int) -> None:
                 **deliver_kwargs,
             )
             # Check if claim was stolen while deliver was running
-            if claim_stolen:
-                logger.warning(
-                    "Claim was stolen during deliver for turn %s in session %s, not persisting result",
-                    claimed_seq,
-                    session_id,
-                )
+            if _abort_stolen_executor("deliver"):
                 return
             if ember != existing_ember:
                 # Safety: re-persist for transports without on_create support
                 await asyncio.to_thread(_persist_ember_session, session_id, ember)
+        except _ClaimStolen:
+            return
         except EmberSessionGone as exc:
+            if await _abort_stolen_executor_confirmed("missing-guest error"):
+                return
             # Session confirmed dead by CP; clear the binding and CLI id together.
             if not fresh_binding_persisted:
                 await asyncio.to_thread(_clear_ember_session_sync, session_id)
             await asyncio.to_thread(
                 _mark_turn_error_sync, session_id, claimed_seq, str(exc)
             )
+            _clear_negative_oracle_verdict(session_id)
             return
         except Exception as exc:
+            if await _abort_stolen_executor_confirmed("delivery error"):
+                return
             # Terminal failure: row is deleted by mark_turn_error_sync (noqa: BLE001)
             await asyncio.to_thread(
                 _mark_turn_error_sync, session_id, claimed_seq, str(exc)
             )
+            _clear_negative_oracle_verdict(session_id)
             return
 
         summary = voice.extract_voice_summary(turn.result)
         status = _turn_status(turn)
+        if await _abort_stolen_executor_confirmed("turn persistence"):
+            return
         # Store the CLI's session_id from the turn for resumption on next deliver
         try:
             await asyncio.to_thread(
@@ -606,6 +743,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 session_id,
             )
             return
+        _clear_negative_oracle_verdict(session_id)
         await asyncio.to_thread(_delete_pending_message_sync, session_id, claimed_seq)
         if not ui_originated:
             await _notify_terminal(turn, summary, status, session_row)
@@ -628,23 +766,57 @@ async def _execute_pending_message(session_id: int) -> None:
                 await refresh_task
             except asyncio.CancelledError:
                 pass
-        await asyncio.to_thread(
-            _release_pending_message_claim_sync, session_id, claimed_seq
-        )
+        if not claim_stolen:
+            await asyncio.to_thread(
+                _release_pending_message_claim_sync,
+                session_id,
+                claimed_seq,
+                claim_owner,
+            )
 
 
 async def recover_zombie_session_if_needed(
     session_id: int, *, now: datetime | None = None
 ) -> dict | None:
     """Recover one old first-turn session if this pod wins its CAS."""
+    if _negative_oracle_verdict_is_fresh(session_id):
+        return None
+
     recovery_now = now or datetime.now(timezone.utc)
     cutoff = recovery_now - timedelta(seconds=ZOMBIE_SESSION_THRESHOLD_SECONDS)
     claim = await asyncio.to_thread(
         _claim_zombie_session_recovery_sync, session_id, cutoff, recovery_now
     )
     if claim is None:
-        return None
+        hung_cutoff = recovery_now - timedelta(seconds=HUNG_CLAIM_THRESHOLD_SECONDS)
+        ember_session_id = await asyncio.to_thread(
+            _get_hung_claim_binding_sync,
+            session_id,
+            hung_cutoff,
+            recovery_now,
+        )
+        if ember_session_id is None:
+            return None
+        cp_available, vm_state = await _fresh_bound_guest_state(ember_session_id)
+        if not cp_available:
+            _memoize_negative_oracle_verdict(session_id)
+            return None
+        if vm_state is not None:
+            never_invoked = vm_state.get("invoke_started_at") is None
+            if not never_invoked:
+                _memoize_negative_oracle_verdict(session_id)
+                return None
+        claim = await asyncio.to_thread(
+            _claim_hung_zombie_session_recovery_sync,
+            session_id,
+            hung_cutoff,
+            recovery_now,
+            ember_session_id,
+        )
+        if claim is None:
+            return None
 
+    _clear_negative_oracle_verdict(session_id)
     ember_session_id = claim["ember_session_id"]
     if ember_session_id:
         try:
@@ -659,6 +831,14 @@ async def recover_zombie_session_if_needed(
                 exc_info=True,
             )
         await asyncio.to_thread(_clear_ember_bindings_for, ember_session_id)
+
+    if claim.get("recovery_declined"):
+        logger.error(
+            "Stopped zombie recovery for session %s turn %s after too many dispatches",
+            session_id,
+            claim["turn_seq"],
+        )
+        return claim
 
     retry_seq = await asyncio.to_thread(
         _finalize_zombie_session_recovery_sync,
@@ -686,13 +866,17 @@ async def recover_zombie_session_if_needed(
 async def _reconcile_zombie_sessions() -> int:
     """Recover a bounded batch of eligible first-turn lane heads.
 
-    A claim that keeps heartbeating while the guest is never invoked is out of
-    scope here and tracked as #5601. Recovery runs at most once per session,
-    deliberately, until #5601 supplies the dispatch count needed to retry it.
+    Hung claims still require a fresh control-plane answer in
+    recover_zombie_session_if_needed before their CAS can run.
     """
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=ZOMBIE_SESSION_THRESHOLD_SECONDS)
-    session_ids = await asyncio.to_thread(_find_zombie_session_ids_sync, cutoff, now, 5)
+    hung_cutoff = now - timedelta(seconds=HUNG_CLAIM_THRESHOLD_SECONDS)
+    unclaimed_ids, hung_ids = await asyncio.gather(
+        asyncio.to_thread(_find_zombie_session_ids_sync, cutoff, now, 5),
+        asyncio.to_thread(_find_hung_claim_session_ids_sync, hung_cutoff, now, 5),
+    )
+    session_ids = list(dict.fromkeys([*unclaimed_ids, *hung_ids]))[:5]
     if not session_ids:
         return 0
     recovered = 0
@@ -702,7 +886,7 @@ async def _reconcile_zombie_sessions() -> int:
         except Exception as exc:  # noqa: BLE001 - one recovery must not stop the sweep
             logger.error("Zombie recovery failed for session %s: %s", session_id, exc)
             continue
-        if result is not None:
+        if result is not None and result.get("retry_seq") is not None:
             recovered += 1
     return recovered
 

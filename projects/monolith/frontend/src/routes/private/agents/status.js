@@ -2,6 +2,7 @@ export function statusClass(session) {
   if (session?.status === "running") {
     return Number(session?.pending_count) > 0 ? "working" : "running";
   }
+  if (session?.status === "failed") return "failed";
   if (session?.status === "warn") return "warn";
   if (session?.status === "needs_input") return "needs_input";
   if (session?.status === "awaiting_login") return "awaiting_login";
@@ -17,6 +18,7 @@ export function statusLabel(session) {
   if (session?.status === "awaiting_login") return "awaiting login";
   if (session?.status === "recovering") return "recovering";
   if (session?.status === "completed") return "completed";
+  if (session?.status === "failed") return "failed";
   if (session?.status === "warn") return "warn";
   return "completed";
 }

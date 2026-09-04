@@ -176,7 +176,7 @@ defmodule Embervm.RouterTest do
     def verify_token(_srv, _id, _token), do: {:error, :not_found}
 
     def get(_srv, "s-live"),
-      do: {:ok, %{session_id: "s-live", workload: "wl-ok", principal: "p", state: :running, generation: 0, base_digest: "sha256:x", created_at: 1, last_invoke_at: nil, expires_at: 9_000_000, updated_at: 1, terminal_reason: nil}}
+      do: {:ok, %{session_id: "s-live", workload: "wl-ok", principal: "p", state: :running, generation: 0, base_digest: "sha256:x", created_at: 1, invoke_started_at: 123, last_invoke_at: nil, expires_at: 9_000_000, updated_at: 1, terminal_reason: nil}}
 
     def get(_srv, "s-term"),
       do: {:ok, %{session_id: "s-term", workload: "wl-ok", principal: "p", state: :destroyed, generation: 0, base_digest: "sha256:x", created_at: 1, last_invoke_at: nil, expires_at: 9_000_000, updated_at: 1, terminal_reason: "destroyed"}}
@@ -1360,6 +1360,7 @@ defmodule Embervm.RouterTest do
     a = req(:get, "/v1/sessions/s-live", auth("sess-token-live"))
     assert a.status == 200
     assert json(a.body)["session_id"] == "s-live"
+    assert json(a.body)["invoke_started_at"] == 123
 
     # Management token (TokenReview via FakeAuth "good").
     b = req(:get, "/v1/sessions/s-live", auth("good"))

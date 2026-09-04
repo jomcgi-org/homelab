@@ -5,6 +5,7 @@ test.each([
   [{ status: "running" }, "running", "running"],
   [{ status: "running", pending_count: 1 }, "working", "working"],
   [{ status: "completed" }, "completed", "completed"],
+  [{ status: "failed" }, "failed", "failed"],
   [{ status: "warn" }, "warn", "warn"],
   [{ status: "needs_input" }, "needs input", "needs_input"],
   [{ status: "awaiting_login" }, "awaiting login", "awaiting_login"],

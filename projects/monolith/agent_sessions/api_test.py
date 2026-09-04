@@ -45,7 +45,9 @@ def test_run_synthetic_session_claims_pending_before_deliver(monkeypatch):
 
     monkeypatch.setattr(api, "_persist_session", lambda *args, **kwargs: row)
     monkeypatch.setattr(api, "_persist_pending_message", lambda *args: 1)
-    monkeypatch.setattr(api, "_claim_pending_message_sync", lambda session_id: 1)
+    monkeypatch.setattr(
+        api, "_claim_pending_message_sync", lambda session_id, claim_owner: 1
+    )
     monkeypatch.setattr(api._transport, "deliver", deliver)
     monkeypatch.setattr(api, "_persist_turn_from_pending_sync", lambda *args: None)
     monkeypatch.setattr(
@@ -56,7 +58,9 @@ def test_run_synthetic_session_claims_pending_before_deliver(monkeypatch):
     monkeypatch.setattr(
         api,
         "_release_pending_message_claim_sync",
-        lambda session_id, turn_seq: released.append((session_id, turn_seq)),
+        lambda session_id, turn_seq, claim_owner: released.append(
+            (session_id, turn_seq)
+        ),
     )
 
     result = asyncio.run(api.run_synthetic_session("probe"))
@@ -83,7 +87,9 @@ def test_run_synthetic_session_does_not_deliver_when_claim_lost(monkeypatch):
 
     monkeypatch.setattr(api, "_persist_session", lambda *args, **kwargs: row)
     monkeypatch.setattr(api, "_persist_pending_message", lambda *args: 1)
-    monkeypatch.setattr(api, "_claim_pending_message_sync", lambda session_id: None)
+    monkeypatch.setattr(
+        api, "_claim_pending_message_sync", lambda session_id, claim_owner: None
+    )
     monkeypatch.setattr(api._transport, "deliver", deliver)
     monkeypatch.setattr(
         api,
@@ -117,7 +123,9 @@ def test_run_synthetic_session_tolerates_duplicate_turn_insert(monkeypatch):
 
     monkeypatch.setattr(api, "_persist_session", lambda *args, **kwargs: row)
     monkeypatch.setattr(api, "_persist_pending_message", lambda *args: 1)
-    monkeypatch.setattr(api, "_claim_pending_message_sync", lambda session_id: 1)
+    monkeypatch.setattr(
+        api, "_claim_pending_message_sync", lambda session_id, claim_owner: 1
+    )
     monkeypatch.setattr(api._transport, "deliver", deliver)
     monkeypatch.setattr(api, "_persist_turn_from_pending_sync", persist_turn)
     monkeypatch.setattr(
@@ -128,7 +136,9 @@ def test_run_synthetic_session_tolerates_duplicate_turn_insert(monkeypatch):
     monkeypatch.setattr(
         api,
         "_release_pending_message_claim_sync",
-        lambda session_id, turn_seq: released.append((session_id, turn_seq)),
+        lambda session_id, turn_seq, claim_owner: released.append(
+            (session_id, turn_seq)
+        ),
     )
 
     result = asyncio.run(api.run_synthetic_session("probe"))
@@ -178,7 +188,9 @@ def test_run_synthetic_session_refreshes_claim_and_delivers_once_when_lease_woul
 
     monkeypatch.setattr(api, "_persist_session", lambda *args, **kwargs: row)
     monkeypatch.setattr(api, "_persist_pending_message", lambda *args: 1)
-    monkeypatch.setattr(api, "_claim_pending_message_sync", lambda session_id: 1)
+    monkeypatch.setattr(
+        api, "_claim_pending_message_sync", lambda session_id, claim_owner: 1
+    )
     monkeypatch.setattr(api, "_refresh_claim_sync", refresh_claim)
     monkeypatch.setattr(api.asyncio, "sleep", sleep)
     monkeypatch.setattr(api._transport, "deliver", deliver)
@@ -191,7 +203,7 @@ def test_run_synthetic_session_refreshes_claim_and_delivers_once_when_lease_woul
     monkeypatch.setattr(
         api,
         "_release_pending_message_claim_sync",
-        lambda session_id, turn_seq: None,
+        lambda session_id, turn_seq, claim_owner: None,
     )
 
     result = asyncio.run(api.run_synthetic_session("probe"))
@@ -199,7 +211,13 @@ def test_run_synthetic_session_refreshes_claim_and_delivers_once_when_lease_woul
     assert result is turn
     assert elapsed == 30
     assert len(delivered) == 1
-    assert refresh_calls == [(44, 1, api._REPLICA_ID)] * 3
+    assert len(refresh_calls) == 3
+    assert {(session_id, turn_seq) for session_id, turn_seq, _ in refresh_calls} == {
+        (44, 1)
+    }
+    owners = {owner for _, _, owner in refresh_calls}
+    assert len(owners) == 1
+    assert owners.pop().startswith(f"{api._REPLICA_ID}:")
     assert deleted == [(44, 1)]
 
 

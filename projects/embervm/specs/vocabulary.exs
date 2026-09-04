@@ -128,7 +128,7 @@
         # session_failed are the create/invoke/expire/fail lifecycle edges bank_relight
         # does not model (it starts from a running instance and models only the
         # bank/relight/evict/destroy generation-pairing subset).
-        ~w(session_created session_invoked session_expired session_failed)a ++
+        ~w(session_created session_invoke_started session_invoked session_expired session_failed)a ++
         # R3 serving lifecycle kinds, out of scope. serving_destroying is the
         # ADR embervm/014 destroy-intent kind (see session_destroying).
         ~w(serving_started serving_published serving_unpublished serving_banked

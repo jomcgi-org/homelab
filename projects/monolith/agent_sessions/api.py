@@ -65,7 +65,10 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
     # The monolith runs multiple replicas; an unclaimed pending message is fair
     # game for another replica's worker. Claiming it here ensures the prompt is
     # delivered at most once per probe run.
-    claimed_seq = await asyncio.to_thread(_claim_pending_message_sync, row.id)
+    claim_owner = f"{_REPLICA_ID}:{uuid4()}"
+    claimed_seq = await asyncio.to_thread(
+        _claim_pending_message_sync, row.id, claim_owner
+    )
     if claimed_seq is None:
         logger.warning(
             "Pending turn %s for synthetic session %s was claimed by another replica",
@@ -89,7 +92,7 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
             try:
                 await asyncio.sleep(10)
                 still_held = await asyncio.to_thread(
-                    _refresh_claim_sync, row.id, turn_seq, _REPLICA_ID
+                    _refresh_claim_sync, row.id, turn_seq, claim_owner
                 )
                 if not still_held:
                     claim_stolen = True
@@ -173,7 +176,10 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
     finally:
         refresh_task.cancel()
         await asyncio.to_thread(
-            _release_pending_message_claim_sync, row.id, claimed_seq
+            _release_pending_message_claim_sync,
+            row.id,
+            claimed_seq,
+            claim_owner,
         )
         if ember is not None:
             try:

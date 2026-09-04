@@ -455,6 +455,84 @@ def test_live_claim_invariant_is_shared_by_detector_and_reclaimer(
         _restore_schemas(schemas)
 
 
+def test_hung_recovery_stolen_claim_makes_refresh_return_false(monkeypatch, tmp_path):
+    engine, schemas = _database(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc)
+    try:
+        with Session(engine) as session:
+            row = store.create_session(
+                session, "hung-stolen", "<guest>", "main", repo="jomcgi/homelab"
+            )
+            row.ember_session_id = "ember-hung"
+            row.ember_session_token = "token"
+            session.add_all(
+                [
+                    row,
+                    PendingMessage(
+                        session_id=row.id,
+                        seq=1,
+                        message_text="hung",
+                        claimed_by_replica="hung-pod:old",
+                        claimed_at=now,
+                        dispatch_count=1,
+                        last_dispatch_at=now - timedelta(seconds=601),
+                    ),
+                ]
+            )
+            session.commit()
+
+            claim = store.claim_hung_zombie_session_recovery(
+                session,
+                row.id,
+                now - timedelta(seconds=600),
+                now,
+                "ember-hung",
+            )
+
+            assert claim is not None
+            assert store.finalize_zombie_session_recovery(session, claim, now) == 1
+            assert (
+                store.claim_pending_message_for_session_sync(row.id, "hung-pod:new")
+                == 1
+            )
+            assert store.refresh_claim_sync(row.id, 1, "hung-pod:old") is False
+            session.expire_all()
+            pending = store.get_pending_message(session, row.id, 1)
+            assert pending.claimed_by_replica == "hung-pod:new"
+    finally:
+        _restore_schemas(schemas)
+
+
+def test_claim_records_dispatch_count_and_time(monkeypatch, tmp_path):
+    engine, schemas = _database(monkeypatch, tmp_path)
+    try:
+        with Session(engine) as session:
+            row = store.create_session(session, "dispatch-trace", "<guest>", "main")
+            pending = store.create_pending_message(session, row.id, "run me")
+            session_id = row.id
+            turn_seq = pending.seq
+
+        assert store.claim_pending_message_for_session_sync(session_id, "pod-a") == 1
+
+        with Session(engine) as session:
+            first = store.get_pending_message(session, session_id, turn_seq)
+            assert first.dispatch_count == 1
+            assert isinstance(first.last_dispatch_at, datetime)
+            first.claimed_by_replica = None
+            first.claimed_at = None
+            session.add(first)
+            session.commit()
+
+        assert store.claim_pending_message_for_session_sync(session_id, "pod-b") == 1
+
+        with Session(engine) as session:
+            second = store.get_pending_message(session, session_id, turn_seq)
+            assert second.dispatch_count == 2
+            assert isinstance(second.last_dispatch_at, datetime)
+    finally:
+        _restore_schemas(schemas)
+
+
 def test_zombie_detector_limits_each_sweep_to_five(monkeypatch, tmp_path):
     engine, schemas = _database(monkeypatch, tmp_path)
     now = datetime.now(timezone.utc)

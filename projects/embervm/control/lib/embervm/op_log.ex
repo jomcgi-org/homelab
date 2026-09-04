@@ -91,10 +91,12 @@ defmodule Embervm.OpLog do
     :drain,
     # Session lifecycle (R2). Additive to the closed enum; sessions are durable,
     # ordered, and auditable exactly like tasks (ADR embervm/001) and project
-    # into the `sessions` table (see Embervm.OpLog.SQLite). session_invoked
+    # into the `sessions` table (see Embervm.OpLog.SQLite).
+    # session_invoke_started is the durable pre-dispatch stamp; session_invoked
     # carries usage only (no request/response bodies) and upserts the same
     # (principal, day) usage projection tasks do, the D12.1 pattern.
     :session_created,
+    :session_invoke_started,
     :session_invoked,
     :session_banked,
     :session_parked,

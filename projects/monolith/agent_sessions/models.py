@@ -143,6 +143,13 @@ class PendingMessage(SQLModel, table=True):
     model: str | None = Field(default=None)
     claimed_by_replica: str | None = Field(default=None)
     claimed_at: datetime | None = Field(default=None)  # For lease expiry detection
+    # Dispatch time is deliberately separate from claimed_at. The executor
+    # refreshes claimed_at every 10 seconds, while last_dispatch_at preserves
+    # when the current continuous claim began.
+    dispatch_count: int = Field(default=0)
+    last_dispatch_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

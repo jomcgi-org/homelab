@@ -2055,6 +2055,8 @@ defmodule Embervm.StatefulSweeperTest do
 
       {:ok, stored} = SessionStore.get(session_store, created.session_id)
       assert stored.state == :running
+      assert is_integer(stored.invoke_started_at)
+      assert stored.last_invoke_at == nil
       {:ok, fact} = NodeCapacity.fetch(ctx.cap_table, {"node-4", "pressure-brick"})
       assert fact.mem_budget_mib - fact.mem_headroom_mib == 900
 

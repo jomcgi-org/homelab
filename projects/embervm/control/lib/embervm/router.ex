@@ -2018,6 +2018,7 @@ defmodule Embervm.Router do
       generation: session.generation,
       base_digest: session.base_digest,
       created_at: session.created_at,
+      invoke_started_at: Map.get(session, :invoke_started_at),
       last_invoke_at: session.last_invoke_at,
       expires_at: session.expires_at,
       updated_at: session.updated_at,

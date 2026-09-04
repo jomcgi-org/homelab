@@ -150,6 +150,18 @@ defmodule Embervm.SessionStore do
     GenServer.call(store, {:record_invoke, session_id, usage})
   end
 
+  @doc """
+  Durably stamps the start of an invoke before its worker is spawned. This is a
+  synchronous write even when async lifecycle writes are enabled because the
+  stamp authorizes recovery code to destroy a guest and must survive a control
+  plane restart.
+  """
+  @spec record_invoke_started(GenServer.server(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def record_invoke_started(store \\ __MODULE__, session_id) do
+    GenServer.call(store, {:record_invoke_started, session_id})
+  end
+
   @doc "The session's hot-set row, or `:error` if unknown."
   @spec get(GenServer.server(), String.t()) :: {:ok, map()} | :error
   def get(store \\ __MODULE__, session_id) do
@@ -303,8 +315,9 @@ defmodule Embervm.SessionStore do
     # to Embervm.AsyncWriter AFTER the ETS row + token are minted synchronously (the
     # caller needs the token, and reads/adoption must see the row immediately), so
     # the boot/wake caller never blocks on the durable write. Off (default): exact
-    # write-through ordering (append THEN reply). Never applies to session_invoked,
-    # bank, or terminal ops (those stay synchronous).
+    # write-through ordering (append THEN reply). Never applies to
+    # session_invoke_started, session_invoked, bank, or terminal ops (those stay
+    # synchronous).
     async_writer = Keyword.get(opts, :async_writer, Embervm.AsyncWriter)
     async_lifecycle_writes = Keyword.get(opts, :async_lifecycle_writes, false)
 
@@ -390,6 +403,8 @@ defmodule Embervm.SessionStore do
       snapshot_size_bytes: row.snapshot_size_bytes,
       token_sha256: row.token_sha256,
       created_at: row.created_at,
+      # Oracle-only evidence. Never use this in idle or eviction fallbacks.
+      invoke_started_at: row.invoke_started_at,
       last_invoke_at: row.last_invoke_at,
       expires_at: row.expires_at,
       updated_at: row.updated_at,
@@ -440,6 +455,10 @@ defmodule Embervm.SessionStore do
 
   def handle_call({:record_invoke, session_id, usage}, _from, state) do
     do_record_invoke(state, session_id, usage)
+  end
+
+  def handle_call({:record_invoke_started, session_id}, _from, state) do
+    do_record_invoke_started(state, session_id)
   end
 
   def handle_call({:get, session_id}, _from, state) do
@@ -660,6 +679,8 @@ defmodule Embervm.SessionStore do
       snapshot_size_bytes: nil,
       token_sha256: token_sha256,
       created_at: ts,
+      # Oracle-only evidence. Never use this in idle or eviction fallbacks.
+      invoke_started_at: nil,
       last_invoke_at: nil,
       expires_at: Map.get(attrs, :expires_at),
       updated_at: ts,
@@ -831,9 +852,51 @@ defmodule Embervm.SessionStore do
 
         case state.op_log_mod.append(state.op_log, op) do
           {:ok, _seq} ->
-            updated = %{session | last_invoke_at: ts, updated_at: ts}
+            updated = %{
+              session
+              | invoke_started_at: session.invoke_started_at || ts,
+                last_invoke_at: ts,
+                updated_at: ts
+            }
             :ets.insert(state.sessions, {session_id, updated})
             notify_metered(state, updated, usage)
+            {:reply, {:ok, updated}, state}
+
+          {:error, _reason} = error ->
+            {:reply, error, state}
+        end
+
+      {:ok, _session} ->
+        {:reply, {:error, :not_running}, state}
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
+  end
+
+  # The accepted second durable append per turn starts here, before the invoke
+  # worker. An ETS-only stamp could disappear on a control plane restart while
+  # the monolith claim keeps heartbeating, causing the recovery oracle to destroy
+  # a healthy live guest. The timestamp is monotonic and is never cleared.
+  defp do_record_invoke_started(state, session_id) do
+    case fetch(state, session_id) do
+      {:ok, %{state: :running} = session} ->
+        ts = max(state.clock.(), session.invoke_started_at || 0)
+
+        op = %Op{
+          kind: :session_invoke_started,
+          tenant: session.tenant,
+          principal: session.principal,
+          workload: session.workload,
+          session_id: session_id,
+          ts: ts,
+          payload: %{}
+        }
+
+        case state.op_log_mod.append(state.op_log, op) do
+          {:ok, _seq} ->
+            updated = %{session | invoke_started_at: ts, updated_at: ts}
+            :ets.insert(state.sessions, {session_id, updated})
             {:reply, {:ok, updated}, state}
 
           {:error, _reason} = error ->

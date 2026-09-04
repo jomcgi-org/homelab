@@ -390,11 +390,21 @@ defmodule Embervm.Session do
   defp maybe_start_next(%{worker: nil} = state) do
     case :queue.out(state.queue) do
       {{:value, {from, req, enqueued_at}}, rest} ->
-        {pid, ref} = spawn_invoke_worker(state, req, enqueued_at)
-        # Last-resort wall clock (#4434): must fire AFTER the gRPC deadline the
-        # server enforces, so the normal DEADLINE_EXCEEDED path gets first shot.
-        timer = Process.send_after(self(), {:invoke_timeout, ref}, invoke_watchdog_ms(state))
-        %{state | queue: rest, worker: {pid, ref, from, timer}}
+        # This synchronous durable stamp deliberately precedes the channel dial
+        # and assign wait inside the worker. Its cost is accepted because the
+        # value authorizes another service to destroy this live guest.
+        case record_invoke_started(state) do
+          {:ok, _session} ->
+            {pid, ref} = spawn_invoke_worker(state, req, enqueued_at)
+            # Last-resort wall clock (#4434): must fire AFTER the gRPC deadline the
+            # server enforces, so the normal DEADLINE_EXCEEDED path gets first shot.
+            timer = Process.send_after(self(), {:invoke_timeout, ref}, invoke_watchdog_ms(state))
+            %{state | queue: rest, worker: {pid, ref, from, timer}}
+
+          {:error, reason} ->
+            GenServer.reply(from, {:error, {:invoke_start_not_recorded, reason}})
+            maybe_start_next(%{state | queue: rest})
+        end
 
       {:empty, _} ->
         arm_idle_timer(state)
@@ -559,6 +569,10 @@ defmodule Embervm.Session do
     _ -> :error
   catch
     _, _ -> :error
+  end
+
+  defp record_invoke_started(state) do
+    Embervm.SessionStore.record_invoke_started(state.session_store, state.session_id)
   end
 
   # Fail the session: append session_failed, reply {:error, reason} to the in-flight
