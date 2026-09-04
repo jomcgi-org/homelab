@@ -2408,13 +2408,19 @@ defmodule Embervm.StatefulManager do
       |> Enum.reject(&is_nil/1)
       |> MapSet.new()
 
+    # One clock read for the whole sweep, so every node seen in this pass shares
+    # a timestamp and the quiet-window comparison cannot straddle two readings.
+    reported_at = state.clock.()
+
+    last_reported =
+      Enum.reduce(reporting_nodes, state.node_last_reported_at_ms, fn node_id, acc ->
+        Map.put(acc, node_id, reported_at)
+      end)
+
     state = %{
       state
       | seen_reporting_nodes: MapSet.union(state.seen_reporting_nodes, reporting_nodes),
-        node_last_reported_at_ms:
-          Enum.reduce(reporting_nodes, state.node_last_reported_at_ms, fn node_id, acc ->
-            Map.put(acc, node_id, state.clock.())
-          end)
+        node_last_reported_at_ms: last_reported
     }
     state = observe_missing_volume_anchors(state)
     live_vms = index_stateful_vms(facts)
@@ -3024,9 +3030,17 @@ defmodule Embervm.StatefulManager do
   defp node_reporting?(_state, _node_id), do: false
 
   defp node_in_quiet_window?(state, node_id) when is_binary(node_id) do
+    now = state.clock.()
+
     case Map.get(state.node_last_reported_at_ms, node_id) do
-      nil -> false
-      last_reported_at -> state.clock.() - last_reported_at < @delete_quiet_window_ms
+      # Never observed, which means one of two things this manager cannot tell
+      # apart until it has been up long enough for a healthy node to have
+      # reported: genuinely gone, or simply not seen yet because the control
+      # plane restarted. A boot-relative floor resolves it the safe way, since
+      # skipping here is what abandons an anchor and evicts its remote copy.
+      # Mirrors withdraw_unreported_resident_health's use of the same floor.
+      nil -> now - state.booted_at_ms < @delete_quiet_window_ms
+      last_reported_at -> now - last_reported_at < @delete_quiet_window_ms
     end
   end
 

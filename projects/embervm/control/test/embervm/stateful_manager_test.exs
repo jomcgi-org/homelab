@@ -2009,8 +2009,11 @@ defmodule Embervm.StatefulManagerTest do
   end
 
   test "delete_volume skips an anchor absent from capacity and reports it as unreachable" do
+    {:ok, now} = Agent.start_link(fn -> 1_000 end)
+
     ctx =
       start_stack(
+        clock: fn -> Agent.get(now, & &1) end,
         channel_fun: fn _node_id -> {:error, :unknown_node} end
       )
 
@@ -2022,6 +2025,11 @@ defmodule Embervm.StatefulManagerTest do
       size_bytes: 10,
       allocated_bytes: 1
     })
+
+    # Absence alone is no longer the skip condition: absence that outlasts the
+    # quiet window is. The channel_fun above proves a skipped node is never
+    # dialed, which is what this test is actually for.
+    Agent.update(now, &(&1 + 90_001))
 
     assert {:ok, %{deleted: true, unreachable: ["node-gone"]}} =
              StatefulManager.delete_volume(ctx.mgr, "wl-a")
@@ -2171,11 +2179,45 @@ defmodule Embervm.StatefulManagerTest do
     stateful_workload(ctx, "wl-a")
     StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-never-seen", generation: 1})
 
+    # Past the boot-relative floor, so "never seen" means the node has had a
+    # full window of this manager's uptime in which to report and did not.
+    Agent.update(now, &(&1 + 90_001))
+
     assert {:ok, %{deleted: true, unreachable: ["node-never-seen"]}} =
              StatefulManager.delete_volume(ctx.mgr, "wl-a")
 
     assert StatefulStore.get_volume(ctx.store, "wl-a") == nil
     assert [{"node-never-seen", _req}] = Agent.get(evicted, & &1)
+  end
+
+  test "delete_volume retains a never-seen node while the manager is still young" do
+    {:ok, now} = Agent.start_link(fn -> 1_000 end)
+    {:ok, evicted} = Agent.start_link(fn -> [] end)
+    clock = fn -> Agent.get(now, & &1) end
+
+    ctx =
+      start_stack(
+        clock: clock,
+        channel_fun: fn node_id -> {:ok, node_id} end,
+        evict_artifact_fun: fn node_id, req ->
+          Agent.update(evicted, &[{node_id, req} | &1])
+          {:ok, %{}}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-quiet", generation: 1})
+
+    # A control plane that restarted seconds ago cannot tell a gone node from
+    # one that has simply not reported yet, and skipping is what abandons the
+    # anchor and evicts its only off-node copy. Within the floor it must retry.
+    Agent.update(now, &(&1 + 30_000))
+
+    assert {:error, {:delete_incomplete, ["node-quiet"]}} =
+             StatefulManager.delete_volume(ctx.mgr, "wl-a")
+
+    assert %{node_id: "node-quiet"} = StatefulStore.get_volume(ctx.store, "wl-a")
+    assert Agent.get(evicted, & &1) == []
   end
 
   test "refresh drops a volume record when its reporting anchor omits the volume" do
