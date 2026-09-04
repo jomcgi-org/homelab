@@ -89,6 +89,10 @@ def test_pick_finished_sessions_applies_all_predicates(engine):
         _add_session(session, "not-quiet", age_seconds=5)
         _add_session(session, "kg", node_key=KG_NODE_KEY)
         _add_session(session, f"{SYNTHETIC_SESSION_PREFIX}job")
+        _add_session(session, "wf:qwen-drain:docfix:abc123", node_key="qwen-drain")
+        _add_session(
+            session, "wf:qwen-drain:docfix-review:20260904T00", node_key="qwen-drain"
+        )
         _add_session(session, "fresh-watermark", watermark=1)
         _add_session(session, "running", status="running")
         session.commit()

@@ -65,8 +65,12 @@ def _read_drainer_health(settings: DrainerSettings) -> dict:
     from core.db import get_engine
 
     with Session(get_engine()) as session:
+        # kg-drain jobs are deferred by design when the daily extraction cap
+        # is reached, which would read as a stall here. The kg advisory owns
+        # that queue's age, so this lag covers the general lane only.
+        general_kinds = [kind for kind in settings.job_kinds if kind != "kg-drain"]
         return _drainer_health_core(
-            session, settings.job_kinds, settings.stall_threshold_seconds
+            session, general_kinds, settings.stall_threshold_seconds
         )
 
 
