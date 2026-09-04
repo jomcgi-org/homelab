@@ -451,6 +451,11 @@ check_verification_partial() {
 		fail "verification_partial_fallback" "got $(cat "$1")"
 }
 
+check_verification_empty3() {
+	[[ "$(cat "$1")" == "//..." ]] && pass "verification_empty3_fallback" ||
+		fail "verification_empty3_fallback" "got $(cat "$1")"
+}
+
 echo "--- Running affected-targets.sh tests ---"
 run_test "build_chg" "setup_build_chg"
 run_test "root_label" "setup_root_label"
@@ -521,6 +526,8 @@ BAZEL_RDEPS_OUTPUT="$rdeps_fixture" BAZEL_VERIFICATION_EXIT="1" \
 	run_test "verification_fail" "setup_verification"
 BAZEL_RDEPS_OUTPUT="$rdeps_fixture" BAZEL_VERIFICATION_OUTPUT="$verification_fixture" \
 	BAZEL_VERIFICATION_EXIT="3" run_test "verification_partial" "setup_verification"
+BAZEL_RDEPS_OUTPUT="$rdeps_fixture" BAZEL_VERIFICATION_EXIT="3" \
+	run_test "verification_empty3" "setup_verification"
 
 echo "--- $PASS passed, $FAIL failed ---"
 [[ $FAIL -eq 0 ]]

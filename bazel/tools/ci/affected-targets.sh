@@ -332,6 +332,15 @@ fi
 # They are found by tag rather than by name so a new one is covered by
 # declaring itself, and queried separately so a failure here cannot discard the
 # test set already computed above.
+#
+# COST: `deps($verified)` reaches @otp_ubuntu2204_amd64, @elixir_1_18_4,
+# @rebar3, @hex_archive and the @hex_* set, and query cannot enumerate those
+# without their repository rules having run. That is new work for a PR touching
+# none of it: measured 45s and 478 packages warm, but a cold runner or a
+# repository-cache miss pays a download to answer "nothing". The cheaper-looking
+# rewrite is worse: `rdeps(//..., ...)` computes the closure of the whole graph
+# and reaches every external repo the repo references. If this shows up in run
+# times, narrow the universe rather than widening it.
 verification_query="let verified = attr(tags, \"[\[ ]verification[,\]]\", //...) in \$verified intersect rdeps(deps(\$verified), set($(printf '"%s" ' "${valid_labels[@]}")))"
 echo "affected-targets: verification-genrule query (timeout ${QUERY_TIMEOUT}s)" >&2
 verification_output=$(timeout "$QUERY_TIMEOUT" "${BAZEL:-bazel}" query "$verification_query" --keep_going --output=label "${bazel_args[@]}") || verification_rc=$?
