@@ -327,6 +327,21 @@ tokenBroker:
   networkPolicy:
     enabled: true
   replicas: 1
+  # Optional OAuth2 client_credentials provider. authentik's machine-to-machine
+  # grant authenticates a SERVICE ACCOUNT, so the standing credential is an
+  # authentik app password plus the account username, not an OAuth client
+  # secret: there is no client_secret in this flow. The secret value is never a
+  # chart value, only the name and key of an existing Kubernetes Secret, which
+  # the Deployment reads through secretKeyRef.
+  authentik:
+    enabled: false
+    tokenEndpoint: ""
+    clientID: ""
+    scope: ""
+    username: ""
+    appPasswordRef:
+      name: ""
+      key: app-password
   # LOUD CONTRACT: every grant below needs a matching Secret /data
   # ignoreDifferences entry in deploy/application.yaml AND in the GKE twin
   # projects/gke-apps/embervm/application.yaml, or ArgoCD will erase the

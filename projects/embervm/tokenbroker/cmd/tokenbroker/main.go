@@ -14,6 +14,7 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/broker"
 	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/metrics"
 	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/provider"
+	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/provider/authentik"
 	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/provider/codexchatgpt"
 	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/store"
 	"github.com/prometheus/client_golang/prometheus"
@@ -71,6 +72,17 @@ func main() {
 	namespace := env("KUBERNETES_NAMESPACE", "embervm")
 	st := &store.SecretStore{Client: client, Namespace: namespace}
 	adapters := map[string]provider.Adapter{"codex-chatgpt": &codexchatgpt.Adapter{}}
+	// authentik authenticates a service account, so the standing credential is
+	// an app password, not an OAuth client secret.
+	minters := map[string]provider.Minter{
+		"authentik": &authentik.Adapter{
+			TokenEndpoint: os.Getenv("AUTHENTIK_TOKEN_ENDPOINT"),
+			ClientID:      os.Getenv("AUTHENTIK_CLIENT_ID"),
+			Scope:         os.Getenv("AUTHENTIK_SCOPE"),
+			Username:      os.Getenv("AUTHENTIK_USERNAME"),
+			AppPassword:   os.Getenv("AUTHENTIK_APP_PASSWORD"),
+		},
+	}
 	brokerConfigs := make([]broker.GrantConfig, 0, len(configs))
 	configMap := make(map[string]grantConfig, len(configs))
 	for _, c := range configs {
@@ -80,7 +92,7 @@ func main() {
 	m := metrics.New()
 	m.Register(prometheus.DefaultRegisterer)
 	s := &server{store: st, adapters: adapters, configs: configMap, logger: logger, startWaitTimeout: loginStartWaitTimeout}
-	s.broker = broker.New(st, adapters, brokerConfigs, logger, m)
+	s.broker = broker.New(st, adapters, minters, brokerConfigs, logger, m)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.health)
 	mux.Handle("/metrics", promhttp.Handler())
@@ -222,7 +234,12 @@ func (s *server) loginStart(name string, w http.ResponseWriter, r *http.Request)
 		}
 		state.mu.Unlock()
 	}()
-	adapter := s.adapters[s.configs[name].ProviderName]
+	adapter, ok := s.adapters[s.configs[name].ProviderName]
+	if !ok {
+		s.setLogin(name, "failed", "provider does not support device login")
+		writeJSON(w, http.StatusBadRequest, map[string]string{"reason": "device_login_unsupported"})
+		return
+	}
 	code, err := adapter.StartDeviceFlow(r.Context())
 	if err != nil {
 		s.setLogin(name, "failed", err.Error())

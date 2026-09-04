@@ -54,7 +54,13 @@ func (b *Broker) ClearNeedsLogin(grantName string) {
 }
 
 type Broker struct {
+	// Two typed registries rather than one map of any: a provider advertises
+	// the capability it has, and registering the wrong kind is a compile
+	// error rather than a runtime "does not support" in a component whose job
+	// is minting credentials. Adapter is the interactive device flow, Minter
+	// is direct client_credentials minting.
 	adapters       map[string]provider.Adapter
+	minters        map[string]provider.Minter
 	store          Store
 	grants         map[string]*grantState
 	grantProviders map[string]string
@@ -63,14 +69,20 @@ type Broker struct {
 	metrics        *metrics.Metrics
 }
 
-func New(s Store, adapters map[string]provider.Adapter, configs []GrantConfig, logger *slog.Logger, m *metrics.Metrics) *Broker {
+func New(s Store, adapters map[string]provider.Adapter, minters map[string]provider.Minter, configs []GrantConfig, logger *slog.Logger, m *metrics.Metrics) *Broker {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if m == nil {
 		m = metrics.New()
 	}
-	b := &Broker{adapters: adapters, store: s, grants: make(map[string]*grantState), grantProviders: make(map[string]string), logger: logger, metrics: m}
+	if adapters == nil {
+		adapters = map[string]provider.Adapter{}
+	}
+	if minters == nil {
+		minters = map[string]provider.Minter{}
+	}
+	b := &Broker{adapters: adapters, minters: minters, store: s, grants: make(map[string]*grantState), grantProviders: make(map[string]string), logger: logger, metrics: m}
 	for _, config := range configs {
 		s := &grantState{}
 		s.cond = sync.NewCond(&s.mu)
@@ -149,21 +161,31 @@ func (b *Broker) refresh(grantName string, ctx context.Context) (string, time.Ti
 		b.mu.RUnlock()
 	}
 	b.mu.RLock()
-	adapter, ok := b.adapters[grant.ProviderName]
+	refresher, hasRefresher := b.adapters[grant.ProviderName]
+	minter, hasMinter := b.minters[grant.ProviderName]
 	b.mu.RUnlock()
-	if !ok {
+	if !hasRefresher && !hasMinter {
 		return "", time.Time{}, fmt.Errorf("provider %q is not configured", grant.ProviderName)
 	}
+	var result provider.TokenResponse
 	if grant.TokenBundle.RefreshToken == "" {
-		return "", time.Time{}, errors.New("no refresh token")
-	}
-	result, err := adapter.RefreshToken(ctx, grant.TokenBundle.RefreshToken)
-	if err != nil && errors.Is(err, provider.ErrRefreshTokenReused) {
-		b.metrics.ReusedRetries.Inc()
-		b.logger.Warn("tokenbroker refresh_token_reused, rereading durable grant and retrying once")
-		grant, err = b.store.LoadGrant(grantName)
-		if err == nil {
-			result, err = adapter.RefreshToken(ctx, grant.TokenBundle.RefreshToken)
+		// A client_credentials grant never has a refresh token: it re-mints.
+		if !hasMinter {
+			return "", time.Time{}, errors.New("no refresh token")
+		}
+		result, err = minter.Mint(ctx)
+	} else {
+		if !hasRefresher {
+			return "", time.Time{}, fmt.Errorf("provider %q does not support token refresh", grant.ProviderName)
+		}
+		result, err = refresher.RefreshToken(ctx, grant.TokenBundle.RefreshToken)
+		if err != nil && errors.Is(err, provider.ErrRefreshTokenReused) {
+			b.metrics.ReusedRetries.Inc()
+			b.logger.Warn("tokenbroker refresh_token_reused, rereading durable grant and retrying once")
+			grant, err = b.store.LoadGrant(grantName)
+			if err == nil {
+				result, err = refresher.RefreshToken(ctx, grant.TokenBundle.RefreshToken)
+			}
 		}
 	}
 	if err != nil {
@@ -245,7 +267,28 @@ func (b *Broker) GetAccessToken(grantName string, ctx context.Context) (string, 
 		return "", time.Time{}, err
 	}
 	if grant.TokenBundle.AccessToken == "" || grant.TokenBundle.ExpiresAt.IsZero() {
-		return "", time.Time{}, ErrNoGrant
+		providerName := grant.ProviderName
+		if providerName == "" {
+			b.mu.RLock()
+			providerName = b.grantProviders[grantName]
+			b.mu.RUnlock()
+		}
+		b.mu.RLock()
+		_, supportsMint := b.minters[providerName]
+		b.mu.RUnlock()
+		if !supportsMint {
+			return "", time.Time{}, ErrNoGrant
+		}
+		if _, _, err = b.RefreshAccessToken(grantName, ctx); err != nil {
+			return "", time.Time{}, ErrRefreshFailed
+		}
+		grant, err = b.store.LoadGrant(grantName)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		if grant.TokenBundle.AccessToken == "" || grant.TokenBundle.ExpiresAt.IsZero() {
+			return "", time.Time{}, ErrNoGrant
+		}
 	}
 	expires := grant.TokenBundle.ExpiresAt
 	// Codex access tokens are valid for roughly eight days. Refresh at seven days
