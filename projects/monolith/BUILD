@@ -4294,6 +4294,17 @@ py_test(
 )
 
 py_test(
+    name = "swarm_health_test",
+    srcs = ["swarm/health_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_cyclegroup",
+        ":pkg_swarm",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "swarm_drainer_test",
     srcs = ["swarm/drainer_test.py"],
     imports = ["."],

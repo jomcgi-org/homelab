@@ -83,6 +83,10 @@ def pick_finished_sessions(
         .where(AgentSession.last_turn_at < quiet_before)
         .where(AgentSession.node_key.is_distinct_from(KG_NODE_KEY))
         .where(~AgentSession.local_session_id.startswith(SYNTHETIC_SESSION_PREFIX))
+        # Lane-internal work on the general drainer kind (docfix PRs and their
+        # reviews) is not knowledge about the system; session extraction never
+        # emits doc_drift, so this is noise, not a loop, but skip it anyway.
+        .where(~AgentSession.local_session_id.contains(":docfix"))
         .where(max_seq.c.max_seq > func.coalesce(AgentSession.kg_extracted_turn_seq, 0))
         .order_by(AgentSession.last_turn_at.desc())
         .limit(limit)
