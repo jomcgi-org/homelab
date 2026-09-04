@@ -14,9 +14,8 @@ Scans three sources of in-flight work, ranks them by how close they are to
 **follow-through**: surface the things Joe started and has not finished, not
 a generic backlog of everything that could ever be done.
 
-Run interactively with `/daily-digest`, or let the
-`projects/monolith/claude_routines/daily-digest.yaml` routine fire it on a
-schedule.
+Run interactively with `/daily-digest` when you want to check on
+outstanding work.
 
 ## Sources
 

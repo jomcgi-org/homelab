@@ -6105,19 +6105,6 @@ py_test(
 )
 
 py_test(
-    name = "knowledge_gap_commit_hook_test",
-    srcs = ["knowledge/gap_commit_hook_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
     name = "knowledge_gap_set_class_test",
     srcs = ["knowledge/gap_set_class_test.py"],
     imports = ["."],
@@ -6497,23 +6484,6 @@ py_test(
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//pyyaml",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "knowledge_mcp_gap_test",
-    srcs = ["knowledge/mcp_gap_test.py"],
-    imports = ["."],
-    deps = [
-        ":pkg_knowledge",
-        "@pip//fastmcp",
-        "@pip//httpx",
-        "@pip//pgvector",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//pyyaml",
-        "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
 )

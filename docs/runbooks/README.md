@@ -8,7 +8,6 @@ description matching. Open only when:
 
 1. Joe asks for that procedure by name or intent, or
 2. A "Where to look next" row in `.claude/CLAUDE.md` names the file, or
-3. A routine under `projects/monolith/claude_routines/` points at the path.
 
 ## Index
 

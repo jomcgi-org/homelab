@@ -284,5 +284,5 @@ these rather than doing it in the main loop: each gets its own context, and the
 three that must not write code have no `Write` or `Edit` tool.
 
 **Runbooks** (`docs/runbooks/`) are explicit-only. Open one when Joe names it,
-when a row above points at it, or when a `claude_routines/*.yaml` prompt does.
+when a row above points at it, or when an agent explicitly requests it.
 Index: `docs/runbooks/README.md`. Do not turn runbook content into skills.

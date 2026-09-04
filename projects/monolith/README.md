@@ -65,7 +65,6 @@ training data. Design and rejected alternatives:
 | `scheduler/`                                                                               | Postgres-backed job scheduler shared by all domains                                        |
 | `shared/`                                                                                  | Cross-domain database session/engine setup and test helpers                                |
 | `hikes/`, `ships/`, `stars/`, `trips/`, `worldcup/`, `campsites/`, `dr_jobs/`, `grimoire/` | Individual small apps, each with their own routes and models                               |
-| `claude_routines/`                                                                         | Version-controlled YAML definitions for scheduled claude.ai agent routines                 |
 | `e2e/`                                                                                     | End-to-end tests spanning the frontend and backend together                                |
 
 ## Deployment
