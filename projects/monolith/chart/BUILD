@@ -291,4 +291,3 @@ semgrep_test(
     ],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
-
