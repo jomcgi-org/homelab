@@ -298,6 +298,100 @@ defmodule Embervm.StatefulStoreTest do
     assert StatefulStore.published_endpoint(store, "wl-a") == %{ip: "10.99.0.9", port: 9000}
   end
 
+  test "touch_active does not update terminalizing instances", %{path: path} do
+    {_op_log, store} = start_pair(path)
+
+    {:ok, _} = start_instance(store, instance_id: "sf-destroying", workload: "wl-destroying")
+
+    {:ok, destroying} =
+      StatefulStore.transition(
+        store,
+        "sf-destroying",
+        :begin_destroy,
+        :stateful_destroying,
+        %{reason: "test"},
+        %{}
+      )
+
+    {:ok, _} = start_instance(store, instance_id: "sf-destroyed", workload: "wl-destroyed")
+
+    {:ok, destroyed} =
+      StatefulStore.transition(
+        store,
+        "sf-destroyed",
+        :destroy,
+        :stateful_destroyed,
+        %{reason: "test"},
+        %{}
+      )
+
+    {:ok, _} = start_instance(store, instance_id: "sf-failed", workload: "wl-failed")
+
+    {:ok, failed} =
+      StatefulStore.transition(
+        store,
+        "sf-failed",
+        :fail,
+        :stateful_failed,
+        %{reason: "test"},
+        %{}
+      )
+
+    {:ok, _} = start_instance(store, instance_id: "sf-evicted", workload: "wl-evicted")
+    _banked = bank(store, "sf-evicted", "wl-evicted", 1)
+
+    {:ok, evicted} =
+      StatefulStore.transition(
+        store,
+        "sf-evicted",
+        :evict,
+        :stateful_evicted,
+        %{reason: "test"},
+        %{}
+      )
+
+    for instance <- [destroying, evicted, destroyed, failed] do
+      assert {:ok, touched} = StatefulStore.touch_active(store, instance.instance_id, 99_000)
+      assert touched == instance
+    end
+  end
+
+  test "set_health withdraws a terminalizing endpoint without moving its escape clock", %{
+    path: path
+  } do
+    {_op_log, store} = start_pair(path)
+    {:ok, _} = start_instance(store, instance_id: "sf-destroying", workload: "wl-destroying")
+    {:ok, _} = StatefulStore.publish(store, "sf-destroying", "10.99.0.9", 9000, :started)
+
+    {:ok, destroying} =
+      StatefulStore.transition(
+        store,
+        "sf-destroying",
+        :begin_destroy,
+        :stateful_destroying,
+        %{reason: "test"},
+        %{}
+      )
+
+    # The node expiry that withdraws a dead brick's endpoints reaches this row
+    # without filtering on state, and it is the same event that leaves the owner
+    # unable to confirm teardown. The flip must land, the clock must not move.
+    assert {:ok, withdrawn} = StatefulStore.set_health(store, "sf-destroying", false)
+    assert withdrawn.healthy == false
+    assert withdrawn.updated_at == destroying.updated_at
+  end
+
+  test "touch_active updates serving activity timestamps", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, _} = start_instance(store)
+    {:ok, serving} = StatefulStore.publish(store, "sf-1", "10.99.0.9", 9000, :started)
+
+    assert {:ok, touched} = StatefulStore.touch_active(store, "sf-1", 99_000)
+    assert touched.last_active_at == 99_000
+    assert touched.updated_at == 99_000
+    refute touched.updated_at == serving.updated_at
+  end
+
   # -- bank / relight / cold-boot sequences -----------------------------------
 
   test "bank (serving -> banking -> banked) clears the endpoint and moves to banked count", %{path: path} do

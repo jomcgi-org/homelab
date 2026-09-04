@@ -183,6 +183,18 @@ defmodule Embervm.StatefulStore do
   # forward-race window.
   @broken_evict_threshold 3
 
+  # States where `updated_at` stops being "last modified" and becomes the
+  # destroy escape's clock: `redrive_one_destroying` fails a lifecycle whose
+  # owner never reports once `now - updated_at` passes destroying_escape_ms, and
+  # `maybe_alarm_destroying` measures the same way. Any writer that advances the
+  # stamp on such a row therefore postpones the only path to terminal, and the
+  # workloads that keep receiving writes are exactly the reachable ones an
+  # operator is trying to recover (#5541: 16 minutes in destroying against a
+  # 600s escape, refreshed by ordinary probe traffic). Writers that legitimately
+  # move the row through the FSM still stamp it; the ones that merely record
+  # activity or health do not.
+  @escape_clock_frozen_states [:destroying, :evicted, :destroyed, :failed]
+
   # -- Client API ------------------------------------------------------------
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -860,6 +872,17 @@ defmodule Embervm.StatefulStore do
 
   def handle_call({:set_health, instance_id, healthy?}, _from, state) do
     case fetch(state, instance_id) do
+      # The flip still lands (withdrawing a dead brick's endpoint is the point),
+      # but it must not move updated_at on a terminalizing row. The node expiry
+      # that withdraws health is the SAME event that leaves the owner gone, so
+      # stamping here would push the destroy escape out at the one moment it is
+      # needed. See the note on @escape_clock_frozen_states.
+      {:ok, %{state: instance_state} = instance}
+      when instance_state in @escape_clock_frozen_states ->
+        updated = %{instance | healthy: healthy?}
+        :ets.insert(state.instances, {instance_id, updated})
+        {:reply, {:ok, updated}, state}
+
       {:ok, instance} ->
         updated = %{instance | healthy: healthy?, updated_at: state.clock.()}
         :ets.insert(state.instances, {instance_id, updated})
@@ -872,6 +895,10 @@ defmodule Embervm.StatefulStore do
 
   def handle_call({:touch_active, instance_id, ts}, _from, state) do
     case fetch(state, instance_id) do
+      {:ok, %{state: instance_state} = instance}
+      when instance_state in @escape_clock_frozen_states ->
+        {:reply, {:ok, instance}, state}
+
       {:ok, instance} ->
         updated = %{instance | last_active_at: ts, updated_at: ts}
         :ets.insert(state.instances, {instance_id, updated})
