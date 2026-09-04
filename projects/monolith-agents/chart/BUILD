@@ -27,12 +27,21 @@ helm_template_test(
 
 py_test(
     name = "chart_render_test",
-    srcs = ["test_chart_render.py"],
+    srcs = ["chart_render_test.py"],
+    # The raw chart files, not the packaged :chart. The test runs
+    # `helm template <dir>`, so templates/ and values.yaml must be in runfiles;
+    # a packaged tgz leaves the directory empty and helm exits non-zero, which
+    # surfaces as a bare Exit 2 rather than an assertion failure.
     data = [
-        ":chart",
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
         "//projects/monolith-agents/deploy:deploy_values",
         "@multitool//tools/helm",
-    ],
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+    ]),
     env = {
         "DEPLOY_VALUES": "$(rootpath //projects/monolith-agents/deploy:deploy_values)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
@@ -59,16 +68,8 @@ argocd_app(
 )
 
 semgrep_test(
-    name = "test_chart_render_semgrep_test",
-    srcs = ["test_chart_render.py"],
+    name = "chart_render_test_semgrep_test",
+    srcs = ["chart_render_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
 
-py_test(
-    name = "test_chart_render",
-    srcs = ["test_chart_render.py"],
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
-)
