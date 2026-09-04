@@ -81,7 +81,7 @@ data:
     # ENOSPC orphan reclaim (#4458).
     #
     # Deliberately narrow: this removes ONLY abandoned build intermediates, never
-    # a published artifact. A bake writes rootfs-<digest>.ext4.tmp.<pid> and
+    # a published artifact. A bake writes rootfs-<digest>.ext4.tmp.<name> and
     # renames on success; SnapshotBase stages into bases/<key>.building and
     # renames on success. Both are garbage by construction once nothing is
     # writing them, so reclaiming them needs NO judgement about which base is
@@ -241,6 +241,7 @@ data:
       echo "rootfs cache hit $short for $GUEST_IMAGE"
     else
       echo "rootfs cache miss $short; building from $GUEST_IMAGE -> $cache"
+      cache_tmp="$(mktemp "$cache.tmp.XXXXXX")"
       # A failed crane export leaves /work/root partially extracted, so the
       # retried attempt must start from a clean tree; reset it inside the unit.
       export_rootfs() {
@@ -248,11 +249,10 @@ data:
         mkdir -p /work/root
         crane export --platform "$platform" "$GUEST_IMAGE" - | tar -x -C /work/root
       }
-      rm -f "$cache.tmp.$$"
       retry export_rootfs
       mkfs_output="$(mktemp)"
       set +e
-      mkfs.ext4 -q -F -L embervmbase -d /work/root "$cache.tmp.$$" "$size" >"$mkfs_output" 2>&1
+      mkfs.ext4 -q -F -L embervmbase -d /work/root "$cache_tmp" "$size" >"$mkfs_output" 2>&1
       mkfs_status=$?
       set -e
       if [ "$mkfs_status" -ne 0 ]; then
@@ -284,25 +284,36 @@ data:
           # explicit `return 1`, and the values it computes are validated before
           # they are compared, which is what makes that safe.
           set +e
-          reclaim_orphans_after_enospc "$cache.tmp.$$"
+          reclaim_orphans_after_enospc "$cache_tmp"
           reclaim_status=$?
           set -e
           rm -f "$mkfs_output"
           if [ "$reclaim_status" -ne 0 ]; then
+            rm -f "$cache_tmp"
             exit 1
           fi
-          rm -f "$cache.tmp.$$"
+          rm -f "$cache_tmp"
           echo "rootfs ENOSPC orphan reclaim retry: mkfs.ext4 once" >&2
-          mkfs.ext4 -q -F -L embervmbase -d /work/root "$cache.tmp.$$" "$size"
+          mkfs.ext4 -q -F -L embervmbase -d /work/root "$cache_tmp" "$size"
         else
           echo "mkfs.ext4 failed and free space looks fine; reclaim not attempted" >&2
           rm -f "$mkfs_output"
+          rm -f "$cache_tmp"
           exit "$mkfs_status"
         fi
       fi
       rm -f "$mkfs_output"
-      mv -f "$cache.tmp.$$" "$cache"
-      echo "rootfs baked at $cache ($size)"
+      if ! mv -f "$cache_tmp" "$cache" 2>/dev/null; then
+        if [ -f "$cache" ]; then
+          echo "rootfs cache created by sibling pod"
+          rm -f "$cache_tmp"
+        else
+          echo "failed to move $cache_tmp to $cache, cache file not found" >&2
+          exit 1
+        fi
+      else
+        echo "rootfs baked at $cache ($size)"
+      fi
     fi
     # Materialize the template-time path noded attaches as a hardlink to the cache
     # file: instant, no data copy, and both names are immutable inodes, so a
