@@ -265,6 +265,8 @@ spec:
             # Pinned OpenRouter model for household content generation.
             - name: HOUSEHOLD_LLM_MODEL
               value: {{ .Values.whatsapp.model | quote }}
+            - name: CHAT_REASONING_EFFORT
+              value: {{ .Values.chat.reasoningEffort | quote }}
             # Gate the WhatsApp heavy-agent path (goose household dispatch for
             # charts/artifacts/full tasks). Off -> a heavy request gets the "not
             # wired up yet" reply; on -> it dispatches the household goose agent.

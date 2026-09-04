@@ -187,6 +187,16 @@ def test_env_vars_in_chart(chart_context):
         assert False, debug_info
 
 
+def test_chat_reasoning_effort_defaults_to_empty_env(chart_context):
+    """The chart lets synchronous Discord reasoning use the code default."""
+    rendered = chart_context["rendered"]
+
+    assert re.search(
+        r"- name: CHAT_REASONING_EFFORT\n\s+value: \"\"",
+        rendered,
+    )
+
+
 def test_migrations_configmap_uses_server_side_apply(chart_context):
     """The migrations ConfigMap must opt into server-side apply (#5150).
 

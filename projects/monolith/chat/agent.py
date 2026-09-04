@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from pydantic_ai import Agent, ModelSettings, RunContext, ToolDefinition
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
 
 import shared.inference
@@ -508,10 +508,11 @@ def create_agent(
         model,
         system_prompt=build_system_prompt(channel),
         model_settings=model_settings
-        or ModelSettings(
+        or OpenAIChatModelSettings(
             temperature=1.0,
             top_p=0.95,
             presence_penalty=1.5,
+            openai_reasoning_effort=shared.inference.chat_reasoning_effort(),
         ),
         prepare_tools=inject_signposts,
     )
@@ -1072,10 +1073,11 @@ def create_fact_check_agent(base_url: str | None = None) -> "Agent[None]":
             "specifics that actually matter. Hard ceiling of about 120 words -- skip the "
             "throat-clearing, the recap of your own response, and the section headers."
         ),
-        model_settings=ModelSettings(
+        model_settings=OpenAIChatModelSettings(
             temperature=1.0,
             top_p=0.95,
             presence_penalty=1.5,
+            openai_reasoning_effort=shared.inference.chat_reasoning_effort(),
         ),
     )
 

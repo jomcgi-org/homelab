@@ -58,6 +58,7 @@ class VisionClient:
 
         payload = {
             "model": shared.inference.META_SPARK_MODEL,
+            "reasoning_effort": shared.inference.chat_reasoning_effort(),
             "messages": [
                 {"role": "system", "content": VISION_SYSTEM_PROMPT},
                 {

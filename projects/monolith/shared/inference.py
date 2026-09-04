@@ -19,6 +19,8 @@ from opentelemetry.trace import SpanKind
 
 META_SPARK_MODEL = "muse-spark-1.3-contributor"
 META_SPARK_API_KEY_ENV = "META_SPARK_API_KEY"
+CHAT_REASONING_EFFORT_ENV = "CHAT_REASONING_EFFORT"
+_DEFAULT_CHAT_REASONING_EFFORT = "minimal"
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,21 @@ logger = logging.getLogger(__name__)
 ASYNC_SLOT_BUDGET = 1
 
 
+def chat_reasoning_effort() -> str:
+    """Reasoning depth for the synchronous Discord paths.
+
+    Spark always reasons and none is a 400 from Meta; reasoning tokens bill
+    as output. The Discord paths are synchronous with humans waiting, so they
+    run at minimal effort. Async callers (swarm, jobs, orchestrator fallbacks)
+    keep the provider default. This env var lets the level be tuned and
+    reverted without a code deploy.
+    """
+    return (
+        os.environ.get(CHAT_REASONING_EFFORT_ENV, "").strip()
+        or _DEFAULT_CHAT_REASONING_EFFORT
+    )
+
+
 def record_usage(usage_dict: Mapping[str, Any] | None, model: str, caller: str) -> None:
     """Emit a usage span and decorate an ambient recording span when present."""
     try:
@@ -60,6 +77,13 @@ def record_usage(usage_dict: Mapping[str, Any] | None, model: str, caller: str) 
             "llm.model": model,
             "llm.caller": caller,
         }
+        completion_details = usage_dict.get("completion_tokens_details")
+        if isinstance(completion_details, Mapping) and (
+            "reasoning_tokens" in completion_details
+        ):
+            attributes["llm.usage.reasoning_tokens"] = int(
+                completion_details["reasoning_tokens"]
+            )
         ambient_span = trace.get_current_span()
         tracer = trace.get_tracer(__name__)
         with tracer.start_as_current_span(

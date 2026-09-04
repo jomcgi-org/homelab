@@ -1153,6 +1153,10 @@ emberDurability:
 
 chat:
   enabled: false
+  # Synchronous Discord paths only. Accepted values are minimal, low, medium,
+  # high, and xhigh. Meta rejects none with a 400 because Spark always reasons.
+  # Empty uses the code default (minimal).
+  reasoningEffort: ""
   # The compare proxy reads this field from the existing chat 1Password item.
   githubApiTokenSecretKey: GITHUB_TOKEN
   llamaCppUrl: ""
