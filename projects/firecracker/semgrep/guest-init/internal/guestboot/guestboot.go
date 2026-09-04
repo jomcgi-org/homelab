@@ -63,6 +63,19 @@ func SetupEnv(logger *slog.Logger) (string, error) {
 		"SEMGREP_SETTINGS_FILE":        settingsFile,
 		"SEMGREP_SEND_METRICS":         "off",
 		"SEMGREP_ENABLE_VERSION_CHECK": "0",
+		// Tracing is a SEPARATE exporter from metrics, and none of the three
+		// settings above touch it. This guest has no NIC by design, so
+		// semgrep's OTel exporter cannot resolve telemetry.semgrep.dev and
+		// every scan burns retries on an export that can never succeed,
+		// filling the serial log with resolver failures (seen 2026-09-04).
+		// Scans DO complete with this noise present, so this is waste and
+		// diagnostic clutter rather than a known outage cause. These are the
+		// vendor-neutral SDK kill switches, so they keep working if semgrep
+		// renames its own knobs.
+		"OTEL_SDK_DISABLED":     "true",
+		"OTEL_TRACES_EXPORTER":  "none",
+		"OTEL_METRICS_EXPORTER": "none",
+		"OTEL_LOGS_EXPORTER":    "none",
 	} {
 		if err := os.Setenv(k, v); err != nil {
 			return "", err
