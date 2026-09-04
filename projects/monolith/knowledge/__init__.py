@@ -58,17 +58,4 @@ def on_startup_jobs(session: Session) -> None:
     so the repo-docs reconcile, which writes the knowledge schema, only ever runs
     where there is write access.
     """
-    from knowledge.repo_docs import repo_docs_reconcile_handler
     from scheduler.api import register_job
-
-    register_job(
-        session,
-        name="knowledge.repo_docs_reconcile",
-        interval_secs=21600,  # 6h; no-op hash compare between deploys
-        handler=repo_docs_reconcile_handler,
-        # The initial backfill embeds thousands of chunks and can run well over
-        # an hour. Keep the lock TTL longer than a backfill so the scheduler does
-        # not consider the lock expired mid-run and start a concurrent run.
-        # Steady-state runs are sub-second, so a long TTL costs nothing there.
-        ttl_secs=7200,  # 2h
-    )

@@ -191,28 +191,6 @@ def worldcup_sim() -> None:
     logger.info("worldcup-sim: done")
 
 
-@app.command("knowledge-layout")
-def knowledge_layout() -> None:
-    """Recompute knowledge-graph node positions as a one-shot.
-
-    Runs the full-graph + public FA2 layout passes (CPU-bound, dispatched to a
-    worker thread inside the handler). One-shot form of the ``knowledge.layout``
-    scheduled job; opens its own session to mirror the scheduler's handler
-    contract. The handler swallows per-pass exceptions and logs them, so a
-    silent layout failure still exits 0 - check the ``pass succeeded`` log line.
-    """
-    from sqlmodel import Session
-
-    from core.db import get_engine
-    from knowledge.service import layout_handler
-
-    configure_logging()
-    logger.info("knowledge-layout: starting")
-    with Session(get_engine()) as session:
-        asyncio.run(layout_handler(session))
-    logger.info("knowledge-layout: done")
-
-
 @app.command("observability-stats-rollup")
 def observability_stats_rollup() -> None:
     """Build the cluster-stats payload and snapshot it to Postgres as a one-shot.
@@ -401,17 +379,6 @@ def stars_refresh() -> None:
     logger.info("stars-materialize: done")
 
 
-@app.command("knowledge-repo-docs-reconcile")
-def knowledge_repo_docs_reconcile() -> None:
-    """Reconcile baked repo-docs manifest into the KG (one-shot of
-    knowledge.repo_docs_reconcile)."""
-    _run_job(
-        "knowledge-repo-docs-reconcile",
-        "knowledge.repo_docs",
-        "repo_docs_reconcile_handler",
-    )
-
-
 @app.command("hikes-refresh-forecasts")
 def hikes_refresh_forecasts() -> None:
     """Refresh hike weather forecasts (one-shot of hikes.refresh_forecasts)."""
@@ -428,18 +395,6 @@ def hikes_prune_windows() -> None:
 def stars_prune_hours() -> None:
     """Prune stale stars live-hours rows (one-shot of stars.prune_hours)."""
     _run_job("stars-prune-hours", "stars.jobs", "prune_hours_handler")
-
-
-@app.command("knowledge-ingest")
-def knowledge_ingest() -> None:
-    """Drain the knowledge ingest queue (one-shot of knowledge.ingest)."""
-    _run_job("knowledge-ingest", "knowledge.ingest_queue", "ingest_handler")
-
-
-@app.command("knowledge-discover-gaps")
-def knowledge_discover_gaps() -> None:
-    """Discover knowledge-graph gaps (one-shot of knowledge.discover-gaps)."""
-    _run_job("knowledge-discover-gaps", "knowledge.service", "discover_gaps_handler")
 
 
 @app.command("home-calendar-poll")
