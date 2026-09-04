@@ -37,7 +37,14 @@ genrule(
           "\"$(location node_roundtrip_test.exs)\" " +
           "\"$(location //projects/embervm/proto/embervm/node/v1/fakenode)\" " +
           "$(locations //bazel/erlang:hex_tarballs)",
-    tags = ["no-remote-cache"],
+    # "verification": a cross-language suite that is not a Bazel test rule, so
+    # only the tag puts it in an affected-target run (#5538). It pairs with
+    # no-remote-cache deliberately, which is why it must be affected-gated
+    # rather than always included: it re-runs in full whenever it is asked for.
+    tags = [
+        "no-remote-cache",
+        "verification",
+    ],
     tools = [
         "//bazel/erlang:roundtrip_test.sh",
         "//projects/embervm/proto/embervm/node/v1/fakenode",

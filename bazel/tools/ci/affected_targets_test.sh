@@ -59,6 +59,13 @@ for arg in "$@"; do
 		labels="${labels//\"/}"
 		[[ -n "$labels" ]] && printf '%s\n' $labels
 		exit "${BAZEL_SET_EXIT:-0}"
+	elif [[ "$arg" == *"attr(tags,"* ]]; then
+		# Verification-genrule query. Checked before the rdeps branch: it carries
+		# an rdeps() too, so order is what keeps the two queries distinguishable.
+		if [[ -n "${BAZEL_VERIFICATION_OUTPUT:-}" && -f "${BAZEL_VERIFICATION_OUTPUT}" ]]; then
+			cat "${BAZEL_VERIFICATION_OUTPUT}"
+		fi
+		exit "${BAZEL_VERIFICATION_EXIT:-0}"
 	elif [[ "$arg" == *"rdeps("* ]]; then
 		# Test-universe query: output fixture if provided
 		if [[ -n "${BAZEL_RDEPS_OUTPUT:-}" && -f "${BAZEL_RDEPS_OUTPUT}" ]]; then
@@ -405,6 +412,38 @@ check_no_change() {
 	[[ -z "$(cat "$1")" ]] && pass "no_changes" || fail "no_changes" "expected empty"
 }
 
+# Verification genrules (#5538): a suite that is not a test rule reaches the
+# output only through the tag query, and a broken tag query must fall back
+# rather than silently drop it.
+setup_verification() {
+	mkdir -p p
+	echo "" >p/BUILD
+	echo "x" >p/f.ex
+	git add .
+	git commit -q -m "base"
+	git branch origin/main
+	echo "y" >p/f.ex
+}
+
+check_verification() {
+	local out="$1" log="$3"
+	if ! grep -q "attr(tags," "$log"; then
+		fail "verification_query" "no verification query was issued"
+		return
+	fi
+	pass "verification_query"
+	if grep -qx "//bazel/erlang:mix_test_smoke" "$out" && grep -qx "//p:f_test" "$out"; then
+		pass "verification_union"
+	else
+		fail "verification_union" "got $(tr '\n' ' ' <"$out")"
+	fi
+}
+
+check_verification_fail() {
+	[[ "$(cat "$1")" == "//..." ]] && pass "verification_fail_fallback" ||
+		fail "verification_fail_fallback" "got $(cat "$1")"
+}
+
 echo "--- Running affected-targets.sh tests ---"
 run_test "build_chg" "setup_build_chg"
 run_test "root_label" "setup_root_label"
@@ -465,6 +504,14 @@ printf '%s\n' "//p:route_test" >"$plus_fixture"
 BAZEL_RDEPS_OUTPUT="$plus_fixture" run_test "plus_label" "setup_plus_label"
 run_test "unstaged_deleted" "setup_unstaged_deleted"
 run_test "no_change" "setup_no_change"
+verification_fixture="$TMP/verification.txt"
+printf '%s\n' "//bazel/erlang:mix_test_smoke" >"$verification_fixture"
+rdeps_fixture="$TMP/rdeps_for_verification.txt"
+printf '%s\n' "//p:f_test" >"$rdeps_fixture"
+BAZEL_RDEPS_OUTPUT="$rdeps_fixture" BAZEL_VERIFICATION_OUTPUT="$verification_fixture" \
+	run_test "verification" "setup_verification"
+BAZEL_RDEPS_OUTPUT="$rdeps_fixture" BAZEL_VERIFICATION_EXIT="1" \
+	run_test "verification_fail" "setup_verification"
 
 echo "--- $PASS passed, $FAIL failed ---"
 [[ $FAIL -eq 0 ]]

@@ -82,6 +82,10 @@ genrule(
     ],
     outs = ["otp_smoke.txt"],
     cmd = "$(location otp_smoke.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$@\"",
+    # "verification" is how bazel/tools/ci/affected-targets.sh finds a suite that
+    # is not a Bazel test rule. Without it a changed source reaches no test()
+    # and the PR run reports green having built none of this (#5538).
+    tags = ["verification"],
     tools = ["otp_smoke.sh"],
 )
 
@@ -121,6 +125,11 @@ genrule(
           "EMBERVM_NODE_PROTO_SRC=\"$(location //projects/embervm/proto/embervm/node/v1:node_proto)\" " +
           "EMBERVM_FAKE_NODE_SRC=\"$(location //projects/embervm/proto/embervm/node/v1/fakenode)\" " +
           "$(location mix_test.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$(location @elixir_1_18_4//:bin/elixir)\" \"$(location //projects/embervm/control:mix.exs)\" \"$@\" \"$(location @hex_archive//file)\" \"$(location //projects/embervm/proto/embervm/node/v1:node_elixir_src)\" $(locations :hex_tarballs)",
+    # The whole control-plane ExUnit suite, ~1580 tests, lives behind this
+    # genrule. "verification" is what puts it in the affected set for a changed
+    # file under projects/embervm/control/ (#5538): tests() cannot see a genrule,
+    # so every such PR ran green having tested none of it.
+    tags = ["verification"],
     tools = ["mix_test.sh"],
 )
 
