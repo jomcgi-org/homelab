@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
@@ -10,10 +11,30 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 
 import shared.inference
 from shared.inference import (
+    CHAT_REASONING_EFFORT_ENV,
     META_SPARK_API_KEY_ENV,
     auth_headers,
+    chat_reasoning_effort,
     structured_output,
 )
+
+
+def test_chat_reasoning_effort_defaults_to_minimal(monkeypatch):
+    monkeypatch.delenv(CHAT_REASONING_EFFORT_ENV, raising=False)
+
+    assert chat_reasoning_effort() == "minimal"
+
+
+def test_chat_reasoning_effort_honors_environment(monkeypatch):
+    monkeypatch.setenv(CHAT_REASONING_EFFORT_ENV, "low")
+
+    assert chat_reasoning_effort() == "low"
+
+
+def test_chat_reasoning_effort_treats_whitespace_as_unset(monkeypatch):
+    monkeypatch.setenv(CHAT_REASONING_EFFORT_ENV, "  \t ")
+
+    assert chat_reasoning_effort() == "minimal"
 
 
 def test_auth_headers_adds_bearer_when_meta_spark_key_is_set(monkeypatch):
@@ -78,6 +99,47 @@ def test_record_usage_sets_attributes_on_current_span():
             "llm.caller": "classifier",
         }
     )
+
+
+def test_record_usage_includes_reasoning_tokens_when_present():
+    span = MagicMock()
+    span.is_recording.return_value = True
+    usage = {
+        "prompt_tokens": 12,
+        "completion_tokens": 5,
+        "total_tokens": 17,
+        "completion_tokens_details": {"reasoning_tokens": 3},
+    }
+
+    with patch("shared.inference.trace.get_current_span", return_value=span):
+        shared.inference.record_usage(usage, "spark", "chat")
+
+    assert span.set_attributes.call_args.args[0]["llm.usage.reasoning_tokens"] == 3
+
+
+@pytest.mark.parametrize(
+    "completion_details",
+    [None, "not-a-mapping", {}, {"accepted_prediction_tokens": 2}],
+)
+def test_record_usage_omits_reasoning_tokens_when_unavailable(completion_details):
+    span = MagicMock()
+    span.is_recording.return_value = True
+    usage = {
+        "prompt_tokens": 12,
+        "completion_tokens": 5,
+        "total_tokens": 17,
+    }
+    if completion_details is not None:
+        usage["completion_tokens_details"] = completion_details
+
+    with patch("shared.inference.trace.get_current_span", return_value=span):
+        shared.inference.record_usage(usage, "spark", "chat")
+
+    attributes = span.set_attributes.call_args.args[0]
+    assert attributes["llm.usage.prompt_tokens"] == 12
+    assert attributes["llm.usage.completion_tokens"] == 5
+    assert attributes["llm.usage.total_tokens"] == 17
+    assert "llm.usage.reasoning_tokens" not in attributes
 
 
 def test_record_usage_returns_without_current_span():

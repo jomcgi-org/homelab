@@ -277,6 +277,24 @@ class TestVisionClientPayload:
         assert payload["model"] == shared.inference.META_SPARK_MODEL
 
     @pytest.mark.asyncio
+    async def test_payload_includes_reasoning_effort(self):
+        """describe() sends the configured synchronous chat reasoning effort."""
+        client = VisionClient(base_url="http://fake:8080")
+
+        with (
+            patch(
+                "chat.vision.shared.inference.chat_reasoning_effort",
+                return_value="low",
+            ),
+            patch("chat.vision.httpx.AsyncClient") as mock_cls,
+        ):
+            mock_cls.return_value = _make_mock_http_client(response=_ok_response())
+            await client.describe(b"\x89PNG", "image/png")
+
+        payload = mock_cls.return_value.post.call_args.kwargs.get("json")
+        assert payload["reasoning_effort"] == "low"
+
+    @pytest.mark.asyncio
     async def test_payload_includes_max_tokens_default(self):
         """describe() sends the VISION_MAX_TOKENS default in the payload."""
         client = VisionClient(base_url="http://fake:8080")
