@@ -1,0 +1,71 @@
+# Task: Make report_distress available in the agent tier
+
+## Summary
+
+`report_distress` cannot be added to the agent tier's tool catalogue because it currently reaches the private `agent` domain through `knowledge/mcp.py`'s `_notify` helper, which calls `agent.api.notify`. The agents binary prunes all of `agent/**`, so the import fails at call time (function-local import).
+
+The solution is to move the notification path to `projects/monolith/shared/notify.py` (tier-portable, no domain dependencies), update imports everywhere, un-prune two chat files that the outbox producer needs, and add the tool.
+
+## Implementation tasks
+
+1. **Create `projects/monolith/shared/notify.py`**
+   - Copy the body of `projects/monolith/agent/notify.py` (33 lines) verbatim in behavior
+   - Read `MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID` env var instead of importing `agent.config.load_settings`
+   - Import `enqueue_message` from `chat.outbox` directly instead of `chat.api`
+   - Keep `_enqueue_sync` helper and its docstring comment about not running sync Session on event loop
+   - Keep the comment explaining that the outbox is a leader-only singleton
+
+2. **Update `projects/monolith/agent/notify.py`**
+   - Become a thin re-export: `from shared.notify import notify`
+   - Preserve the public signature and behavior completely so `agent.api.notify` keeps working
+
+3. **Update `projects/monolith/knowledge/mcp.py`** in `_notify` function (around line 112)
+   - Change from: `from agent.api import notify as agent_notify`
+   - Change to: `from shared.notify import notify as _notify_impl`
+   - Call: `return await _notify_impl(message, level)`
+   - Update docstring: replace the explanation of why report_distress CANNOT join the agent tier with a note that the notification path lives in `shared` precisely so both tiers can use it, and that function-local imports into pruned domains fail at call time not build time
+
+4. **Update `projects/monolith/BUILD`**
+   - In the `main_agents` py_venv_binary's srcs glob (around line 1896), add `"chat/**/*.py"` to the source patterns
+   - In `_AGENTS_PRUNE_EXCLUDE` (around line 1785), replace `"chat/**"` with specific file exclusions for every chat file EXCEPT `chat/models.py` and `chat/outbox.py`
+   - Add a comment above the chat exclusions explaining: the outbox producer (enqueue_message) is infrastructure shared by every replica, the drain loop stays private, and these two files import no other domain and no private code
+
+5. **Update `projects/monolith/app/agents_main.py`**
+   - Import `report_distress` from `knowledge.mcp`
+   - Add it to `AGENT_TOOLS` tuple (making it 4 tools, not 3)
+   - Remove the comment block explaining why report_distress is absent
+   - Add a new comment: "report_distress is included; its notification path is shared.notify, so the tier does not reach agent/**"
+
+6. **Update `projects/monolith/app/main_agents_imports_test.py`**
+   - Currently asserts the whole `chat` package is forbidden
+   - Narrow it: `chat.models` and `chat.outbox` must be permitted, every other `chat.*` module must be forbidden
+   - Update `FORBIDDEN_MODULES` to replace `"chat"` with:
+     - All other chat modules by name (or use a comment explaining the allowlist)
+   - Add a comment explaining the allowance: "chat.models and chat.outbox are shared outbox producer infrastructure; no other chat modules are imported"
+
+7. **Update `projects/monolith/knowledge/mcp_registry_test.py`**
+   - Delete `test_report_distress_stays_out_of_the_agent_catalogue`
+   - Add `test_report_distress_is_in_the_agent_catalogue`: assert that `"report_distress"` IS in `app.agents_main.AGENT_TOOL_NAMES`
+   - Add `test_knowledge_mcp_does_not_import_agent_api`: read the module source of `knowledge.mcp` and assert the string `"agent.api"` does NOT appear in it (proves the function-local import is gone)
+
+8. **Update `projects/monolith/knowledge/mcp_reports_test.py`**
+   - All patches of `"knowledge.mcp.notify"` become `"knowledge.mcp._notify"`
+   - Update all assertions: the distress tests still assert that a raw is written without enqueueing extraction, and that secrets are redacted from the body, extra AND the notification
+   - Behavioral assertions must not be weakened
+
+## Hard constraints
+
+- The private tier's behavior is unchanged. `agent.api.notify` keeps working unchanged.
+- No `py3_image`, no chart, no deployment wiring
+- No em-dashes anywhere
+- Never call sync SQLModel `Session` methods inside `async def`
+- Do not touch `Chart.yaml` `version:` or `deploy/application.yaml` `targetRevision:`
+
+## Verification
+
+After implementation, run from inside the worktree (unpiped):
+```
+/Users/jomcgi/repos/homelab/bazel/tools/ci/ci
+```
+
+Report the exact `Executed N out of M tests` line. A line reading `Executed 0 out of N` means nothing ran and is NOT a pass.

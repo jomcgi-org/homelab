@@ -1,11 +1,12 @@
-"""Tests for agent.notify (enqueues to the Discord outbox)."""
+"""Tests for the shared notification implementation and agent re-export."""
 
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent import notify as notify_mod
+from agent import notify as agent_notify_mod
+from shared import notify as notify_mod
 
 
 @pytest.fixture
@@ -33,7 +34,7 @@ def _patched_outbox():
 @pytest.mark.asyncio
 async def test_notify_defaults_to_settings_channel(discord_env):
     with _patched_outbox() as (enqueue, session):
-        result = await notify_mod.notify("hi")
+        result = await agent_notify_mod.notify("hi")
     enqueue.assert_called_once_with(session, "C-default", content="hi", level="info")
     session.commit.assert_called_once()
     assert result == {"ok": True, "channel": "C-default", "queued": True}
@@ -42,7 +43,7 @@ async def test_notify_defaults_to_settings_channel(discord_env):
 @pytest.mark.asyncio
 async def test_notify_passes_level_through(discord_env):
     with _patched_outbox() as (enqueue, session):
-        result = await notify_mod.notify("hi", level="warn")
+        result = await agent_notify_mod.notify("hi", level="warn")
     enqueue.assert_called_once_with(session, "C-default", content="hi", level="warn")
     assert result["channel"] == "C-default"
 
@@ -52,6 +53,6 @@ async def test_notify_enqueues_explicit_channel(discord_env):
     # Any channel is enqueued; the bot's server membership (not an app
     # allow-list) bounds where it can actually post.
     with _patched_outbox() as (enqueue, session):
-        result = await notify_mod.notify("hi", channel="9999")
+        result = await agent_notify_mod.notify("hi", channel="9999")
     enqueue.assert_called_once_with(session, "9999", content="hi", level="info")
     assert result == {"ok": True, "channel": "9999", "queued": True}

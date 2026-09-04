@@ -1,10 +1,11 @@
 """MCP tools for knowledge graph search and task tracking.
 
-Registers note tools (``search_knowledge``, ``get_note``, ``report_knowledge``,
+Defines note tools (``search_knowledge``, ``get_note``, ``report_knowledge``,
 ``dispute_fact``, ``report_distress``) and task tools (``list_tasks``,
-``search_tasks``, ``update_task``, ``get_daily_tasks``, ``get_weekly_tasks``)
-on the shared monolith MCP instance.
-Tools call KnowledgeStore directly (no HTTP round-trip).
+``search_tasks``, ``update_task``, ``get_daily_tasks``, ``get_weekly_tasks``).
+``knowledge.module`` registers the full catalogue on the shared private MCP
+instance, while pruned entrypoints can select a safe subset. Tools call
+KnowledgeStore directly (no HTTP round-trip).
 """
 
 from __future__ import annotations
@@ -21,7 +22,6 @@ from sqlmodel import Session, select
 
 from auth.api import current_principal
 from core.db import get_engine
-from core.mcp_app import mcp
 from knowledge.api import ingest_raw_with_status
 from knowledge.atoms import index_atom
 from knowledge.indexing import index_note_from_raw
@@ -109,14 +109,36 @@ def _resolved_scope(proposed_scope: str, subject: str) -> str:
     return f"{proposed_scope}:{subject}"
 
 
-async def notify(message: str, level: str) -> dict:
-    """Load the agent notification boundary only when distress is reported."""
-    from agent.api import notify as agent_notify
+async def _notify(message: str, level: str) -> dict:
+    """Send an operator notification through the shared tier boundary.
 
-    return await agent_notify(message, level)
+    The notification path lives in ``shared`` precisely so both the private and
+    agent tiers can use it. Function-local imports into pruned domains fail at
+    call time, not build time, so this deferred import must remain tier-portable.
+    """
+
+    from shared.notify import notify as _notify_impl
+
+    return await _notify_impl(message, level)
 
 
-@mcp.tool
+_KNOWLEDGE_TOOLS: list = []
+
+
+def _knowledge_tool(fn):
+    """Mark a function as part of the knowledge MCP catalogue.
+
+    Registration happens at the DEFINITION SITE on purpose. A separate list of
+    tool names is a thing to forget, and a tool missing from it does not fail:
+    it silently disappears from whichever tier reads that list, which is how
+    report_knowledge stayed invisible in Context Forge for a day.
+    """
+
+    _KNOWLEDGE_TOOLS.append(fn)
+    return fn
+
+
+@_knowledge_tool
 async def search_knowledge(
     query: str,
     limit: int = 20,
@@ -152,7 +174,7 @@ async def search_knowledge(
     return {"results": results}
 
 
-@mcp.tool
+@_knowledge_tool
 async def get_note(note_id: str) -> dict:
     """Retrieve a knowledge note by its stable ID.
 
@@ -235,7 +257,7 @@ def _report_knowledge_sync(
         }
 
 
-@mcp.tool
+@_knowledge_tool
 async def report_knowledge(
     assertion: str,
     proposed_scope: str = "repo",
@@ -355,7 +377,7 @@ def _dispute_fact_sync(
         }
 
 
-@mcp.tool
+@_knowledge_tool
 async def dispute_fact(
     fact_id: str,
     reason: str,
@@ -440,7 +462,7 @@ def _report_distress_sync(
     return ({"intervention_id": raw_id}, message, level)
 
 
-@mcp.tool
+@_knowledge_tool
 async def report_distress(
     summary: str,
     severity: str,
@@ -471,14 +493,14 @@ async def report_distress(
         return result
     raw_id = result["intervention_id"]
     try:
-        await notify(message, level)
+        await _notify(message, level)
     except Exception:
         logger.exception("knowledge mcp: distress notification failed for %s", raw_id)
         return {"intervention_id": raw_id, "status": "recorded"}
     return {"intervention_id": raw_id, "status": "notified"}
 
 
-@mcp.tool
+@_knowledge_tool
 async def list_tasks(
     status: str | None = None,
     due_before: str | None = None,
@@ -509,7 +531,7 @@ async def list_tasks(
     return {"tasks": tasks}
 
 
-@mcp.tool
+@_knowledge_tool
 async def search_tasks(
     query: str,
     status: str | None = None,
@@ -546,7 +568,7 @@ async def search_tasks(
     return {"tasks": tasks}
 
 
-@mcp.tool
+@_knowledge_tool
 async def update_task(
     note_id: str,
     fields: dict,
@@ -570,7 +592,7 @@ async def update_task(
     return {"updated": True, "note_id": note_id}
 
 
-@mcp.tool
+@_knowledge_tool
 async def get_daily_tasks() -> dict:
     """Get tasks due today or overdue.
 
@@ -582,7 +604,7 @@ async def get_daily_tasks() -> dict:
     return {"tasks": tasks}
 
 
-@mcp.tool
+@_knowledge_tool
 async def get_weekly_tasks() -> dict:
     """Get tasks due this week.
 
@@ -592,6 +614,12 @@ async def get_weekly_tasks() -> dict:
     with Session(get_engine()) as session:
         tasks = KnowledgeStore(session).list_tasks_weekly()
     return {"tasks": tasks}
+
+
+def register_mcp_tools(mcp_server: Any) -> None:
+    """Register the full knowledge catalogue on a supplied MCP server."""
+    for tool in _KNOWLEDGE_TOOLS:
+        mcp_server.add_tool(tool)
 
 
 # ---------------------------------------------------------------------------
