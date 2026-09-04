@@ -444,6 +444,13 @@ check_verification_fail() {
 		fail "verification_fail_fallback" "got $(cat "$1")"
 }
 
+# Unlike the test-universe query, a --keep_going partial is NOT accepted here: a
+# partial that dropped the one suite looks exactly like "nothing to run".
+check_verification_partial() {
+	[[ "$(cat "$1")" == "//..." ]] && pass "verification_partial_fallback" ||
+		fail "verification_partial_fallback" "got $(cat "$1")"
+}
+
 echo "--- Running affected-targets.sh tests ---"
 run_test "build_chg" "setup_build_chg"
 run_test "root_label" "setup_root_label"
@@ -512,6 +519,8 @@ BAZEL_RDEPS_OUTPUT="$rdeps_fixture" BAZEL_VERIFICATION_OUTPUT="$verification_fix
 	run_test "verification" "setup_verification"
 BAZEL_RDEPS_OUTPUT="$rdeps_fixture" BAZEL_VERIFICATION_EXIT="1" \
 	run_test "verification_fail" "setup_verification"
+BAZEL_RDEPS_OUTPUT="$rdeps_fixture" BAZEL_VERIFICATION_OUTPUT="$verification_fixture" \
+	BAZEL_VERIFICATION_EXIT="3" run_test "verification_partial" "setup_verification"
 
 echo "--- $PASS passed, $FAIL failed ---"
 [[ $FAIL -eq 0 ]]

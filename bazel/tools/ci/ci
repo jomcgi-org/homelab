@@ -334,9 +334,27 @@ cmd_test() {
 		# one was a cache hit, so a tree whose sources just changed either did not
 		# reach those targets or is not in the affected set at all (#5538). Say so
 		# rather than leaving the reader to know that tell.
-		if grep -qE 'Executed 0 out of [1-9][0-9]* tests?' "$out"; then
+		#
+		# Two runs must NOT get this note, or it says the opposite of the truth.
+		# A verification genrule is a build action and never enters the test
+		# count, so a control-plane run can print "Executed 0" having just run
+		# 1580 ExUnit tests. And an explicit-target run has no affected set to go
+		# check, so the advice does not apply.
+		if grep -qE 'Executed 0 out of [1-9][0-9]* tests?' "$out" &&
+			grep -qF 'ci-local-affected: running bazel test on' "$out" &&
+			! grep -qE 'affected-targets: [0-9]+ affected targets, [1-9][0-9]* of them verification genrules' "$out"; then
 			dim "note: Executed 0 means every affected test was a cache hit, so this run re-proved a tree that was already green. If you just changed code, check that the changed targets are in the affected set (issue #5538)."
 		fi
+	fi
+	# A verification genrule that fails is a FAILING SUITE, but bazel reports it
+	# as a build failure (--keep_going=false under --config=ci), with no test
+	# summary at all. Without this branch every red EmberVM control-plane run
+	# lands in the #4118 "nothing was verified" arm and reads as an infra
+	# problem, which is the population this whole mechanism aims at.
+	if grep -qE "(^|${esc}\[[0-9;]*m)ERROR: .*Executing genrule //[^ ]+ failed" "$out" ||
+		grep -qF 'Build did NOT complete successfully' "$out"; then
+		err "a build action failed, and for a verification genrule (the Elixir and TLA+ suites) that IS the suite failing, not infrastructure: read the genrule output above"
+		return 1
 	fi
 	if grep -qE "(^|${esc}\[[0-9;]*m)(Action failed:|Command failed: exit status)" "$out"; then
 		err "remote runner failed before or while running tests (see output above, issue #4118)"

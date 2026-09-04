@@ -32,6 +32,12 @@
 # plus the :bin/java anchor, mirroring how //projects/embervm/control stages
 # @otp's :otp filegroup + :Install anchor. tla2tools.jar comes from @tla2tools.
 #
+# Every TLC genrule carries tags = ["verification"], which is how
+# bazel/tools/ci/affected-targets.sh finds a suite that is not a Bazel test rule
+# (#5538). Without it, editing a .tla or .cfg reaches no test() and the PR
+# model-checks nothing while reporting green; the merge queue's //... is the
+# only thing that would have caught it.
+#
 # No no-remote-cache tag: the check is deterministic in (spec, cfg, toolchain),
 # so a cache hit is a correct skip and a full TLC re-run only happens when one of
 # those changes. That is exactly the ADR's cost model (full checking on spec
@@ -63,6 +69,7 @@ genrule(
           "\"$(location adoption.tla)\" " +
           "\"$(location adoption.cfg)\" " +
           "\"$@\" pass",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -79,6 +86,7 @@ genrule(
           "\"$(location adoption.tla)\" " +
           "\"$(location adoption_liveness.cfg)\" " +
           "\"$@\" pass",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -95,6 +103,7 @@ genrule(
           "\"$(location adoption.tla)\" " +
           "\"$(location adoption_wedge.cfg)\" " +
           "\"$@\" fail",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -111,6 +120,7 @@ genrule(
           "\"$(location adoption.tla)\" " +
           "\"$(location adoption_resurrection.cfg)\" " +
           "\"$@\" fail",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -131,6 +141,7 @@ genrule(
           "\"$(location bank_relight.tla)\" " +
           "\"$(location bank_relight.cfg)\" " +
           "\"$@\" pass",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -147,6 +158,7 @@ genrule(
           "\"$(location bank_relight.tla)\" " +
           "\"$(location bank_relight_isolated.cfg)\" " +
           "\"$@\" pass",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -163,6 +175,7 @@ genrule(
           "\"$(location bank_relight.tla)\" " +
           "\"$(location bank_relight_regress.cfg)\" " +
           "\"$@\" fail",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -177,6 +190,7 @@ genrule(
           "\"$(location %s)\" " % _JAVA +
           "\"$(location %s)\" " % _JAR +
           "\"$(location quota.tla)\" \"$(location quota.cfg)\" \"$@\" pass",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -191,6 +205,7 @@ genrule(
           "\"$(location %s)\" " % _JAVA +
           "\"$(location %s)\" " % _JAR +
           "\"$(location quota.tla)\" \"$(location quota_zero.cfg)\" \"$@\" pass",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -205,6 +220,7 @@ genrule(
           "\"$(location %s)\" " % _JAVA +
           "\"$(location %s)\" " % _JAR +
           "\"$(location quota.tla)\" \"$(location quota_submit_only.cfg)\" \"$@\" fail",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -221,6 +237,7 @@ genrule(
           "\"$(location session_create.tla)\" " +
           "\"$(location session_create.cfg)\" " +
           "\"$@\" pass",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -237,6 +254,7 @@ genrule(
           "\"$(location session_create.tla)\" " +
           "\"$(location session_create_liveness.cfg)\" " +
           "\"$@\" pass",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -253,6 +271,7 @@ genrule(
           "\"$(location session_create.tla)\" " +
           "\"$(location session_create_wedge.cfg)\" " +
           "\"$@\" fail",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -274,6 +293,7 @@ genrule(
           "\"$(location generation_issuance.tla)\" " +
           "\"$(location generation_issuance.cfg)\" " +
           "\"$@\" pass",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -290,6 +310,7 @@ genrule(
           "\"$(location generation_issuance.tla)\" " +
           "\"$(location generation_issuance_liveness.cfg)\" " +
           "\"$@\" pass",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -306,6 +327,7 @@ genrule(
           "\"$(location generation_issuance.tla)\" " +
           "\"$(location generation_issuance_heal_wedge.cfg)\" " +
           "\"$@\" fail",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -322,6 +344,7 @@ genrule(
           "\"$(location generation_issuance.tla)\" " +
           "\"$(location generation_issuance_lag_wedge.cfg)\" " +
           "\"$@\" fail",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -341,6 +364,7 @@ genrule(
           "\"$(location stateful.tla)\" " +
           "\"$(location stateful.cfg)\" " +
           "\"$@\" pass",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -357,6 +381,7 @@ genrule(
           "\"$(location stateful.tla)\" " +
           "\"$(location stateful_liveness.cfg)\" " +
           "\"$@\" pass",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -373,6 +398,7 @@ genrule(
           "\"$(location stateful.tla)\" " +
           "\"$(location stateful_destroying_wedge.cfg)\" " +
           "\"$@\" fail",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -389,6 +415,7 @@ genrule(
           "\"$(location stateful.tla)\" " +
           "\"$(location stateful_attach_wedge.cfg)\" " +
           "\"$@\" fail",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
@@ -405,6 +432,7 @@ genrule(
           "\"$(location stateful.tla)\" " +
           "\"$(location stateful_destroy_escape_unsafe.cfg)\" " +
           "\"$@\" fail",
+    tags = ["verification"],
     tools = ["//bazel/tla:tlc.sh"],
 )
 
