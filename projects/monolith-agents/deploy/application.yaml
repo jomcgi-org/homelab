@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monolith-agents
+  namespace: argocd
+spec:
+  project: default
+  sources:
+    - repoURL: ghcr.io/jomcgi/homelab/charts
+      chart: monolith-agents
+      targetRevision: 0.1.0
+      helm:
+        releaseName: monolith-agents
+        valueFiles:
+          - $values/projects/monolith-agents/deploy/values.yaml
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monolith-agents
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

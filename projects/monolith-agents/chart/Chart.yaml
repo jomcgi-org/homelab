@@ -1,0 +1,20 @@
+apiVersion: v2
+name: monolith-agents
+description: Isolated authenticated MCP and knowledge service for the agents tier
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+maintainers:
+  - name: homelab
+keywords:
+  - agents
+  - mcp
+  - knowledge
+annotations:
+  org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.url: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.licenses: "MPL-2.0"
+dependencies:
+  - name: homelab-library
+    version: "0.6.0"
+    repository: "file://../../shared/helm/homelab-library/chart"

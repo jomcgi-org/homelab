@@ -1,0 +1,1 @@
+{{- include "homelab.service" (dict "context" . "component" "agents") }}

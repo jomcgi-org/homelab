@@ -43,6 +43,7 @@ oci_digest_manifest(
         "//projects/monolith:image.info": "//projects/monolith:image.push",
         "//projects/monolith:image_public.info": "//projects/monolith:image_public.push",
         "//projects/monolith:jobs_image.info": "//projects/monolith:jobs_image.push",
+        "//projects/monolith:main_agents_image.info": "//projects/monolith:main_agents_image.push",
         "//projects/monolith:progress_image.info": "//projects/monolith:progress_image.push",
         "//projects/operators/oci-model-cache:image.info": "//projects/operators/oci-model-cache:image.push",
     },

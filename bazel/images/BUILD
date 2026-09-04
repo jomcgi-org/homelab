@@ -55,6 +55,7 @@ multirun(
         "//projects/firecracker/semgrep/guest:image.push",
         "//projects/firecracker/substrate/egress-proxy:image.push",
         "//projects/firecracker/substrate/rootfs-builder:image.push",
+        "//projects/monolith-agents/chart:chart.push",
         "//projects/monolith-public/chart:chart.push",
         "//projects/monolith/chart:chart.push",
         "//projects/monolith/frontend:image.push",
@@ -63,6 +64,7 @@ multirun(
         "//projects/monolith:image.push",
         "//projects/monolith:image_public.push",
         "//projects/monolith:jobs_image.push",
+        "//projects/monolith:main_agents_image.push",
         "//projects/monolith:progress_image.push",
         "//projects/operators/oci-model-cache/helm/oci-model-cache-operator:chart.push",
         "//projects/operators/oci-model-cache:image.push",
@@ -81,6 +83,7 @@ multirun(
     name = "push_charts",
     commands = [
         "//projects/embervm/chart:chart.push",
+        "//projects/monolith-agents/chart:chart.push",
         "//projects/monolith-public/chart:chart.push",
         "//projects/monolith/chart:chart.push",
         "//projects/operators/oci-model-cache/helm/oci-model-cache-operator:chart.push",

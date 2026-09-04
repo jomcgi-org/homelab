@@ -1,0 +1,160 @@
+# Authenticated agents service. Isolation is enforced by
+# templates/cilium-policy.yaml under ADR platform/012.
+#
+# Identity-only token for authentication; the SA has no K8s RBAC. The token is
+# mounted so the workload can prove its service identity, not call the K8s API.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# OTLP/HTTP traces endpoint. Empty disables the exporter.
+otelEndpoint: ""
+
+imagePullSecret:
+  enabled: false
+imagePullSecrets: []
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+serviceAccount:
+  create: true
+  # Identity-only token for authentication; the SA has no K8s RBAC.
+  automount: true
+  annotations: {}
+  name: ""
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+database:
+  # This Secret must be available in the monolith-agents namespace. It carries
+  # the CNPG app credential in the same "uri" shape as monolith-pg-app.
+  secretName: monolith-pg-app
+  secretKey: uri
+
+embeddingUrl: "http://inference-embeddings.inference.svc.cluster.local:8080"
+
+knowledge:
+  defaultRepoScope: "repo:jomcgi-org/homelab"
+
+auth:
+  authentik:
+    jwksUrl: "http://authentik-server.authentik.svc.cluster.local/application/o/mcp-friends/jwks/"
+    issuer: "https://auth.jomcgi.dev/application/o/mcp-friends/"
+    audience: "https://private.jomcgi.dev"
+    agentJwksUrl: "http://authentik-server.authentik.svc.cluster.local/application/o/mcp-agents/jwks/"
+    agentIssuer: "https://auth.jomcgi.dev/application/o/mcp-agents/"
+    agentAudience: "https://private.jomcgi.dev"
+  jwksCacheTtlSeconds: 300
+
+# Object-storage and agent-auth sets fail SILENTLY when missing. Keep every
+# value and secret reference explicit, even when a library default seems safe.
+objectStorage:
+  endpoint: "https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
+  region: auto
+  secretName: monolith-r2-s3
+  accessKeyKey: access-key-id
+  secretAccessKeyKey: secret-access-key
+
+discord:
+  defaultChannelId: ""
+
+# ADR platform/012 isolation. Once selected, the agents pod has closed ingress
+# except node health probes and destination-scoped egress for its dependencies.
+ciliumPolicy:
+  enabled: true
+  objectStorageFqdn: "7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
+
+agents:
+  enabled: true
+  replicas: 1
+  image:
+    # No digest here on purpose. helm_images_values pins it at build time from
+    # //projects/monolith:main_agents_image.info (see chart/BUILD). A digest
+    # written by hand goes stale on the next CI rebuild and turns into
+    # ImagePullBackOff, and a placeholder digest deploys an image that does not
+    # exist at all.
+    repository: ghcr.io/jomcgi/homelab/projects/monolith/agents
+    tag: latest
+    pullPolicy: IfNotPresent
+  containerPort: 8092
+  portName: http
+  env:
+    - name: DATABASE_URL
+      valueFrom:
+        secretKeyRef:
+          name: monolith-pg-app
+          key: uri
+    - name: EMBEDDING_URL
+      value: "http://inference-embeddings.inference.svc.cluster.local:8080"
+    - name: KNOWLEDGE_DEFAULT_REPO_SCOPE
+      value: "repo:jomcgi-org/homelab"
+    - name: AUTH_AUTHENTIK_JWKS_URL
+      value: "http://authentik-server.authentik.svc.cluster.local/application/o/mcp-friends/jwks/"
+    - name: AUTH_AUTHENTIK_ISSUER
+      value: "https://auth.jomcgi.dev/application/o/mcp-friends/"
+    - name: AUTH_AUTHENTIK_AUDIENCE
+      value: "https://private.jomcgi.dev"
+    - name: AUTH_JWKS_CACHE_TTL_S
+      value: "300"
+    - name: AUTH_AUTHENTIK_AGENT_JWKS_URL
+      value: "http://authentik-server.authentik.svc.cluster.local/application/o/mcp-agents/jwks/"
+    - name: AUTH_AUTHENTIK_AGENT_ISSUER
+      value: "https://auth.jomcgi.dev/application/o/mcp-agents/"
+    - name: AUTH_AUTHENTIK_AGENT_AUDIENCE
+      value: "https://private.jomcgi.dev"
+    - name: SEAWEEDFS_S3_ENDPOINT
+      value: "https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
+    - name: AWS_REGION
+      value: auto
+    - name: S3_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: monolith-r2-s3
+          key: access-key-id
+    - name: S3_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: monolith-r2-s3
+          key: secret-access-key
+    - name: MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID
+      value: ""
+  probes:
+    liveness:
+      path: /healthz
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 6
+    # A single pod has no alternate replica to receive traffic. The same cheap,
+    # auth-free /healthz check prevents routing to a process that cannot answer
+    # while avoiding dependency-driven readiness flaps that remove all capacity.
+    readiness:
+      path: /healthz
+      initialDelaySeconds: 2
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 3
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 256Mi
+  service:
+    type: ClusterIP
+    port: 8092

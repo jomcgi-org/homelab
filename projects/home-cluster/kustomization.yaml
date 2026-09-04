@@ -4,5 +4,6 @@ kind: Kustomization
 
 resources:
   - ../../projects/inference/deploy
+  - ../../projects/monolith-agents/deploy
   - ../../projects/operators/oci-model-cache/deploy
   - ../../projects/platform

@@ -1,0 +1,32 @@
+# Production overrides for the monolith agents service.
+# NOTE: A brand new GHCR package defaults to PRIVATE. This package must be made public after its first push, or ImagePullBackOff will result.
+
+otelEndpoint: "http://otel-collector.otel-collector.svc.cluster.local:4318/v1/traces"
+
+# These Secrets must exist in the monolith-agents namespace. DATABASE_URL uses
+# the CNPG app Secret's "uri" key, matching the monolith backend deployment.
+database:
+  secretName: monolith-pg-app
+  secretKey: uri
+
+# Object-storage credentials use the same field names as the monolith backend.
+# Missing object-storage and agent-auth settings fail SILENTLY in the service.
+objectStorage:
+  endpoint: "https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
+  region: auto
+  secretName: monolith-r2-s3
+  accessKeyKey: access-key-id
+  secretAccessKeyKey: secret-access-key
+
+auth:
+  authentik:
+    jwksUrl: "http://authentik-server.authentik.svc.cluster.local/application/o/mcp-friends/jwks/"
+    issuer: "https://auth.jomcgi.dev/application/o/mcp-friends/"
+    audience: "https://private.jomcgi.dev"
+    agentJwksUrl: "http://authentik-server.authentik.svc.cluster.local/application/o/mcp-agents/jwks/"
+    agentIssuer: "https://auth.jomcgi.dev/application/o/mcp-agents/"
+    agentAudience: "https://private.jomcgi.dev"
+  jwksCacheTtlSeconds: 300
+
+discord:
+  defaultChannelId: "1501965852969402517"
