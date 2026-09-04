@@ -149,6 +149,7 @@ def chart_context():
 
     return {
         "chart_dir": chart_dir,
+        "deploy_values_file": Path(deploy_values_file),
         "rendered": rendered,
     }
 
@@ -205,6 +206,28 @@ def test_chat_max_tokens_defaults_to_empty_env(chart_context):
         r"- name: CHAT_MAX_TOKENS\n\s+value: \"\"",
         rendered,
     )
+
+
+def test_hosted_chat_provider_renders_from_deploy_values(chart_context):
+    """Production values route Discord chat through the hosted provider."""
+    rendered = chart_context["rendered"]
+
+    assert re.search(
+        r'- name: CHAT_MODEL\n\s+value: "openai/gpt-oss-20b"',
+        rendered,
+    )
+    assert re.search(
+        r'- name: CHAT_BASE_URL\n\s+value: "https://openrouter.ai/api/v1"',
+        rendered,
+    )
+
+
+def test_deploy_values_pin_hosted_chat_provider(chart_context):
+    """The production values keep both hosted provider fields explicit."""
+    deploy_values = chart_context["deploy_values_file"].read_text()
+
+    assert 'model: "openai/gpt-oss-20b"' in deploy_values
+    assert 'baseUrl: "https://openrouter.ai/api/v1"' in deploy_values
 
 
 def test_migrations_configmap_uses_server_side_apply(chart_context):

@@ -488,17 +488,32 @@ def create_agent(
 ) -> Agent[ChatDeps]:
     """Create a PydanticAI agent (same tools and prompts for every tier).
 
-    Defaults to the LLAMA_CPP_URL OpenAI-compatible endpoint. Pass ``provider_base_url`` +
-    ``api_key`` + ``model_name`` to back it with a hosted OpenAI-compatible model
-    instead (the household/WhatsApp tier -> DeepSeek V4 Flash on OpenRouter); the
-    default path is untouched when those are absent. ``provider_base_url`` is used
-    verbatim (it already includes the API path, e.g. ``.../api/v1``), unlike the
-    llama.cpp ``base_url`` which gets ``/v1`` appended.
+    Defaults to the env-configured hosted provider when both CHAT_MODEL and
+    CHAT_BASE_URL are set, otherwise to the LLAMA_CPP_URL OpenAI-compatible
+    endpoint. Pass ``provider_base_url`` + ``api_key`` + ``model_name`` to back
+    it with an explicit hosted OpenAI-compatible model instead (the
+    household/WhatsApp tier -> DeepSeek V4 Flash on OpenRouter).
+    ``provider_base_url`` is used verbatim (it already includes the API path,
+    e.g. ``.../api/v1``), unlike the llama.cpp ``base_url`` which gets ``/v1``
+    appended.
     """
     if provider_base_url:
         prov_url = provider_base_url
         key = api_key or ""
         name = model_name or shared.inference.META_SPARK_MODEL
+    elif model_name is None and api_key is None:
+        # No explicit provider; check for env-configured hosted provider
+        hosted = shared.inference.hosted_chat_provider()
+        if hosted:
+            prov_url, name = hosted
+            key = os.environ.get("OPENROUTER_API_KEY", "")
+        else:
+            # Fall back to Spark via llama.cpp
+            url = base_url or LLAMA_CPP_URL
+            prov_url = f"{url}/v1"
+            authorization = shared.inference.auth_headers(url).get("Authorization", "")
+            key = api_key or authorization.removeprefix("Bearer ") or "not-needed"
+            name = shared.inference.META_SPARK_MODEL
     else:
         url = base_url or LLAMA_CPP_URL
         prov_url = f"{url}/v1"
@@ -1059,17 +1074,25 @@ def create_household_agent() -> Agent[ChatDeps]:
 def create_fact_check_agent(base_url: str | None = None) -> "Agent[None]":
     """Create a lightweight agent for fact-checking a bot response via web search.
 
-    Uses the same Meta Spark model and Bosun persona but no chat deps, just a
-    web_search tool so it can verify claims against SearXNG.
+    Uses the configured Discord chat provider and Bosun persona but no chat
+    deps, just a web_search tool so it can verify claims against SearXNG.
     """
-    url = base_url or LLAMA_CPP_URL
-    authorization = shared.inference.auth_headers(url).get("Authorization", "")
+    hosted = shared.inference.hosted_chat_provider()
+    if hosted:
+        prov_url, model_name = hosted
+        key = os.environ.get("OPENROUTER_API_KEY", "")
+    else:
+        url = base_url or LLAMA_CPP_URL
+        prov_url = f"{url}/v1"
+        authorization = shared.inference.auth_headers(url).get("Authorization", "")
+        model_name = shared.inference.META_SPARK_MODEL
+        key = authorization.removeprefix("Bearer ") or "not-needed"
 
     model = OpenAIChatModel(
-        shared.inference.META_SPARK_MODEL,
+        model_name,
         provider=OpenAIProvider(
-            base_url=f"{url}/v1",
-            api_key=authorization.removeprefix("Bearer ") or "not-needed",
+            base_url=prov_url,
+            api_key=key,
         ),
     )
 

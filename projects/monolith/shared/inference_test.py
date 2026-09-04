@@ -11,10 +11,13 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 
 import shared.inference
 from shared.inference import (
+    CHAT_BASE_URL_ENV,
+    CHAT_MODEL_ENV,
     CHAT_REASONING_EFFORT_ENV,
     META_SPARK_API_KEY_ENV,
     auth_headers,
     chat_reasoning_effort,
+    hosted_chat_provider,
     structured_output,
 )
 
@@ -35,6 +38,51 @@ def test_chat_reasoning_effort_treats_whitespace_as_unset(monkeypatch):
     monkeypatch.setenv(CHAT_REASONING_EFFORT_ENV, "  \t ")
 
     assert chat_reasoning_effort() == "minimal"
+
+
+def test_hosted_chat_provider_requires_model(monkeypatch):
+    monkeypatch.delenv(CHAT_MODEL_ENV, raising=False)
+    monkeypatch.setenv(CHAT_BASE_URL_ENV, "https://provider.example/v1")
+
+    assert hosted_chat_provider() is None
+
+
+def test_hosted_chat_provider_requires_base_url(monkeypatch):
+    monkeypatch.setenv(CHAT_MODEL_ENV, "provider/model")
+    monkeypatch.delenv(CHAT_BASE_URL_ENV, raising=False)
+
+    assert hosted_chat_provider() is None
+
+
+@pytest.mark.parametrize(
+    ("model", "base_url"),
+    [("", ""), ("  ", "\t")],
+)
+def test_hosted_chat_provider_rejects_empty_values(monkeypatch, model, base_url):
+    monkeypatch.setenv(CHAT_MODEL_ENV, model)
+    monkeypatch.setenv(CHAT_BASE_URL_ENV, base_url)
+
+    assert hosted_chat_provider() is None
+
+
+def test_hosted_chat_provider_returns_configured_pair(monkeypatch):
+    monkeypatch.setenv(CHAT_MODEL_ENV, "openai/gpt-oss-20b")
+    monkeypatch.setenv(CHAT_BASE_URL_ENV, "https://openrouter.ai/api/v1")
+
+    assert hosted_chat_provider() == (
+        "https://openrouter.ai/api/v1",
+        "openai/gpt-oss-20b",
+    )
+
+
+def test_hosted_chat_provider_uses_environment_values(monkeypatch):
+    monkeypatch.setenv(CHAT_MODEL_ENV, "custom/model")
+    monkeypatch.setenv(CHAT_BASE_URL_ENV, "https://custom.example/v1")
+
+    assert hosted_chat_provider() == (
+        "https://custom.example/v1",
+        "custom/model",
+    )
 
 
 def test_auth_headers_adds_bearer_when_meta_spark_key_is_set(monkeypatch):

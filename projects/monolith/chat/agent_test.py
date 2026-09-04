@@ -1,9 +1,140 @@
 """Tests for PydanticAI chat agent."""
 
 from datetime import datetime, timezone
+from unittest.mock import patch
 
-from chat.agent import build_system_prompt, format_context_messages
+import shared.inference
+from chat.agent import (
+    build_system_prompt,
+    create_agent,
+    create_fact_check_agent,
+    format_context_messages,
+)
 from chat.models import Attachment, Blob, Message
+
+
+class TestChatProviderRouting:
+    def test_create_agent_uses_hosted_provider_from_environment(self, monkeypatch):
+        monkeypatch.setenv(shared.inference.CHAT_MODEL_ENV, "hosted/model")
+        monkeypatch.setenv(
+            shared.inference.CHAT_BASE_URL_ENV, "https://hosted.example/v1"
+        )
+        monkeypatch.setenv("OPENROUTER_API_KEY", "hosted-key")
+
+        with (
+            patch("chat.agent.Agent"),
+            patch("chat.agent.OpenAIChatModel") as model,
+            patch("chat.agent.OpenAIProvider") as provider,
+        ):
+            create_agent()
+
+        provider.assert_called_once_with(
+            base_url="https://hosted.example/v1", api_key="hosted-key"
+        )
+        model.assert_called_once_with("hosted/model", provider=provider.return_value)
+
+    def test_create_agent_falls_back_to_spark(self, monkeypatch):
+        monkeypatch.delenv(shared.inference.CHAT_MODEL_ENV, raising=False)
+        monkeypatch.delenv(shared.inference.CHAT_BASE_URL_ENV, raising=False)
+
+        with (
+            patch("chat.agent.Agent"),
+            patch("chat.agent.LLAMA_CPP_URL", "http://spark:8080"),
+            patch("chat.agent.OpenAIChatModel") as model,
+            patch("chat.agent.OpenAIProvider") as provider,
+        ):
+            create_agent()
+
+        provider.assert_called_once_with(
+            base_url="http://spark:8080/v1", api_key="not-needed"
+        )
+        model.assert_called_once_with(
+            shared.inference.META_SPARK_MODEL,
+            provider=provider.return_value,
+        )
+
+    def test_explicit_provider_base_url_wins_over_environment(self, monkeypatch):
+        monkeypatch.setenv(shared.inference.CHAT_MODEL_ENV, "hosted/model")
+        monkeypatch.setenv(
+            shared.inference.CHAT_BASE_URL_ENV, "https://hosted.example/v1"
+        )
+
+        with (
+            patch("chat.agent.Agent"),
+            patch("chat.agent.OpenAIChatModel") as model,
+            patch("chat.agent.OpenAIProvider") as provider,
+        ):
+            create_agent(
+                provider_base_url="https://explicit.example/v1",
+                model_name="explicit/model",
+                api_key="explicit-key",
+            )
+
+        provider.assert_called_once_with(
+            base_url="https://explicit.example/v1", api_key="explicit-key"
+        )
+        model.assert_called_once_with("explicit/model", provider=provider.return_value)
+
+    def test_explicit_model_and_api_key_win_over_environment(self, monkeypatch):
+        monkeypatch.setenv(shared.inference.CHAT_MODEL_ENV, "hosted/model")
+        monkeypatch.setenv(
+            shared.inference.CHAT_BASE_URL_ENV, "https://hosted.example/v1"
+        )
+
+        with (
+            patch("chat.agent.Agent"),
+            patch("chat.agent.OpenAIChatModel") as model,
+            patch("chat.agent.OpenAIProvider") as provider,
+        ):
+            create_agent(
+                base_url="http://explicit-spark:8080",
+                model_name="explicit/model",
+                api_key="explicit-key",
+            )
+
+        provider.assert_called_once_with(
+            base_url="http://explicit-spark:8080/v1", api_key="explicit-key"
+        )
+        model.assert_called_once_with("explicit/model", provider=provider.return_value)
+
+    def test_fact_check_agent_uses_hosted_provider(self, monkeypatch):
+        monkeypatch.setenv(shared.inference.CHAT_MODEL_ENV, "hosted/model")
+        monkeypatch.setenv(
+            shared.inference.CHAT_BASE_URL_ENV, "https://hosted.example/v1"
+        )
+        monkeypatch.setenv("OPENROUTER_API_KEY", "hosted-key")
+
+        with (
+            patch("chat.agent.Agent"),
+            patch("chat.agent.OpenAIChatModel") as model,
+            patch("chat.agent.OpenAIProvider") as provider,
+        ):
+            create_fact_check_agent()
+
+        provider.assert_called_once_with(
+            base_url="https://hosted.example/v1", api_key="hosted-key"
+        )
+        model.assert_called_once_with("hosted/model", provider=provider.return_value)
+
+    def test_fact_check_agent_falls_back_to_spark(self, monkeypatch):
+        monkeypatch.delenv(shared.inference.CHAT_MODEL_ENV, raising=False)
+        monkeypatch.delenv(shared.inference.CHAT_BASE_URL_ENV, raising=False)
+
+        with (
+            patch("chat.agent.Agent"),
+            patch("chat.agent.LLAMA_CPP_URL", "http://spark:8080"),
+            patch("chat.agent.OpenAIChatModel") as model,
+            patch("chat.agent.OpenAIProvider") as provider,
+        ):
+            create_fact_check_agent()
+
+        provider.assert_called_once_with(
+            base_url="http://spark:8080/v1", api_key="not-needed"
+        )
+        model.assert_called_once_with(
+            shared.inference.META_SPARK_MODEL,
+            provider=provider.return_value,
+        )
 
 
 class TestBuildSystemPrompt:

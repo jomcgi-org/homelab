@@ -171,6 +171,10 @@ chat:
   llamaCppUrl: "http://inference.inference.svc.cluster.local:8080"
   movingChatInferenceUrl: "http://inference.inference.svc.cluster.local:8080"
   embeddingUrl: "http://inference-embeddings.inference.svc.cluster.local:8080"
+  # Groq (via OpenRouter): 507 tok/s vs 98 tok/s on Spark. Clear both lines
+  # to revert to Spark (llama.cpp) without a code deploy.
+  model: "openai/gpt-oss-20b"
+  baseUrl: "https://openrouter.ai/api/v1"
   searxngUrl: "http://monolith-searxng:8080"
   changelogs:
     - name: "homelab"

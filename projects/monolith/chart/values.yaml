@@ -1173,6 +1173,11 @@ chat:
   # Empty uses the code default (512). Set to 0 to disable the cap entirely.
   # Raise it if answers start getting cut mid-sentence (check logs for warnings).
   maxTokens: ""
+  # OpenAI-compatible hosted provider for Discord chat (defaults to Spark via llama.cpp).
+  # Both model and baseUrl must be set; empty defaults to Spark with LLAMA_CPP_URL.
+  # baseUrl must include the API path, e.g. https://openrouter.ai/api/v1
+  model: ""
+  baseUrl: ""
   # The compare proxy reads this field from the existing chat 1Password item.
   githubApiTokenSecretKey: GITHUB_TOKEN
   llamaCppUrl: ""

@@ -87,6 +87,25 @@ def chat_max_tokens() -> int | None:
         return _DEFAULT_CHAT_MAX_TOKENS
 
 
+CHAT_MODEL_ENV = "CHAT_MODEL"
+CHAT_BASE_URL_ENV = "CHAT_BASE_URL"
+
+
+def hosted_chat_provider() -> tuple[str, str] | None:
+    """Hosted OpenAI-compatible provider for Discord chat when configured.
+
+    Returns (base_url, model) when both CHAT_MODEL and CHAT_BASE_URL are set
+    and non-empty, otherwise None (fall back to Spark). This is the seam where
+    values-only configuration arms the Groq provider; clearing both env vars
+    reverts to Spark without a code deploy.
+    """
+    model = os.environ.get(CHAT_MODEL_ENV, "").strip()
+    base_url = os.environ.get(CHAT_BASE_URL_ENV, "").strip()
+    if model and base_url:
+        return (base_url, model)
+    return None
+
+
 def record_usage(usage_dict: Mapping[str, Any] | None, model: str, caller: str) -> None:
     """Emit a usage span and decorate an ambient recording span when present."""
     try:
