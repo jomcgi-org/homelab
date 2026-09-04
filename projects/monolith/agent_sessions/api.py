@@ -121,7 +121,9 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
 
     try:
         if claim_stolen:
-            await asyncio.to_thread(_delete_pending_message_sync, row.id, turn_seq)
+            # Leave the row: a stolen claim means another replica holds it and is
+            # delivering, so deleting it here discards ITS work, which is the same
+            # race the losing path above stopped taking part in.
             logger.warning(
                 "Claim for turn %s in session %s was reclaimed before delivery, aborting",
                 turn_seq,
@@ -148,7 +150,9 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
                 turn_seq,
                 row.id,
             )
-            await asyncio.to_thread(_delete_pending_message_sync, row.id, turn_seq)
+            # The new owner is mid-delivery of this same row. Dropping our result
+            # is the at-most-once rule; deleting the row on the way out would also
+            # take theirs, leaving the turn persisted by nobody.
             return None
         status = _turn_status(turn)
         try:
