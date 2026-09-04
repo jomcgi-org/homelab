@@ -4940,7 +4940,6 @@ py_test(
     ],
 )
 
-
 py_test(
     name = "knowledge_gardener_test",
     srcs = ["knowledge/gardener_test.py"],
@@ -6082,7 +6081,6 @@ py_test(
     ],
 )
 
-
 py_test(
     name = "knowledge_gap_set_class_test",
     srcs = ["knowledge/gap_set_class_test.py"],
@@ -6109,9 +6107,6 @@ py_test(
         "@pip//sqlmodel",
     ],
 )
-
-
-
 
 py_test(
     name = "knowledge_store_gap_queries_test",
@@ -6445,7 +6440,6 @@ py_test(
     ],
 )
 
-
 py_test(
     name = "knowledge_raw_store_test",
     srcs = ["knowledge/raw_store_test.py"],
@@ -6468,7 +6462,6 @@ py_test(
         "@pip//sqlmodel",
     ],
 )
-
 
 py_test(
     name = "knowledge_ingest_queue_claim_test",
