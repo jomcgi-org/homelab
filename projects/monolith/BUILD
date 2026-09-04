@@ -1643,6 +1643,18 @@ py3_image(
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/progress",
 )
 
+# Agents-tier image: the pruned authenticated MCP binary on its dedicated port.
+# Its runfiles path follows the binary target name, as progress_image does.
+py3_image(
+    name = "main_agents_image",
+    binary = "//projects/monolith:main_agents",
+    env = {
+        "PYTHONPATH": "/projects/monolith/main_agents.runfiles/_main:/projects/monolith/main_agents.runfiles/_main/projects/monolith",
+    },
+    main = "app/agents_main.py",
+    repository = "ghcr.io/jomcgi/homelab/projects/monolith/agents",
+)
+
 # ---------------------------------------------------------------------------
 # Public service (ADR 004 Phase 5): a pruned, read-only binary/image that runs
 # app/main_public.py. It deliberately excludes every private write-path domain

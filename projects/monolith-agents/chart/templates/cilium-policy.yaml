@@ -1,0 +1,92 @@
+# ADR platform/012 isolation for the agents tier. These policies select both
+# directions, so traffic not explicitly listed below is denied by Cilium.
+{{- if .Values.ciliumPolicy.enabled }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "monolith-agents.fullname" . }}-ingress
+  labels:
+    {{- include "monolith-agents.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "monolith-agents.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: agents
+  ingress:
+    # Kubelet probes originate from the node host. The health entity permits
+    # Cilium's health checks. /healthz itself performs no DNS lookup.
+    - fromEntities:
+        - host
+        - health
+      toPorts:
+        - ports:
+            - port: {{ .Values.agents.containerPort | quote }}
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ include "monolith-agents.fullname" . }}-egress
+  labels:
+    {{- include "monolith-agents.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- include "monolith-agents.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: agents
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: monolith
+            cnpg.io/cluster: monolith-pg
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: inference
+            app.kubernetes.io/name: inference
+            app.kubernetes.io/component: embeddings
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: authentik
+            app.kubernetes.io/name: authentik
+            app.kubernetes.io/instance: authentik
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: otel-collector
+            app.kubernetes.io/name: otel-collector
+            app.kubernetes.io/instance: otel-collector
+      toPorts:
+        - ports:
+            - port: "4318"
+              protocol: TCP
+    {{- with .Values.ciliumPolicy.objectStorageFqdn }}
+    - toFQDNs:
+        - matchName: {{ . | quote }}
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    {{- end }}
+{{- end }}

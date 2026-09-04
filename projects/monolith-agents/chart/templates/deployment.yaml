@@ -1,0 +1,22 @@
+{{- $env := list
+  (dict "name" "DATABASE_URL" "valueFrom" (dict "secretKeyRef" (dict "name" .Values.database.secretName "key" .Values.database.secretKey)))
+  (dict "name" "EMBEDDING_URL" "value" .Values.embeddingUrl)
+  (dict "name" "KNOWLEDGE_DEFAULT_REPO_SCOPE" "value" .Values.knowledge.defaultRepoScope)
+  (dict "name" "AUTH_AUTHENTIK_JWKS_URL" "value" .Values.auth.authentik.jwksUrl)
+  (dict "name" "AUTH_AUTHENTIK_ISSUER" "value" .Values.auth.authentik.issuer)
+  (dict "name" "AUTH_AUTHENTIK_AUDIENCE" "value" .Values.auth.authentik.audience)
+  (dict "name" "AUTH_JWKS_CACHE_TTL_S" "value" (.Values.auth.jwksCacheTtlSeconds | toString))
+  (dict "name" "AUTH_AUTHENTIK_AGENT_JWKS_URL" "value" .Values.auth.authentik.agentJwksUrl)
+  (dict "name" "AUTH_AUTHENTIK_AGENT_ISSUER" "value" .Values.auth.authentik.agentIssuer)
+  (dict "name" "AUTH_AUTHENTIK_AGENT_AUDIENCE" "value" .Values.auth.authentik.agentAudience)
+  (dict "name" "SEAWEEDFS_S3_ENDPOINT" "value" .Values.objectStorage.endpoint)
+  (dict "name" "AWS_REGION" "value" .Values.objectStorage.region)
+  (dict "name" "S3_ACCESS_KEY_ID" "valueFrom" (dict "secretKeyRef" (dict "name" .Values.objectStorage.secretName "key" .Values.objectStorage.accessKeyKey)))
+  (dict "name" "S3_SECRET_ACCESS_KEY" "valueFrom" (dict "secretKeyRef" (dict "name" .Values.objectStorage.secretName "key" .Values.objectStorage.secretAccessKeyKey)))
+  (dict "name" "MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID" "value" .Values.discord.defaultChannelId)
+-}}
+{{- if .Values.otelEndpoint }}
+{{- $env = append $env (dict "name" "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" "value" .Values.otelEndpoint) }}
+{{- end }}
+{{- $_ := set .Values.agents "env" $env }}
+{{- include "homelab.deployment" (dict "context" . "component" "agents") }}
