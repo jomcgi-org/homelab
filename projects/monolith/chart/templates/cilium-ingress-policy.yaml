@@ -11,24 +11,22 @@ arbitrary pod. That is precisely why it is gated default-false and why the
 allowlist below is exhaustive rather than illustrative. A caller omitted here
 fails as a silent dial timeout, not a readable deny (see PR #4294).
 
-The selector picks one pod carrying four containers. The monolith pod runs
+The selector picks one pod carrying three containers. The monolith pod runs
 backend (containerPort 8000, named api), progress-ingest (8091, named
-progress), agent-mcp (8092, named agent-mcp), and frontend (3000, named http).
-One pod is one Cilium endpoint, so an ingress rule default-denies all four
-ports at once. That is why a policy about the API must also account for 3000,
-8091, and 8092. Agent MCP ingress remains closed until the separate EmberVM
-network allowlist change opens both directions deliberately.
+progress) and frontend (3000, named http). One pod is one Cilium endpoint, so
+an ingress rule default-denies all three ports at once. That is why a policy
+about the API must also allowlist 3000 and 8091.
 
-Service ports and container ports coincide here (3000, 8000, 8091, 8092), but
-the rule is written against the pod ports on purpose. Cilium enforces policy
+Service ports and container ports coincide here (3000, 8000, 8091), but the
+rule is written against the pod ports on purpose. Cilium enforces policy
 after service DNAT, so a rule naming a service port that differed from its
 targetPort would silently fail to match.
 
 fromEntities: [host, health] is mandatory, not optional. kubelet probes
 originate from the node. Once any ingress rule selects the endpoint it becomes
 default-deny and the pod never goes Ready without this. The backend has a
-readiness probe on api every 5s and liveness every 10s; progress-ingest and
-agent-mcp have liveness probes every 20s.
+readiness probe on api every 5s and liveness every 10s; progress-ingest has
+liveness on progress every 20s.
 
 Provenance of each allowlist entry:
   - envoy-gateway-system to 3000 AND 8000, NARROWED to the envoy proxy pods
