@@ -32,7 +32,9 @@ export async function POST({ request }) {
       messages: body.messages,
       model: MODEL,
       stream: true,
-      temperature: 0,
+      // No temperature here on purpose: the server resolves sampling from the
+      // model's own generation_config, which is tuned for this model's thinking
+      // mode. Forcing greedy decoding would override that.
       max_tokens: maxTokens,
       chat_template_kwargs: { enable_thinking: enableThinking },
     }),
