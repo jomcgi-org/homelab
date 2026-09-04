@@ -1178,6 +1178,10 @@ chat:
   # baseUrl must include the API path, e.g. https://openrouter.ai/api/v1
   model: ""
   baseUrl: ""
+  # Provider name for pinning when using hosted provider (e.g. "groq" for Groq via OpenRouter).
+  # Empty means no pin; the hosted provider will fallback silently to alternate hosts.
+  # Only used when both model and baseUrl are set.
+  provider: ""
   # The compare proxy reads this field from the existing chat 1Password item.
   githubApiTokenSecretKey: GITHUB_TOKEN
   llamaCppUrl: ""

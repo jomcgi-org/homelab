@@ -106,6 +106,21 @@ def hosted_chat_provider() -> tuple[str, str] | None:
     return None
 
 
+CHAT_PROVIDER_ENV = "CHAT_PROVIDER"
+
+
+def chat_provider() -> str | None:
+    """Provider name for pinning when using hosted Discord chat provider.
+
+    Returns the provider name (e.g. "groq") when set and non-empty, otherwise
+    None. Used to construct the extra_body pin for OpenRouter requests. Empty
+    means no pin and silent fallback is possible, so it must be explicit when
+    a hard pin is required. Ignored when using Spark (no hosted provider).
+    """
+    provider = os.environ.get(CHAT_PROVIDER_ENV, "").strip()
+    return provider if provider else None
+
+
 def record_usage(usage_dict: Mapping[str, Any] | None, model: str, caller: str) -> None:
     """Emit a usage span and decorate an ambient recording span when present."""
     try:

@@ -261,3 +261,50 @@ class TestToolGuidancePrompt:
         """build_system_prompt() includes the don't-pretend-you-searched rule."""
         prompt = build_system_prompt()
         assert "Pretend you looked something up" in prompt
+
+
+class TestProviderPin:
+    """The OpenRouter route must be pinned or the measured throughput is a guess."""
+
+    def _settings(self, monkeypatch, **env):
+        for key in (
+            shared.inference.CHAT_MODEL_ENV,
+            shared.inference.CHAT_BASE_URL_ENV,
+            shared.inference.CHAT_PROVIDER_ENV,
+        ):
+            monkeypatch.delenv(key, raising=False)
+        # The OpenAI client rejects an empty api_key outright, so the hosted
+        # lane needs one present before it can be constructed at all.
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        with patch("chat.agent.LLAMA_CPP_URL", "http://fake:8080"):
+            return create_agent(base_url="http://fake:8080").model_settings
+
+    def test_hosted_lane_carries_the_pin(self, monkeypatch):
+        settings = self._settings(
+            monkeypatch,
+            CHAT_MODEL="openai/gpt-oss-20b",
+            CHAT_BASE_URL="https://openrouter.ai/api/v1",
+            CHAT_PROVIDER="groq",
+        )
+
+        assert settings["extra_body"] == {
+            "provider": {"order": ["groq"], "allow_fallbacks": False}
+        }
+
+    def test_hosted_lane_without_a_pin_omits_extra_body(self, monkeypatch):
+        settings = self._settings(
+            monkeypatch,
+            CHAT_MODEL="openai/gpt-oss-20b",
+            CHAT_BASE_URL="https://openrouter.ai/api/v1",
+            CHAT_PROVIDER="   ",
+        )
+
+        assert "extra_body" not in settings
+
+    def test_spark_lane_never_carries_a_routing_directive(self, monkeypatch):
+        """A pin set while on Spark must not be forwarded; Meta cannot parse it."""
+        settings = self._settings(monkeypatch, CHAT_PROVIDER="groq")
+
+        assert "extra_body" not in settings

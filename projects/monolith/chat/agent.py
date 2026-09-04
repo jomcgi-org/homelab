@@ -464,6 +464,7 @@ def _sync_chat_settings() -> OpenAIChatModelSettings:
     applies when the key is absent: a present-but-None key is forwarded to the
     provider as an explicit null instead of being dropped. Uncapped mode is the
     revert lever for a small-context local engine, so it has to actually work.
+    The same absent-not-empty rule applies to the extra_body provider pin.
     """
     settings = OpenAIChatModelSettings(
         temperature=1.0,
@@ -474,6 +475,20 @@ def _sync_chat_settings() -> OpenAIChatModelSettings:
     max_tokens = shared.inference.chat_max_tokens()
     if max_tokens is not None:
         settings["max_tokens"] = max_tokens
+
+    # Provider pinning for hosted Discord provider (e.g. Groq via OpenRouter).
+    # Only set when BOTH hosted provider is configured AND provider name is given.
+    # extra_body MUST be absent (not present-and-empty) when not pinning, so the
+    # OpenAI client doesn't forward an unexpected directive.
+    hosted = shared.inference.hosted_chat_provider()
+    provider = shared.inference.chat_provider()
+    if hosted and provider:
+        settings["extra_body"] = {
+            "provider": {
+                "order": [provider],
+                "allow_fallbacks": False,
+            }
+        }
     return settings
 
 

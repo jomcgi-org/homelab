@@ -223,11 +223,12 @@ def test_hosted_chat_provider_renders_from_deploy_values(chart_context):
 
 
 def test_deploy_values_pin_hosted_chat_provider(chart_context):
-    """The production values keep both hosted provider fields explicit."""
+    """The production values keep hosted provider fields explicit."""
     deploy_values = chart_context["deploy_values_file"].read_text()
 
     assert 'model: "openai/gpt-oss-20b"' in deploy_values
     assert 'baseUrl: "https://openrouter.ai/api/v1"' in deploy_values
+    assert 'provider: "groq"' in deploy_values
 
 
 def test_migrations_configmap_uses_server_side_apply(chart_context):
@@ -253,3 +254,10 @@ def test_migrations_configmap_uses_server_side_apply(chart_context):
     assert "argocd.argoproj.io/sync-options: ServerSideApply=true" in docs[0], (
         "migrations ConfigMap is missing the ServerSideApply=true sync option"
     )
+
+
+def test_chat_provider_pin_is_rendered(chart_context):
+    """The hosted lane must ship a provider pin, not an open route."""
+    rendered = chart_context["rendered"]
+
+    assert re.search(r'- name: CHAT_PROVIDER\n\s+value: "groq"', rendered)
