@@ -167,7 +167,7 @@ def test_run_synthetic_session_aborts_when_claim_stolen_mid_deliver(monkeypatch)
     assert len(delivered) == 1
     assert len(refresh_calls) == 1
     assert persisted == []
-    assert deleted == [(45, 1)]
+    assert deleted == []
 
 
 def test_run_synthetic_session_tolerates_duplicate_turn_insert(monkeypatch):
