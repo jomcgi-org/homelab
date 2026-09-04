@@ -82,9 +82,12 @@ genrule(
     ],
     outs = ["otp_smoke.txt"],
     cmd = "$(location otp_smoke.sh) \"$(location @otp_ubuntu2204_amd64//:Install)\" \"$@\"",
-    # "verification" is how bazel/tools/ci/affected-targets.sh finds a suite that
-    # is not a Bazel test rule. Without it a changed source reaches no test()
-    # and the PR run reports green having built none of this (#5538).
+    # "verification" marks a suite that is not a Bazel test rule, for
+    # bazel/tools/ci/affected-targets.sh (#5538). INERT on this target as things
+    # stand: its only main-repo source is otp_smoke.sh, and any changed file
+    # under bazel/ takes the //... fallback before the query runs, so the tag can
+    # never be what selects it. Kept so the marking is uniform across the suites,
+    # and so it starts working if that fallback is ever narrowed.
     tags = ["verification"],
     tools = ["otp_smoke.sh"],
 )
