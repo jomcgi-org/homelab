@@ -12,5 +12,4 @@ go_test(
     name = "authentik_test",
     srcs = ["adapter_test.go"],
     embed = [":authentik"],
-    deps = ["//projects/embervm/tokenbroker/internal/provider"],
 )
