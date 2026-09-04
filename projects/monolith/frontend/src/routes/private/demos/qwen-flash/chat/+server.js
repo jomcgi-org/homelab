@@ -3,11 +3,10 @@ import { qwenFlashApiBase } from "../upstream.js";
 const MODEL = "qwen3.6-27b";
 const REQUEST_TIMEOUT_MS = 300000;
 
-// 400 keeps a reasoned answer near 20 s at the roughly 20 tok/s this server
-// sustains with thinking on. 600 pushes it past 30 s, which is too long to hold
-// a room during a live demo.
-const DEFAULT_MAX_TOKENS = 400;
-const MAX_MAX_TOKENS = 2048;
+// Thinking and the visible answer share this budget. A short cap can end the
+// reasoning trace before the audience sees an answer.
+const DEFAULT_MAX_TOKENS = 8192;
+const MAX_MAX_TOKENS = 8192;
 
 export async function POST({ request }) {
   const body = await request.json();

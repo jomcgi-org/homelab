@@ -1,25 +1,92 @@
-const EMPTY_PEAKS = Object.freeze({ decodeTps: 0, prefillTps: 0 });
+const EMPTY_PEAKS = Object.freeze({ decodeTps: 0, ttftMs: null });
+const EMPTY_TOTALS = Object.freeze({ turns: 0, tokens: 0, generationMs: 0 });
 
-export function trackPeaks(peaks = EMPTY_PEAKS, stats) {
+function hasText(value) {
+  return typeof value === "string" && value.length > 0;
+}
+
+function nonNegativeInteger(value) {
+  return Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function positiveInteger(value) {
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function finiteNonNegative(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : 0;
+}
+
+function indexedValues(value) {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== "object") return null;
+
+  const indexes = Object.keys(value)
+    .map(Number)
+    .filter((index) => Number.isInteger(index) && index >= 0);
+  if (!indexes.length) return [];
+
+  const result = new Array(Math.max(...indexes) + 1);
+  for (const index of indexes) result[index] = value[String(index)];
+  return result;
+}
+
+function profileLayers(profile) {
+  return indexedValues(profile?.layers);
+}
+
+function profileHits(profile) {
+  return indexedValues(profile?.expert_hits);
+}
+
+function inferredExpertCount(profile) {
+  const rows = profileHits(profile);
+  if (!rows) return null;
+  const widths = rows
+    .filter(Array.isArray)
+    .map((row) => row.length)
+    .filter((width) => width > 0);
+  if (!widths.length || widths.some((width) => width !== widths[0]))
+    return null;
+  return widths[0];
+}
+
+export function trackSessionPeaks(peaks = EMPTY_PEAKS, turnMetrics) {
+  const decodeTps = finiteNonNegative(turnMetrics?.tokensPerSecond);
+  const ttft = finiteNonNegative(turnMetrics?.ttftMs);
+  const nextTtft =
+    turnMetrics?.ttftMs === null || turnMetrics?.ttftMs === undefined
+      ? peaks.ttftMs
+      : peaks.ttftMs === null
+        ? ttft
+        : Math.min(peaks.ttftMs, ttft);
+
   return {
-    decodeTps: Math.max(
-      peaks.decodeTps,
-      Number(stats?.throughput?.decode_tps) || 0,
-    ),
-    prefillTps: Math.max(
-      peaks.prefillTps,
-      Number(stats?.throughput?.prefill_tps) || 0,
-    ),
+    decodeTps: Math.max(finiteNonNegative(peaks.decodeTps), decodeTps),
+    ttftMs: nextTtft,
+  };
+}
+
+export function addSessionTurn(
+  totals = EMPTY_TOTALS,
+  turnMetrics,
+  generationMs,
+) {
+  return {
+    turns: nonNegativeInteger(totals.turns) === null ? 1 : totals.turns + 1,
+    tokens:
+      finiteNonNegative(totals.tokens) +
+      finiteNonNegative(turnMetrics?.reasoningTokens) +
+      finiteNonNegative(turnMetrics?.answerTokens),
+    generationMs:
+      finiteNonNegative(totals.generationMs) + finiteNonNegative(generationMs),
   };
 }
 
 export function deriveModelState(inFlight, firstTokenSeen) {
   if (!inFlight) return "idle";
   return firstTokenSeen ? "generating" : "prefilling";
-}
-
-function hasText(value) {
-  return typeof value === "string" && value.length > 0;
 }
 
 export function countTurnTokens(chunks) {
@@ -88,27 +155,23 @@ export function formatRate(rate) {
 }
 
 export function classifyLayerTier(layers, layerIndex) {
-  const value = layers?.[String(layerIndex)];
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? "disk"
-    : "resident";
+  const values = indexedValues(layers);
+  const value = values?.[layerIndex];
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return "unknown";
+  }
+  return value > 0 ? "disk" : "resident";
 }
 
 export function diffExpertHits(previous, current) {
-  if (!previous?.expert_hits || !current?.expert_hits) return [];
+  const previousRows = profileHits(previous);
+  const currentRows = profileHits(current);
+  if (!previousRows || !currentRows) return [];
 
   const fired = [];
-  for (const [layerKey, currentHits] of Object.entries(current.expert_hits)) {
-    const previousHits = previous.expert_hits[layerKey];
-    const layer = Number(layerKey);
-    if (
-      !Number.isInteger(layer) ||
-      layer < 0 ||
-      !Array.isArray(currentHits) ||
-      !Array.isArray(previousHits)
-    ) {
-      continue;
-    }
+  currentRows.forEach((currentHits, layer) => {
+    const previousHits = previousRows[layer];
+    if (!Array.isArray(currentHits) || !Array.isArray(previousHits)) return;
 
     currentHits.forEach((value, expert) => {
       const before = previousHits[expert];
@@ -123,52 +186,139 @@ export function diffExpertHits(previous, current) {
       const delta = value - before;
       if (delta > 0) fired.push({ layer, expert, delta });
     });
-  }
+  });
   return fired;
 }
 
-export function decayActivity(value, factor = 0.82, cutoff = 0.03) {
-  const current = Number(value);
-  if (!Number.isFinite(current) || current <= 0) return 0;
-  const next = current * factor;
-  return next < cutoff ? 0 : next;
-}
-
-function nonNegativeInteger(value) {
-  return Number.isInteger(value) && value >= 0 ? value : null;
-}
-
-function positiveInteger(value) {
-  return Number.isInteger(value) && value > 0 ? value : null;
-}
-
-export function calculateTierSummary(geometry) {
-  const numExperts = positiveInteger(geometry?.num_experts);
-  const numLayers = positiveInteger(geometry?.num_moe_layers);
+export function calculateTierSummary(profile, geometry) {
+  const layers = profileLayers(profile);
+  const configuredLayers = positiveInteger(geometry?.num_moe_layers);
+  const numLayers = configuredLayers ?? (layers?.length || null);
+  const numExperts =
+    positiveInteger(geometry?.num_experts) ?? inferredExpertCount(profile);
   const requestedCacheSize = nonNegativeInteger(geometry?.moe_cache_size);
   const bytesPerExpert = positiveInteger(geometry?.unit_bytes?.moe_per_expert);
   const totalExperts =
     numExperts === null || numLayers === null ? null : numExperts * numLayers;
-  const gpuExperts =
-    totalExperts === null || requestedCacheSize === null
+
+  let residentLayers = null;
+  let diskLayers = null;
+  if (layers && numLayers !== null && layers.length >= numLayers) {
+    residentLayers = 0;
+    diskLayers = 0;
+    for (let layer = 0; layer < numLayers; layer += 1) {
+      const tier = classifyLayerTier(layers, layer);
+      if (tier === "resident") residentLayers += 1;
+      else if (tier === "disk") diskLayers += 1;
+      else {
+        residentLayers = null;
+        diskLayers = null;
+        break;
+      }
+    }
+  }
+
+  const warmExperts =
+    residentLayers === null || numExperts === null
       ? null
-      : Math.min(totalExperts, requestedCacheSize);
-  const nvmeExperts =
-    totalExperts === null || gpuExperts === null
+      : residentLayers * numExperts;
+  const diskExperts =
+    diskLayers === null || numExperts === null ? null : diskLayers * numExperts;
+  const hotExperts =
+    diskExperts === null
       ? null
-      : totalExperts - gpuExperts;
+      : diskExperts === 0
+        ? 0
+        : requestedCacheSize === null
+          ? null
+          : Math.min(diskExperts, requestedCacheSize);
+  const coldExperts =
+    diskExperts === null || hotExperts === null
+      ? null
+      : diskExperts - hotExperts;
+  const bytes = (experts) =>
+    experts === null || bytesPerExpert === null
+      ? null
+      : experts * bytesPerExpert;
 
   return {
     totalExperts,
-    gpuExperts,
-    nvmeExperts,
-    gpuBytes:
-      gpuExperts === null || bytesPerExpert === null
-        ? null
-        : gpuExperts * bytesPerExpert,
-    nvmeBytes:
-      nvmeExperts === null || bytesPerExpert === null
-        ? null
-        : nvmeExperts * bytesPerExpert,
+    residentLayers,
+    diskLayers,
+    hotExperts,
+    warmExperts,
+    coldExperts,
+    hotBytes: bytes(hotExperts),
+    warmBytes: bytes(warmExperts),
+    coldBytes: bytes(coldExperts),
+  };
+}
+
+function likelyHotExperts(profile, geometry) {
+  const summary = calculateTierSummary(profile, geometry);
+  const layers = profileLayers(profile);
+  const hits = profileHits(profile);
+  const numExperts =
+    positiveInteger(geometry?.num_experts) ?? inferredExpertCount(profile);
+  if (
+    !layers ||
+    !hits ||
+    numExperts === null ||
+    summary.hotExperts === null ||
+    summary.diskLayers === null
+  ) {
+    return null;
+  }
+
+  const diskLayerIndexes = layers
+    .map((_, layer) => layer)
+    .filter((layer) => classifyLayerTier(layers, layer) === "disk");
+  const hot = new Set();
+  if (!diskLayerIndexes.length || summary.hotExperts === 0) return hot;
+
+  const perLayer = Math.floor(summary.hotExperts / diskLayerIndexes.length);
+  let remainder = summary.hotExperts % diskLayerIndexes.length;
+  for (const layer of diskLayerIndexes) {
+    const slotCount = Math.min(numExperts, perLayer + (remainder > 0 ? 1 : 0));
+    if (remainder > 0) remainder -= 1;
+    const row = Array.isArray(hits[layer]) ? hits[layer] : [];
+    const ranked = Array.from({ length: numExperts }, (_, expert) => ({
+      expert,
+      hits:
+        typeof row[expert] === "number" && Number.isFinite(row[expert])
+          ? row[expert]
+          : Number.NEGATIVE_INFINITY,
+    })).sort(
+      (left, right) => right.hits - left.hits || left.expert - right.expert,
+    );
+    for (let index = 0; index < slotCount; index += 1) {
+      hot.add(`${layer}:${ranked[index].expert}`);
+    }
+  }
+  return hot;
+}
+
+export function attributeExpertActivity(previous, current, geometry) {
+  const fired = diffExpertHits(previous, current);
+  const layers = profileLayers(current);
+  const hotExperts = likelyHotExperts(current, geometry);
+  const activity = { hotHits: 0, warmHits: 0, coldHits: 0, unknownHits: 0 };
+
+  for (const { layer, expert, delta } of fired) {
+    const tier = classifyLayerTier(layers, layer);
+    if (tier === "resident") activity.warmHits += delta;
+    else if (tier === "disk" && hotExperts?.has(`${layer}:${expert}`)) {
+      activity.hotHits += delta;
+    } else if (tier === "disk" && hotExperts) activity.coldHits += delta;
+    else activity.unknownHits += delta;
+  }
+
+  return {
+    ...activity,
+    totalHits:
+      activity.hotHits +
+      activity.warmHits +
+      activity.coldHits +
+      activity.unknownHits,
   };
 }
