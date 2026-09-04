@@ -13,17 +13,29 @@
 
   const CHAT_URL = "/private/demos/qwen-flash/chat";
   const STATS_URL = "/private/demos/qwen-flash/stats";
+  const EMPTY_TURN_METRICS = {
+    ttftMs: null,
+    tokensPerSecond: 0,
+    timeToFirstReasoningMs: null,
+    timeToFirstAnswerMs: null,
+    reasoningTokens: 0,
+    answerTokens: 0,
+  };
 
   let messages = $state([]);
   let inputText = $state("");
   let isInFlight = $state(false);
   let firstTokenSeen = $state(false);
+  // Drives GENERATION, not just display: the server reads enableThinking and
+  // passes it to the model, so flipping this mid-demo shows the contrast
+  // between a reasoned answer and a direct one.
+  let thinkingEnabled = $state(true);
   let stats = $state(null);
   let statsError = $state("");
   let peaks = $state({ decodeTps: 0, prefillTps: 0 });
   let turnStartedAt = 0;
   let turnChunks = [];
-  let turnMetrics = $state({ ttftMs: null, tokensPerSecond: 0 });
+  let turnMetrics = $state({ ...EMPTY_TURN_METRICS });
   let controller;
   let chatLog;
   let statsTimer;
@@ -42,6 +54,20 @@
     const minutes = Math.floor((total % 3600) / 60);
     const remaining = total % 60;
     return `${String(hours).padStart(3, "0")}:${String(minutes).padStart(2, "0")}:${String(remaining).padStart(2, "0")}`;
+  }
+
+  function formatDuration(milliseconds) {
+    return milliseconds === null
+      ? "--.- s"
+      : `${(milliseconds / 1000).toFixed(1)} s`;
+  }
+
+  function formatReasoningRatio(reasoningTokens, answerTokens) {
+    if (!reasoningTokens && !answerTokens) return "-- / --";
+    if (reasoningTokens < 10 || answerTokens < 10) {
+      return `${reasoningTokens} / ${answerTokens}`;
+    }
+    return `${(reasoningTokens / answerTokens).toFixed(1)}x`;
   }
 
   function scrollToBottom() {
@@ -75,13 +101,30 @@
     }, delay);
   }
 
-  function appendToken(text) {
-    if (!text) return;
+  function appendDelta(delta) {
     const now = performance.now();
-    firstTokenSeen = true;
-    messages[messages.length - 1].content += text;
-    turnChunks = [...turnChunks, { at: now, tokens: 1 }];
+    const assistant = messages[messages.length - 1];
+    const reasoningContent =
+      typeof delta.reasoning_content === "string"
+        ? delta.reasoning_content
+        : "";
+    const content = typeof delta.content === "string" ? delta.content : "";
+
+    if (delta.role === "assistant") assistant.role = delta.role;
+    if (reasoningContent) assistant.reasoningContent += reasoningContent;
+    if (content) assistant.content += content;
+
+    turnChunks = [
+      ...turnChunks,
+      {
+        at: now,
+        role: delta.role,
+        reasoning_content: reasoningContent,
+        content,
+      },
+    ];
     turnMetrics = calculateTurnMetrics(turnStartedAt, turnChunks);
+    firstTokenSeen = turnMetrics.ttftMs !== null;
     scrollToBottom();
   }
 
@@ -95,7 +138,8 @@
 
     try {
       const event = JSON.parse(data);
-      appendToken(event.choices?.[0]?.delta?.content ?? "");
+      const delta = event.choices?.[0]?.delta;
+      if (delta && typeof delta === "object") appendDelta(delta);
     } catch {
       // A malformed upstream event is ignored without interrupting the stream.
     }
@@ -106,13 +150,13 @@
     if (!text || isInFlight) return;
 
     inputText = "";
-    messages.push({ role: "user", content: text });
-    messages.push({ role: "assistant", content: "" });
+    messages.push({ role: "user", content: text, reasoningContent: "" });
+    messages.push({ role: "assistant", content: "", reasoningContent: "" });
     isInFlight = true;
     firstTokenSeen = false;
     turnStartedAt = performance.now();
     turnChunks = [];
-    turnMetrics = { ttftMs: null, tokensPerSecond: 0 };
+    turnMetrics = { ...EMPTY_TURN_METRICS };
     controller = new AbortController();
     scheduleStats(0);
     scrollToBottom();
@@ -126,6 +170,7 @@
             role,
             content,
           })),
+          enableThinking: thinkingEnabled,
         }),
         signal: controller.signal,
       });
@@ -212,24 +257,43 @@
           <p class="section-label">01 / Chat</p>
           <h2>Ask the 125B model</h2>
         </div>
-        <div class="state" data-state={modelState} aria-live="polite">
-          <span class="state-dot"></span>
-          {modelState}
+        <div class="heading-controls">
+          <label class="thinking-toggle">
+            <input type="checkbox" bind:checked={thinkingEnabled} />
+            <span>Thinking</span>
+          </label>
+          <div class="state" data-state={modelState} aria-live="polite">
+            <span class="state-dot"></span>
+            {modelState}
+          </div>
         </div>
       </header>
 
       <div class="turn-strip">
         <div>
           <span>Time to first token</span>
-          <strong>
-            {turnMetrics.ttftMs === null
-              ? "--.- s"
-              : `${(turnMetrics.ttftMs / 1000).toFixed(1)} s`}
-          </strong>
+          <strong>{formatDuration(turnMetrics.ttftMs)}</strong>
         </div>
         <div>
           <span>This turn</span>
           <strong>{formatRate(turnMetrics.tokensPerSecond)} tok/s</strong>
+        </div>
+        <div>
+          <span>First reasoning</span>
+          <strong>{formatDuration(turnMetrics.timeToFirstReasoningMs)}</strong>
+        </div>
+        <div>
+          <span>First answer</span>
+          <strong>{formatDuration(turnMetrics.timeToFirstAnswerMs)}</strong>
+        </div>
+        <div>
+          <span>Reasoning / answer</span>
+          <strong>
+            {formatReasoningRatio(
+              turnMetrics.reasoningTokens,
+              turnMetrics.answerTokens,
+            )}
+          </strong>
         </div>
       </div>
 
@@ -251,12 +315,23 @@
             class="message"
           >
             <p class="message-role">{message.role}</p>
-            {#if message.role === "assistant" && !message.content && isInFlight && index === messages.length - 1}
+            {#if message.role === "assistant" && !message.content && !message.reasoningContent && isInFlight && index === messages.length - 1}
               <p class="waiting">
                 <span class="waiting-mark"></span>
                 Waiting for first token. Cold expert pages can take tens of seconds
                 to reach the GPU.
               </p>
+            {:else if message.role === "assistant"}
+              {#if message.reasoningContent}
+                <details
+                  class="thinking-region"
+                  open={isInFlight && index === messages.length - 1}
+                >
+                  <summary>Thinking</summary>
+                  <pre>{message.reasoningContent}</pre>
+                </details>
+              {/if}
+              <pre class="answer-region">{message.content}</pre>
             {:else}
               <pre>{message.content}</pre>
             {/if}
@@ -304,6 +379,10 @@
           <p class="section-label">02 / Hardware</p>
           <span class="live-tag">Live</span>
         </div>
+        <p class="setup-callout">
+          A 125B-parameter model fits on one 24 GB card only because its weights
+          live on NVMe. The server pages experts on demand.
+        </p>
         <p class="gpu-name">{stats?.gpus?.[0]?.name ?? "GPU stats loading"}</p>
         <div class="vram-hero">
           <strong>{stats ? formatBytes(stats.vram_bytes) : "--.- GB"}</strong>
@@ -511,6 +590,33 @@
     letter-spacing: -0.025em;
   }
 
+  .heading-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+  }
+
+  .thinking-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-height: 2rem;
+    padding: 0 0.55rem;
+    border: 1px solid var(--line);
+    color: var(--ink-2);
+    font-family: var(--font-code);
+    font-size: 0.67rem;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .thinking-toggle input {
+    width: 0.85rem;
+    height: 0.85rem;
+    margin: 0;
+    accent-color: var(--accent-ink);
+  }
+
   .state {
     display: inline-flex;
     align-items: center;
@@ -545,9 +651,18 @@
 
   .turn-strip {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     border-bottom: 1px solid var(--line);
     background: var(--band);
+  }
+
+  .turn-strip > div:nth-child(-n + 2) {
+    grid-column: span 3;
+  }
+
+  .turn-strip > div:nth-child(n + 3) {
+    grid-column: span 2;
+    border-top: 1px solid var(--line);
   }
 
   .turn-strip > div {
@@ -560,6 +675,10 @@
 
   .turn-strip > div + div {
     border-left: 1px solid var(--line);
+  }
+
+  .turn-strip > div:nth-child(3) {
+    border-left: 0;
   }
 
   .turn-strip span {
@@ -576,6 +695,8 @@
   }
 
   .turn-strip strong {
+    min-width: 5.5ch;
+    text-align: right;
     white-space: nowrap;
     font-size: 0.9rem;
   }
@@ -645,6 +766,35 @@
     font-family: var(--font-ui);
     font-size: 0.95rem;
     line-height: 1.58;
+  }
+
+  .thinking-region {
+    margin: 0 0 0.8rem;
+    padding: 0.55rem 0.65rem 0.65rem;
+    border: 1px solid var(--line);
+    background: var(--band);
+    color: var(--ink-3);
+  }
+
+  .thinking-region summary {
+    color: var(--ink-2);
+    font-family: var(--font-code);
+    font-size: 0.67rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+
+  .thinking-region pre {
+    margin-top: 0.5rem;
+    color: var(--ink-3);
+    font-size: 0.8rem;
+    line-height: 1.5;
+  }
+
+  .answer-region {
+    color: var(--ink);
   }
 
   .waiting {
@@ -759,6 +909,17 @@
 
   .hardware-header .section-label {
     color: var(--ink-3);
+  }
+
+  .setup-callout {
+    margin: 0.9rem 0 1.1rem;
+    padding: 0.85rem 0;
+    border-top: 1px solid var(--accent-ink);
+    border-bottom: 1px solid var(--accent-ink);
+    color: var(--sheet);
+    font-size: clamp(1rem, 1.7vw, 1.25rem);
+    font-weight: 650;
+    line-height: 1.35;
   }
 
   .live-tag {
@@ -963,9 +1124,18 @@
       grid-template-columns: 1fr;
     }
 
+    .turn-strip > div:nth-child(n) {
+      grid-column: span 1;
+    }
+
     .turn-strip > div + div {
       border-top: 1px solid var(--line);
       border-left: 0;
+    }
+
+    .heading-controls {
+      align-items: flex-end;
+      flex-direction: column-reverse;
     }
 
     .message {

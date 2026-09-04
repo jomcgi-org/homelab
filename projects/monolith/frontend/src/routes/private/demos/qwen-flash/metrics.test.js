@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   calculateTurnMetrics,
+  countTurnTokens,
   deriveModelState,
   formatBytes,
   formatRate,
@@ -39,21 +40,67 @@ describe("deriveModelState", () => {
 });
 
 describe("calculateTurnMetrics", () => {
-  it("measures first token latency and decode rate from timestamped chunks", () => {
+  it("measures first token latency and decode rate from answer chunks", () => {
     expect(
       calculateTurnMetrics(1000, [
-        { at: 2500, tokens: 1 },
-        { at: 2750, tokens: 1 },
-        { at: 3000, tokens: 1 },
+        { at: 2500, role: "assistant" },
+        { at: 2500, content: "One" },
+        { at: 2750, content: " two" },
+        { at: 3000, content: " three" },
       ]),
-    ).toEqual({ ttftMs: 1500, tokensPerSecond: 4 });
+    ).toEqual({
+      ttftMs: 1500,
+      tokensPerSecond: 4,
+      timeToFirstReasoningMs: null,
+      timeToFirstAnswerMs: 1500,
+      reasoningTokens: 0,
+      answerTokens: 3,
+    });
   });
 
   it("reports no rate until two streamed tokens establish an interval", () => {
-    expect(calculateTurnMetrics(1000, [{ at: 1600, tokens: 1 }])).toEqual({
+    expect(
+      calculateTurnMetrics(1000, [{ at: 1600, content: "Hello" }]),
+    ).toEqual({
       ttftMs: 600,
       tokensPerSecond: 0,
+      timeToFirstReasoningMs: null,
+      timeToFirstAnswerMs: 600,
+      reasoningTokens: 0,
+      answerTokens: 1,
     });
+  });
+
+  it("derives reasoning and answer timings and counts from streamed deltas", () => {
+    expect(
+      calculateTurnMetrics(1000, [
+        { at: 1050, role: "assistant" },
+        { at: 4000, reasoning_content: "We" },
+        { at: 4100, reasoning_content: " think" },
+        { at: 5300, content: "The" },
+        { at: 5400, content: " answer" },
+      ]),
+    ).toEqual({
+      ttftMs: 3000,
+      tokensPerSecond: 3_000 / 1_400,
+      timeToFirstReasoningMs: 3000,
+      timeToFirstAnswerMs: 4300,
+      reasoningTokens: 2,
+      answerTokens: 2,
+    });
+  });
+});
+
+describe("countTurnTokens", () => {
+  it("counts reasoning separately from answer and ignores the role chunk", () => {
+    expect(
+      countTurnTokens([
+        { role: "assistant" },
+        { reasoning_content: "First" },
+        { reasoning_content: " thought" },
+        { content: "Answer" },
+      ]),
+    ).toEqual({ reasoningTokens: 2, answerTokens: 1 });
   });
 });
 
