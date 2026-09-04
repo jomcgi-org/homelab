@@ -64,8 +64,8 @@ class PrincipalMiddleware:
         # of who the caller was. authorization_present comes from the raw header
         # rather than the principal, because "no token arrived" and "a token
         # arrived and resolved" are the two cases this exists to tell apart.
-        _record_principal(principal, authorization, scope.get("path", ""))
         try:
+            _record_principal(principal, authorization, scope.get("path", ""))
             await self.app(scope, receive, send)
         finally:
             reset_current_principal(context_token)

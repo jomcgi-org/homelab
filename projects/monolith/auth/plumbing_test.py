@@ -216,8 +216,10 @@ async def test_middleware_logs_and_traces_resolved_bearer_principal(
 
 @pytest.mark.asyncio
 async def test_middleware_instrumentation_preserves_response_and_principal(
+    caplog,
     human_principal,
 ):
+    caplog.set_level(logging.INFO, logger="monolith.auth")
     token = "instrumentation-failure-token"
     captured = {}
 
@@ -247,6 +249,13 @@ async def test_middleware_instrumentation_preserves_response_and_principal(
     assert captured["state"] == human_principal
     assert captured["context"] == human_principal
     span.set_attributes.assert_called_once()
+    # A failing span must not take the log line down with it: the log is the
+    # half we can actually read in prod, so assert it survived rather than only
+    # asserting the response did.
+    assert (
+        "authorization_present=True"
+        in _principal_resolution_record(caplog).getMessage()
+    )
 
 
 @pytest.mark.asyncio
