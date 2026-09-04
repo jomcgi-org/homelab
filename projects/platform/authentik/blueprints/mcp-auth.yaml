@@ -171,6 +171,27 @@ entries:
     identifiers:
       name: mcp-friends
     attrs:
+      # Permit the machine-to-machine grant for agent service accounts
+      # (kg-agent-sa, issue #5633). Like property_mappings below, this REPLACES
+      # the list rather than appending, so the two grants the browser flow needs
+      # are restated: dropping either would break every human login.
+      #
+      # The discovery document is NOT evidence for this. `grant_types_supported`
+      # at /application/o/mcp-friends/.well-known/openid-configuration lists the
+      # SERVER's global capabilities, including client_credentials, while the
+      # provider's own allowlist was ['authorization_code', 'refresh_token'].
+      # A request for a grant missing here fails `invalid_grant`, which reads
+      # like a bad credential rather than a refused grant type, so verify with
+      # OAuth2Provider.grant_types and never with discovery.
+      #
+      # This widens a PUBLIC client (no client_secret) with a password-style
+      # path, so what stands between the token endpoint and a token is the
+      # 60-character random app password plus the application's policy
+      # bindings. Both are required; neither is sufficient.
+      grant_types:
+        - authorization_code
+        - refresh_token
+        - client_credentials
       property_mappings:
         - !Find [
             authentik_providers_oauth2.scopemapping,
