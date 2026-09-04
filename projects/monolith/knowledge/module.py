@@ -11,8 +11,11 @@ from framework import Module as _Module
 
 
 def _register_mcp() -> None:
-    """Attach the knowledge MCP tools to the shared instance (side-effect import)."""
-    import knowledge.mcp  # noqa: F401, PLC0415
+    """Attach the knowledge MCP tools to the shared private instance."""
+    from core.mcp_app import mcp  # noqa: PLC0415
+    from knowledge.mcp import register_mcp_tools  # noqa: PLC0415
+
+    register_mcp_tools(mcp)
 
 
 MODULE = _Module(

@@ -102,7 +102,7 @@ async def test_report_distress_records_then_notifies(session, knowledge_mcp_engi
             "knowledge.ingest_queue.upload_raw",
             side_effect=lambda raw_id, content: uploads.setdefault(raw_id, content),
         ),
-        patch("knowledge.mcp.notify", notify),
+        patch("knowledge.mcp._notify", notify),
     ):
         result = await report_distress(
             "Blocked on access", "urgent", requested_intervention="restore it"

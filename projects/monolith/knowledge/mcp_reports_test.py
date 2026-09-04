@@ -404,7 +404,7 @@ async def test_distress_writes_raw_without_enqueue_and_notifies(
     with (
         patch("knowledge.mcp.get_engine", return_value=db.engine),
         patch("knowledge.mcp.current_principal", return_value=principal),
-        patch("knowledge.mcp.notify", notify),
+        patch("knowledge.mcp._notify", notify),
     ):
         result = await report_distress(
             "Cannot continue", severity, "tool is unavailable", "restore access"
@@ -433,7 +433,7 @@ async def test_distress_redacts_secret_from_body_extra_and_notification(db, prin
     with (
         patch("knowledge.mcp.get_engine", return_value=db.engine),
         patch("knowledge.mcp.current_principal", return_value=principal),
-        patch("knowledge.mcp.notify", notify),
+        patch("knowledge.mcp._notify", notify),
     ):
         result = await report_distress(
             f"Cannot continue with {secret}",
@@ -459,7 +459,7 @@ async def test_distress_notify_failure_leaves_raw_recorded(db, principal):
     with (
         patch("knowledge.mcp.get_engine", return_value=db.engine),
         patch("knowledge.mcp.current_principal", return_value=principal),
-        patch("knowledge.mcp.notify", AsyncMock(side_effect=RuntimeError("offline"))),
+        patch("knowledge.mcp._notify", AsyncMock(side_effect=RuntimeError("offline"))),
     ):
         result = await report_distress("Cannot continue", "blocked")
 
@@ -476,7 +476,7 @@ async def test_distress_long_summary_keeps_raw_id_in_notification(db, principal)
     with (
         patch("knowledge.mcp.get_engine", return_value=db.engine),
         patch("knowledge.mcp.current_principal", return_value=principal),
-        patch("knowledge.mcp.notify", notify),
+        patch("knowledge.mcp._notify", notify),
     ):
         result = await report_distress("s" * 3_000, "urgent")
 

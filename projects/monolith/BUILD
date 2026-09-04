@@ -1762,6 +1762,170 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "faas/functions/**/*.py",
 ]
 
+# ---------------------------------------------------------------------------
+# Agent service (issue #5656 slice 1): a pruned, authenticated MCP binary that
+# runs app/agents_main.py. It carries only the knowledge catalogue plus the
+# auth, core, framework, shared, and app support code needed to serve it. Every
+# unrelated domain and every private knowledge, home, cluster, and app path is
+# excluded from the source glob below. app/main_agents_imports_test.py imports
+# the entrypoint in a fresh process and PROVES that none of those private
+# modules enter its runtime closure, so excluding their FILES is safe: any new
+# eager dependency fails in CI before a later image can fail at startup. The
+# pip dependencies mirror :monolith_backend wholesale for now. Trimming wheels
+# is separate from enforcing the Python source boundary.
+_AGENTS_PRUNE_EXCLUDE = [
+    # Standard production excludes (mirror :monolith_backend / :main).
+    "**/*_test.py",
+    "**/test_*.py",
+    "*/tests/**/*.py",
+    "shared/testing/**/*.py",
+    # Whole private domains.
+    "agent/**",
+    "agent_sessions/**",
+    "cluster/**",
+    "demos/**",
+    "goosecracker/**",
+    "moving/**",
+    "sandbox/**",
+    "scheduler/**",
+    "shotter/**",
+    "trips/**",
+    "updates/**",
+    # The chat domain is NOT globbed at all for this tier (see the srcs list
+    # below), so it needs no exclusions here. The two files that DO ship are
+    # named one by one, which is default-deny: a new chat/*.py cannot join this
+    # tier by merely existing.
+    "artifact/**",
+    "campsites/**",
+    "chat_public/**",
+    "dr_jobs/**",
+    "ember_public/**",
+    "faas/**",
+    "grimoire/**",
+    "grimoire_chat/**",
+    "hikes/**",
+    "home/**",
+    "semgrep_scan/**",
+    "ships/**",
+    "stars/**",
+    "swarm/**",
+    "worldcup/**",
+    # Private entrypoints and registries. The import test itself is excluded
+    # explicitly as well as by the standard test patterns above.
+    "app/main.py",
+    "app/mcp_app.py",
+    "app/modules_private.py",
+    "app/main_domain.py",
+    "app/jobs_main.py",
+    "app/progress_main.py",
+    "app/main_agents_imports_test.py",
+    # The shared private monolith MCP server. agents_main owns a dedicated
+    # four-tool FastMCP instance instead.
+    "core/mcp_app.py",
+    # Private knowledge routers and write or maintenance paths.
+    "knowledge/router.py",
+    "knowledge/tasks_router.py",
+    "knowledge/gaps.py",
+    "knowledge/ingest_queue.py",
+    "knowledge/service.py",
+    "knowledge/layout.py",
+    # Private home scheduling and observability writer paths. home/** is not in
+    # the allowlist today, but keeping the individual paths documents the
+    # boundary if a narrow home dependency is added later.
+    "home/schedule.py",
+    "home/schedule_router.py",
+    "home/observability/slo.py",
+    "home/observability/rollup.py",
+    "home/observability/stats.py",
+    "home/observability/traces.py",
+]
+
+py_library(
+    name = "monolith_agents_backend",
+    srcs = glob(
+        [
+            "app/**/*.py",
+            "auth/**/*.py",
+            "core/**/*.py",
+            "framework/**/*.py",
+            "knowledge/**/*.py",
+            "shared/**/*.py",
+        ],
+        exclude = _AGENTS_PRUNE_EXCLUDE,
+    ) + [
+        # The outbox PRODUCER only. enqueue_message is infrastructure every
+        # replica uses ("producers on any replica enqueue a row; the leader's
+        # bot drains it"), and both files import no other domain. The drain
+        # loop and the rest of chat stay out. Named explicitly rather than
+        # globbed so adding a chat file cannot widen this tier silently.
+        "chat/models.py",
+        "chat/outbox.py",
+    ],  # keep
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "@pip//astral",
+        "@pip//beautifulsoup4",
+        "@pip//boto3",
+        "@pip//certifi",
+        "@pip//discord_py",
+        "@pip//fastapi",
+        "@pip//fastmcp",
+        "@pip//httpx",
+        "@pip//icalendar",
+        "@pip//kubernetes_asyncio",
+        "@pip//lxml_html_clean",
+        "@pip//networkx",
+        "@pip//opentelemetry_exporter_otlp_proto_http",
+        "@pip//opentelemetry_instrumentation_fastapi",
+        "@pip//opentelemetry_instrumentation_httpx",
+        "@pip//opentelemetry_sdk",
+        "@pip//pgvector",
+        "@pip//psycopg",
+        "@pip//psycopg_binary",
+        "@pip//pydantic",
+        "@pip//pydantic_ai_slim",
+        "@pip//python_multipart",
+        "@pip//pyyaml",
+        "@pip//pyjwt",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+        "@pip//starlette",
+        "@pip//timelength",
+        "@pip//trafilatura",
+        "@pip//tzdata",
+        "@pip//uvicorn",
+        "@pip//websockets",
+        "@pip//youtube_transcript_api",
+    ],
+)
+
+py_venv_binary(
+    name = "main_agents",
+    srcs = glob(
+        [
+            "app/**/*.py",
+            "auth/**/*.py",
+            "core/**/*.py",
+            "framework/**/*.py",
+            "knowledge/**/*.py",
+            "shared/**/*.py",
+        ],
+        exclude = _AGENTS_PRUNE_EXCLUDE,
+    ) + [
+        # The outbox PRODUCER only. enqueue_message is infrastructure every
+        # replica uses ("producers on any replica enqueue a row; the leader's
+        # bot drains it"), and both files import no other domain. The drain
+        # loop and the rest of chat stay out. Named explicitly rather than
+        # globbed so adding a chat file cannot widen this tier silently.
+        "chat/models.py",
+        "chat/outbox.py",
+    ],  # keep
+    imports = ["."],  # keep
+    main = "app/agents_main.py",
+    visibility = ["//:__subpackages__"],
+    deps = [":monolith_agents_backend"],  # keep
+)
+
 py_library(
     name = "monolith_public_backend",
     srcs = glob(
@@ -2275,6 +2439,19 @@ py_test(
     # asserts the forbidden private modules are absent from the closure.
     deps = [
         ":monolith_public_backend",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "main_agents_imports_test",
+    srcs = ["app/main_agents_imports_test.py"],
+    imports = ["."],
+    # Depend on the PRUNED agents library, not :monolith_backend. This makes
+    # the test validate both the source prune and the fresh-process import
+    # closure before any later image is assembled.
+    deps = [
+        ":monolith_agents_backend",
         "@pip//pytest",
     ],
 )
@@ -6305,6 +6482,18 @@ py_test(
         ":pkg_knowledge",
         "@pip//fastmcp",
         "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "knowledge_mcp_registry_test",
+    srcs = ["knowledge/mcp_registry_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//fastmcp",
         "@pip//pytest",
         "@pip//pytest_asyncio",
     ],
