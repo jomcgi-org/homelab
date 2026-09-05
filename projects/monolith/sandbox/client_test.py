@@ -93,6 +93,49 @@ async def test_idempotency_key_includes_language():
 
 
 @pytest.mark.asyncio
+async def test_idempotency_key_includes_files():
+    await client.run_code_in_sandbox(
+        "same source", files=[{"name": "input.txt", "content": "first"}]
+    )
+    await client.run_code_in_sandbox(
+        "same source", files=[{"name": "input.txt", "content": "second"}]
+    )
+
+    first_key = _FakeClient.posts[0]["headers"]["Idempotency-Key"]
+    second_key = _FakeClient.posts[1]["headers"]["Idempotency-Key"]
+    assert first_key != second_key
+
+
+@pytest.mark.asyncio
+async def test_idempotency_key_canonicalizes_file_order():
+    files = [
+        {"name": "first.txt", "content": "first"},
+        {"name": "second.txt", "content": "second"},
+    ]
+    await client.run_code_in_sandbox("same source", files=files)
+    await client.run_code_in_sandbox("same source", files=list(reversed(files)))
+
+    first_key = _FakeClient.posts[0]["headers"]["Idempotency-Key"]
+    second_key = _FakeClient.posts[1]["headers"]["Idempotency-Key"]
+    assert first_key == second_key
+
+
+@pytest.mark.asyncio
+async def test_idempotency_key_differs_with_and_without_files():
+    await client.run_code_in_sandbox("same source")
+    await client.run_code_in_sandbox("same source")
+    await client.run_code_in_sandbox(
+        "same source", files=[{"name": "input.txt", "content": "contents"}]
+    )
+
+    first_key = _FakeClient.posts[0]["headers"]["Idempotency-Key"]
+    second_key = _FakeClient.posts[1]["headers"]["Idempotency-Key"]
+    files_key = _FakeClient.posts[2]["headers"]["Idempotency-Key"]
+    assert first_key == second_key
+    assert first_key != files_key
+
+
+@pytest.mark.asyncio
 async def test_empty_code_short_circuits():
     result = await client.run_code_in_sandbox("   ")
     assert "error" in result
