@@ -35,6 +35,12 @@ keda:
   # Pre-populate the Kyverno OTEL annotation to match the cluster mutation
   # (prevents ArgoCD drift) and add prometheus.io/scrape annotations for the
   # metrics endpoints (port 8080, path /metrics).
+  #
+  # metricsAdapter deliberately carries no prometheus.io/* keys: with
+  # prometheus.metricServer.enabled the upstream chart already renders its own
+  # scrape, port and path annotations on the metrics-apiserver Deployment, and
+  # repeating them here produced one annotations map with duplicate YAML keys,
+  # which the API server rejects (#5398).
   podAnnotations:
     keda:
       otel.injected-by: kyverno/inject-otel-env-vars
@@ -43,9 +49,6 @@ keda:
       prometheus.io/path: "/metrics"
     metricsAdapter:
       otel.injected-by: kyverno/inject-otel-env-vars
-      prometheus.io/scrape: "true"
-      prometheus.io/port: "8080"
-      prometheus.io/path: "/metrics"
     webhooks:
       otel.injected-by: kyverno/inject-otel-env-vars
       prometheus.io/scrape: "true"
