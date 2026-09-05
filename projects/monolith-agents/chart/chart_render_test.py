@@ -113,8 +113,8 @@ def _secret_refs(container: dict) -> set[str]:
 
 def test_every_secret_ref_is_synced_into_the_namespace(documents: list[dict]) -> None:
     # Secrets are namespaced. A secretKeyRef that no OnePasswordItem in this
-    # chart syncs resolves to nothing at runtime, which is a CrashLoop for
-    # DATABASE_URL and a silent no-op for the S3 credential.
+    # chart syncs resolves to nothing at runtime: none of these refs are
+    # optional, so the pod sits in CreateContainerConfigError.
     container = _deployment(documents)["spec"]["template"]["spec"]["containers"][0]
     synced = {
         doc["metadata"]["name"]
