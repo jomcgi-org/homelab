@@ -30,6 +30,8 @@ GROUP = "embervm.dev"
 VERSION = "v1alpha1"
 PLURAL = "workloads"
 NAMESPACE = "embervm"
+MANAGED_BY_LABEL = "monolith.jomcgi.dev/managed-by"
+MANAGED_BY_VALUE = "faas"
 
 
 async def _custom_objects_api() -> "client.CustomObjectsApi":
@@ -89,7 +91,11 @@ async def upsert_workload(name: str, spec: dict) -> None:
     body = {
         "apiVersion": f"{GROUP}/{VERSION}",
         "kind": "Workload",
-        "metadata": {"name": name, "namespace": NAMESPACE},
+        "metadata": {
+            "name": name,
+            "namespace": NAMESPACE,
+            "labels": {MANAGED_BY_LABEL: MANAGED_BY_VALUE},
+        },
         "spec": spec,
     }
     try:
@@ -110,7 +116,12 @@ async def upsert_workload(name: str, spec: dict) -> None:
             namespace=NAMESPACE,
             plural=PLURAL,
             name=name,
-            body={"spec": spec},
+            body={
+                "metadata": {
+                    "labels": {MANAGED_BY_LABEL: MANAGED_BY_VALUE},
+                },
+                "spec": spec,
+            },
             _content_type="application/merge-patch+json",
         )
 

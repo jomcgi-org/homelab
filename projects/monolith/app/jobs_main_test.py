@@ -7,6 +7,7 @@ call happens.
 
 from __future__ import annotations
 
+import json
 import logging
 from unittest import mock
 
@@ -15,6 +16,7 @@ import pytest
 from typer.testing import CliRunner
 
 import app.jobs_main as jobs_main
+from faas.reconcile import ReconcileReport
 
 runner = CliRunner()
 
@@ -82,6 +84,32 @@ def test_cluster_snapshot_refresh_dispatches_to_refresh():
 
     assert result.exit_code == 0, result.output
     refresh.assert_awaited_once()
+
+
+def test_faas_reconcile_dispatches_and_prints_json():
+    report = ReconcileReport(
+        scanned=2,
+        orphans=["orphan"],
+        deleted=[],
+        kept=["serving"],
+        skipped_unmarked=0,
+    )
+    reconcile = mock.AsyncMock(return_value=report)
+    with (
+        mock.patch("faas.reconcile.reconcile_orphan_workloads", new=reconcile),
+        mock.patch.object(jobs_main, "configure_logging"),
+    ):
+        result = runner.invoke(jobs_main.app, ["faas-reconcile", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    reconcile.assert_awaited_once_with(dry_run=True)
+    assert json.loads(result.stdout) == {
+        "deleted": [],
+        "kept": ["serving"],
+        "orphans": ["orphan"],
+        "scanned": 2,
+        "skipped_unmarked": 0,
+    }
 
 
 def test_no_args_lists_commands():

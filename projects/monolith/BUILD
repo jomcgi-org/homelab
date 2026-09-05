@@ -5543,6 +5543,17 @@ py_test(
 )
 
 py_test(
+    name = "faas_reconcile_test",
+    srcs = ["faas/reconcile_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_faas",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "faas_router_test",
     srcs = ["faas/router_test.py"],
     imports = ["."],

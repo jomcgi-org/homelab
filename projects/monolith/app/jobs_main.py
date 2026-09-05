@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import logging
 import os
 import time
+from dataclasses import asdict
 
 import typer
 
@@ -120,6 +122,18 @@ def ember_spark_synthetic_trigger() -> None:
 def agent_drain_trigger() -> None:
     """Trigger one asynchronous Luna work-queue drain cycle."""
     _post_internal("/internal/agent/drain", "agent-drain-trigger", timeout=90)
+
+
+@app.command("faas-reconcile")
+def faas_reconcile(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report without deleting"),
+) -> None:
+    """Delete marked FaaS Workloads that have no registry row."""
+    from faas.reconcile import reconcile_orphan_workloads
+
+    configure_logging()
+    report = asyncio.run(reconcile_orphan_workloads(dry_run=dry_run))
+    typer.echo(json.dumps(asdict(report), sort_keys=True))
 
 
 # Hub evidence from 2026-09-05 showed rollout disconnects at 07:30 and 08:40.

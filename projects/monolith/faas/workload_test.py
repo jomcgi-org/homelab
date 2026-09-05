@@ -130,6 +130,7 @@ async def test_upsert_creates_when_absent(monkeypatch):
     body = api.created[0]["body"]
     assert body["metadata"]["name"] == "echo-fn"
     assert body["metadata"]["namespace"] == "embervm"
+    assert body["metadata"]["labels"] == {"monolith.jomcgi.dev/managed-by": "faas"}
     assert body["apiVersion"] == "embervm.dev/v1alpha1"
 
 
@@ -141,7 +142,12 @@ async def test_upsert_patches_on_conflict(monkeypatch):
     assert len(api.created) == 1  # attempted
     assert len(api.patched) == 1  # then merge-patched
     assert api.patched[0]["_content_type"] == "application/merge-patch+json"
-    assert api.patched[0]["body"] == {"spec": {"class": "task"}}
+    assert api.patched[0]["body"] == {
+        "metadata": {
+            "labels": {"monolith.jomcgi.dev/managed-by": "faas"},
+        },
+        "spec": {"class": "task"},
+    }
 
 
 # --------------------------------------------------------------------------- #
