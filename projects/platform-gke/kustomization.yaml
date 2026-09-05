@@ -14,3 +14,4 @@ resources:
   - ./kyverno # Secret cloning into monolith-workflows (job pods were secretless on the hub)
   - ./priority-classes # Cluster-scoped tiers (embervm's disposable tier depends on homelab-disposable)
   - ./kargo # Promotion controller; owns targetRevision for the apps in its pipelines
+  - ./spire # SPIFFE identity control plane (ADR embervm/041, #5706); phase 1, no consumer yet
