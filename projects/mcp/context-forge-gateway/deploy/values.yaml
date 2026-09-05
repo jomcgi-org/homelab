@@ -67,6 +67,16 @@ mcp-stack:
       # sufficient.
       - name: SSO_API_TOKEN_AUTH_ENABLED
         value: "true"
+      # CORRECTION (2026-09-05, verified against mcp-context-forge 1.0.7):
+      # this flag is NOT what forwards the caller's token. The Authorization
+      # forwarding described below is the auth_type=none branch at the top of
+      # get_passthrough_headers (mcpgateway/utils/passthrough_headers.py),
+      # which runs before this flag is consulted and before the header
+      # allowlist. With this false the token would still be forwarded; what
+      # the flag gates is the allowlisted extra headers (GlobalConfig
+      # passthrough_headers), which nothing here relies on. Kept on pending a
+      # decision on #5002. The intent recorded below still stands.
+      #
       # Forward the caller's authentik token to upstream gateways, so the
       # monolith can learn WHO is calling and scope its own results.
       #
@@ -93,8 +103,10 @@ mcp-stack:
       # DEFAULT_PASSTHROUGH_HEADERS stays empty, so Authorization is the only
       # thing forwarded, via that branch rather than an allowlist.
       #
-      # INERT until the monolith validates the token. Enabling it alone changes
-      # no behaviour; it is the prerequisite for the monolith-side work.
+      # The monolith validates the forwarded token since #4955 and reads its
+      # groups (the principal log line in auth/middleware.py shows
+      # authorization_present=True on the claude.ai path); result scoping by
+      # those groups is still #4569.
       #
       # Two properties to keep in mind:
       #  - the token's `aud` is the MCP client id, not the monolith, so the
@@ -120,9 +132,8 @@ mcp-stack:
       # enforcement the endpoint answers 200 with no WWW-Authenticate, so no
       # client ever begins an OAuth flow.
       #
-      # Note this is gateway-wide, not per server. mcp.jomcgi.dev tokens are
-      # issued by jomcgi.cloudflareaccess.com and DCR_ALLOWED_ISSUERS is empty,
-      # so that path may need its issuer trusted once validation is enforced.
+      # Note this is gateway-wide, not per server: every hostname that reaches
+      # this gateway authenticates, including the friends scoped route.
       #
       # This is not a secret, and as the switch that decides whether the MCP
       # endpoint authenticates anyone at all, it is the last value that should
@@ -200,7 +211,7 @@ teamMapping:
       team: homelab-admin
       description: Full monolith catalogue. Mapped from the authentik group of the same name.
 
-# ── External access via Cloudflare Managed OAuth (ADR 011) ───────────────
+# ── External access: OAuth against authentik, RFC 9728 discovery by Envoy ──
 httpRoute:
   enabled: true
   hostname: mcp.jomcgi.dev
@@ -221,12 +232,13 @@ httpRoute:
 
 # friends.jomcgi.dev reaches exactly one virtual server, "friends-empty",
 # which is deliberately empty: tools/list returns [] so the hostname exposes
-# nothing even though MCP_REQUIRE_AUTH is off and no Cloudflare Access
-# application covers it. It exists to test whether a Claude connector can
+# nothing even though no Cloudflare Access application covers it.
+# MCP_REQUIRE_AUTH is gateway-wide so this route authenticates too, but the
+# empty server is the control. It exists to test whether a Claude connector can
 # complete an OAuth flow against authentik, via the virtual server's own
 # oauth_enabled / oauth_config, without spending Zero Trust seats.
 #
-# Do not add tools to that virtual server while it is unauthenticated.
+# Do not add tools to that virtual server while no Access application covers it.
 scopedRoutes:
   - name: friends
     enabled: true
