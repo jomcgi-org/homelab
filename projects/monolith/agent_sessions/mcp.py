@@ -4,7 +4,6 @@ import asyncio
 import collections
 import json
 import logging
-import os
 import platform
 import re
 import secrets
@@ -27,6 +26,12 @@ from agent_sessions.constants import (
 )
 from agent_sessions.rationale import rationale_trailer_instruction
 from agent_sessions.models import AgentSession, AgentTurn
+from agent_sessions.provider_quota import (
+    BROKER_URL_ENV as BROKER_URL_ENV,
+    _broker_url,
+    fetch_provider_quota,
+    summarise,
+)
 from agent_sessions.transport import (
     EmberBrickGone,
     EmberSession,
@@ -1374,16 +1379,8 @@ async def monolith_agent_session_destroy(ember_session_id: str) -> dict:
 
 # -- token broker login (ADR 048, #4250 PR 2) --------------------------------
 
-BROKER_URL_ENV = "EMBER_TOKENBROKER_URL"
 _DEFAULT_GRANT = "codex-cluster"
 _GRANT_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
-
-
-def _broker_url() -> str:
-    url = os.environ.get(BROKER_URL_ENV, "")
-    if not url:
-        raise ValueError("token broker is not configured")
-    return url.rstrip("/")
 
 
 def _grant_or_raise(grant: str) -> str:
@@ -1452,6 +1449,13 @@ async def monolith_codex_broker_refresh(grant: str = _DEFAULT_GRANT) -> dict:
                 )
             return data
         raise
+
+
+@mcp.tool
+async def monolith_provider_quota(*, force: bool = False) -> dict:
+    """Read the broker quota endpoint. An unavailable broker returns available: false rather than an error, and optional force bypasses the cache."""
+    result = await fetch_provider_quota(force=force)
+    return {**result, "summary": summarise(result.get("providers", {}))}
 
 
 @mcp.tool

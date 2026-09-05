@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import text
 from sqlmodel import Session, create_engine
 
+from agent_sessions import provider_quota
 import swarm.drainer as drainer
 
 # trace.get_tracer returns a ProxyTracer that resolves the provider lazily, at
@@ -22,6 +23,8 @@ _EXPORTER = InMemorySpanExporter()
 _PROVIDER = TracerProvider()
 _PROVIDER.add_span_processor(SimpleSpanProcessor(_EXPORTER))
 trace.set_tracer_provider(_PROVIDER)
+
+_QUOTA_SPAN_ATTRIBUTES_STEP = drainer._quota_span_attributes
 
 
 SETTINGS = {
@@ -46,6 +49,11 @@ def _clear_spans(monkeypatch):
     _EXPORTER.clear()
     monkeypatch.setattr(drainer, "sweep_kg_raws", lambda: 0)
     monkeypatch.setattr(drainer, "kg_effective_cap", lambda base_cap: base_cap)
+    monkeypatch.setattr(
+        drainer,
+        "_quota_span_attributes",
+        lambda: {},
+    )
     yield
 
 
@@ -1070,6 +1078,82 @@ def test_each_claimed_job_emits_a_job_span(monkeypatch):
     assert [span.attributes["drain.job_name"] for span in spans] == [
         job["name"] for job in jobs
     ]
+
+
+def test_job_span_includes_observed_provider_quota(monkeypatch):
+    monkeypatch.setattr(
+        provider_quota,
+        "fetch_provider_quota_sync",
+        lambda: {
+            "available": True,
+            "providers": {
+                "codex": {
+                    "observed": True,
+                    "age_seconds": 42,
+                    "exhausted": False,
+                    "windows": [{"name": "primary", "used_percent": 24}],
+                },
+                "claude": {
+                    "observed": True,
+                    "age_seconds": 3,
+                    "exhausted": True,
+                    "windows": [{"name": "5h", "used_percent": 100}],
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        drainer,
+        "_quota_span_attributes",
+        _QUOTA_SPAN_ATTRIBUTES_STEP.__wrapped__,
+    )
+
+    result, *_rest = _run(
+        monkeypatch, [{"name": "job-1", "payload": {"prompt": "work"}}]
+    )
+
+    attributes = _spans_named("drain.job")[0].attributes
+    assert attributes["drain.quota.codex.used_percent"] == 24.0
+    assert attributes["drain.quota.codex.age_seconds"] == 42.0
+    assert attributes["drain.quota.codex.window"] == "primary"
+    assert attributes["drain.quota.codex.exhausted"] is False
+    assert attributes["drain.quota.claude.used_percent"] == 100.0
+    assert attributes["drain.quota.claude.age_seconds"] == 3.0
+    assert attributes["drain.quota.claude.window"] == "5h"
+    assert attributes["drain.quota.claude.exhausted"] is True
+    assert result == {"status": "complete", "processed": 1}
+
+
+def test_job_span_omits_quota_when_broker_is_unavailable(monkeypatch):
+    result, *_rest = _run(
+        monkeypatch, [{"name": "job-1", "payload": {"prompt": "work"}}]
+    )
+
+    attributes = _spans_named("drain.job")[0].attributes
+    assert not any(name.startswith("drain.quota.") for name in attributes)
+    assert result == {"status": "complete", "processed": 1}
+
+
+def test_quota_telemetry_exception_does_not_change_job_outcome(monkeypatch, caplog):
+    def fail():
+        raise RuntimeError("quota exploded")
+
+    monkeypatch.setattr(provider_quota, "fetch_provider_quota_sync", fail)
+    monkeypatch.setattr(
+        drainer,
+        "_quota_span_attributes",
+        _QUOTA_SPAN_ATTRIBUTES_STEP.__wrapped__,
+    )
+
+    with caplog.at_level("DEBUG", logger=drainer.__name__):
+        result, *_rest = _run(
+            monkeypatch, [{"name": "job-1", "payload": {"prompt": "work"}}]
+        )
+
+    attributes = _spans_named("drain.job")[0].attributes
+    assert not any(name.startswith("drain.quota.") for name in attributes)
+    assert result == {"status": "complete", "processed": 1}
+    assert "drain quota telemetry failed" in caplog.text
 
 
 def test_a_failing_job_still_ends_its_spans(monkeypatch):

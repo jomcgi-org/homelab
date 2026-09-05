@@ -43,6 +43,36 @@ DOCFIX_REVIEW_SUMMARY_RE = re.compile(
 )
 
 
+@DBOS.step()
+def _quota_span_attributes() -> dict:
+    try:  # nosemgrep: no-broad-except-swallow - optional telemetry only
+        from agent_sessions.provider_quota import fetch_provider_quota_sync, summarise
+
+        fetched = fetch_provider_quota_sync()
+        if not fetched.get("available", False):
+            return {}
+        quotas = summarise(fetched.get("providers", {}))
+        attributes = {}
+        for provider in ("codex", "claude"):
+            quota = quotas.get(provider)
+            if quota is None:
+                continue
+            used_percent = quota.get("headline_used_percent")
+            if used_percent is not None:
+                attributes[f"drain.quota.{provider}.used_percent"] = used_percent
+            age_seconds = quota.get("age_seconds")
+            if age_seconds is not None:
+                attributes[f"drain.quota.{provider}.age_seconds"] = age_seconds
+            window = quota.get("headline_window")
+            if window is not None:
+                attributes[f"drain.quota.{provider}.window"] = window
+            attributes[f"drain.quota.{provider}.exhausted"] = quota["exhausted"]
+        return attributes
+    except Exception:  # noqa: BLE001
+        logger.debug("drain quota telemetry failed", exc_info=True)
+        return {}
+
+
 class MalformedPayload(ValueError):
     """A routine job payload failed validation before session creation."""
 
@@ -636,6 +666,9 @@ def drain_cycle() -> dict:
                             "drain.reasoning": reasoning,
                         },
                     )
+                    quota_attributes = _quota_span_attributes()
+                    if quota_attributes:
+                        set_attributes(job_span, quota_attributes)
                     start_attempted = True
                     session_id = start_agent_session(
                         local_session_id,

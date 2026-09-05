@@ -7433,6 +7433,21 @@ py_test(
 )
 
 py_test(
+    name = "agent_sessions_provider_quota_test",
+    srcs = ["agent_sessions/provider_quota_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_framework",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "agent_sessions_transport_test",
     srcs = ["agent_sessions/transport_test.py"],
     imports = ["."],
