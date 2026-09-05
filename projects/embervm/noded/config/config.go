@@ -26,6 +26,10 @@ import (
 	"time"
 )
 
+// DefaultUnexportableTTL is the retry suppression period for artifacts whose
+// data-key request receives a permanent control-plane refusal.
+const DefaultUnexportableTTL = 24 * time.Hour
+
 // Image is the node-side identity of one guest image the daemon can build a base
 // for. The gRPC BuildBase request names the image by ref; the daemon resolves
 // that ref to the on-disk rootfs an init container (rootfs-builder) baked, plus
@@ -440,6 +444,10 @@ type Config struct {
 	// the writer OFF, then the writer is armed only after every daemon can read
 	// encrypted objects. Env EMBERVM_NODED_STORE_ENCRYPT. Default false.
 	StoreEncrypt bool
+	// UnexportableTTL suppresses reconcile retries after an artifact-specific
+	// control-plane wrap refusal. Default 24h. Env
+	// EMBERVM_NODED_UNEXPORTABLE_TTL.
+	UnexportableTTL time.Duration
 
 	// RequireRestoreCapability refuses an enveloped artifact restore unless its
 	// request carries a valid, tuple-scoped capability. This is a two-phase
@@ -522,6 +530,7 @@ func Load() (Config, error) {
 		StoreBucket:          getenvDefault("EMBERVM_NODED_STORE_BUCKET", "embervm"),
 		StoreCompress:        boolDefault("EMBERVM_NODED_STORE_COMPRESS", false),
 		StoreEncrypt:         boolDefault("EMBERVM_NODED_STORE_ENCRYPT", false),
+		UnexportableTTL:      DefaultUnexportableTTL,
 		StoreAccessKeyID:     os.Getenv("EMBERVM_NODED_STORE_ACCESS_KEY_ID"),
 		StoreSecretAccessKey: os.Getenv("EMBERVM_NODED_STORE_SECRET_ACCESS_KEY"),
 
@@ -626,6 +635,12 @@ func Load() (Config, error) {
 	}
 	if err := parseDuration("EMBERVM_NODED_REGISTER_INTERVAL", &c.RegisterInterval); err != nil {
 		return Config{}, err
+	}
+	if err := parseDuration("EMBERVM_NODED_UNEXPORTABLE_TTL", &c.UnexportableTTL); err != nil {
+		return Config{}, err
+	}
+	if c.UnexportableTTL <= 0 {
+		return Config{}, fmt.Errorf("EMBERVM_NODED_UNEXPORTABLE_TTL must be greater than zero, got %s", c.UnexportableTTL)
 	}
 	if err := parseDuration("EMBERVM_NODED_WARMTH_HEARTBEAT_INTERVAL", &c.WarmthHeartbeatInterval); err != nil {
 		return Config{}, err

@@ -147,6 +147,8 @@ type ExportOptions struct {
 	Workload  string
 	Ref       string
 	Overwrite bool
+	// DataKeySucceededFn observes a validated key and envelope before upload.
+	DataKeySucceededFn func()
 }
 
 // Store is the S3-API object-store client. It is safe for concurrent use (the
@@ -478,6 +480,9 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 		}
 		if len(meta.Envelope) == 0 {
 			return 0, false, fmt.Errorf("store: data key provider returned an empty envelope for %q", prefix)
+		}
+		if opts.DataKeySucceededFn != nil {
+			opts.DataKeySucceededFn()
 		}
 	}
 

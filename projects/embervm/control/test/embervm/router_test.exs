@@ -624,6 +624,53 @@ defmodule Embervm.RouterTest do
              Envelope.decode(encoded_envelope)
   end
 
+  test "POST /v1/artifacts/wrap logs an unknown artifact refusal" do
+    service = key_service(:binary.copy(<<9>>, 32))
+    Application.put_env(:embervm, :artifact_encryption, true)
+    Application.put_env(:embervm, :artifact_key_service, service)
+    Application.put_env(:embervm, :noded_service_account, @allowed)
+    Application.put_env(:embervm, :session_store_mod, FakeSessionStore)
+    Application.put_env(:embervm, :session_store, :fake)
+    parent = self()
+
+    log =
+      capture_log(
+        [format: "$message $metadata\n", metadata: [:kind, :workload, :ref]],
+        fn ->
+          resp =
+            req(
+              :post,
+              "/v1/artifacts/wrap",
+              auth("good"),
+              wrap_body("session-workspace", "sbx", "forgotten-lineage")
+            )
+
+          send(parent, {:unknown_artifact_response, resp})
+        end
+      )
+
+    assert_receive {:unknown_artifact_response, resp}
+    assert resp.status == 404
+    assert json(resp.body) == %{"error" => "unknown_artifact"}
+    assert log =~ "artifact wrap refused: unknown artifact"
+    assert log =~ "kind=session-workspace"
+    assert log =~ "workload=sbx"
+    assert log =~ "ref=forgotten-lineage"
+  end
+
+  test "POST /v1/artifacts/wrap distinguishes an unknown kind" do
+    service = key_service(:binary.copy(<<9>>, 32))
+    Application.put_env(:embervm, :artifact_encryption, true)
+    Application.put_env(:embervm, :artifact_key_service, service)
+    Application.put_env(:embervm, :noded_service_account, @allowed)
+
+    resp =
+      req(:post, "/v1/artifacts/wrap", auth("good"), wrap_body("future-kind", "sbx", "ref-1"))
+
+    assert resp.status == 404
+    assert json(resp.body) == %{"error" => "unknown_kind"}
+  end
+
   test "POST /v1/artifacts/wrap uses customer KMS custody for a configured principal" do
     principal = "acct:artifact-owner"
 

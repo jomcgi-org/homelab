@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,32 @@ const (
 	wrapArtifactPath   = "/v1/artifacts/wrap"
 	rewrapArtifactPath = "/v1/artifacts/rewrap"
 )
+
+// ErrWrapRejected identifies an HTTP refusal from the control plane's artifact
+// wrap endpoint. Transport failures and response decoding failures do not wrap
+// this sentinel.
+var ErrWrapRejected = errors.New("control plane rejected artifact wrap request")
+
+// WrapRejectedError preserves the HTTP status and safe response reason so an
+// export caller can distinguish artifact-specific refusals from retryable
+// control-plane and transport failures.
+type WrapRejectedError struct {
+	StatusCode int
+	Reason     string
+}
+
+func (e *WrapRejectedError) Error() string {
+	return fmt.Sprintf("control plane rejected artifact wrap request: status %d", e.StatusCode)
+}
+
+func (e *WrapRejectedError) Unwrap() error { return ErrWrapRejected }
+
+// Permanent reports whether this response identifies an artifact the control
+// plane no longer knows. Status alone is not enough: 400 is a daemon request
+// bug and every 403 is a global control-plane configuration or identity fault.
+func (e *WrapRejectedError) Permanent() bool {
+	return e.StatusCode == http.StatusNotFound && e.Reason == "unknown_artifact"
+}
 
 type cpDataKeyProvider struct {
 	controlPlaneURL string
@@ -62,8 +89,12 @@ func (p *cpDataKeyProvider) DataKey(ctx context.Context, kind, workload, ref str
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		reason := responseErrorReason(resp.Body)
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
-		return nil, nil, fmt.Errorf("control plane rejected artifact wrap request: status %d", resp.StatusCode)
+		return nil, nil, &WrapRejectedError{
+			StatusCode: resp.StatusCode,
+			Reason:     reason,
+		}
 	}
 	var out struct {
 		DataKey  []byte `json:"data_key"`
@@ -79,6 +110,16 @@ func (p *cpDataKeyProvider) DataKey(ctx context.Context, kind, workload, ref str
 		return nil, nil, fmt.Errorf("artifact wrap response envelope is empty")
 	}
 	return out.DataKey, out.Envelope, nil
+}
+
+func responseErrorReason(body io.Reader) string {
+	var out struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(io.LimitReader(body, 4<<10)).Decode(&out); err != nil {
+		return ""
+	}
+	return out.Error
 }
 
 // RewrapEnvelope asks the control plane to move one opaque artifact envelope
