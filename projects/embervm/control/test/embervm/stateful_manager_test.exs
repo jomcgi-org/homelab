@@ -782,16 +782,88 @@ defmodule Embervm.StatefulManagerTest do
 
   # -- straggler -----------------------------------------------------------------
 
-  test "a connection arriving while a live endpoint exists is resolved, not re-woken" do
+  test "activator connect withdraws a stale published endpoint and starts an ordinary wake" do
+    ctx = start_stack()
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    assert {:ok, _first} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert Agent.get(ctx.starts, & &1) == 1
+
+    [old] = StatefulStore.list(ctx.store, "wl-a")
+
+    assert {:ok, %{ip: "10.88.0.5", port: 5432}} =
+             StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    assert Agent.get(ctx.starts, & &1) == 2
+    {:ok, failed} = StatefulStore.get(ctx.store, old.instance_id)
+    assert failed.state == :failed
+    refute failed.healthy
+
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+
+    assert Enum.any?(ops, fn op ->
+             op.kind == :stateful_failed and op.stateful_instance_id == old.instance_id and
+               op.payload["reason"] == "activator_witnessed_connect"
+           end)
+  end
+
+  test "activator connect flap guard logs once and splices when a healthy node still reports the VM live" do
     ctx = start_stack()
     stateful_workload(ctx, "wl-a")
     stateful_node(ctx, "node-4")
 
     assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
-    assert Agent.get(ctx.starts, & &1) == 1
+    [instance] = StatefulStore.list(ctx.store, "wl-a")
 
-    assert {:ok, %{ip: "10.88.0.5", port: 5432}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    stateful_node(ctx, "node-4",
+      stateful_vms: [
+        %{
+          vm_id: instance.vm_id,
+          workload: "wl-a",
+          ip: instance.ip,
+          port: instance.port,
+          healthy: true
+        }
+      ]
+    )
+
+    log =
+      capture_log(fn ->
+        assert {:ok, %{ip: "10.88.0.5", port: 5432}} =
+                 StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+        assert {:ok, %{ip: "10.88.0.5", port: 5432}} =
+                 StatefulManager.wake(ctx.mgr, "wl-a", "p")
+      end)
+
+    assert length(Regex.scan(~r/stateful activator transient/, log)) == 1
     assert Agent.get(ctx.starts, & &1) == 1
+    assert {:ok, %{state: :serving, healthy: true}} = StatefulStore.get(ctx.store, instance.instance_id)
+  end
+
+  test "wake-rate limit bounds repeated witnessed-connect withdrawals" do
+    ctx = start_stack(wake_max: 2)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert Agent.get(ctx.starts, & &1) == 2
+
+    assert {:error, {:wake_rate, _}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert Agent.get(ctx.starts, & &1) == 2
+
+    assert [%{state: :serving, healthy: true} | _] = StatefulStore.list(ctx.store, "wl-a")
+
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+
+    witnessed =
+      Enum.filter(ops, fn op ->
+        op.kind == :stateful_failed and op.payload["reason"] == "activator_witnessed_connect"
+      end)
+
+    assert length(witnessed) == 1
   end
 
   # -- plan_wake: relight vs cold, pair validity --------------------------------

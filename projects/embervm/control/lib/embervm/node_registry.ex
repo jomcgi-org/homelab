@@ -371,7 +371,7 @@ defmodule Embervm.NodeRegistry do
     # vm_ids appeared in this brick instance's last NodeStatus. Tests can point the
     # same production callback at unnamed real stores via the two store options.
     resident_health_fun =
-      Keyword.get(opts, :resident_health_fun, &default_withdraw_resident_health/4)
+      Keyword.get(opts, :resident_health_fun, &__MODULE__.withdraw_resident_health/4)
 
     NodeCapacity.create(table)
 
@@ -1974,9 +1974,17 @@ defmodule Embervm.NodeRegistry do
   # Match both configured node and vm_id: store rows intentionally carry the node
   # name while the registry distinguishes co-located bricks by pod_uid, and the
   # remembered VM inventory is what identifies residency on the expiring instance.
-  defp default_withdraw_resident_health(_store_mod, _store, _node_id, []), do: :ok
+  @doc """
+  Withdraws the lossy health fact for resident VMs on one node instance.
 
-  defp default_withdraw_resident_health(store_mod, store, node_id, vm_ids) do
+  Node expiry and the stateful activator's witnessed-connect path share this
+  operation so both match on configured node plus VM identity and leave durable
+  lifecycle state to the caller.
+  """
+  @spec withdraw_resident_health(module(), GenServer.server(), String.t(), [String.t()]) :: :ok
+  def withdraw_resident_health(_store_mod, _store, _node_id, []), do: :ok
+
+  def withdraw_resident_health(store_mod, store, node_id, vm_ids) do
     resident_vm_ids = MapSet.new(vm_ids)
 
     store_mod.all(store)

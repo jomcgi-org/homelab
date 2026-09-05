@@ -21,17 +21,18 @@ defmodule Embervm.EndpointPublisher do
 
     * for each serving-class workload in the catalog: a cluster named
       `serve|<workload>`, whose EDS endpoints are that workload's HEALTHY
-      `published` instances (`ServingStore.published_endpoints/2`), OR the single
-      activator endpoint when the workload has none live-and-healthy (the
-      empty-cluster activator swap: the activator is the fallback endpoint that
-      wakes the workload on the next request);
+      `published` instances (`ServingStore.published_endpoints/2`) at priority 0
+      and the single activator endpoint at priority 1. Active TCP health checks
+      move traffic to the activator when every live endpoint is unreachable. A
+      workload with no live endpoint keeps the activator-only assignment;
     * a route per workload: host from the catalog's `serving.host`, prefix `/`,
       injecting `x-ember-workload: <workload>` so the woken VM (and the activator)
       can resolve which workload a request targets;
     * for each STATEFUL-class workload (R4): an L4 listener (`state-<listen_port>`)
-      plus a cluster named `state|<workload>` whose single endpoint is the live
-      instance (`StatefulStore.published_endpoint/1`) OR the stateful activator's
-      TCP fallback at `{activator_ip, workload.stateful.listen_port}` (Task 8: the
+      plus a cluster named `state|<workload>` whose priority-0 endpoint is the
+      live instance (`StatefulStore.published_endpoint/1`) and whose priority-1
+      endpoint is the stateful activator's TCP fallback at
+      `{activator_ip, workload.stateful.listen_port}` (Task 8: the
       activator resolves the workload by the LOCAL ACCEPT PORT it is dialed on,
       so the fallback endpoint MUST be per-workload, not one fixed
       `{ip, port}`; see the `activator_ip` option below). A cold stateful
@@ -99,6 +100,11 @@ defmodule Embervm.EndpointPublisher do
   # Level-triggered re-push cadence: re-PUT the current desired even if unchanged,
   # so a sidecar-container restart (which empties its volatile cache) self-heals.
   @default_repush_ms 45_000
+  @default_health_check_timeout_ms 1_000
+  @default_health_check_interval_ms 2_000
+  @default_health_check_no_traffic_interval_ms 2_000
+  @default_health_check_unhealthy_threshold 2
+  @default_health_check_healthy_threshold 1
   # Fixed field width for the version's epoch and counter halves. 20 digits holds
   # any 64-bit value zero-padded, so lexical order equals numeric order.
   @version_width 20
@@ -167,7 +173,8 @@ defmodule Embervm.EndpointPublisher do
   @doc """
   The PURE desired-state document for one node at `version`, rendered from `ctx`,
   a render context bundling the fact sources: `%{store, stateful_store,
-  catalog_table, activator_endpoint, activator_ip, connect_timeout_ms}`
+  catalog_table, activator_endpoint, activator_ip, connect_timeout_ms,
+  health_check}`
   (built by `render_ctx/1` from the publisher's state). Reads ONLY the
   ServingStore + StatefulStore facts + the WorkloadCatalog it names, never the
   durable op-log. Exposed for the pure-function tests (facts in, snapshot map out)
@@ -259,6 +266,16 @@ defmodule Embervm.EndpointPublisher do
       # x-ember-workload HTTP header instead).
       activator_ip: Keyword.get(opts, :activator_ip, nil),
       connect_timeout_ms: Keyword.get(opts, :connect_timeout_ms, 1_000),
+      health_check: %{
+        timeout_ms: Keyword.get(opts, :health_check_timeout_ms, @default_health_check_timeout_ms),
+        interval_ms: Keyword.get(opts, :health_check_interval_ms, @default_health_check_interval_ms),
+        no_traffic_interval_ms:
+          Keyword.get(opts, :health_check_no_traffic_interval_ms, @default_health_check_no_traffic_interval_ms),
+        unhealthy_threshold:
+          Keyword.get(opts, :health_check_unhealthy_threshold, @default_health_check_unhealthy_threshold),
+        healthy_threshold:
+          Keyword.get(opts, :health_check_healthy_threshold, @default_health_check_healthy_threshold)
+      },
       debounce_ms: Keyword.get(opts, :debounce_ms, @default_debounce_ms),
       repush_ms: Keyword.get(opts, :repush_ms, @default_repush_ms),
       clock: Keyword.get(opts, :clock, &default_clock/0),
@@ -440,7 +457,8 @@ defmodule Embervm.EndpointPublisher do
       # the ctx so the render stays a pure function of the ctx (the byte-identical
       # rebuild property EDS relies on).
       node_facts: NodeCapacity.all(state.capacity_table),
-      connect_timeout_ms: state.connect_timeout_ms
+      connect_timeout_ms: state.connect_timeout_ms,
+      health_check: state.health_check
     }
   end
 
@@ -498,22 +516,46 @@ defmodule Embervm.EndpointPublisher do
     end)
   end
 
-  # One cluster per workload: the healthy published endpoints, OR the activator
-  # endpoint when there are none (the empty-cluster activator swap). The endpoints
-  # are already in a stable (instance-id) order from the store, so the rendered
-  # cluster is deterministic across rebuilds.
+  # One cluster per workload. A live cluster has its healthy published endpoints
+  # at priority 0 and the activator at priority 1; Envoy therefore uses the
+  # activator only after active health checking ejects every live endpoint. A cold
+  # cluster keeps the existing activator-only priority-0 shape. Live endpoints are
+  # already in stable instance-id order, so the render is deterministic.
   defp cluster_for(ctx, workload) do
-    endpoints =
-      case ServingStore.published_endpoints(ctx.store, workload) do
-        [] -> activator_endpoints(ctx, workload)
-        eps -> eps
+    live = ServingStore.published_endpoints(ctx.store, workload)
+
+    {endpoints, health_check} =
+      case live do
+        [] ->
+          {activator_endpoints(ctx, workload), nil}
+
+        eps ->
+          live_endpoints = Enum.map(eps, &priority_endpoint(&1, 0))
+          fallback_endpoints = Enum.map(activator_endpoints(ctx, workload), &priority_endpoint(&1, 1))
+          {live_endpoints ++ fallback_endpoints, health_check(ctx)}
       end
 
-    %{
+    cluster = %{
       name: @cluster_prefix <> workload,
-      endpoints: Enum.map(endpoints, &%{ip: &1.ip, port: &1.port}),
+      endpoints: endpoints,
       connect_timeout_ms: ctx.connect_timeout_ms
     }
+
+    if health_check, do: Map.put(cluster, :health_check, health_check), else: cluster
+  end
+
+  defp priority_endpoint(endpoint, priority) do
+    %{ip: endpoint.ip, port: endpoint.port, priority: priority}
+  end
+
+  defp health_check(ctx) do
+    Map.get(ctx, :health_check, %{
+      timeout_ms: @default_health_check_timeout_ms,
+      interval_ms: @default_health_check_interval_ms,
+      no_traffic_interval_ms: @default_health_check_no_traffic_interval_ms,
+      unhealthy_threshold: @default_health_check_unhealthy_threshold,
+      healthy_threshold: @default_health_check_healthy_threshold
+    })
   end
 
   # The activator fallback: a single endpoint (the control plane's activator
@@ -618,8 +660,8 @@ defmodule Embervm.EndpointPublisher do
   defp stateful_render(ctx) do
     stateful_catalog_entries(ctx.catalog_table)
     |> Enum.reduce({[], []}, fn {workload, cfg}, {clusters, listeners} ->
-      case stateful_endpoint(ctx, workload, cfg.listen_port) do
-        nil ->
+      case stateful_endpoints(ctx, workload, cfg.listen_port) do
+        [] ->
           # Cold workload with no activator wired: it cannot be woken yet, so emit no
           # listener/cluster. Logged so an operator can see WHY a declared stateful
           # workload is absent from the fan-out (it appears once the activator lands).
@@ -630,12 +672,19 @@ defmodule Embervm.EndpointPublisher do
 
           {clusters, listeners}
 
-        endpoint ->
+        endpoints ->
           cluster = %{
             name: @stateful_cluster_prefix <> workload,
-            endpoints: [%{ip: endpoint.ip, port: endpoint.port}],
+            endpoints: endpoints,
             connect_timeout_ms: ctx.connect_timeout_ms
           }
+
+          cluster =
+            if Enum.any?(endpoints, &(Map.get(&1, :priority) == 0 and Map.has_key?(&1, :priority))) do
+              Map.put(cluster, :health_check, health_check(ctx))
+            else
+              cluster
+            end
 
           listen_port = cfg.listen_port
 
@@ -668,18 +717,24 @@ defmodule Embervm.EndpointPublisher do
     end)
   end
 
-  # The endpoint the stateful workload's L4 cluster should carry: the single live
-  # instance if one is serving-and-healthy, else the activator's fallback endpoint
-  # AT THIS WORKLOAD'S OWN listen_port (the activator resolves the workload from
-  # the local accept port, so it must be dialed on the workload's port, never a
-  # single shared one), else nil (cold and no activator_ip => skipped upstream).
-  defp stateful_endpoint(ctx, workload, listen_port) do
+  # The endpoints the stateful workload's L4 cluster should carry. With a live
+  # instance, render it at priority 0 and the per-workload activator at priority 1.
+  # With no live instance, retain the activator-only priority-0 shape.
+  defp stateful_endpoints(ctx, workload, listen_port) do
     case StatefulStore.published_endpoint(ctx.stateful_store, workload) do
       %{ip: ip, port: port} when is_binary(ip) and ip != "" and is_integer(port) ->
-        %{ip: ip, port: port}
+        live = [%{ip: ip, port: port, priority: 0}]
+
+        case activator_tcp_endpoint(ctx, workload, listen_port) do
+          nil -> live
+          activator -> live ++ [priority_endpoint(activator, 1)]
+        end
 
       _ ->
-        activator_tcp_endpoint(ctx, workload, listen_port)
+        case activator_tcp_endpoint(ctx, workload, listen_port) do
+          nil -> []
+          activator -> [activator]
+        end
     end
   end
 

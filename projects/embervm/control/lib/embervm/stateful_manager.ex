@@ -241,12 +241,12 @@ defmodule Embervm.StatefulManager do
   the workload is woken and returns `{:ok, %{ip, port}}` for the
   `Embervm.TcpActivator` to splice the parked connection to, OR a denial:
 
-    * `{:ok, %{ip, port}}`             -> splice (a fresh wake, OR the
-      STRAGGLER path: a connection reached the activator while a healthy
-      instance already exists, resolved without a wake). A fresh wake's map
-      also carries `generation` (the volume generation the boot landed on,
-      Task 10 observability); the straggler path replies with just `{ip, port}`
-      since it never wakes anything.
+    * `{:ok, %{ip, port}}`             -> splice after a fresh wake, or after
+      the witnessed-connect flap guard confirms a current healthy node status
+      still reports the published VM live. A fresh wake's map also carries
+      `generation` (the volume generation the boot landed on, Task 10
+      observability); the guarded direct-splice path replies with just `{ip,
+      port}` since it never wakes anything.
     * `{:error, {:wake_rate, _}}`               -> close (per-workload wake-rate limit)
     * `{:error, {:park_full, _}}`                -> close (parked-connection cap)
     * `{:error, {:wake_failed, r}}`              -> close (start error / readiness
@@ -423,6 +423,11 @@ defmodule Embervm.StatefulManager do
       # keyed by workload per the moduledoc (a stateful workload's principal IS
       # its workload).
       wake_events: %{},
+      # workload -> instance_id last logged by the witnessed-connect flap guard.
+      # A transient Envoy failover can send a burst to the activator; log that
+      # direct-splice decision once per published instance while bounding this map
+      # by the catalog's workload cardinality.
+      activator_splice_logged: %{},
       wake_max: Keyword.get(opts, :wake_max, @default_wake_max),
       wake_window_ms: Keyword.get(opts, :wake_window_ms, @default_wake_window_ms),
       park_cap: Keyword.get(opts, :park_cap, @default_park_cap),
@@ -624,15 +629,102 @@ defmodule Embervm.StatefulManager do
   # -- wake handling -----------------------------------------------------------
 
   defp handle_wake(state, workload, principal, from) do
-    # A straggler: the VM came up between the node Envoy's miss and this call
-    # reaching us (a race with a just-published wake). Resolve to the live
-    # endpoint directly, do NOT wake or error.
-    case StatefulStore.published_endpoint(state.store, workload) do
-      %{ip: ip, port: port} when is_binary(ip) and ip != "" and is_integer(port) ->
-        {:reply, {:ok, %{ip: ip, port: port}}, clear_last_wake_outcome(state, workload)}
+    case published_instance(state, workload) do
+      %{ip: ip, port: port} = instance when is_binary(ip) and ip != "" and is_integer(port) ->
+        handle_published_connect(state, instance, workload, principal, from)
 
       _ ->
         handle_cold_wake(state, workload, principal, from)
+    end
+  end
+
+  # Envoy reaches this path only after its priority-0 TCP health check has failed.
+  # A current healthy node report that still contains this exact VM is the flap
+  # guard: splice to the published endpoint and let the next health check heal.
+  # Otherwise withdraw health, durably retire the stale lifecycle, and run the
+  # ordinary rate-limited wake path.
+  defp handle_published_connect(state, instance, workload, principal, from) do
+    cond do
+      freshly_reported_live?(state, instance) ->
+        state = log_activator_transient_once(state, instance)
+        {:reply, {:ok, %{ip: instance.ip, port: instance.port}}, clear_last_wake_outcome(state, workload)}
+
+      not Map.has_key?(state.waking, workload) and not wake_allowed?(state, principal) ->
+        audit_denial(state, principal, workload, :wake_rate)
+        {:reply, {:error, {:wake_rate, "per-workload wake-rate limit exceeded"}}, state}
+
+      true ->
+        :ok =
+          NodeRegistry.withdraw_resident_health(
+            StatefulStore,
+            state.store,
+            instance.node_id,
+            [instance.vm_id]
+          )
+
+        case StatefulStore.transition(
+               state.store,
+               instance.instance_id,
+               :fail,
+               :stateful_failed,
+               %{reason: "activator_witnessed_connect"},
+               %{}
+             ) do
+          {:ok, _failed} ->
+            Logger.warning("embervm stateful endpoint withdrawn after activator witnessed connect",
+              event: :serving_withdrawn,
+              reason: "activator_witnessed_connect",
+              workload: workload,
+              instance_id: instance.instance_id,
+              node_id: instance.node_id,
+              vm_id: instance.vm_id
+            )
+
+            EndpointPublisher.publish(state.publisher)
+            handle_cold_wake(state, workload, principal, from)
+
+          {:error, reason} ->
+            {:reply, {:error, {:wake_failed, {:withdraw, reason}}}, state}
+        end
+    end
+  end
+
+  defp published_instance(state, workload) do
+    StatefulStore.list(state.store, workload)
+    |> Enum.find(fn instance ->
+      instance.state == :serving and instance.healthy and is_binary(instance.ip) and
+        instance.ip != "" and is_integer(instance.port)
+    end)
+  end
+
+  defp freshly_reported_live?(state, instance) do
+    case NodeCapacity.fetch(state.capacity_table, instance.node_id) do
+      {:ok, fact} ->
+        Enum.any?(Map.get(fact, :stateful_vms, []) || [], fn vm ->
+          Map.get(vm, :vm_id) == instance.vm_id
+        end)
+
+      :error ->
+        false
+    end
+  end
+
+  defp log_activator_transient_once(state, instance) do
+    if Map.get(state.activator_splice_logged, instance.workload) == instance.instance_id do
+      state
+    else
+      Logger.info("embervm stateful activator transient, splicing to reported-live endpoint",
+        reason: "activator_health_check_transient",
+        workload: instance.workload,
+        instance_id: instance.instance_id,
+        node_id: instance.node_id
+      )
+
+      %{
+        state
+        | activator_splice_logged:
+            Map.put(state.activator_splice_logged, instance.workload, instance.instance_id)
+      }
     end
   end
 

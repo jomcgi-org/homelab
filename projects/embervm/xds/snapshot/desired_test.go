@@ -2,6 +2,7 @@ package snapshot
 
 import (
 	"testing"
+	"time"
 
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -12,16 +13,24 @@ import (
 	resourcev3 "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
 )
 
-func TestBuild_translatesClustersEndpointsRoutes(t *testing.T) {
+func TestBuild_translatesPriorityEndpointsHealthCheckAndRoutes(t *testing.T) {
 	d := &Desired{
 		Version: "0000000001",
 		Clusters: []Cluster{
 			{
 				Name:             "fn-hello",
 				ConnectTimeoutMs: 250,
+				HealthCheck: &HealthCheck{
+					TimeoutMs:           1000,
+					IntervalMs:          2000,
+					NoTrafficIntervalMs: 2000,
+					UnhealthyThreshold:  2,
+					HealthyThreshold:    1,
+				},
 				Endpoints: []Endpoint{
-					{IP: "10.42.0.5", Port: 8080},
-					{IP: "10.42.0.6", Port: 8080},
+					{IP: "10.42.0.5", Port: 8080, Priority: 0},
+					{IP: "10.42.0.6", Port: 8080, Priority: 0},
+					{IP: "10.42.0.10", Port: 7000, Priority: 1},
 				},
 			},
 		},
@@ -61,8 +70,31 @@ func TestBuild_translatesClustersEndpointsRoutes(t *testing.T) {
 	if cl.GetEdsClusterConfig().GetEdsConfig().GetAds() == nil {
 		t.Error("eds config should use ADS")
 	}
+	healthChecks := cl.GetHealthChecks()
+	if len(healthChecks) != 1 {
+		t.Fatalf("want 1 health check, got %d", len(healthChecks))
+	}
+	hc := healthChecks[0]
+	if hc.GetTcpHealthCheck() == nil {
+		t.Error("health check should be TCP")
+	}
+	if got := hc.GetTimeout().AsDuration(); got != time.Second {
+		t.Errorf("health timeout = %v, want 1s", got)
+	}
+	if got := hc.GetInterval().AsDuration(); got != 2*time.Second {
+		t.Errorf("health interval = %v, want 2s", got)
+	}
+	if got := hc.GetNoTrafficInterval().AsDuration(); got != 2*time.Second {
+		t.Errorf("no traffic interval = %v, want 2s", got)
+	}
+	if got := hc.GetUnhealthyThreshold().GetValue(); got != 2 {
+		t.Errorf("unhealthy threshold = %d, want 2", got)
+	}
+	if got := hc.GetHealthyThreshold().GetValue(); got != 1 {
+		t.Errorf("healthy threshold = %d, want 1", got)
+	}
 
-	// EDS: one ClusterLoadAssignment with both endpoints.
+	// EDS: one assignment with priority-0 live endpoints and priority-1 activator.
 	eds := snap.GetResources(resourcev3.EndpointType)
 	cla, ok := eds["fn-hello"].(*endpointv3.ClusterLoadAssignment)
 	if !ok {
@@ -71,13 +103,28 @@ func TestBuild_translatesClustersEndpointsRoutes(t *testing.T) {
 	if cla.GetClusterName() != "fn-hello" {
 		t.Errorf("cla cluster name = %q, want fn-hello", cla.GetClusterName())
 	}
-	lbs := cla.GetEndpoints()[0].GetLbEndpoints()
+	localities := cla.GetEndpoints()
+	if len(localities) != 2 {
+		t.Fatalf("want 2 priority localities, got %d", len(localities))
+	}
+	if localities[0].GetPriority() != 0 || localities[1].GetPriority() != 1 {
+		t.Fatalf("priorities = [%d, %d], want [0, 1]", localities[0].GetPriority(), localities[1].GetPriority())
+	}
+	lbs := localities[0].GetLbEndpoints()
 	if len(lbs) != 2 {
-		t.Fatalf("want 2 lb endpoints, got %d", len(lbs))
+		t.Fatalf("want 2 priority-0 endpoints, got %d", len(lbs))
 	}
 	addr := lbs[0].GetEndpoint().GetAddress().GetSocketAddress()
 	if addr.GetAddress() != "10.42.0.5" || addr.GetPortValue() != 8080 {
 		t.Errorf("endpoint[0] = %s:%d, want 10.42.0.5:8080", addr.GetAddress(), addr.GetPortValue())
+	}
+	fallback := localities[1].GetLbEndpoints()[0].GetEndpoint()
+	fallbackAddr := fallback.GetAddress().GetSocketAddress()
+	if fallbackAddr.GetAddress() != "10.42.0.10" || fallbackAddr.GetPortValue() != 7000 {
+		t.Errorf("fallback = %s:%d, want 10.42.0.10:7000", fallbackAddr.GetAddress(), fallbackAddr.GetPortValue())
+	}
+	if !fallback.GetHealthCheckConfig().GetDisableActiveHealthCheck() {
+		t.Error("priority-1 activator should opt out of active health checks")
 	}
 
 	// RDS: one route config named for the bootstrap RDS reference, one vhost with
@@ -107,6 +154,32 @@ func TestBuild_translatesClustersEndpointsRoutes(t *testing.T) {
 	}
 	if hdrs[0].GetAppendAction() != corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD {
 		t.Errorf("header append action = %v, want OVERWRITE_IF_EXISTS_OR_ADD", hdrs[0].GetAppendAction())
+	}
+}
+
+func TestBuild_activatorOnlyAssignmentKeepsPriorityZeroWithoutHealthCheck(t *testing.T) {
+	d := &Desired{
+		Version: "1",
+		Clusters: []Cluster{
+			{Name: "state|cold", Endpoints: []Endpoint{{IP: "10.42.0.10", Port: 9100}}},
+		},
+	}
+
+	snap, err := Build(d)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	cl := snap.GetResources(resourcev3.ClusterType)["state|cold"].(*clusterv3.Cluster)
+	if len(cl.GetHealthChecks()) != 0 {
+		t.Fatalf("activator-only cluster health checks = %d, want 0", len(cl.GetHealthChecks()))
+	}
+	cla := snap.GetResources(resourcev3.EndpointType)["state|cold"].(*endpointv3.ClusterLoadAssignment)
+	if len(cla.GetEndpoints()) != 1 || cla.GetEndpoints()[0].GetPriority() != 0 {
+		t.Fatalf("activator-only localities = %v, want one priority-0 locality", cla.GetEndpoints())
+	}
+	endpoint := cla.GetEndpoints()[0].GetLbEndpoints()[0].GetEndpoint()
+	if endpoint.GetHealthCheckConfig().GetDisableActiveHealthCheck() {
+		t.Error("activator-only endpoint must remain eligible without a cluster health check")
 	}
 }
 
@@ -242,6 +315,7 @@ func TestBuild_rejectsMalformed(t *testing.T) {
 		{"endpoint missing ip", &Desired{Version: "1", Clusters: []Cluster{{Name: "c", Endpoints: []Endpoint{{Port: 80}}}}}},
 		{"endpoint port zero", &Desired{Version: "1", Clusters: []Cluster{{Name: "c", Endpoints: []Endpoint{{IP: "1.1.1.1", Port: 0}}}}}},
 		{"endpoint port too high", &Desired{Version: "1", Clusters: []Cluster{{Name: "c", Endpoints: []Endpoint{{IP: "1.1.1.1", Port: 70000}}}}}},
+		{"endpoint priority too high", &Desired{Version: "1", Clusters: []Cluster{{Name: "c", Endpoints: []Endpoint{{IP: "1.1.1.1", Port: 80, Priority: 2}}}}}},
 		{"route missing host", &Desired{Version: "1", Clusters: []Cluster{{Name: "c"}}, Routes: []Route{{Cluster: "c"}}}},
 		{"route missing cluster", &Desired{Version: "1", Routes: []Route{{Host: "h"}}}},
 		{"route to undefined cluster", &Desired{Version: "1", Routes: []Route{{Host: "h", Cluster: "nope"}}}},
