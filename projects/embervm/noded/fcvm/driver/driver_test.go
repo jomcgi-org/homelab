@@ -1889,6 +1889,24 @@ func TestWriteAndScanServingImageMarker(t *testing.T) {
 	}
 }
 
+func TestScanServingHandlerArtifactsSkipsTransientBaseDirs(t *testing.T) {
+	d := testDriver(t)
+	for _, baseKey := range []string{
+		"ping__real",
+		"ping__old.stale.123",
+		"ping__next.building",
+	} {
+		if err := d.WriteServingImageMarker(baseKey, "sha256:439160ce"); err != nil {
+			t.Fatalf("WriteServingImageMarker(%q): %v", baseKey, err)
+		}
+	}
+
+	got := d.ScanServingHandlerArtifacts()
+	if len(got) != 1 || got[0].BaseKey != "ping__real" {
+		t.Fatalf("rescan entries = %+v, want only ping__real", got)
+	}
+}
+
 // TestServingSnapshotRoundTrip banks a serving VM (writing the pinned-IP sidecar),
 // reads the pin back, restores from the bundle, and evicts it, mirroring the session
 // round-trip test but asserting the D-R3.4.1 IP pin is persisted and recovered.

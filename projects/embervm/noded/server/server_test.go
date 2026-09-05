@@ -30,6 +30,7 @@ import (
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
+	fcvmdriver "github.com/jomcgi/homelab/projects/embervm/noded/fcvm/driver"
 	artifactstore "github.com/jomcgi/homelab/projects/embervm/noded/store"
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
@@ -2967,6 +2968,66 @@ func TestReconcileBasesFromDiskRestoresRefAndGCsRefless(t *testing.T) {
 	}
 }
 
+func TestReconcileBasesFromDiskReflessRemovesServingImage(t *testing.T) {
+	dir := t.TempDir()
+	s := New(Options{Config: config.Config{SnapshotRoot: dir}})
+	baseKey := "wl-b__noref"
+	writeReconcileBase(t, filepath.Join(dir, "bases"), baseKey, "")
+	s.servingImage.add(servingImageEntry{baseKey: baseKey, workload: "wl-b"})
+
+	if err := s.ReconcileBasesFromDisk(); err != nil {
+		t.Fatalf("ReconcileBasesFromDisk: %v", err)
+	}
+	if _, ok := s.servingImage.get(baseKey); ok {
+		t.Fatalf("refless base %q survived in serving image inventory", baseKey)
+	}
+}
+
+func TestReconcileBasesReclaimsStaleDirWithoutRemovingRebuiltServingImage(t *testing.T) {
+	dir := t.TempDir()
+	s := New(Options{Config: config.Config{SnapshotRoot: dir}})
+	baseKey := "echo__rebuilt"
+	writeReconcileBase(t, filepath.Join(dir, "bases"), baseKey, "img-new")
+	staleKey := baseKey + ".stale.123"
+	staleDir := filepath.Join(dir, "bases", staleKey)
+	if err := os.MkdirAll(staleDir, 0o700); err != nil {
+		t.Fatalf("mkdir stale base: %v", err)
+	}
+	s.servingImage.add(servingImageEntry{baseKey: baseKey, workload: "echo", runtimeImageRef: "img-new"})
+	s.servingImage.add(servingImageEntry{baseKey: staleKey, workload: "echo", runtimeImageRef: "img-old"})
+
+	if err := s.ReconcileBasesFromDisk(); err != nil {
+		t.Fatalf("ReconcileBasesFromDisk: %v", err)
+	}
+	if _, err := os.Stat(staleDir); !os.IsNotExist(err) {
+		t.Fatalf("stale base was not reclaimed: %v", err)
+	}
+	if got, ok := s.servingImage.get(baseKey); !ok || got.runtimeImageRef != "img-new" {
+		t.Fatalf("rebuilt serving image = %+v ok=%v, want fresh entry preserved", got, ok)
+	}
+	if _, ok := s.servingImage.get(staleKey); ok {
+		t.Fatalf("stale key %q survived in serving image inventory", staleKey)
+	}
+}
+
+func TestReconcileBasesIdentityMismatchRemovesServingImage(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	baseKey := "echo__serving-mismatch"
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDB)
+	dir := writeIdentityBaseBundle(t, s, baseKey, rootfs, testRootfsUUIDA)
+	s.servingImage.add(servingImageEntry{baseKey: baseKey, workload: "echo", runtimeImageRef: "img"})
+
+	if err := s.ReconcileBasesFromDisk(); err != nil {
+		t.Fatalf("ReconcileBasesFromDisk: %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("mismatched base was not removed: %v", err)
+	}
+	if _, ok := s.servingImage.get(baseKey); ok {
+		t.Fatal("removed mismatched base survived in serving image inventory")
+	}
+}
+
 // TestReconcileBasesRefusesMissingScratchGeneration proves the adoption
 // backstop never trusts bundles before scratch-prep has identified the mounted
 // filesystem.
@@ -3042,27 +3103,47 @@ func TestScratchGenerationChangeReadoptsAndSignals(t *testing.T) {
 	if err := os.WriteFile(marker, []byte("generation-1\n"), 0o644); err != nil {
 		t.Fatalf("write first generation: %v", err)
 	}
+	servingDriver := fcvmdriver.New(fcvmdriver.Config{SnapshotRoot: dir}, nil, nil)
+	writeReconcileBase(t, basesDir, "wl-a__old", "img-old")
+	if err := servingDriver.WriteServingImageMarker("wl-a__old", "img-old"); err != nil {
+		t.Fatalf("write old serving marker: %v", err)
+	}
 	s := New(Options{
 		Config: config.Config{
 			Arch: "amd64", Node: "node-4", MaxLiveVMs: 4, SnapshotRoot: dir,
 			ScratchGenerationPath: marker,
 		},
+		ServingDriver: servingDriver,
 	})
-	writeReconcileBase(t, basesDir, "wl-a__old", "img-old")
 	if err := s.ReconcileBasesFromDisk(); err != nil {
 		t.Fatalf("first reconcile: %v", err)
 	}
 	if _, ok := s.bases.get("wl-a__old"); !ok {
 		t.Fatal("first generation base was not adopted")
 	}
+	if _, ok := s.servingImage.get("wl-a__old"); !ok {
+		t.Fatal("first generation serving image was not seeded")
+	}
 	s.sessionSnap.add(sessionSnapshotEntry{snapshotRef: "session-old"})
 
 	changes := s.subscribe()
 	defer s.unsubscribe(changes)
-	if err := os.RemoveAll(filepath.Join(basesDir, "wl-a__old")); err != nil {
-		t.Fatalf("remove old generation base: %v", err)
+	if err := os.RemoveAll(basesDir); err != nil {
+		t.Fatalf("remove old generation bases: %v", err)
 	}
 	writeReconcileBase(t, basesDir, "wl-b__new", "img-new")
+	if err := servingDriver.WriteServingImageMarker("wl-b__new", "img-new"); err != nil {
+		t.Fatalf("write new serving marker: %v", err)
+	}
+	staleKey := "wl-c__old.stale.123"
+	if err := servingDriver.WriteServingImageMarker(staleKey, "img-stale"); err != nil {
+		t.Fatalf("write stale serving marker: %v", err)
+	}
+	s.vms.add(&vmEntry{id: "vm-stale", snapshotRef: "wl-c__old", state: vmPrimed})
+	buildingKey := "wl-d__next.building"
+	if err := servingDriver.WriteServingImageMarker(buildingKey, "img-building"); err != nil {
+		t.Fatalf("write building serving marker: %v", err)
+	}
 	if err := os.WriteFile(marker, []byte("generation-2\n"), 0o644); err != nil {
 		t.Fatalf("write second generation: %v", err)
 	}
@@ -3079,6 +3160,17 @@ func TestScratchGenerationChangeReadoptsAndSignals(t *testing.T) {
 	}
 	if got, ok := s.bases.get("wl-b__new"); !ok || got.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
 		t.Fatalf("new generation base = %+v ok=%v, want adopted READY", got, ok)
+	}
+	if _, ok := s.servingImage.get("wl-a__old"); ok {
+		t.Fatal("old generation serving image survived the registry reset")
+	}
+	if got, ok := s.servingImage.get("wl-b__new"); !ok || got.runtimeImageRef != "img-new" {
+		t.Fatalf("new generation serving image = %+v ok=%v, want re-seeded", got, ok)
+	}
+	for _, key := range []string{staleKey, buildingKey} {
+		if _, ok := s.servingImage.get(key); ok {
+			t.Fatalf("transient directory %q was re-seeded as a serving image", key)
+		}
 	}
 	if got := s.sessionSnap.snapshot(); len(got) != 0 {
 		t.Fatalf("old generation session inventory survived rescan: %+v", got)

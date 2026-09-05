@@ -1024,6 +1024,7 @@ func TestEvictBaseLocalRefusesInUse(t *testing.T) {
 
 	inUse := "sandbox__inuse00000"
 	dir := seedLocalBase(t, s, "sandbox", inUse)
+	s.servingImage.add(servingImageEntry{baseKey: inUse, workload: "sandbox", runtimeImageRef: "img"})
 	s.vms.add(&vmEntry{id: "vm-live-1", workload: "sandbox", snapshotRef: inUse, state: vmPrimed})
 
 	err := evictBase(s, "sandbox", inUse)
@@ -1032,6 +1033,9 @@ func TestEvictBaseLocalRefusesInUse(t *testing.T) {
 	}
 	if !dirExists(dir) {
 		t.Fatal("in-use base dir was removed despite the guard")
+	}
+	if _, ok := s.servingImage.get(inUse); !ok {
+		t.Fatal("in-use base was removed from serving image inventory despite the guard")
 	}
 }
 

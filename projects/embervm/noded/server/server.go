@@ -507,20 +507,7 @@ func New(opts Options) *Server {
 	// Re-seed the serving-images inventory from disk so a daemon restart re-discovers
 	// the cold-boot handler artifacts it built before (mirroring the banked-snapshot
 	// rescan). Only when serving is configured; task/session-only builds skip it.
-	if opts.ServingDriver != nil {
-		for _, a := range opts.ServingDriver.ScanServingHandlerArtifacts() {
-			s.servingImage.add(servingImageEntry{
-				baseKey: a.BaseKey,
-				// The disk rescan has no control-plane binding, so recover the workload
-				// from the base-key prefix (same as ReconcileBasesFromDisk) so NodeStatus
-				// keys serving_image_ref by workload immediately, not only after a rebuild.
-				workload:        workloadFromBaseKey(a.BaseKey),
-				handlerPath:     a.Path,
-				runtimeImageRef: a.RuntimeImageRef,
-				sizeBytes:       a.SizeBytes,
-			})
-		}
-	}
+	s.reconcileServingImagesFromDisk()
 	// Load the last-synced workload registry from NVMe and mark it STALE (ADR
 	// embervm/012, never warm-to-dead): a restarted daemon serves the warm pool it
 	// already knew from the cached table while it waits for the control plane to
@@ -3075,7 +3062,7 @@ func (s *Server) ReconcileBasesFromDisk() error {
 				gc++
 				// The serving inventory advertises this key as serving_image_ref and must not
 				// outlive the directory (#4089).
-				s.servingImage.remove(origKey)
+				s.servingImage.remove(baseKey)
 			}
 			continue
 		}
@@ -3182,11 +3169,11 @@ func (s *Server) ReconcileBasesFromDisk() error {
 						s.logger.Warn("noded: remove base with rootfs identity mismatch", "base", baseKey, "err", err)
 					} else {
 						gc++
+						// The serving inventory advertises this key as serving_image_ref and must not
+						// outlive the directory (#4089).
+						s.servingImage.remove(baseKey)
 					}
 					s.bases.remove(baseKey)
-					// The serving inventory advertises this key as serving_image_ref and must not
-					// outlive the directory (#4089).
-					s.servingImage.remove(baseKey)
 					continue
 				}
 			}
@@ -3239,6 +3226,7 @@ func (s *Server) ReconcileBasesFromDisk() error {
 func (s *Server) invalidateScratchInventories() {
 	s.sessionSnap.reset()
 	s.servingSnap.reset()
+	s.servingImage.reset()
 	s.statefulBundles.reset()
 	s.groupBundles.reset()
 	if s.groupNet != nil {
@@ -3257,9 +3245,28 @@ func (s *Server) invalidateScratchInventories() {
 func (s *Server) reconcileScratchInventoriesFromDisk() {
 	s.ReconcileSessionsFromDisk()
 	s.ReconcileServingFromDisk()
+	s.reconcileServingImagesFromDisk()
 	s.ReconcileStatefulFromDisk()
 	s.ReconcileGroupNetworksFromDisk()
 	s.ReconcileGroupBundlesFromDisk()
+}
+
+func (s *Server) reconcileServingImagesFromDisk() {
+	if s.servingDriver == nil {
+		return
+	}
+	for _, a := range s.servingDriver.ScanServingHandlerArtifacts() {
+		s.servingImage.add(servingImageEntry{
+			baseKey: a.BaseKey,
+			// The disk rescan has no control-plane binding, so recover the workload
+			// from the base-key prefix (same as ReconcileBasesFromDisk) so NodeStatus
+			// keys serving_image_ref by workload immediately, not only after a rebuild.
+			workload:        workloadFromBaseKey(a.BaseKey),
+			handlerPath:     a.Path,
+			runtimeImageRef: a.RuntimeImageRef,
+			sizeBytes:       a.SizeBytes,
+		})
+	}
 }
 
 // readScratchGeneration returns the scratch-prep marker. An empty configured

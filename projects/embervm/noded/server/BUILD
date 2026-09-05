@@ -73,6 +73,7 @@ go_test(
     embed = [":server"],
     deps = [
         "//projects/embervm/noded/config",
+        "//projects/embervm/noded/fcvm/driver",
         "//projects/embervm/noded/serving",
         "//projects/embervm/noded/store",
         "//projects/embervm/noded/substrate",
