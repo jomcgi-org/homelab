@@ -906,6 +906,85 @@ func TestSwapPumpObservesQuotaAndRelaysResponse(t *testing.T) {
 	}
 }
 
+func TestSwapPumpPlaintextUpstreamClosesAfterEachResponse(t *testing.T) {
+	// A kept-alive guest connection on the plaintext-upstream lane must be
+	// answered with Connection: close and torn down after one exchange, so a
+	// pooling MCP client never reuses a connection the idle deadline will kill.
+	previousTimeout := headerTimeout
+	headerTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { headerTimeout = previousTimeout })
+
+	upClient, upOrigin := net.Pipe()
+	defer upClient.Close()
+	originSaw := make(chan *http.Request, 1)
+	originEOF := make(chan bool, 1)
+	go func() {
+		defer upOrigin.Close()
+		req, err := http.ReadRequest(bufio.NewReader(upOrigin))
+		if err != nil {
+			originSaw <- nil
+			originEOF <- false
+			return
+		}
+		originSaw <- req
+		_, _ = io.WriteString(upOrigin, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+		// The sidecar must close its side after one exchange rather than wait
+		// for a second request on this connection.
+		var b [1]byte
+		_ = upOrigin.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, readErr := upOrigin.Read(b[:])
+		originEOF <- readErr != nil
+	}()
+
+	// Two requests, no Connection: close from the guest: a pooling client.
+	guest := "POST http://agents.internal:8092/mcp HTTP/1.1\r\n" +
+		"Host: agents.internal:8092\r\n" +
+		"Content-Length: 0\r\n\r\n" +
+		"POST http://agents.internal:8092/mcp HTTP/1.1\r\n" +
+		"Host: agents.internal:8092\r\n" +
+		"Content-Length: 0\r\n\r\n"
+	sec := &secretEntry{
+		Header:            "Authorization",
+		EgressTo:          []string{"agents.internal"},
+		PlaintextUpstream: true,
+		InjectAlwaysPaths: []string{"/mcp"},
+		value:             "real",
+	}
+	var back bytes.Buffer
+	p := &proxy{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	done := make(chan struct{})
+	go func() {
+		p.swapPump(bufio.NewReader(strings.NewReader(guest)), &back, nil, upClient, "agents.internal:8092", sec)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("swapPump kept the connection open after the first response")
+	}
+
+	got := <-originSaw
+	if got == nil {
+		t.Fatal("origin never read a request")
+	}
+	if !got.Close {
+		t.Errorf("forwarded request lacked Connection: close; header %q", got.Header.Get("Connection"))
+	}
+	if !<-originEOF {
+		t.Error("sidecar did not close the upstream side after one exchange")
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(strings.NewReader(back.String())), got)
+	if err != nil {
+		t.Fatalf("guest response unparseable: %v; raw %q", err, back.String())
+	}
+	if !resp.Close {
+		t.Errorf("guest response lacked Connection: close: %q", back.String())
+	}
+	if strings.Count(back.String(), "HTTP/1.1 200") != 1 {
+		t.Errorf("expected exactly one relayed response, got %q", back.String())
+	}
+}
+
 func runSwapResponse(p *proxy, sec *secretEntry, status int, body string) (string, error) {
 	upClient, upOrigin := net.Pipe()
 	defer upClient.Close()

@@ -618,6 +618,18 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, guestDeadline i
 		// which is what an origin server expects. req.Host was already populated
 		// from whichever form arrived, so the header survives either way.
 		closeAfter := req.Close
+		if sec.PlaintextUpstream {
+			// One request per connection on this lane. headerTimeout closes a
+			// kept-alive connection 30s after its last request, and the guest-side
+			// forwarder does not surface that close until the client's next write,
+			// so a pooled connection dies under an MCP client's first tool call
+			// after a pause (seen with both the claude and codex CLIs, 2026-09-05;
+			// the curl probes that always worked dialled afresh every time).
+			// Telling both ends the connection is done makes every client dial
+			// afresh, which costs one local connect per call.
+			req.Close = true
+			closeAfter = true
+		}
 		req.RequestURI = ""
 		req.URL.Scheme, req.URL.Host = "", ""
 		if err := req.Write(up); err != nil {
@@ -665,6 +677,9 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, guestDeadline i
 				}
 				p.quotaReporter.report(obs)
 			}
+		}
+		if sec.PlaintextUpstream {
+			resp.Close = true
 		}
 		err = resp.Write(guestW)
 		_ = resp.Body.Close()
