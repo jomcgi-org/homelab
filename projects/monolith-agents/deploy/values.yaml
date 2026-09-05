@@ -36,18 +36,14 @@ auth:
 discord:
   defaultChannelId: "1501965852969402517"
 
-# The workload stays OFF until its database credential exists. Secrets are
-# namespaced, so this tier cannot read the monolith's monolith-pg-app: it needs
-# its own synced copy, and the scoped Postgres role that credential should use
-# is a later slice. Rendering a Deployment now would CrashLoop on a secretKeyRef
-# that resolves to nothing.
-#
-# To arm, in order: create the scoped role, put its uri in 1Password, set
-# onepassword.itemPath here, then flip this to true.
-# The tier's database credential, synced from the 1Password item that also
-# backs the CNPG role password (see projects/monolith/deploy/agents-writer-secret.md).
+# Armed 2026-09-05: the scoped agents_writer role exists (migration
+# 20260904180000), its uri is in 1Password (agents-writer-db) and the hub
+# synced monolith-agents-db from it before this flip. The R2 credential syncs
+# from objectStorage.onepassword.itemPath above. Both refs are non-optional,
+# so a missing Secret shows as CreateContainerConfigError, never as a running
+# pod with no storage.
 onepassword:
   itemPath: "vaults/k8s-homelab/items/agents-writer-db"
 
 agents:
-  enabled: false
+  enabled: true
