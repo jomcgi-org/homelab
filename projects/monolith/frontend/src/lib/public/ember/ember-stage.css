@@ -13,6 +13,13 @@
   --es-cell-idle-bg: #e6e2d7;
   --es-ink: var(--em-ink, #20222a);
   --es-muted: var(--em-muted, #525965);
+  --es-amber: var(--em-amber, #f2b04e);
+  --es-amber-deep: var(--em-amber-deep, #9a6414);
+  --es-shadow-soft: var(
+    --em-shadow-soft,
+    0 1px 3px rgba(32, 34, 42, 0.05),
+    0 10px 24px rgba(32, 34, 42, 0.06)
+  );
 
   /* Cold (banked) cell hue range: same blue family fcstory uses for its
    * frost tones. */

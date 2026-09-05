@@ -103,6 +103,7 @@ def test_postgres_status_shapes_control_plane_payload(monkeypatch):
     assert body["anchor"] is None
     assert body["recovery"] is None
     assert body["preempted"] is None
+    assert body["display_preempted"] is False
 
 
 @pytest.mark.parametrize(
@@ -133,7 +134,7 @@ def test_postgres_status_shapes_control_plane_payload(monkeypatch):
         (
             {
                 "node_id": "spot-a",
-                "health": "unknown",
+                "health": "down",
                 "draining": False,
                 "missing_since_ms": 1_700_000_000_000,
             },
@@ -167,6 +168,46 @@ def test_postgres_status_shapes_preemption_phases(
         "since_ms": expected_since_ms,
         "phase": phase,
     }
+    assert body["display_preempted"] is True
+
+
+@pytest.mark.parametrize(
+    ("state", "anchor", "recovery", "expected_display"),
+    [
+        ("serving", {"health": "healthy", "draining": True}, None, False),
+        ("banked", {"health": "healthy", "draining": True}, None, True),
+        (
+            "serving",
+            {"health": "healthy", "draining": False},
+            "anchor_lost",
+            True,
+        ),
+        ("serving", {"health": "down", "draining": False}, None, True),
+    ],
+)
+def test_postgres_status_separates_draining_from_display_preemption(
+    monkeypatch, state, anchor, recovery, expected_display
+):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        return _pg_status_payload(
+            state=state,
+            anchor=anchor,
+            recovery=recovery,
+        )
+
+    async def fake_record(_state, _generation):
+        return None
+
+    monkeypatch.setattr(core, "fetch_demo_pg_status", fake_status)
+    monkeypatch.setattr(core, "record_demo_pg_savings", fake_record)
+
+    body = _client().get("/api/ember/postgres/status").json()
+
+    assert body["preempted"] is not None
+    assert body["display_preempted"] is expected_display
 
 
 def test_shape_pg_status_includes_park_fields():
@@ -487,12 +528,93 @@ def test_postgres_query_preemption_hides_driver_error(monkeypatch):
     body = _client().post("/api/ember/postgres/query", json={}).json()
 
     assert body["classification"] == "preempted"
+    assert body["display_preempted"] is True
     assert body["error"] == (
-        "the brick hosting this demo was preempted, the control plane is restoring it"
+        "The machine running this database was shut down at short notice, which is "
+        "normal on the cheap capacity it runs on. It is coming back automatically "
+        "with its data intact. It is coming back with its data."
     )
     assert body["phase_before"] == "serving"
     assert body["total_ms"] >= 0
     assert "server closed" not in body["error"]
+
+
+def test_postgres_query_success_uses_same_preemption_classification(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        return _pg_status_payload(
+            state="banked",
+            anchor={"health": "down", "draining": False},
+            recovery="restoring",
+        )
+
+    monkeypatch.setattr(core, "fetch_demo_pg_status", fake_status)
+    monkeypatch.setattr(core, "demo_pg_orders_roundtrip", lambda *_: _query_result())
+
+    body = _client().post("/api/ember/postgres/query", json={}).json()
+
+    assert body["error"] is None
+    assert body["classification"] == "preempted"
+    assert body["display_preempted"] is True
+
+
+def test_postgres_query_draining_while_serving_keeps_driver_error(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        return _pg_status_payload(
+            state="serving",
+            anchor={"health": "healthy", "draining": True},
+        )
+
+    def fake_roundtrip(*_args):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(core, "fetch_demo_pg_status", fake_status)
+    monkeypatch.setattr(core, "demo_pg_orders_roundtrip", fake_roundtrip)
+
+    body = _client().post("/api/ember/postgres/query", json={}).json()
+
+    assert body["classification"] == "preempted"
+    assert body["display_preempted"] is False
+    assert body["error"] == "connection refused"
+
+
+def test_postgres_query_cold_recovery_is_consistent_on_success_and_failure(
+    monkeypatch,
+):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        return _pg_status_payload(
+            state=None,
+            anchor={"health": "healthy", "draining": False},
+            recovery="cold",
+        )
+
+    fail = {"value": False}
+
+    def fake_roundtrip(*_args):
+        if fail["value"]:
+            raise OSError("connection refused")
+        return _query_result()
+
+    monkeypatch.setattr(core, "fetch_demo_pg_status", fake_status)
+    monkeypatch.setattr(core, "demo_pg_orders_roundtrip", fake_roundtrip)
+
+    success = _client().post("/api/ember/postgres/query", json={}).json()
+    fail["value"] = True
+    failure = _client().post("/api/ember/postgres/query", json={}).json()
+
+    assert success["classification"] == "cold"
+    assert failure["classification"] == "cold"
+    assert success["display_preempted"] is False
+    assert failure["display_preempted"] is False
+    assert failure["error"] == "connection refused"
 
 
 def test_presence_ttl_prunes_and_counts(monkeypatch):
@@ -564,6 +686,22 @@ def test_classify_wake_paths():
             }
         )
         == "preempted"
+    )
+
+
+@pytest.mark.parametrize(
+    ("phase", "phase_copy"),
+    [
+        ("confirming", "It is checking whether the machine is really gone."),
+        ("restoring", "It is coming back with its data."),
+        ("cold", "It is starting fresh."),
+    ],
+)
+def test_preemption_copy_names_each_phase(phase, phase_copy):
+    assert core.preemption_copy(phase) == (
+        "The machine running this database was shut down at short notice, which is "
+        "normal on the cheap capacity it runs on. It is coming back automatically "
+        f"with its data intact. {phase_copy}"
     )
 
 

@@ -54,6 +54,7 @@
     <EmberStage
       vmState={consoleStatus?.state}
       preempted={consoleStatus?.preempted}
+      displayPreempted={consoleStatus?.display_preempted}
       totalSavedMibS={consoleStatus?.total_saved_mib_s}
       stopwatchMs={consoleStopwatchMs}
       running={consoleRunning}

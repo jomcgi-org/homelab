@@ -24,8 +24,10 @@
     includedSnapshotWait,
     parkedMsBreakdown,
     phaseLabel,
+    retryWindowExpiredResult,
     shouldRetry,
   } from "./console-retry.js";
+  import { preemptionCopy } from "./preemption-copy.js";
 
   /** @type {{ turnstileSiteKey?: string, initialStatus?: object|null, initialSavings?: object|null, status?: object|null, running?: boolean, stopwatchMs?: number }} */
   let {
@@ -40,8 +42,6 @@
 
   const API = "/ember/postgres/api";
   const POLL_MS = 700;
-  const PREEMPTION_COPY =
-    "The Spot node hosting this Postgres was preempted. The control plane is restoring the volume from the object store.";
 
   // Clicks during a lifecycle transition (mid-bank, wake-rate limiter) fail
   // transiently; retry the same request under the still-ticking stopwatch so
@@ -80,12 +80,14 @@
     : initialSavings
       ? { total_saved_mib_s: initialSavings.total_saved_mib_s }
       : null;
-  let statusError = $state(status?.preempted ? PREEMPTION_COPY : "");
+  let statusError = $state(
+    status?.display_preempted ? preemptionCopy(status.preempted?.phase) : "",
+  );
   let lastRun = $state(null);
   let runError = $state("");
   let runErrorKind = $state("");
   let livePhase = $derived(
-    phaseLabel(status?.preempted ? "preempted" : status?.state),
+    phaseLabel(status?.display_preempted ? "preempted" : status?.state),
   );
 
   // Which result shape the right column shows. INSERT lands on the orders
@@ -225,11 +227,7 @@
       }
       if (attempt < RETRY_DELAYS_MS.length) {
         if (!shouldRetry(performance.now() - startTime, RETRY_WINDOW_MS)) {
-          return {
-            ...lastResult,
-            error:
-              "the demo took too long to answer and may be waking from cold, try again in a moment",
-          };
+          return retryWindowExpiredResult(lastResult);
         }
         await sleep(RETRY_DELAYS_MS[attempt]);
       }
@@ -320,7 +318,6 @@
         statusError = body.error;
         return;
       }
-      statusError = body.preempted ? PREEMPTION_COPY : "";
       // Stale-poll guard: the status read is cached ~500ms and polled at
       // 700ms, so right after a completed run the poll can still say
       // "banked" while we already know the VM served us. Accepting that
@@ -333,7 +330,12 @@
           body.state === "checkpointed" ||
           body.state === "banking") &&
         Date.now() - lastOwnActivityAt < 2500;
-      status = staleCold ? { ...body, state: "serving" } : body;
+      status = staleCold
+        ? { ...body, state: "serving", display_preempted: false }
+        : body;
+      statusError = status.display_preempted
+        ? preemptionCopy(status.preempted?.phase)
+        : "";
     } catch (err) {
       statusError = String(err);
     }
@@ -437,8 +439,8 @@
       return {
         ok: false,
         classification: body.classification,
-        error:
-          body.classification === "preempted" ? PREEMPTION_COPY : body.error,
+        displayPreempted: body.display_preempted,
+        error: body.error,
       };
     }
     return { ok: true, body };
@@ -454,7 +456,7 @@
       const result = await fetchWithBackoff(() => attemptQuery(mode));
       if (!result.ok) {
         runError = result.error;
-        runErrorKind = result.classification ?? "";
+        runErrorKind = result.displayPreempted ? "preempted" : "";
         return;
       }
       const body = result.body;
@@ -466,7 +468,11 @@
       // flipping false and the poll confirming. Without this the warm sweep
       // visibly dips mid-wake; the next poll still owns the true state.
       if (status?.state !== "serving") {
-        status = { ...(status ?? {}), state: "serving" };
+        status = {
+          ...(status ?? {}),
+          state: "serving",
+          display_preempted: false,
+        };
       }
       view = mode === "aggregate" ? "summary" : "orders";
       const tier = classifyTier(body.classification);
@@ -720,10 +726,8 @@
         {runError}
       </p>
     {/if}
-    {#if statusError}
-      <p class="soft-error" class:preempted-notice={!!status?.preempted}>
-        status: {statusError}
-      </p>
+    {#if statusError && !status?.display_preempted}
+      <p class="soft-error">{statusError}</p>
     {/if}
 
     <div class="stats-card">

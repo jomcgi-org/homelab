@@ -267,14 +267,19 @@ def shape_pg_status(status: dict) -> dict:
 
 
 def preemption_status(status: dict | None) -> dict | None:
-    """Describe an active Spot-brick recovery from defensive CP fields."""
+    """Describe an active Spot-brick recovery from defensive CP fields.
+
+    ``anchor`` and ``recovery`` arrive with control-plane issue #5676. They
+    are absent until that change merges, so these projection branches remain
+    inert while the Offline words and landing-page behavior are live now.
+    """
     if not status:
         return None
     anchor = status.get("anchor")
     anchor = anchor if isinstance(anchor, dict) else {}
     recovery = status.get("recovery")
     anchor_missing = anchor.get("health") == "down" or anchor.get("draining") is True
-    if recovery not in {"anchor_lost", "restoring", "cold"} and not anchor_missing:
+    if recovery not in {"anchor_lost", "restoring"} and not anchor_missing:
         return None
 
     if recovery == "cold":
@@ -291,6 +296,46 @@ def preemption_status(status: dict | None) -> dict | None:
     ):
         since_ms = max(0, int(time() * 1000 - missing_since_ms))
     return {"since_ms": since_ms, "phase": phase}
+
+
+def display_preempted(status: dict | None) -> bool:
+    """Whether recovery should replace the workload's normal display state.
+
+    A draining anchor is still a preempted wake tier, but it keeps serving
+    during the notice window. Only switch the public display once recovery is
+    active, the anchor is down, or the workload itself is no longer serving.
+    """
+    if preemption_status(status) is None:
+        return False
+    anchor = status.get("anchor") if status else None
+    anchor = anchor if isinstance(anchor, dict) else {}
+    instance = status.get("instance") if status else None
+    instance = instance if isinstance(instance, dict) else {}
+    healthy = status.get("healthy", instance.get("healthy"))
+    return (
+        status.get("recovery") in {"anchor_lost", "restoring"}
+        or anchor.get("health") == "down"
+        or status.get("state") != "serving"
+        or healthy is False
+    )
+
+
+_PREEMPTION_COPY = (
+    "The machine running this database was shut down at short notice, which is "
+    "normal on the cheap capacity it runs on. It is coming back automatically "
+    "with its data intact."
+)
+_PREEMPTION_PHASE_COPY = {
+    "confirming": "It is checking whether the machine is really gone.",
+    "restoring": "It is coming back with its data.",
+    "cold": "It is starting fresh.",
+}
+
+
+def preemption_copy(phase: str | None) -> str:
+    """Return the shared public explanation for a preemption phase."""
+    phase_copy = _PREEMPTION_PHASE_COPY.get(phase)
+    return f"{_PREEMPTION_COPY} {phase_copy}" if phase_copy else _PREEMPTION_COPY
 
 
 # All-time "memory saved while asleep" counter (every visitor, not just this
