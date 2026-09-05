@@ -92,6 +92,19 @@ defmodule Embervm.StatefulStoreTest do
     assert StatefulStore.next_blessed_generation(restarted, "wl-a") == 1001
   end
 
+  test "blessing lease start remains seeded past the reported generation", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, _} = StatefulStore.create_volume(store, "wl-a", %{node_id: "node-4", generation: 3})
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 3)
+
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 7, generation_blessed: true})
+
+    assert {:ok, lease} = StatefulStore.grant_blessing_lease(store, "wl-a", "node-4", 10)
+    assert lease.start_generation == 8
+    assert lease.next_generation == 8
+    assert lease.lease_end == 18
+  end
+
   test "ensure_blessing_lease grants when the lease is absent", %{path: path} do
     {op_log, store} = start_pair(path)
     StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 0})
@@ -628,6 +641,17 @@ defmodule Embervm.StatefulStoreTest do
     assert StatefulStore.next_blessed_generation(store, "wl-a") == 3
   end
 
+  test "next_blessed_generation skips a blessed node generation ahead of the watermark", %{path: path} do
+    {_op_log, store} = start_pair(path)
+    {:ok, _} = StatefulStore.create_volume(store, "wl-a", %{node_id: "node-4", generation: 3})
+    {:ok, _} = StatefulStore.bless_generation(store, "wl-a", 3)
+
+    StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-4", generation: 4, generation_blessed: true})
+
+    assert StatefulStore.blessing_watermark(store, "wl-a") == 3
+    assert StatefulStore.next_blessed_generation(store, "wl-a") == 5
+  end
+
   test "bless_generation durably appends generation_blessed and updates the blessing ledger, separate from the volume row",
        %{path: path} do
     {op_log, store} = start_pair(path)
@@ -792,7 +816,8 @@ defmodule Embervm.StatefulStoreTest do
     # genuine split-brain shape: quarantine (the watermark must not adopt it).
     StatefulStore.upsert_volume(store, "wl-a", %{node_id: "node-9", generation: 5, generation_blessed: false})
     assert StatefulStore.quarantined?(store, "wl-a")
-    assert StatefulStore.next_blessed_generation(store, "wl-a") == 4
+    assert StatefulStore.blessing_watermark(store, "wl-a") == 3
+    assert StatefulStore.next_blessed_generation(store, "wl-a") == 6
   end
 
   test "a CP roll that rewinds the watermark below the anchor's on-disk generation self-heals via adoption, not a permanent quarantine",
