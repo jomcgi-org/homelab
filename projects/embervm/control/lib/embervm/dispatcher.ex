@@ -1378,6 +1378,22 @@ defmodule Embervm.Dispatcher do
     queued_tasks_truncated = length(queued_tasks) > @spec_trace_queued_tasks_limit
     queued_tasks = Enum.take(queued_tasks, @spec_trace_queued_tasks_limit)
 
+    workload_concurrency =
+      if :ets.whereis(state.catalog_table) == :undefined do
+        %{}
+      else
+        for workload <- WorkloadCatalog.all_names(state.catalog_table),
+            {:ok, %{cap: cap}} <- [WorkloadCatalog.fetch(state.catalog_table, workload)],
+            is_integer(cap),
+            into: %{} do
+          {workload,
+           %{
+             "inflight" => inflight_count(state.inflight_wl, workload),
+             "cap" => cap
+           }}
+        end
+      end
+
     reserved_vm_ids =
       state.workers
       |> Map.values()
@@ -1401,6 +1417,7 @@ defmodule Embervm.Dispatcher do
       "node_workload_vm_ids" => node_workload_vm_ids,
       "queued_tasks" => queued_tasks,
       "queued_tasks_truncated" => queued_tasks_truncated,
+      "workload_concurrency" => workload_concurrency,
       "reserved_vm_ids" => reserved_vm_ids,
       "node_health" => safe_node_health(),
       "node_reported" => node_reported
