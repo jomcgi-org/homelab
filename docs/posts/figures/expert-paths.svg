@@ -1,43 +1,39 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 286" role="img" aria-label="Expert transfer vs bandwidth">
-  <text x="18" y="24" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">WEIGHTS</text>
-  <text x="270" y="24" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">ACCESS / 2.6 MB</text>
-  <text x="420" y="24" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">BANDWIDTH</text>
-  <text x="616" y="24" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">COMPUTE</text>
-  <line x1="18" y1="36" x2="682" y2="36" stroke="currentColor" stroke-width="1"/>
-  <rect x="18" y="48" width="5" height="40" fill="var(--replay-hot)"/>
-  <text x="34" y="61" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start" font-weight="bold">HOT</text>
-  <text x="34" y="80" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">GPU VRAM</text>
-  <text x="270" y="75" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="18" fill="currentColor" text-anchor="middle">~3 us</text>
-  <text x="420" y="74" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="14" fill="currentColor" text-anchor="middle">1 TB/s</text>
-  <line x1="496" y1="68" x2="525" y2="68" stroke="currentColor" stroke-width="1"/>
-  <rect x="18" y="106" width="5" height="40" fill="var(--replay-warm)"/>
-  <text x="34" y="119" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start" font-weight="bold">WARM</text>
-  <text x="34" y="138" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">Pinned RAM / PCIe</text>
-  <text x="270" y="133" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="18" fill="currentColor" text-anchor="middle">~100 us</text>
-  <text x="420" y="132" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="14" fill="currentColor" text-anchor="middle">25 GB/s</text>
-  <line x1="496" y1="126" x2="525" y2="126" stroke="currentColor" stroke-width="1"/>
-  <rect x="18" y="164" width="5" height="40" fill="var(--replay-cold)"/>
-  <text x="34" y="177" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start" font-weight="bold">COLD</text>
-  <text x="34" y="196" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">Page cache hit</text>
-  <text x="270" y="191" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="18" fill="currentColor" text-anchor="middle">~40 us</text>
-  <text x="420" y="190" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="14" fill="currentColor" text-anchor="middle">RAM speed</text>
-  <line x1="496" y1="184" x2="525" y2="184" stroke="currentColor" stroke-width="1"/>
-  <rect x="18" y="222" width="5" height="40" fill="var(--replay-cold)"/>
-  <text x="34" y="235" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start" font-weight="bold">COLD</text>
-  <text x="34" y="254" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">NVMe bulk read</text>
-  <text x="270" y="249" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="18" fill="currentColor" text-anchor="middle">~370 us</text>
-  <text x="420" y="248" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="14" fill="currentColor" text-anchor="middle">7 GB/s</text>
-  <line x1="496" y1="242" x2="525" y2="242" stroke="currentColor" stroke-width="1"/>
-  <line x1="525" y1="68" x2="525" y2="126" stroke="currentColor" stroke-width="1"/>
-  <line x1="525" y1="97" x2="557" y2="97" stroke="currentColor" stroke-width="1"/>
-  <line x1="557" y1="97" x2="552.9549150281252" y2="99.93892626146237" stroke="currentColor" stroke-width="1"/>
-  <line x1="557" y1="97" x2="552.9549150281252" y2="94.06107373853763" stroke="currentColor" stroke-width="1"/>
-  <rect x="567" y="71" width="98" height="52" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="616" y="103" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="18" fill="currentColor" text-anchor="middle" font-weight="bold">GPU</text>
-  <line x1="525" y1="184" x2="525" y2="242" stroke="currentColor" stroke-width="1"/>
-  <line x1="525" y1="213" x2="557" y2="213" stroke="currentColor" stroke-width="1"/>
-  <line x1="557" y1="213" x2="552.9549150281252" y2="215.93892626146237" stroke="currentColor" stroke-width="1"/>
-  <line x1="557" y1="213" x2="552.9549150281252" y2="210.06107373853763" stroke="currentColor" stroke-width="1"/>
-  <rect x="567" y="187" width="98" height="52" fill="none" stroke="currentColor" stroke-width="1.25"/>
-  <text x="616" y="219" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="18" fill="currentColor" text-anchor="middle" font-weight="bold">CPU</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 256" role="img" aria-label="Expert transfer vs bandwidth">
+  <rect x="32" y="24" width="340" height="76" fill="none" stroke="currentColor" stroke-width="1.25"/>
+  <text x="44" y="43" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start" font-weight="bold">GPU</text>
+  <line x1="32" y1="52" x2="372" y2="52" stroke="currentColor" stroke-width="1.25"/>
+  <rect x="44" y="65" width="4" height="22" fill="var(--replay-hot)"/>
+  <text x="58" y="82" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">HOT experts</text>
+  <line x1="144" y1="78" x2="273" y2="78" stroke="currentColor" stroke-width="1"/>
+  <line x1="273" y1="78" x2="268.95491502812524" y2="80.93892626146237" stroke="currentColor" stroke-width="1"/>
+  <line x1="273" y1="78" x2="268.95491502812524" y2="75.06107373853763" stroke="currentColor" stroke-width="1"/>
+  <text x="209" y="69" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">1 TB/s</text>
+  <text x="285" y="82" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">compute</text>
+  <rect x="32" y="181" width="170" height="51" fill="none" stroke="currentColor" stroke-width="1.25"/>
+  <rect x="32" y="181" width="4" height="51" fill="var(--replay-warm)"/>
+  <text x="46" y="200" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start" font-weight="bold">WARM experts</text>
+  <text x="46" y="220" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">Pinned RAM</text>
+  <polyline points="117,181 117,134 316,134 316,100" fill="none" stroke="currentColor" stroke-width="1"/>
+  <line x1="316" y1="100" x2="318.93892626146237" y2="104.04508497187474" stroke="currentColor" stroke-width="1"/>
+  <line x1="316" y1="100" x2="313.06107373853763" y2="104.04508497187473" stroke="currentColor" stroke-width="1"/>
+  <text x="211" y="126" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">PCIe / 25 GB/s</text>
+  <rect x="526" y="24" width="142" height="76" fill="none" stroke="currentColor" stroke-width="1.25"/>
+  <text x="538" y="43" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start" font-weight="bold">CPU</text>
+  <line x1="526" y1="52" x2="668" y2="52" stroke="currentColor" stroke-width="1.25"/>
+  <text x="597" y="82" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">compute</text>
+  <rect x="308" y="181" width="146" height="51" fill="none" stroke="currentColor" stroke-width="1.25"/>
+  <rect x="308" y="181" width="4" height="51" fill="var(--replay-cold)"/>
+  <text x="322" y="200" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start" font-weight="bold">COLD experts</text>
+  <text x="322" y="220" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">Page cache</text>
+  <polyline points="381,181 381,134 597,134 597,100" fill="none" stroke="currentColor" stroke-width="1"/>
+  <line x1="597" y1="100" x2="599.9389262614624" y2="104.04508497187474" stroke="currentColor" stroke-width="1"/>
+  <line x1="597" y1="100" x2="594.0610737385376" y2="104.04508497187473" stroke="currentColor" stroke-width="1"/>
+  <text x="475" y="126" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">RAM speed</text>
+  <rect x="554" y="181" width="114" height="51" fill="none" stroke="currentColor" stroke-width="1.25"/>
+  <text x="611" y="211" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle" font-weight="bold">NVMe</text>
+  <line x1="554" y1="207" x2="454" y2="207" stroke="currentColor" stroke-width="1"/>
+  <line x1="454" y1="207" x2="458.04508497187476" y2="204.06107373853763" stroke="currentColor" stroke-width="1"/>
+  <line x1="454" y1="207" x2="458.04508497187476" y2="209.93892626146237" stroke="currentColor" stroke-width="1"/>
+  <text x="504" y="196" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">7 GB/s</text>
+  <text x="504" y="225" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">on miss</text>
 </svg>
