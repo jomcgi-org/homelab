@@ -1070,6 +1070,7 @@ def test_codex_first_turn_returns_thread_voice_and_usage(tmp_path, monkeypatch):
     assert record == {
         "result": "Done <voice>Codex completed the work.</voice>",
         "terminal_reason": "completed",
+        "model": "luna",
         "session_id": "codex-thread",
         "usage": {
             "input_tokens": 3,
@@ -3960,14 +3961,16 @@ def test_claude_model_argv_and_mid_session_switch_resumes(tmp_path, monkeypatch)
     args_path = tmp_path / "args.json"
     monkeypatch.setenv("FAKE_ARGS", str(args_path))
     manager = _manager(tmp_path, monkeypatch)
-    manager.turn("first", model="opus")
+    first = manager.turn("first", model="opus")
+    assert first["model"] == "opus"
     assert (
         json.loads(args_path.read_text())[
             json.loads(args_path.read_text()).index("--model") + 1
         ]
         == "opus"
     )
-    manager.turn("second", session_id="init-sid", model="fable")
+    second = manager.turn("second", session_id="init-sid", model="fable")
+    assert second["model"] == "fable"
     args = json.loads(args_path.read_text())
     assert args[args.index("--resume") + 1] == "init-sid"
     assert args[args.index("--model") + 1] == "claude-fable-5"

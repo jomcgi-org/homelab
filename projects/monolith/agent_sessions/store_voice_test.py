@@ -109,6 +109,7 @@ def test_persist_turn_keeps_blob_when_diff_is_truncated(session, monkeypatch):
             "zlib_b64": base64.b64encode(compressed).decode("ascii"),
             "truncated": True,
         },
+        model=None,
     )
 
     store.persist_turn_from_pending_sync(
@@ -146,6 +147,7 @@ def test_persist_turn_keeps_declared_artifact_bytes(session, monkeypatch):
             "content_b64": base64.b64encode(raw).decode("ascii"),
             "outcome": "ok",
         },
+        model=None,
     )
 
     store.persist_turn_from_pending_sync(
@@ -177,6 +179,7 @@ def test_persist_turn_discards_malformed_artifact(session, monkeypatch):
         duration_ms=1,
         activities=[],
         artifact={"path": "plan.json"},
+        model=None,
     )
 
     store.persist_turn_from_pending_sync(

@@ -514,6 +514,26 @@ def test_deliver_includes_model_when_present(monkeypatch):
     }
 
 
+def test_deliver_extracts_actual_model_from_guest_response(monkeypatch):
+    async def handler(request):
+        response = _turn_response(request)
+        payload = response.json()
+        payload["model"] = "claude-fable-5"
+        return httpx.Response(200, json=payload, request=request)
+
+    _client(monkeypatch, handler)
+    turn, _ = asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            transport.EmberSession("s1", "t1", None),
+            "cli-1",
+            "hello",
+            "fable",
+        )
+    )
+
+    assert turn.model == "claude-fable-5"
+
+
 @pytest.mark.parametrize(
     ("reasoning", "expected_thinking"), [(True, "high"), (False, "off")]
 )

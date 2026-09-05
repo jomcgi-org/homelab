@@ -224,6 +224,7 @@ class Turn(NamedTuple):
     workspace_recovery: dict | None = None
     diff: dict | None = None
     artifact: dict | None = None
+    model: str | None = None
 
 
 def _reject_guest_diff(session_id, reason: str) -> None:
@@ -832,6 +833,7 @@ class EmberVmShimTransport:
                             artifact_path,
                             current.session_id,
                         ),
+                        model=guest_data.get("model"),
                     )
             except httpx.TimeoutException as exc:
                 logger.warning(

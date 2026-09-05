@@ -273,7 +273,13 @@ def test_cross_family_send_is_rejected_without_pending_row(session):
     assert store.get_pending_message(session, row.id, 1) is None
 
 
-def test_same_family_override_reaches_transport_and_turn(monkeypatch, session):
+@pytest.mark.parametrize(
+    ("guest_model", "persisted_model"),
+    [("terra", "terra"), ("sol", "sol"), (None, "terra")],
+)
+def test_same_family_override_persists_actual_model_with_fallback(
+    monkeypatch, session, guest_model, persisted_model
+):
     monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
     delivered_models = []
 
@@ -291,7 +297,8 @@ def test_same_family_override_reaches_transport_and_turn(monkeypatch, session):
         reasoning=False,
     ):
         delivered_models.append(model)
-        return _completed_delivery(message)
+        turn, ember = _completed_delivery(message)
+        return turn._replace(model=guest_model), ember
 
     async def notify(*args, **kwargs):
         return None
@@ -312,7 +319,7 @@ def test_same_family_override_reaches_transport_and_turn(monkeypatch, session):
     assert store.get_session(session, row.id).status == "running"
     asyncio.run(mcp._execute_pending_message(row.id))
     assert delivered_models == ["terra"]
-    assert store.get_turn(session, row.id, result["turn"]).model == "terra"
+    assert store.get_turn(session, row.id, result["turn"]).model == persisted_model
 
 
 def test_session_start_returns_immediately(monkeypatch, session):
@@ -798,6 +805,7 @@ def _completed_turn(message: str) -> Turn:
         total_cost_usd=0.01,
         duration_ms=100,
         activities=[],
+        model=None,
     )
 
 
@@ -1663,6 +1671,7 @@ def test_notify_terminal_with_no_terminal_reason_warns(monkeypatch):
             total_cost_usd=0.01,
             duration_ms=100,
             activities=[],
+            model=None,
         )
         await mcp._notify_terminal(turn, "Test summary", "warn")
 
@@ -1696,6 +1705,7 @@ def test_turn_status_needs_input_on_permission_denials():
         total_cost_usd=0.01,
         duration_ms=100,
         activities=[],
+        model=None,
     )
 
     status = mcp._turn_status(turn_with_denials)
