@@ -622,12 +622,14 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 // Cilium/eBPF datapath reap the idle flow's conntrack entry mid-transfer ("the
 // connection is closed"), the same failure that forced base EXPORT async. So a
 // BASE restore that genuinely needs a download runs the cheap presence + sku +
-// rootfs identity + already-local checks SYNCHRONOUSLY (so a store miss or
-// incompatible rootfs is a fast, distinguishable FAILED_PRECONDITION the caller
-// falls back to rebuild on, and an already-local base is an inline skipped
-// no-op), then ENQUEUES the download onto a bounded, deduped queue and fast-ACKs
-// accepted=true. The caller polls NodeStatus for the base to appear READY. Every
-// other (small) kind still restores inline.
+// already-local checks SYNCHRONOUSLY. An already-local base is an inline skipped
+// no-op. Otherwise the rootfs identity gate runs before download: each bake has
+// a random UUID, so a base is valid only with the exact rootfs file it used or a
+// byte-identical copy. A store miss or incompatible rootfs is a fast,
+// distinguishable FAILED_PRECONDITION the caller falls back to rebuild on. A
+// compatible restore is enqueued onto a bounded, deduped queue and fast-ACKed
+// with accepted=true. The caller polls NodeStatus for the base to appear READY.
+// Every other (small) kind still restores inline.
 func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifactRequest) (*nodev1.RestoreArtifactResponse, error) {
 	if s.store == nil {
 		return nil, status.Error(codes.FailedPrecondition, "noded: object store not configured; restore unavailable")
@@ -670,6 +672,28 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 		}
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: restore artifact %q: not present in store", prefix)
 	}
+
+	var dataKey []byte
+	if len(envelope) > 0 {
+		dataKey, err = s.restoreDataKey(req.GetCapability(), ref, gen)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Idempotency: if the artifact is already present locally with a checksum
+	// matching the store's marker, the restore is a no-op. This must precede the
+	// BASE identity gate because no runtime image lookup is needed to keep bytes
+	// already held locally. Enveloped artifacts have already passed capability
+	// validation above, so a local copy cannot bypass download authorization.
+	if local, err := enumerateArtifactFiles(localDir); err == nil && len(local) > 0 {
+		s.reregisterRestored(ref)
+		if len(envelope) > 0 {
+			s.rewrapEnvelopeAfterAccess(ref, prefix)
+		}
+		return &nodev1.RestoreArtifactResponse{Skipped: true, Generation: gen}, nil
+	}
+
 	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_BASE {
 		storedImageRef = strings.TrimSpace(storedImageRef)
 		var img config.Image
@@ -677,15 +701,20 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 		if storedImageRef != "" {
 			img, ok = s.resolveImageByRef(storedImageRef)
 		} else {
-			// Legacy image-lane metadata did not name the runtime ref. Its
-			// workload-keyed registry entry still identifies the current rootfs.
-			img, ok = s.resolveImage(ref.GetWorkload(), "")
+			// Such copies predate the UUID metadata. They rebuild once and get
+			// backfilled rootfs identity on first successful export. A current
+			// workload entry with a rootfs is the only safe legacy resolution.
+			entry, found := s.registry.get(ref.GetWorkload())
+			if !found || strings.TrimSpace(entry.RootfsRef) == "" {
+				return nil, status.Errorf(codes.FailedPrecondition,
+					"noded: restore base %q: cannot verify rootfs identity without stored runtime ref; workload %q carries no rootfs",
+					prefix, ref.GetWorkload())
+			}
+			img = config.Image{RootfsPath: entry.RootfsRef, HarnessInit: entry.HarnessInit}
+			ok = true
 		}
 		if !ok {
-			if storedImageRef != "" {
-				return nil, status.Errorf(codes.FailedPrecondition, "noded: restore base %q: runtime image %q not provisioned on this node", prefix, storedImageRef)
-			}
-			return nil, status.Errorf(codes.FailedPrecondition, "noded: restore base %q: no current rootfs for workload %q", prefix, ref.GetWorkload())
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: restore base %q: runtime image %q not provisioned on this node", prefix, storedImageRef)
 		}
 		localRootfsID, rootfsErr := ext4UUID(img.RootfsPath)
 		if rootfsErr != nil {
@@ -698,26 +727,6 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 		} else if storedRootfsID != localRootfsID {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: restore base %q: store rootfs UUID %s != local rootfs UUID %s", prefix, storedRootfsID, localRootfsID)
 		}
-	}
-
-	var dataKey []byte
-	if len(envelope) > 0 {
-		dataKey, err = s.restoreDataKey(req.GetCapability(), ref, gen)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// Idempotency: if the artifact is already present locally with a checksum
-	// matching the store's marker, the restore is a no-op. Enveloped artifacts
-	// have already passed capability validation above, so a local copy cannot
-	// bypass the same authorization required for a download.
-	if local, err := enumerateArtifactFiles(localDir); err == nil && len(local) > 0 {
-		s.reregisterRestored(ref)
-		if len(envelope) > 0 {
-			s.rewrapEnvelopeAfterAccess(ref, prefix)
-		}
-		return &nodev1.RestoreArtifactResponse{Skipped: true, Generation: gen}, nil
 	}
 
 	// BASE: fast-ACK and download asynchronously (multi-GB; must not hold the RPC).
@@ -1456,8 +1465,9 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 	}
 	// Already off node under this (vendor, ref)? Then a sibling node of the same
 	// vendor exported it and there is nothing to upload. Without this the CP-driven
-	// path fell through to Store.Export's CONTENT-addressed compare, which never
-	// matches across nodes for a base (snapshots are not byte-reproducible), so
+	// path fell through to Store.Export's CONTENT-addressed compare. A shared base
+	// ref now binds both nodes to the exact baked rootfs file or a byte-identical
+	// copy via its random UUID, but their memory snapshots can still differ, so
 	// every node re-uploaded ~1 GiB over the sibling's object under the same key.
 	// The startup reconcile sweep already gated on presence; this is the same
 	// policy on the path the control plane actually drives.
@@ -1651,14 +1661,13 @@ func (s *Server) enqueueIfMissing(ctx context.Context, ref *nodev1.ArtifactRef) 
 //
 // Presence, NOT content equality, is the test for every kind except VOLUME. The
 // store key is REF-addressed (`base/<vendor>/<workload>/<ref>`) while
-// Store.Export's own short-circuit is CONTENT-addressed (`sameFiles`), and for a
-// base those disagree by construction: a Firecracker memory snapshot is not
-// byte-reproducible, so two nodes that independently build the SAME ref hold
-// different bytes (verified 2026-07-27: bazel-query__00ada79f752f differs between
-// node-1 and node-2). Content equality therefore never holds across nodes, the
-// short-circuit never fires, and each node re-uploads ~1 GiB over the sibling's
-// object. It is also not NEEDED: same vendor and template means either node's
-// copy restores, which is the premise vendor keying already rests on.
+// Store.Export's own short-circuit is CONTENT-addressed (`sameFiles`). A base ref
+// includes the random per-bake rootfs UUID, so two nodes share a ref only when
+// they use the exact baked rootfs file or a byte-identical copy distributed by
+// #5772. Their Firecracker memory snapshots can still differ, so content equality
+// does not reliably hold and each node would re-upload ~1 GiB over the sibling's
+// object. Presence is sufficient because the shared ref also binds CPU vendor,
+// template, and rootfs identity.
 //
 // A VOLUME is data rather than a snapshot, so it keeps the stricter generation
 // test: presence at a STALE generation must still re-export.

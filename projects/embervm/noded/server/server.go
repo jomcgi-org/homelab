@@ -938,8 +938,9 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 // adoptSiblingBaseBundle adopts a COMPLETE base bundle published on shared
 // scratch by a co-located sibling brick (#4866) and reports it as an
 // AlreadyBuilt hit. The baseKey is a pure function of (workload, image identity,
-// revision, vendor), so a complete bundle at that key IS this build's output:
-// the request's imageDigest and rootfsPath are exactly what the sibling recorded.
+// revision, vendor, rootfs UUID), so a complete bundle at that key is valid only
+// against the same baked rootfs file or a byte-identical copy. The request's
+// imageDigest and rootfsPath are exactly what the sibling recorded.
 // Adoption registers READY (as ReconcileBasesFromDisk would) and returns true;
 // false means "no complete bundle" or "complete but not adoptable HERE", and the
 // caller proceeds with a normal build. The checks mirror reconcile's adoption
@@ -3639,16 +3640,14 @@ const defaultReadyPath = "/shim/ready"
 // dmNameRE-style sanitiser for the workload component of a base key.
 var baseKeyUnsafe = regexp.MustCompile(`[^A-Za-z0-9_-]`)
 
-// baseKeyFor derives the deterministic, filesystem-safe base key (== the opaque
-// snapshot_ref) from the workload and the (image_ref, workload_revision, vendor,
-// rootfs UUID) idempotency inputs. Vendor is hashed in (R7, standing decision 1),
-// so the same image built on an Intel node and an AMD node gets different base
-// keys. A Firecracker snapshot restore never crosses the vendor boundary, so a
-// base key that ignored vendor would let one vendor's warm cache be handed to
-// noded on the other, and BuildBase's idempotency check would wrongly report the
-// mismatched-vendor base as AlreadyBuilt. The workload prefix is recoverable on
-// startup for the capacity report; the hash suffix keys the bundle per
-// image+revision+vendor+rootfs UUID.
+// baseKeyFor derives the filesystem-safe base key (== the opaque snapshot_ref)
+// from the workload and the (image_ref, workload_revision, vendor, rootfs UUID)
+// identity inputs. Each rootfs bake has a random UUID. A base is therefore valid
+// only against the exact baked file or a byte-identical copy, and a rebake of the
+// same image gets a distinct key. Cross-node use requires distribution of the
+// baked file itself (#5772). Vendor is also hashed in (R7, standing decision 1),
+// so a Firecracker snapshot never crosses either restore boundary. The workload
+// prefix remains recoverable on startup for the capacity report.
 func baseKeyFor(workload, imageRef, revision, vendor, rootfsUUID string) string {
 	sum := sha256.Sum256([]byte(imageRef + "\x00" + revision + "\x00" + vendor + "\x00" + rootfsUUID))
 	sig := hex.EncodeToString(sum[:])[:12]
@@ -3660,11 +3659,10 @@ func baseKeyFor(workload, imageRef, revision, vendor, rootfsUUID string) string 
 }
 
 // baseKeyForZip derives the base key (== the opaque snapshot_ref) for a ZIP-lane
-// build. Its idempotency inputs are (runtime image digest, archive sha256,
-// vendor, rootfs UUID): the same archive on the same runtime, CPU vendor, and
-// rootfs keys the same base, so a re-registration is a no-op hit. A different
-// vendor or rootfs keys a distinct base. The workload prefix is recoverable on
-// startup for the capacity report, mirroring baseKeyFor.
+// build. Its identity inputs are (runtime image digest, archive sha256, vendor,
+// rootfs UUID). The random per-bake UUID binds the snapshot to the exact baked
+// rootfs file or a byte-identical copy, just as baseKeyFor does. The workload
+// prefix is recoverable on startup for the capacity report.
 func baseKeyForZip(workload, imageDigest, archiveSha256, vendor, rootfsUUID string) string {
 	sum := sha256.Sum256([]byte("zip\x00" + imageDigest + "\x00" + archiveSha256 + "\x00" + vendor + "\x00" + rootfsUUID))
 	sig := hex.EncodeToString(sum[:])[:12]
