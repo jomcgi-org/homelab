@@ -1986,6 +1986,43 @@ def test_broker_refresh_needs_login_returns_status_and_notifies(monkeypatch):
     assert notified[0][1] == "warn"
 
 
+def test_provider_quota_returns_summary_and_forwards_force(monkeypatch):
+    forces = []
+
+    async def fake_fetch(*, force=False):
+        forces.append(force)
+        return {
+            "available": True,
+            "providers": {
+                "codex": {
+                    "observed": True,
+                    "exhausted": False,
+                    "status": "allowed",
+                    "windows": [
+                        {"name": "primary", "used_percent": 24, "resets_at": "soon"}
+                    ],
+                }
+            },
+            "fetched_at": "2026-09-05T18:10:00+00:00",
+        }
+
+    monkeypatch.setattr(mcp, "fetch_provider_quota", fake_fetch)
+
+    result = asyncio.run(mcp.monolith_provider_quota(force=True))
+
+    assert forces == [True]
+    assert result["available"] is True
+    assert result["providers"]["codex"]["observed"] is True
+    assert result["summary"]["codex"]["headline_used_percent"] == 24.0
+
+
+def test_provider_quota_tool_uses_hyphenated_registration_name():
+    tools = asyncio.run(mcp.mcp.list_tools())
+    gateway_names = {tool.name.replace("_", "-") for tool in tools}
+
+    assert "monolith-provider-quota" in gateway_names
+
+
 def test_session_vms_returns_transport_payload(monkeypatch):
     payload = {
         "workload": "claude-runtime",

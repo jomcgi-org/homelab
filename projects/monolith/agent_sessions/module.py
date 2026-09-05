@@ -1,6 +1,8 @@
 from framework import Module as _Module
 from framework import register_leader_tasks
 
+from agent_sessions.provider_quota import provider_quota_health
+
 
 def register(app) -> None:
     """Register the agent_sessions HTTP router with the app."""
@@ -37,4 +39,5 @@ MODULE = _Module(
     register=register,
     register_mcp=_register_mcp,
     leader_start=_leader_start,
+    register_health_advisory={"provider_quota": provider_quota_health},
 )
