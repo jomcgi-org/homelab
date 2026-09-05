@@ -1084,12 +1084,94 @@ def test_await_turn_keeps_waiting_after_interrupted(monkeypatch):
     sleeps = []
 
     monkeypatch.setattr(workflows, "poll_turn", lambda *_args: turns.pop(0))
+    monkeypatch.setattr(
+        workflows,
+        "observe_clock",
+        iter(
+            [
+                "2026-08-22T00:00:00+00:00",
+                "2026-08-22T00:00:01+00:00",
+                "2026-08-22T00:00:02+00:00",
+            ]
+        ).__next__,
+    )
     monkeypatch.setattr(workflows.DBOS, "sleep", sleeps.append)
 
     turn = workflows._await_turn(101, 0, 10)
 
     assert turn["terminal_reason"] == "completed"
     assert sleeps == [workflows.POLL_INTERVAL_SECONDS]
+
+
+def test_await_turn_uses_wall_clock_deadline(monkeypatch):
+    polls = []
+    sleeps = []
+    clock = iter(
+        [
+            "2026-08-22T00:00:00+00:00",
+            "2026-08-22T00:10:00+00:00",
+            "2026-08-22T00:20:00+00:00",
+            "2026-08-22T00:30:00+00:00",
+        ]
+    )
+
+    monkeypatch.setattr(workflows, "observe_clock", clock.__next__)
+    monkeypatch.setattr(
+        workflows, "poll_turn", lambda *_args: polls.append(True) or None
+    )
+    monkeypatch.setattr(workflows.DBOS, "sleep", sleeps.append)
+
+    assert workflows._await_turn(101, 0, 1800) is None
+    assert len(polls) <= 4
+    assert sleeps == [workflows.POLL_INTERVAL_SECONDS] * (len(polls) - 1)
+
+
+def test_await_turn_returns_turn_before_deadline(monkeypatch):
+    turns = iter([None, None, {"seq": 1, "terminal_reason": "completed"}])
+    clock = iter(
+        [
+            "2026-08-22T00:00:00+00:00",
+            "2026-08-22T00:00:01+00:00",
+            "2026-08-22T00:00:02+00:00",
+        ]
+    )
+    sleeps = []
+
+    monkeypatch.setattr(workflows, "observe_clock", clock.__next__)
+    monkeypatch.setattr(workflows, "poll_turn", lambda *_args: next(turns))
+    monkeypatch.setattr(workflows.DBOS, "sleep", sleeps.append)
+
+    assert workflows._await_turn(101, 0, 1800) == {
+        "seq": 1,
+        "terminal_reason": "completed",
+    }
+    assert sleeps == [workflows.POLL_INTERVAL_SECONDS] * 2
+
+
+def test_await_turn_skips_interrupted_turn_until_replacement(monkeypatch):
+    turns = iter(
+        [
+            {"seq": 1, "terminal_reason": "interrupted"},
+            None,
+            {"seq": 1, "terminal_reason": "completed"},
+        ]
+    )
+    clock = iter(
+        [
+            "2026-08-22T00:00:00+00:00",
+            "2026-08-22T00:00:01+00:00",
+            "2026-08-22T00:00:02+00:00",
+            "2026-08-22T00:00:03+00:00",
+        ]
+    )
+    sleeps = []
+
+    monkeypatch.setattr(workflows, "observe_clock", clock.__next__)
+    monkeypatch.setattr(workflows, "poll_turn", lambda *_args: next(turns))
+    monkeypatch.setattr(workflows.DBOS, "sleep", sleeps.append)
+
+    assert workflows._await_turn(101, 0, 1800)["terminal_reason"] == "completed"
+    assert sleeps == [workflows.POLL_INTERVAL_SECONDS] * 2
 
 
 def test_unparseable_verdict_does_not_trigger_requeue(monkeypatch):
