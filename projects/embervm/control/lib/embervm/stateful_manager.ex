@@ -54,15 +54,18 @@ defmodule Embervm.StatefulManager do
 
   ## plan_wake: relight vs cold, and the volume-anchored node
 
-  `plan_wake/2` reads `StatefulStore` + `StatefulStore.pair_valid?/1` purely (ETS
-  reads only, mirroring `ServingManager.plan_wake/2`):
+  `plan_wake/2` reads `StatefulStore` + `StatefulStore.pair_valid?/1` and may
+  append a durable eviction before returning a cold or restore plan. That write
+  is safe on the serialized manager process because it removes unusable warmth
+  before any replacement wake worker is dispatched:
 
     * a VALID pair (a banked bundle whose `snapshot_generation` matches the
       volume's current `generation`) relights: `{:relight, instance, node_id,
       snapshot_ref}`.
-    * a banked bundle with a BROKEN pair is evicted first (the durable
-      `stateful_evicted` op, reason `pair_broken`), then the wake falls through
-      to cold: `{:cold, node_id, boot_ref, mode}`.
+    * a banked bundle with a BROKEN pair is evicted before a viable replacement
+      (the durable `stateful_evicted` op, reason `pair_broken`), then the wake
+      falls through to cold or exported-volume recovery. If a missing anchor has
+      no recovery path, the bank is retained and the wake is refused.
     * no bundle at all: cold or fresh, `{:cold, node_id, boot_ref, mode}`, `mode`
       is `FRESH` when the workload has never had a volume (no volume row yet:
       the daemon must create it) and `COLD` when a volume row already exists
@@ -74,12 +77,11 @@ defmodule Embervm.StatefulManager do
   volume: decision 11 anchors the wake to the NODE THAT HOLDS THE VOLUME (volume
   files are node-local NVMe, never migrated by this rung). `plan_wake/2` reads
   the volume's `node_id` from `StatefulStore.get_volume/2` and requires that
-  node to still be reporting (`Embervm.NodeCapacity.fetch/2`); if the node is
-  gone, the wake is `{:error, :volume_node_gone}` (a FAILED_PRECONDITION-shaped
-  refusal, never a silent recreate on a different node). Only a workload with NO
-  volume row yet (its true first boot) is free to place via
-  serving-subnet eligibility, because there is no data to
-  anchor to.
+  node to still be reporting (`Embervm.NodeCapacity.fetch/2`). A missing node is
+  a `:volume_node_gone` refusal until its own absence spans the registry-expiry
+  window and an exported recovery source exists. Only then may recovery select
+  a new anchor. A workload with NO volume row yet (its true first boot) is free
+  to place via serving-subnet eligibility, because there is no data to anchor to.
 
   ## wake-rate limit: per-workload (the per-principal intent, singleton-reduced)
 
@@ -336,10 +338,10 @@ defmodule Embervm.StatefulManager do
       # from permanent disconnects. This is deliberately process-local: after a CP
       # restart the full window must elapse again.
       node_last_reported_at_ms: %{},
-      # workload -> first manager-clock millisecond at which its durable volume's
+      # node_id -> first manager-clock millisecond at which that durable volume
       # anchor was absent from NodeCapacity. Presence clears the observation.
-      # Keying by workload preserves continuous absence when refresh_volume_facts
-      # rewrites the volume row's anchor across node identity churn.
+      # Keying by anchor identity prevents a newly restored anchor from inheriting
+      # the previous anchor's absence interval.
       # This is deliberately process-local: after a CP restart the full expiry
       # window must elapse again before any volume can move to another writer.
       missing_anchor_since_ms: %{},
@@ -738,8 +740,9 @@ defmodule Embervm.StatefulManager do
 
   # Kick ONE async wake for a workload. The relight-vs-cold DECISION and, for a
   # relight, the ETS `banked -> relighting` mark happen HERE on the serialized
-  # manager process (a cheap pure placement read + one ETS mark), so the FSM
-  # edge is taken in order and crash-consistently. The StartStateful RPC itself
+  # manager process. Planning may also append a durable eviction for unusable
+  # warmth before dispatch, so the FSM edge is taken in order and
+  # crash-consistently. The StartStateful RPC itself
   # runs in a spawned worker so a multi-second boot never head-of-line-blocks
   # another workload's wake; the worker reports the RPC result and finish_wake
   # completes the durable transition + publish on this process.
@@ -754,8 +757,8 @@ defmodule Embervm.StatefulManager do
     # Stamp the wake phase's start + the cold bool into the tracing bundle now
     # (before the plan/RPC), so finish_wake can emit the `wake` child span with a
     # real duration. Mirrors ServingManager.start_wake/2's placement/wake stamps,
-    # collapsed to one boundary here (plan_wake is a cheap pure ETS read, not
-    # worth its own child span at this granularity).
+    # collapsed to one boundary here (plan_wake is a local planning step whose
+    # occasional durable eviction is part of that same wake boundary).
     wake_start = :opentelemetry.timestamp()
     plan = plan_wake(state, workload)
     cold = match?({:cold, _, _, _, _}, plan) or match?({:cold, _, _, _, _, _}, plan) or match?({:restore_volume_then_cold, _, _, _}, plan) or match?({:consult_volume_store, _, _}, plan)
@@ -1062,13 +1065,15 @@ defmodule Embervm.StatefulManager do
 
   # -- placement (relight vs cold, volume-anchored) ---------------------------
 
-  # PURE (ETS reads only). A banked instance with a VALID pair relights; a
-  # banked instance with a BROKEN pair is evicted first (so it never resurfaces
-  # as a relight candidate) and the wake falls through to cold; no banked
-  # instance at all goes straight to cold. Cold placement is ANCHORED to the
-  # volume's node when a volume row already exists (decision 11: volume files
-  # are node-local, never migrated); a workload with NO volume row yet is a true
-  # first boot, free to place among any eligible node.
+  # Reads local ETS state and may append a durable eviction before returning a
+  # replacement plan. The write is safe here because the manager serializes wake
+  # planning, and unusable warmth is removed before a cold or restore worker can
+  # be dispatched. A banked instance with a VALID pair relights; a banked
+  # instance with a BROKEN pair is evicted before replacement when recovery is
+  # possible. Cold placement is ANCHORED to the volume's node when a volume row
+  # already exists (decision 11: volume files are node-local, never migrated); a
+  # workload with NO volume row yet is a true first boot, free to place among any
+  # eligible node.
   defp plan_wake(state, workload) do
     volume = StatefulStore.get_volume(state.store, workload)
 
@@ -1123,30 +1128,42 @@ defmodule Embervm.StatefulManager do
               end
 
             {:error, :volume_node_gone} ->
-              if confirmed_anchor_gone?({state, volume}) do
-                # A banked bundle is node-local and vendor-bound, so confirmed
-                # anchor loss makes it unrecoverable. Evict it durably before
-                # reusing the exported-volume recovery path.
-                _ =
-                  StatefulStore.transition(
-                    state.store,
-                    instance.instance_id,
-                    :evict,
-                    :stateful_evicted,
-                    %{reason: "anchor_gone"},
-                    %{}
+              cond do
+                anchor_recovery_available?(state, volume) ->
+                  # A banked bundle is node-local and vendor-bound, so confirmed
+                  # anchor loss makes it unrecoverable. Evict it durably before
+                  # reusing the exported-volume recovery path.
+                  _ =
+                    StatefulStore.transition(
+                      state.store,
+                      instance.instance_id,
+                      :evict,
+                      :stateful_evicted,
+                      %{reason: "anchor_gone"},
+                      %{}
+                    )
+
+                  restore_volume_or_cold(state, workload, volume)
+
+                confirmed_anchor_gone?({state, volume}) ->
+                  Logger.warning(
+                    "embervm stateful: wake refused, confirmed-gone anchor has no recovery source",
+                    workload: workload,
+                    anchor: volume.node_id,
+                    exported_generation: exported_generation(volume)
                   )
 
-                restore_volume_or_cold(state, workload, volume)
-              else
-                Logger.warning(
-                  "embervm stateful: wake refused, banked instance on an anchor not yet confirmed gone",
-                  workload: workload,
-                  anchor: volume.node_id,
-                  missing_since_ms: missing_anchor_since_ms(state, volume)
-                )
+                  {:error, :volume_node_gone}
 
-                {:error, :volume_node_gone}
+                true ->
+                  Logger.warning(
+                    "embervm stateful: wake refused, banked instance on an anchor not yet confirmed gone",
+                    workload: workload,
+                    anchor: volume.node_id,
+                    missing_since_ms: missing_anchor_since_ms(state, volume)
+                  )
+
+                  {:error, :volume_node_gone}
               end
 
             {:error, reason} ->
@@ -1154,20 +1171,39 @@ defmodule Embervm.StatefulManager do
           end
         else
           # Broken pair: evict the stale bundle through the durable path (so a
-          # rebuild agrees it is gone) and fall through to a cold boot, carrying the
-          # mismatch reason so the wake records stateful_cold_booted{generation_mismatch}
-          # (gate 2: the op-log alone tells the whole story).
-          _ =
-            StatefulStore.transition(
-              state.store,
-              instance.instance_id,
-              :evict,
-              :stateful_evicted,
-              %{reason: "pair_broken"},
-              %{}
-            )
+          # rebuild agrees it is gone), then cold boot on the anchor. After
+          # confirmed anchor loss, use recovery instead, but retain even broken
+          # warmth when no recovery path exists rather than making an otherwise
+          # useless durable change.
+          if confirmed_anchor_gone?({state, volume}) do
+            if anchor_recovery_available?(state, volume) do
+              _ =
+                StatefulStore.transition(
+                  state.store,
+                  instance.instance_id,
+                  :evict,
+                  :stateful_evicted,
+                  %{reason: "pair_broken"},
+                  %{}
+                )
 
-          cold_plan(state, workload, volume, :generation_mismatch)
+              restore_volume_or_cold(state, workload, volume)
+            else
+              {:error, :volume_node_gone}
+            end
+          else
+            _ =
+              StatefulStore.transition(
+                state.store,
+                instance.instance_id,
+                :evict,
+                :stateful_evicted,
+                %{reason: "pair_broken"},
+                %{}
+              )
+
+            cold_plan(state, workload, volume, :generation_mismatch)
+          end
         end
     end
   end
@@ -1313,6 +1349,10 @@ defmodule Embervm.StatefulManager do
   end
 
   defp store_truth_candidate?(_state, _volume), do: false
+
+  defp anchor_recovery_available?(state, volume) do
+    volume_restorable?(state, volume) or store_truth_candidate?(state, volume)
+  end
 
   defp negative_store_truth_memoized?(state, workload) do
     case Map.get(state.negative_store_truth, workload) do
@@ -1555,9 +1595,9 @@ defmodule Embervm.StatefulManager do
 
   defp confirmed_anchor_gone?(_state_and_volume), do: false
 
-  defp missing_anchor_since_ms(state, %{workload: workload})
-       when is_binary(workload) and workload != "" do
-    Map.get(state.missing_anchor_since_ms, workload)
+  defp missing_anchor_since_ms(state, %{node_id: node_id})
+       when is_binary(node_id) and node_id != "" do
+    Map.get(state.missing_anchor_since_ms, node_id)
   end
 
   defp missing_anchor_since_ms(_state, _volume), do: nil
@@ -1574,8 +1614,7 @@ defmodule Embervm.StatefulManager do
               {:ok, _fact} -> acc
 
               :error ->
-                workload = volume.workload
-                Map.put(acc, workload, Map.get(state.missing_anchor_since_ms, workload, now))
+                Map.put(acc, node_id, Map.get(state.missing_anchor_since_ms, node_id, now))
             end
 
           _missing_anchor ->
