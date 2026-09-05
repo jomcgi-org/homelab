@@ -153,14 +153,15 @@ def test_every_secret_ref_is_synced_into_the_namespace(documents: list[dict]) ->
     assert {"monolith-agents-db", "monolith-r2-s3"} <= synced
 
 
-def test_disarmed_hub_render_is_syncable_before_the_secrets_exist(
+def test_hub_render_holds_its_invariants_armed_or_not(
     hub_documents: list[dict],
 ) -> None:
-    # What ships today. No Deployment (nothing to CrashLoop on a missing
-    # Secret), no CiliumNetworkPolicy (the hub has no CRD for it), and both
-    # OnePasswordItems so the Secrets are ready when agents.enabled flips.
+    # What ships to the GKE hub, at whatever agents.enabled the deploy values
+    # carry. No CiliumNetworkPolicy (the hub has no CRD for it, and the first
+    # sync would wedge), both OnePasswordItems so the Secrets exist before or
+    # alongside the workload, and if a Deployment renders, every Secret it
+    # reads is one of those.
     kinds = {doc["kind"] for doc in hub_documents}
-    assert "Deployment" not in kinds
     assert "CiliumNetworkPolicy" not in kinds
     synced = {
         doc["metadata"]["name"]
@@ -168,3 +169,7 @@ def test_disarmed_hub_render_is_syncable_before_the_secrets_exist(
         if doc.get("kind") == "OnePasswordItem"
     }
     assert synced == {"monolith-agents-db", "monolith-r2-s3"}
+    deployments = [doc for doc in hub_documents if doc.get("kind") == "Deployment"]
+    for deployment in deployments:
+        container = deployment["spec"]["template"]["spec"]["containers"][0]
+        assert _secret_refs(container) <= synced
