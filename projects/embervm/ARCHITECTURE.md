@@ -905,10 +905,12 @@ as a mechanism to rely on; revocation at the validator is the control.
 
 **Public surface hardening** (**Built**): the public routes are scoped at their
 HTTPRoutes, with serving routes additionally constrained by node Envoy authority
-matches and the guest shim's reserved `/shim/` prefix. The pattern's proof
-is a public Bazel-query demo that serves each visitor query from a
-disposable CoW clone of a warm-Skyframe snapshot: server-controlled argv,
-zero egress, reaped per request.
+matches. Node Envoy returns 404 for `/shim/*` before routing to a serving
+workload, so the workload handler never sees the reserved prefix. Inside the
+guest, hydrate is build-only and the shim refuses another hydrate once it is
+ready. The pattern's proof is a public Bazel-query demo that serves each visitor
+query from a disposable CoW clone of a warm-Skyframe snapshot: server-controlled
+argv, zero egress, reaped per request.
 
 **Guest identity**: a guest never holds a cluster credential (**Built**, by
 construction: no NIC, no mounted ServiceAccount); the
@@ -1026,7 +1028,7 @@ Trust diagram legend: every edge is a current path.
 
 | Requirement (external mapping #) | Ember state |
 | ---------------------------- | ----------- |
-| No direct internet exposure of guests, nodes, or the CP (1, 2, 3) | **Built.** Nothing faces the internet directly; ingress rides the deployment's zero-trust edge tunnel, public routes are scoped at their HTTPRoutes, and the serving shim's reserved `/shim/` prefix is unreachable from outside (section 9). |
+| No direct internet exposure of guests, nodes, or the CP (1, 2, 3) | **Built.** Nothing faces the internet directly; ingress rides the deployment's zero-trust edge tunnel, public routes are scoped at their HTTPRoutes, and node Envoy returns 404 for `/shim/*` before routing, so the workload handler never sees the reserved prefix. The build-only hydrate endpoint also refuses another hydrate once the shim is ready (section 9). |
 | Mutual authentication and encrypted transport between components (4, 10) | **Built** for CP-to-noded authentication and ingress confinement: one bearer Secret is rendered into the control plane and every noded pod from the same values keys and enabled flag, and the control plane attaches it to every unary and streaming gRPC request. An ingress-only CiliumNetworkPolicy allow-lists each noded listener by its caller. Both controls are enforced in production and dev (#4693, 2026-08-22). mTLS/SPIFFE remains the additive upgrade path (`proto/embervm/node/v1/node.proto`). Encrypted session-routing tokens are **Decided direction**. Management callers authenticate via Kubernetes TokenReview against an allow-list; the actor / principal / permission split with per-verb authorization is **Decided direction**. |
 | Control plane isolated from the data plane (6) | **Built** as a seam: the CP runs on Kubernetes, noded runs on bricks, and payloads never traverse the CP (invariant 2). **Accepted risk** in the reference deployment: guests co-locate with the etcd masters (section 11); do not import that clause into a cluster whose etcd is precious. |
 | Runtime configurable only by administrators (7) | **Built.** A workload chooses class and source (zip or image); the sandbox technology, kernel, and platform bases are CI-built platform artifacts it cannot substitute. |

@@ -624,8 +624,9 @@ defmodule Embervm.EndpointPublisher do
 
   defp cp_activator_endpoint(_ctx), do: []
 
-  # One route per workload: exact host from the catalog, prefix `/`, injecting the
-  # workload header. A serving workload with no host in its catalog entry yields no
+  # One route per workload: exact host from the catalog, prefix `/`, reserved shim
+  # prefix denied at node Envoy, and the workload header injected. A serving
+  # workload with no host in its catalog entry yields no
   # route (nil, filtered out): without a host Envoy cannot match, and rendering a
   # hostless virtual host would be rejected by the sidecar's validate (host is
   # required). The cluster is still rendered so an instance can publish; only the
@@ -636,6 +637,7 @@ defmodule Embervm.EndpointPublisher do
         %{
           host: host,
           path_prefix: "/",
+          deny_prefixes: ["/shim/"],
           cluster: @cluster_prefix <> workload,
           request_headers: %{@workload_header => workload}
         }
