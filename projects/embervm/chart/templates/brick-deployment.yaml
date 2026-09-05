@@ -114,9 +114,13 @@ spec:
 # class bin-packing onto whichever node the scheduler happens to fill first
 # (observed: everything landing on node-4 and spilling under load). Each floor
 # renders the SAME shared pod (identical labels, resources, strategy) as its
-# class's demand-driven Deployment, but under a DISTINCT name
-# (`-brick-<class>-<node>` vs `-brick-<class>`) and with nodeSelector pinned to
-# kubernetes.io/hostname instead of the fleet-wide FC-node label.
+# class's demand-driven Deployment, but under a DISTINCT name and with either
+# hostname pinning (kubernetes.io/hostname) for legacy entries or label selector
+# matching for anchor entries.
+#
+# A floor can be pinned by hostname (node field, existing form) or by label
+# selector (selector field, new form for stable node pools like anchor). It must
+# have exactly one, not both or neither.
 #
 # The distinct name is what keeps the BrickController out: it PATCHes /scale by
 # exact Deployment name (deployment_prefix <> class name), never enumerating by
@@ -128,10 +132,11 @@ spec:
 # LESS likely and idle scale-down MORE likely (the accounting is registered <
 # desired shaped, not equality-shaped), both acceptable per the plan's analysis.
 #
-# Selector: embervm.brickFloor.selectorLabels adds a brick-floor=<node> label on
-# top of the shared class selector, so this Deployment's selector is DISJOINT
-# from its class Deployment's. Reusing the class selector here would be a real
-# bug (two ReplicaSet controllers fighting over the same pods), not just style.
+# Selector: embervm.brickFloor.selectorLabels adds a brick-floor label on
+# top of the shared class selector, keyed by the floor identifier (hostname or
+# name), so this Deployment's selector is DISJOINT from its class Deployment's.
+# Reusing the class selector here would be a real bug (two ReplicaSet controllers
+# fighting over the same pods), not just style.
 #
 # Floors roll AFTER every class group. Their waves start at syncWaveBase +
 # ceil(len(classes) / syncWaveGroupSize), then group floors by list position.
@@ -140,16 +145,39 @@ spec:
 # class Deployments cycle. The group size bounds how many pinned nodes can pull
 # and build a rootfs concurrently.
 {{- range $j, $floor := .Values.bricks.nodeFloors }}
+{{- $hasNode := (hasKey $floor "node") }}
+{{- $hasSelector := (hasKey $floor "selector") }}
+{{- if and $hasNode $hasSelector }}
+{{- fail "bricks.nodeFloors entry cannot have both 'node' (hostname) and 'selector' (label map): provide exactly one" }}
+{{- end }}
+{{- if and (not $hasNode) (not $hasSelector) }}
+{{- fail "bricks.nodeFloors entry must have either 'node' (hostname) or 'selector' (label map)" }}
+{{- end }}
 {{- $class := $floor.class }}
+{{- $floorIdentifier := "" }}
+{{- $nodeSelectorMap := dict }}
+{{- if $hasNode }}
+{{- $floorIdentifier = $floor.node }}
+{{- $nodeSelectorMap = dict "kubernetes.io/hostname" $floor.node }}
+{{- else }}
+{{- $floorIdentifier = $floor.name }}
+{{- if not $floor.name }}
+{{- fail "bricks.nodeFloors entry with 'selector' must have a 'name' field" }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" $floor.name) }}
+{{- fail (printf "bricks.nodeFloors entry 'name' %q is not DNS-1123 compliant (must be lowercase alphanumeric or hyphen, start and end with alphanumeric)" $floor.name) }}
+{{- end }}
+{{- $nodeSelectorMap = $floor.selector }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "embervm.noded.fullname" $ctx }}-brick-{{ $class }}-{{ $floor.node }}
+  name: {{ include "embervm.noded.fullname" $ctx }}-brick-{{ $class }}-{{ $floorIdentifier }}
   annotations:
     argocd.argoproj.io/sync-wave: {{ include "embervm.brick.floorWave" (dict "ctx" $ctx "index" $j) | quote }}
   labels:
-    {{- include "embervm.brickFloor.labels" (dict "ctx" $ctx "class" $class "node" $floor.node) | nindent 4 }}
+    {{- include "embervm.brickFloor.labels" (dict "ctx" $ctx "class" $class "identifier" $floorIdentifier) | nindent 4 }}
 spec:
   # Same reasoning as the class Deployment above: the 600s default is shorter
   # than a healthy rootfs rebuild (#4868).
@@ -166,11 +194,11 @@ spec:
   selector:
     # nosemgrep: require-component-label-in-selector
     matchLabels:
-      {{- include "embervm.brickFloor.selectorLabels" (dict "ctx" $ctx "class" $class "node" $floor.node) | nindent 6 }}
+      {{- include "embervm.brickFloor.selectorLabels" (dict "ctx" $ctx "class" $class "identifier" $floorIdentifier) | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "embervm.brickFloor.labels" (dict "ctx" $ctx "class" $class "node" $floor.node) | nindent 8 }}
+        {{- include "embervm.brickFloor.labels" (dict "ctx" $ctx "class" $class "identifier" $floorIdentifier) | nindent 8 }}
     spec:
       {{- $classSpec := "" }}
       {{- range $c := $ctx.Values.bricks.classes }}
@@ -179,8 +207,8 @@ spec:
       {{- end }}
       {{- end }}
       {{- if not $classSpec }}
-      {{- fail (printf "bricks.nodeFloors entry for node %s references unknown class %q (not in bricks.classes)" $floor.node $class) }}
+      {{- fail (printf "bricks.nodeFloors entry for %s references unknown class %q (not in bricks.classes)" $floorIdentifier $class) }}
       {{- end }}
-      {{- include "embervm.noded.podSpec" (dict "ctx" $ctx "sizeClass" $class "resources" $classSpec.resources "nodeSelector" (dict "kubernetes.io/hostname" $floor.node)) | nindent 6 }}
+      {{- include "embervm.noded.podSpec" (dict "ctx" $ctx "sizeClass" $class "resources" $classSpec.resources "nodeSelector" $nodeSelectorMap) | nindent 6 }}
 {{- end }}
 {{- end }}

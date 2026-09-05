@@ -153,32 +153,27 @@ Input: (dict "ctx" $ "index" $j).
 {{- end -}}
 
 {{/*
+{{/*
 Per-node brick FLOOR labels (brick-capacity PR-3). A floor Deployment is still
 "a brick of this class" (same component + size-class labels as the class-wide
 Deployment, on purpose: it is the same kind of pod), but it MUST NOT share the
 class Deployment's selector - two Deployments' ReplicaSet controllers fighting
 over the same pods is a live bug, not a style choice. The extra
-embervm.jomcgi.dev/brick-floor=<node> label makes the floor's selector disjoint
-from its class's (and from every other floor's) while still being reachable by
-the shared size-class label for anything that wants "all 2gi bricks, floor or
-not". Input dict: (dict "ctx" $ "class" $class "node" $floor.node).
+embervm.jomcgi.dev/brick-floor label, keyed by the floor identifier (hostname or
+name), makes the floor's selector disjoint from its class's (and from every other
+floor's) while still being reachable by the shared size-class label for anything
+that wants "all 2gi bricks, floor or not". Input dict: (dict "ctx" $ "class"
+$class "identifier" $floor.identifier).
 */}}
 {{- define "embervm.brickFloor.selectorLabels" -}}
 {{ include "embervm.brick.selectorLabels" (dict "ctx" .ctx "class" .class) }}
-embervm.jomcgi.dev/brick-floor: {{ .node | quote }}
+embervm.jomcgi.dev/brick-floor: {{ .identifier | quote }}
 {{- end -}}
 
 {{- define "embervm.brickFloor.labels" -}}
-{{ include "embervm.brickFloor.selectorLabels" (dict "ctx" .ctx "class" .class "node" .node) }}
+{{ include "embervm.brickFloor.selectorLabels" (dict "ctx" .ctx "class" .class "identifier" .identifier) }}
 app.kubernetes.io/managed-by: {{ .ctx.Release.Service }}
 {{- end -}}
-
-{{/*
-The per-node serving Envoy tier (R3, PR-3) is a DaemonSet in this one chart. Like
-noded it uses a DISTINCT app.kubernetes.io/name ("<name>-serving-envoy") so its
-selector is disjoint from the control plane and noded, and carries a component
-label to disambiguate self-documentingly.
-*/}}
 {{- define "embervm.servingEnvoy.name" -}}
 {{- printf "%s-serving-envoy" (include "embervm.name" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
