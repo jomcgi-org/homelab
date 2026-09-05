@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
-# Measure Firecracker host RSS overhead from EmberVM brick pods.
+# Measure Firecracker host RSS and PSS overhead from EmberVM brick pods.
 # Usage: measure-vm-overhead.sh [options]
 # Defaults target the homelab hub context and the embervm namespace.
 # With no sampling flags, one sample is written as JSON Lines to stdout.
 # Use --out PATH to replace PATH with the JSON Lines result.
 # Use --interval SECONDS --count N to collect N samples and summaries.
-# Each guest line reports total RSS, guest-mapping RSS, and their difference.
+# Each guest line reports total RSS and PSS, guest-mapping RSS and PSS, the
+# guest mapping's VMA size, and both overhead differences.
 # Guest memory is the sum of every */memfile mapping (a guest above 3 GiB maps
 # its memfile twice, around the PCI hole); with no memfile, the largest
 # anonymous mapping by VMA size is used instead.
-# Declared memory is read from CLI/config when exposed by the process.
-# Current noded uses its API, so class plus declared_memory_source marks proxy use.
+# Declared memory is read from mem_mib beside a directly mapped memfile.
+# Jailed memfile paths are reported as unsupported. noded.jailer.enabled is false
+# today, and the jailed path does not identify the snapshot bundle holding mem_mib.
 # A successful exec with no Firecracker children emits a guests:0 line.
 # Exec failures are diagnostics on stderr and do not stop other bricks.
-# Cluster access is read-only: pod listing and cat-only kubectl exec calls.
+# Cluster access is read-only: pod get, a sh -c discovery loop that reads
+# /proc/1/task/*/children and comm files, and cat-only kubectl exec reads.
 # Run --self-test to check the smaps parser without kubectl access.
-# Requires bash, kubectl, awk, sed, sort, tr, mktemp, and standard core tools.
+# Requires bash, kubectl, awk, sort, mktemp, and standard core tools.
 
 set -uo pipefail
 
@@ -119,7 +122,8 @@ if [[ ! "$COUNT" =~ ^[1-9][0-9]*$ ]]; then
 	die_usage "--count must be a positive integer"
 fi
 
-# Print total RSS KiB, guest RSS KiB, guest VMA size KiB, and a path or "-".
+# Print total RSS KiB, total PSS KiB, guest RSS KiB, guest PSS KiB, guest VMA
+# size KiB, and a path or "-".
 # Guest memory is the sum over every */memfile mapping; when the process has no
 # memfile mapping, the largest anonymous mapping by VMA size stands in for it.
 parse_smaps() {
@@ -128,11 +132,13 @@ parse_smaps() {
 			if (memfile) {
 				memfile_size += map_size
 				memfile_rss += map_rss
+				memfile_pss += map_pss
 				if (memfile_path == "") memfile_path = path
 			} else if (anonymous && (map_size > anon_size ||
 			    (map_size == anon_size && map_rss > anon_rss))) {
 				anon_size = map_size
 				anon_rss = map_rss
+				anon_pss = map_pss
 			}
 		}
 		/^[[:xdigit:]]+-[[:xdigit:]]+[[:space:]]/ {
@@ -146,6 +152,7 @@ parse_smaps() {
 			memfile = (path ~ /(^|\/)memfile([[:space:]]+\(deleted\))?$/)
 			map_size = 0
 			map_rss = 0
+			map_pss = 0
 			next
 		}
 		/^Size:[[:space:]]/ { map_size = $2; next }
@@ -154,49 +161,67 @@ parse_smaps() {
 			total_rss += $2
 			next
 		}
+		/^Pss:[[:space:]]/ {
+			map_pss = $2
+			total_pss += $2
+			next
+		}
 		END {
 			finish_mapping()
 			if (memfile_size > 0) {
 				guest_size = memfile_size
 				guest_rss = memfile_rss
+				guest_pss = memfile_pss
 				guest_path = memfile_path
 			} else {
 				guest_size = anon_size
 				guest_rss = anon_rss
+				guest_pss = anon_pss
 				guest_path = "-"
 			}
-			printf "%.0f\t%.0f\t%.0f\t%s\n", total_rss, guest_rss, guest_size, guest_path
+			printf "%.0f\t%.0f\t%.0f\t%.0f\t%.0f\t%s\n", \
+			    total_rss, total_pss, guest_rss, guest_pss, guest_size, guest_path
 		}
 	'
 }
 
 self_test() {
-	local parsed total guest_rss guest_size overhead
+	local parsed total_rss total_pss guest_rss guest_pss guest_size
+	local overhead_rss overhead_pss
 	parsed=$(
 		parse_smaps <<'EOF'
 00400000-00420000 r-xp 00000000 08:01 10 /opt/fc/firecracker
 Size:                128 kB
 Rss:                3000 kB
+Pss:                1000 kB
 7f000000-80000000 rw-p 00000000 07:00 655624 /var/lib/embervm/scratch/snapshots/bases/wl__abc/memfile
 Size:             262144 kB
 Rss:              250000 kB
+Pss:              249000 kB
 80000000-a0000000 rw-p c0000000 07:00 655624 /var/lib/embervm/scratch/snapshots/bases/wl__abc/memfile
 Size:             524288 kB
 Rss:              100000 kB
+Pss:               99000 kB
 a0000000-a0001000 rw-p 00000000 00:00 0 [heap]
 Size:               4096 kB
 Rss:                1000 kB
+Pss:                1000 kB
 EOF
 	)
-	IFS=$'\t' read -r total guest_rss guest_size _guest_path <<<"$parsed"
-	overhead=$((total - guest_rss))
-	if [[ "$total" != "354000" || "$guest_rss" != "350000" ||
-		"$guest_size" != "786432" || "$overhead" != "4000" ]]; then
-		printf 'self-test failed: total=%s guest_rss=%s guest_size=%s overhead=%s\n' \
-			"$total" "$guest_rss" "$guest_size" "$overhead" >&2
+	IFS=$'\t' read -r total_rss total_pss guest_rss guest_pss guest_size \
+		_guest_path <<<"$parsed"
+	overhead_rss=$((total_rss - guest_rss))
+	overhead_pss=$((total_pss - guest_pss))
+	if [[ "$total_rss" != "354000" || "$total_pss" != "350000" ||
+		"$guest_rss" != "350000" || "$guest_pss" != "348000" ||
+		"$guest_size" != "786432" || "$overhead_rss" != "4000" ||
+		"$overhead_pss" != "2000" ]]; then
+		printf 'self-test failed: total_rss=%s total_pss=%s guest_rss=%s guest_pss=%s guest_size=%s overhead_rss=%s overhead_pss=%s\n' \
+			"$total_rss" "$total_pss" "$guest_rss" "$guest_pss" \
+			"$guest_size" "$overhead_rss" "$overhead_pss" >&2
 		return 1
 	fi
-	printf 'self-test passed: total=354000 guest_rss=350000 (two memfile maps) overhead=4000 KiB\n'
+	printf 'self-test passed: RSS overhead=4000 KiB PSS overhead=2000 KiB (two memfile maps)\n'
 }
 
 if ((SELF_TEST == 1)); then
@@ -259,128 +284,87 @@ class_from_pod() {
 }
 
 DECLARED_JSON="null"
-DECLARED_SOURCE="pod_class_proxy"
+DECLARED_SOURCE="unavailable"
 
 declared_memory_for_pid() {
-	local pod="$1" pid="$2" work_dir="$3" guest_path="$4"
-	local cmdline_file config_file config_path="" sidecar_path=""
-	local arg="" expect_path=0 value=""
+	local pod="$1" work_dir="$2" guest_path="$3"
+	local sidecar_file sidecar_path="" value=""
 	DECLARED_JSON="null"
-	DECLARED_SOURCE="pod_class_proxy"
+	DECLARED_SOURCE="unavailable"
 	if [[ "$guest_path" == *" (deleted)" ]]; then
 		guest_path=${guest_path% \(deleted\)}
 	fi
 	case "$guest_path" in
-	*/jailer/firecracker/*/root/snapshot/memfile)
-		sidecar_path="${guest_path%%/jailer/firecracker/*}/mem_mib"
+	*/jailer/firecracker/*)
+		DECLARED_SOURCE="jailed_layout_unsupported"
+		return 0
 		;;
 	*/memfile)
 		sidecar_path="${guest_path%/memfile}/mem_mib"
 		;;
 	esac
 	if [[ -n "$sidecar_path" ]]; then
-		config_file="$work_dir/mem_mib"
+		sidecar_file="$work_dir/mem_mib"
 		if kube exec "$pod" -c noded -- cat "$sidecar_path" \
-			>"$config_file" 2>/dev/null; then
-			read -r value <"$config_file"
+			>"$sidecar_file" 2>/dev/null; then
+			read -r value <"$sidecar_file"
 			if [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
 				DECLARED_JSON="$value"
 				DECLARED_SOURCE="mem_mib_sidecar"
-				return 0
 			fi
 		fi
-	fi
-	cmdline_file="$work_dir/cmdline"
-	if ! kube exec "$pod" -c noded -- cat "/proc/$pid/cmdline" \
-		>"$cmdline_file" 2>/dev/null; then
-		return 0
-	fi
-	while IFS= read -r arg; do
-		if ((expect_path == 1)); then
-			config_path="$arg"
-			expect_path=0
-			continue
-		fi
-		case "$arg" in
-		--mem-size-mib=*)
-			value=${arg#*=}
-			;;
-		--mem-size-mib)
-			expect_path=2
-			;;
-		--config-file=*)
-			config_path=${arg#*=}
-			;;
-		--config-file)
-			expect_path=1
-			;;
-		*)
-			if ((expect_path == 2)); then
-				value="$arg"
-				expect_path=0
-			fi
-			;;
-		esac
-	done < <(tr '\000' '\n' <"$cmdline_file")
-	if [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
-		DECLARED_JSON="$value"
-		DECLARED_SOURCE="command_line"
-		return 0
-	fi
-	[[ -n "$config_path" ]] || return 0
-	config_file="$work_dir/config.json"
-	if [[ "$config_path" == /* ]]; then
-		config_path="/proc/$pid/root$config_path"
-	else
-		config_path="/proc/$pid/cwd/$config_path"
-	fi
-	if ! kube exec "$pod" -c noded -- cat "$config_path" \
-		>"$config_file" 2>/dev/null; then
-		return 0
-	fi
-	value=$(tr -d '\n' <"$config_file" |
-		sed -n 's/.*"mem_size_mib"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' |
-		sed -n '1p')
-	if [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
-		DECLARED_JSON="$value"
-		DECLARED_SOURCE="config_file"
 	fi
 }
 
 emit_guest() {
 	local ts="$1" pod="$2" class="$3" pid="$4" comm="$5"
-	local total_kib="$6" guest_kib="$7" overhead_kib="$8" line
+	local total_rss_kib="$6" total_pss_kib="$7" guest_rss_kib="$8"
+	local guest_pss_kib="$9" guest_size_kib="${10}" overhead_rss_kib="${11}"
+	local overhead_pss_kib="${12}" line
 	line=$(awk \
 		-v ts="$ts" -v pod="$pod" -v class="$class" -v pid="$pid" \
 		-v declared="$DECLARED_JSON" -v source="$DECLARED_SOURCE" \
-		-v total="$total_kib" -v guest="$guest_kib" -v overhead="$overhead_kib" \
+		-v total_rss="$total_rss_kib" -v total_pss="$total_pss_kib" \
+		-v guest_rss="$guest_rss_kib" -v guest_pss="$guest_pss_kib" \
+		-v guest_size="$guest_size_kib" -v overhead_rss="$overhead_rss_kib" \
+		-v overhead_pss="$overhead_pss_kib" \
 		-v comm="$comm" 'BEGIN {
 			printf "{\"ts\":\"%s\",\"pod\":\"%s\",\"class\":\"%s\",", ts, pod, class
 			printf "\"pid\":%d,\"declared_mib_or_null\":%s,", pid, declared
 			printf "\"declared_memory_source\":\"%s\",", source
-			printf "\"rss_total_mib\":%.3f,\"guest_mapping_mib\":%.3f,", total / 1024, guest / 1024
-			printf "\"overhead_mib\":%.3f,\"comm\":\"%s\"}", overhead / 1024, comm
+			printf "\"rss_total_mib\":%.3f,\"pss_total_mib\":%.3f,", total_rss / 1024, total_pss / 1024
+			printf "\"guest_mapping_rss_mib\":%.3f,", guest_rss / 1024
+			printf "\"guest_mapping_pss_mib\":%.3f,", guest_pss / 1024
+			printf "\"guest_mapping_size_mib\":%.3f,", guest_size / 1024
+			printf "\"overhead_rss_mib\":%.3f,", overhead_rss / 1024
+			printf "\"overhead_pss_mib\":%.3f,\"comm\":\"%s\"}", overhead_pss / 1024, comm
 		}')
 	emit_line "$line"
 }
 
 sample_once() {
-	local sample_number="$1" ts pods_file get_error pod class pod_dir
+	local sample_number="$1" ts pods_file get_error pod class deletion_timestamp pod_dir
 	local discovery_file exec_error pid comm smaps_file parsed
-	local total_kib guest_kib guest_size_kib guest_path overhead_kib discovered emitted
+	local total_rss_kib total_pss_kib guest_rss_kib guest_pss_kib guest_size_kib
+	local guest_path overhead_rss_kib overhead_pss_kib discovered emitted
 	ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 	pods_file="$TMP_ROOT/pods.$sample_number"
 	get_error="$TMP_ROOT/get.$sample_number.err"
-	if ! kube get pods -o name >"$pods_file" 2>"$get_error"; then
+	if ! kube get pods \
+		--selector "app.kubernetes.io/component=noded-brick" \
+		--field-selector "status.phase=Running" \
+		-o 'jsonpath={range .items[*]}{.metadata.name}{"|"}{.metadata.labels.embervm\.jomcgi\.dev/size-class}{"|"}{.metadata.deletionTimestamp}{"\n"}{end}' \
+		>"$pods_file" 2>"$get_error"; then
 		while IFS= read -r line; do
 			printf '%s\n' "$line" >&2
 		done <"$get_error"
 		return 1
 	fi
-	while IFS= read -r pod; do
-		pod=${pod#pod/}
-		[[ "$pod" == *noded-brick-* ]] || continue
-		class=$(class_from_pod "$pod")
+	while IFS='|' read -r pod class deletion_timestamp; do
+		[[ -n "$pod" && -z "$deletion_timestamp" ]] || continue
+		if [[ -z "$class" ]]; then
+			class=$(class_from_pod "$pod")
+		fi
 		printf '%s\n' "$class" >>"$CLASSES_FILE"
 		pod_dir="$TMP_ROOT/$sample_number.$pod"
 		mkdir -p "$pod_dir"
@@ -412,18 +396,23 @@ done
 				continue
 			fi
 			parsed=$(parse_smaps <"$smaps_file")
-			IFS=$'\t' read -r total_kib guest_kib guest_size_kib guest_path <<<"$parsed"
-			if [[ ! "$total_kib" =~ ^[0-9]+$ || ! "$guest_kib" =~ ^[0-9]+$ ||
+			IFS=$'\t' read -r total_rss_kib total_pss_kib guest_rss_kib \
+				guest_pss_kib guest_size_kib guest_path <<<"$parsed"
+			if [[ ! "$total_rss_kib" =~ ^[0-9]+$ || ! "$total_pss_kib" =~ ^[0-9]+$ ||
+				! "$guest_rss_kib" =~ ^[0-9]+$ || ! "$guest_pss_kib" =~ ^[0-9]+$ ||
 				! "$guest_size_kib" =~ ^[1-9][0-9]*$ ]]; then
 				printf 'WARNING: pod %s pid %s: no guest mapping found in smaps; skipping\n' \
 					"$pod" "$pid" >&2
 				continue
 			fi
-			overhead_kib=$((total_kib - guest_kib))
-			declared_memory_for_pid "$pod" "$pid" "$pod_dir" "$guest_path"
+			overhead_rss_kib=$((total_rss_kib - guest_rss_kib))
+			overhead_pss_kib=$((total_pss_kib - guest_pss_kib))
+			declared_memory_for_pid "$pod" "$pod_dir" "$guest_path"
 			emit_guest "$ts" "$pod" "$class" "$pid" "$comm" \
-				"$total_kib" "$guest_kib" "$overhead_kib"
-			printf '%s\t%s\n' "$class" "$overhead_kib" >>"$METRICS_FILE"
+				"$total_rss_kib" "$total_pss_kib" "$guest_rss_kib" \
+				"$guest_pss_kib" "$guest_size_kib" "$overhead_rss_kib" \
+				"$overhead_pss_kib"
+			printf '%s\t%s\n' "$class" "$overhead_pss_kib" >>"$METRICS_FILE"
 			emitted=$((emitted + 1))
 		done <"$discovery_file"
 		if ((discovered == 0)); then
@@ -444,7 +433,7 @@ emit_summaries() {
 		awk -F '\t' -v wanted="$class" '$1 == wanted { print $2 }' \
 			"$METRICS_FILE" | LC_ALL=C sort -n >"$values_file"
 		if [[ ! -s "$values_file" ]]; then
-			emit_line "{\"type\":\"summary\",\"class\":\"$class\",\"sample_count\":0,\"median_overhead_mib\":null,\"p90_overhead_mib\":null,\"suggested_noded.vmOverheadMib\":null}"
+			emit_line "{\"type\":\"summary\",\"class\":\"$class\",\"sample_count\":0,\"median_overhead_pss_mib\":null,\"p90_overhead_pss_mib\":null,\"suggested_noded.vmOverheadMib\":null}"
 			continue
 		fi
 		line=$(awk -v class="$class" '
@@ -459,8 +448,8 @@ emit_summaries() {
 				p90 = values[rank]
 				suggested = int((p90 + 16383) / 16384) * 16
 				printf "{\"type\":\"summary\",\"class\":\"%s\",", class
-				printf "\"sample_count\":%d,\"median_overhead_mib\":%.3f,", count, median / 1024
-				printf "\"p90_overhead_mib\":%.3f,", p90 / 1024
+				printf "\"sample_count\":%d,\"median_overhead_pss_mib\":%.3f,", count, median / 1024
+				printf "\"p90_overhead_pss_mib\":%.3f,", p90 / 1024
 				printf "\"suggested_noded.vmOverheadMib\":%d}", suggested
 			}
 		' "$values_file")
