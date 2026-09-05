@@ -187,9 +187,9 @@
   <polyline points="48,498 38,498 38,412 48,412" fill="none" stroke="currentColor" stroke-width="1"/>
   <line x1="48" y1="412" x2="43.954915028125264" y2="414.93892626146237" stroke="currentColor" stroke-width="1"/>
   <line x1="48" y1="412" x2="43.954915028125264" y2="409.06107373853763" stroke="currentColor" stroke-width="1"/>
-  <text x="6" y="456" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">HMM</text>
-  <text x="54" y="598" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">table rows: the GPU reads the file mapping</text>
-  <text x="54" y="612" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">itself, through the page cache</text>
+  <text x="6" y="456" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">stage</text>
+  <text x="54" y="598" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">table rows: gather into pinned staging,</text>
+  <text x="54" y="612" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">then copy to GPU before the forward</text>
   <circle cx="650" cy="404" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
   <text x="650" y="408" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">+</text>
   <line x1="608" y1="396" x2="641" y2="402" stroke="currentColor" stroke-width="1"/>
