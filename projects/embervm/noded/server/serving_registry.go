@@ -226,6 +226,7 @@ func (r *servingRegistry) add(e *servingEntry) {
 
 // firstByWorkload returns any live serving VM for workload. The activator uses
 // this to serve Envoy stragglers that arrive after another path made the VM live.
+// TODO(#5537): filter unhealthy entries before using this serving-path straggler.
 func (r *servingRegistry) firstByWorkload(workload string) (*servingEntry, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

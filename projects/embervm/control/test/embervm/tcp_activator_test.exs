@@ -239,14 +239,14 @@ defmodule Embervm.TcpActivatorTest do
   # -- the straggler race: a live endpoint already exists -----------------------
 
   defmodule LiveEndpointStore do
-    def published_endpoint(_srv, "wl-a"), do: %{ip: "127.0.0.1", port: Application.get_env(:embervm, :tcp_activator_test_vm_port)}
+    def published_endpoint(_srv, "wl-a"),
+      do: raise("stateful routing must not read the published endpoint eagerly")
+
     def published_endpoint(_srv, _wl), do: nil
   end
 
-  test "a connection for an already-published stateful endpoint delegates witnessed-connect handling", ctx do
+  test "a stateful connection delegates witnessed-connect handling without an eager store read", ctx do
     {_echo_pid, vm_port} = start_echo_server()
-    Application.put_env(:embervm, :tcp_activator_test_vm_port, vm_port)
-    on_exit(fn -> Application.delete_env(:embervm, :tcp_activator_test_vm_port) end)
 
     start_activator(
       %{"wl-a" => {:ok, %{ip: "127.0.0.1", port: vm_port}}},

@@ -384,15 +384,24 @@ the noded pod IP and activator port as the activator endpoint,
 instance ids minted node-side carry `origin: ACTIVATOR` for the CP to adopt
 and backfill on reconcile. **Planned**: partially landed, soak ongoing.
 
-Published serving and stateful endpoints share one EDS assignment with their
-per-workload activator fallback at the next Envoy priority. Active TCP health
-checks eject unreachable live endpoints, so traffic falls through to the
-activator and returns to the live priority when it recovers. On the stateful L4
-path, a connection that reaches the activator withdraws the stale resident
-health fact before starting the ordinary rate-limited wake, unless a current
-healthy node status still reports that exact VM live, in which case the
-activator treats the failover as a transient and splices to the published
-endpoint.
+Each published stateful endpoint shares its EDS assignment with a per-workload
+L4 activator fallback at the next Envoy priority. Serving workload clusters
+instead reuse one shared L7 activator endpoint, with the injected
+`x-ember-workload` header disambiguating the workload. Active TCP health checks
+eject unreachable live endpoints, so traffic falls through to the activator and
+returns to the live priority when it recovers. On the stateful L4 path, a
+connection that reaches the activator withdraws the stale resident health fact
+before starting the ordinary rate-limited wake, unless it is within the
+five-second publish cooldown or the registry's retained node inventory reports
+the exact VM with `healthy: true` and `last_probe_unix_ms` no older than one
+two-second status interval. In either guarded case, the activator treats the
+failover as a transient and splices to the published endpoint.
+
+For serving, Envoy's default overprovisioning factor makes the priority shift
+fractional, so one unhealthy host out of two can still send some traffic to the
+activator, whose node-local serving straggler lookup currently has no health
+filter. Issue #5537 tracks that serving-path caveat; this round changes only the
+stateful witnessed-connect behavior.
 
 ### Sessions: the durability ladder
 

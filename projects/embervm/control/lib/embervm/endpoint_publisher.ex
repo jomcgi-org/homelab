@@ -519,33 +519,38 @@ defmodule Embervm.EndpointPublisher do
   # One cluster per workload. A live cluster has its healthy published endpoints
   # at priority 0 and the activator at priority 1; Envoy therefore uses the
   # activator only after active health checking ejects every live endpoint. A cold
-  # cluster keeps the existing activator-only priority-0 shape. Live endpoints are
-  # already in stable instance-id order, so the render is deterministic.
+  # cluster keeps the activator-only priority-0 shape and opts that endpoint out of
+  # active checking. The health check is unconditional so wake and bank update EDS
+  # without also replacing the CDS cluster. Live endpoints are already in stable
+  # instance-id order, so the render is deterministic.
   defp cluster_for(ctx, workload) do
     live = ServingStore.published_endpoints(ctx.store, workload)
 
-    {endpoints, health_check} =
+    endpoints =
       case live do
         [] ->
-          {activator_endpoints(ctx, workload), nil}
+          Enum.map(activator_endpoints(ctx, workload), &disable_active_health_check/1)
 
         eps ->
           live_endpoints = Enum.map(eps, &priority_endpoint(&1, 0))
           fallback_endpoints = Enum.map(activator_endpoints(ctx, workload), &priority_endpoint(&1, 1))
-          {live_endpoints ++ fallback_endpoints, health_check(ctx)}
+          live_endpoints ++ fallback_endpoints
       end
 
-    cluster = %{
+    %{
       name: @cluster_prefix <> workload,
       endpoints: endpoints,
-      connect_timeout_ms: ctx.connect_timeout_ms
+      connect_timeout_ms: ctx.connect_timeout_ms,
+      health_check: health_check(ctx)
     }
-
-    if health_check, do: Map.put(cluster, :health_check, health_check), else: cluster
   end
 
   defp priority_endpoint(endpoint, priority) do
     %{ip: endpoint.ip, port: endpoint.port, priority: priority}
+  end
+
+  defp disable_active_health_check(endpoint) do
+    Map.put(endpoint, :disable_active_health_check, true)
   end
 
   defp health_check(ctx) do
@@ -676,15 +681,11 @@ defmodule Embervm.EndpointPublisher do
           cluster = %{
             name: @stateful_cluster_prefix <> workload,
             endpoints: endpoints,
-            connect_timeout_ms: ctx.connect_timeout_ms
+            connect_timeout_ms: ctx.connect_timeout_ms,
+            # Keep the CDS shape stable across wake and bank. The activator-only
+            # endpoint is explicitly exempted from this check in stateful_endpoints/3.
+            health_check: health_check(ctx)
           }
-
-          cluster =
-            if Enum.any?(endpoints, &(Map.get(&1, :priority) == 0 and Map.has_key?(&1, :priority))) do
-              Map.put(cluster, :health_check, health_check(ctx))
-            else
-              cluster
-            end
 
           listen_port = cfg.listen_port
 
@@ -733,7 +734,7 @@ defmodule Embervm.EndpointPublisher do
       _ ->
         case activator_tcp_endpoint(ctx, workload, listen_port) do
           nil -> []
-          activator -> [activator]
+          activator -> [disable_active_health_check(activator)]
         end
     end
   end

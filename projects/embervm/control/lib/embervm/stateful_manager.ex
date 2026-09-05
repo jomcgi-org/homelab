@@ -177,6 +177,13 @@ defmodule Embervm.StatefulManager do
   # intent, not a deviation from it.
   @default_wake_max 10
   @default_wake_window_ms 60_000
+  # WatchNode re-sends NodeStatus every two seconds in noded. The flap guard
+  # accepts only a per-VM probe no older than one such status interval.
+  @node_status_interval_ms 2_000
+  # A freshly published endpoint may reach the activator before Envoy has
+  # incorporated its first active-health result. Protect that publication for
+  # five seconds, long enough to cover two status intervals plus scheduling lag.
+  @publish_cooldown_ms 5_000
 
   # Keep this equal to NodeRegistry's @expire_after_ms (90_000). A rebuilt
   # serving row is deliberately optimistic so a control-plane deploy does not
@@ -241,12 +248,13 @@ defmodule Embervm.StatefulManager do
   the workload is woken and returns `{:ok, %{ip, port}}` for the
   `Embervm.TcpActivator` to splice the parked connection to, OR a denial:
 
-    * `{:ok, %{ip, port}}`             -> splice after a fresh wake, or after
-      the witnessed-connect flap guard confirms a current healthy node status
-      still reports the published VM live. A fresh wake's map also carries
-      `generation` (the volume generation the boot landed on, Task 10
-      observability); the guarded direct-splice path replies with just `{ip,
-      port}` since it never wakes anything.
+    * `{:ok, %{ip, port}}`             -> splice after a fresh wake, during the
+      five-second publish cooldown, or after the witnessed-connect flap guard
+      finds the exact VM in the registry's retained inventory with healthy=true
+      and a probe no older than one two-second status interval. A fresh wake's
+      map also carries `generation` (the volume generation the boot landed on,
+      Task 10 observability); the guarded direct-splice path replies with just
+      `{ip, port}` since it never wakes anything.
     * `{:error, {:wake_rate, _}}`               -> close (per-workload wake-rate limit)
     * `{:error, {:park_full, _}}`                -> close (parked-connection cap)
     * `{:error, {:wake_failed, r}}`              -> close (start error / readiness
@@ -341,6 +349,8 @@ defmodule Embervm.StatefulManager do
       capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
       catalog_table: Keyword.get(opts, :catalog_table, WorkloadCatalog.table()),
       node_registry: Keyword.get(opts, :node_registry, NodeRegistry),
+      node_registry_status_fun:
+        Keyword.get(opts, :node_registry_status_fun, &Embervm.NodeRegistry.status/1),
       clock: clock,
       # The grace is control-plane-boot-relative, not first-reconcile-relative.
       # Capturing it in init prevents an empty capacity table from extending the
@@ -629,29 +639,33 @@ defmodule Embervm.StatefulManager do
   # -- wake handling -----------------------------------------------------------
 
   defp handle_wake(state, workload, principal, from) do
-    case published_instance(state, workload) do
-      %{ip: ip, port: port} = instance when is_binary(ip) and ip != "" and is_integer(port) ->
-        handle_published_connect(state, instance, workload, principal, from)
+    if stateful_workload?(state, workload) do
+      case published_instance(state, workload) do
+        %{ip: ip, port: port} = instance when is_binary(ip) and ip != "" and is_integer(port) ->
+          handle_published_connect(state, instance, workload, principal, from)
 
-      _ ->
-        handle_cold_wake(state, workload, principal, from)
+        _ ->
+          handle_cold_wake(state, workload, principal, from)
+      end
+    else
+      {:reply, {:error, {:unknown_workload}}, state}
     end
   end
 
   # Envoy reaches this path only after its priority-0 TCP health check has failed.
-  # A current healthy node report that still contains this exact VM is the flap
-  # guard: splice to the published endpoint and let the next health check heal.
-  # Otherwise withdraw health, durably retire the stale lifecycle, and run the
-  # ordinary rate-limited wake path.
+  # During the five-second publish cooldown, splice while Envoy incorporates its
+  # first active-health result. After that, the flap guard requires the registry's
+  # retained inventory to contain the exact VM with healthy=true and a probe from
+  # the last NodeStatus interval. Otherwise withdraw health and durably retire the
+  # stale lifecycle before the ordinary wake path applies its rate limit.
   defp handle_published_connect(state, instance, workload, principal, from) do
     cond do
+      within_publish_cooldown?(state, instance) ->
+        {:reply, {:ok, %{ip: instance.ip, port: instance.port}}, state}
+
       freshly_reported_live?(state, instance) ->
         state = log_activator_transient_once(state, instance)
         {:reply, {:ok, %{ip: instance.ip, port: instance.port}}, clear_last_wake_outcome(state, workload)}
-
-      not Map.has_key?(state.waking, workload) and not wake_allowed?(state, principal) ->
-        audit_denial(state, principal, workload, :wake_rate)
-        {:reply, {:error, {:wake_rate, "per-workload wake-rate limit exceeded"}}, state}
 
       true ->
         :ok =
@@ -698,15 +712,26 @@ defmodule Embervm.StatefulManager do
   end
 
   defp freshly_reported_live?(state, instance) do
-    case NodeCapacity.fetch(state.capacity_table, instance.node_id) do
-      {:ok, fact} ->
-        Enum.any?(Map.get(fact, :stateful_vms, []) || [], fn vm ->
-          Map.get(vm, :vm_id) == instance.vm_id
-        end)
+    now = state.clock.()
 
-      :error ->
-        false
-    end
+    state.node_registry_status_fun.(state.node_registry)
+    |> Map.values()
+    |> Enum.any?(fn rt ->
+      instance.vm_id in (Map.get(rt, :stateful_vm_ids, []) || []) and
+        Map.get(rt, :configured_id) == instance.node_id and
+        Enum.any?(Map.get(rt, :stateful_vms, []) || [], fn vm ->
+          last_probe_unix_ms = Map.get(vm, :last_probe_unix_ms)
+
+          Map.get(vm, :vm_id) == instance.vm_id and Map.get(vm, :healthy) == true and
+            is_integer(last_probe_unix_ms) and last_probe_unix_ms > 0 and
+            last_probe_unix_ms >= now - @node_status_interval_ms
+        end)
+    end)
+  end
+
+  defp within_publish_cooldown?(state, instance) do
+    is_integer(instance.updated_at) and
+      state.clock.() - instance.updated_at < @publish_cooldown_ms
   end
 
   defp log_activator_transient_once(state, instance) do
