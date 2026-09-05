@@ -38,6 +38,13 @@ spec:
       jqPathExpressions:
         - .spec.template.spec.containers[].volumeMounts[].readOnly
         - .spec.template.spec.containers[].ports[].protocol
+        # The API server stamps apiVersion, kind, and creationTimestamp into
+        # volumeClaimTemplates on the live object. The server-side diff's
+        # predicted state drops them, so the StatefulSet read OutOfSync
+        # forever and selfHeal re-applied it every reconcile.
+        - .spec.volumeClaimTemplates[].apiVersion
+        - .spec.volumeClaimTemplates[].kind
+        - .spec.volumeClaimTemplates[].metadata.creationTimestamp
   syncPolicy:
     automated:
       prune: true
