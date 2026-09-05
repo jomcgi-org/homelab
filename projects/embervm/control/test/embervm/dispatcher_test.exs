@@ -1307,40 +1307,67 @@ defmodule Embervm.DispatcherTest do
     Embervm.SpecTrace.scope_writer(writer_name)
 
     cases = [
-      {"wl-no-channel", "no_channel",
+      {"wl-warm-no-channel", "no_channel", ":unavailable", "node-4",
        [channel_fun: fn _node -> {:error, :unavailable} end],
        fn ctx ->
-         put_facts(ctx, "wl-no-channel", free: 0)
-         Dispatcher.deposit(ctx.name, "node-4", "wl-no-channel", "vm-warm")
+         put_facts(ctx, "wl-warm-no-channel", free: 0)
+         Dispatcher.deposit(ctx.name, "node-4", "wl-warm-no-channel", "vm-warm")
        end},
-      {"wl-prime-failed", "prime_failed",
+      {"wl-miss-no-channel", "no_channel", ":unavailable", "node-4",
+       [channel_fun: fn _node -> {:error, :unavailable} end],
+       fn ctx -> put_facts(ctx, "wl-miss-no-channel", free: 1) end},
+      {"wl-prime-failed", "prime_failed", ":unavailable", "node-4",
        [prime_fun: fn _channel, _req -> {:error, :unavailable} end],
-       fn ctx -> put_facts(ctx, "wl-prime-failed", free: 1) end}
+       fn ctx -> put_facts(ctx, "wl-prime-failed", free: 1) end},
+      {"wl-resource-exhausted", "resource_exhausted", "pressure:mem", "node-4",
+       [
+         prime_fun: fn _channel, _req ->
+           {:error, %GRPC.RPCError{status: 8, message: "noded: pressure:mem"}}
+         end
+       ],
+       fn ctx -> put_facts(ctx, "wl-resource-exhausted", free: 1) end}
     ]
 
-    for {workload, expected_reason, opts, prepare} <- cases do
+    for {workload, expected_reason, expected_detail, declined_node_id, opts, prepare} <- cases do
       ctx = start_stack(opts)
       put_catalog(ctx, workload,
         retry: %{
           max_attempts: 3,
-          backoff_ms: 60_000,
-          backoff_cap_ms: 60_000,
+          backoff_ms: 20,
+          backoff_cap_ms: 20,
           retry_on: [:transport]
         }
       )
       prepare.(ctx)
       task_id = submit(ctx, workload, "p1")
 
-      assert eventually(fn -> state_of(ctx, task_id) == :failed_retryable end)
+      assert eventually(fn ->
+               :ok = Embervm.SpecTrace.drain(writer)
+
+               {:ok, failed_records} =
+                 Embervm.SpecTrace.Store.SQLite.read_window(store,
+                   action: "dispatch_failed"
+                 )
+
+               state_of(ctx, task_id) == :dead_lettered and
+                 Enum.count(failed_records, &(&1["vars"]["task_id"] == task_id)) == 3
+             end)
+
       :ok = Embervm.SpecTrace.drain(writer)
+
       {:ok, failed_records} =
         Embervm.SpecTrace.Store.SQLite.read_window(store, action: "dispatch_failed")
+
       records = Enum.filter(failed_records, &(&1["vars"]["task_id"] == task_id))
 
-      assert length(records) == 1
-      assert [record] = records
-      assert record["vars"]["workload"] == workload
-      assert record["vars"]["reason"] == expected_reason
+      assert length(records) == 3
+
+      for record <- records do
+        assert record["vars"]["workload"] == workload
+        assert record["vars"]["reason"] == expected_reason
+        assert record["vars"]["node_id"] == declined_node_id
+        assert record["vars"]["detail"] =~ expected_detail
+      end
 
       {:ok, warm_records} =
         Embervm.SpecTrace.Store.SQLite.read_window(store, action: "dispatch_warm")

@@ -1,6 +1,4 @@
 defmodule Embervm.SpecTrace.Checker do
-  # dispatch_failed is an observability record for pre-dispatch failures. It is
-  # intentionally excluded from the invariant action lists below.
   @moduledoc """
   Evaluates adoption.tla invariants over spec-trace records.
 
@@ -236,6 +234,8 @@ defmodule Embervm.SpecTrace.Checker do
   end
 
   defp check_no_double_assign(records) do
+    # dispatch_failed is an observability record for pre-dispatch failures. It is
+    # intentionally excluded from the invariant action lists below.
     dispatches = Enum.filter(records, &(&1["action"] in ["dispatch_warm", "dispatch_miss"]))
 
     case dispatches do

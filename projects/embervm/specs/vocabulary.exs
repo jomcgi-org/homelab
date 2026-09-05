@@ -313,8 +313,8 @@
         "invention.",
     dispatch_failed:
       "a pre-dispatch failure observation, not an adoption.tla action. It records " <>
-        "that acquisition failed before any VM was assigned, so the checker can " <>
-        "distinguish repeated queueing from a silent absence of dispatch records."
+        "that acquisition failed before any VM was assigned. No invariant reads " <>
+        "it today; a gated invariant is a possible follow-up on #5351."
   },
 
   # Runtime scope decisions, distinct from both of the above: not a prose action
@@ -339,9 +339,10 @@
     # so groundwork is distinguishable from an oversight, which is the
     # declared-but-unwired class this repo keeps rediscovering.
     unread_by_any_invariant:
-      "succeed and abandon_claim are emitted and stored but no invariant reads " <>
-        "them today. adoption.tla models Succeed(t) and AbandonClaim(t), so the " <>
-        "records are deliberate groundwork for the task-lifecycle invariants, " <>
-        "not a spec action nobody wired up."
+      "succeed, abandon_claim, and dispatch_failed are emitted and stored but no " <>
+        "invariant reads them today. adoption.tla models Succeed(t) and " <>
+        "AbandonClaim(t), so those records are deliberate groundwork for the " <>
+        "task-lifecycle invariants. dispatch_failed is an observability record " <>
+        "for a possible gated invariant on #5351."
   }
 }
