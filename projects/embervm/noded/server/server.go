@@ -3073,6 +3073,9 @@ func (s *Server) ReconcileBasesFromDisk() error {
 				s.logger.Warn("noded: remove stale base bundle", "base", baseKey, "err", err)
 			} else {
 				gc++
+				// The serving inventory advertises this key as serving_image_ref and must not
+				// outlive the directory (#4089).
+				s.servingImage.remove(origKey)
 			}
 			continue
 		}
@@ -3103,6 +3106,9 @@ func (s *Server) ReconcileBasesFromDisk() error {
 		if imageRef == "" {
 			if err := os.RemoveAll(filepath.Join(root, baseKey)); err == nil {
 				gc++
+				// The serving inventory advertises this key as serving_image_ref and must not
+				// outlive the directory (#4089).
+				s.servingImage.remove(baseKey)
 			}
 			continue
 		}
@@ -3166,6 +3172,9 @@ func (s *Server) ReconcileBasesFromDisk() error {
 					} else {
 						args = append(args, "moved_to", asideDir)
 						s.logger.Warn("noded: base failed rootfs identity gate but is in use by live vm; moved aside, reporting base absent", args...)
+						// The serving inventory advertises this key as serving_image_ref and must not
+						// outlive the directory (#4089).
+						s.servingImage.remove(baseKey)
 					}
 				} else {
 					s.logger.Warn("noded: removing base with rootfs identity mismatch during reconcile", args...)
@@ -3175,6 +3184,9 @@ func (s *Server) ReconcileBasesFromDisk() error {
 						gc++
 					}
 					s.bases.remove(baseKey)
+					// The serving inventory advertises this key as serving_image_ref and must not
+					// outlive the directory (#4089).
+					s.servingImage.remove(baseKey)
 					continue
 				}
 			}
