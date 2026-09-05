@@ -173,7 +173,9 @@ existing bearer token is accepted alongside for one release, then retired.
 #5702's netd-to-egress-proxy hop and the egress proxy's own client-auth task
 (named but not built in that issue) use the same SVIDs instead of each
 inventing a separate per-brick token, which was the third and fourth
-reinvention this ADR is written to prevent.
+reinvention this ADR is written to prevent. See the 2026-09-05 amendment
+below for how this hop's credentials are actually delivered, staged, and
+sequenced.
 
 **8. Cloud federation.** `spire-oidc-discovery-provider` is exposed on a
 public HTTPS URL so GCP can fetch its JWKS from outside the cluster;
@@ -273,6 +275,102 @@ What this costs, accepted:
 - On-prem parity lags the hub by construction: the hub is the first
   deployment, and the on-prem cluster gets phase 1 onward only once the hub
   proves it out.
+
+---
+
+## Amendment 2026-09-05: phase 2 credential delivery and sequencing
+
+Records the design review on #5706 that settled how decision 7's CP-to-noded
+mTLS is actually delivered and sequenced, three points decision 7's original
+text left implicit.
+
+**Delivery: files, not a client library.** Decision 7 stands: the hop is
+symmetric X.509-SVID mTLS. What was undecided is how the credential reaches
+Erlang's `:ssl`. It arrives as files, written by a `spiffe-helper` sidecar in
+the SPIFFE Filesystem Delivery layout (`svid.pem`, `svid_key.pem`,
+`svid_bundle.pem`) to a shared `emptyDir`; the control plane passes file
+paths, read at dial time, to `:ssl`'s built-in credential and verification
+options rather than caching bytes in application state. No SPIFFE client
+library is added on the Elixir side: this repo vendors every hex package by
+sha256 with no `mix.lock`, so a new dependency means enumerating its entire
+transitive closure, and the built-in `:ssl` plus `:public_key` already do
+everything decision 7 needs. Peer identity is an exact match on the URI SAN
+against the configured noded SPIFFE ID, not a prefix or trust-domain check.
+
+**Why files, and why this is not "wait for Kubernetes to do it."** Kubernetes
+1.37 (GA 2026-08-26) made `PodCertificateRequest`, the `podCertificate`
+projected volume, and `ClusterTrustBundle` generally available. They are the
+intended future *delivery* mechanism for platform-pod X.509: a
+`podCertificate` volume can replace the `spiffe-helper` sidecar with no
+change to the code that reads the files, once a SPIRE-backed signer for
+`PodCertificateRequest` exists. They are not a replacement for SPIRE in this
+program, for three reasons that all hold today: core Kubernetes ships no
+signer on its own, the mechanism covers pods only, so it has nothing for the
+Firecracker guests phases 3 and 4 need, and it is X.509 only, so it has
+nothing to offer phase 5's JWT-SVID and OIDC federation. GKE's channels at
+decision time: the hub on 1.35.7 regular, rapid at 1.36.3, 1.37 available
+only as alpha-cluster previews, none of them usable for this cluster. Revisit
+when the hub's channel carries 1.37 and a production SPIRE-backed
+`PodCertificateRequest` signer exists; at that point the sidecar is a swap,
+not a redesign, because the file layout was chosen for exactly this.
+
+**Rotation is discipline, not a subsystem.** An established TLS connection
+has no reason to re-read a rotated certificate, so correctness rests on two
+things instead of a channel-invalidation mechanism: the control plane reads
+the credential files fresh at every dial, and noded bounds connection
+lifetime with gRPC `MaxConnectionAge` (1 hour, 5 minute grace) so a
+long-lived channel is forced to re-handshake and pick up whatever is
+currently on disk. This is the same discipline a `podCertificate` volume
+would require regardless, so it is not a cost specific to the sidecar.
+
+**Rejected.** Asymmetric X.509 server auth plus a JWT-SVID minted by the
+control plane as its client credential: cheaper to build now and sidesteps
+rotation handling entirely, but a JWT-SVID is exactly the credential
+Kubernetes Pod Certificates can never deliver, so choosing it here would keep
+a SPIRE client dependency on the Elixir side permanently, for one hop,
+forever. Kubernetes bound service-account tokens as the control plane's
+credential: native to the platform, but it introduces a second identity
+vocabulary for one hop and requires noded to carry TokenReview RBAC it has no
+other reason to hold. Envoy sidecars with SDS: no application changes on
+either side, but it means an Envoy per brick pod and per control-plane pod,
+listeners bound to localhost, and a network-policy rework, more footprint
+than one gRPC hop justifies.
+
+**Second listeners, not in-place flips.** Decision 7's original text, "the
+existing bearer token is accepted alongside for one release," assumed one
+flag could stage both sides of the hop together. It cannot: the chart gates
+both sides of the bearer from a single value on purpose, so staging needs two
+independent flags. noded instead serves mTLS on a second gRPC port (9443,
+`noded.spiffe.grpcTlsPort`) alongside its existing plaintext bearer listener,
+and the token broker serves `/token` only on a second, mTLS-only port
+(8443); each is its own chart flag, so the control plane can move client by
+client (egress-proxy to the broker, then itself to noded) and the plaintext
+listeners are the last thing removed, not removed by the same PR that adds
+the new ones. Read "accepted alongside" in decision 7 as two independently
+staged flags, not one combined switch.
+
+**The token broker's client auth is phase 2 work, not a nicety.** The
+broker's `CiliumNetworkPolicy` is its only access control today and it is
+not rendered on the GKE hub, so any pod that can reach it can fetch any
+grant's live token; closing that gap is why #5755 sits in this phase rather
+than later. One consumer is intentionally left out for now: the monolith's
+device-code login proxy keeps using the plaintext port for `/login/*` and
+`/refresh` until the monolith itself carries an SVID, a follow-up rather than
+a blocker for this phase.
+
+**The restore-capability key stops piggybacking on the bearer.**
+`restore_capability.ex` defaults its HMAC key to `:noded_bearer_token`, so
+retiring the bearer as decision 7 plans would silently break every
+enveloped restore under `requireRestoreCapability: true`. #5756 gives it its
+own secret before the bearer retires, not after.
+
+**Sequencing.** Hop-independent pieces land first: `ClusterSPIFFEID`
+registrations for the platform components (#5754), broker mTLS (#5755), and
+the restore-capability key (#5756). Then the two sides of the CP-to-noded
+hop: noded's listener (#5757), then the control plane's dial (#5758). Then
+the hub value flips (#5759), one flag per PR, each verified live before the
+next. The order is fixed rather than incidental: each step is independently
+revertible only as long as nothing after it has shipped.
 
 ---
 
