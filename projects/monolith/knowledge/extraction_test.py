@@ -29,6 +29,17 @@ from knowledge.extraction import (
 from knowledge.models import AtomRawProvenance, Chunk, Dispute, Note, NoteLink, RawInput
 
 
+CODEX_FIXTURE_MARKERS: dict[str, str] = {
+    "exit 42 quota exhausted": "quota exhausted after 12 tool calls",
+    "silent death": "message predates final file write",
+    "correction rounds": "reviewer correction identified",
+    "spec violations": "quoted spec was violated",
+    "tests reported green that never ran": "Executed 0 out of 3 tests",
+    "workarounds taken instead of asking": "compatibility workaround swallowed",
+    "tool or environment blockers": "Bazel-only generated file not found",
+}
+
+
 @pytest.fixture(name="session")
 def session_fixture(tmp_path, monkeypatch):
     monkeypatch.setattr("knowledge.extraction.EmbeddingClient", _Embedder)
@@ -287,19 +298,33 @@ def test_codex_lens_names_every_failure_mode(session_lens_prompts, title, _descr
 def test_codex_session_golden_fixture(session, monkeypatch):
     fixture_path = Path(__file__).parent / "testdata" / "codex_session_redacted.txt"
     body = fixture_path.read_text()
+    failure_mode_titles = {title for title, _description in CODEX_FAILURE_MODES}
+    assert set(CODEX_FIXTURE_MARKERS) == failure_mode_titles
+    assert len(set(CODEX_FIXTURE_MARKERS.values())) == len(failure_mode_titles)
+
+    def missing_markers(fixture_body: str) -> set[str]:
+        return {
+            title
+            for title, marker in CODEX_FIXTURE_MARKERS.items()
+            if marker not in fixture_body
+        }
+
+    assert not missing_markers(body)
+    assert missing_markers("x") == failure_mode_titles
+
     raw = _raw(
         session,
         "codex-session",
         extra={"fixture": "knowledge/testdata/codex_session_redacted.txt"},
     )
-    raw.path = "knowledge/testdata/codex_session_redacted.txt"
     _patch_prompt(monkeypatch, body)
 
     prompt = build_extraction_prompt(session, raw)
+    lens_and_after = prompt[prompt.index("Lens:") :]
 
-    assert body in prompt
-    assert prompt.index("Lens:") < prompt.index(body)
-    assert any(title in prompt for title, _description in CODEX_FAILURE_MODES)
+    for marker in CODEX_FIXTURE_MARKERS.values():
+        assert body.count(marker) == 1
+        assert marker in lens_and_after
 
 
 def test_prompt_caps_body_in_the_middle(session, monkeypatch):
