@@ -37,9 +37,10 @@ defmodule Embervm.SessionManager do
       transient window). PR-3 returns `{:error, {:not_ready, state}}` which the
       router 409s, rather than block, since no bank/relight path exists yet to
       resolve it (noted);
-    * a wake DENIED on node memory pressure (#4355): the callers stay parked and
-      the wake re-arms on a timer until the pressure clears or the wait bound
-      expires; only expiry replies an error (`{:relight_failed,
+    * a wake denied on node memory pressure or on placement (no bricks
+      registered, or no headroom on the node): the callers stay parked and the
+      wake re-arms on a timer until the denial clears or the wait bound expires;
+      only expiry replies an error (`{:relight_failed,
       {:pressure_wait_expired, last_reason}}`) to the parked callers;
     * a TERMINAL session: `{:error, {:gone, reason}}` (the router 410s with the
       recorded terminal reason);
@@ -3176,14 +3177,15 @@ defmodule Embervm.SessionManager do
     %{state | relighting: Map.delete(state.relighting, session_id)}
   end
 
-  # -- wake denied on memory pressure (#4355) ---------------------------------
+  # -- wake denied on pressure or placement (#4355, #5765) --------------------
 
-  # Whether a wake-failure reason is a node memory-pressure admission denial:
-  # RESOURCE_EXHAUSTED (gRPC status 8), the daemon's cheap "pressure:mem" reject.
-  # Matches the reason nested in either wake path's error shape
-  # ({:relight, err} from the Relight RPC, {:prime_failed, err} from a rejoin's
-  # Prime). Deliberately narrow: any other failure keeps today's semantics.
+  # Matches the node's memory-pressure reject (gRPC status 8) AND the scheduler's
+  # two placement denials (:no_bricks, CP is blind because no brick has dialed
+  # home yet; :capacity, no brick on the target node has headroom). All three are
+  # transient. See #4355 and #5765.
   defp pressure_denied?(%GRPC.RPCError{status: 8}), do: true
+  defp pressure_denied?(:no_bricks), do: true
+  defp pressure_denied?(:capacity), do: true
   defp pressure_denied?(reason) when is_tuple(reason) do
     reason |> Tuple.to_list() |> Enum.any?(&pressure_denied?/1)
   end
@@ -3222,7 +3224,7 @@ defmodule Embervm.SessionManager do
     elapsed_ms = now - wait.first_denied_at
 
     if first_denial? do
-      Logger.warning("embervm session wake denied on node memory pressure, parking",
+      Logger.warning("embervm session wake denied on pressure or placement, parking",
         session_id: session_id,
         workload: workload_of(state, session_id),
         principal: principal_of(state, session_id),
@@ -3287,7 +3289,7 @@ defmodule Embervm.SessionManager do
   # distinguishable expiry reason. The session itself stays alive at its resting
   # state: a later invoke may try again once pressure has genuinely cleared.
   defp give_up_pressure_wait(state, session_id, wait) do
-    Logger.warning("embervm session wake parked behind memory pressure expired its bound",
+    Logger.warning("embervm session wake parked behind pressure or placement denial expired its bound",
       session_id: session_id,
       workload: workload_of(state, session_id),
       bound_ms: state.pressure_wait_bound_ms,

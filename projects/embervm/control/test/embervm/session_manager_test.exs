@@ -1766,20 +1766,75 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, _} = SessionStore.verify_token(ctx.store, created.session_id, created.token)
   end
 
-  test "volume_node_gone_prevents_rejoin" do
-    ctx = start_stack(prime_fun: fake_prime_fun("vm-rejoined"), channel_fun: fake_channel_fun())
+  test "a parked session's rejoin with no bricks registered parks and succeeds once a brick dials home" do
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-rejoined"),
+        channel_fun: fake_channel_fun(),
+        pressure_retry_interval_ms: 10
+      )
+
     created = create_persistence_session(ctx)
     park_session(ctx, created)
     NodeCapacity.drop(ctx.cap_table, "node-4")
 
-    # The rejoin now reports the REAL failure reason instead of flattening
-    # everything to :no_capacity; the volume node vanishing surfaces as
-    # :no_bricks so incidents are diagnosable.
-    assert {:error, {:relight_failed, :no_bricks}} =
-             SessionManager.invoke(ctx.mgr, created.session_id, %{body: "retry"})
+    task =
+      Task.async(fn ->
+        SessionManager.invoke(ctx.mgr, created.session_id, %{body: "rejoin-queued"})
+      end)
 
-    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
-    assert session.state == :parked
+    assert eventually(fn ->
+             Map.has_key?(:sys.get_state(ctx.mgr).pressure_waits, created.session_id)
+           end)
+
+    session = wait_for_state(ctx, created.session_id, :parked)
+    assert session.terminal_reason == nil
+
+    put_session_workload(ctx, "wl-persist", persistence_workload_opts())
+
+    assert {:ok, resp} = Task.await(task)
+    assert resp.status_code == 200
+    assert resp.body == "rejoin-queued"
+
+    assert wait_for_state(ctx, created.session_id, :running).state == :running
+  end
+
+  test "a parked session's rejoin with no bricks registered expires its bound into a retryable failure" do
+    {:ok, mono} = Agent.start_link(fn -> 0 end)
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-rejoin-expired"),
+        channel_fun: fake_channel_fun(),
+        monotonic_clock: fn -> Agent.get(mono, & &1) end,
+        pressure_retry_interval_ms: 10,
+        pressure_wait_bound_ms: 100
+      )
+
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+
+    task =
+      Task.async(fn ->
+        SessionManager.invoke(ctx.mgr, created.session_id, %{body: "expire-rejoin"})
+      end)
+
+    assert eventually(fn ->
+             Map.has_key?(:sys.get_state(ctx.mgr).pressure_waits, created.session_id)
+           end)
+
+    session = wait_for_state(ctx, created.session_id, :parked)
+    assert session.terminal_reason == nil
+
+    :ok = Agent.update(mono, &(&1 + 110))
+
+    reason = {:relight_failed, {:pressure_wait_expired, :no_bricks}}
+    assert {:error, ^reason} = Task.await(task)
+
+    session = wait_for_state(ctx, created.session_id, :parked)
+    assert session.terminal_reason == nil
+    assert Embervm.Router.classify_error_as_retryable(reason)
   end
 
   test "fatal workspace restore aborts the rejoin and keeps the session parked" do
