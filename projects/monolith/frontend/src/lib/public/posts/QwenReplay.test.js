@@ -106,7 +106,10 @@ test("tier keys highlight routing and history above the transcript", async () =>
 
 test("initial placement stays stable until polling and controls precede the instrument", async () => {
   const view = await render();
-  const first = turn.samples.find((item) => item.tiers);
+  const first = turn.samples.find(
+    (item, index) =>
+      index > 0 && turn.samples[index - 1].at >= turn.events[0].at,
+  );
   const bar = view.querySelector(".activity-bar");
   const starting = bar.innerHTML;
   expect(view.querySelector(".capacity").textContent).toContain("10.4 GB");
@@ -119,18 +122,14 @@ test("initial placement stays stable until polling and controls precede the inst
   await seek(first.at - 1);
   expect(bar.innerHTML).toBe(starting);
   expect(view.querySelector(".routing-history rect.hot")).toBeNull();
-  expect(view.querySelector(".routing-history").textContent).toContain(
-    "No routing samples",
-  );
+  expect(view.querySelector(".prefill-history line")).not.toBeNull();
   await seek(first.at);
   expect(view.querySelector(".routing-heading").textContent).toContain(
     "activations",
   );
   expect(bar.innerHTML).not.toBe(starting);
   const firstHot = view.querySelector(".routing-history rect.hot");
-  expect(Number(firstHot.getAttribute("x"))).toBeCloseTo(
-    (700 * first.at) / turn.durationMs,
-  );
+  expect(Number(firstHot.getAttribute("x"))).toBeCloseTo(0);
   await seek(0);
   expect(bar.innerHTML).toBe(starting);
 });
@@ -148,4 +147,28 @@ test("the final routing split reaches the end without displaying idle samples as
   expect(view.querySelector(".tier.hot strong").textContent).toContain(
     "of routes",
   );
+});
+
+test("prefill and boundary routing samples are excluded without fabricating sparkline points", async () => {
+  const view = await render();
+  expect(view.querySelectorAll(".prefill-history circle")).toHaveLength(0);
+  await seek(turn.events[0].at);
+  expect(view.querySelectorAll(".routing-history rect")).toHaveLength(0);
+  expect(view.querySelector(".routing-heading").textContent).toContain(
+    "Initial placement",
+  );
+  const expected = turn.statsSamples.filter(
+    (item) =>
+      item.at < turn.events[0].at &&
+      !item.unavailable &&
+      item.prefillTps != null,
+  );
+  expect(view.querySelectorAll(".prefill-history circle")).toHaveLength(
+    expected.length,
+  );
+  await seek(turn.durationMs);
+  expect(view.querySelectorAll(".prefill-history circle")).toHaveLength(
+    expected.length,
+  );
+  expect(view.textContent).not.toContain("No routing samples");
 });
