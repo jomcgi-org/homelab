@@ -269,7 +269,7 @@
                 >Service throughput, 0 to {prefillScale} tok/s. Playback interpolates
                 between recorded samples.</title
               >
-              {#each [10, 50, 90] as y}
+              {#each [0, 50, 100] as y}
                 <line
                   x1="0"
                   x2="300"
@@ -293,9 +293,9 @@
                   <line
                     class="prefill-segment"
                     x1={(300 * previous.at) / decodeAt}
-                    y1={90 - (80 * previous.prefillTps) / prefillScale}
+                    y1={100 - (100 * previous.prefillTps) / prefillScale}
                     x2={(300 * at) / decodeAt}
-                    y2={90 - (80 * rate) / prefillScale}
+                    y2={100 - (100 * rate) / prefillScale}
                     stroke="var(--ink)"
                     stroke-width="2"
                     stroke-linecap="round"
@@ -304,7 +304,7 @@
                 {#if item.at <= position && !item.unavailable && item.prefillTps != null}
                   <circle
                     cx={(300 * item.at) / decodeAt}
-                    cy={90 - (80 * item.prefillTps) / prefillScale}
+                    cy={100 - (100 * item.prefillTps) / prefillScale}
                     r="2"
                     fill="var(--ink)"
                   />
@@ -313,7 +313,7 @@
             </svg>
           </div>
           <div class="history-labels">
-            <span>0 s</span><span>{seconds(decodeAt)}</span>
+            <span></span><span>{seconds(decodeAt)}</span>
           </div>
         </div>
         <div class="routing-history">
