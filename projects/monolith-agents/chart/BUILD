@@ -37,6 +37,7 @@ py_test(
         "Chart.yaml",
         "values.yaml",
         "//projects/monolith-agents/deploy:deploy_values",
+        "//projects/monolith-agents/deploy:gke_values",
         "@multitool//tools/helm",
     ] + glob([
         "templates/**/*",
@@ -44,6 +45,7 @@ py_test(
     ]),
     env = {
         "DEPLOY_VALUES": "$(rootpath //projects/monolith-agents/deploy:deploy_values)",
+        "DEPLOY_VALUES_GKE": "$(rootpath //projects/monolith-agents/deploy:gke_values)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
     deps = [

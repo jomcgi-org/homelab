@@ -5,6 +5,12 @@ filegroup(
 )
 
 filegroup(
+    name = "gke_values",
+    srcs = ["values-gke.yaml"],
+    visibility = ["//projects/monolith-agents/chart:__pkg__"],
+)
+
+filegroup(
     name = "application",
     srcs = ["application.yaml"],
     visibility = ["//visibility:public"],
