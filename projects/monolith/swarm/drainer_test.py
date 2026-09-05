@@ -45,6 +45,7 @@ class FakeDBOS:
 def _clear_spans(monkeypatch):
     _EXPORTER.clear()
     monkeypatch.setattr(drainer, "sweep_kg_raws", lambda: 0)
+    monkeypatch.setattr(drainer, "kg_effective_cap", lambda base_cap: base_cap)
     yield
 
 

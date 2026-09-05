@@ -1,8 +1,9 @@
 """MCP tools for knowledge graph search and task tracking.
 
 Defines note tools (``search_knowledge``, ``get_note``, ``report_knowledge``,
-``dispute_fact``, ``report_distress``) and task tools (``list_tasks``,
-``search_tasks``, ``update_task``, ``get_daily_tasks``, ``get_weekly_tasks``).
+``dispute_fact``, ``report_distress``), knowledge extraction operations, and
+task tools (``list_tasks``, ``search_tasks``, ``update_task``,
+``get_daily_tasks``, ``get_weekly_tasks``).
 ``knowledge.module`` registers the full catalogue on the shared private MCP
 instance, while pruned entrypoints can select a safe subset. Tools call
 KnowledgeStore directly (no HTTP round-trip).
@@ -24,6 +25,7 @@ from auth.api import current_principal
 from core.db import get_engine
 from knowledge.api import ingest_raw_with_status
 from knowledge.atoms import index_atom
+from knowledge.burst import create_kg_burst_grant, validate_kg_burst_grant
 from knowledge.indexing import index_note_from_raw
 from knowledge.models import Dispute
 from knowledge.notes import resolve_note_body
@@ -136,6 +138,51 @@ def _knowledge_tool(fn):
 
     _KNOWLEDGE_TOOLS.append(fn)
     return fn
+
+
+def _grant_kg_burst_sync(
+    extra_jobs: int, duration_seconds: int, created_by: str
+) -> dict:
+    with Session(get_engine()) as session:
+        return create_kg_burst_grant(
+            session,
+            extra_jobs=extra_jobs,
+            duration_seconds=duration_seconds,
+            created_by=created_by,
+        )
+
+
+@_knowledge_tool
+async def grant_kg_burst(extra_jobs: int, duration_minutes: int) -> dict:
+    """Grant a temporary, job-limited knowledge extraction burst.
+
+    Only an operator can grant a burst. The grant stops contributing when its
+    job allowance is exhausted or its duration expires, whichever comes first.
+
+    Args:
+        extra_jobs: Jobs above the normal rolling cap, from 1 through 1000.
+        duration_minutes: Grant lifetime in minutes, from 1 through 1440.
+    """
+    principal = current_principal()
+    if not principal.has_group("operators"):
+        return {"error": "operator group membership is required"}
+
+    duration_seconds = duration_minutes * 60
+    try:
+        validate_kg_burst_grant(extra_jobs, duration_seconds)
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    created_by = f"{principal.authority}:{principal.subject}"
+    try:
+        return await asyncio.to_thread(
+            _grant_kg_burst_sync,
+            extra_jobs,
+            duration_seconds,
+            created_by,
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
 
 
 @_knowledge_tool

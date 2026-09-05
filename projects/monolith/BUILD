@@ -4600,6 +4600,18 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_burst_test",
+    srcs = ["knowledge/burst_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_drain_console_test",
     srcs = ["swarm/drain_console_test.py"],
     imports = ["."],

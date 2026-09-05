@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 
 from knowledge.models import Note
 from knowledge.mcp import (
+    grant_kg_burst,
     get_daily_tasks,
     get_note,
     get_weekly_tasks,
@@ -54,6 +55,53 @@ SAMPLE_NOTE = {
     "type": "paper",
     "tags": ["ml", "transformers"],
 }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extra_jobs", "duration_minutes", "message"),
+    [
+        (1_001, 60, "extra_jobs must not exceed 1000"),
+        (100, 1_441, "duration_seconds must not exceed 86400 (24 hours)"),
+    ],
+)
+async def test_grant_kg_burst_rejects_unsafe_limits(
+    extra_jobs, duration_minutes, message
+):
+    principal = MagicMock()
+    principal.has_group.return_value = True
+    with (
+        patch("knowledge.mcp.current_principal", return_value=principal),
+        patch("knowledge.mcp._grant_kg_burst_sync") as grant_sync,
+    ):
+        result = await grant_kg_burst(extra_jobs, duration_minutes)
+
+    assert result == {"error": message}
+    grant_sync.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_grant_kg_burst_returns_created_grant():
+    principal = MagicMock()
+    principal.has_group.return_value = True
+    principal.authority = "standing"
+    principal.subject = "operator@example.com"
+    granted = {
+        "grant_id": 7,
+        "extra_jobs": 500,
+        "duration_seconds": 7_200,
+        "created_at": "2026-09-04T12:00:00+00:00",
+        "expires_at": "2026-09-04T14:00:00+00:00",
+        "created_by": "standing:operator@example.com",
+    }
+    with (
+        patch("knowledge.mcp.current_principal", return_value=principal),
+        patch("knowledge.mcp._grant_kg_burst_sync", return_value=granted) as grant_sync,
+    ):
+        result = await grant_kg_burst(500, 120)
+
+    assert result == granted
+    grant_sync.assert_called_once_with(500, 7_200, "standing:operator@example.com")
 
 
 def _get_note_row(engine, note_id: str) -> Note:

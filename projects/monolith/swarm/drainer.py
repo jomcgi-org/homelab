@@ -109,6 +109,16 @@ def kg_jobs_today() -> int:
 
 
 @DBOS.step()
+def kg_effective_cap(base_cap: int) -> int:
+    from core.db import get_engine
+    from knowledge.burst import kg_effective_cap as _kg_effective_cap
+    from sqlmodel import Session
+
+    with Session(get_engine()) as session:
+        return _kg_effective_cap(session, base_cap)
+
+
+@DBOS.step()
 def sweep_kg_raws(limit: int = 50) -> int:
     from core.db import get_engine
     from knowledge.api import sweep_unqueued_raws
@@ -577,8 +587,9 @@ def drain_cycle() -> dict:
                     job_span, {"drain.job_name": name, "drain.job_kind": job_kind}
                 )
 
-                if job_kind == KG_JOB_KIND and kg_jobs_today() >= settings.get(
-                    "kg_max_jobs_per_day", 40
+                base_kg_cap = settings.get("kg_max_jobs_per_day", 40)
+                if job_kind == KG_JOB_KIND and kg_jobs_today() >= kg_effective_cap(
+                    base_kg_cap
                 ):
                     finish_drainer_job(name, "deferred", "kg daily cap reached")
                     defer_drainer_job(name, 3600)
