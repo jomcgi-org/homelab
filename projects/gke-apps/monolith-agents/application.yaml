@@ -1,0 +1,44 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monolith-agents
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # After monolith (wave 1): the tier needs the monolith Postgres, its
+    # migrations (agents_writer role) and the 1Password operator before it can
+    # start. Not Kargo-managed: this pin is the deploy lever and follows the
+    # gke-apps rule that write-back does NOT maintain these pins.
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  sources:
+    - repoURL: ghcr.io/jomcgi/homelab/charts
+      chart: monolith-agents
+      # Bootstrap floor: the newest chart published from main when the tier was
+      # registered on the hub. Advance by hand, as with the other gke-apps pins.
+      targetRevision: 0.5.1
+      helm:
+        releaseName: monolith-agents
+        valueFiles:
+          - $values/projects/monolith-agents/deploy/values.yaml
+        ignoreMissingValueFiles: false
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monolith-agents
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

@@ -72,6 +72,11 @@ objectStorage:
   secretName: monolith-r2-s3
   accessKeyKey: access-key-id
   secretAccessKeyKey: secret-access-key
+  # Synced into this namespace by the 1Password operator under secretName
+  # above. Unset by default; deploy values point it at the same item the
+  # monolith's own monolith-r2-s3 comes from.
+  onepassword:
+    itemPath: ""
 
 discord:
   defaultChannelId: ""
@@ -83,9 +88,9 @@ ciliumPolicy:
   objectStorageFqdn: "7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
 
 # The tier's own database credential, synced into this namespace by the
-# 1Password operator. Unset by default: the scoped Postgres role it points at
-# is a later slice, and the workload stays disabled until it exists.
-databaseSecretName: monolith-agents-db
+# 1Password operator under database.secretName. Unset by default: the scoped
+# Postgres role it points at is a later slice, and the workload stays disabled
+# until it exists.
 onepassword:
   itemPath: ""
 

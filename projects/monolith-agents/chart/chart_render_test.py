@@ -101,3 +101,27 @@ def test_all_required_environment_variables_are_present(documents: list[dict]) -
     container = _deployment(documents)["spec"]["template"]["spec"]["containers"][0]
     env_names = {entry["name"] for entry in container["env"]}
     assert REQUIRED_ENV <= env_names
+
+
+def _secret_refs(container: dict) -> set[str]:
+    return {
+        entry["valueFrom"]["secretKeyRef"]["name"]
+        for entry in container["env"]
+        if "valueFrom" in entry and "secretKeyRef" in entry["valueFrom"]
+    }
+
+
+def test_every_secret_ref_is_synced_into_the_namespace(documents: list[dict]) -> None:
+    # Secrets are namespaced. A secretKeyRef that no OnePasswordItem in this
+    # chart syncs resolves to nothing at runtime, which is a CrashLoop for
+    # DATABASE_URL and a silent no-op for the S3 credential.
+    container = _deployment(documents)["spec"]["template"]["spec"]["containers"][0]
+    synced = {
+        doc["metadata"]["name"]
+        for doc in documents
+        if doc.get("kind") == "OnePasswordItem"
+    }
+    assert _secret_refs(container) <= synced, (
+        f"unsynced secret refs: {_secret_refs(container) - synced}"
+    )
+    assert {"monolith-agents-db", "monolith-r2-s3"} <= synced

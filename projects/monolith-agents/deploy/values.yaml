@@ -3,11 +3,13 @@
 
 otelEndpoint: "http://otel-collector.otel-collector.svc.cluster.local:4318/v1/traces"
 
-# These Secrets must exist in the monolith-agents namespace. DATABASE_URL uses
-# the CNPG app Secret's "uri" key, matching the monolith backend deployment.
-database:
-  secretName: monolith-pg-app
-  secretKey: uri
+# Both Secrets the Deployment reads are synced INTO this namespace by the two
+# OnePasswordItems the chart renders: database.secretName from
+# onepassword.itemPath below, and the object-storage secret from
+# objectStorage.onepassword.itemPath. Secrets are namespaced, so the monolith's
+# own CNPG app credential and R2 credential are unreachable from here. The
+# chart defaults (monolith-agents-db, monolith-r2-s3) ARE the synced names and
+# are deliberately not overridden.
 
 # Object-storage credentials use the same field names as the monolith backend.
 # Missing object-storage and agent-auth settings fail SILENTLY in the service.
@@ -17,6 +19,9 @@ objectStorage:
   secretName: monolith-r2-s3
   accessKeyKey: access-key-id
   secretAccessKeyKey: secret-access-key
+  onepassword:
+    # The same item the monolith namespace syncs its monolith-r2-s3 from.
+    itemPath: "vaults/k8s-homelab/items/r2-s3-credentials"
 
 auth:
   authentik:
