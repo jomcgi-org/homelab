@@ -43,6 +43,25 @@ defmodule Embervm.StatefulManagerStoreTruthTest do
              StatefulStore.get_volume(rebuilt, "wl-a")
   end
 
+  test "banked instance on a confirmed gone anchor consults store truth when projected export is absent" do
+    {volume_store, store_calls} = complete_volume_store(7)
+    ctx = start_stack(volume_store: volume_store)
+    prepare_confirmed_missing_anchor(ctx, 7)
+    seed_banked_with_pair(ctx, "stf-dead-anchor", 7)
+
+    assert %{exported_generation: 0} = StatefulStore.get_volume(ctx.store, "wl-a")
+    assert {:ok, %{generation: 8}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    assert Agent.get(
+             store_calls,
+             &Enum.count(&1, fn {verb, _key} -> verb == :list end)
+           ) == 1
+
+    {:ok, evicted} = StatefulStore.get(ctx.store, "stf-dead-anchor")
+    assert evicted.state == :evicted
+    assert evicted.terminal_reason == "anchor_gone"
+  end
+
   test "encrypted generation metadata adopts through the durable blessing watermark" do
     {volume_store, store_calls} = complete_volume_store(7, encrypted: true)
     ctx = start_stack(volume_store: volume_store)
@@ -350,6 +369,32 @@ defmodule Embervm.StatefulManagerStoreTruthTest do
 
     :ok = StatefulManager.reconcile(ctx.mgr)
     Agent.update(ctx.now, fn _ -> 90_000 end)
+  end
+
+  defp seed_banked_with_pair(ctx, instance_id, generation) do
+    {:ok, _} =
+      StatefulStore.start(ctx.store, %{
+        instance_id: instance_id,
+        tenant: "homelab",
+        principal: "p",
+        workload: "wl-a",
+        node_id: "node-dead",
+        vm_id: "vm-#{instance_id}",
+        generation: generation
+      })
+
+    {:ok, _} = StatefulStore.publish(ctx.store, instance_id, "10.88.0.9", 5432, :started)
+    {:ok, _} = StatefulStore.unpublish(ctx.store, instance_id, :bank)
+
+    {:ok, _} =
+      StatefulStore.transition(
+        ctx.store,
+        instance_id,
+        :bank_ready,
+        :stateful_banked,
+        %{snapshot_ref: "stateful/#{instance_id}", size_bytes: 10, snapshot_generation: generation},
+        %{snapshot_ref: "stateful/#{instance_id}", snapshot_generation: generation, snapshot_size_bytes: 10, vm_id: nil}
+      )
   end
 
   defp complete_volume_store(generation, opts \\ []) do

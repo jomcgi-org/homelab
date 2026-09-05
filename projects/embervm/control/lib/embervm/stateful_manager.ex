@@ -336,8 +336,10 @@ defmodule Embervm.StatefulManager do
       # from permanent disconnects. This is deliberately process-local: after a CP
       # restart the full window must elapse again.
       node_last_reported_at_ms: %{},
-      # node_id -> first manager-clock millisecond at which a durable volume's
+      # workload -> first manager-clock millisecond at which its durable volume's
       # anchor was absent from NodeCapacity. Presence clears the observation.
+      # Keying by workload preserves continuous absence when refresh_volume_facts
+      # rewrites the volume row's anchor across node identity churn.
       # This is deliberately process-local: after a CP restart the full expiry
       # window must elapse again before any volume can move to another writer.
       missing_anchor_since_ms: %{},
@@ -1120,6 +1122,33 @@ defmodule Embervm.StatefulManager do
                 {:restore_then_relight, instance, node_id, instance.snapshot_ref}
               end
 
+            {:error, :volume_node_gone} ->
+              if confirmed_anchor_gone?({state, volume}) do
+                # A banked bundle is node-local and vendor-bound, so confirmed
+                # anchor loss makes it unrecoverable. Evict it durably before
+                # reusing the exported-volume recovery path.
+                _ =
+                  StatefulStore.transition(
+                    state.store,
+                    instance.instance_id,
+                    :evict,
+                    :stateful_evicted,
+                    %{reason: "anchor_gone"},
+                    %{}
+                  )
+
+                restore_volume_or_cold(state, workload, volume)
+              else
+                Logger.warning(
+                  "embervm stateful: wake refused, banked instance on an anchor not yet confirmed gone",
+                  workload: workload,
+                  anchor: volume.node_id,
+                  missing_since_ms: missing_anchor_since_ms(state, volume)
+                )
+
+                {:error, :volume_node_gone}
+              end
+
             {:error, reason} ->
               {:error, reason}
           end
@@ -1513,10 +1542,10 @@ defmodule Embervm.StatefulManager do
   # window. Presence clears the observation, and restart clears all observations.
   # Together those rules preserve the single-writer fence while allowing a GCS
   # export to recover from confirmed SPOT-node loss.
-  defp confirmed_anchor_gone?({state, %{node_id: node_id}})
+  defp confirmed_anchor_gone?({state, %{node_id: node_id} = volume})
        when is_binary(node_id) and node_id != "" do
     now = state.clock.()
-    missing_since = Map.get(state.missing_anchor_since_ms, node_id)
+    missing_since = missing_anchor_since_ms(state, volume)
 
     match?(:error, NodeCapacity.fetch(state.capacity_table, node_id)) and
       is_integer(missing_since) and
@@ -1525,6 +1554,13 @@ defmodule Embervm.StatefulManager do
   end
 
   defp confirmed_anchor_gone?(_state_and_volume), do: false
+
+  defp missing_anchor_since_ms(state, %{workload: workload})
+       when is_binary(workload) and workload != "" do
+    Map.get(state.missing_anchor_since_ms, workload)
+  end
+
+  defp missing_anchor_since_ms(_state, _volume), do: nil
 
   defp observe_missing_volume_anchors(state) do
     now = state.clock.()
@@ -1536,7 +1572,10 @@ defmodule Embervm.StatefulManager do
           node_id when is_binary(node_id) and node_id != "" ->
             case NodeCapacity.fetch(state.capacity_table, node_id) do
               {:ok, _fact} -> acc
-              :error -> Map.put(acc, node_id, Map.get(state.missing_anchor_since_ms, node_id, now))
+
+              :error ->
+                workload = volume.workload
+                Map.put(acc, workload, Map.get(state.missing_anchor_since_ms, workload, now))
             end
 
           _missing_anchor ->

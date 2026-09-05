@@ -22,6 +22,8 @@ defmodule Embervm.LogFormatter do
     :principal,
     :ref,
     :node_id,
+    :anchor,
+    :missing_since_ms,
     :reason,
     :attempt,
     :kind,
