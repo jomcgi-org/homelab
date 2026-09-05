@@ -17,7 +17,8 @@ defmodule Embervm.Router do
     * `GET  /v1/health/durability`     both ADR 031 durability tiers (#4338):
       tier 1 export-failure streaks + tier 2 gc-manifests stall. 200 ok /
       503 not-ok / 404 while dark.
-    * `GET  /healthz`                  unauthenticated liveness/readiness.
+    * `GET  /healthz`                  unauthenticated readiness.
+    * `GET  /livez`                    unauthenticated liveness.
 
   ## Task envelope
 
@@ -37,7 +38,8 @@ defmodule Embervm.Router do
   Every `/v1` path requires a bearer token authenticated by `Embervm.Auth`
   (TokenReview + allow-list, cached). The reviewer is resolved from application
   env so request tests can inject a fake without a live API server; production
-  uses the supervised `Embervm.Auth`. `/healthz` is unauthenticated.
+  uses the supervised `Embervm.Auth`. `/healthz` and `/livez` are
+  unauthenticated.
   """
   use Plug.Router
 
@@ -67,10 +69,15 @@ defmodule Embervm.Router do
   plug(:authenticate)
   plug(:dispatch)
 
-  # Kubelet readiness drops a wedged manager on its 5s cadence. Liveness keeps
-  # its six failures at 10s before restarting the control plane (#5291).
+  # Readiness reflects process presence, so a busy manager is never dropped from
+  # the Service. Liveness restarts a manager that cannot answer a trivial call
+  # within 2s for six consecutive 10s probes (#5291).
   get "/healthz" do
     handle_healthz(conn)
+  end
+
+  get "/livez" do
+    handle_livez(conn)
   end
 
   post "/v1/workloads/:name/tasks" do
@@ -234,8 +241,8 @@ defmodule Embervm.Router do
   # cluster). It is identified by the `x-ember-workload` request header the serving
   # route injects; a request carrying that header IS a miss signal for that
   # workload (standing decision 1). Any OTHER unmatched path is a genuine 404. This
-  # is deliberately the last route so it never shadows /healthz, /v1/*, or the
-  # management surface: only a request that matched nothing above AND carries the
+  # is deliberately the last route so it never shadows /healthz, /livez, /v1/*,
+  # or the management surface: only a request that matched nothing above AND carries the
   # activator header reaches the miss path.
   match _ do
     case header_value(conn, @workload_header) do
@@ -251,8 +258,8 @@ defmodule Embervm.Router do
 
   defp fetch_query(conn, _opts), do: fetch_query_params(conn)
 
-  # Auth is scoped to /v1: /healthz stays open for the kubelet probes. The session
-  # routes that take a SESSION token (invoke, and the session-token-or-management
+  # Auth is scoped to /v1: /healthz and /livez stay open for kubelet probes. The
+  # session routes that take a SESSION token (invoke, and the session-token-or-management
   # GET) authenticate in their handler, not here, because the bearer token they
   # carry is a per-session capability, not a ServiceAccount token TokenReview would
   # recognize. Running management auth on them would 401 every valid session token.
@@ -569,27 +576,37 @@ defmodule Embervm.Router do
   # every other route; a slow/failed status call degrades to an empty snapshot
   # rather than failing the request.
   defp handle_nodes(conn) do
-    {create_inflight, create_concurrency} = create_admission_stats()
+    {create_inflight, create_concurrency, create_saturated_denials} =
+      create_admission_stats()
 
     send_json(conn, 200, %{
       nodes: nodes_snapshot(),
       dispatch: dispatch_snapshot(),
       create_inflight: create_inflight,
-      create_concurrency: create_concurrency
+      create_concurrency: create_concurrency,
+      create_saturated_denials: create_saturated_denials
     })
   end
 
   defp handle_healthz(conn) do
+    if session_manager_alive?() do
+      text_response(conn, 200, "ok")
+    else
+      text_response(conn, 503, "session manager down")
+    end
+  end
+
+  defp handle_livez(conn) do
     if session_manager_alive?() do
       try do
         case session_manager().ping(session_manager_server(), 2_000) do
           :pong -> text_response(conn, 200, "ok")
           _ -> text_response(conn, 503, "session manager unresponsive")
         end
+      rescue
+        _ -> text_response(conn, 503, "session manager unresponsive")
       catch
-        :exit, {:noproc, _} -> text_response(conn, 503, "session manager down")
-        :exit, {:timeout, _} -> text_response(conn, 503, "session manager unresponsive")
-        :exit, _ -> text_response(conn, 503, "session manager unresponsive")
+        _, _ -> text_response(conn, 503, "session manager unresponsive")
       end
     else
       text_response(conn, 503, "session manager down")
@@ -612,11 +629,11 @@ defmodule Embervm.Router do
   end
 
   defp create_admission_stats do
-    session_manager().create_admission_stats(session_manager_server())
+    session_manager().create_admission_stats(session_manager_server(), 500)
   rescue
-    _ -> {nil, nil}
+    _ -> {nil, nil, nil}
   catch
-    _, _ -> {nil, nil}
+    _, _ -> {nil, nil, nil}
   end
 
   defp handle_conformance(conn) do

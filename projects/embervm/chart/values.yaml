@@ -87,11 +87,12 @@ resources:
     memory: 512Mi
 
 controlPlane:
+  # Maximum concurrent session create workers. 0 disables the cap.
   createConcurrency: 16
 
 controlPlaneLivenessProbe:
   # Issue #5235: at the 10-second period, allow up to 60 seconds for an internal
-  # recovery. Readiness stays unchanged and removes an unhealthy pod promptly.
+  # recovery. Readiness independently checks manager process presence every 5s.
   failureThreshold: 6
 
 # The op-log volume. persistentVolume is TRUE now that the SQLite-WAL op-log ships

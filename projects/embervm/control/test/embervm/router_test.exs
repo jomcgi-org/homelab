@@ -146,7 +146,7 @@ defmodule Embervm.RouterTest do
     def create(_srv, _wl, _principal, _restore_lineage, _opts), do: {:error, {:denied, :unknown_workload}}
 
     def ping(_srv, _timeout), do: :pong
-    def create_admission_stats(_srv), do: {0, 16}
+    def create_admission_stats(_srv, _timeout), do: {0, 16, 7}
 
     def invoke(_srv, "s-live", _req), do: {:ok, %{status_code: 200, headers: %{"content-type" => "text/plain"}, body: "echoed"}}
     def invoke(_srv, "s-queue", _req), do: {:error, :queue_full}
@@ -172,6 +172,13 @@ defmodule Embervm.RouterTest do
 
   defmodule TimeoutPingSessionManager do
     def ping(_server, _timeout), do: exit({:timeout, {GenServer, :call, 3}})
+  end
+
+  defmodule RaisingPingSessionManager do
+    def ping(_server, _timeout), do: raise("ping must not be called by readiness")
+  end
+
+  defmodule NoPingSessionManager do
   end
 
   defmodule NeverReplySessionManager do
@@ -926,21 +933,39 @@ defmodule Embervm.RouterTest do
     assert resp.status == 403
   end
 
-  test "/healthz needs no auth" do
-    with_session_fakes()
+  test "/healthz needs no auth and does not ping an alive manager" do
+    Application.put_env(:embervm, :session_manager, RaisingPingSessionManager)
     Application.put_env(:embervm, :session_manager_server, self())
     resp = req(:get, "/healthz")
     assert resp.status == 200
     assert resp.body == "ok"
   end
 
-  test "/healthz reports an unresponsive session manager" do
+  test "/livez needs no auth and reports an unresponsive session manager" do
     Application.put_env(:embervm, :session_manager, TimeoutPingSessionManager)
     Application.put_env(:embervm, :session_manager_server, self())
 
-    resp = req(:get, "/healthz")
+    resp = req(:get, "/livez")
     assert resp.status == 503
     assert resp.body == "session manager unresponsive"
+  end
+
+  test "/livez reports an alive manager module without ping as unresponsive" do
+    Application.put_env(:embervm, :session_manager, NoPingSessionManager)
+    Application.put_env(:embervm, :session_manager_server, self())
+
+    resp = req(:get, "/livez")
+    assert resp.status == 503
+    assert resp.body == "session manager unresponsive"
+  end
+
+  test "/livez returns ok when the manager pings pong" do
+    with_session_fakes()
+    Application.put_env(:embervm, :session_manager_server, self())
+
+    resp = req(:get, "/livez")
+    assert resp.status == 200
+    assert resp.body == "ok"
   end
 
   test "/healthz reports a missing session manager" do
@@ -948,6 +973,15 @@ defmodule Embervm.RouterTest do
     Application.put_env(:embervm, :session_manager_server, :missing_session_manager)
 
     resp = req(:get, "/healthz")
+    assert resp.status == 503
+    assert resp.body == "session manager down"
+  end
+
+  test "/livez reports a missing session manager" do
+    with_session_fakes()
+    Application.put_env(:embervm, :session_manager_server, :missing_session_manager)
+
+    resp = req(:get, "/livez")
     assert resp.status == 503
     assert resp.body == "session manager down"
   end
@@ -964,6 +998,7 @@ defmodule Embervm.RouterTest do
     assert is_map(body["dispatch"])
     assert is_integer(body["create_inflight"])
     assert body["create_concurrency"] == 16
+    assert is_integer(body["create_saturated_denials"])
   end
 
   # -- submit ----------------------------------------------------------------

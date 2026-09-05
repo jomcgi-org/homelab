@@ -91,6 +91,7 @@ defmodule Embervm.SessionManager do
   # Global concurrent-create cap: claim/prime workers perform expensive guest
   # operations, so a burst must not launch an unbounded number at once.
   @default_create_concurrency 16
+  @saturation_log_window_ms 10_000
 
   # Wake-rate limit: relight-triggering invokes per principal per window. A relight
   # restores a full 2 GiB snapshot, so a burst of misses is an asymmetric-cost DoS
@@ -166,11 +167,15 @@ defmodule Embervm.SessionManager do
     GenServer.call(server, :ping, timeout)
   end
 
-  @doc "Returns the number of create workers in flight and the admission cap."
-  @spec create_admission_stats(GenServer.server()) :: {non_neg_integer(), pos_integer()}
-  def create_admission_stats(server \\ __MODULE__) do
-    GenServer.call(server, :create_admission_stats)
+  @doc "Returns create workers in flight, the admission cap, and saturated denials."
+  @spec create_admission_stats(GenServer.server(), timeout()) ::
+          {non_neg_integer(), non_neg_integer(), non_neg_integer()}
+  def create_admission_stats(server \\ __MODULE__, timeout \\ 5_000) do
+    GenServer.call(server, :create_admission_stats, timeout)
   end
+
+  @doc false
+  def default_create_concurrency, do: @default_create_concurrency
 
   @doc false
   def default_pressure_retry_interval_ms, do: @default_pressure_retry_interval_ms
@@ -364,6 +369,11 @@ defmodule Embervm.SessionManager do
     op_log = Keyword.get(opts, :op_log, op_log_mod)
     capacity_table = Keyword.get(opts, :capacity_table, NodeCapacity.table())
 
+    create_concurrency =
+      opts
+      |> Keyword.get(:create_concurrency, @default_create_concurrency)
+      |> validate_create_concurrency!()
+
     session_opts =
       opts
       |> Keyword.get(:session_opts, [])
@@ -433,13 +443,11 @@ defmodule Embervm.SessionManager do
       # slice 3); idempotency_key is nil for an unkeyed create (#4919).
       create_inflight: %{},
       create_next_ref: 0,
-      create_concurrency:
-        Keyword.get(
-          opts,
-          :create_concurrency,
-          Application.get_env(:embervm, :create_concurrency, @default_create_concurrency)
-        ),
+      create_concurrency: create_concurrency,
       create_workers: %{},
+      create_saturated_denials: 0,
+      saturation_last_logged_at_ms: nil,
+      saturation_suppressed: 0,
       # #4919: {principal, key} -> create_ref for creates currently mid-flight,
       # and {principal, key} -> [from] callers parked behind them. Claimed
       # synchronously in handle_call (so a later same-key caller parks instead of
@@ -583,7 +591,9 @@ defmodule Embervm.SessionManager do
   end
 
   def handle_call(:create_admission_stats, _from, state) do
-    {:reply, {map_size(state.create_workers), state.create_concurrency}, state}
+    {:reply,
+     {map_size(state.create_workers), state.create_concurrency,
+      state.create_saturated_denials}, state}
   end
 
   def handle_call({:create, workload, principal, restore_lineage, idempotency_key}, from, state) do
@@ -630,7 +640,8 @@ defmodule Embervm.SessionManager do
         waiters = Map.get(state.idempotency_waiters, waiter_key, [])
         {:noreply, %{state | idempotency_waiters: Map.put(state.idempotency_waiters, waiter_key, [from | waiters])}}
 
-      map_size(state.create_workers) >= state.create_concurrency ->
+      state.create_concurrency > 0 and
+          map_size(state.create_workers) >= state.create_concurrency ->
         inflight = map_size(state.create_workers)
 
         Tracer.with_span "embervm.session.create",
@@ -639,12 +650,14 @@ defmodule Embervm.SessionManager do
                              "ember.workload" => workload,
                              "ember.principal" => principal,
                              "ember.create.inflight" => inflight,
-                             "ember.create.concurrency" => state.create_concurrency
+                             "ember.create.concurrency" => state.create_concurrency,
+                             "ember.create.denied" => "create_saturated"
                            }
                          } do
+          Tracer.set_status(:error, "create_saturated")
           error_result = {:error, {:denied, :create_saturated}}
-          audit_denial(state, principal, workload, :create_saturated)
-          log_create_result(error_result, workload, principal, inflight, state.create_concurrency)
+          state = %{state | create_saturated_denials: state.create_saturated_denials + 1}
+          state = log_saturated_denial(state, workload, principal, inflight)
           {:reply, error_result, state}
         end
 
@@ -975,7 +988,7 @@ defmodule Embervm.SessionManager do
                        attributes: %{
                          "ember.workload" => workload,
                          "ember.principal" => principal,
-                         "ember.create.inflight" => map_size(state.create_workers) + 1,
+                         "ember.create.inflight" => map_size(state.create_workers),
                          "ember.create.concurrency" => state.create_concurrency
                        }
                      } do
@@ -1292,22 +1305,39 @@ defmodule Embervm.SessionManager do
     )
   end
 
-  defp log_create_result(
-         {:error, {:denied, :create_saturated}},
-         workload,
-         principal,
-         inflight,
-         concurrency
-       ) do
-    Logger.warning(
-      "create denied: saturated inflight=#{inflight} cap=#{concurrency} workload=#{workload}",
-      workload: workload,
-      principal: principal,
-      reason: :create_saturated
-    )
+  defp log_saturated_denial(state, workload, principal, inflight) do
+    now = state.monotonic_clock.()
+
+    if is_nil(state.saturation_last_logged_at_ms) or
+         now - state.saturation_last_logged_at_ms >= @saturation_log_window_ms do
+      Logger.warning(
+        "create denied: saturated inflight=#{inflight} cap=#{state.create_concurrency} workload=#{workload}, " <>
+          "suppressed=#{state.saturation_suppressed} since last line",
+        workload: workload,
+        principal: principal,
+        reason: :create_saturated
+      )
+
+      %{
+        state
+        | saturation_last_logged_at_ms: now,
+          saturation_suppressed: 0
+      }
+    else
+      %{state | saturation_suppressed: state.saturation_suppressed + 1}
+    end
   end
 
   defp log_create_result(_other, _workload, _principal), do: :ok
+
+  defp validate_create_concurrency!(value)
+       when is_integer(value) and value >= 0,
+       do: value
+
+  defp validate_create_concurrency!(value) do
+    raise ArgumentError,
+          "create_concurrency must be a non-negative integer, got: #{inspect(value)}"
+  end
 
   defp fetch_session_workload(state, workload) do
     case WorkloadCatalog.fetch(state.catalog_table, workload) do
@@ -4717,9 +4747,11 @@ defmodule Embervm.SessionManager do
 
   # -- helpers ---------------------------------------------------------------
 
-  # Audit a create denial as one op-log append (D12.2 cadence). Capacity/quota
-  # denials are principal-attributable and request-bounded, so they are appended
-  # (unlike per-tick dispatch saturation). Reuses the metering denial reason space.
+  # Audit a create denial as one op-log append (D12.2 cadence). Policy and
+  # quota denials are principal-attributable and request-bounded, so they are
+  # appended. Create saturation is deliberately excluded at its call site: a
+  # create storm is unbounded, like per-tick dispatch saturation, and must not
+  # amplify into one durable append per request. Reuses the metering denial reason space.
   defp audit_denial(state, principal, workload, reason) do
     metering_reason =
       case reason do

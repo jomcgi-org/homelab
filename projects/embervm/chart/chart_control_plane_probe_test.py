@@ -53,5 +53,9 @@ def test_control_plane_liveness_allows_sixty_seconds_without_changing_readiness(
 
     assert liveness["failureThreshold"] == 6
     assert liveness["periodSeconds"] == 10
+    assert liveness["httpGet"]["path"] == "/livez"
+    assert liveness["timeoutSeconds"] == 5
     assert readiness.get("failureThreshold", 3) == 3
     assert readiness["periodSeconds"] == 5
+    assert readiness["httpGet"]["path"] == "/healthz"
+    assert readiness["timeoutSeconds"] == 2
