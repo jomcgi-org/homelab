@@ -975,6 +975,7 @@ defmodule Embervm.Dispatcher do
           :warm ->
             Embervm.SpecTrace.emit(:adoption, :dispatch_warm, %{
               "task_id" => ctx.task_id,
+              "workload" => ctx.workload,
               "vm_id" => vm_id,
               "node_id" => node_id,
               "provenance" =>
@@ -984,6 +985,7 @@ defmodule Embervm.Dispatcher do
           :miss ->
             Embervm.SpecTrace.emit(:adoption, :dispatch_miss, %{
               "task_id" => ctx.task_id,
+              "workload" => ctx.workload,
               "vm_id" => vm_id,
               "node_id" => node_id,
               "provenance" => :miss
@@ -1297,6 +1299,7 @@ defmodule Embervm.Dispatcher do
 
     Embervm.SpecTrace.emit(:adoption, :succeed, %{
       "task_id" => meta.task_id,
+      "workload" => meta.workload,
       "vm_id" => meta.vm_id,
       "session_id" => session_id
     })
@@ -1356,6 +1359,16 @@ defmodule Embervm.Dispatcher do
   end
 
   defp emit_spec_trace_checkpoint(state) do
+    if Embervm.SpecTrace.enabled_now?() do
+      do_emit_spec_trace_checkpoint(state)
+    end
+
+    state
+  rescue
+    _ -> state
+  end
+
+  defp do_emit_spec_trace_checkpoint(state) do
     node_workload_vm_ids =
       for {{node_id, workload}, queue} <- state.inventory, into: %{} do
         {"#{node_id}:#{workload}", :queue.to_list(queue)}
@@ -1378,21 +1391,7 @@ defmodule Embervm.Dispatcher do
     queued_tasks_truncated = length(queued_tasks) > @spec_trace_queued_tasks_limit
     queued_tasks = Enum.take(queued_tasks, @spec_trace_queued_tasks_limit)
 
-    workload_concurrency =
-      if :ets.whereis(state.catalog_table) == :undefined do
-        %{}
-      else
-        for workload <- WorkloadCatalog.all_names(state.catalog_table),
-            {:ok, %{cap: cap}} <- [WorkloadCatalog.fetch(state.catalog_table, workload)],
-            is_integer(cap),
-            into: %{} do
-          {workload,
-           %{
-             "inflight" => inflight_count(state.inflight_wl, workload),
-             "cap" => cap
-           }}
-        end
-      end
+    workload_concurrency = spec_trace_workload_concurrency(state, queued_tasks)
 
     reserved_vm_ids =
       state.workers
@@ -1423,9 +1422,37 @@ defmodule Embervm.Dispatcher do
       "node_reported" => node_reported
     })
 
-    state
+    :ok
+  end
+
+  defp spec_trace_workload_concurrency(_state, []), do: %{}
+
+  defp spec_trace_workload_concurrency(state, queued_tasks) do
+    # Only workloads visible in queued_tasks can contribute to the checker's
+    # denominator. Keep the catalog race local so the rest of the checkpoint is
+    # still emitted if the table owner exits between whereis and fetch.
+    if :ets.whereis(state.catalog_table) == :undefined do
+      %{}
+    else
+      workloads =
+        queued_tasks
+        |> Enum.map(& &1["workload"])
+        |> Enum.filter(&is_binary/1)
+        |> Enum.uniq()
+
+      for workload <- workloads,
+          {:ok, %{cap: cap}} <- [WorkloadCatalog.fetch(state.catalog_table, workload)],
+          is_integer(cap),
+          into: %{} do
+        {workload,
+         %{
+           "inflight" => inflight_count(state.inflight_wl, workload),
+           "cap" => cap
+         }}
+      end
+    end
   rescue
-    _ -> state
+    _ -> %{}
   end
 
   defp safe_node_health do

@@ -57,10 +57,12 @@ defmodule Embervm.SpecTrace.Checker do
 
   8. **EventuallyDispatched** (bounded liveness): every window of K+1
      consecutive checkpoints in which a task stays queued must contain its
-     dispatch or success when inventory for that task's workload persists and
-     the workload stays below its concurrency cap. The checkpoint does not yet
-     expose per-principal in-flight shares, so a task blocked only by the
-     per-principal share check remains a known residual for this invariant.
+     dispatch or success when inventory for that task's workload persists.
+     Healthy backpressure, where the workload is at its concurrency cap and has
+     turnover during the window, is excused. A cap pinned by stuck in-flight
+     tasks with no turnover still fails. The checkpoint does not yet expose
+     per-principal in-flight shares, so a task blocked only by the per-principal
+     share check remains a known residual for this invariant.
 
   9. **InventoryReconciled**: at a checkpoint, a dispatchable node instance
      reporting `live_vms > 0` must not have an empty control-plane inventory.
@@ -555,10 +557,15 @@ defmodule Embervm.SpecTrace.Checker do
           # has persistent inventory. A task that drains between sweeps is genuinely
           # not a wedge, so its absence from K+1 consecutive checkpoints is honest
           # vacuousness rather than a coverage shortfall.
-          progress_by_task =
+          progress_records =
             records
             |> Enum.filter(&(&1["action"] in ["dispatch_warm", "dispatch_miss", "succeed"]))
-            |> Enum.group_by(&get_in(&1, ["vars", "task_id"]), & &1["mono"])
+
+          progress_by_task =
+            Enum.group_by(progress_records, &get_in(&1, ["vars", "task_id"]), & &1["mono"])
+
+          progress_by_workload =
+            Enum.group_by(progress_records, &get_in(&1, ["vars", "workload"]), & &1["mono"])
 
           task_ids =
             checkpoints
@@ -575,7 +582,8 @@ defmodule Embervm.SpecTrace.Checker do
               eventually_dispatched_task_result(
                 task_id,
                 windows,
-                Map.get(progress_by_task, task_id, [])
+                Map.get(progress_by_task, task_id, []),
+                progress_by_workload
               )
             end)
 
@@ -585,8 +593,17 @@ defmodule Embervm.SpecTrace.Checker do
     eventually_dispatched_add_truncation_detail(verdict, checkpoints)
   end
 
-  defp eventually_dispatched_task_result(task_id, windows, progress_monos) do
-    window_results = Enum.map(windows, &eventually_dispatched_window(task_id, &1, progress_monos))
+  defp eventually_dispatched_task_result(
+         task_id,
+         windows,
+         progress_monos,
+         progress_by_workload
+       ) do
+    window_results =
+      Enum.map(
+        windows,
+        &eventually_dispatched_window(task_id, &1, progress_monos, progress_by_workload)
+      )
 
     cond do
       Enum.any?(window_results, &(&1 == :violation)) ->
@@ -613,7 +630,7 @@ defmodule Embervm.SpecTrace.Checker do
     end
   end
 
-  defp eventually_dispatched_window(task_id, window, progress_monos) do
+  defp eventually_dispatched_window(task_id, window, progress_monos, progress_by_workload) do
     queued = Enum.map(window, &checkpoint_task_status(&1, task_id))
 
     cond do
@@ -637,15 +654,23 @@ defmodule Embervm.SpecTrace.Checker do
             :pass
 
           true ->
-            at_cap? =
+            at_cap_workloads =
               window
               |> Enum.zip(queued)
-              |> Enum.any?(fn {checkpoint, {:queued, workload}} ->
-                checkpoint_workload_at_cap?(checkpoint, workload)
+              |> Enum.flat_map(fn {checkpoint, {:queued, workload}} ->
+                if checkpoint_workload_at_cap?(checkpoint, workload), do: [workload], else: []
+              end)
+              |> MapSet.new()
+
+            healthy_backpressure? =
+              Enum.any?(at_cap_workloads, fn workload ->
+                progress_by_workload
+                |> Map.get(workload, [])
+                |> Enum.any?(&(&1 >= first_mono and &1 <= last_mono))
               end)
 
-            if at_cap? do
-              {:unjudged, :at_cap, "workload at its concurrency cap"}
+            if healthy_backpressure? do
+              {:unjudged, :at_cap, "workload at its concurrency cap with turnover"}
             else
               empty_workloads =
                 window
@@ -718,7 +743,7 @@ defmodule Embervm.SpecTrace.Checker do
       true ->
         eventually_dispatched_vacuous(
           0,
-          "no task had a judgeable persistent-inventory window; unjudged tasks: #{eventually_dispatched_unjudged_detail(unjudged)}"
+          "#{eventually_dispatched_unjudged_summary(unjudged)}; unjudged tasks: #{eventually_dispatched_unjudged_detail(unjudged)}"
         )
     end
   end
@@ -793,6 +818,27 @@ defmodule Embervm.SpecTrace.Checker do
   end
 
   defp eventually_dispatched_unjudged_detail([]), do: "none"
+
+  defp eventually_dispatched_unjudged_summary(unjudged) do
+    reasons =
+      unjudged
+      |> Enum.flat_map(&MapSet.to_list(&1.reasons))
+      |> MapSet.new()
+
+    case {MapSet.member?(reasons, :inventory), MapSet.member?(reasons, :at_cap)} do
+      {true, false} ->
+        "persistent inventory was absent from every otherwise judgeable window"
+
+      {false, true} ->
+        "healthy backpressure at the workload concurrency cap prevented judgement"
+
+      {true, true} ->
+        "persistent inventory was absent or healthy backpressure at the workload concurrency cap prevented judgement"
+
+      {false, false} ->
+        "no task had a judgeable window"
+    end
+  end
 
   defp eventually_dispatched_unjudged_detail(unjudged) do
     Enum.map_join(unjudged, ", ", fn result ->
