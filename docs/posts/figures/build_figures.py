@@ -4,10 +4,9 @@ Run from anywhere: `python3 docs/posts/figures/build_figures.py`. Each
 function is one figure; the layout numbers are the drawing, so a change to a
 figure is a change here, and the SVG is regenerated rather than edited.
 
-Tones are fixed per memory tier across every figure: gpu, ram (pinned host
-memory), cache (page cache), disk (NVMe), hot (the hot expert set). A part
-takes its tier's tone on its outline, title, and callout; the parts inside it,
-the leaders, and every arrow stay ink so movement reads as movement.
+Expert tones are consistent across the figures and replay: hot red, warm
+yellow, cold blue. Hardware and transfer arrows stay neutral. Colored
+expert regions retain matching callouts and key-table entries.
 
 A part is one outline partitioned by lines that run edge to edge (a title
 band, then columns), never a box drawn inside a box.
@@ -37,9 +36,11 @@ def memory_tiers() -> Figure:
     f.vline(270, 54, 128, tone="gpu")
     f.vline(420, 54, 128, tone="gpu")
     f.lines(160, 74, ["dense layers", "9.2 GB"])
-    f.lines(280, 74, ["expert slot cache", "hot set stays", "resident here"])
+    f.lines(
+        280, 74, ["expert slot cache", "hot set stays", "resident here"], tone="hot"
+    )
     f.text(430, 74, "KV cache")
-    f.keyed(40, 78, "1", 150, 78, tone="gpu")
+    f.keyed(40, 78, "1", 150, 78, tone="hot")
 
     # 2 PCIe
     f.arrow(ax, 134, ax, 170, both=True)
@@ -52,9 +53,9 @@ def memory_tiers() -> Figure:
     f.text(160, 194, "PINNED HOST MEMORY: part of the 64 GB DDR5", tone="ram")
     f.hline(150, 550, 202, tone="ram")
     f.vline(410, 202, 254, tone="hot")
-    f.lines(160, 222, ["expert banks, 40 GB", "30 whole layers"])
+    f.lines(160, 222, ["expert banks, 40 GB", "30 whole layers"], tone="warm")
     f.lines(420, 222, ["hot rows, 6 GB", "18 disk layers"], tone="hot")
-    f.keyed(40, 215, "3", 150, 215, tone="ram")
+    f.keyed(40, 215, "3", 150, 215, tone="warm")
 
     # 6 CPU executor, fed from the page cache. Level with the pinned host
     # memory part: same top and bottom edges, so the CPU reads as the
@@ -69,8 +70,8 @@ def memory_tiers() -> Figure:
     f.text(
         160, 298, "PAGE CACHE: about 16 GB, what the kernel keeps of 5", tone="cache"
     )
-    f.text(160, 316, "recently used cold expert rows and table rows")
-    f.keyed(40, 308, "4", 150, 308, tone="cache")
+    f.text(160, 316, "recently used cold expert rows", tone="cold")
+    f.keyed(40, 308, "4", 150, 308, tone="cold")
 
     # 5 NVMe
     f.box(150, 366, 400, 76, tone="disk")
@@ -101,19 +102,19 @@ def _decode_parts(f: Figure, px: float, py: float, *, letters: bool) -> None:
     f.lines(x(278), y(134), ["CPU", "exec"])
     # B pinned banks
     f.box(x(48), y(118), 210, 40, tone="ram")
-    f.lines(x(54), y(134), ["pinned banks", "40 GB"], tone="ram")
+    f.lines(x(54), y(134), ["pinned banks", "40 GB"], tone="warm")
     # C page cache
     f.box(x(48), y(172), 210, 34, dashed=True, tone="cache")
-    f.text(x(54), y(192), "page cache", tone="cache")
+    f.text(x(54), y(192), "cold experts: page cache", tone="cold")
     # D NVMe
     f.box(x(48), y(220), 210, 40, tone="disk")
     f.line(x(170), y(220), x(170), y(260), weight=1.25, tone="disk")
     f.lines(x(54), y(236), ["expert banks", "63.5 GB"], tone="disk")
     f.lines(x(176), y(236), ["table", "27 GB"], tone="disk")
     if letters:
-        f.keyed(x(26), y(71), "A", x(48), y(71), tone="gpu")
-        f.keyed(x(26), y(138), "B", x(48), y(138), tone="ram")
-        f.keyed(x(26), y(189), "C", x(48), y(189), tone="cache")
+        f.keyed(x(26), y(71), "A", x(48), y(71), tone="hot")
+        f.keyed(x(26), y(138), "B", x(48), y(138), tone="warm")
+        f.keyed(x(26), y(189), "C", x(48), y(189), tone="cold")
         f.keyed(x(26), y(240), "D", x(48), y(240), tone="disk")
         f.keyed(x(300), y(174), "E", x(300), y(158))
 
@@ -145,8 +146,8 @@ def decode_step() -> Figure:
     px, py = slots[1]
     rows = [
         ("hot", 6, "stay on A (72%)", "hot"),
-        ("pinned", 2, "fetched from B", "ram"),
-        ("cold", 4, "read from D through C", "disk"),
+        ("pinned", 2, "fetched from B", "warm"),
+        ("cold", 4, "read from D through C", "cold"),
     ]
     for i, (name, n, where, tone) in enumerate(rows):
         yy = py + 274 + i * 14
@@ -216,7 +217,7 @@ def hot_set_swap() -> Figure:
         f.box(px + 28, py + 196, 180, 34, tone="disk")
         f.text(px + 34, py + 216, "NVMe expert banks", tone="disk")
         if i == 0:
-            f.keyed(px + 14, py + 64, "A", px + 28, py + 64, tone="gpu")
+            f.keyed(px + 14, py + 64, "A", px + 28, py + 64, tone="hot")
             f.keyed(px + 14, py + 213, "D", px + 28, py + 213, tone="disk")
 
     # 1 Tick
@@ -300,7 +301,7 @@ def prefill_chunk() -> Figure:
     px, py = slots[2]
     f.arrow(px + 144, py + 115, px + 156, py + 115)
     f.text(px + 34, py + 152, "lookup by compact local id")
-    f.text(px + 34, py + 166, "hot experts on the GPU")
+    f.text(px + 34, py + 166, "hot experts on the GPU", tone="hot")
     f.text(px + 34, py + 194, "faults a chunk: 3.6M to 5k")
     return f
 
@@ -339,7 +340,7 @@ def expert_paths() -> Figure:
     f.text(44, 43, "GPU", weight="bold")
     f.hline(32, 372, 52)
     f.parts.append(
-        '<rect x="32" y="24" width="4" height="76" fill="var(--replay-hot)"/>'
+        '<rect x="32" y="52" width="4" height="48" fill="var(--replay-hot)"/>'
     )
     f.parts.append('<g dominant-baseline="central">')
     # Optical offset aligns painted glyphs, rather than the font's em box.

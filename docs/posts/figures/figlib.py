@@ -1,9 +1,8 @@
 """Primitives for the keyed workshop-manual figures under docs/posts/figures.
 
 Every figure on the blog is a line drawing: currentColor strokes, mono labels,
-numbered callouts for stages, lettered callouts for parts, and a fixed tone per
-memory tier (GPU, host RAM, page cache, NVMe, hot set) so colour means the same
-thing in every figure.
+numbered callouts for stages, lettered callouts for parts, and red/yellow/blue
+expert tones shared with the replay. Hardware stays neutral.
 This module holds the vocabulary so every figure shares one geometry (callout
 radius, leader weight, hatch pitch, arrowhead) and a new figure is a layout,
 never a restyle. The output is plain SVG with presentation attributes only, so
@@ -20,14 +19,15 @@ from xml.sax.saxutils import escape
 
 MONO = "ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace"
 ACCENT = "var(--accent-ink)"
-# Tier tones, defined in technical-drawing.css for both schemes. A tone names
-# the memory tier a part belongs to; it is never decoration.
+# Legacy hardware tone names remain neutral; expert tones carry residency.
 TONES = {
-    "gpu": "var(--tone-gpu)",
-    "ram": "var(--tone-ram)",
-    "cache": "var(--tone-cache)",
-    "disk": "var(--tone-disk)",
-    "hot": "var(--tone-hot)",
+    "gpu": "currentColor",
+    "ram": "currentColor",
+    "cache": "currentColor",
+    "disk": "currentColor",
+    "hot": "var(--replay-hot)",
+    "warm": "var(--replay-warm)",
+    "cold": "var(--replay-cold)",
 }
 
 
@@ -84,6 +84,8 @@ class Figure:
         weight: str | None = None,
     ) -> None:
         fill = _paint(accent, tone)
+        if tone in ("hot", "warm", "cold"):
+            fill = f"color-mix(in srgb, {fill} 45%, var(--ink))"
         fw = f' font-weight="{weight}"' if weight else ""
         self.parts.append(
             f'<text x="{x}" y="{y}" font-family="{MONO}" font-size="{size}" '
