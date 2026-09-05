@@ -1916,6 +1916,7 @@ defmodule Embervm.StatefulStore do
 
   defp handle_call_next_blessed(state, workload) do
     current = fetch_blessing(state, workload) |> Map.get(:blessed_generation, 0) || 0
+    reported_generation = Map.get(fetch_volume(state, workload) || %{}, :generation, 0) || 0
     ends =
       state.blessing_leases
       |> :ets.tab2list()
@@ -1927,7 +1928,7 @@ defmodule Embervm.StatefulStore do
       |> Enum.filter(fn {{w, _node}, row} -> w == workload and row.next_generation < row.lease_end end)
       |> Enum.map(fn {_key, row} -> row.lease_end end)
 
-    Enum.max([current + 1 | ends])
+    Enum.max([current + 1, reported_generation + 1 | ends])
   end
 
   defp append_blessing_lease(state, workload, node_id, size) do
