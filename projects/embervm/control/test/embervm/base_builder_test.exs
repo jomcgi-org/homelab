@@ -1877,6 +1877,170 @@ defmodule Embervm.BaseBuilderTest do
     assert st.workloads["w"].built
   end
 
+  test "finish_build re-drives a workload held until node capacity becomes eligible" do
+    table = new_cap_table()
+    put_brick(table, "node-4", "uid", mem_budget: 8_192)
+    test_pid = self()
+
+    build_fun = fn :fake_channel, req ->
+      send(test_pid, {:capacity_build_started, req.trace.workload, self()})
+
+      receive do
+        :finish_capacity_build -> {:ok, resp("snap-#{req.trace.workload}")}
+      end
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/uid", address: "node-4:9090"}],
+        capacity_table: table,
+        status_writer: fn _, _, _ -> :ok end,
+        build_fun: build_fun
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{name: "busy", mem_mib: 256}))
+    assert_receive {:capacity_build_started, "busy", busy_worker}, 1_000
+
+    NodeCapacity.drop(table, {"node-4", "uid"})
+    :ok = BaseBuilder.reconcile(builder, desc(%{name: "parked", mem_mib: 4_000}))
+
+    parked = :sys.get_state(builder)
+    assert parked.workloads["parked"].last_status_phase == {:pending, :no_node}
+    assert parked.workloads["parked"].node_id == nil
+    refute Enum.any?(parked.nodes, fn {_id, node} -> "parked" in node.queue end)
+
+    put_brick(table, "node-4", "uid", mem_budget: 8_192)
+    send(busy_worker, :finish_capacity_build)
+
+    assert_receive {:capacity_build_started, "parked", parked_worker}, 1_000
+
+    assert_eventually(fn ->
+      workload = :sys.get_state(builder).workloads["parked"]
+      workload.node_id == "node-4/uid" and workload.last_status_phase == :building
+    end)
+
+    send(parked_worker, :finish_capacity_build)
+  end
+
+  test "capacity_fact_updated re-drives a held workload when capacity becomes eligible" do
+    table = new_cap_table()
+    {:ok, builds} = Agent.start_link(fn -> 0 end)
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/uid", address: "node-4:9090"}],
+        capacity_table: table,
+        status_writer: fn _, _, _ -> :ok end,
+        build_fun: fn :fake_channel, _req ->
+          Agent.update(builds, &(&1 + 1))
+          {:ok, resp("snap-capacity")}
+        end
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{name: "parked", mem_mib: 4_000}))
+    assert :sys.get_state(builder).workloads["parked"].last_status_phase == {:pending, :no_node}
+
+    put_brick(table, "node-4", "uid", mem_budget: 8_192)
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+
+    assert_eventually(fn ->
+      workload = :sys.get_state(builder).workloads["parked"]
+      workload.snapshot_ref == "snap-capacity" and workload.node_id == "node-4/uid"
+    end)
+
+    assert Agent.get(builds, & &1) == 1
+  end
+
+  test "capacity fact re-drive is debounced per held workload" do
+    table = new_cap_table()
+    {:ok, clock} = Agent.start_link(fn -> 10_000 end)
+    {:ok, builds} = Agent.start_link(fn -> 0 end)
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/uid", address: "node-4:9090"}],
+        capacity_table: table,
+        status_writer: fn _, _, _ -> :ok end,
+        build_fun: fn :fake_channel, _req ->
+          Agent.update(builds, &(&1 + 1))
+          {:ok, resp("snap-debounced")}
+        end,
+        clock: fn -> Agent.get(clock, & &1) end,
+        base_backoff_ms: 1_000
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{name: "parked", mem_mib: 4_000}))
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+
+    state = :sys.get_state(builder)
+    assert state.redrive_at["parked"] == 11_000
+    assert state.workloads["parked"].last_status_phase == {:pending, :no_node}
+    assert Agent.get(builds, & &1) == 0
+
+    put_brick(table, "node-4", "uid", mem_budget: 8_192)
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    _state = :sys.get_state(builder)
+    assert Agent.get(builds, & &1) == 0
+
+    Agent.update(clock, &(&1 + 1_001))
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+
+    assert_eventually(fn ->
+      Agent.get(builds, & &1) == 1 and
+        BaseBuilder.status(builder).workloads["parked"].snapshot_ref == "snap-debounced"
+    end)
+
+    :ok = BaseBuilder.forget(builder, "parked")
+    refute Map.has_key?(:sys.get_state(builder).redrive_at, "parked")
+  end
+
+  test "held workload stays parked when finish and capacity updates find no capacity" do
+    table = new_cap_table()
+    put_brick(table, "node-4", "uid", mem_budget: 8_192)
+    test_pid = self()
+    {:ok, builds} = Agent.start_link(fn -> 0 end)
+
+    build_fun = fn :fake_channel, req ->
+      Agent.update(builds, &(&1 + 1))
+      send(test_pid, {:unavailable_build_started, req.trace.workload, self()})
+
+      receive do
+        :finish_unavailable_build -> {:ok, resp("snap-#{req.trace.workload}")}
+      end
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/uid", address: "node-4:9090"}],
+        capacity_table: table,
+        status_writer: fn _, _, _ -> :ok end,
+        build_fun: build_fun,
+        base_backoff_ms: 1_000
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{name: "busy", mem_mib: 256}))
+    assert_receive {:unavailable_build_started, "busy", busy_worker}, 1_000
+
+    NodeCapacity.drop(table, {"node-4", "uid"})
+    :ok = BaseBuilder.reconcile(builder, desc(%{name: "parked", mem_mib: 4_000}))
+    send(busy_worker, :finish_unavailable_build)
+
+    assert_eventually(fn -> :sys.get_state(builder).workloads["busy"].snapshot_ref == "snap-busy" end)
+
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    state = :sys.get_state(builder)
+    parked = Map.fetch!(state.workloads, "parked")
+
+    assert parked.last_status_phase == {:pending, :no_node}
+    assert parked.node_id == nil
+    assert parked.snapshot_ref == nil
+    assert Agent.get(builds, & &1) == 1
+    refute Enum.any?(state.nodes, fn {_id, node} -> "parked" in node.queue end)
+    refute Enum.any?(state.workers, fn {_pid, meta} -> meta.name == "parked" end)
+  end
+
   test "remove_node/2 unpins a workload placed on the vanished node" do
     agent = start_recorder()
     build_fun = fn :fake_channel, _req -> {:ok, resp("snap1")} end
