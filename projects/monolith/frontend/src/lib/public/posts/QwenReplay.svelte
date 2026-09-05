@@ -663,7 +663,6 @@
   .conversation {
     margin-inline: -1rem;
     padding-inline: 1rem;
-    border-block: 1px solid var(--stroke);
   }
   summary {
     cursor: pointer;

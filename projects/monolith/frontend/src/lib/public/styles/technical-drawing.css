@@ -43,6 +43,11 @@
   --replay-hot: #ff2535;
   --replay-warm: #ffd400;
   --replay-cold: #006bff;
+  /* Static hardware references, distinct from routing activity colors. */
+  --ref-gpu: #73519a;
+  --ref-ram: #26736b;
+  --ref-cache: #856b29;
+  --ref-disk: #865440;
   /* A key cell's letter sits on an 18% tint of its tone, which costs
    * about a point of contrast against the sheet figure. Day mixes the
    * letter 80% tone with ink to stay above 4.5:1 on the tint; night's
@@ -68,6 +73,10 @@
     --tone-disk: #ff6b6b;
     --tone-hot: #ff7be5;
     --key-letter: 100%;
+    --ref-gpu: #c5a5e9;
+    --ref-ram: #87c6b7;
+    --ref-cache: #d2bd7a;
+    --ref-disk: #d4a58f;
   }
 }
 
@@ -88,6 +97,10 @@
   --tone-disk: #ff6b6b;
   --tone-hot: #ff7be5;
   --key-letter: 100%;
+  --ref-gpu: #c5a5e9;
+  --ref-ram: #87c6b7;
+  --ref-cache: #d2bd7a;
+  --ref-disk: #d4a58f;
 }
 
 /* The document scales with the viewport between 16px and 19px so a wide
