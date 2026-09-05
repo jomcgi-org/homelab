@@ -2961,6 +2961,7 @@ class PiProcess:
         self.executable = executable
         self.process = None
         self.session_id = None
+        self._poisoned_sessions = set()
         self.turn_lock = threading.Lock()
         self.process_lock = threading.Lock()
         self.stderr_lines = collections.deque(maxlen=5)
@@ -3279,6 +3280,13 @@ class PiProcess:
                 )
                 self._model = model_name
             requested_session = session_id or self.session_id
+            if requested_session in self._poisoned_sessions:
+                sys.stderr.write(
+                    "ember-claude-shim: discarding poisoned pi session %s, "
+                    "forcing fresh session\n" % requested_session
+                )
+                sys.stderr.flush()
+                requested_session = None
             if requested_session and requested_session != self.session_id:
                 try:
                     data = self._command(
@@ -3552,8 +3560,11 @@ class PiProcess:
                                 sys.stderr.flush()
                             except Exception:
                                 pass
+                            # Track poisoned session to prevent caller-resupplied
+                            # session_id from resurrecting it via switch_session.
+                            if self.session_id:
+                                self._poisoned_sessions.add(self.session_id)
                             self._close_process(kill=True)
-                            # Clear session to prevent next turn from resuming the poisoned session file
                             self.session_id = None
                             raise RuntimeError(
                                 "pi returned tool-call syntax as its answer instead of "
@@ -3584,8 +3595,11 @@ class PiProcess:
                             stderr = _truncate_ring_for_error(self.stderr_lines)
                             if stderr:
                                 error_detail += "\nCLI stderr:\n%s" % stderr
+                            # Track poisoned session to prevent caller-resupplied
+                            # session_id from resurrecting it via switch_session.
+                            if self.session_id:
+                                self._poisoned_sessions.add(self.session_id)
                             self._close_process(kill=True)
-                            # Clear session to prevent next turn from resuming the poisoned session file
                             self.session_id = None
                             raise RuntimeError(
                                 "pi turn produced no output: %s" % error_detail
