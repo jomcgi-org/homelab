@@ -509,6 +509,10 @@ defmodule Embervm.BaseBuilder do
       # replacement build is starting, so keep that edge-triggered for at least
       # the ordinary base backoff window.
       dropped_at: %{},
+      # Next capacity-fact re-drive allowed per workload. A node can publish
+      # facts frequently while capacity is still unavailable, so a held
+      # workload gets at most one placement attempt per base backoff window.
+      redrive_at: %{},
       # pid -> %{node_id, name, signature, cpu_vendor} for the CURRENT build
       # worker, so a result from a superseded worker (or for a since-changed spec)
       # is dropped and an accepted result is attributed to its build vendor.
@@ -697,7 +701,9 @@ defmodule Embervm.BaseBuilder do
         state
       end
 
-    {:noreply, reconcile_dropped_inventory(state, instance_id)}
+    state = reconcile_dropped_inventory(state, instance_id)
+
+    {:noreply, redrive_pending_after_capacity_update(state)}
   end
 
   @impl true
@@ -1660,10 +1666,65 @@ defmodule Embervm.BaseBuilder do
     else
       # A newly-added node: re-drive every workload that was held {:pending,
       # :no_node} (node_id nil, unbuilt) so it places onto the fleet now.
+      # Every workload, not only the strictly held ones: a workload whose build
+      # died with its node still carries an armed retry timer, and a new node is
+      # exactly what its retry needs. redrive_pending_workload decides per
+      # workload; the stricter held_pending_workloads filter is for the
+      # capacity-freed triggers, which must not race an armed timer.
       state.workloads
       |> Map.keys()
       |> Enum.reduce(state, fn name, acc -> redrive_pending_workload(acc, name) end)
     end
+  end
+
+  defp held_pending_workloads(workloads) do
+    Enum.filter(workloads, fn
+      {_name,
+       %{
+         last_status_phase: {:pending, :no_node},
+         node_id: nil,
+         snapshot_ref: nil,
+         built_signature: nil,
+         retry_timer: nil
+       }} ->
+        true
+
+      _other ->
+        false
+    end)
+  end
+
+  defp redrive_pending_after_capacity_update(state) do
+    now = state.clock.()
+
+    state.workloads
+    |> held_pending_workloads()
+    |> Enum.reduce(state, fn {name, _w}, acc ->
+      case Map.get(acc.redrive_at, name) do
+        deadline when is_integer(deadline) and now <= deadline ->
+          acc
+
+        _deadline ->
+          acc
+          |> put_in([:redrive_at, name], now + acc.base_backoff_ms)
+          |> redrive_pending_from(name, :capacity_fact_updated)
+      end
+    end)
+  end
+
+  defp redrive_pending_from(state, name, source) do
+    state = redrive_pending_workload(state, name)
+
+    if match?(
+         [{^name, _w}],
+         held_pending_workloads(%{name => Map.get(state.workloads, name)})
+       ) do
+      Logger.debug(
+        "embervm base builder: #{source} re-drive found no eligible node for workload #{name}"
+      )
+    end
+
+    state
   end
 
   # Re-place a held workload (no node, no built base) now that a node exists,
@@ -1788,9 +1849,9 @@ defmodule Embervm.BaseBuilder do
   #
   # A capacity fact exists exactly while an instance is healthy, so a fact-less
   # instance is not placeable. A brand-new control plane can briefly have no
-  # facts; a workload then holds at {:pending, :no_node} until WorkloadWatcher's
-  # periodic catalog resync (60s default) re-drives it, since nothing notifies
-  # the builder when the first NodeStatus lands a fact.
+  # facts; a workload then holds at {:pending, :no_node} until the first
+  # capacity_fact_updated notification re-drives it. WorkloadWatcher's periodic
+  # catalog resync remains a slower backstop.
   defp placement(state, prev, need_mib) do
     case eligible_build_instances(state, need_mib) do
       [] ->
@@ -2288,6 +2349,7 @@ defmodule Embervm.BaseBuilder do
 
         state
         |> update_in([:workloads], &Map.delete(&1, name))
+        |> update_in([:redrive_at], &Map.delete(&1, name))
         |> update_in([:dropped_at], fn dropped ->
           Map.reject(dropped, fn {{workload, _node_id}, _at} -> workload == name end)
         end)
@@ -2470,6 +2532,13 @@ defmodule Embervm.BaseBuilder do
       end
 
     state = maybe_start_build(state, node_id)
+
+    state =
+      state.workloads
+      |> held_pending_workloads()
+      |> Enum.reduce(state, fn {held_name, _w}, acc ->
+        redrive_pending_from(acc, held_name, :finish_build)
+      end)
 
     case Map.get(state.nodes, node_id) do
       %{building: nil, queue: []} ->
@@ -3803,8 +3872,9 @@ defmodule Embervm.BaseBuilder do
             # builder down (#5082, observed live in embervm-dev). Re-place
             # through placement/3 exactly like reconcile_desc/2, hold with
             # {:pending, :no_node} when nothing is eligible (its nil-placement
-            # branch; add_node re-drives held workloads), and persist the new
-            # pin so stickiness tracks where the rebuild actually ran.
+            # branch; node addition, capacity updates, and build completion
+            # re-drive held workloads), and persist the new pin so stickiness
+            # tracks where the rebuild actually ran.
             node_id = placement(state, w, Map.get(w, :mem_mib) || 0)
 
             cond do
