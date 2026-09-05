@@ -2769,6 +2769,25 @@ defmodule Embervm.StatefulManager do
 
       unreachable_node_ids = Enum.sort(unreachable_node_ids)
       outcomes = Enum.map(reachable_node_ids, &{&1, safe_delete_volume(state, &1, workload)})
+
+      {successful_deletes, still_unreachable} =
+        Enum.split_with(unreachable_node_ids, fn node_id ->
+          case safe_delete_volume(state, node_id, workload) do
+            :ok ->
+              true
+
+            :error ->
+              Logger.warning("embervm stateful: best-effort delete_volume abandoned unreachable node",
+                node_id: node_id,
+                workload: workload
+              )
+
+              false
+          end
+        end)
+
+      unreachable_node_ids = Enum.sort(still_unreachable)
+      outcomes = outcomes ++ Enum.map(successful_deletes, &{&1, :ok})
       failed_node_ids =
         ((for {node_id, :error} <- outcomes, do: node_id) ++ quiet_window_node_ids)
         |> Enum.sort()
@@ -2781,13 +2800,10 @@ defmodule Embervm.StatefulManager do
             # Remote eviction is permitted only after the durable delete succeeds;
             # a quiet-window retry must preserve the recovery copy.
             #
-            # KNOWN RESIDUE (#5632): eviction dials a node through NodeChannel,
-            # which serves a cached channel without consulting capacity. So a
-            # node skipped as `unreachable` on absent capacity can still be
-            # dialable, and the eviction then destroys the off-node copy through
-            # the very node that was never asked to delete its local vol.img.
-            # Deciding when the control plane may abandon an anchor belongs to
-            # the anchorLossPolicy ADR, not here.
+            # #5632: every node beyond the quiet window was already sent a
+            # best-effort DeleteVolume above, so `unreachable` now names only
+            # nodes that did not answer. The eviction dials a live node (see
+            # store_eviction_node/2) rather than blindly dialing the anchor.
             _ = evict_remote_volume(state, volume, workload)
 
             state = clear_negative_store_truth(state, workload)
@@ -3982,31 +3998,87 @@ defmodule Embervm.StatefulManager do
   # VOLUME) alongside DeleteVolume. Best-effort; the daemon refuses the evict if a
   # bundle still pairs (its own generation guard), and here delete was already
   # refused while any instance existed, so the guard is doubly held.
-  defp evict_remote_volume(state, %{node_id: node_id}, workload) when is_binary(node_id) do
+  defp evict_remote_volume(state, %{node_id: anchor}, workload) when is_binary(anchor) do
+    node_id = store_eviction_node(state, anchor, workload)
+
     # Ref EMPTY for the same reason as restore_volume: the export lives at
     # volume/<workload>/, so a ref-bearing evict silently deleted nothing.
     artifact = %ArtifactRef{kind: :ARTIFACT_KIND_VOLUME, workload: workload}
     req = %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
-      try do
-        state.evict_artifact_fun.(channel, req)
-      rescue
-        _ -> :error
-      catch
-        :exit, _ ->
-          _ = state.invalidate_fun.(node_id, channel)
-          :error
+    result =
+      case safe_channel(state.channel_fun, node_id) do
+        {:ok, channel} ->
+          try do
+            case state.evict_artifact_fun.(channel, req) do
+              {:error, reason} -> {:error, reason}
+              :error -> {:error, :error}
+              _ -> :ok
+            end
+          rescue
+            error -> {:error, {:raised, error}}
+          catch
+            :exit, reason ->
+              _ = state.invalidate_fun.(node_id, channel)
+              {:error, {:exit, reason}}
 
-        _, _ ->
-          :error
+            kind, reason ->
+              {:error, {kind, reason}}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+
+        other ->
+          {:error, other}
       end
+
+    case result do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("embervm stateful: store eviction failed, store copy may be orphaned",
+          node_id: node_id,
+          workload: workload,
+          error: inspect(reason)
+        )
     end
 
     :ok
   end
 
   defp evict_remote_volume(_state, _volume, _workload), do: :ok
+
+  # #5632: the node the store eviction dials. The anchor while it reports;
+  # otherwise any reporting node, preferring one that reports a reachable store,
+  # since the eviction only needs a daemon that can talk to the object store.
+  # With no reporting node at all, fall back to the anchor and say so: the
+  # eviction is then best-effort against a node the CP cannot see.
+  defp store_eviction_node(state, anchor, workload) do
+    if node_reporting?(state, anchor) do
+      anchor
+    else
+      reporting =
+        state.capacity_table
+        |> NodeCapacity.all()
+        |> Enum.filter(&is_binary(Map.get(&1, :configured_id)))
+        |> Enum.sort_by(&{Map.get(&1, :store_reachable, false) != true, &1.configured_id})
+
+      case reporting do
+        [%{configured_id: node_id} | _] ->
+          node_id
+
+        [] ->
+          Logger.warning("embervm stateful: no reporting node for store eviction, dialing the anchor",
+            node_id: anchor,
+            workload: workload
+          )
+
+          anchor
+      end
+    end
+  end
 
   defp volume_store(opts) do
     Keyword.get_lazy(opts, :volume_store, &default_volume_store/0)
