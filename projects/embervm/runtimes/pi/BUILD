@@ -36,6 +36,22 @@ tar(
     visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
 )
 
+# Pi's bridge to the agents MCP server (#5569). Pi has no MCP client, so this
+# extension registers the tier's four knowledge tools as pi tools and calls
+# them over streamable HTTP through curl, on the same brokered egress lane as
+# web-research above. The shim loads it only when EMBER_AGENT_MCP_URL is set
+# and the endpoint answers a probe, so a guest on a cluster without the tier
+# never sees the tools or the prompt that names them.
+tar(
+    name = "agent_mcp_extension_tar",
+    srcs = ["agent-mcp.ts"],
+    mtree = [
+        "./usr/share/ember-pi/extensions/agent-mcp.ts type=file content=$(execpath agent-mcp.ts) mode=0644 uid=0 gid=0",
+    ],
+    # Same reason as web_research_extension_tar: both runtime images can run pi.
+    visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
+)
+
 # This image's prewarm list (#4423), read by the shared shim's
 # ProcessManager._read_prewarm_clis at /usr/share/ember-shim/prewarm-clis.
 # Only pi: the claude and codex CLIs are deliberately absent from this image,
@@ -70,6 +86,7 @@ apko_image(
         "//projects/embervm/runtimes/claude:guest_config_tar",
         "//projects/embervm/runtimes/claude:guest_init_tar_amd64",
         ":web_research_extension_tar",
+        ":agent_mcp_extension_tar",
         ":prewarm_clis_tar",
         # The pi coding agent, a self-contained Bun-compiled ELF from the GitHub
         # release (see pi_coding_agent in MODULE.bazel), plus the theme JSONs and
