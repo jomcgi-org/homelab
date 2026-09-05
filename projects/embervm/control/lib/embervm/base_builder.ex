@@ -613,10 +613,12 @@ defmodule Embervm.BaseBuilder do
     end
   end
 
-  # Clear the scalar base and only the anchor vendor's precise local/store
-  # records. Both explicit force-rebuild and live inventory-drop recovery use
-  # this helper so neither path can retain stale vendor evidence.
-  defp clear_rebuild_record(state, w, anchor_node) do
+  # Clear the scalar base and the anchor vendor's precise local record. Explicit
+  # force-rebuild also clears store evidence by default, while inventory-drop
+  # recovery preserves evidence that remains valid across nodes.
+  defp clear_rebuild_record(state, w, anchor_node, opts \\ []) do
+    keep_store_evidence = Keyword.get(opts, :keep_store_evidence, false)
+
     anchor_vendor =
       if is_binary(anchor_node) do
         state.capacity_table
@@ -627,15 +629,21 @@ defmodule Embervm.BaseBuilder do
         ""
       end
 
-    {vendor_built, store_confirmed} =
+    vendor_built =
       if anchor_vendor == "" do
         # Without a capacity fact we cannot identify which vendor is being
         # rebuilt. Keep every vendor entry rather than invalidating an
-        # unrelated vendor's completed build or its store evidence.
-        {w.vendor_built, w.store_confirmed}
+        # unrelated vendor's completed build.
+        w.vendor_built
       else
-        {Map.delete(w.vendor_built, anchor_vendor),
-         Map.delete(w.store_confirmed, anchor_vendor)}
+        Map.delete(w.vendor_built, anchor_vendor)
+      end
+
+    store_confirmed =
+      if anchor_vendor == "" or keep_store_evidence do
+        w.store_confirmed
+      else
+        Map.delete(w.store_confirmed, anchor_vendor)
       end
 
     %{
@@ -1490,29 +1498,25 @@ defmodule Embervm.BaseBuilder do
   # base from disk. The workload status and the summarized WorkloadCapacity entry
   # can still say READY at that point, so compare the builder's recorded ref with
   # the full NodeStatus.local_bases inventory delivered through NodeCapacity.
+  # An empty inventory is deliberately authoritative because that is the incident
+  # signature. This path assumes a well-behaved daemon always populates local_bases;
+  # one that never does would cause every pinned workload to rebuild once.
   defp reconcile_dropped_inventory(state, instance_id) do
     case find_capacity_fact(state.capacity_table, instance_id) do
       :error ->
         state
 
       {:ok, fact} ->
-        case Map.fetch(fact, :local_bases) do
-          {:ok, local_bases} when is_list(local_bases) ->
-            now = state.clock.()
+        local_bases = Map.get(fact, :local_bases, [])
+        now = state.clock.()
 
-            Enum.reduce(state.workloads, state, fn {name, w}, acc ->
-              if dropped_base_rebuild?(acc, w, name, instance_id, local_bases, now) do
-                rebuild_dropped_base(acc, w, name, instance_id, now)
-              else
-                acc
-              end
-            end)
-
-          _ ->
-            # An older or synthetic fact with no full inventory is unknown, not
-            # affirmative evidence that every recorded base disappeared.
-            state
-        end
+        Enum.reduce(state.workloads, state, fn {name, w}, acc ->
+          if dropped_base_rebuild?(acc, w, name, instance_id, local_bases, now) do
+            rebuild_dropped_base(acc, w, name, instance_id, now)
+          else
+            acc
+          end
+        end)
     end
   end
 
@@ -1523,7 +1527,8 @@ defmodule Embervm.BaseBuilder do
     w.node_id == instance_id and Map.has_key?(state.nodes, instance_id) and
       is_binary(w.snapshot_ref) and w.snapshot_ref != "" and
       not Enum.any?(local_bases, fn base ->
-        Map.get(base, :workload) == name and Map.get(base, :ref) == w.snapshot_ref
+        Map.get(base, :workload) == name and Map.get(base, :ref) == w.snapshot_ref and
+          Embervm.Scheduler.base_state_ready?(Map.get(base, :base_state))
       end) and
       not worker_for_workload?(state, name) and
       not MapSet.member?(state.hydrating, name) and
@@ -1537,7 +1542,7 @@ defmodule Embervm.BaseBuilder do
 
   defp rebuild_dropped_base(state, w, name, instance_id, now) do
     cleared_ref = w.snapshot_ref
-    w = clear_rebuild_record(state, w, node_name(instance_id))
+    w = clear_rebuild_record(state, w, node_name(instance_id), keep_store_evidence: true)
 
     Logger.warning(
       "embervm base builder: node dropped base #{name}/#{cleared_ref}; enqueueing rebuild",
@@ -1560,13 +1565,15 @@ defmodule Embervm.BaseBuilder do
     |> put_in([:workloads, name], w)
     |> put_in([:dropped_at, {name, instance_id}], now)
     |> cancel_pending_retry(name)
+    # Direct BuildBase avoids a 1 GB download plus the poll_base_ready budget before another bake's copy is refused.
+    # Unlike reconcile_scratch_generation, skip hydrate_for_anchor because the identity gate rejected this ref.
     |> enqueue(instance_id, name)
     |> write_base_status(w, :building)
     |> maybe_start_build(instance_id)
   end
 
-  # :base_built is the existing audit-only base lifecycle event. The reason
-  # distinguishes this recovery transition from ordinary build completion.
+  # The :base_built kind existed in the proto enums but was never emitted until
+  # now. The payload reason is the discriminator, so emit it only on this path.
   defp record_base_rebuild(op_log_mod, op_log, tenant, clock, workload, node_id, ref) do
     op = %Embervm.OpLog.Op{
       kind: :base_built,
