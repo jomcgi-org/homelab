@@ -84,6 +84,8 @@ defmodule Embervm.StatefulManagerTest do
         capacity_table: cap_table,
         catalog_table: cat_table,
         node_registry: registry || Keyword.get(opts, :node_registry, NodeRegistry),
+        node_registry_status_fun:
+          Keyword.get(opts, :node_registry_status_fun, fn _ -> %{} end),
         clock: Keyword.get(opts, :clock, fn -> 1_000 end),
         channel_fun: Keyword.get(opts, :channel_fun, fn _node -> {:ok, :ch} end),
         invalidate_fun: Keyword.get(opts, :invalidate_fun, fn _node, _chan -> :ok end),
@@ -782,8 +784,15 @@ defmodule Embervm.StatefulManagerTest do
 
   # -- straggler -----------------------------------------------------------------
 
-  test "activator connect withdraws a stale published endpoint and starts an ordinary wake" do
-    ctx = start_stack()
+  test "dead port with a live VM withdraws the published endpoint and starts an ordinary wake" do
+    {:ok, runtime} = Agent.start_link(fn -> %{} end)
+
+    ctx =
+      start_stack(
+        clock: fn -> 10_000 end,
+        node_registry_status_fun: fn _ -> Agent.get(runtime, & &1) end
+      )
+
     stateful_workload(ctx, "wl-a")
     stateful_node(ctx, "node-4")
 
@@ -791,6 +800,16 @@ defmodule Embervm.StatefulManagerTest do
     assert Agent.get(ctx.starts, & &1) == 1
 
     [old] = StatefulStore.list(ctx.store, "wl-a")
+
+    Agent.update(runtime, fn _ ->
+      %{
+        "node-4/pod" => %{
+          configured_id: "node-4",
+          stateful_vm_ids: [old.vm_id],
+          stateful_vms: [%{vm_id: old.vm_id, healthy: false, last_probe_unix_ms: 10_000}]
+        }
+      }
+    end)
 
     assert {:ok, %{ip: "10.88.0.5", port: 5432}} =
              StatefulManager.wake(ctx.mgr, "wl-a", "p")
@@ -808,25 +827,34 @@ defmodule Embervm.StatefulManagerTest do
            end)
   end
 
-  test "activator connect flap guard logs once and splices when a healthy node still reports the VM live" do
-    ctx = start_stack()
+  test "draining brick with a healthy recent probe splices without withdrawal" do
+    {:ok, runtime} = Agent.start_link(fn -> %{} end)
+
+    ctx =
+      start_stack(
+        clock: fn -> 10_000 end,
+        node_registry_status_fun: fn _ -> Agent.get(runtime, & &1) end
+      )
+
     stateful_workload(ctx, "wl-a")
     stateful_node(ctx, "node-4")
 
     assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
     [instance] = StatefulStore.list(ctx.store, "wl-a")
 
-    stateful_node(ctx, "node-4",
-      stateful_vms: [
-        %{
-          vm_id: instance.vm_id,
-          workload: "wl-a",
-          ip: instance.ip,
-          port: instance.port,
-          healthy: true
+    Agent.update(runtime, fn _ ->
+      %{
+        "node-4/pod" => %{
+          configured_id: "node-4",
+          draining: true,
+          dispatchable: false,
+          stateful_vm_ids: [instance.vm_id],
+          stateful_vms: [%{vm_id: instance.vm_id, healthy: true, last_probe_unix_ms: 10_000}]
         }
-      ]
-    )
+      }
+    end)
+
+    NodeCapacity.drop(ctx.cap_table, "node-4")
 
     log =
       capture_log(fn ->
@@ -839,11 +867,62 @@ defmodule Embervm.StatefulManagerTest do
 
     assert length(Regex.scan(~r/stateful activator transient/, log)) == 1
     assert Agent.get(ctx.starts, & &1) == 1
-    assert {:ok, %{state: :serving, healthy: true}} = StatefulStore.get(ctx.store, instance.instance_id)
+
+    assert {:ok, %{state: :serving, healthy: true}} =
+             StatefulStore.get(ctx.store, instance.instance_id)
   end
 
-  test "wake-rate limit bounds repeated witnessed-connect withdrawals" do
-    ctx = start_stack(wake_max: 2)
+  test "a healthy VM report older than one status interval does not pass the flap guard" do
+    {:ok, runtime} = Agent.start_link(fn -> %{} end)
+
+    ctx =
+      start_stack(
+        clock: fn -> 10_000 end,
+        node_registry_status_fun: fn _ -> Agent.get(runtime, & &1) end
+      )
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    [old] = StatefulStore.list(ctx.store, "wl-a")
+
+    Agent.update(runtime, fn _ ->
+      %{
+        "node-4/pod" => %{
+          configured_id: "node-4",
+          stateful_vm_ids: [old.vm_id],
+          stateful_vms: [%{vm_id: old.vm_id, healthy: true, last_probe_unix_ms: 7_999}]
+        }
+      }
+    end)
+
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert Agent.get(ctx.starts, & &1) == 2
+
+    assert {:ok, %{state: :failed, healthy: false}} =
+             StatefulStore.get(ctx.store, old.instance_id)
+  end
+
+  test "publish cooldown splices before the first health check can land" do
+    {:ok, now} = Agent.start_link(fn -> 1_000 end)
+    ctx = start_stack(clock: fn -> Agent.get(now, & &1) end)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    [instance] = StatefulStore.list(ctx.store, "wl-a")
+    Agent.update(now, fn _ -> instance.updated_at + 4_999 end)
+
+    expected = %{ip: instance.ip, port: instance.port}
+    assert {:ok, ^expected} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert Agent.get(ctx.starts, & &1) == 1
+
+    assert {:ok, %{state: :serving, healthy: true}} =
+             StatefulStore.get(ctx.store, instance.instance_id)
+  end
+
+  test "wake-rate limit applies after witnessed-connect withdrawal" do
+    ctx = start_stack(wake_max: 2, clock: fn -> 10_000 end)
     stateful_workload(ctx, "wl-a")
     stateful_node(ctx, "node-4")
 
@@ -854,7 +933,7 @@ defmodule Embervm.StatefulManagerTest do
     assert {:error, {:wake_rate, _}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
     assert Agent.get(ctx.starts, & &1) == 2
 
-    assert [%{state: :serving, healthy: true} | _] = StatefulStore.list(ctx.store, "wl-a")
+    assert StatefulStore.published_endpoint(ctx.store, "wl-a") == nil
 
     {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
 
@@ -863,7 +942,23 @@ defmodule Embervm.StatefulManagerTest do
         op.kind == :stateful_failed and op.payload["reason"] == "activator_witnessed_connect"
       end)
 
-    assert length(witnessed) == 1
+    assert length(witnessed) == 2
+  end
+
+  test "a workload removed from the catalog is rejected before its published endpoint is touched" do
+    ctx = start_stack(clock: fn -> 10_000 end)
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4")
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    [instance] = StatefulStore.list(ctx.store, "wl-a")
+
+    WorkloadCatalog.drop(ctx.cat_table, "wl-a")
+
+    assert {:error, {:unknown_workload}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert Agent.get(ctx.starts, & &1) == 1
+
+    assert {:ok, %{state: :serving, healthy: true}} =
+             StatefulStore.get(ctx.store, instance.instance_id)
   end
 
   # -- plan_wake: relight vs cold, pair validity --------------------------------

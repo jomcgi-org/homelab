@@ -76,10 +76,13 @@ type Cluster struct {
 
 // Endpoint is one serving-VM tap IP + port. In v1 these are node-local routable
 // tap addresses the node Envoy dials directly over pod networking (PR-2 bridge).
+// Activator-only priority-0 endpoints explicitly opt out of active health checks
+// so a cold cluster can retain the same CDS health-check shape as a live cluster.
 type Endpoint struct {
-	IP       string `json:"ip"`
-	Port     int    `json:"port"`
-	Priority uint32 `json:"priority,omitempty"`
+	IP                       string `json:"ip"`
+	Port                     int    `json:"port"`
+	Priority                 uint32 `json:"priority,omitempty"`
+	DisableActiveHealthCheck bool   `json:"disable_active_health_check,omitempty"`
 }
 
 // HealthCheck configures the active TCP health check on priority-0 live
@@ -174,6 +177,8 @@ func (d *Desired) validate() error {
 			return fmt.Errorf("cluster[%d]: duplicate cluster name %q", i, c.Name)
 		}
 		seen[c.Name] = struct{}{}
+		priorities := make(map[uint32]struct{})
+		maxPriority := uint32(0)
 		for j := range c.Endpoints {
 			e := &c.Endpoints[j]
 			if e.IP == "" {
@@ -184,6 +189,15 @@ func (d *Desired) validate() error {
 			}
 			if e.Priority > 1 {
 				return fmt.Errorf("cluster[%d].endpoints[%d]: priority %d out of range", i, j, e.Priority)
+			}
+			priorities[e.Priority] = struct{}{}
+			if e.Priority > maxPriority {
+				maxPriority = e.Priority
+			}
+		}
+		for priority := uint32(0); len(c.Endpoints) > 0 && priority <= maxPriority; priority++ {
+			if _, ok := priorities[priority]; !ok {
+				return fmt.Errorf("cluster[%d]: endpoint priorities must be contiguous from zero, missing priority %d", i, priority)
 			}
 		}
 		if h := c.HealthCheck; h != nil {
@@ -263,6 +277,9 @@ func buildCluster(c *Cluster) *clusterv3.Cluster {
 		},
 	}
 	if h := c.HealthCheck; h != nil {
+		cluster.CommonLbConfig = &clusterv3.Cluster_CommonLbConfig{
+			IgnoreNewHostsUntilFirstHc: true,
+		}
 		cluster.HealthChecks = []*corev3.HealthCheck{
 			{
 				Timeout:            durationpb.New(time.Duration(h.TimeoutMs) * time.Millisecond),
@@ -292,7 +309,7 @@ func buildEndpoint(c *Cluster) *endpointv3.ClusterLoadAssignment {
 			HostIdentifier: &endpointv3.LbEndpoint_Endpoint{
 				Endpoint: &endpointv3.Endpoint{
 					HealthCheckConfig: &endpointv3.Endpoint_HealthCheckConfig{
-						DisableActiveHealthCheck: e.Priority > 0,
+						DisableActiveHealthCheck: e.DisableActiveHealthCheck || e.Priority > 0,
 					},
 					Address: &corev3.Address{
 						Address: &corev3.Address_SocketAddress{

@@ -166,7 +166,8 @@ defmodule Embervm.EndpointPublisherTest do
     assert [cluster] = desired.clusters
     assert cluster.name == "serve|wl-a"
     # Empty of real endpoints: the activator is the fallback.
-    assert cluster.endpoints == [%{ip: "10.1.1.1", port: 7000}]
+    assert cluster.endpoints == [%{ip: "10.1.1.1", port: 7000, disable_active_health_check: true}]
+    assert cluster.health_check == @health_check
 
     assert [route] = desired.routes
     assert route.host == "wl-a.example"
@@ -232,7 +233,8 @@ defmodule Embervm.EndpointPublisherTest do
 
     for {_node, desired} <- puts do
       assert [cluster] = desired.clusters
-      assert cluster.endpoints == [%{ip: "10.99.0.5", port: 8081}]
+      assert cluster.endpoints == [%{ip: "10.99.0.5", port: 8081, disable_active_health_check: true}]
+      assert cluster.health_check == @health_check
     end
   end
 
@@ -242,12 +244,22 @@ defmodule Embervm.EndpointPublisherTest do
     serving_node(ctx, "node-4")
 
     start_published(ctx, "srv-1", "wl-a", "10.99.0.5", 8080)
+    :ok = EndpointPublisher.flush(ctx.pub)
+    [{"node-4", live_desired}] = last_puts(ctx)
+    [live_cluster] = live_desired.clusters
+
     {:ok, _} = ServingStore.unpublish(ctx.store, "srv-1", :drain)
     :ok = EndpointPublisher.flush(ctx.pub)
 
-    assert [{"node-4", desired}] = last_puts(ctx)
+    assert [{"node-4", ^live_desired}, {"node-4", desired}] = last_puts(ctx)
     assert [cluster] = desired.clusters
-    assert cluster.endpoints == [%{ip: "10.1.1.1", port: 7000}]
+
+    assert cluster.endpoints == [
+             %{ip: "10.1.1.1", port: 7000, disable_active_health_check: true}
+           ]
+
+    assert cluster.health_check == @health_check
+    assert Map.delete(cluster, :endpoints) == Map.delete(live_cluster, :endpoints)
   end
 
   test "an unhealthy instance is ejected from the rendered cluster (activator swaps in)" do
@@ -261,7 +273,8 @@ defmodule Embervm.EndpointPublisherTest do
 
     assert [{"node-4", desired}] = last_puts(ctx)
     assert [cluster] = desired.clusters
-    assert cluster.endpoints == [%{ip: "10.1.1.1", port: 7000}]
+    assert cluster.endpoints == [%{ip: "10.1.1.1", port: 7000, disable_active_health_check: true}]
+    assert cluster.health_check == @health_check
   end
 
   test "multiple healthy instances render as one cluster with all endpoints, id-ordered" do
@@ -469,7 +482,8 @@ defmodule Embervm.EndpointPublisherTest do
     assert desired.listeners == [%{name: "state-9100", port: 9100, cluster: "state|wl-s"}]
 
     cluster = Enum.find(desired.clusters, &(&1.name == "state|wl-s"))
-    assert cluster.endpoints == [%{ip: "10.2.2.2", port: 9100}]
+    assert cluster.endpoints == [%{ip: "10.2.2.2", port: 9100, disable_active_health_check: true}]
+    assert cluster.health_check == @health_check
   end
 
   test "ADR embervm/018 Phase 2: a cold stateful workload's L4 fallback prefers the anchor node's advertised activator" do
@@ -493,7 +507,8 @@ defmodule Embervm.EndpointPublisherTest do
 
     assert [{"node-4", desired}] = last_puts(ctx)
     cluster = Enum.find(desired.clusters, &(&1.name == "state|wl-s"))
-    assert cluster.endpoints == [%{ip: "10.88.0.7", port: 9100}]
+    assert cluster.endpoints == [%{ip: "10.88.0.7", port: 9100, disable_active_health_check: true}]
+    assert cluster.health_check == @health_check
   end
 
   test "a second stateful workload falls back to the SAME activator_ip but its OWN listen_port" do
@@ -508,8 +523,10 @@ defmodule Embervm.EndpointPublisherTest do
 
     cluster_s = Enum.find(desired.clusters, &(&1.name == "state|wl-s"))
     cluster_t = Enum.find(desired.clusters, &(&1.name == "state|wl-t"))
-    assert cluster_s.endpoints == [%{ip: "10.2.2.2", port: 9100}]
-    assert cluster_t.endpoints == [%{ip: "10.2.2.2", port: 9101}]
+    assert cluster_s.endpoints == [%{ip: "10.2.2.2", port: 9100, disable_active_health_check: true}]
+    assert cluster_t.endpoints == [%{ip: "10.2.2.2", port: 9101, disable_active_health_check: true}]
+    assert cluster_s.health_check == @health_check
+    assert cluster_t.health_check == @health_check
   end
 
   test "a cold stateful workload with NO activator_ip emits no listener and no cluster" do

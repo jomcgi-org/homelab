@@ -93,6 +93,9 @@ func TestBuild_translatesPriorityEndpointsHealthCheckAndRoutes(t *testing.T) {
 	if got := hc.GetHealthyThreshold().GetValue(); got != 1 {
 		t.Errorf("healthy threshold = %d, want 1", got)
 	}
+	if !cl.GetCommonLbConfig().GetIgnoreNewHostsUntilFirstHc() {
+		t.Error("health-checked cluster should set ignore_new_hosts_until_first_hc")
+	}
 
 	// EDS: one assignment with priority-0 live endpoints and priority-1 activator.
 	eds := snap.GetResources(resourcev3.EndpointType)
@@ -157,11 +160,15 @@ func TestBuild_translatesPriorityEndpointsHealthCheckAndRoutes(t *testing.T) {
 	}
 }
 
-func TestBuild_activatorOnlyAssignmentKeepsPriorityZeroWithoutHealthCheck(t *testing.T) {
+func TestBuild_activatorOnlyAssignmentKeepsStableHealthCheckedCluster(t *testing.T) {
 	d := &Desired{
 		Version: "1",
 		Clusters: []Cluster{
-			{Name: "state|cold", Endpoints: []Endpoint{{IP: "10.42.0.10", Port: 9100}}},
+			{
+				Name:        "state|cold",
+				HealthCheck: &HealthCheck{TimeoutMs: 1000, IntervalMs: 2000, NoTrafficIntervalMs: 2000, UnhealthyThreshold: 2, HealthyThreshold: 1},
+				Endpoints:   []Endpoint{{IP: "10.42.0.10", Port: 9100, DisableActiveHealthCheck: true}},
+			},
 		},
 	}
 
@@ -170,16 +177,19 @@ func TestBuild_activatorOnlyAssignmentKeepsPriorityZeroWithoutHealthCheck(t *tes
 		t.Fatalf("Build: %v", err)
 	}
 	cl := snap.GetResources(resourcev3.ClusterType)["state|cold"].(*clusterv3.Cluster)
-	if len(cl.GetHealthChecks()) != 0 {
-		t.Fatalf("activator-only cluster health checks = %d, want 0", len(cl.GetHealthChecks()))
+	if len(cl.GetHealthChecks()) != 1 {
+		t.Fatalf("activator-only cluster health checks = %d, want 1", len(cl.GetHealthChecks()))
+	}
+	if !cl.GetCommonLbConfig().GetIgnoreNewHostsUntilFirstHc() {
+		t.Error("activator-only cluster should retain ignore_new_hosts_until_first_hc")
 	}
 	cla := snap.GetResources(resourcev3.EndpointType)["state|cold"].(*endpointv3.ClusterLoadAssignment)
 	if len(cla.GetEndpoints()) != 1 || cla.GetEndpoints()[0].GetPriority() != 0 {
 		t.Fatalf("activator-only localities = %v, want one priority-0 locality", cla.GetEndpoints())
 	}
 	endpoint := cla.GetEndpoints()[0].GetLbEndpoints()[0].GetEndpoint()
-	if endpoint.GetHealthCheckConfig().GetDisableActiveHealthCheck() {
-		t.Error("activator-only endpoint must remain eligible without a cluster health check")
+	if !endpoint.GetHealthCheckConfig().GetDisableActiveHealthCheck() {
+		t.Error("activator-only endpoint should opt out of the stable cluster health check")
 	}
 }
 
@@ -316,6 +326,7 @@ func TestBuild_rejectsMalformed(t *testing.T) {
 		{"endpoint port zero", &Desired{Version: "1", Clusters: []Cluster{{Name: "c", Endpoints: []Endpoint{{IP: "1.1.1.1", Port: 0}}}}}},
 		{"endpoint port too high", &Desired{Version: "1", Clusters: []Cluster{{Name: "c", Endpoints: []Endpoint{{IP: "1.1.1.1", Port: 70000}}}}}},
 		{"endpoint priority too high", &Desired{Version: "1", Clusters: []Cluster{{Name: "c", Endpoints: []Endpoint{{IP: "1.1.1.1", Port: 80, Priority: 2}}}}}},
+		{"endpoint priority gap", &Desired{Version: "1", Clusters: []Cluster{{Name: "c", Endpoints: []Endpoint{{IP: "1.1.1.1", Port: 80, Priority: 1}}}}}},
 		{"route missing host", &Desired{Version: "1", Clusters: []Cluster{{Name: "c"}}, Routes: []Route{{Cluster: "c"}}}},
 		{"route missing cluster", &Desired{Version: "1", Routes: []Route{{Host: "h"}}}},
 		{"route to undefined cluster", &Desired{Version: "1", Routes: []Route{{Host: "h", Cluster: "nope"}}}},

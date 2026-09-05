@@ -597,6 +597,11 @@ defmodule Embervm.NodeRegistry do
            scratch_generation: rt.scratch_generation,
            health: rt.health,
            draining: rt.draining,
+           # Retain the last stateful inventory independently of NodeCapacity.
+           # Capacity disappears on drain or degradation, while expiry and the
+           # stateful activator flap guard still need the exact resident VM fact.
+           stateful_vm_ids: rt.stateful_vm_ids,
+           stateful_vms: rt.stateful_vms,
            dispatchable: not is_nil(facts),
            facts: facts,
            connected: not is_nil(rt.streamer)
@@ -706,12 +711,15 @@ defmodule Embervm.NodeRegistry do
   defp apply_status(state, instance_id, %NodeStatus{} = status) do
     now = state.clock.()
     prev = state.node_runtime[instance_id]
+    stateful_vms = stateful_vms_from_status(status)
+
     rt = %{
       prev
       | last_status_at: now,
         health: :healthy,
         draining: status.draining,
-        stateful_vm_ids: resident_vm_ids(status.stateful_vms),
+        stateful_vm_ids: resident_vm_ids(stateful_vms),
+        stateful_vms: stateful_vms,
         serving_vm_ids: resident_vm_ids(status.serving_vms)
     }
     state = put_in(state.node_runtime[instance_id], rt)
@@ -1766,6 +1774,7 @@ defmodule Embervm.NodeRegistry do
       # the configured node name, not pod_uid, so vm_id is the discriminator that
       # prevents expiry of one co-located brick from ejecting its healthy sibling.
       stateful_vm_ids: [],
+      stateful_vms: [],
       serving_vm_ids: [],
       gen: 0
     }

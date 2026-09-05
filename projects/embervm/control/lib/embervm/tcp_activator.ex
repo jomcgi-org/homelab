@@ -38,12 +38,14 @@ defmodule Embervm.TcpActivator do
   Every stateful connection calls `Embervm.StatefulManager.wake/3`, including
   one for a workload that still has a published endpoint. Reaching this fallback
   after Envoy's active health check is evidence that the published endpoint may
-  be stale. The manager owns the fresh-status flap guard, endpoint withdrawal,
-  wake-rate bound, and ordinary replacement wake. This handler process IS the
-  `from` parked behind the GenServer call (`:infinity`, bounded by the manager's
-  reply contract), so correctness here reduces entirely to the manager's
-  single-flight guarantee. Composite connections retain their direct-splice
-  straggler check because witnessed withdrawal is scoped to stateful workloads.
+  be stale. The manager owns the five-second publish cooldown, the exact-VM
+  healthy and recent-probe flap guard over retained NodeRegistry inventory,
+  endpoint withdrawal, wake-rate bound, and ordinary replacement wake. This
+  handler process IS the `from` parked behind the GenServer call (`:infinity`,
+  bounded by the manager's reply contract), so correctness here reduces
+  entirely to the manager's single-flight guarantee. Composite connections
+  retain their direct-splice straggler check because witnessed withdrawal is
+  scoped to stateful workloads.
 
   ## the byte splice (bidirectional, half-close propagated, framing-agnostic)
 
@@ -246,20 +248,23 @@ defmodule Embervm.TcpActivator do
   # and single-flight the wake in their respective manager; the splice below is
   # identical (opaque L4 bytes either way).
   defp route_connection(csock, class, workload, ctx) do
-    case {class, live_endpoint(ctx, class, workload)} do
-      {:stateful, _endpoint} ->
+    case class do
+      :stateful ->
         # Reaching the activator after Envoy's active health check failed is itself
         # evidence about a published stateful endpoint. StatefulManager owns the
         # flap guard, withdrawal, rate limit, and replacement wake decision.
         wake_and_splice(csock, class, workload, ctx)
 
-      {_class, %{ip: ip, port: vm_port}} when is_binary(ip) and ip != "" and is_integer(vm_port) ->
-        # Straggler: the VM/group is already live (a race with the node Envoy's
-        # fallback decision). Splice directly, no wake.
-        splice_to(csock, class, workload, ip, vm_port, ctx)
-
       _ ->
-        wake_and_splice(csock, class, workload, ctx)
+        case live_endpoint(ctx, class, workload) do
+          %{ip: ip, port: vm_port} when is_binary(ip) and ip != "" and is_integer(vm_port) ->
+            # Straggler: the group is already live (a race with the node Envoy's
+            # fallback decision). Splice directly, no wake.
+            splice_to(csock, class, workload, ip, vm_port, ctx)
+
+          _ ->
+            wake_and_splice(csock, class, workload, ctx)
+        end
     end
   rescue
     e ->

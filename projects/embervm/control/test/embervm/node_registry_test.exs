@@ -69,6 +69,7 @@ defmodule Embervm.NodeRegistryTest do
       mem_budget_mib: Keyword.get(opts, :mem_budget_mib, 3584),
       cpu_budget_millicores: Keyword.get(opts, :cpu_budget_millicores, 2000),
       draining: Keyword.get(opts, :draining, false),
+      stateful_vms: Keyword.get(opts, :stateful_vms, []),
       cpu_vendor: Keyword.get(opts, :cpu_vendor, ""),
       scratch_generation: Keyword.get(opts, :scratch_generation, ""),
       build_error: ""
@@ -169,13 +170,21 @@ defmodule Embervm.NodeRegistryTest do
 
     # Draining must retract capacity the instant it is observed, even though the
     # stream is still healthy.
-    :ok = NodeRegistry.inject_status(reg, "node-4", node_status(draining: true))
+    vm = %StatefulVm{vm_id: "vm-live", workload: "db", healthy: true, last_probe_unix_ms: 123}
+    :ok = NodeRegistry.inject_status(reg, "node-4", node_status(draining: true, stateful_vms: [vm]))
     assert NodeRegistry.capacity(table) == []
 
     snapshot = NodeRegistry.status(reg)
     assert snapshot["node-4"].health == :healthy
     assert snapshot["node-4"].draining
     refute snapshot["node-4"].dispatchable
+    assert snapshot["node-4"].stateful_vm_ids == ["vm-live"]
+
+    assert [%{vm_id: "vm-live", healthy: true, last_probe_unix_ms: 123}] =
+             Enum.map(
+               snapshot["node-4"].stateful_vms,
+               &Map.take(&1, [:vm_id, :healthy, :last_probe_unix_ms])
+             )
   end
 
   # -- age-out + reassignment ------------------------------------------------
