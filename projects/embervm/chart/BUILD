@@ -113,6 +113,7 @@ py_test(
         "values.yaml",
         "//projects/embervm/deploy:application",
         "//projects/embervm/deploy:deploy_values",
+        "//projects/embervm/deploy:gke_values",
         "//projects/embervm/dev/deploy:application",
         "//projects/embervm/dev/deploy:deploy_values",
         "@multitool//tools/helm",
@@ -123,6 +124,9 @@ py_test(
     env = {
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
         "PROD_VALUES": "$(rootpath //projects/embervm/deploy:deploy_values)",
+        # The hub overlay, so the agent MCP kernel token test reads the file
+        # that actually carries it.
+        "GKE_VALUES": "$(rootpath //projects/embervm/deploy:gke_values)",
         "DEV_VALUES": "$(rootpath //projects/embervm/dev/deploy:deploy_values)",
         # The Applications, so releaseName is read from where it is DECLARED.
         "PROD_APPLICATION": "$(rootpath //projects/embervm/deploy:application)",

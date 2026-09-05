@@ -192,6 +192,65 @@ def test_ensure_persistence_mountpoint_writable(tmp_path, monkeypatch):
     shim._ensure_persistence_mountpoint_writable(str(tmp_path / "missing"))
 
 
+def test_root_config_rewrite_mcp_directory_ownership_and_symlink_guard(
+    tmp_path, monkeypatch
+):
+    if os.geteuid() != 0:
+        pytest.skip("root config ownership test requires root")
+
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 0)
+    chown_calls = []
+    monkeypatch.setattr(
+        shim.os,
+        "chown",
+        lambda path, uid, gid: chown_calls.append((path, uid, gid)),
+    )
+
+    config_dir = tmp_path / "ember-mcp"
+    config_path = config_dir / "claude-mcp.json"
+    monkeypatch.setattr(shim, "CLAUDE_MCP_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(shim, "CLAUDE_MCP_CONFIG_PATH", str(config_path))
+    shim._create_claude_mcp_config_dir()
+    assert (str(config_dir), 0, 0) in chown_calls
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    codex_home = workspace / ".codex"
+    codex_home.mkdir()
+    codex_config = codex_home / "config.toml"
+    codex_config.write_text("old = true\n")
+    os.chmod(codex_config, 0o444)
+    old_inode = codex_config.stat().st_ino
+    real_unlink = os.unlink
+    unlink_calls = []
+
+    def recording_unlink(path):
+        unlink_calls.append(path)
+        real_unlink(path)
+
+    monkeypatch.setattr(shim.os, "unlink", recording_unlink)
+    codex = shim.CodexProcess(str(workspace), "codex")
+    codex._write_model_config(str(codex_home))
+    assert str(codex_config) in unlink_calls
+    assert codex_config.stat().st_ino != old_inode
+
+    config_dir.rmdir()
+    symlink_target = tmp_path / "symlink-target"
+    symlink_target.mkdir()
+    config_dir.symlink_to(symlink_target, target_is_directory=True)
+    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, "http://agents.test:8092/mcp")
+    monkeypatch.setattr(shim, "_agent_mcp_endpoint_alive", lambda _url: True)
+    claude = shim.ClaudeProcess.__new__(shim.ClaudeProcess)
+    claude.workspace = str(workspace)
+    claude.executable = "claude"
+    claude.fatal_error = None
+    monkeypatch.setattr(claude, "_configure_git", lambda: None)
+
+    with pytest.raises(shim.StartupError, match="found symbolic link") as exc_info:
+        claude._spawn()
+    assert str(config_dir) in str(exc_info.value)
+
+
 FAKE_CLI_INIT_AFTER_INPUT = r"""#!/usr/bin/env python3
 import json
 import os
@@ -1310,6 +1369,7 @@ def test_codex_config_uses_subscription_endpoint_override(tmp_path, monkeypatch)
     assert config["model_provider"] == "ember-openai"
     assert config["sandbox_mode"] == "danger-full-access"
     assert config["approval_policy"] == "never"
+    assert config["projects"][str(tmp_path / "workspace")]["trust_level"] == ("trusted")
     assert config["tools"]["web_search"] is True
     assert config["model_providers"]["ember-openai"]["wire_api"] == "responses"
 
@@ -1442,6 +1502,23 @@ def test_codex_resume_by_thread_id(tmp_path, monkeypatch):
         instructions = request["params"]["developerInstructions"]
         assert shim.SANDBOX_PROMPT in instructions
         assert "CALLER-MARKER" in instructions
+    manager._close_process()
+
+
+def test_codex_prompt_describes_written_agent_mcp_config(tmp_path, monkeypatch):
+    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, "http://agents.test:8092/mcp")
+    manager = _codex_manager(tmp_path, monkeypatch)
+    manager.turn("first", model="luna")
+    requests = [
+        json.loads(line)
+        for line in (tmp_path / "codex-rpc.jsonl").read_text().splitlines()
+    ]
+    thread_start = next(
+        request for request in requests if request["method"] == "thread/start"
+    )
+    instructions = thread_start["params"]["developerInstructions"]
+    assert "only in-cluster service you can reach" in instructions
+    assert "in-cluster services are not" not in instructions
     manager._close_process()
 
 
@@ -3501,11 +3578,13 @@ def test_claude_spawn_includes_include_partial_messages(tmp_path, monkeypatch):
 
 def test_claude_spawn_uses_strict_agent_mcp_config(tmp_path, monkeypatch):
     config_dir = tmp_path / "ember-mcp"
+    config_dir.mkdir()
     config_path = config_dir / "claude-mcp.json"
     args_path = tmp_path / "args.json"
     agent_mcp_url = "http://agents.test:8092/mcp"
     monkeypatch.setattr(shim, "CLAUDE_MCP_CONFIG_DIR", str(config_dir))
     monkeypatch.setattr(shim, "CLAUDE_MCP_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(shim, "_agent_mcp_endpoint_alive", lambda _url: True)
     monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, agent_mcp_url)
     monkeypatch.setenv("FAKE_ARGS", str(args_path))
 
@@ -3519,6 +3598,115 @@ def test_claude_spawn_uses_strict_agent_mcp_config(tmp_path, monkeypatch):
     }
     assert config_path.stat().st_mode & 0o777 == 0o444
     assert config_dir.stat().st_mode & 0o777 == 0o755
+    manager._close_process(kill=True)
+
+
+def test_agent_mcp_probe_treats_http_error_as_alive(monkeypatch):
+    captured = {}
+    monkeypatch.delenv(shim.EGRESS_PORT_ENV, raising=False)
+
+    class ErrorOpener:
+        def open(self, request, timeout):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            raise shim.urllib.error.HTTPError(
+                request.full_url, 401, "unauthorized", {}, None
+            )
+
+    def build_opener(handler):
+        captured["proxies"] = handler.proxies
+        return ErrorOpener()
+
+    monkeypatch.setattr(shim.urllib.request, "build_opener", build_opener)
+
+    assert shim._agent_mcp_endpoint_alive("http://agents.test:8092/mcp")
+    assert captured["timeout"] == 3.0
+    assert captured["proxies"] == {
+        "http": "http://127.0.0.1:1024",
+        "https": "http://127.0.0.1:1024",
+    }
+    assert captured["request"].get_method() == "POST"
+    assert captured["request"].get_header("Content-type") == "application/json"
+    assert captured["request"].get_header("Accept") == (
+        "application/json, text/event-stream"
+    )
+    assert json.loads(captured["request"].data)["method"] == "initialize"
+
+
+def test_agent_mcp_probe_timeout_is_not_alive(monkeypatch):
+    class TimeoutOpener:
+        def open(self, _request, timeout):
+            assert timeout == 3.0
+            raise socket.timeout("stalled")
+
+    monkeypatch.setattr(
+        shim.urllib.request,
+        "build_opener",
+        lambda _handler: TimeoutOpener(),
+    )
+
+    assert not shim._agent_mcp_endpoint_alive("http://agents.test:8092/mcp")
+
+
+def test_claude_spawn_omits_failed_mcp_probe_and_uses_network_prompt(
+    tmp_path, monkeypatch, capsys
+):
+    config_dir = tmp_path / "ember-mcp"
+    config_path = config_dir / "claude-mcp.json"
+    args_path = tmp_path / "args.json"
+    agent_mcp_url = "http://agents.test:8092/mcp"
+    monkeypatch.setattr(shim, "CLAUDE_MCP_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(shim, "CLAUDE_MCP_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(shim, "_agent_mcp_endpoint_alive", lambda _url: False)
+    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, agent_mcp_url)
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+
+    manager = _manager(tmp_path, monkeypatch)
+    manager.turn("make changes")
+    argv = json.loads(args_path.read_text())
+    prompt = argv[argv.index("--append-system-prompt") + 1]
+    assert "--mcp-config" not in argv
+    assert "--strict-mcp-config" not in argv
+    assert "in-cluster services are not" in prompt
+    assert "only in-cluster service you can reach" not in prompt
+    assert not config_path.exists()
+    warning = capsys.readouterr().err
+    assert agent_mcp_url in warning
+    assert "probe failed or timed out" in warning
+    manager._close_process(kill=True)
+
+
+def test_claude_http_error_probe_configures_mcp_and_prompt(tmp_path, monkeypatch):
+    config_dir = tmp_path / "ember-mcp"
+    config_dir.mkdir()
+    config_path = config_dir / "claude-mcp.json"
+    args_path = tmp_path / "args.json"
+    agent_mcp_url = "http://agents.test:8092/mcp"
+
+    class ErrorOpener:
+        def open(self, request, timeout):
+            raise shim.urllib.error.HTTPError(
+                request.full_url, 401, "unauthorized", {}, None
+            )
+
+    monkeypatch.setattr(
+        shim.urllib.request,
+        "build_opener",
+        lambda _handler: ErrorOpener(),
+    )
+    monkeypatch.setattr(shim, "CLAUDE_MCP_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(shim, "CLAUDE_MCP_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, agent_mcp_url)
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+
+    manager = _manager(tmp_path, monkeypatch)
+    manager.turn("make changes")
+    argv = json.loads(args_path.read_text())
+    prompt = argv[argv.index("--append-system-prompt") + 1]
+    assert "--mcp-config" in argv
+    assert "--strict-mcp-config" in argv
+    assert "only in-cluster service you can reach" in prompt
+    assert "in-cluster services are not" not in prompt
     manager._close_process(kill=True)
 
 
@@ -3766,26 +3954,21 @@ def test_progress_pusher_collapses_rapid_events_to_latest():
     assert pushed == ["second"]
 
 
-def test_compose_system_prompt(monkeypatch):
-    monkeypatch.delenv(shim.AGENT_MCP_URL_ENV, raising=False)
+def test_compose_system_prompt():
     assert shim.compose_system_prompt(None) == shim.SANDBOX_PROMPT
     assert shim.compose_system_prompt("  ") == shim.SANDBOX_PROMPT
-    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, "")
-    assert shim.compose_system_prompt(None) == shim.SANDBOX_PROMPT
     composed = shim.compose_system_prompt("X")
     assert composed.startswith(shim.SANDBOX_PROMPT + "\n")
     assert "X" in composed
 
 
-def test_compose_system_prompt_describes_configured_agent_mcp(monkeypatch):
-    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, "http://agents.test:8092/mcp")
-    composed = shim.compose_system_prompt()
+def test_compose_system_prompt_describes_configured_agent_mcp():
+    composed = shim.compose_system_prompt(agent_mcp_configured=True)
     assert (
         "only in-cluster service you can reach is the `agents` MCP server" in composed
     )
     assert "in-cluster services are not" not in composed
 
-    monkeypatch.delenv(shim.AGENT_MCP_URL_ENV)
     composed = shim.compose_system_prompt()
     assert "in-cluster services are not" in composed
     assert "only in-cluster service you can reach" not in composed
@@ -6001,6 +6184,7 @@ def test_pi_argv_constrains_the_context_budget(tmp_path, monkeypatch):
     still succeeds, it just spends the window on discovered context or a default
     prompt instead of the task, and the answers quietly get worse.
     """
+    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, "http://agents.test:8092/mcp")
     manager = _pi_manager(tmp_path, monkeypatch)
     manager.turn("hello", model="spark", system_prompt="CALLER-MARKER")
     argv = json.loads((tmp_path / "pi-args.jsonl").read_text().splitlines()[0])
@@ -6012,6 +6196,8 @@ def test_pi_argv_constrains_the_context_budget(tmp_path, monkeypatch):
     assert "You are a focused coding agent." in system_prompt
     assert shim.SANDBOX_PROMPT in system_prompt
     assert "CALLER-MARKER" in system_prompt
+    assert "in-cluster services are not" in system_prompt
+    assert "only in-cluster service you can reach" not in system_prompt
 
     # Discovery of every kind is off: context files (AGENTS.md/CLAUDE.md),
     # extensions, skills and prompt templates all inject tokens we did not

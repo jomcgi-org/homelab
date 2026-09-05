@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 import zlib
 
@@ -738,10 +739,10 @@ SANDBOX_PROMPT = (
 )
 
 
-def compose_system_prompt(caller_prompt=None):
+def compose_system_prompt(caller_prompt=None, agent_mcp_configured=False):
     """Join the shim-owned sandbox prompt with an optional caller prompt."""
     sandbox_prompt = SANDBOX_PROMPT
-    if os.environ.get(AGENT_MCP_URL_ENV):
+    if agent_mcp_configured:
         sandbox_prompt = sandbox_prompt.replace(
             SANDBOX_NETWORK_EGRESS_PROMPT, SANDBOX_AGENT_MCP_PROMPT
         )
@@ -1156,7 +1157,12 @@ def _ensure_cli_dir(path):
 
 
 def _write_read_only_file(path, content):
-    """Rewrite shim-owned configuration and leave it read-only."""
+    """Rewrite shim-owned configuration and block in-place edits and casual drift.
+
+    A CLI-owned parent directory still permits replace-by-rename despite mode
+    0444. The microVM plus the egress sidecar allowlist, not this file mode, are
+    the security boundary.
+    """
     if os.path.lexists(path):
         if _cli_privilege_kwargs():
             # Recreate the inode so a legacy CLI-owned copy becomes root-owned.
@@ -1166,6 +1172,96 @@ def _write_read_only_file(path, content):
     with open(path, "w") as stream:
         stream.write(content)
     os.chmod(path, 0o444)
+
+
+def _validate_claude_mcp_config_dir():
+    """Reject an MCP config directory that is not the shim-owned directory."""
+    if os.path.islink(CLAUDE_MCP_CONFIG_DIR):
+        raise StartupError(
+            "unsafe MCP config directory %s: found symbolic link"
+            % CLAUDE_MCP_CONFIG_DIR
+        )
+    if not os.path.isdir(CLAUDE_MCP_CONFIG_DIR):
+        found = "missing path"
+        if os.path.lexists(CLAUDE_MCP_CONFIG_DIR):
+            found = "non-directory"
+        raise StartupError(
+            "unsafe MCP config directory %s: found %s" % (CLAUDE_MCP_CONFIG_DIR, found)
+        )
+    try:
+        directory_stat = os.stat(CLAUDE_MCP_CONFIG_DIR)
+    except OSError as exc:
+        raise StartupError(
+            "unsafe MCP config directory %s: stat failed: %s"
+            % (CLAUDE_MCP_CONFIG_DIR, exc)
+        ) from exc
+    if os.geteuid() == 0 and directory_stat.st_uid != 0:
+        raise StartupError(
+            "unsafe MCP config directory %s: found owner uid %s, expected 0"
+            % (CLAUDE_MCP_CONFIG_DIR, directory_stat.st_uid)
+        )
+
+
+def _create_claude_mcp_config_dir():
+    """Create the private MCP config directory before any CLI can run."""
+    try:
+        os.mkdir(CLAUDE_MCP_CONFIG_DIR, 0o755)
+    except FileExistsError:
+        pass
+    if os.path.islink(CLAUDE_MCP_CONFIG_DIR):
+        raise StartupError(
+            "unsafe MCP config directory %s: found symbolic link"
+            % CLAUDE_MCP_CONFIG_DIR
+        )
+    if not os.path.isdir(CLAUDE_MCP_CONFIG_DIR):
+        raise StartupError(
+            "unsafe MCP config directory %s: found non-directory"
+            % CLAUDE_MCP_CONFIG_DIR
+        )
+    if os.geteuid() == 0:
+        os.chown(CLAUDE_MCP_CONFIG_DIR, 0, 0)
+    os.chmod(CLAUDE_MCP_CONFIG_DIR, 0o755)
+
+
+def _agent_mcp_endpoint_alive(url, timeout=3.0):
+    """Return whether the MCP endpoint produces any HTTP response."""
+    proxy_env = egress_proxy_env()
+    proxy_handler = urllib.request.ProxyHandler(
+        {
+            "http": proxy_env["http_proxy"],
+            "https": proxy_env["https_proxy"],
+        }
+    )
+    opener = urllib.request.build_opener(proxy_handler)
+    body = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "ember-shim-probe", "version": "1"},
+            },
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
+        method="POST",
+    )
+    try:
+        response = opener.open(request, timeout=timeout)
+        response.close()
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except (urllib.error.URLError, socket.timeout, OSError):
+        return False
 
 
 def _persistence_mount_path():
@@ -1899,11 +1995,9 @@ class ClaudeProcess:
         if session_id:
             command.extend(["--resume", session_id])
         agent_mcp_url = os.environ.get(AGENT_MCP_URL_ENV)
-        if agent_mcp_url:
-            os.makedirs(CLAUDE_MCP_CONFIG_DIR, mode=0o755, exist_ok=True)
-            if _cli_privilege_kwargs():
-                os.chown(CLAUDE_MCP_CONFIG_DIR, 0, 0)
-            os.chmod(CLAUDE_MCP_CONFIG_DIR, 0o755)
+        agent_mcp_configured = False
+        if agent_mcp_url and _agent_mcp_endpoint_alive(agent_mcp_url):
+            _validate_claude_mcp_config_dir()
             mcp_config = {
                 "mcpServers": {"agents": {"type": "http", "url": agent_mcp_url}}
             }
@@ -1914,7 +2008,22 @@ class ClaudeProcess:
             command.extend(
                 ["--mcp-config", CLAUDE_MCP_CONFIG_PATH, "--strict-mcp-config"]
             )
-        command.extend(["--append-system-prompt", compose_system_prompt(system_prompt)])
+            agent_mcp_configured = True
+        elif agent_mcp_url:
+            sys.stderr.write(
+                "ember-claude-shim: warning: agent MCP endpoint %s is not "
+                "reachable: initialize probe failed or timed out after 3.0 seconds\n"
+                % agent_mcp_url
+            )
+            sys.stderr.flush()
+        command.extend(
+            [
+                "--append-system-prompt",
+                compose_system_prompt(
+                    system_prompt, agent_mcp_configured=agent_mcp_configured
+                ),
+            ]
+        )
         child_env = os.environ.copy()
         child_env.update(egress_proxy_env())
         process = subprocess.Popen(
@@ -2000,6 +2109,14 @@ class ClaudeProcess:
             if event is None:
                 continue
             if event.get("type") == "system" and event.get("subtype") == "init":
+                if event.get("mcp_servers") is not None:
+                    # Same visibility as the codex startup-status line in
+                    # CodexProcess._handle_server_request.
+                    sys.stderr.write(
+                        "ember-claude-shim: claude mcp_servers %s\n"
+                        % json.dumps(event.get("mcp_servers"))
+                    )
+                    sys.stderr.flush()
                 self.init_event = event
                 actual_session_id = event.get("session_id")
                 if isinstance(actual_session_id, str) and actual_session_id:
@@ -2423,6 +2540,7 @@ class CodexProcess:
         self._turn_done = threading.Event()
         self._turn_done.set()
         self._write_lock = threading.Lock()
+        self._agent_mcp_configured = False
         # Spawn-time workspace identity, read by the manager's remediation to
         # detect a volume mount hiding the tmpfs workspace this process was
         # spawned against. Same contract as ClaudeProcess.
@@ -2497,8 +2615,7 @@ class CodexProcess:
         with open(os.path.join(codex_home, "auth.json"), "w") as stream:
             json.dump(auth, stream)
 
-    @staticmethod
-    def _write_model_config(codex_home):
+    def _write_model_config(self, codex_home):
         base_url = os.environ.get(
             CODEX_SUBSCRIPTION_BASE_URL_ENV, DEFAULT_CODEX_SUBSCRIPTION_BASE_URL
         )
@@ -2526,6 +2643,9 @@ chatgpt_base_url = %s
 sandbox_mode = "danger-full-access"
 approval_policy = "never"
 
+[projects.%s]
+trust_level = "trusted"
+
 # Codex 0.146.0 binary inspection exposes [tools].web_search, while
 # web_search_request is deprecated because web search is enabled by default.
 [tools]
@@ -2535,7 +2655,11 @@ web_search = true
 name = "ember-openai"
 base_url = %s
 wire_api = "responses"
-""" % (json.dumps(base_url), json.dumps(provider_base_url))
+""" % (
+            json.dumps(base_url),
+            json.dumps(self.workspace),
+            json.dumps(provider_base_url),
+        )
         agent_mcp_url = os.environ.get(AGENT_MCP_URL_ENV)
         if agent_mcp_url:
             config += """
@@ -2545,13 +2669,14 @@ wire_api = "responses"
 url = %s
 """ % json.dumps(agent_mcp_url)
         _write_read_only_file(os.path.join(codex_home, "config.toml"), config)
+        return bool(agent_mcp_url)
 
     def _spawn(self):
         if not _workspace_ready_for_spawn(self.workspace, self.requires_git_checkout):
             raise StartupError("workspace does not exist: %s" % self.workspace)
         child_env = self._child_env()
         self._write_auth_json(child_env["CODEX_HOME"])
-        self._write_model_config(child_env["CODEX_HOME"])
+        self._agent_mcp_configured = self._write_model_config(child_env["CODEX_HOME"])
         process = subprocess.Popen(
             [self.executable, "app-server"],
             cwd=self.workspace,
@@ -2645,6 +2770,14 @@ url = %s
         return str(error)
 
     def _handle_server_request(self, event):
+        if event.get("method") == "mcpServer/startupStatus/updated":
+            # A dead MCP lane is otherwise indistinguishable from a live one
+            # while the prompt asserts the tools exist; stderr lands in the
+            # brick's noded logs.
+            sys.stderr.write(
+                "ember-claude-shim: codex mcp %s\n" % json.dumps(event.get("params"))
+            )
+            sys.stderr.flush()
         if event.get("method") is None or event.get("id") is None:
             return
         try:
@@ -2685,7 +2818,10 @@ url = %s
             "cwd": self.workspace,
             "approvalPolicy": "never",
             "sandbox": "danger-full-access",
-            "developerInstructions": compose_system_prompt(system_prompt),
+            "developerInstructions": compose_system_prompt(
+                system_prompt,
+                agent_mcp_configured=self._agent_mcp_configured,
+            ),
         }
         try:
             result = self._request("thread/resume", params, timeout=INIT_READ_TIMEOUT)
@@ -2779,7 +2915,10 @@ url = %s
                         "cwd": self.workspace,
                         "approvalPolicy": "never",
                         "sandbox": "danger-full-access",
-                        "developerInstructions": compose_system_prompt(system_prompt),
+                        "developerInstructions": compose_system_prompt(
+                            system_prompt,
+                            agent_mcp_configured=self._agent_mcp_configured,
+                        ),
                     },
                 )
                 thread = result.get("thread", {}) if isinstance(result, dict) else {}
@@ -3819,6 +3958,7 @@ class ProcessManager:
         self._remediation_attempts = 0
         self._remediation_thread = None
         _write_git_proxy_helper()
+        _create_claude_mcp_config_dir()
         cli_workspace = os.path.join(self.workspace, "src")
         _ensure_cli_dir(cli_workspace)
         self.claude = ClaudeProcess(cli_workspace, claude_executable)

@@ -29,6 +29,7 @@ outputs against each other finds them, which is what this does.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -58,6 +59,32 @@ def _chart_dir() -> Path:
     if (here / "Chart.yaml").exists():
         return here
     raise RuntimeError("Could not find chart Chart.yaml")
+
+
+def _kernel_boot_args(values_path: Path) -> str:
+    matches = re.findall(
+        r'^\s{4}kernelBootArgs:\s*"([^"]*)"\s*$',
+        values_path.read_text(),
+        re.MULTILINE,
+    )
+    assert len(matches) == 1, (
+        f"expected one noded.firecracker.kernelBootArgs in {values_path}, "
+        f"found {len(matches)}"
+    )
+    return matches[0]
+
+
+def test_gke_agent_mcp_kernel_env_decodes_and_extends_chart_default() -> None:
+    env_prefix = " ember.env.EMBER_AGENT_MCP_URL="
+    default_args = _kernel_boot_args(_chart_dir() / "values.yaml")
+    gke_args = _kernel_boot_args(Path(os.environ["GKE_VALUES"]))
+    prefix, encoded_url = gke_args.split(env_prefix, 1)
+    padded_url = encoded_url + "=" * (-len(encoded_url) % 4)
+
+    assert prefix == default_args
+    assert base64.urlsafe_b64decode(padded_url).decode("utf-8") == (
+        "http://monolith-agents-agents.monolith-agents.svc.cluster.local:8092/mcp"
+    )
 
 
 def _render(
