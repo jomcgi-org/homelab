@@ -483,12 +483,14 @@ func TestMirrorLaneFailClosedWhenUnset(t *testing.T) {
 func TestPlaintextUpstreamInjectsCredentialToInternalDestination(t *testing.T) {
 	type receivedRequest struct {
 		authorization string
+		hostHeader    string
 		tls           bool
 	}
 	received := make(chan receivedRequest, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received <- receivedRequest{
 			authorization: r.Header.Get("Authorization"),
+			hostHeader:    r.Host,
 			tls:           r.TLS != nil,
 		}
 		w.Header().Set("Connection", "close")
@@ -522,13 +524,16 @@ func TestPlaintextUpstreamInjectsCredentialToInternalDestination(t *testing.T) {
 			Header:            "Authorization",
 			EgressTo:          []string{host},
 			PlaintextUpstream: true,
+			// The production client (the codex rmcp connector) sends no
+			// Authorization header at all, so the path opt-in is what admits
+			// injection. Exercise that shape rather than presence-keying.
+			InjectAlwaysPaths: []string{"/v1/data"},
 			value:             "internal-credential",
 		}},
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	request := "GET http://" + net.JoinHostPort(host, port) + "/v1/data HTTP/1.1\r\n" +
 		"Host: " + net.JoinHostPort(host, port) + "\r\n" +
-		"Authorization: guest-placeholder\r\n" +
 		"Connection: close\r\n\r\n"
 	response := driveHandle(t, p, net.JoinHostPort(host, port)+"\n"+request)
 	if !strings.Contains(response, "204 No Content") {
@@ -542,6 +547,9 @@ func TestPlaintextUpstreamInjectsCredentialToInternalDestination(t *testing.T) {
 		}
 		if got.tls {
 			t.Error("internal plaintext upstream received a TLS request")
+		}
+		if want := net.JoinHostPort(host, port); got.hostHeader != want {
+			t.Errorf("upstream Host = %q, want %q (port must survive on a non-443 upstream)", got.hostHeader, want)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("internal plaintext upstream did not receive the request")
