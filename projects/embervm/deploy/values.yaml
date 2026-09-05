@@ -164,13 +164,9 @@ kekRoot:
 artifactEncryption:
   enabled: true
 
-# Node capacity override (cluster-specific; the chart default of 8 is a
-# conservative backstop). node-4 is a ~62Gi box (27% used), and the two platform
-# pools alone (semgrep floor 4 + sandbox floor 4) consume all 8 default slots,
-# leaving zero room for a zip-lane function workload (R1) to prime/miss. Lift the
-# backstop to 16 so functions (og-image and peers, cap 4 each) have headroom; at
-# ~1.5Gi/VM that is ~24Gi worst case, well within budget. This only raises the
-# runaway backstop, not any pool floor.
+# Fleet live-VM ceiling, raised from the chart default of 8 to 16. Every noded
+# pod uses this ceiling unless its brick class overrides it; production has no
+# per-class override yet, so the wildcard and every brick receive 16.
 noded:
   # RAISED from the chart's 60s. This bounds the readiness poll after a COLD
   # boot, which is the base build, and it has to be strictly greater than the

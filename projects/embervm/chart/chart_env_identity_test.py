@@ -379,6 +379,83 @@ def test_noded_admission_model_defaults_observed_and_accepts_reserved():
                 )
 
 
+def test_noded_max_live_vms_accepts_per_class_override(tmp_path: Path):
+    chart = _chart_dir()
+    fleet_value = "11"
+
+    def max_live_vms(document: str) -> str:
+        rendered_env = re.search(
+            r'name:\s*EMBERVM_NODED_MAX_LIVE_VMS\s+value:\s*"([^\"]+)"',
+            document,
+        )
+        assert rendered_env, "noded pod is missing EMBERVM_NODED_MAX_LIVE_VMS"
+        return rendered_env.group(1)
+
+    default_render = _render(
+        "noded-max-live-default",
+        [chart / "values.yaml"],
+        ["bricks.enabled=true", f"noded.maxLiveVMs={fleet_value}"],
+    )
+    default_bricks = [
+        doc
+        for kind, _, doc in _docs(default_render)
+        if kind == "Deployment" and "app.kubernetes.io/component: noded-brick" in doc
+    ]
+    assert default_bricks, (
+        "default max-live render produced no brick Deployment; this test is inert"
+    )
+    assert all(max_live_vms(brick) == fleet_value for brick in default_bricks)
+
+    override = tmp_path / "per-class-max-live.yaml"
+    override.write_text(
+        """bricks:
+  enabled: true
+  classes:
+    - name: small
+      maxLiveVMs: 3
+      resources:
+        requests:
+          cpu: "1"
+          memory: 2Gi
+        limits:
+          memory: 2Gi
+    - name: large
+      resources:
+        requests:
+          cpu: "1"
+          memory: 4Gi
+        limits:
+          memory: 4Gi
+  nodeFloors:
+    - node: test-node
+      class: small
+"""
+    )
+    override_render = _render(
+        "noded-max-live-override",
+        [chart / "values.yaml", override],
+        [f"noded.maxLiveVMs={fleet_value}"],
+    )
+    override_bricks = {
+        name: doc
+        for kind, name, doc in _docs(override_render)
+        if kind == "Deployment" and "app.kubernetes.io/component: noded-brick" in doc
+    }
+    assert len(override_bricks) == 3
+    for name, deployment in override_bricks.items():
+        expected = "3" if "-brick-small" in name else fleet_value
+        assert max_live_vms(deployment) == expected
+
+    for rendered in (default_render, override_render):
+        wildcard = [
+            doc
+            for kind, name, doc in _docs(rendered)
+            if kind == "DaemonSet" and name.endswith("-embervm-noded")
+        ]
+        assert len(wildcard) == 1
+        assert max_live_vms(wildcard[0]) == fleet_value
+
+
 def test_noded_onepassword_item_uses_default_shared_secret_name():
     chart = _chart_dir()
     rendered = _render(

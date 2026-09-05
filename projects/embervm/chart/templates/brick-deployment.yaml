@@ -105,7 +105,7 @@ spec:
       labels:
         {{- include "embervm.brick.labels" (dict "ctx" $ctx "class" $class.name) | nindent 8 }}
     spec:
-      {{- include "embervm.noded.podSpec" (dict "ctx" $ctx "sizeClass" $class.name "resources" $class.resources) | nindent 6 }}
+      {{- include "embervm.noded.podSpec" (dict "ctx" $ctx "sizeClass" $class.name "resources" $class.resources "maxLiveVMs" $class.maxLiveVMs) | nindent 6 }}
 {{- end }}
 
 # Per-node brick FLOOR Deployments (brick-capacity PR-3, ADR embervm/013 sibling
@@ -209,6 +209,6 @@ spec:
       {{- if not $classSpec }}
       {{- fail (printf "bricks.nodeFloors entry for %s references unknown class %q (not in bricks.classes)" $floorIdentifier $class) }}
       {{- end }}
-      {{- include "embervm.noded.podSpec" (dict "ctx" $ctx "sizeClass" $class "resources" $classSpec.resources "nodeSelector" $nodeSelectorMap) | nindent 6 }}
+      {{- include "embervm.noded.podSpec" (dict "ctx" $ctx "sizeClass" $class "resources" $classSpec.resources "maxLiveVMs" $classSpec.maxLiveVMs "nodeSelector" $nodeSelectorMap) | nindent 6 }}
 {{- end }}
 {{- end }}
