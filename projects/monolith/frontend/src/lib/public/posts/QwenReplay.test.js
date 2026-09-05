@@ -39,7 +39,7 @@ test("seeking restores recorded output and independent prefill statistics", asyn
     "Waiting for the first token",
   );
   expect(view.querySelector(".telemetry").textContent).toContain(
-    "No telemetry sample available",
+    "Initial placement",
   );
   const prefill = turn.statsSamples.find(
     (sample) => !sample.unavailable && sample.at < turn.samples[0].at,
@@ -51,7 +51,7 @@ test("seeking restores recorded output and independent prefill statistics", asyn
     prefill.prefillTps.toFixed(1),
   );
   expect(view.querySelector(".telemetry").textContent).toContain(
-    "No telemetry sample available",
+    "Initial placement",
   );
 });
 
@@ -102,4 +102,30 @@ test("tier keys highlight routing and history above the transcript", async () =>
   hot.click();
   await tick();
   expect(view.querySelectorAll(".dimmed").length).toBe(0);
+});
+
+test("initial placement stays stable until polling and controls precede the instrument", async () => {
+  const view = await render();
+  const first = turn.samples.find((item) => item.tiers);
+  const bar = view.querySelector(".activity-bar");
+  const starting = bar.innerHTML;
+  expect(view.querySelector(".capacity").textContent).toContain("10.4 GB");
+  expect(
+    view
+      .querySelector(".controls")
+      .compareDocumentPosition(view.querySelector(".instrument")) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  await seek(first.at - 1);
+  expect(bar.innerHTML).toBe(starting);
+  expect(
+    view.querySelector(".routing-history rect.hot").getAttribute("width"),
+  ).not.toBe("0");
+  await seek(first.at);
+  expect(view.querySelector(".routing-heading").textContent).toContain(
+    "activations",
+  );
+  expect(bar.innerHTML).not.toBe(starting);
+  await seek(0);
+  expect(bar.innerHTML).toBe(starting);
 });

@@ -2,6 +2,15 @@
   import recording from "./qwen-replay.json";
 
   const turn = recording.turns[0];
+  // A visual starting layout, not measured pre-request routing activity.
+  const initialSample = turn.samples.find((item) => item.tiers);
+  const initialPlacement = {
+    hotHits: initialSample.tiers.hotExperts,
+    warmHits: initialSample.tiers.warmExperts,
+    coldHits: initialSample.tiers.coldExperts,
+    unknownHits: 0,
+    totalHits: initialSample.tiers.totalExperts,
+  };
   let position = $state(0);
   let playing = $state(false);
   let highlighted = $state(null);
@@ -23,7 +32,9 @@
           (item) => item.at <= position && item.activity?.totalHits > 0,
         ),
   );
-  let activity = $derived(routingSample?.activity);
+  let initial = $derived(position < initialSample.at);
+  let activity = $derived(initial ? initialPlacement : routingSample?.activity);
+  let placement = $derived(initial ? initialSample.tiers : sample?.tiers);
   let phase = $derived(
     position >= turn.durationMs
       ? "Complete"
@@ -91,6 +102,27 @@
 </script>
 
 <section class="replay" aria-label="Recorded inference on the RTX 4090">
+  <div class="controls">
+    <button type="button" onclick={toggle}
+      >{playing
+        ? "Pause"
+        : position >= turn.durationMs
+          ? "Replay"
+          : "Play"}</button
+    >
+    <label class="timeline"
+      ><span class="sr-only">Recorded time</span><input
+        type="range"
+        min="0"
+        max={turn.durationMs}
+        step="1"
+        bind:value={position}
+        oninput={() => (playing = false)}
+        aria-valuetext={seconds(position)}
+      /></label
+    >
+    <span class="time">{seconds(position)}</span>
+  </div>
   <div class="instrument">
     <header class="instrument-heading">
       <span
@@ -133,15 +165,19 @@
       <header class="routing-heading">
         <strong>Expert routing</strong>
         <span
-          >{activity
-            ? count(activity.totalHits) + " activations"
-            : "Awaiting sample"}</span
+          >{initial
+            ? "Initial placement"
+            : activity
+              ? count(activity.totalHits) + " activations"
+              : "Awaiting sample"}</span
         >
       </header>
       <div
         class="activity-bar"
         role="img"
-        aria-label={"Expert routing: " +
+        aria-label={(initial
+          ? "Initial expert placement: "
+          : "Expert routing: ") +
           tiers
             .map(
               (tier) =>
@@ -180,9 +216,7 @@
             <strong
               >{percent(activity?.[tier.hits], activity?.totalHits)}</strong
             >
-            <span class="capacity"
-              >{gb(sample?.tiers?.[tier.bytes])} capacity</span
-            >
+            <span class="capacity">{gb(placement?.[tier.bytes])} capacity</span>
           </button>
         {/each}
       </div>
@@ -198,11 +232,22 @@
           viewBox="0 0 700 100"
           preserveAspectRatio="none"
           role="img"
-          aria-label="Recorded routing mix over time: hot, warm, and cold expert activations"
+          aria-label="Initial placement until the first sample, then recorded hot, warm, and cold routing"
         >
           <title>Routing mix over recorded time</title>
+          {#each bands(initialPlacement) as band}
+            <rect
+              class={band.key}
+              class:dimmed={highlighted && highlighted !== band.key}
+              x="0"
+              y={band.y}
+              width={(700 * Math.min(position, initialSample.at)) /
+                turn.durationMs}
+              height={band.height}
+            />
+          {/each}
           {#each turn.samples as item, index}
-            {@const start = index ? turn.samples[index - 1].at : 0}
+            {@const start = index ? turn.samples[index - 1].at : item.at}
             {#if item.at <= position}
               {#if item.unavailable || !item.activity?.totalHits}
                 <rect
@@ -244,36 +289,16 @@
       </div>
       <div class="sample-status">
         <span
-          >{routingSample
-            ? "Sample " + seconds(routingSample.at)
-            : "No telemetry sample available"}</span
+          >{initial
+            ? "Starting split: first recorded placement"
+            : routingSample
+              ? "Sample " + seconds(routingSample.at)
+              : "No telemetry sample available"}</span
         >
         <span>Stats {seconds(stats?.at)}</span>
         <span>{count(stats?.activeRequests)} in flight</span>
       </div>
     </section>
-  </div>
-
-  <div class="controls">
-    <button type="button" onclick={toggle}
-      >{playing
-        ? "Pause"
-        : position >= turn.durationMs
-          ? "Replay"
-          : "Play"}</button
-    >
-    <label class="timeline"
-      ><span class="sr-only">Recorded time</span><input
-        type="range"
-        min="0"
-        max={turn.durationMs}
-        step="1"
-        bind:value={position}
-        oninput={() => (playing = false)}
-        aria-valuetext={seconds(position)}
-      /></label
-    >
-    <span class="time">{seconds(position)}</span>
   </div>
 
   <div class="conversation">
