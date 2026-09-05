@@ -382,7 +382,13 @@ func (p *proxy) handle(client net.Conn) {
 				defer up.Close()
 				p.logger.Info("egress allowed (inject, plaintext upstream)", "dest", dest, "dial", dialAddr)
 				_ = client.SetReadDeadline(time.Time{})
-				p.swapPump(br, client, client, up, host, sec)
+				// Carry the port in the upstream Host header. This lane dials a
+				// non-443 listener, and an upstream that routes by virtual host
+				// compares the authority port and all; the 443 lanes pass the bare
+				// host because 443 is the default and is elided. mismatchedAuthority
+				// canonicalises the port away, so the guest's own Host header still
+				// matches.
+				p.swapPump(br, client, client, up, net.JoinHostPort(host, port), sec)
 				return
 			}
 			// Without the internal-only plaintext upstream opt-in, the guest speaks
