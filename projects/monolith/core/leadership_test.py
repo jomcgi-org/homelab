@@ -75,6 +75,7 @@ async def test_db_error_is_follower(monkeypatch):
 async def test_acquire_hook_failure_resigns_and_reacquires(monkeypatch):
     monkeypatch.setattr(leadership, "_acquire_or_renew", lambda *_a: True)
     monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0)
+    monkeypatch.setattr(leadership, "ACQUIRE_BACKOFF_INITIAL", 0)
     released = mock.Mock()
     monkeypatch.setattr(leadership, "_release", released)
     reacquired = asyncio.Event()
@@ -109,6 +110,7 @@ async def test_repeated_acquire_hook_failures_trip_health_flag(monkeypatch):
     monkeypatch.setattr(leadership, "_acquire_or_renew", lambda *_a: True)
     monkeypatch.setattr(leadership, "_release", mock.Mock())
     monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0)
+    monkeypatch.setattr(leadership, "ACQUIRE_BACKOFF_INITIAL", 0)
     next_attempt_started = asyncio.Event()
     acquire_calls = 0
 
@@ -131,6 +133,82 @@ async def test_repeated_acquire_hook_failures_trip_health_flag(monkeypatch):
         elector.consecutive_acquire_failures
         == leadership.MAX_CONSECUTIVE_ACQUIRE_FAILURES
     )
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_acquire_hook_failure_backoff_grows(monkeypatch):
+    class StopElection(Exception):
+        pass
+
+    monkeypatch.setattr(leadership, "_acquire_or_renew", lambda *_a: True)
+    monkeypatch.setattr(leadership, "_release", mock.Mock())
+    monkeypatch.setattr(leadership.random, "uniform", lambda *_a: 1.0)
+    sleep_intervals: list[float] = []
+
+    async def fake_sleep(interval: float) -> None:
+        sleep_intervals.append(interval)
+        if len(sleep_intervals) == 3:
+            raise StopElection
+
+    async def failing_acquire() -> None:
+        raise RuntimeError("singleton startup failed")
+
+    monkeypatch.setattr(leadership.asyncio, "sleep", fake_sleep)
+    elector = leadership.LeaderElector()
+
+    with pytest.raises(StopElection):
+        await elector.run(failing_acquire, mock.AsyncMock())
+
+    assert sleep_intervals == [
+        leadership.ACQUIRE_BACKOFF_INITIAL,
+        leadership.ACQUIRE_BACKOFF_INITIAL * 2,
+        leadership.ACQUIRE_BACKOFF_INITIAL * 4,
+    ]
+    assert sleep_intervals[2] > sleep_intervals[0]
+
+
+@pytest.mark.asyncio
+async def test_observing_follower_resets_acquire_failures(monkeypatch):
+    monkeypatch.setattr(leadership, "_acquire_or_renew", _seq([True, False, False]))
+    monkeypatch.setattr(leadership, "_release", mock.Mock())
+    monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0)
+    monkeypatch.setattr(leadership, "ACQUIRE_BACKOFF_INITIAL", 0)
+    elector = leadership.LeaderElector()
+
+    async def failing_acquire() -> None:
+        raise RuntimeError("singleton startup failed")
+
+    task = asyncio.create_task(elector.run(failing_acquire, mock.AsyncMock()))
+    await asyncio.sleep(0.03)
+
+    assert elector.is_leader is False
+    assert elector.consecutive_acquire_failures == 0
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_resign_failure_does_not_end_election(monkeypatch):
+    monkeypatch.setattr(leadership, "_acquire_or_renew", _seq([True, False]))
+    monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0)
+    resign_attempted = asyncio.Event()
+
+    async def failing_resign() -> None:
+        resign_attempted.set()
+        raise RuntimeError("singleton shutdown failed")
+
+    elector = leadership.LeaderElector()
+    task = asyncio.create_task(elector.run(mock.AsyncMock(), failing_resign))
+    await asyncio.wait_for(resign_attempted.wait(), timeout=0.5)
+    await asyncio.sleep(0)
+
+    assert not task.done()
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

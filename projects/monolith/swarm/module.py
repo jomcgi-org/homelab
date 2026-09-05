@@ -33,6 +33,7 @@ async def _leader_stop(app):
 
 MODULE = _Module(
     name="swarm",
+    leader_priority=0,
     register=register,
     leader_start=_leader_start,
     leader_stop=_leader_stop,

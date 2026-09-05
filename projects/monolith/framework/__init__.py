@@ -21,6 +21,7 @@ from framework.core import (
     build_private_lifespan,
     domain_profile,
     log_task_exception,
+    register_leader_tasks,
     start_leader_singletons,
     stop_leader_singletons,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "build_private_lifespan",
     "domain_profile",
     "log_task_exception",
+    "register_leader_tasks",
     "start_leader_singletons",
     "stop_leader_singletons",
 ]

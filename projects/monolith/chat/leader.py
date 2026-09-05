@@ -15,7 +15,7 @@ import os
 
 from fastapi import FastAPI
 
-from framework import log_task_exception
+from framework import log_task_exception, register_leader_tasks
 
 logger = logging.getLogger("monolith.chat.leader")
 
@@ -82,6 +82,7 @@ async def leader_start(app: FastAPI) -> list[asyncio.Task]:
 
     bot_task = asyncio.create_task(_start_bot_when_ready())
     bot_task.add_done_callback(log_task_exception)
+    register_leader_tasks(app, [bot_task])
     tasks.append(bot_task)
     logger.info("Discord bot starting")
 
@@ -91,6 +92,7 @@ async def leader_start(app: FastAPI) -> list[asyncio.Task]:
 
     drain_task = asyncio.create_task(run_outbox_drain(bot, get_engine()))
     drain_task.add_done_callback(log_task_exception)
+    register_leader_tasks(app, [drain_task])
     tasks.append(drain_task)
     logger.info("Discord outbox drain starting")
 
@@ -134,6 +136,7 @@ async def leader_start(app: FastAPI) -> list[asyncio.Task]:
 
     sweep_task = asyncio.create_task(_lock_sweep_loop())
     sweep_task.add_done_callback(log_task_exception)
+    register_leader_tasks(app, [sweep_task])
     tasks.append(sweep_task)
     logger.info("Message lock sweep started (30s interval)")
 
