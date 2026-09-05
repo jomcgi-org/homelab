@@ -24,6 +24,9 @@ const CURL_TIMEOUT_MS = 32000;
 const CATALOGUE_CHECK_TIMEOUT_MS = 8000;
 const META_MARKER = "\n__EMBER_MCP_META__";
 const MAX_RESULT_CHARS = 60000;
+// Same bound web-research.ts puts on a page: pi.exec buffers the whole body
+// into a string before MAX_RESULT_CHARS can truncate it.
+const MAX_DOWNLOAD_BYTES = 1024 * 1024;
 
 type JsonRpcResponse = {
   jsonrpc?: unknown;
@@ -84,6 +87,8 @@ function curlArgs(url: string, body: string): string[] {
     "8",
     "--max-time",
     String(CURL_MAX_TIME_SECONDS),
+    "--max-filesize",
+    String(MAX_DOWNLOAD_BYTES),
     "--proto",
     "=http,https",
     "--user-agent",
@@ -153,6 +158,13 @@ async function rpc(
     signal,
     timeout: timeoutMs,
   });
+  // A curl killed by the timeout or an abort resolves with code null, which
+  // pi reports as 0; without this check it would read as a protocol fault.
+  if ((response as { killed?: boolean }).killed) {
+    throw new Error(
+      "agents MCP request timed out or was aborted before a response",
+    );
+  }
   if (response.code !== 0) {
     throw new Error(
       `agents MCP request failed before a response: ${text(response.stderr).trim() || `curl exit ${response.code}`}`,
@@ -319,7 +331,13 @@ function stripUndefined(params: Record<string, unknown>) {
   return out;
 }
 
+// Once per pi process: session_start also fires on resume and fork, and each
+// check costs a round trip plus a stderr line in the shim's crash ring.
+let catalogueChecked = false;
+
 async function checkCatalogue(pi: ExtensionAPI): Promise<void> {
+  if (catalogueChecked) return;
+  catalogueChecked = true;
   try {
     const listed = (await rpc(
       pi,
