@@ -31,6 +31,11 @@ defmodule Embervm.TaskStore do
   alias Embervm.OpLog.Op
   alias Embervm.TaskState
 
+  # The submit caller must outlive the Postgres adapter's 20-second append
+  # budget, otherwise the HTTP process exits before TaskStore can return the
+  # retryable unavailable result.
+  @submit_timeout_ms 25_000
+
   @tasks_table :embervm_tasks
   @idem_table :embervm_task_idempotency
 
@@ -59,7 +64,7 @@ defmodule Embervm.TaskStore do
   @spec submit(GenServer.server(), map()) ::
           {:ok, :created, String.t()} | {:ok, :existing, String.t()} | {:error, term()}
   def submit(store \\ __MODULE__, attrs) do
-    GenServer.call(store, {:submit, attrs})
+    GenServer.call(store, {:submit, attrs}, @submit_timeout_ms)
   end
 
   @doc """
@@ -698,6 +703,9 @@ defmodule Embervm.TaskStore do
 
         notify_queued(state, task)
         {:reply, {:ok, :created, task_id}, state}
+
+      {:error, :unavailable} ->
+        {:reply, {:error, :unavailable}, state}
 
       {:error, _reason} = error ->
         {:reply, error, state}
