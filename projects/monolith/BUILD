@@ -4521,6 +4521,7 @@ py_test(
 py_test(
     name = "knowledge_extraction_test",
     srcs = ["knowledge/extraction_test.py"],
+    data = ["knowledge/testdata/codex_session_redacted.txt"],
     imports = ["."],
     deps = [
         ":pkg_knowledge",

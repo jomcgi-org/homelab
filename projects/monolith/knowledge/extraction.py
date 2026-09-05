@@ -48,6 +48,67 @@ REPO_DIFF_INTERVAL_SECS = 3600
 REPO_DIFF_PATCH_CAP = 60_000
 DOC_DRIFT_CAP = 10
 
+_SESSION_BEHAVIOUR_RULES = (
+    "A fact is worth keeping only if it states how something BEHAVES, not "
+    "what a value is. Accepted shapes are: causal, for example `X does Y "
+    "because Z`, `X does not do Y`, or `when A happens, B follows`; "
+    "constraint, for example `the restore marker must be external or "
+    "snapshot recovery repeats stale state`, naming what fails; operational "
+    "state with validity, recording what is enabled, pinned, or configured "
+    "since when, for example `the repo-diff feed has been enabled since the "
+    "rollout`, and carrying `valid_from` and `observed_at`; measured, "
+    "for example `the retry took 47 seconds`, where the number was observed "
+    "rather than read from a file. A constant, default, or setting may appear "
+    "ONLY as the mechanism of a behaviour, phrased as the behaviour, for "
+    "example `past the daily cap the drainer defers the rest an hour`, never "
+    "as a bare value such as `the cap is 40`. Skip restatements of constants, "
+    "docstrings, READMEs, ADRs, commit messages, and anything a reader gets by "
+    "opening one file. Skip anything already stated by a related note unless "
+    "this raw contradicts it; then emit the contradiction with "
+    "`edges.contradicts`. Prefer what cost the session something: failures, "
+    "corrections, workarounds, surprises, contradictions between docs and "
+    "reality, and things confirmed by tool output rather than asserted by the "
+    "agent. `verification_state` is `verified` only when tool output in the "
+    "transcript shows it; the agent saying so is `unverified`. An empty "
+    "`assertions` list is the normal answer for a short or read-only session; "
+    "do not pad."
+)
+
+CODEX_FAILURE_MODES = (
+    (
+        "exit 42 quota exhausted",
+        "Codex quota was exhausted mid-run, and what preceded it",
+    ),
+    (
+        "silent death",
+        "The run ended with no final message, or the last message predates the last "
+        "file write",
+    ),
+    (
+        "correction rounds",
+        "What a review found that the first pass missed, quoted from the spec or "
+        "review",
+    ),
+    (
+        "spec violations",
+        "An instruction the worker did not follow, quoting the instruction",
+    ),
+    (
+        "tests reported green that never ran",
+        "Tests that report 'not run per guardrails', 'Executed 0 out of N', or 'go "
+        "test was not run'",
+    ),
+    (
+        "workarounds taken instead of asking",
+        "A stub, a skipped or deleted assertion, a widened type, a swallowed error",
+    ),
+    (
+        "tool or environment blockers",
+        "Missing binary, Bazel-only generated package, blocked sandbox network, "
+        "podman or docker pulls",
+    ),
+)
+
 
 _SCOPE_PATTERN = r"^(personal|org|repo|environment|session):.+$"
 _FENCED_BLOCK_RE = re.compile(
@@ -335,31 +396,20 @@ def _lens(raw: RawInput) -> str:
             "ARCHITECTURE.md, runbooks, ADRs marked Accepted) makes a claim the diff "
             "contradicts."
         )
-    if raw.source in {"claude-session", "codex-session", "ember-session"}:
+    if raw.source in {"claude-session", "ember-session"}:
+        return _SESSION_BEHAVIOUR_RULES
+    if raw.source == "codex-session":
+        failure_modes = "\n".join(
+            f"- {title}: {description}" for title, description in CODEX_FAILURE_MODES
+        )
         return (
-            "A fact is worth keeping only if it states how something BEHAVES, not "
-            "what a value is. Accepted shapes are: causal, for example `X does Y "
-            "because Z`, `X does not do Y`, or `when A happens, B follows`; "
-            "constraint, for example `the restore marker must be external or "
-            "snapshot recovery repeats stale state`, naming what fails; operational "
-            "state with validity, recording what is enabled, pinned, or configured "
-            "since when, for example `the repo-diff feed has been enabled since the "
-            "rollout`, and carrying `valid_from` and `observed_at`; measured, "
-            "for example `the retry took 47 seconds`, where the number was observed "
-            "rather than read from a file. A constant, default, or setting may appear "
-            "ONLY as the mechanism of a behaviour, phrased as the behaviour, for "
-            "example `past the daily cap the drainer defers the rest an hour`, never "
-            "as a bare value such as `the cap is 40`. Skip restatements of constants, "
-            "docstrings, READMEs, ADRs, commit messages, and anything a reader gets by "
-            "opening one file. Skip anything already stated by a related note unless "
-            "this raw contradicts it; then emit the contradiction with "
-            "`edges.contradicts`. Prefer what cost the session something: failures, "
-            "corrections, workarounds, surprises, contradictions between docs and "
-            "reality, and things confirmed by tool output rather than asserted by the "
-            "agent. `verification_state` is `verified` only when tool output in the "
-            "transcript shows it; the agent saying so is `unverified`. An empty "
-            "`assertions` list is the normal answer for a short or read-only session; "
-            "do not pad."
+            f"{_SESSION_BEHAVIOUR_RULES}\n\n"
+            "Additionally, for implementer sessions with failures, capture facts "
+            f"about:\n{failure_modes}\n\n"
+            "Each atom must quote evidence from a spec line, command, or transcript "
+            "line, and carry `verification_state: verified` only when tool output "
+            "shows it. An empty `assertions` list is the normal answer when none of "
+            "these occurred; do not pad."
         )
     if raw.source == "agent-report":
         return (
