@@ -3,8 +3,8 @@ defmodule Embervm.WorkloadCatalog do
   Pure ETS accessor for the reconciled Workload catalog: NO process of its
   own. `Embervm.WorkloadWatcher` owns the table's lifecycle (creates it on
   init, writes to it after every reconcile), and this module is just the
-  read/write surface both the watcher and readers (today, only
-  `Embervm.TaskStore.cfg_for/1`) call against a table name, never a PID.
+  read/write surface both the watcher and readers (today, `Embervm.TaskStore`)
+  call against a table name, never a PID.
 
   Splitting the accessor from the owning GenServer this way means a reader on
   the hot path (`cfg_for/1`, called from `TaskStore`'s `:fail` handling) never
@@ -102,6 +102,22 @@ defmodule Embervm.WorkloadCatalog do
       case fetch(table, name) do
         {:ok, entry} -> entry.retry
         :error -> Embervm.Retry.default_config()
+      end
+    end
+  end
+
+  @doc "Whether permanent task failures should enter the dead-letter queue."
+  @spec dead_letter_enabled?(String.t()) :: boolean()
+  def dead_letter_enabled?(name), do: dead_letter_enabled?(@table, name)
+
+  @spec dead_letter_enabled?(atom(), String.t()) :: boolean()
+  def dead_letter_enabled?(table, name) do
+    if :ets.whereis(table) == :undefined do
+      true
+    else
+      case fetch(table, name) do
+        {:ok, %{dead_letter_enabled: false}} -> false
+        _ -> true
       end
     end
   end

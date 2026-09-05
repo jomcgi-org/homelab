@@ -150,6 +150,25 @@ defmodule Embervm.WorkloadWatcherTest do
     assert desc.mem_mib == 256
   end
 
+  test "deadLetter.enabled is cataloged with a true default" do
+    for {value, expected} <- [{:absent, true}, {false, false}, {true, true}] do
+      table = unique_table()
+      agent = start_recorder()
+
+      cr =
+        case value do
+          :absent -> valid_cr()
+          enabled -> valid_cr(%{"spec" => %{"invocation" => %{"deadLetter" => %{"enabled" => enabled}}}})
+        end
+
+      watcher = start_watcher(fn -> {:ok, [cr]} end, recording_status_writer(agent), table)
+      :ok = WorkloadWatcher.reconcile_now(watcher)
+
+      assert {:ok, entry} = WorkloadCatalog.fetch(table, "semgrep")
+      assert entry.dead_letter_enabled == expected
+    end
+  end
+
   test "node registration redrive uses the full LIST reconcile path" do
     table = unique_table()
     status = start_recorder()
@@ -314,6 +333,30 @@ defmodule Embervm.WorkloadWatcherTest do
     assert {_ns, "sandbox-session", status_map} = ready_status(recorded_calls(agent), "sandbox-session")
     assert status_map["observedGeneration"] == 1
     refute Map.has_key?(status_map, "conditions")
+  end
+
+  test "session persistence does not carry the unenforced retention field" do
+    table = unique_table()
+    agent = start_recorder()
+
+    cr =
+      session_cr(%{
+        "spec" => %{
+          "persistence" => %{
+            "memory" => false,
+            "filesystem" => %{"enabled" => true, "retention" => 7, "sizeBytes" => 4096}
+          }
+        }
+      })
+
+    watcher = start_watcher(fn -> {:ok, [cr]} end, recording_status_writer(agent), table)
+    :ok = WorkloadWatcher.reconcile_now(watcher)
+
+    assert {:ok, entry} = WorkloadCatalog.fetch(table, "sandbox-session")
+    assert entry.persistence.memory == false
+    assert entry.persistence.filesystem.enabled == true
+    assert entry.persistence.filesystem.size_bytes == 4096
+    refute Map.has_key?(entry.persistence.filesystem, :retention)
   end
 
   test "session class: session block defaults apply when fields are omitted" do
