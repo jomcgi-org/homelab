@@ -13,24 +13,46 @@ describe("EmberStage state words", () => {
     ["evicted", "Offline"],
     ["destroying", "Offline"],
     ["destroyed", "Offline"],
-    ["preempted", "Rehoming"],
   ])("renders %s as %s", async (vmState, expected) => {
     expect(await renderStage({ vmState })).toContain(expected);
   });
 
-  it("renders an unmapped state as Offline", async () => {
-    expect(await renderStage({ vmState: "future_state" })).toContain("Offline");
-  });
+  it.each([null, "future_state"])(
+    "renders unknown state %s as neutral asleep copy",
+    async (vmState) => {
+      expect(await renderStage({ vmState })).toContain("Asleep");
+      expect(await renderStage({ vmState })).not.toContain("Offline");
+    },
+  );
 
-  it("explains preemption and shows its duration", async () => {
+  it("keeps a draining serving instance in its normal state", async () => {
     const html = await renderStage({
       vmState: "serving",
-      preempted: { since_ms: 300_000, phase: "restoring" },
+      preempted: { since_ms: 0, phase: "confirming" },
+      displayPreempted: false,
+    });
+
+    expect(html).toContain("Awake");
+    expect(html).not.toContain("Rehoming");
+    expect(html).not.toContain("shut down at short notice");
+  });
+
+  it.each([
+    ["confirming", "It is checking whether the machine is really gone."],
+    ["restoring", "It is coming back with its data."],
+    ["cold", "It is starting fresh."],
+  ])("explains the %s preemption phase", async (phase, phaseCopy) => {
+    const html = await renderStage({
+      vmState: "failed",
+      preempted: { since_ms: 300_000, phase },
+      displayPreempted: true,
     });
 
     expect(html).toContain(
-      "The Spot node hosting this Postgres was preempted. The control plane is restoring the volume from the object store.",
+      "The machine running this database was shut down at short notice, which is normal on the cheap capacity it runs on. It is coming back automatically with its data intact.",
     );
+    expect(html).toContain(phaseCopy);
+    expect(html).toContain("Rehoming");
     expect(html).toContain("down for 5m");
   });
 });

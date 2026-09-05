@@ -10,11 +10,13 @@
   import { onMount } from "svelte";
   import { fade } from "svelte/transition";
   import "./ember-stage.css";
+  import { preemptionCopy } from "./preemption-copy.js";
 
-  /** @type {{ vmState?: string|null, preempted?: {since_ms?: number|null, phase?: string}|null, totalSavedMibS?: number|null, stopwatchMs?: number, running?: boolean, wakePromise?: string, present?: number|null }} */
+  /** @type {{ vmState?: string|null, preempted?: {since_ms?: number|null, phase?: string}|null, displayPreempted?: boolean, totalSavedMibS?: number|null, stopwatchMs?: number, running?: boolean, wakePromise?: string, present?: number|null }} */
   let {
     vmState = null,
     preempted = null,
+    displayPreempted = false,
     totalSavedMibS = null,
     stopwatchMs = 0,
     running = false,
@@ -144,7 +146,7 @@
   const COLD_STATES = new Set(["banked", "checkpointed"]);
 
   function effectiveState() {
-    if (preempted) return "preempted";
+    if (displayPreempted) return "preempted";
     if (running && (vmState == null || COLD_STATES.has(vmState))) {
       return "relighting";
     }
@@ -270,7 +272,9 @@
   // Reactive mirror of effectiveState() for the derived display bits below
   // (the rAF loop reads effectiveState() directly each frame instead).
   let optimisticWaking = $derived(
-    !preempted && running && (vmState == null || COLD_STATES.has(vmState)),
+    !displayPreempted &&
+      running &&
+      (vmState == null || COLD_STATES.has(vmState)),
   );
 
   // ── Reduced-motion static fallback: two-state cell fill, no rAF loop ──
@@ -318,10 +322,14 @@
   // falls back to the raw + optimistic derivation.
   let effDisplay = $derived(
     displayState ??
-      (preempted ? "preempted" : optimisticWaking ? "relighting" : vmState),
+      (displayPreempted
+        ? "preempted"
+        : optimisticWaking
+          ? "relighting"
+          : vmState),
   );
 
-  let stateWord = $derived(STATE_WORD[effDisplay ?? ""] ?? "Offline");
+  let stateWord = $derived(STATE_WORD[effDisplay ?? ""] ?? "Asleep");
 
   let heroKind = $derived(
     effDisplay === "preempted"
@@ -383,10 +391,9 @@
           in:fade={{ duration: 260 }}
         >
           {#if heroKind === "preempted"}
-            <span class="es-preempted-copy"
-              >The Spot node hosting this Postgres was preempted. The control
-              plane is restoring the volume from the object store.</span
-            >
+            <span class="es-preempted-copy">
+              {preemptionCopy(preempted?.phase)}
+            </span>
             {#if downFor(preempted?.since_ms)}
               <span class="es-preempted-duration"
                 >{downFor(preempted?.since_ms)}</span
@@ -610,9 +617,9 @@
   .es-preempted-copy,
   .es-preempted-duration {
     color: var(--es-ink);
-    background: color-mix(in srgb, var(--em-amber) 38%, var(--es-panel));
-    border: 1px solid var(--em-amber);
-    box-shadow: var(--em-shadow-soft);
+    background: color-mix(in srgb, var(--es-amber) 38%, var(--es-panel));
+    border: 1px solid var(--es-amber);
+    box-shadow: var(--es-shadow-soft);
     border-radius: 8px;
   }
 

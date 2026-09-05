@@ -79,6 +79,7 @@ async def postgres_status(request: Request) -> dict:
         return {"configured": True, "present": present, "error": str(exc)}
     shaped = core.shape_pg_status(status)
     preempted = core.preemption_status(shaped)
+    display_preempted = core.display_preempted(shaped)
     total = await core.record_demo_pg_savings(shaped["state"], shaped["generation"])
     if total is not None:
         return {
@@ -86,6 +87,7 @@ async def postgres_status(request: Request) -> dict:
             "present": present,
             **shaped,
             "preempted": preempted,
+            "display_preempted": display_preempted,
             "total_saved_mib_s": total,
         }
     return {
@@ -93,6 +95,7 @@ async def postgres_status(request: Request) -> dict:
         "present": present,
         **shaped,
         "preempted": preempted,
+        "display_preempted": display_preempted,
     }
 
 
@@ -166,20 +169,18 @@ async def postgres_query(body: PostgresQueryRequest, request: Request) -> dict:
             )
         except Exception as exc:  # noqa: BLE001 - surface connect/query failures in-band
             logger.warning("demo-postgres query roundtrip failed: %s", exc)
-            classification = (
-                "preempted"
-                if core.preemption_status(before) is not None
-                else core.classify_wake(before)
-            )
+            classification = core.classify_wake(before)
+            preempted = core.preemption_status(before)
+            display_preempted = core.display_preempted(before)
             return {
                 "error": (
-                    "the brick hosting this demo was preempted, "
-                    "the control plane is restoring it"
-                    if classification == "preempted"
+                    core.preemption_copy(preempted["phase"] if preempted else None)
+                    if display_preempted and preempted is not None
                     else str(exc)
                 ),
                 "mode": body.mode,
                 "classification": classification,
+                "display_preempted": display_preempted,
                 "phase_before": (before or {}).get("state"),
                 "total_ms": (perf_counter() - started) * 1000,
             }
@@ -234,6 +235,7 @@ async def postgres_query(body: PostgresQueryRequest, request: Request) -> dict:
         **result,
         "total_ms": (perf_counter() - started) * 1000,
         "classification": core.classify_wake(before),
+        "display_preempted": core.display_preempted(before),
         "phase_before": (before or {}).get("state"),
         "generation": (before or {}).get("generation"),
         "parked_ms": parked_ms,

@@ -59,7 +59,16 @@ def test_public_app_api_health_surfaces_synthetic_probe_failure(monkeypatch):
     async def read_probe(_):
         return row
 
+    async def live_status():
+        return {
+            "state": "failed",
+            "anchor": {"health": "down", "draining": False},
+            "recovery": "restoring",
+        }
+
     monkeypatch.setattr(health, "read_probe", read_probe)
+    monkeypatch.setattr(health.core, "EMBERVM_URL", "http://embervm")
+    monkeypatch.setattr(health.core, "cached_demo_pg_status", live_status)
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
@@ -71,6 +80,8 @@ def test_public_app_api_health_surfaces_synthetic_probe_failure(monkeypatch):
     assert resp.status_code == 503
     body = resp.json()
     assert body["components"]["ember_postgres"]["ok"] is False
+    assert body["components"]["ember_postgres"]["cause"] == "preemption"
+    assert body["causes"] == {"ember_postgres": "preemption"}
     assert "demo_postgres" not in body["components"]
 
 

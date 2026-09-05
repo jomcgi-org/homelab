@@ -63,6 +63,15 @@ export function shouldRetry(elapsedMs, retryWindow) {
   return elapsedMs < retryWindow;
 }
 
+const RETRY_TIMEOUT_COPY =
+  "the demo took too long to answer and may be waking from cold, try again in a moment";
+
+/** Keep a preemption explanation when a slow failed attempt exhausts retries. */
+export function retryWindowExpiredResult(lastResult) {
+  if (lastResult?.classification === "preempted") return lastResult;
+  return { ...lastResult, error: RETRY_TIMEOUT_COPY };
+}
+
 /**
  * Returns an indicative live VM phase. Status is cached server-side for about
  * 500ms and polled every 700ms, so this can lag reality by about 1s. It shows

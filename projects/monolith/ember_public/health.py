@@ -7,6 +7,7 @@ has one source of truth for the ember demos.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 import ember_public.core as core
@@ -40,8 +41,12 @@ def synthetic_probe_health(demo: str, staleness_s: float):
             preempted = None
             if demo == "postgres" and core.EMBERVM_URL:
                 try:
-                    live_status = await core.cached_demo_pg_status()
+                    live_status = await asyncio.wait_for(
+                        core.cached_demo_pg_status(), 2.0
+                    )
                     preempted = core.preemption_status(live_status)
+                except TimeoutError:
+                    preempted = None
                 except Exception:  # noqa: BLE001 - attribution is best-effort
                     preempted = None
             if preempted is not None:

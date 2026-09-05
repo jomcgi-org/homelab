@@ -12,6 +12,7 @@
   // and rate limits live.
   import { onMount } from "svelte";
   import { servingWakeMs } from "$lib/public/fcstory/metrics.js";
+  import { preemptionCopy } from "$lib/public/ember/preemption-copy.js";
   import "$lib/public/ember/ember.css";
   import "./landing.css";
 
@@ -41,9 +42,9 @@
   };
 
   let status = $state(data.status);
-  let isPreempted = $derived(!!status?.preempted);
+  let isPreempted = $derived(!!status?.display_preempted);
   let stateWord = $derived(
-    STATE_WORD[isPreempted ? "preempted" : (status?.state ?? "")] ?? "offline",
+    STATE_WORD[isPreempted ? "preempted" : (status?.state ?? "")] ?? null,
   );
   let dotClass = $derived(
     isPreempted
@@ -136,7 +137,7 @@
         <span class="dot {dotClass}"></span>
         <span class="live-text">
           {#if isPreempted}
-            the demo Postgres is being rehomed after a Spot preemption.
+            {preemptionCopy(status?.preempted?.phase)}
             <a href="/ember/postgres">watch the automatic recovery</a>
           {:else if stateWord === "awake"}
             the demo Postgres is <b>awake</b> right now.
@@ -145,8 +146,8 @@
             the demo Postgres is <b>{stateWord}</b>.
             <a href="/ember/postgres">watch it on the live demo</a>
           {:else}
-            the demo Postgres is <b>{stateWord}</b> right now.
-            {#if stateWord === "asleep"}
+            the demo Postgres is <b>{stateWord ?? "asleep"}</b> right now.
+            {#if stateWord == null || stateWord === "asleep"}
               <a href="/ember/postgres">wake it yourself on the live demo</a>
             {:else}
               <a href="/ember/postgres">open the console</a>
@@ -159,7 +160,7 @@
         <span class="sep">·</span>
         <span><b>~{vmRestore} ms</b> VM restore</span>
         <span class="sep">·</span>
-        <span>{stateWord} now</span>
+        <span>{stateWord ?? "asleep"} now</span>
         <span class="sep">·</span>
         <a
           class="src"

@@ -4,6 +4,7 @@ import {
   includedSnapshotWait,
   parkedMsBreakdown,
   phaseLabel,
+  retryWindowExpiredResult,
   shouldRetry,
 } from "./console-retry.js";
 
@@ -46,6 +47,27 @@ describe("shouldRetry", () => {
 
   it("refuses a retry after a slow attempt has passed its retry window", () => {
     expect(shouldRetry(20000, 15000)).toBe(false);
+  });
+});
+
+describe("retryWindowExpiredResult", () => {
+  it("preserves preemption copy when the retry window expires", () => {
+    const lastResult = {
+      ok: false,
+      classification: "preempted",
+      error: "phase-specific preemption copy",
+    };
+    expect(retryWindowExpiredResult(lastResult)).toEqual(lastResult);
+  });
+
+  it("replaces an ordinary transient error with retry guidance", () => {
+    expect(
+      retryWindowExpiredResult({ ok: false, error: "connection refused" }),
+    ).toEqual({
+      ok: false,
+      error:
+        "the demo took too long to answer and may be waking from cold, try again in a moment",
+    });
   });
 });
 
