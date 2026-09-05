@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -940,11 +941,15 @@ func dirExists(path string) bool {
 // EvictSnapshot misrouted a base ref into the session path and no-op'd.
 func TestEvictBaseLocalRemovesSupersededDir(t *testing.T) {
 	s := newStoreTestServer(t, newFakeStore())
+	var logs bytes.Buffer
+	s.logger = slog.New(slog.NewTextHandler(&logs, nil))
 
 	current := "semgrep__current00"
 	superseded := "semgrep__old0000000"
 	seedLocalBase(t, s, "semgrep", current)
 	oldDir := seedLocalBase(t, s, "semgrep", superseded)
+	s.servingImage.add(servingImageEntry{baseKey: current, workload: "semgrep", runtimeImageRef: "runtime:v2"})
+	s.servingImage.add(servingImageEntry{baseKey: superseded, workload: "semgrep", handlerPath: filepath.Join(oldDir, "handler.zip"), runtimeImageRef: "runtime:v2"})
 
 	if err := evictBase(s, "semgrep", superseded); err != nil {
 		t.Fatalf("evict superseded base: %v", err)
@@ -955,12 +960,28 @@ func TestEvictBaseLocalRemovesSupersededDir(t *testing.T) {
 	if _, ok := s.bases.get(superseded); ok {
 		t.Fatal("superseded base still registered after eviction")
 	}
+	if _, ok := s.servingImage.get(superseded); ok {
+		t.Fatal("superseded serving image still registered after its base bundle was removed")
+	}
 	// The current base is untouched.
 	if _, ok := s.bases.get(current); !ok {
 		t.Fatal("current base was wrongly forgotten")
 	}
+	if _, ok := s.servingImage.get(current); !ok {
+		t.Fatal("current serving image was wrongly forgotten")
+	}
 	if !dirExists(filepath.Join(s.cfg.SnapshotRoot, "bases", current)) {
 		t.Fatal("current base dir was wrongly removed")
+	}
+	logLine := logs.String()
+	for _, field := range []string{
+		"workload_id=semgrep",
+		"base_id=semgrep__old0000000",
+		"reason=superseded_base_reconcile",
+	} {
+		if !strings.Contains(logLine, field) {
+			t.Errorf("removal log %q missing %q", logLine, field)
+		}
 	}
 }
 
@@ -969,8 +990,18 @@ func TestEvictBaseLocalRemovesSupersededDir(t *testing.T) {
 // duplicate reconcile sweep is harmless.
 func TestEvictBaseLocalIdempotentAlreadyGone(t *testing.T) {
 	s := newStoreTestServer(t, newFakeStore())
-	if err := evictBase(s, "semgrep", "semgrep__neverexisted"); err != nil {
+	ref := "semgrep__neverexisted"
+	// A stale in-memory serving-image entry can outlive an earlier filesystem
+	// removal. The retry must reconcile it even though RemoveAll is a no-op.
+	s.servingImage.add(servingImageEntry{baseKey: ref, workload: "semgrep", runtimeImageRef: "runtime:v1"})
+	if err := evictBase(s, "semgrep", ref); err != nil {
 		t.Fatalf("evict of absent base should be idempotent success, got %v", err)
+	}
+	if _, ok := s.servingImage.get(ref); ok {
+		t.Fatal("idempotent eviction left a stale serving-image registry entry")
+	}
+	if err := evictBase(s, "semgrep", ref); err != nil {
+		t.Fatalf("second evict of absent base should be a no-op, got %v", err)
 	}
 }
 

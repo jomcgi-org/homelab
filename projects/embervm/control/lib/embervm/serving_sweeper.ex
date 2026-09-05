@@ -68,15 +68,14 @@ defmodule Embervm.ServingSweeper do
   EndpointPublisher's per-node keying); v1 has one serving node reached via the one
   serving Service DNS name (`stats_base`).
 
-  ## does serving participate in base-refcounting?
+  ## serving base lineage
 
-  No (D-R3.3.1, resolved in Task 9): a serving instance cold-boots from a rootfs
-  IMAGE (`img.RootfsPath`, resolved via the node's image table, D-R3.4.2), never from
-  a `BuildBase` base SNAPSHOT, and once banked rides its OWN per-instance serving
-  snapshot. So base eviction (`Embervm.BaseBuilder.evictable?/1`) can never remove
-  anything a live serving instance needs, and this sweeper reports NO `:serving`
-  base-ref count (there is nothing to hold a superseded base alive for). The inert
-  `:serving` term threaded through `merge_refcounts` stays a no-op by design.
+  A serving instance cold-boots from the node's published `serving_image_ref`.
+  `ServingStore` records that ref as `base_snapshot_ref` at birth and preserves it
+  while the instance is live or banked. BaseBuilder's existing retention reconcile
+  reads those rows directly, then reclaims an older serving base only after no
+  non-terminal instance references it. This sweeper continues to own per-instance
+  serving snapshots; it does not introduce another base-GC mechanism.
   """
 
   use GenServer

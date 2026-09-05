@@ -286,11 +286,10 @@ defmodule Embervm.BaseBuilder do
   Unknown/absent refs are ignored (the ref was never superseded, or already
   evicted). A synchronous call so a test can assert eviction ordering.
 
-  R3: a future ServingStore (Task 9) may also report `:serving` (non-terminal
-  serving instances still pinned to the old base as their birth lineage,
-  mirroring `:sessions`); the counts are accepted today but NOT yet required
-  for eviction (see the comment on `merge_refcounts/2`) since nothing reports
-  it until that store exists.
+  The legacy `:serving` count is still accepted for compatibility, but serving
+  lineage is reconciled directly from `ServingStore` during the disk-driven
+  retention sweep. That arm compares every non-terminal instance's recorded
+  birth base with BaseBuilder's published current base.
   """
   @spec report_base_refs(GenServer.server(), String.t(), keyword()) :: :ok
   def report_base_refs(server \\ __MODULE__, ref, counts) do
@@ -457,6 +456,14 @@ defmodule Embervm.BaseBuilder do
     # sets it on. Merging this PR is inert: the sweep runs but only logs.
     retention_sweep_enabled = Keyword.get(opts, :retention_sweep_enabled, false)
     retention_disk_driven_enabled = Keyword.get(opts, :retention_disk_driven_enabled, false)
+    # Serving base retention reads the durable lifecycle projection directly:
+    # every non-terminal live or banked row retains its birth base in
+    # base_snapshot_ref. The function seam keeps BaseBuilder tests hermetic and
+    # lets an unavailable store fail toward retaining bytes instead of crashing
+    # the sweep.
+    serving_store = Keyword.get(opts, :serving_store, Embervm.ServingStore)
+    serving_instances_fun =
+      Keyword.get(opts, :serving_instances_fun, &Embervm.ServingStore.all/1)
 
     status_writer = Keyword.get(opts, :status_writer, &Embervm.K8s.patch_workload_status/3)
     clock = Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end)
@@ -540,7 +547,9 @@ defmodule Embervm.BaseBuilder do
       retention_sweep_interval_ms: retention_sweep_interval_ms,
       retention_sweep_enabled: retention_sweep_enabled,
       retention_disk_driven_enabled: retention_disk_driven_enabled,
-      retention_sweep_evictions: 0
+      retention_sweep_evictions: 0,
+      serving_store: serving_store,
+      serving_instances_fun: serving_instances_fun
     }
 
     schedule_export_reconcile(state)
@@ -2868,11 +2877,13 @@ defmodule Embervm.BaseBuilder do
   # spawned evictions (gate on) or the dry-run log (gate off).
   #
   # For each node with a reported current local base, candidates are local bases
-  # minus the node's current ref and still-refcounted superseded refs. Base ownership
+  # minus the node's current ref and still-referenced superseded refs. Base ownership
   # is a NODE property because bases live on shared hostPath scratch, so each node is
-  # considered once even when several bricks report the same local inventory. BUILDING
-  # local bases are never candidates. The per-base desired, refcount, BUILDING,
-  # and age filters make each candidate non-current and unreferenced by
+  # considered once even when several bricks report the same local inventory. For a
+  # serving workload the references are derived from ServingStore birth lineage;
+  # other classes retain the primed/session ledger.
+  # BUILDING local bases are never candidates. The per-base desired, refcount,
+  # BUILDING, and age filters make each candidate non-current and unreferenced by
   # construction. This avoids the old durability guard deadlocking against #4893.
   defp retention_sweep_plan(state) do
     state = %{state | retention_sweep_evictions: 0}
@@ -2916,7 +2927,22 @@ defmodule Embervm.BaseBuilder do
   # Decide one retention outcome per node from the representative reported facts:
   #   :skip                          - no local base or nothing to evict
   #   {:evict, node_id, refs, bytes} - this node's local bases to evict + bytes
-  defp workload_retention(state, w) do
+  defp workload_retention(state, %{class: class} = w) when class in ["serving", :serving] do
+    case serving_retention_workload(state, w) do
+      {:ok, serving_w} -> workload_retention(state, serving_w, :serving_image_ref)
+
+      {:error, reason} ->
+        Logger.warning(
+          "embervm base builder: serving base retention held for #{w.name}: #{inspect(reason)}"
+        )
+
+        []
+    end
+  end
+
+  defp workload_retention(state, w), do: workload_retention(state, w, :snapshot_ref)
+
+  defp workload_retention(state, w, current_ref_field) do
     for fact <- representative_facts_by_node(state, w.name),
         is_list(Map.get(fact, :local_bases, [])),
         # Deliberate: skip nodes that have local bases but do not report this
@@ -2925,7 +2951,7 @@ defmodule Embervm.BaseBuilder do
         # resident. This is the conservative choice, though it may leave orphans
         # from pre-noded implementations that never tracked bases per-workload.
         Map.has_key?(Map.get(fact, :workloads, %{}), w.name) do
-      node_ref = get_in(fact, [:workloads, w.name, :snapshot_ref])
+      node_ref = get_in(fact, [:workloads, w.name, current_ref_field])
 
       cond do
         not is_binary(node_ref) or node_ref == "" ->
@@ -2981,6 +3007,59 @@ defmodule Embervm.BaseBuilder do
                retention_accounting(local_bases, desired, w.base_refs, candidates)}
           end
       end
+    end
+  end
+
+  # Serving instances are born from WorkloadCapacity.serving_image_ref, and the
+  # ServingStore preserves that ref as base_snapshot_ref for the entire lifecycle.
+  # Replace the ordinary primed/session ref ledger with the non-terminal serving
+  # lineage set for this sweep only. desired_refs_for_node/2 then retains the
+  # published current ref plus every live or banked birth ref, while allowing an
+  # unreferenced superseded serving base to use the existing eviction path.
+  #
+  # A non-terminal row with a missing birth ref can arise from adoption of a VM
+  # created while the control plane was unavailable. Its lineage is unknowable,
+  # so hold all serving bases for the workload until that VM becomes terminal.
+  defp serving_retention_workload(state, w) do
+    with {:ok, instances} <- serving_instances(state) do
+      active =
+        Enum.filter(instances, fn instance ->
+          Map.get(instance, :workload) == w.name and
+            not Embervm.ServingState.terminal?(Map.get(instance, :state))
+        end)
+
+      case Enum.find(active, fn instance ->
+             ref = Map.get(instance, :base_snapshot_ref)
+             not is_binary(ref) or ref == ""
+           end) do
+        nil ->
+          base_refs =
+            active
+            |> Enum.map(&Map.fetch!(&1, :base_snapshot_ref))
+            |> Enum.uniq()
+            |> Map.new(fn ref ->
+              {ref, %{node_id: nil, primed: 1, sessions: 0, evicted: false}}
+            end)
+
+          {:ok, %{w | base_refs: base_refs}}
+
+        instance ->
+          {:error, {:unknown_instance_lineage, Map.get(instance, :instance_id)}}
+      end
+    end
+  end
+
+  defp serving_instances(state) do
+    try do
+      case state.serving_instances_fun.(state.serving_store) do
+        instances when is_list(instances) -> {:ok, instances}
+        other -> {:error, {:invalid_serving_store_result, other}}
+      end
+    rescue
+      error -> {:error, {:serving_store_raised, error}}
+    catch
+      :exit, reason -> {:error, {:serving_store_exit, reason}}
+      kind, reason -> {:error, {kind, reason}}
     end
   end
 
@@ -3424,15 +3503,9 @@ defmodule Embervm.BaseBuilder do
     entry
     |> maybe_put_count(:primed, Keyword.get(counts, :primed))
     |> maybe_put_count(:sessions, Keyword.get(counts, :sessions))
-    # R3 (D-R3.3.1, RESOLVED in Task 9): this :serving key is DELIBERATELY INERT.
-    # The investigation in Task 9 established that serving does NOT participate in
-    # base-refcounting at all: a serving instance cold-boots from a rootfs IMAGE
-    # (D-R3.4.2), never restores a BuildBase base snapshot, and once banked rides its
-    # own per-instance serving snapshot, so base eviction can never remove anything a
-    # live serving instance needs. Nothing reports a :serving count, and evictable?/1
-    # below is correctly NOT widened to require one. This key is kept (not removed) so
-    # PR-1's accepted counts contract is not churned; it stays a no-op unless a future
-    # rung ever gives serving a shared evictable base lineage. See D-R3.3.1.
+    # Kept for compatibility with callers of the older report_base_refs seam.
+    # Serving safety now comes from the retention reconcile's direct ServingStore
+    # lineage read, not from this event-driven count.
     |> maybe_put_count(:serving, Keyword.get(counts, :serving))
   end
 
@@ -3444,16 +3517,9 @@ defmodule Embervm.BaseBuilder do
   # withheld until every owner has spoken, so a base is never destroyed under a
   # session that has not yet been counted (fail-safe).
   #
-  # R3 (D-R3.3.1, RESOLVED in Task 9): correctly keyed on primed/sessions only, NOT
-  # serving. Serving does NOT participate in base-refcounting: a serving instance
-  # cold-boots from a rootfs IMAGE (D-R3.4.2), never restores a BuildBase base
-  # snapshot, and rides its own per-instance serving snapshot once banked, so base
-  # eviction can never remove anything it needs. There is nothing to report and no
-  # serving: 0 term to add: widening this to require serving: 0 with no reporter would
-  # make it require serving: 0 forever (nil never equals 0), silently wedging base
-  # eviction for EVERY workload class. Not-widening is both the correct model and the
-  # only safe move. The :serving key in merge_refcounts/2 above stays deliberately
-  # inert. See D-R3.3.1.
+  # This event-driven arm remains keyed on primed/session reporters. Serving uses
+  # the disk-driven retention reconcile, which derives birth-base references from
+  # ServingStore and current base publication from NodeStatus.
   defp evictable?(%{primed: 0, sessions: 0, evicted: false}), do: true
   defp evictable?(_), do: false
 
