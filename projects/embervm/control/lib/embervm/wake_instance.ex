@@ -276,17 +276,25 @@ defmodule Embervm.WakeInstance do
 
   @doc """
   Resolves a banked session to the instance on its recorded node that reports its
-  snapshot, or returns `{:error, :snapshot_lost}`.
+  snapshot. Returns `{:error, :no_bricks}` while the capacity table is empty, or
+  `{:error, :snapshot_lost}` when bricks report but none owns the snapshot. A
+  missing snapshot ref is always `:snapshot_lost`.
   """
-  @spec node_for_relight(map(), atom()) :: {:ok, String.t()} | {:error, :snapshot_lost}
+  @spec node_for_relight(map(), atom()) ::
+          {:ok, String.t()} | {:error, :no_bricks | :snapshot_lost}
   def node_for_relight(session, capacity_table \\ NodeCapacity.table()) do
     snapshot_ref = Map.get(session, :snapshot_ref)
     node_id = Map.get(session, :node_id)
 
     if is_binary(snapshot_ref) and snapshot_ref != "" do
-      case owning_instance_for(capacity_table, node_id, :session_snapshots, :snapshot_ref, snapshot_ref) do
-        {:ok, dial_key} -> {:ok, dial_key}
-        :none -> {:error, :snapshot_lost}
+      # #5777: an empty capacity table is a CP-blind window, not snapshot loss.
+      if Brick.bricks(capacity_table) == [] do
+        {:error, :no_bricks}
+      else
+        case owning_instance_for(capacity_table, node_id, :session_snapshots, :snapshot_ref, snapshot_ref) do
+          {:ok, dial_key} -> {:ok, dial_key}
+          :none -> {:error, :snapshot_lost}
+        end
       end
     else
       {:error, :snapshot_lost}

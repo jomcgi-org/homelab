@@ -72,6 +72,21 @@ defmodule Embervm.WakeInstanceTest do
     assert {:error, :snapshot_lost} = WakeInstance.node_for_relight(%{node_id: "node-4", snapshot_ref: "gone"}, table)
   end
 
+  test "session relight reports no_bricks when capacity is empty", %{table: table} do
+    assert {:error, :no_bricks} =
+             WakeInstance.node_for_relight(%{node_id: "node-4", snapshot_ref: "sess-1"}, table)
+  end
+
+  test "session relight reports snapshot_lost for nil snapshot ref when capacity is empty", %{table: table} do
+    assert {:error, :snapshot_lost} =
+             WakeInstance.node_for_relight(%{node_id: "node-4", snapshot_ref: nil}, table)
+  end
+
+  test "session relight reports snapshot_lost for empty snapshot ref when capacity is empty", %{table: table} do
+    assert {:error, :snapshot_lost} =
+             WakeInstance.node_for_relight(%{node_id: "node-4", snapshot_ref: ""}, table)
+  end
+
   test "serving relight resolves a serving-capable node", %{table: table} do
     NodeCapacity.put(table, "node-4", %{
       node_id: "node-4",

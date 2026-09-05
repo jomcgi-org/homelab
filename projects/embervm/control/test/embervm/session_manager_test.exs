@@ -1499,6 +1499,96 @@ defmodule Embervm.SessionManagerTest do
       assert [{_pid, _}] = Registry.lookup(ctx.registry, created.session_id)
     end
 
+    test "a relight with no bricks stays banked until capacity reports" do
+      parent = self()
+      evict_fun = fn _channel, req -> send(parent, {:evicted, req.snapshot_ref}) && {:ok, %{}} end
+      ctx = start_stack(evict_fun: evict_fun, pressure_retry_interval_ms: 10)
+      put_session_workload(ctx, "wl-blind")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-blind", "p1")
+      assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+      wait_for_state(ctx, created.session_id, :banked)
+      NodeCapacity.drop(ctx.cap_table, "node-4")
+
+      task =
+        Task.async(fn ->
+          SessionManager.invoke(ctx.mgr, created.session_id, %{body: "wait-for-brick"})
+        end)
+
+      assert eventually(fn ->
+               Map.has_key?(:sys.get_state(ctx.mgr).pressure_waits, created.session_id)
+             end)
+
+      assert wait_for_state(ctx, created.session_id, :banked).terminal_reason == nil
+      assert Task.yield(task, 50) == nil
+      refute_receive {:evicted, _}
+
+      put_snapshot_fact(ctx, "wl-blind", created.session_id)
+
+      assert {:ok, resp} = Task.await(task)
+      assert resp.status_code == 200
+      assert resp.body == "wait-for-brick"
+    end
+
+    test "a failed relight mark clears the existing pressure wait" do
+      ctx = start_stack(pressure_retry_interval_ms: 60_000)
+      put_session_workload(ctx, "wl-mark-race")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-mark-race", "p1")
+      assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+      wait_for_state(ctx, created.session_id, :banked)
+      NodeCapacity.drop(ctx.cap_table, "node-4")
+
+      task =
+        Task.async(fn ->
+          SessionManager.invoke(ctx.mgr, created.session_id, %{body: "mark-race"})
+        end)
+
+      assert eventually(fn ->
+               Map.has_key?(:sys.get_state(ctx.mgr).pressure_waits, created.session_id)
+             end)
+
+      manager = ctx.mgr
+      session_id = created.session_id
+
+      # Queue adoption behind the retry's first read. The next read sees running,
+      # so start_relight receives a stale wake candidate and its mark must fail.
+      :ok = :sys.suspend(ctx.store)
+
+      on_exit(fn ->
+        if Process.alive?(ctx.store), do: :sys.resume(ctx.store)
+      end)
+
+      send(manager, {:relight_pressure_retry, session_id})
+
+      assert eventually(fn ->
+               {:messages, messages} = Process.info(ctx.store, :messages)
+
+               Enum.any?(messages, fn
+                 {:"$gen_call", {^manager, _tag}, {:get, ^session_id}} ->
+                   true
+
+                 _ ->
+                   false
+               end)
+             end)
+
+      move = Task.async(fn -> SessionStore.adopt_state(ctx.store, session_id, :running) end)
+
+      assert eventually(fn ->
+               {:messages, messages} = Process.info(ctx.store, :messages)
+
+               Enum.any?(messages, fn
+                 {:"$gen_call", {_pid, _tag}, {:adopt_state, ^session_id, :running}} -> true
+                 _ -> false
+               end)
+             end)
+
+      :ok = :sys.resume(ctx.store)
+      assert :ok = Task.await(move)
+
+      assert {:error, {:not_ready, :banked}} = Task.await(task)
+      refute Map.has_key?(:sys.get_state(manager).pressure_waits, session_id)
+    end
+
     test "a parked session's rejoin prime denied on pressure queues and succeeds" do
       parent = self()
       {:ok, gate} = Agent.start_link(fn -> :clear end)
