@@ -67,6 +67,32 @@ def documents() -> list[dict]:
     return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
 
 
+@pytest.fixture(scope="module")
+def hub_documents() -> list[dict]:
+    """The manifest that actually ships to the GKE hub: disarmed, hub overrides."""
+    helm = os.environ.get("HELM_BIN", "helm")
+    chart = _chart_dir()
+    deploy = chart.parent / "deploy"
+    result = subprocess.run(
+        [
+            helm,
+            "template",
+            "monolith-agents",
+            str(chart),
+            "--namespace",
+            "monolith-agents",
+            "--values",
+            str(os.environ.get("DEPLOY_VALUES", deploy / "values.yaml")),
+            "--values",
+            str(os.environ.get("DEPLOY_VALUES_GKE", deploy / "values-gke.yaml")),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return [doc for doc in yaml.safe_load_all(result.stdout) if doc]
+
+
 def _deployment(documents: list[dict]) -> dict:
     return next(doc for doc in documents if doc.get("kind") == "Deployment")
 
@@ -125,3 +151,20 @@ def test_every_secret_ref_is_synced_into_the_namespace(documents: list[dict]) ->
         f"unsynced secret refs: {_secret_refs(container) - synced}"
     )
     assert {"monolith-agents-db", "monolith-r2-s3"} <= synced
+
+
+def test_disarmed_hub_render_is_syncable_before_the_secrets_exist(
+    hub_documents: list[dict],
+) -> None:
+    # What ships today. No Deployment (nothing to CrashLoop on a missing
+    # Secret), no CiliumNetworkPolicy (the hub has no CRD for it), and both
+    # OnePasswordItems so the Secrets are ready when agents.enabled flips.
+    kinds = {doc["kind"] for doc in hub_documents}
+    assert "Deployment" not in kinds
+    assert "CiliumNetworkPolicy" not in kinds
+    synced = {
+        doc["metadata"]["name"]
+        for doc in hub_documents
+        if doc.get("kind") == "OnePasswordItem"
+    }
+    assert synced == {"monolith-agents-db", "monolith-r2-s3"}

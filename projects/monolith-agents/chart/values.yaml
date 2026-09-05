@@ -108,46 +108,9 @@ agents:
     pullPolicy: IfNotPresent
   containerPort: 8092
   portName: http
-  env:
-    - name: DATABASE_URL
-      valueFrom:
-        secretKeyRef:
-          name: monolith-agents-db
-          key: uri
-    - name: EMBEDDING_URL
-      value: "http://inference-embeddings.inference.svc.cluster.local:8080"
-    - name: KNOWLEDGE_DEFAULT_REPO_SCOPE
-      value: "repo:jomcgi-org/homelab"
-    - name: AUTH_AUTHENTIK_JWKS_URL
-      value: "http://authentik-server.authentik.svc.cluster.local/application/o/mcp-friends/jwks/"
-    - name: AUTH_AUTHENTIK_ISSUER
-      value: "https://auth.jomcgi.dev/application/o/mcp-friends/"
-    - name: AUTH_AUTHENTIK_AUDIENCE
-      value: "https://private.jomcgi.dev"
-    - name: AUTH_JWKS_CACHE_TTL_S
-      value: "300"
-    - name: AUTH_AUTHENTIK_AGENT_JWKS_URL
-      value: "http://authentik-server.authentik.svc.cluster.local/application/o/mcp-agents/jwks/"
-    - name: AUTH_AUTHENTIK_AGENT_ISSUER
-      value: "https://auth.jomcgi.dev/application/o/mcp-agents/"
-    - name: AUTH_AUTHENTIK_AGENT_AUDIENCE
-      value: "https://private.jomcgi.dev"
-    - name: SEAWEEDFS_S3_ENDPOINT
-      value: "https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
-    - name: AWS_REGION
-      value: auto
-    - name: S3_ACCESS_KEY_ID
-      valueFrom:
-        secretKeyRef:
-          name: monolith-r2-s3
-          key: access-key-id
-    - name: S3_SECRET_ACCESS_KEY
-      valueFrom:
-        secretKeyRef:
-          name: monolith-r2-s3
-          key: secret-access-key
-    - name: MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID
-      value: ""
+  # The container env is composed in templates/deployment.yaml from the
+  # database, objectStorage, auth and discord values above; there is no
+  # env list to override here.
   probes:
     liveness:
       path: /healthz
