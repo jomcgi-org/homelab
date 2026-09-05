@@ -71,11 +71,8 @@ func newTokenBroker(rawURL string) *tokenBroker {
 	if rawURL == "" {
 		return &tokenBroker{grants: make(map[string]*brokerGrantState), forced: make(map[string]time.Time)}
 	}
-	if !strings.Contains(rawURL, "://") {
-		rawURL = "http://" + rawURL
-	}
 	return &tokenBroker{
-		baseURL: strings.TrimRight(rawURL, "/"),
+		baseURL: normalizeBrokerURL(rawURL),
 		client:  &http.Client{Timeout: 10 * time.Second},
 		grants:  make(map[string]*brokerGrantState),
 		forced:  make(map[string]time.Time),
@@ -203,12 +200,15 @@ type secretEntry struct {
 	// credential in the vault. A stored base64 blob would be a derived copy that
 	// silently outlives a rotation of the value it was derived from, and nothing
 	// would detect the drift until a push started failing.
-	BasicUser   string   `json:"basicUser"`
-	Env         string   `json:"env"`
-	BrokerGrant string   `json:"brokerGrant"`
-	EgressTo    []string `json:"egressTo"`
-	ClaimHeader string   `json:"claimHeader"`
-	ClaimPath   string   `json:"claimPath"`
+	BasicUser   string `json:"basicUser"`
+	Env         string `json:"env"`
+	BrokerGrant string `json:"brokerGrant"`
+	// QuotaProvider enables response-header observation for this entry. Empty
+	// preserves the existing relay path without quota work.
+	QuotaProvider string   `json:"quotaProvider"`
+	EgressTo      []string `json:"egressTo"`
+	ClaimHeader   string   `json:"claimHeader"`
+	ClaimPath     string   `json:"claimPath"`
 	// PlaintextUpstream is the explicit opt-in to inject credentials over a
 	// plaintext TCP upstream connection. It is restricted to internal
 	// destinations; public addresses are denied rather than sent credentials in
@@ -362,6 +362,11 @@ func loadSecretsWithBroker(logger *slog.Logger, brokerURL string) []secretEntry 
 		// which surfaces later as an opaque 401 from the destination.
 		if e.BasicUser != "" && e.ValuePrefix != "" {
 			logger.Error("secret catalog entry sets both basicUser and valuePrefix; refusing to start", "egressTo", e.EgressTo)
+			exitFn(1)
+			return nil
+		}
+		if e.QuotaProvider != "" && e.QuotaProvider != "codex" && e.QuotaProvider != "claude" {
+			logger.Error("invalid quotaProvider in secret catalog entry; refusing to start", "quotaProvider", e.QuotaProvider, "egressTo", e.EgressTo)
 			exitFn(1)
 			return nil
 		}
@@ -650,6 +655,16 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, guestDeadline i
 					p.logger.Warn("egress swap: broker force refresh failed", "dest", host, "grant", grant, "err", refreshErr)
 				}
 			}(sec.broker, sec.BrokerGrant)
+		}
+		if sec.QuotaProvider != "" {
+			if obs, ok := observeQuota(sec, resp, time.Now()); ok {
+				if window, ok := quotaSummary(obs); ok {
+					p.logger.Info("egress quota observed", "provider", obs.Provider, "status", obs.Status, "window", window.Name, "used_percent", window.UsedPercent, "resets_at", window.ResetsAt)
+				} else {
+					p.logger.Info("egress quota observed", "provider", obs.Provider, "status", obs.Status)
+				}
+				p.quotaReporter.report(obs)
+			}
 		}
 		err = resp.Write(guestW)
 		_ = resp.Body.Close()

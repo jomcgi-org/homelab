@@ -1815,6 +1815,10 @@ egress:
   #     egressTo: [api.anthropic.com]              # exact hosts, no wildcards
   #     secretRef: {name: <secret>, key: <key>}    # the ONLY delivery path
   #     plaintextUpstream: false                    # opt in only for internal HTTP
+  #     quotaProvider: claude                      # optional: codex or claude; the
+  #                                                # sidecar reads that provider's
+  #                                                # quota headers off responses and
+  #                                                # reports them to the token broker
   #
   #   - header: Authorization                      # a second provider example
   #     valuePrefix: "Bearer "

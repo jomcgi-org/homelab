@@ -9,13 +9,18 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/broker"
+	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/metrics"
 	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/provider"
+	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/quota"
 	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/store"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 type fakeStore struct {
@@ -97,7 +102,12 @@ func newTestServer(st *fakeStore, adapter *fakeAdapter) *server {
 	adapters := map[string]provider.Adapter{"test": adapter}
 	configs := map[string]grantConfig{"codex-cluster": {Name: "codex-cluster", ProviderName: "test"}}
 	b := broker.New(st, adapters, nil, []broker.GrantConfig{{Name: "codex-cluster", ProviderName: "test"}}, logger, nil)
-	return &server{broker: b, store: st, adapters: adapters, configs: configs, logger: logger, startWaitTimeout: loginStartWaitTimeout}
+	return &server{
+		broker: b, store: st, adapters: adapters, configs: configs, logger: logger,
+		startWaitTimeout: loginStartWaitTimeout, quotaStore: quota.NewStore(),
+		quotaProviders:     map[string]struct{}{"codex": {}, "claude": {}},
+		quotaProviderOrder: []string{"codex", "claude"},
+	}
 }
 
 func requestGrant(t *testing.T, s *server, method, path string) *httptest.ResponseRecorder {
@@ -151,6 +161,201 @@ func receiveWithin[T any](t *testing.T, ch <-chan T, description string) T {
 		t.Fatalf("timed out waiting for %s", description)
 		var zero T
 		return zero
+	}
+}
+
+func quotaTestServer(providers ...string) (*server, *prometheus.Registry) {
+	providerSet := make(map[string]struct{}, len(providers))
+	for _, provider := range providers {
+		providerSet[provider] = struct{}{}
+	}
+	quotaStore := quota.NewStore()
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(metrics.NewQuotaCollector(quotaStore, providers))
+	return &server{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)), quotaStore: quotaStore,
+		quotaProviders: providerSet, quotaProviderOrder: providers,
+	}, registry
+}
+
+func requestQuota(t *testing.T, s *server, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	recorder := httptest.NewRecorder()
+	s.quota(recorder, req)
+	return recorder
+}
+
+func TestQuotaPostThenGetRoundTrip(t *testing.T) {
+	s, _ := quotaTestServer("codex", "claude")
+	body := `{"provider":"wrong-body-value","observed_at":"2026-09-05T18:10:00Z","status":"allowed","reached_type":"","windows":[{"name":"primary","used_percent":24,"window_minutes":10080,"resets_at":"2026-09-12T10:07:08Z"}]}`
+	posted := requestQuota(t, s, http.MethodPost, "/quota/codex", body)
+	if posted.Code != http.StatusNoContent || posted.Body.Len() != 0 {
+		t.Fatalf("POST = %d %s", posted.Code, posted.Body.String())
+	}
+	got := requestQuota(t, s, http.MethodGet, "/quota/codex", "")
+	if got.Code != http.StatusOK {
+		t.Fatalf("GET = %d %s", got.Code, got.Body.String())
+	}
+	decoded := decodeBody(t, got)
+	if decoded["provider"] != "codex" || decoded["observed"] != true || decoded["status"] != "allowed" || decoded["exhausted"] != false {
+		t.Fatalf("view = %#v", decoded)
+	}
+}
+
+func TestQuotaHandlerRejectsUnknownProviderBadJSONAndEmptyObservation(t *testing.T) {
+	s, _ := quotaTestServer("codex", "claude")
+	tests := []struct {
+		name, path, body string
+		want             int
+	}{
+		{name: "unknown provider", path: "/quota/gemini", body: `{}`, want: http.StatusNotFound},
+		{name: "bad JSON", path: "/quota/codex", body: `{`, want: http.StatusBadRequest},
+		{name: "empty observation", path: "/quota/codex", body: `{"observed_at":"2026-09-05T18:10:00Z","status":"unknown","windows":[]}`, want: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := requestQuota(t, s, http.MethodPost, tt.path, tt.body)
+			if got.Code != tt.want {
+				t.Fatalf("status = %d, want %d; body = %s", got.Code, tt.want, got.Body.String())
+			}
+		})
+	}
+}
+
+func TestQuotaGetListsAllowedProvidersIncludingUnobserved(t *testing.T) {
+	s, _ := quotaTestServer("codex", "claude")
+	body := `{"observed_at":"2026-09-05T18:10:00Z","status":"allowed","reached_type":"","windows":[{"name":"primary","used_percent":24}]}`
+	if got := requestQuota(t, s, http.MethodPost, "/quota/codex", body); got.Code != http.StatusNoContent {
+		t.Fatalf("POST = %d %s", got.Code, got.Body.String())
+	}
+	response := requestQuota(t, s, http.MethodGet, "/quota", "")
+	decoded := decodeBody(t, response)
+	providers, ok := decoded["providers"].(map[string]any)
+	if !ok || len(providers) != 2 {
+		t.Fatalf("providers = %#v", decoded["providers"])
+	}
+	claude, ok := providers["claude"].(map[string]any)
+	if !ok || claude["provider"] != "claude" || claude["observed"] != false || len(claude) != 2 {
+		t.Fatalf("unobserved claude view = %#v", providers["claude"])
+	}
+}
+
+func TestConfiguredQuotaProvidersOverride(t *testing.T) {
+	t.Setenv("TOKENBROKER_QUOTA_PROVIDERS", "claude")
+	providers := configuredQuotaProviders(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if len(providers) != 1 || providers[0] != "claude" {
+		t.Fatalf("providers = %v", providers)
+	}
+	s, _ := quotaTestServer(providers...)
+	if got := requestQuota(t, s, http.MethodGet, "/quota/codex", ""); got.Code != http.StatusNotFound {
+		t.Fatalf("codex status = %d, want 404", got.Code)
+	}
+}
+
+func TestQuotaMetricsAfterPost(t *testing.T) {
+	s, registry := quotaTestServer("codex")
+	observedAt := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+	resetAt := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	body, err := json.Marshal(quota.Observation{
+		ObservedAt: observedAt.Format(time.RFC3339), Status: "allowed",
+		Windows: []quota.Window{{Name: "primary", UsedPercent: 100, ResetsAt: resetAt.Format(time.RFC3339)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := requestQuota(t, s, http.MethodPost, "/quota/codex", string(body))
+	if got.Code != http.StatusNoContent {
+		t.Fatalf("POST = %d %s", got.Code, got.Body.String())
+	}
+	expected := fmt.Sprintf(`# HELP tokenbroker_quota_exhausted Whether the latest provider quota observation is exhausted.
+# TYPE tokenbroker_quota_exhausted gauge
+tokenbroker_quota_exhausted{provider="codex"} 1
+# HELP tokenbroker_quota_observed_at_seconds Latest quota observation time as Unix seconds.
+# TYPE tokenbroker_quota_observed_at_seconds gauge
+tokenbroker_quota_observed_at_seconds{provider="codex"} %d
+# HELP tokenbroker_quota_resets_at_seconds Latest observed quota reset time as Unix seconds.
+# TYPE tokenbroker_quota_resets_at_seconds gauge
+tokenbroker_quota_resets_at_seconds{provider="codex",window="primary"} %d
+# HELP tokenbroker_quota_used_percent Latest observed quota utilization percentage.
+# TYPE tokenbroker_quota_used_percent gauge
+tokenbroker_quota_used_percent{provider="codex",window="primary"} 100
+`, observedAt.Unix(), resetAt.Unix())
+	if err := testutil.GatherAndCompare(
+		registry, strings.NewReader(expected),
+		"tokenbroker_quota_exhausted",
+		"tokenbroker_quota_observed_at_seconds",
+		"tokenbroker_quota_resets_at_seconds",
+		"tokenbroker_quota_used_percent",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	pastResetBody, err := json.Marshal(quota.Observation{
+		ObservedAt: observedAt.Format(time.RFC3339), Status: "allowed",
+		Windows: []quota.Window{{Name: "primary", UsedPercent: 100, ResetsAt: time.Now().UTC().Add(-time.Second).Format(time.RFC3339)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := requestQuota(t, s, http.MethodPost, "/quota/codex", string(pastResetBody)); got.Code != http.StatusNoContent {
+		t.Fatalf("POST expired window = %d %s", got.Code, got.Body.String())
+	}
+	if err := testutil.GatherAndCompare(
+		registry,
+		strings.NewReader(`# HELP tokenbroker_quota_exhausted Whether the latest provider quota observation is exhausted.
+# TYPE tokenbroker_quota_exhausted gauge
+tokenbroker_quota_exhausted{provider="codex"} 0
+`),
+		"tokenbroker_quota_exhausted",
+	); err != nil {
+		t.Fatalf("expired window scrape: %v", err)
+	}
+}
+
+func quotaObservationBodyOfSize(t *testing.T, size int) string {
+	t.Helper()
+	obs := quota.Observation{
+		ObservedAt: "2026-09-05T18:10:00Z", Status: "allowed",
+		Windows: []quota.Window{{Name: "padding", UsedPercent: 1}},
+	}
+	encoded, err := json.Marshal(obs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixedSize := len(encoded) - len(obs.Windows[0].Name)
+	if size <= fixedSize {
+		t.Fatalf("requested body size %d is not larger than fixed JSON size %d", size, fixedSize)
+	}
+	obs.Windows[0].Name = strings.Repeat("x", size-fixedSize)
+	encoded, err = json.Marshal(obs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) != size {
+		t.Fatalf("body size = %d, want %d", len(encoded), size)
+	}
+	return string(encoded)
+}
+
+func TestQuotaBodyLimit(t *testing.T) {
+	s, _ := quotaTestServer("codex")
+	tests := []struct {
+		name string
+		size int
+		want int
+	}{
+		{name: "under limit", size: 63 << 10, want: http.StatusNoContent},
+		{name: "over limit", size: (64 << 10) + 1, want: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := quotaObservationBodyOfSize(t, tt.size)
+			got := requestQuota(t, s, http.MethodPost, "/quota/codex", body)
+			if got.Code != tt.want {
+				t.Fatalf("status = %d, want %d; body = %s", got.Code, tt.want, got.Body.String())
+			}
+		})
 	}
 }
 

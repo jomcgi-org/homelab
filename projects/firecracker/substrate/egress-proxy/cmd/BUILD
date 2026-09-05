@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "classify.go",
         "main.go",
+        "quota.go",
         "swap.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/firecracker/substrate/egress-proxy/cmd",
@@ -22,6 +23,7 @@ go_test(
     srcs = [
         "classify_test.go",
         "main_test.go",
+        "quota_test.go",
         "swap_test.go",
     ],
     embed = [":cmd_lib"],
