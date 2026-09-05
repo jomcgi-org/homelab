@@ -1010,23 +1010,9 @@ defmodule Embervm.Dispatcher do
         end
 
       {:error, :no_channel, reason} ->
-        Embervm.SpecTrace.emit(:adoption, :dispatch_failed, %{
-          "task_id" => ctx.task_id,
-          "workload" => ctx.workload,
-          "reason" => "no_channel",
-          "node_id" => ctx.node_id
-        })
-
         {:failed, :transport, {:no_channel, reason}, nil}
 
       {:error, :prime_failed, reason} ->
-        Embervm.SpecTrace.emit(:adoption, :dispatch_failed, %{
-          "task_id" => ctx.task_id,
-          "workload" => ctx.workload,
-          "reason" => "prime_failed",
-          "node_id" => ctx.node_id
-        })
-
         classify_error(reason)
     end
   end
@@ -1036,7 +1022,10 @@ defmodule Embervm.Dispatcher do
        when is_binary(vm_id) do
     case channel_fun.(ctx.node_id) do
       {:ok, channel} -> {:ok, vm_id, ctx.node_id, channel}
-      {:error, reason} -> {:error, :no_channel, reason}
+
+      {:error, reason} ->
+        emit_dispatch_failed(ctx, ctx.node_id, "no_channel", reason)
+        {:error, :no_channel, reason}
     end
   end
 
@@ -1067,10 +1056,12 @@ defmodule Embervm.Dispatcher do
             {:reject, reason} ->
               # Node-pressure RESOURCE_EXHAUSTED: this brick is full; drop its
               # channel (best-effort) and let Retry try the next candidate.
+              emit_dispatch_failed(ctx, dial_id, reject_reason(reason), reject_detail(reason))
               _ = invalidate_fun.(dial_id, channel)
               {:reject, reason}
 
             {:error, reason} ->
+              emit_dispatch_failed(ctx, dial_id, "prime_failed", reason)
               _ = invalidate_fun.(dial_id, channel)
               {:error, {:prime_failed, reason}}
           end
@@ -1080,6 +1071,7 @@ defmodule Embervm.Dispatcher do
           # advances to a reachable candidate rather than failing the whole dispatch
           # on one unreachable brick (gate-off degrades to the single committed brick,
           # whose unreachability is the same terminal no-channel as before).
+          emit_dispatch_failed(ctx, dial_id, "no_channel", reason)
           {:reject, {:no_channel, reason}}
       end
     end
@@ -1101,6 +1093,22 @@ defmodule Embervm.Dispatcher do
       {:error, :no_capacity} ->
         {:error, :prime_failed, {:rpc, :resource_exhausted}}
     end
+  end
+
+  defp reject_reason({:error, %GRPC.RPCError{status: 8}}), do: "resource_exhausted"
+  defp reject_reason(_reason), do: "rejected"
+
+  defp reject_detail({:error, reason}), do: reason
+  defp reject_detail(reason), do: reason
+
+  defp emit_dispatch_failed(ctx, node_id, reason, detail) do
+    Embervm.SpecTrace.emit(:adoption, :dispatch_failed, %{
+      "task_id" => ctx.task_id,
+      "workload" => ctx.workload,
+      "reason" => reason,
+      "node_id" => node_id,
+      "detail" => inspect(detail, limit: 10, printable_limit: 200)
+    })
   end
 
   # One Prime attempt on an already-acquired channel for the candidate `dial_id`.
