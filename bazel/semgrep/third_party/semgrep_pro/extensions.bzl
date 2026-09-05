@@ -6,13 +6,14 @@ per-language rule packs. Reads digest pins from digests.bzl.
 
 load(":digests.bzl", "SEMGREP_PRO_DIGESTS")
 load(":oci_archive.bzl", "oci_archive")
+load(":stub_engine.bzl", "host_is_macos", "stub_engine")
 
 _GHCR_PREFIX = "jomcgi/homelab/tools/semgrep-pro"
 
 _ENGINE_BUILD = """\
 filegroup(
     name = "engine",
-    srcs = glob(["semgrep-core-proprietary"]),
+    srcs = glob(["semgrep-core-proprietary"], allow_empty = True),
     visibility = ["//visibility:public"],
 )
 """
@@ -35,14 +36,21 @@ def _semgrep_pro_impl(module_ctx):
             build_file_content = _ENGINE_BUILD,
         )
 
-    # Engine binary — macOS
+    # Engine binary, macOS. Stubbed on other hosts so //... queries never fetch
+    # the macOS manifests (#5121).
     for platform in ["osx_arm64", "osx_x86_64"]:
-        oci_archive(
-            name = "semgrep_pro_engine_" + platform,
-            image = _GHCR_PREFIX + "/engine-" + platform.replace("_", "-"),
-            digest = SEMGREP_PRO_DIGESTS.get("engine_" + platform, ""),
-            build_file_content = _ENGINE_BUILD,
-        )
+        if host_is_macos(module_ctx):
+            oci_archive(
+                name = "semgrep_pro_engine_" + platform,
+                image = _GHCR_PREFIX + "/engine-" + platform.replace("_", "-"),
+                digest = SEMGREP_PRO_DIGESTS.get("engine_" + platform, ""),
+                build_file_content = _ENGINE_BUILD,
+            )
+        else:
+            stub_engine(
+                name = "semgrep_pro_engine_" + platform,
+                build_file_content = _ENGINE_BUILD,
+            )
 
     # Rule packs — one repo per language
     for lang in ["golang", "python", "javascript", "kubernetes", "rust"]:
