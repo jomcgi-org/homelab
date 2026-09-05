@@ -10,12 +10,3 @@
 # still hold.
 ciliumPolicy:
   enabled: false
-
-# authentik runs on the home cluster, so the in-cluster Service name in
-# deploy/values.yaml does not resolve on the hub and every token would fail its
-# JWKS fetch; fetch over the public hostname instead. Issuer and audience stay
-# as they are.
-auth:
-  authentik:
-    jwksUrl: "https://auth.jomcgi.dev/application/o/mcp-friends/jwks/"
-    agentJwksUrl: "https://auth.jomcgi.dev/application/o/mcp-agents/jwks/"

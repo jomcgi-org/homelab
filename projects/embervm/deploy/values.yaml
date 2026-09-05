@@ -662,7 +662,9 @@ egress:
     # token from the authentik client_credentials grant, so no guest ever holds
     # it. Only the hub declares the agent-mcp grant: on the home cluster this
     # entry is dead and its host is DENIED, which is the intended fail-closed
-    # state.
+    # state. No guest image dials this host on its own yet: #5569 lands the
+    # shim-written MCP client config; until then a guest registers the server
+    # at runtime (codex mcp add / claude mcp add), verified 2026-09-05.
     - header: Authorization
       valuePrefix: "Bearer "
       brokerGrant: "agent-mcp"
@@ -670,8 +672,12 @@ egress:
         - monolith-agents-agents.monolith-agents.svc.cluster.local
       # The codex rmcp client sends no Authorization header (#4298), so /mcp is
       # the explicit opt-in path, as chatgpt.com's entry above does.
+      # Both spellings: the tier registers Route("/mcp") and Mount("/mcp"), and
+      # the match is exact, so a client configured with a trailing slash would
+      # otherwise arrive uninjected and take a 401 from the principal gate.
       injectAlwaysPaths:
         - /mcp
+        - /mcp/
       # In-cluster plaintext listener: the sidecar dials the pinned internal
       # ip:8092 and injects there instead of re-routing to :443. Honoured only
       # for internal destinations. A sidecar or chart older than this field
