@@ -3,13 +3,16 @@ package fcclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeFC is an in-process Firecracker API stub listening on a unix socket. It
@@ -65,6 +68,32 @@ func startFakeFC(t *testing.T) (*fakeFC, string) {
 	go func() { _ = f.srv.Serve(ln) }()
 	t.Cleanup(func() { _ = f.srv.Close(); _ = os.Remove(sock) })
 	return f, sock
+}
+
+func startDelayedFakeFC(t *testing.T, delay time.Duration) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "fc-delay")
+	if err != nil {
+		t.Fatalf("mkdir temp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "fc.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(delay):
+			w.WriteHeader(http.StatusNoContent)
+		case <-r.Context().Done():
+		}
+	})
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close(); _ = os.Remove(sock) })
+	return sock
 }
 
 func (f *fakeFC) paths() []string {
@@ -179,6 +208,54 @@ func TestClientLoadSnapshotResume(t *testing.T) {
 	mb, ok := r.Body["mem_backend"].(map[string]any)
 	if !ok || mb["backend_type"] != "File" {
 		t.Fatalf("mem_backend = %v", r.Body["mem_backend"])
+	}
+}
+
+func TestSnapshotClientAllowsLongRequestWhileControlClientTimesOut(t *testing.T) {
+	t.Parallel()
+	c := New(startDelayedFakeFC(t, 45*time.Second))
+
+	snapshotCtx, cancelSnapshot := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancelSnapshot()
+	snapshotResult := make(chan error, 1)
+	controlResult := make(chan error, 1)
+	go func() {
+		snapshotResult <- c.CreateSnapshot(snapshotCtx, SnapshotCreate{
+			SnapshotPath: "/snap/snapfile",
+			MemFilePath:  "/snap/memfile",
+		})
+	}()
+	go func() {
+		controlResult <- c.PutMachineConfig(context.Background(), MachineConfig{
+			VCPUCount:  1,
+			MemSizeMib: 4096,
+		})
+	}()
+
+	if err := <-snapshotResult; err != nil {
+		t.Fatalf("CreateSnapshot with a 2 minute deadline: %v", err)
+	}
+	controlErr := <-controlResult
+	if controlErr == nil || !strings.Contains(controlErr.Error(), "Client.Timeout exceeded") {
+		t.Fatalf("PutMachineConfig error = %v, want Client.Timeout exceeded", controlErr)
+	}
+}
+
+func TestSnapshotClientHonorsCallerDeadline(t *testing.T) {
+	t.Parallel()
+	c := New(startDelayedFakeFC(t, 45*time.Second))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	err := c.CreateSnapshot(ctx, SnapshotCreate{
+		SnapshotPath: "/snap/snapfile",
+		MemFilePath:  "/snap/memfile",
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("CreateSnapshot error = %v, want context.DeadlineExceeded", err)
+	}
+	if strings.Contains(err.Error(), "Client.Timeout exceeded") {
+		t.Fatalf("CreateSnapshot error = %v, want caller deadline rather than client timeout", err)
 	}
 }
 
