@@ -180,12 +180,9 @@ defmodule Embervm.StatefulManagerTest do
   end
 
   defp stateful_node(ctx, node_id, opts \\ []) do
-    configured_id = Keyword.get(opts, :configured_id, node_id)
-    reported_node_id = Keyword.get(opts, :reported_node_id, node_id)
-
-    NodeCapacity.put(ctx.cap_table, configured_id, %{
-      configured_id: configured_id,
-      node_id: reported_node_id,
+    NodeCapacity.put(ctx.cap_table, node_id, %{
+      configured_id: node_id,
+      node_id: node_id,
       # CPU-vendor fact (Bug B): stamped onto a vendor-bound restore ref (STATEFUL),
       # left off a VOLUME restore (vendor-portable).
       cpu_vendor: Keyword.get(opts, :cpu_vendor, "amd"),
@@ -2549,7 +2546,7 @@ defmodule Embervm.StatefulManagerTest do
 
     # First reconcile observes the absent anchor but cannot confirm it yet.
     :ok = StatefulManager.reconcile(ctx.mgr)
-    assert :sys.get_state(ctx.mgr).missing_anchor_since_ms["wl-a"] == 0
+    assert :sys.get_state(ctx.mgr).missing_anchor_since_ms["node-dead"] == 0
 
     Agent.update(now, fn _ -> 90_000 end)
 
@@ -2613,6 +2610,81 @@ defmodule Embervm.StatefulManagerTest do
            end)
   end
 
+  test "confirmed gone anchor keeps its banked instance when recovery is unavailable" do
+    {:ok, now} = Agent.start_link(fn -> 0 end)
+    clock = fn -> Agent.get(now, & &1) end
+
+    ctx = start_stack(clock: clock, mono_clock: clock)
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-live", store_reachable: true)
+    seed_banked_with_pair(ctx, "stf-no-recovery", "node-dead", 3, 3)
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    Agent.update(now, fn _ -> 90_000 end)
+
+    :sys.replace_state(ctx.mgr, fn state ->
+      %{state | negative_store_truth: %{"wl-a" => 1_000_000}}
+    end)
+
+    assert {:error, {:wake_failed, :volume_node_gone}} =
+             StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    {:ok, banked} = StatefulStore.get(ctx.store, "stf-no-recovery")
+    assert banked.state == :banked
+
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+
+    refute Enum.any?(ops, fn op ->
+             op.kind == :stateful_evicted and
+               op.stateful_instance_id == "stf-no-recovery"
+           end)
+  end
+
+  test "confirmed gone anchor restores a broken pair before cold boot" do
+    {:ok, now} = Agent.start_link(fn -> 0 end)
+    clock = fn -> Agent.get(now, & &1) end
+    {restore_fun, restore_calls} = recording_restore_fun()
+
+    cold_fun = fn _ch, _req ->
+      {:ok,
+       %StartStatefulResponse{
+         vm_id: "vm-reanchored",
+         ip: "10.88.0.21",
+         port: 5432,
+         generation: 4,
+         was_relight: false
+       }}
+    end
+
+    ctx =
+      start_stack(
+        clock: clock,
+        start_stateful_fun: cold_fun,
+        restore_artifact_fun: restore_fun
+      )
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-live", store_reachable: true)
+    seed_banked_with_pair(ctx, "stf-broken-dead-anchor", "node-dead", 2, 3)
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{exported_generation: 3})
+    _ = StatefulStore.seed_blessed_generation_if_unset(ctx.store, "wl-a", 3)
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    Agent.update(now, fn _ -> 90_000 end)
+
+    assert {:ok, %{ip: "10.88.0.21", port: 5432}} =
+             StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    assert [%{kind: :ARTIFACT_KIND_VOLUME, workload: "wl-a"}] =
+             Agent.get(restore_calls, & &1)
+
+    {:ok, evicted} = StatefulStore.get(ctx.store, "stf-broken-dead-anchor")
+    assert evicted.state == :evicted
+    assert evicted.terminal_reason == "pair_broken"
+    assert %{node_id: "node-live", generation: 4} = StatefulStore.get_volume(ctx.store, "wl-a")
+  end
+
   test "unconfirmed gone anchor keeps its banked instance and logs the refusal" do
     {:ok, now} = Agent.start_link(fn -> 0 end)
     clock = fn -> Agent.get(now, & &1) end
@@ -2648,7 +2720,7 @@ defmodule Embervm.StatefulManagerTest do
     assert banked.state == :banked
   end
 
-  test "missing anchor age survives volume anchor rewrites across node identity churn" do
+  test "a restored anchor must be absent for its own full expiry window" do
     {:ok, now} = Agent.start_link(fn -> 0 end)
     clock = fn -> Agent.get(now, & &1) end
     {restore_fun, restore_calls} = recording_restore_fun()
@@ -2665,58 +2737,67 @@ defmodule Embervm.StatefulManagerTest do
       )
 
     stateful_workload(ctx, "wl-a")
-    stateful_node(ctx, "node-live", store_reachable: true)
+    stateful_node(ctx, "node-b", store_reachable: true)
 
     {:ok, _} =
       StatefulStore.create_volume(ctx.store, "wl-a", %{
-        node_id: "node-dead-a",
+        node_id: "node-a",
         generation: 3,
         exported_generation: 3
       })
 
     _ = StatefulStore.seed_blessed_generation_if_unset(ctx.store, "wl-a", 3)
     :ok = StatefulManager.reconcile(ctx.mgr)
-    assert :sys.get_state(ctx.mgr).missing_anchor_since_ms["wl-a"] == 0
+    assert :sys.get_state(ctx.mgr).missing_anchor_since_ms["node-a"] == 0
 
-    Agent.update(now, fn _ -> 30_000 end)
-
-    # refresh_volume_facts writes configured_id into the volume row, while
-    # NodeCapacity resolves node presence from the reported node_id. Model two
-    # successive identity rewrites whose configured anchors remain absent.
-    stateful_node(ctx, "runtime-b",
-      configured_id: "node-dead-b",
-      volumes: [
-        %{workload: "wl-a", generation: 3, size_bytes: 100, allocated_bytes: 10, exported_generation: 3}
-      ]
-    )
-
-    :ok = StatefulManager.reconcile(ctx.mgr)
-    assert %{node_id: "node-dead-b"} = StatefulStore.get_volume(ctx.store, "wl-a")
-    assert :sys.get_state(ctx.mgr).missing_anchor_since_ms["wl-a"] == 0
-
-    NodeCapacity.drop(ctx.cap_table, "node-dead-b")
-    Agent.update(now, fn _ -> 60_000 end)
-
-    stateful_node(ctx, "runtime-c",
-      configured_id: "node-dead-c",
-      volumes: [
-        %{workload: "wl-a", generation: 3, size_bytes: 100, allocated_bytes: 10, exported_generation: 3}
-      ]
-    )
-
-    :ok = StatefulManager.reconcile(ctx.mgr)
-    assert %{node_id: "node-dead-c"} = StatefulStore.get_volume(ctx.store, "wl-a")
-    assert :sys.get_state(ctx.mgr).missing_anchor_since_ms["wl-a"] == 0
-
-    NodeCapacity.drop(ctx.cap_table, "node-dead-c")
-    Agent.update(now, fn _ -> 90_001 end)
-    :ok = StatefulManager.reconcile(ctx.mgr)
+    Agent.update(now, fn _ -> 90_000 end)
 
     assert {:ok, %{ip: "10.88.0.21", port: 5432}} =
              StatefulManager.wake(ctx.mgr, "wl-a", "p")
 
+    assert %{node_id: "node-b", generation: 4} =
+             StatefulStore.get_volume(ctx.store, "wl-a")
+
     assert [%{kind: :ARTIFACT_KIND_VOLUME, workload: "wl-a"}] =
              Agent.get(restore_calls, & &1)
+
+    [serving] =
+      ctx.store
+      |> StatefulStore.list("wl-a")
+      |> Enum.reject(&Embervm.StatefulState.terminal?(&1.state))
+
+    {:ok, _} = StatefulStore.unpublish(ctx.store, serving.instance_id, :bank)
+
+    {:ok, _} =
+      StatefulStore.transition(
+        ctx.store,
+        serving.instance_id,
+        :bank_ready,
+        :stateful_banked,
+        %{snapshot_ref: "stateful/reanchored", size_bytes: 10, snapshot_generation: 4},
+        %{
+          snapshot_ref: "stateful/reanchored",
+          snapshot_generation: 4,
+          snapshot_size_bytes: 10,
+          vm_id: nil
+        }
+      )
+
+    NodeCapacity.drop(ctx.cap_table, "node-b")
+    stateful_node(ctx, "node-c", store_reachable: true)
+    Agent.update(now, fn _ -> 90_001 end)
+
+    assert {:error, {:wake_failed, :volume_node_gone}} =
+             StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    state = :sys.get_state(ctx.mgr)
+    assert state.missing_anchor_since_ms["node-b"] == 90_001
+    refute Map.has_key?(state.missing_anchor_since_ms, "node-a")
+    assert [_initial_restore] = Agent.get(restore_calls, & &1)
+
+    {:ok, banked} = StatefulStore.get(ctx.store, serving.instance_id)
+    assert banked.state == :banked
+    assert %{node_id: "node-b"} = StatefulStore.get_volume(ctx.store, "wl-a")
   end
 
   test "still fails when anchor missing < expiry window" do
@@ -2765,7 +2846,7 @@ defmodule Embervm.StatefulManagerTest do
     # observation while this manager has only just booted. The current capacity
     # table still has no anchor row, but the boot-relative floor must win.
     :sys.replace_state(ctx.mgr, fn state ->
-      %{state | missing_anchor_since_ms: %{"wl-a" => 0}}
+      %{state | missing_anchor_since_ms: %{"node-dead" => 0}}
     end)
 
     assert {:error, {:wake_failed, :volume_node_gone}} =

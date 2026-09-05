@@ -90,4 +90,30 @@ defmodule Embervm.LogFormatterTest do
     assert decoded["from"] == "high"
     assert decoded["to"] == "shedding"
   end
+
+  test "preserves volume restore refusal fields in structured JSON" do
+    metadata = %{
+      workload: "wl-a",
+      anchor: "node-dead",
+      restore_target: "node-live",
+      exported_generation: 3
+    }
+
+    line =
+      Embervm.LogFormatter.format(
+        %{
+          level: :warning,
+          msg: {:string, "embervm stateful: volume restore refused"},
+          meta: metadata
+        },
+        %{}
+      )
+      |> IO.iodata_to_binary()
+
+    decoded = :json.decode(line)
+
+    for {key, value} <- metadata do
+      assert Map.get(decoded, Atom.to_string(key)) == value
+    end
+  end
 end
