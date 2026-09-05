@@ -39,8 +39,11 @@ defmodule Embervm.Session do
   A `DEADLINE_EXCEEDED` or transport error on `SessionAssign` (or a `suspect` VM
   the daemon left alive but flagged) marks the session `failed` and destroys the
   VM: a guest in an unknown mid-request state must not accrete further state
-  silently. The parked caller gets the error; every still-queued caller gets a
-  `{:error, :failed}` (the router 410s them). This process then stops.
+  silently. Brick preemption is distinct: a draining, down, or tombstoned owner,
+  or an unavailable/deadline transport result while the owner is unhealthy,
+  returns `:brick_gone` to every caller. The manager rests a durable lineage at
+  its existing bank or workspace, and fails an unbanked lineage with terminal
+  reason `brick_gone`. This process then stops without replaying the turn.
 
   The wall-clock watchdog (#4434) is deliberately gentler, because it fires in
   the opposite diagnostic situation: the server never enforced its deadline
@@ -129,6 +132,25 @@ defmodule Embervm.Session do
   @spec session_id(GenServer.server()) :: String.t()
   def session_id(server), do: GenServer.call(server, :session_id)
 
+  @doc "Whether this session has no invoke in flight and no queued callers."
+  @spec quiescent?(GenServer.server(), timeout()) :: boolean()
+  def quiescent?(server, timeout \\ 1_000), do: GenServer.call(server, :quiescent?, timeout)
+
+  @doc "Fail every current caller retryably because the session's brick is gone."
+  @spec brick_gone(GenServer.server(), map()) :: :ok
+  def brick_gone(server, metadata \\ %{}), do: GenServer.cast(server, {:brick_gone, metadata})
+
+  @doc "Classify an invoke error using the bound node's current registry state."
+  @spec classify_invoke_error(term(), map()) :: %{reason: term(), invalidate_channel: boolean()}
+  def classify_invoke_error(error, status) do
+    reason = normalize_invoke_error(error)
+
+    %{
+      reason: if(brick_gone_error?(error, status), do: :brick_gone, else: reason),
+      invalidate_channel: invalidate_channel?(error)
+    }
+  end
+
   @doc """
   Banks this session for brick memory pressure only when it is idle now.
 
@@ -189,6 +211,8 @@ defmodule Embervm.Session do
       assign_fun: Keyword.get(opts, :assign_fun, &default_session_assign/2),
       destroy_fun: Keyword.get(opts, :destroy_fun, &default_destroy/2),
       rejoin_failure_fun: Keyword.get(opts, :rejoin_failure_fun),
+      brick_status_fun: Keyword.get(opts, :brick_status_fun, &default_brick_status/1),
+      brick_gone_fun: Keyword.get(opts, :brick_gone_fun, &default_brick_gone/3),
       # FIFO of {from, req} waiting their turn; the head runs when no worker is in
       # flight. `worker` is the {pid, ref, from, watchdog_timer} of the in-flight
       # invoke, or nil.
@@ -203,13 +227,14 @@ defmodule Embervm.Session do
 
   @impl true
   def handle_call(:session_id, _from, state), do: {:reply, state.session_id, state}
+  def handle_call(:quiescent?, _from, state), do: {:reply, quiescent_state?(state), state}
 
   def handle_call(:pressure_bank, _from, state) do
     cond do
       not banking_enabled?(state) ->
         {:reply, {:error, :banking_disabled}, state}
 
-      not quiescent?(state) ->
+      not quiescent_state?(state) ->
         {:reply, {:error, :busy}, state}
 
       true ->
@@ -242,6 +267,14 @@ defmodule Embervm.Session do
   end
 
   @impl true
+  def handle_cast({:brick_gone, _metadata}, state) do
+    state = stop_invoke_worker(state)
+    reply_current_as_brick_gone(state)
+    drain_queue(state, :brick_gone)
+    {:stop, :normal, %{state | worker: nil, queue: :queue.new()}}
+  end
+
+  @impl true
   def handle_info({:invoke_done, pid, outcome}, %{worker: {pid, ref, from, timer}} = state) do
     Process.demonitor(ref, [:flush])
     # Defensive cancellation: a late {:invoke_timeout, ref} is harmless because
@@ -259,14 +292,19 @@ defmodule Embervm.Session do
         GenServer.reply(from, {:ok, result})
         {:noreply, maybe_start_next(disarm_rejoin_failure(state))}
 
-      {:error, reason} ->
+      {:error, reason, status} ->
         # A daemon transport/timeout/suspect failure: the session is failed and its
         # VM destroyed. Mirror the success branch: append session_failed BEFORE
         # replying (#4644, durable-before-observed), so a caller told {:error, _}
         # can read :failed straight back. Then reply, destroy the VM best-effort
         # off the caller's critical path, drain the rest as :failed, and stop (a
         # failed session has no process).
-        fail_and_stop(state, reason, from)
+        handle_invoke_error(state, reason, status, from)
+
+      {:error, reason} ->
+        status = safe_brick_status(state)
+        %{reason: classified_reason} = classify_invoke_error(reason, status)
+        handle_invoke_error(state, classified_reason, status, from)
     end
   end
 
@@ -275,7 +313,9 @@ defmodule Embervm.Session do
   def handle_info({:DOWN, ref, :process, pid, down_reason}, %{worker: {pid, ref, from, timer}} = state) do
     _ = Process.cancel_timer(timer)
     state = %{state | worker: nil}
-    fail_and_stop(state, {:worker_down, down_reason}, from)
+    status = safe_brick_status(state)
+    %{reason: reason} = classify_invoke_error({:worker_down, down_reason}, status)
+    handle_invoke_error(state, reason, status, from)
   end
 
   # The invoke wall-clock watchdog fired (#4434): the worker has outlived the
@@ -322,7 +362,7 @@ defmodule Embervm.Session do
   def handle_info(:maybe_bank, state) do
     state = %{state | idle_timer: nil}
 
-    if quiescent?(state) do
+    if quiescent_state?(state) do
       case ask_bank(state) do
         :ok ->
           # Admitted: the manager now owns the whole bank lifecycle. A banked session
@@ -344,7 +384,7 @@ defmodule Embervm.Session do
 
   # -- idle-bank -------------------------------------------------------------
 
-  defp quiescent?(state), do: is_nil(state.worker) and :queue.is_empty(state.queue)
+  defp quiescent_state?(state), do: is_nil(state.worker) and :queue.is_empty(state.queue)
 
   defp banking_enabled?(%{idle_bank_ms: ms}), do: is_integer(ms) and ms > 0
 
@@ -434,6 +474,7 @@ defmodule Embervm.Session do
     channel_fun = state.channel_fun
     invalidate_fun = state.invalidate_fun
     assign_fun = state.assign_fun
+    brick_status_fun = state.brick_status_fun
 
     spawn_monitor(fn ->
       # Restore the invoke ROOT span (carried on the req from the router) as the
@@ -475,7 +516,8 @@ defmodule Embervm.Session do
             req: req,
             channel_fun: channel_fun,
             invalidate_fun: invalidate_fun,
-            assign_fun: assign_fun
+            assign_fun: assign_fun,
+            brick_status_fun: brick_status_fun
           })
         end
 
@@ -511,8 +553,10 @@ defmodule Embervm.Session do
 
         case ctx.assign_fun.(channel, assign_req) do
           {:ok, %SessionAssignResponse{suspect: true}} ->
-            _ = ctx.invalidate_fun.(ctx.dial_id, channel)
-            {:error, :suspect}
+            status = safe_brick_status(ctx)
+            classification = classify_invoke_error(:suspect, status)
+            maybe_invalidate(ctx, channel, classification.invalidate_channel)
+            {:error, classification.reason, status}
 
           {:ok, %SessionAssignResponse{response: %GuestResponse{} = resp, usage: usage}} ->
             {:ok,
@@ -523,8 +567,10 @@ defmodule Embervm.Session do
              }, Embervm.Usage.from_proto(usage)}
 
           {:error, reason} ->
-            maybe_invalidate(ctx, channel, reason)
-            {:error, classify_error(reason)}
+            status = safe_brick_status(ctx)
+            classification = classify_invoke_error(reason, status)
+            maybe_invalidate(ctx, channel, classification.invalidate_channel)
+            {:error, classification.reason, status}
         end
 
       {:error, reason} ->
@@ -541,22 +587,86 @@ defmodule Embervm.Session do
   # noded pod restart, so invalidate when transport_dead?/1 recognises the wrapped
   # shape. Any non-RPCError reason (raw transport error, closed socket) stays
   # invalidate-always, unchanged.
-  defp maybe_invalidate(ctx, channel, %GRPC.RPCError{} = reason) do
-    if Embervm.NodeChannel.transport_dead?(reason) do
+  defp maybe_invalidate(ctx, channel, invalidate?) do
+    if invalidate? do
       _ = ctx.invalidate_fun.(ctx.dial_id, channel)
     end
 
     :ok
   end
 
-  defp maybe_invalidate(ctx, channel, _reason) do
-    _ = ctx.invalidate_fun.(ctx.dial_id, channel)
-    :ok
+  defp normalize_invoke_error(%GRPC.RPCError{status: 4}), do: :deadline_exceeded
+  defp normalize_invoke_error(%GRPC.RPCError{} = e), do: {:rpc, e.status}
+  defp normalize_invoke_error(reason), do: reason
+
+  defp handle_invoke_error(state, :brick_gone, status, from) do
+    _ = record_brick_gone_outcome(state, Map.put(status, :node_id, state.node_id))
+    GenServer.reply(from, {:error, :brick_gone})
+    drain_queue(state, :brick_gone)
+    {:stop, :normal, %{state | queue: :queue.new()}}
   end
 
-  defp classify_error(%GRPC.RPCError{status: 4}), do: :deadline_exceeded
-  defp classify_error(%GRPC.RPCError{} = e), do: {:rpc, e.status}
-  defp classify_error(reason), do: reason
+  defp handle_invoke_error(state, reason, _status, from), do: fail_and_stop(state, reason, from)
+
+  defp record_brick_gone_outcome(state, metadata) do
+    state.brick_gone_fun.(state.manager, state.session_id, metadata)
+  rescue
+    e ->
+      Logger.error("session brick_gone transition raised",
+        session_id: state.session_id,
+        node_id: state.node_id,
+        error: inspect(e)
+      )
+
+      :error
+  catch
+    kind, reason ->
+      Logger.error("session brick_gone transition exited",
+        session_id: state.session_id,
+        node_id: state.node_id,
+        error: inspect({kind, reason})
+      )
+
+      :error
+  end
+
+  defp brick_gone_error?(error, status) do
+    Map.get(status, :draining, false) or Map.get(status, :health) == :down or
+      Map.get(status, :tombstoned, false) or
+      (transport_preemption_error?(error) and Map.get(status, :health) != :healthy)
+  end
+
+  defp transport_preemption_error?(:deadline_exceeded), do: true
+  defp transport_preemption_error?({:rpc, status}) when status in [4, 14], do: true
+  defp transport_preemption_error?(%GRPC.RPCError{status: status}) when status in [4, 14], do: true
+  defp transport_preemption_error?({:no_channel, reason}), do: transport_preemption_error?(reason)
+
+  defp transport_preemption_error?(_reason), do: false
+
+  defp invalidate_channel?(%GRPC.RPCError{} = reason),
+    do: Embervm.NodeChannel.transport_dead?(reason)
+
+  defp invalidate_channel?(_reason), do: true
+
+  defp safe_brick_status(state) do
+    case state.brick_status_fun.(state.dial_id) do
+      status when is_map(status) ->
+        %{
+          node_id: state.node_id,
+          health: Map.get(status, :health, :unknown),
+          draining: Map.get(status, :draining, false),
+          tombstoned: Map.get(status, :tombstoned, false),
+          pod_uid: Map.get(status, :pod_uid)
+        }
+
+      _ ->
+        %{node_id: state.node_id, health: :healthy, draining: false, tombstoned: false, pod_uid: nil}
+    end
+  rescue
+    _ -> %{node_id: state.node_id, health: :healthy, draining: false, tombstoned: false, pod_uid: nil}
+  catch
+    _, _ -> %{node_id: state.node_id, health: :healthy, draining: false, tombstoned: false, pod_uid: nil}
+  end
 
   # -- session-store side effects --------------------------------------------
 
@@ -598,7 +708,7 @@ defmodule Embervm.Session do
       state = disarm_rejoin_failure(state)
       GenServer.reply(from, {:error, reason})
       _ = failure_fun.(reason)
-      drain_queue_as_failed(state)
+      drain_queue(state, :failed)
       {:stop, :normal, %{state | queue: :queue.new()}}
     else
       _ =
@@ -613,18 +723,30 @@ defmodule Embervm.Session do
 
       GenServer.reply(from, {:error, reason})
       _ = destroy_vm(state)
-      drain_queue_as_failed(state)
+      drain_queue(state, :failed)
       {:stop, :normal, %{state | queue: :queue.new()}}
     end
   end
 
   defp disarm_rejoin_failure(state), do: %{state | rejoin_failure_fun: nil}
 
-  defp drain_queue_as_failed(state) do
+  defp drain_queue(state, reason) do
     for {from, _req, _enqueued_at} <- :queue.to_list(state.queue) do
-      GenServer.reply(from, {:error, :failed})
+      GenServer.reply(from, {:error, reason})
     end
   end
+
+  defp stop_invoke_worker(%{worker: nil} = state), do: state
+
+  defp stop_invoke_worker(%{worker: {pid, ref, _from, timer}} = state) do
+    _ = Process.cancel_timer(timer)
+    Process.demonitor(ref, [:flush])
+    Process.exit(pid, :kill)
+    state
+  end
+
+  defp reply_current_as_brick_gone(%{worker: nil}), do: :ok
+  defp reply_current_as_brick_gone(%{worker: {_pid, _ref, from, _timer}}), do: GenServer.reply(from, {:error, :brick_gone})
 
   defp destroy_vm(state) do
     case state.channel_fun.(state.dial_id) do
@@ -653,6 +775,12 @@ defmodule Embervm.Session do
     Embervm.Node.V1.NodeService.Stub.destroy(channel, %Embervm.Node.V1.DestroyRequest{vm_id: vm_id},
       timeout: 15_000
     )
+  end
+
+  defp default_brick_status(node_id), do: Embervm.NodeRegistry.brick_status(node_id)
+
+  defp default_brick_gone(manager, session_id, metadata) do
+    Embervm.SessionManager.brick_gone(manager, session_id, metadata)
   end
 
   # Transport timeout must exceed the application deadline (timeout_ms) the guest is

@@ -1335,7 +1335,7 @@ defmodule Embervm.Router do
           "ember.session_state" => to_string(Map.get(session, :state))
         })
 
-        proxy_invoke(conn, session_id)
+        proxy_invoke(conn, session_id, session)
       else
         {:error, :no_token} ->
           halt_json(conn, 401, %{error: "missing session token", retryable: false})
@@ -1350,7 +1350,7 @@ defmodule Embervm.Router do
     end
   end
 
-  defp proxy_invoke(conn, session_id) do
+  defp proxy_invoke(conn, session_id, authorized_session) do
     case read_capped_body(conn) do
       {:ok, body, conn} ->
         req = %{
@@ -1401,6 +1401,9 @@ defmodule Embervm.Router do
           {:error, :not_found} ->
             send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
 
+          {:error, :brick_gone} ->
+            send_brick_gone(conn, session_id, authorized_session)
+
           {:error, reason} ->
             # {:invoke_start_not_recorded, :unavailable} means the guest was never
             # called and the session remains live. Any reason carrying unavailable
@@ -1423,6 +1426,7 @@ defmodule Embervm.Router do
 
   # Memory pressure is inherent to the claude fleet (4096 MiB VMs, single 16gi brick host); idle sessions park/evict on TTL, so RESOURCE_EXHAUSTED is transient and retryable.
   def classify_error_as_retryable(:unavailable), do: true
+  def classify_error_as_retryable(:brick_gone), do: true
   def classify_error_as_retryable(%GRPC.RPCError{status: 8}), do: true
   def classify_error_as_retryable(%GRPC.RPCError{}), do: false
   def classify_error_as_retryable(reason) when is_tuple(reason) do
@@ -1462,6 +1466,26 @@ defmodule Embervm.Router do
   end
 
   defp unavailable_error?(_reason), do: false
+  defp latest_session(session_id, fallback) do
+    case session_store().get(session_store_server(), session_id) do
+      {:ok, session} -> session
+      _ -> fallback
+    end
+  end
+
+  defp send_brick_gone(conn, session_id, authorized_session) do
+    Tracer.set_attributes(%{"ember.brick_gone" => true})
+    latest = latest_session(session_id, authorized_session)
+
+    send_json(conn, 503, %{
+      error: "brick preempted",
+      reason: "brick_gone",
+      retryable: true,
+      lineage_id: Map.get(latest, :lineage_id) || session_id,
+      session_state: latest |> Map.get(:state, :failed) |> to_string(),
+      node_id: Map.get(authorized_session, :node_id) || Map.get(latest, :node_id)
+    })
+  end
 
   defp guest_path(conn) do
     # Only an EXPLICIT X-Ember-Guest-Path sets the guest path; absent, return nil so
@@ -1639,11 +1663,10 @@ defmodule Embervm.Router do
       primary = primary_stateful_instance(instances)
       banked = Enum.find(instances, &(&1.state == :banked))
       volume = stateful_store().get_volume(stateful_store_server(), workload)
+      recovery = stateful_recovery_status(workload, volume)
 
-      send_json(
-        conn,
-        200,
-        json_nullify(%{
+      body =
+        %{
           workload: workload,
           instance: primary && stateful_instance_view(primary),
           state: primary && to_string(primary.state),
@@ -1654,8 +1677,16 @@ defmodule Embervm.Router do
           # The volume's actual block usage (the watermark), null if there is no volume row.
           volume_bytes: volume && volume.allocated_bytes,
           published_endpoint: stateful_store().published_endpoint(stateful_store_server(), workload)
+        }
+        |> json_nullify()
+        # JSON keys "anchor" and "recovery" are stable public fields. Merge them
+        # after legacy nil omission so nullable values remain explicit.
+        |> Map.merge(%{
+          anchor: stateful_anchor_view(recovery.anchor),
+          recovery: recovery.recovery
         })
-      )
+
+      send_json(conn, 200, body)
     else
       send_json(conn, 404, %{error: "unknown stateful workload", workload: workload, retryable: false})
     end
@@ -1694,6 +1725,40 @@ defmodule Embervm.Router do
       park_seq: positive_or_nil(Map.get(instance, :activator_park_seq)),
       updated_at: instance.updated_at,
       terminal_reason: instance.terminal_reason
+    }
+  end
+
+  defp stateful_recovery_status(workload, volume) do
+    manager = stateful_manager()
+
+    if function_exported?(manager, :recovery_status, 2) do
+      manager.recovery_status(stateful_manager_server(), workload)
+    else
+      node_id = volume && Map.get(volume, :node_id)
+      status = node_status(node_id)
+
+      %{
+        anchor: %{
+          node_id: node_id,
+          health: Map.get(status, :health),
+          draining: Map.get(status, :draining, false),
+          missing_since_ms: nil
+        },
+        recovery: if(is_nil(volume), do: :cold, else: nil)
+      }
+    end
+  rescue
+    _ -> %{anchor: %{node_id: volume && Map.get(volume, :node_id), health: nil, draining: false, missing_since_ms: nil}, recovery: nil}
+  catch
+    _, _ -> %{anchor: %{node_id: volume && Map.get(volume, :node_id), health: nil, draining: false, missing_since_ms: nil}, recovery: nil}
+  end
+
+  defp stateful_anchor_view(anchor) do
+    %{
+      node_id: Map.get(anchor, :node_id),
+      health: Map.get(anchor, :health),
+      draining: Map.get(anchor, :draining, false),
+      missing_since_ms: Map.get(anchor, :missing_since_ms)
     }
   end
 
@@ -2055,8 +2120,30 @@ defmodule Embervm.Router do
       last_invoke_at: session.last_invoke_at,
       expires_at: session.expires_at,
       updated_at: session.updated_at,
-      terminal_reason: session.terminal_reason
+      terminal_reason: session.terminal_reason,
+      node: session_node_view(session)
     }
+  end
+
+  defp session_node_view(session) do
+    node_id = Map.get(session, :node_id) || Map.get(session, :volume_node_id)
+    status = node_status(node_id)
+
+    %{
+      node_id: node_id,
+      health: Map.get(status, :health),
+      draining: Map.get(status, :draining, false)
+    }
+  end
+
+  defp node_status(nil), do: %{}
+
+  defp node_status(node_id) do
+    Embervm.NodeRegistry.brick_status(node_id)
+  rescue
+    _ -> %{}
+  catch
+    _, _ -> %{}
   end
 
   # Resolvable session modules/servers, symmetric with `store/0`: the concrete
@@ -2236,14 +2323,15 @@ defmodule Embervm.Router do
     conn |> send_json(status, map) |> halt()
   end
 
-  defp encode_json(map), do: map |> :json.encode() |> :erlang.iolist_to_binary()
+  defp encode_json(map) do
+    map |> :json.encode(&encode_json_value/2) |> :erlang.iolist_to_binary()
+  end
 
-  # OTP's :json.encode renders the Elixir `nil` atom as the JSON STRING "nil" (nil
-  # is just an atom to the encoder), not JSON null. Rather than depend on the
-  # encoder's atom handling, OMIT nil-valued keys entirely: a JSON object without a
-  # key decodes to a map where accessing it yields nil, which is exactly what a
-  # genuinely-null field (a banked stateful workload's absent live endpoint, an
-  # absent bundle generation) should read back as. Recurses into nested maps/lists.
+  defp encode_json_value(nil, _encoder), do: "null"
+  defp encode_json_value(value, encoder), do: :json.encode_value(value, encoder)
+
+  # Preserve the established omission of nil-valued legacy stateful fields.
+  # Stable nullable fields are merged after this transformation.
   defp json_nullify(map) when is_map(map) do
     map
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)

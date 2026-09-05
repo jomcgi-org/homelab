@@ -74,6 +74,8 @@ defmodule Embervm.SessionState do
     :park_complete,
     :rejoin_ready,
     :parked_abort,
+    :brick_gone_bank,
+    :brick_gone_park,
     :relight,
     :relight_ready,
     :relight_abort,
@@ -111,6 +113,16 @@ defmodule Embervm.SessionState do
     {:relighting, :relight_ready} => :running,
     {:relighting, :relight_abort} => :banked,
     {:relighting, :parked_abort} => :parked,
+    # Brick loss never replays an invoke whose effects are uncertain. A durable
+    # bank or workspace lets the next caller relight explicitly.
+    {:creating, :brick_gone_bank} => :banked,
+    {:running, :brick_gone_bank} => :banked,
+    {:banking, :brick_gone_bank} => :banked,
+    {:relighting, :brick_gone_bank} => :banked,
+    {:creating, :brick_gone_park} => :parked,
+    {:running, :brick_gone_park} => :parked,
+    {:banking, :brick_gone_park} => :parked,
+    {:relighting, :brick_gone_park} => :parked,
     # Max-lifetime expiry: a live or banked session past its deadline.
     {:running, :expire} => :expired,
     {:banked, :expire} => :expired,
@@ -168,6 +180,8 @@ defmodule Embervm.SessionState do
           | :park_complete
           | :rejoin_ready
           | :parked_abort
+          | :brick_gone_bank
+          | :brick_gone_park
           | :relight_ready
           | :expire
           | :evict

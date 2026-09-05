@@ -62,6 +62,7 @@ defmodule Embervm.SessionManager do
   alias Embervm.Scheduler.Request
   alias Embervm.Scheduler
   alias Embervm.PrimedOp
+  alias Embervm.OpLog.Op
 
   alias Embervm.Node.V1.{
     ArtifactRef,
@@ -257,6 +258,30 @@ defmodule Embervm.SessionManager do
     GenServer.call(server, {:route_invoke, session_id, req}, :infinity)
   end
 
+  @doc "Records brick loss and moves a session to its safest durable resting state."
+  @spec brick_gone(String.t()) :: {:ok, atom()} | {:error, term()}
+  def brick_gone(session_id), do: brick_gone(__MODULE__, session_id, %{})
+
+  @spec brick_gone(GenServer.server(), String.t()) :: {:ok, atom()} | {:error, term()}
+  def brick_gone(server, session_id), do: brick_gone(server, session_id, %{})
+
+  @spec brick_gone(GenServer.server(), String.t(), map()) :: {:ok, atom()} | {:error, term()}
+  def brick_gone(server, session_id, metadata) do
+    GenServer.call(server, {:brick_gone, session_id, metadata}, :infinity)
+  end
+
+  @doc "Sweeps every live session bound to a node that the registry aged down."
+  @spec node_down(String.t()) :: non_neg_integer()
+  def node_down(node_id), do: node_down(__MODULE__, node_id, %{})
+
+  @spec node_down(GenServer.server(), String.t()) :: non_neg_integer()
+  def node_down(server, node_id), do: node_down(server, node_id, %{})
+
+  @spec node_down(GenServer.server(), String.t(), map()) :: non_neg_integer()
+  def node_down(server, node_id, metadata) do
+    GenServer.call(server, {:node_down, node_id, metadata}, :infinity)
+  end
+
   @doc """
   Destroys a session (`* -> destroyed`): stops its process/VM and records
   `session_destroyed`. Returns `{:ok, session}`, `{:error, :not_found}`, or
@@ -315,13 +340,21 @@ defmodule Embervm.SessionManager do
   def init(opts) do
     op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.OpLog.SQLite)
     op_log = Keyword.get(opts, :op_log, op_log_mod)
+    capacity_table = Keyword.get(opts, :capacity_table, NodeCapacity.table())
+
+    session_opts =
+      opts
+      |> Keyword.get(:session_opts, [])
+      |> Keyword.put_new(:brick_status_fun, fn dial_id ->
+        brick_status(capacity_table, dial_id)
+      end)
 
     state = %{
       session_store: Keyword.get(opts, :session_store, SessionStore),
       dispatcher: Keyword.get(opts, :dispatcher, Embervm.Dispatcher),
       supervisor: Keyword.get(opts, :supervisor, Embervm.SessionSupervisor),
       registry: Keyword.get(opts, :registry, @registry),
-      capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
+      capacity_table: capacity_table,
       catalog_table: Keyword.get(opts, :catalog_table, WorkloadCatalog.table()),
       clock: Keyword.get(opts, :clock, &default_clock/0),
       monotonic_clock: Keyword.get(opts, :monotonic_clock, fn -> System.monotonic_time(:millisecond) end),
@@ -362,7 +395,7 @@ defmodule Embervm.SessionManager do
       op_log_mod: op_log_mod,
       # Extra opts threaded into every started Embervm.Session (the daemon seams),
       # so a test can inject a fake session_assign into the spawned process.
-      session_opts: Keyword.get(opts, :session_opts, []),
+      session_opts: session_opts,
       tenant: Keyword.get(opts, :tenant, "homelab"),
       # Per-node concurrent-bank cap: node_id -> count of banks in flight on it. A
       # node at its cap refuses a new bank (the session stays live, re-arms its timer).
@@ -738,6 +771,17 @@ defmodule Embervm.SessionManager do
 
   def handle_call({:drain_node, node_id}, _from, state) do
     {count, state} = drain_bank_node(state, node_id)
+    {:reply, count, state}
+  end
+
+  def handle_call({:brick_gone, session_id, metadata}, _from, state) do
+    {reply, state} = brick_gone_outcome(state, session_id, metadata)
+    if match?({:ok, _}, reply), do: notify_session_brick_gone(state, session_id, metadata)
+    {:reply, reply, state}
+  end
+
+  def handle_call({:node_down, node_id, metadata}, _from, state) do
+    {count, state} = sweep_brick_gone_node(state, node_id, metadata)
     {:reply, count, state}
   end
 
@@ -1662,13 +1706,14 @@ defmodule Embervm.SessionManager do
   # Replies `:ok` (admitted; the caller session process stops) or a refusal (the
   # caller re-arms its timer and stays live).
   @doc """
-  Force-bank every live session on a draining node (R6, ADR embervm/009).
+  Force-bank every quiescent live session on a draining node (R6, ADR embervm/009).
 
   Called by the DrainCoordinator on the drain edge. Banks each `:running` session
-  on the node via the existing bank path (so its state survives the roll and relights
-  on the next invoke). Sessions already banking are skipped. Sessions refused (at the
-  per-node bank cap, or with unknown disk facts) are left for the normal sweep, which
-  keeps ticking during the hold. Returns the count whose bank was admitted.
+  on the node via the existing bank path, so its state survives the roll and relights
+  on the next invoke. A session with an invoke in flight is never terminated at this
+  edge. Its transport settles at the drain deadline as `brick_gone`. Sessions already
+  banking are skipped. Sessions refused at the per-node bank cap or with unknown disk
+  facts are left for the normal sweep. Returns the count whose bank was admitted.
   """
   @spec drain_node(GenServer.server(), String.t()) :: non_neg_integer()
   def drain_node(server \\ __MODULE__, node_id) do
@@ -1680,6 +1725,7 @@ defmodule Embervm.SessionManager do
       SessionStore.all(state.session_store)
       |> Enum.filter(&(&1.state == :running and &1.node_id == node_id))
       |> Enum.reject(&Map.has_key?(state.banking, &1.session_id))
+      |> Enum.filter(&quiescent_session?(state, &1.session_id))
 
     {count, state} = Enum.reduce(sessions, {0, state}, fn session, {n, acc} ->
       case do_bank(acc, session.session_id) do
@@ -1701,6 +1747,190 @@ defmodule Embervm.SessionManager do
     spawn(fn -> Enum.each(parked, fn session -> _ = archive_session_volume(state, session) end) end)
 
     {count, state}
+  end
+
+  defp quiescent_session?(state, session_id) do
+    case Registry.lookup(state.registry, session_id) do
+      [{pid, _}] -> Embervm.Session.quiescent?(pid, 100)
+      [] -> false
+    end
+  rescue
+    _ -> false
+  catch
+    _, _ -> false
+  end
+
+  defp sweep_brick_gone_node(state, node_id, supplied_metadata) do
+    sessions =
+      SessionStore.all(state.session_store)
+      |> Enum.filter(
+        &(session_bound_to_node?(&1, node_id) and
+            &1.state in [:running, :banking, :relighting, :creating] and
+            session_on_downed_instance?(state, &1, node_id, supplied_metadata))
+      )
+
+    Enum.reduce(sessions, {0, state}, fn session, {count, acc} ->
+      metadata =
+        Map.merge(
+          %{node_id: node_id, health: :down, draining: false, tombstoned: false, pod_uid: nil},
+          supplied_metadata
+        )
+      {reply, acc} = brick_gone_outcome(acc, session.session_id, metadata)
+      if match?({:ok, _}, reply), do: notify_session_brick_gone(acc, session.session_id, metadata)
+
+      acc = drain_relight_waiters(acc, session.session_id, {:error, :brick_gone})
+      {count + if(match?({:ok, _}, reply), do: 1, else: 0), acc}
+    end)
+  end
+
+  defp notify_session_brick_gone(state, session_id, metadata) do
+    case Registry.lookup(state.registry, session_id) do
+      [{pid, _}] -> Embervm.Session.brick_gone(pid, metadata)
+      [] -> :ok
+    end
+  end
+
+  defp session_bound_to_node?(session, node_id) do
+    session.node_id == node_id or
+      (session.state in [:relighting, :creating] and Map.get(session, :volume_node_id) == node_id)
+  end
+
+  defp session_on_downed_instance?(_state, _session, _node_id, %{pod_uid: pod_uid})
+       when not is_binary(pod_uid) or pod_uid == "",
+       do: true
+
+  defp session_on_downed_instance?(state, session, node_id, %{pod_uid: pod_uid}) do
+    down_dial_id = node_id <> "/" <> pod_uid
+
+    case Map.get(state.session_dials, session.session_id) do
+      ^down_dial_id ->
+        true
+
+      dial_id when is_binary(dial_id) and dial_id != node_id ->
+        false
+
+      _missing_or_legacy_dial ->
+        not session_reported_on_surviving_instance?(state, session, node_id, down_dial_id)
+    end
+  end
+
+  defp session_on_downed_instance?(_state, _session, _node_id, _metadata), do: true
+
+  # A manager restart can lose the instance-specific session_dials cache while
+  # durable running, relighting, or creating rows remain. After registry expiry
+  # the down instance's capacity fact is already gone. Preserve a co-located
+  # sibling only when its surviving fact positively reports this session's VM,
+  # snapshot, or node-shared workspace. Otherwise the aged-down owner is the only
+  # remaining explanation and the row must be swept.
+  defp session_reported_on_surviving_instance?(state, session, node_id, down_dial_id) do
+    state.capacity_table
+    |> NodeCapacity.all()
+    |> Enum.filter(&(Map.get(&1, :configured_id) == node_id and fact_dial_id(&1) != down_dial_id))
+    |> Enum.any?(fn fact ->
+      Enum.any?(Map.get(fact, :session_vms, []) || [], &(&1.session_id == session.session_id)) or
+        Enum.any?(Map.get(fact, :session_snapshots, []) || [], &(&1.session_id == session.session_id)) or
+        (session.state in [:relighting, :creating] and
+           Enum.any?(Map.get(fact, :session_volumes, []) || [], fn volume ->
+             Map.get(volume, :lineage_id) == session.lineage_id and
+               Map.get(volume, :workload) == session.workload
+           end))
+    end)
+  end
+
+  defp brick_gone_outcome(state, session_id, metadata) do
+    case SessionStore.get(state.session_store, session_id) do
+      {:ok, %{state: current} = session}
+      when current in [:running, :banking, :relighting, :creating] ->
+        record_brick_gone(state, session, metadata)
+
+        {event, op_kind, payload, updates, outcome} =
+          cond do
+            persistence_enabled_workload?(session_workload_entry(state, session.workload)) and
+                is_binary(Map.get(session, :volume_node_id)) ->
+              {:brick_gone_park, :session_parked,
+               %{reason: "brick_gone", volume_node_id: session.volume_node_id},
+               %{node_id: nil, vm_id: nil, volume_node_id: session.volume_node_id}, :parked}
+
+            is_binary(Map.get(session, :snapshot_ref)) and session.snapshot_ref != "" ->
+              {:brick_gone_bank, :session_banked,
+               %{
+                 reason: "brick_gone",
+                 snapshot_ref: session.snapshot_ref,
+                 size_bytes: session.snapshot_size_bytes,
+                 generation: session.generation,
+                 parent_base_ref: session.base_snapshot_ref
+               }, %{vm_id: nil}, :banked}
+
+            true ->
+              {:fail, :session_failed, %{reason: :brick_gone, detail: "brick_gone"}, %{}, :failed}
+          end
+
+        reply = SessionStore.transition(state.session_store, session_id, event, op_kind, payload, updates)
+
+        state =
+          if match?({:ok, _}, reply) do
+            clear_brick_gone_tracking(state, session_id)
+          else
+            state
+          end
+
+        case reply do
+          {:ok, _} -> {{:ok, outcome}, state}
+          {:error, reason} -> {{:error, reason}, state}
+        end
+
+      {:ok, %{state: state_name}} when state_name in [:banked, :parked, :failed] ->
+        {{:ok, state_name}, state}
+
+      {:ok, %{state: state_name}} ->
+        {{:error, {:not_applicable, state_name}}, state}
+
+      :error ->
+        {{:error, :not_found}, state}
+    end
+  end
+
+  defp record_brick_gone(state, session, metadata) do
+    op = %Op{
+      kind: :session_brick_gone,
+      tenant: session.tenant,
+      principal: session.principal,
+      workload: session.workload,
+      session_id: session.session_id,
+      ts: state.clock.(),
+      payload: %{
+        node_id: Map.get(metadata, :node_id, session.node_id),
+        pod_uid: Map.get(metadata, :pod_uid),
+        health: Map.get(metadata, :health),
+        draining: Map.get(metadata, :draining, false)
+      }
+    }
+
+    _ = state.op_log_mod.append(state.op_log, op)
+    :ok
+  rescue
+    e ->
+      Logger.warning("embervm session_brick_gone append raised",
+        session_id: session.session_id,
+        error: inspect(e)
+      )
+
+      :ok
+  end
+
+  defp clear_brick_gone_tracking(state, session_id) do
+    bank = Map.get(state.banking, session_id)
+
+    state =
+      state
+      |> clear_pressure_wait(session_id)
+      |> clear_session_tracking(session_id)
+      |> Map.update!(:banking, &Map.delete(&1, session_id))
+
+    case bank do
+      %{node_id: node_id} -> decr_bank_inflight(state, node_id)
+      _ -> state
+    end
   end
 
   defp do_bank(state, session_id) do
@@ -1908,6 +2138,14 @@ defmodule Embervm.SessionManager do
         state
         |> clear_session_tracking(session_id)
         |> drain_relight_waiters(session_id, {:error, {:gone, to_string(st)}})
+
+      # A node-down sweep can settle an in-flight bank from its last durable
+      # snapshot before the async bank RPC returns. Its eventual result no
+      # longer owns the row and must not attempt an illegal bank_ready event.
+      {:ok, %{state: st}} when st in [:banked, :parked] ->
+        state
+        |> clear_session_tracking(session_id)
+        |> drain_relight_waiters(session_id, {:error, :brick_gone})
 
       _ ->
         finish_bank_active(state, session_id, node_id, outcome)
@@ -2727,6 +2965,13 @@ defmodule Embervm.SessionManager do
       {:ok, %{state: st}} when st in [:destroying, :expired, :evicted, :destroyed, :failed] ->
         state = clear_pressure_wait(state, session_id)
         drain_relight_waiters(state, session_id, {:error, {:gone, to_string(st)}})
+
+      # A node-down sweep can move a relighting lineage back to its durable
+      # resting state. The stale worker result must not start a process or
+      # replay the parked turn after callers have observed brick_gone.
+      {:ok, %{state: st}} when st in [:banked, :parked] ->
+        state = clear_pressure_wait(state, session_id)
+        drain_relight_waiters(state, session_id, {:error, :brick_gone})
 
       _ ->
         finish_relight_active(state, session_id, outcome)
@@ -4469,6 +4714,30 @@ defmodule Embervm.SessionManager do
 
   defp default_delete_session_volume(channel, %DeleteVolumeRequest{} = req) do
     Embervm.Node.V1.NodeService.Stub.delete_volume(channel, req, timeout: 15_000)
+  end
+
+  # A capacity row is NodeRegistry's healthy, non-draining projection. Prefer it
+  # for the bound dial so a healthy replacement is not hidden by an old sibling's
+  # tombstone, then ask the registry for every non-dispatchable state.
+  defp brick_status(capacity_table, dial_id) do
+    capacity_table
+    |> NodeCapacity.all()
+    |> Enum.find(fn facts ->
+      Map.get(facts, :instance_id) == dial_id or Map.get(facts, :configured_id) == dial_id or
+        Map.get(facts, :node_id) == dial_id
+    end)
+    |> case do
+      facts when is_map(facts) ->
+        %{
+          health: :healthy,
+          draining: false,
+          tombstoned: false,
+          pod_uid: Map.get(facts, :pod_uid)
+        }
+
+      nil ->
+        Embervm.NodeRegistry.brick_status(dial_id)
+    end
   end
 
   defp delete_session_volume(state, %{volume_node_id: node_id, workload: workload, lineage_id: lineage_id})

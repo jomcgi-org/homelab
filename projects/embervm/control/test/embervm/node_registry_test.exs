@@ -41,7 +41,8 @@ defmodule Embervm.NodeRegistryTest do
       watch_startup: false,
       # No background registry re-push unless a test opts in (mirrors the manual
       # informer control the harness relies on).
-      registry_resync_ms: 0
+      registry_resync_ms: 0,
+      session_sweep_fun: fn _node_id, _pod_uid -> :ok end
     ]
 
     {:ok, pid} = NodeRegistry.start_link(Keyword.merge(defaults, opts))
@@ -199,6 +200,7 @@ defmodule Embervm.NodeRegistryTest do
     advance.(10_000)
     :ok = NodeRegistry.tick(reg)
     assert NodeRegistry.status(reg)["node-4"].health == :down
+    assert NodeRegistry.brick_status(reg, "node-4").health == :down
     assert_receive {:reassigned, "node-4"}
 
     # A further tick while still down must not re-fire reassignment.
@@ -242,6 +244,21 @@ defmodule Embervm.NodeRegistryTest do
     :ok = NodeRegistry.tick(reg)
     assert NodeRegistry.status(reg)["node-4"].health == :down
     refute_receive {:reassigned, "node-4"}, 50
+  end
+
+  test "a node aged down triggers the session sweep even without a prior status" do
+    {clock, advance} = new_clock()
+    test_pid = self()
+
+    {reg, _table} =
+      start_registry(
+        clock: clock,
+        session_sweep_fun: fn node_id, pod_uid -> send(test_pid, {:sessions_swept, node_id, pod_uid}) end
+      )
+
+    advance.(15_000)
+    :ok = NodeRegistry.tick(reg)
+    assert_receive {:sessions_swept, "node-4", ""}
   end
 
   test "a down edge reassigns only an instance that has produced a status" do

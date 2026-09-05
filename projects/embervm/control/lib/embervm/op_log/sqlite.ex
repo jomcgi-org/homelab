@@ -931,6 +931,7 @@ defmodule Embervm.OpLog.SQLite do
     :session_created,
     :session_invoke_started,
     :session_invoked,
+    :session_brick_gone,
     :session_banked,
     :session_parked,
     :session_parking,
@@ -2147,6 +2148,7 @@ defmodule Embervm.OpLog.SQLite do
               :drain,
               :node_drain_started,
               :node_drain_finished,
+              :session_brick_gone,
               :artifact_exported,
               :artifact_restored,
               :artifact_evicted_remote

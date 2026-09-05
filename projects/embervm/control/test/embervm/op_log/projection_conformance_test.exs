@@ -204,6 +204,7 @@ defmodule Embervm.OpLog.ProjectionConformance do
       :drain,
       :node_drain_started,
       :node_drain_finished,
+      :session_brick_gone,
       :artifact_exported,
       :artifact_restored,
       :artifact_evicted_remote

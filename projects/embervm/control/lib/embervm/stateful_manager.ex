@@ -265,6 +265,12 @@ defmodule Embervm.StatefulManager do
     GenServer.call(server, {:parked?, workload})
   end
 
+  @doc "Operational anchor and recovery state for the stateful read surface."
+  @spec recovery_status(GenServer.server(), String.t()) :: %{anchor: map(), recovery: atom() | nil}
+  def recovery_status(server \\ __MODULE__, workload) do
+    GenServer.call(server, {:recovery_status, workload})
+  end
+
   @doc """
   Runs one adoption reconcile synchronously (the boot continue + the periodic
   sweep run the same code) and returns after it completes. Reconciles the
@@ -450,6 +456,10 @@ defmodule Embervm.StatefulManager do
 
   def handle_call({:parked?, workload}, _from, state) do
     {:reply, wake_waiters(state, workload) != [], state}
+  end
+
+  def handle_call({:recovery_status, workload}, _from, state) do
+    {:reply, recovery_status_view(state, workload), state}
   end
 
   def handle_call(:reconcile, _from, state) do
@@ -714,7 +724,7 @@ defmodule Embervm.StatefulManager do
   end
 
   defp new_wake_entry(waiters) do
-    %{token: System.unique_integer([:monotonic, :positive]), waiters: waiters}
+    %{token: System.unique_integer([:monotonic, :positive]), waiters: waiters, restoring: false}
   end
 
   defp wake_waiters(state, workload) do
@@ -761,10 +771,23 @@ defmodule Embervm.StatefulManager do
     # occasional durable eviction is part of that same wake boundary).
     wake_start = :opentelemetry.timestamp()
     plan = plan_wake(state, workload)
+    state = mark_restore_plan(state, workload, plan)
     cold = match?({:cold, _, _, _, _}, plan) or match?({:cold, _, _, _, _, _}, plan) or match?({:restore_volume_then_cold, _, _, _}, plan) or match?({:consult_volume_store, _, _}, plan)
     state = stamp_wake_trace(state, workload, %{wake_start: wake_start, cold: cold})
 
     continue_wake_plan(state, workload, entry, plan, true)
+  end
+
+  defp mark_restore_plan(state, workload, plan) do
+    restoring =
+      match?({:restore_then_relight, _, _, _}, plan) or
+        match?({:restore_volume_then_cold, _, _, _}, plan) or
+        match?({:consult_volume_store, _, _}, plan)
+
+    case Map.get(state.waking, workload) do
+      nil -> state
+      entry -> %{state | waking: Map.put(state.waking, workload, Map.put(entry, :restoring, restoring))}
+    end
   end
 
   defp continue_wake_plan(state, workload, _entry, {:consult_volume_store, volume, anchor_node_id}, true) do
@@ -1601,6 +1624,42 @@ defmodule Embervm.StatefulManager do
   end
 
   defp missing_anchor_since_ms(_state, _volume), do: nil
+
+  defp recovery_status_view(state, workload) do
+    volume = StatefulStore.get_volume(state.store, workload)
+    node_id = volume && Map.get(volume, :node_id)
+    missing_since = missing_anchor_since_ms(state, volume)
+    status = recovery_node_status(node_id)
+    waking = Map.get(state.waking, workload)
+
+    recovery =
+      cond do
+        is_map(waking) and Map.get(waking, :restoring, false) -> :restoring
+        confirmed_anchor_gone?({state, volume}) -> :anchor_lost
+        is_nil(volume) -> :cold
+        true -> nil
+      end
+
+    %{
+      anchor: %{
+        node_id: node_id,
+        health: Map.get(status, :health),
+        draining: Map.get(status, :draining, false),
+        missing_since_ms: missing_since
+      },
+      recovery: recovery
+    }
+  end
+
+  defp recovery_node_status(nil), do: %{}
+
+  defp recovery_node_status(node_id) do
+    Embervm.NodeRegistry.brick_status(node_id)
+  rescue
+    _ -> %{}
+  catch
+    _, _ -> %{}
+  end
 
   defp observe_missing_volume_anchors(state) do
     now = state.clock.()
