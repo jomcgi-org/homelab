@@ -487,27 +487,136 @@ defmodule Embervm.SpecTrace.CheckerTest do
       assert verdict.detail =~ "W"
     end
 
-    test "a queued task at the workload concurrency cap is unjudged", %{store: store} do
-      inflight_task_ids = ["task-1", "task-2"]
-      task_id = "task-3"
+    test "one at-cap checkpoint without turnover still judges persistent inventory", %{
+      store: store
+    } do
+      task_id = "task-transient-cap"
+
+      checkpoints = [
+        eventually_checkpoint(
+          10,
+          [queued_task(task_id, "W")],
+          %{"node:W" => ["vm-w"]},
+          workload_concurrency: workload_concurrency("W", 0, 2)
+        ),
+        eventually_checkpoint(
+          20,
+          [queued_task(task_id, "W")],
+          %{"node:W" => ["vm-w"]},
+          workload_concurrency: workload_concurrency("W", 2, 2)
+        ),
+        eventually_checkpoint(
+          30,
+          [queued_task(task_id, "W")],
+          %{"node:W" => ["vm-w"]},
+          workload_concurrency: workload_concurrency("W", 1, 2)
+        )
+      ]
+
+      verdict = eventually_dispatched_verdict(store, checkpoints)
+
+      assert verdict.verdict == :fail
+      assert verdict.coverage == 1
+      assert verdict.detail =~ task_id
+    end
+
+    test "a workload frozen at its cap with no turnover fails", %{store: store} do
+      task_id = "task-frozen-cap"
 
       checkpoints =
-        for mono <- [10, 20, 30, 40] do
+        for mono <- [10, 20, 30] do
           eventually_checkpoint(
             mono,
-            [queued_task(task_id, "bazel-query")],
-            %{"node:bazel-query" => ["primed-clone"]},
-            workload_concurrency:
-              workload_concurrency("bazel-query", length(inflight_task_ids), 2)
+            [queued_task(task_id, "W")],
+            %{"node:W" => ["vm-w"]},
+            workload_concurrency: workload_concurrency("W", 2, 2)
           )
         end
 
       verdict = eventually_dispatched_verdict(store, checkpoints)
 
+      assert verdict.verdict == :fail
+      assert verdict.coverage == 1
+      assert verdict.detail =~ task_id
+    end
+
+    test "turnover for another task makes at-cap backpressure unjudged", %{store: store} do
+      task_id = "task-healthy-cap"
+
+      checkpoints =
+        for mono <- [10, 20, 30] do
+          eventually_checkpoint(
+            mono,
+            [queued_task(task_id, "W")],
+            %{"node:W" => ["vm-w"]},
+            workload_concurrency: workload_concurrency("W", 2, 2)
+          )
+        end
+
+      verdict =
+        eventually_dispatched_verdict(store, [
+          eventually_progress(15, "dispatch_warm", "task-with-turnover", "W")
+          | checkpoints
+        ])
+
       assert verdict.verdict == :vacuous
       assert verdict.coverage == 0
       assert verdict.detail =~ task_id
-      assert verdict.detail =~ "workload at its concurrency cap"
+      assert verdict.detail =~ "workload at its concurrency cap with turnover"
+    end
+
+    test "a passing truncated run reports a partial visible denominator", %{store: store} do
+      task_a = "task-visible-a"
+      task_b = "task-visible-b"
+      queued_tasks = [queued_task(task_a, "W"), queued_task(task_b, "W")]
+
+      checkpoints =
+        for mono <- [10, 20, 30] do
+          eventually_checkpoint(
+            mono,
+            queued_tasks,
+            %{"node:W" => ["vm-w"]},
+            truncated: true,
+            workload_concurrency: workload_concurrency("W", 0, 2)
+          )
+        end
+
+      verdict =
+        eventually_dispatched_verdict(store, [
+          eventually_progress(15, "dispatch_warm", task_a, "W"),
+          eventually_progress(25, "succeed", task_b, "W")
+          | checkpoints
+        ])
+
+      assert verdict.verdict == :pass
+      assert verdict.coverage == 2
+      assert verdict.detail =~ "judged 2 queued task(s)"
+      assert verdict.detail =~ "truncation hid an unknown number of tasks at 3 checkpoint(s)"
+      assert verdict.detail =~ "coverage counts only visible tasks"
+    end
+
+    test "an at-cap-only vacuous summary names the cap rather than inventory", %{store: store} do
+      task_id = "task-cap-summary"
+
+      checkpoints =
+        for mono <- [10, 20, 30] do
+          eventually_checkpoint(
+            mono,
+            [queued_task(task_id, "W")],
+            %{"node:W" => ["vm-w"]},
+            workload_concurrency: workload_concurrency("W", 2, 2)
+          )
+        end
+
+      verdict =
+        eventually_dispatched_verdict(store, [
+          eventually_progress(15, "succeed", "task-other", "W")
+          | checkpoints
+        ])
+
+      assert verdict.verdict == :vacuous
+      assert verdict.detail =~ "concurrency cap prevented judgement"
+      refute verdict.detail =~ "inventory"
     end
 
     test "a real queued wedge below the workload concurrency cap fails", %{store: store} do
@@ -538,7 +647,8 @@ defmodule Embervm.SpecTrace.CheckerTest do
           eventually_checkpoint(
             mono,
             [queued_task(task_id, "W")],
-            %{"node:W" => ["vm-w"]}
+            %{"node:W" => ["vm-w"]},
+            workload_concurrency: :absent
           )
         end
 
@@ -997,7 +1107,21 @@ defmodule Embervm.SpecTrace.CheckerTest do
   end
 
   defp eventually_checkpoint(mono, queued_tasks, inventory, opts \\ []) do
-    vars = %{"node_workload_vm_ids" => inventory}
+    vars = %{
+      "node_workload_vm_ids" => inventory,
+      "queued_tasks_truncated" => Keyword.get(opts, :truncated, false),
+      "workload_concurrency" => Keyword.get(opts, :workload_concurrency, %{}),
+      "reserved_vm_ids" => [],
+      "node_health" => %{},
+      "node_reported" => %{}
+    }
+
+    vars =
+      if vars["workload_concurrency"] == :absent do
+        Map.delete(vars, "workload_concurrency")
+      else
+        vars
+      end
 
     vars =
       if queued_tasks == :absent do
@@ -1006,27 +1130,13 @@ defmodule Embervm.SpecTrace.CheckerTest do
         Map.put(vars, "queued_tasks", queued_tasks)
       end
 
-    vars =
-      if Keyword.get(opts, :truncated, false) do
-        Map.put(vars, "queued_tasks_truncated", true)
-      else
-        vars
-      end
-
-    vars =
-      case Keyword.fetch(opts, :workload_concurrency) do
-        {:ok, workload_concurrency} ->
-          Map.put(vars, "workload_concurrency", workload_concurrency)
-
-        :error ->
-          vars
-      end
-
     eventually_record("checkpoint", mono, vars)
   end
 
-  defp eventually_progress(mono, action, task_id) do
-    eventually_record(action, mono, %{"task_id" => task_id})
+  defp eventually_progress(mono, action, task_id, workload \\ nil) do
+    vars = %{"task_id" => task_id}
+    vars = if is_binary(workload), do: Map.put(vars, "workload", workload), else: vars
+    eventually_record(action, mono, vars)
   end
 
   defp eventually_queue_edge(mono, task_id, workload) do
