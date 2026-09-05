@@ -1448,6 +1448,9 @@ noded:
   # restore-on-miss is impossible, so state stays local-only (a safe degrade).
   store:
     endpoint: http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333
+    # Baked rootfs payloads use rootfs/<guest-image-digest>/<payload-sha256>.ext4;
+    # rootfs.ext4.sha256 in that prefix names the complete payload. Adding a
+    # retention lifecycle for orphan payloads is follow-up work on #5772.
     bucket: embervm
     # Reader support shipped while writer compression remained inert, the first
     # phase of the two-phase rollout. Every brick in the fleet now runs a daemon
