@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "recordedAt": "2026-09-05T02:38:25.207Z",
+  "recordedAt": "2026-09-05T02:42:12.534Z",
   "build": "3a67403a293be20836604bc25729329997848e09",
   "model": "Qwen3.8-Flash-Next, 125B, NVFP4",
   "hardware": "RTX 4090 24 GB, Ryzen 7800X3D, 64 GB RAM, NVMe",
@@ -9,141 +9,93 @@
   "conditions": "Existing warm service, default sampling, shared with normal traffic. Client timings include transport. This is a walkthrough, not an isolated benchmark.",
   "turns": [
     {
-      "title": "A short question",
-      "prompt": "In about 100 words, explain why a model's weights might fit on disk but still be difficult to serve on a 24 GB GPU.",
+      "title": "How this inference works",
+      "prompt": "Explain this inference setup in three short sentences, under 80 words: hot experts stay on the GPU, warm experts transfer from pinned RAM over PCIe, and cold experts run on the CPU using weights from the page cache or NVMe. Explain how their outputs combine to generate the next token.",
       "events": [
-        { "at": 2434, "content": "While", "reasoning": "" },
-        { "at": 2434, "content": " a", "reasoning": "" },
-        { "at": 2452, "content": " model", "reasoning": "" },
-        { "at": 2512, "content": "’s", "reasoning": "" },
-        { "at": 2591, "content": " weights", "reasoning": "" },
-        { "at": 2622, "content": " might", "reasoning": "" },
-        { "at": 2672, "content": " compress", "reasoning": "" },
-        { "at": 2754, "content": " to", "reasoning": "" },
-        { "at": 2792, "content": " under", "reasoning": "" },
-        { "at": 2843, "content": " ", "reasoning": "" },
-        { "at": 2903, "content": "2", "reasoning": "" },
-        { "at": 2987, "content": "4", "reasoning": "" },
-        { "at": 3023, "content": " GB", "reasoning": "" },
-        { "at": 3083, "content": ",", "reasoning": "" },
-        { "at": 3146, "content": " serving", "reasoning": "" },
-        { "at": 3183, "content": " requires", "reasoning": "" },
-        { "at": 3213, "content": " more", "reasoning": "" },
-        { "at": 3253, "content": " than", "reasoning": "" },
-        { "at": 3293, "content": " just", "reasoning": "" },
-        { "at": 3363, "content": " storage", "reasoning": "" },
-        { "at": 3403, "content": ".", "reasoning": "" },
-        { "at": 3423, "content": " Key", "reasoning": "" },
-        { "at": 3483, "content": " bott", "reasoning": "" },
-        { "at": 3557, "content": "lene", "reasoning": "" },
-        { "at": 3593, "content": "cks", "reasoning": "" },
-        { "at": 3643, "content": " include", "reasoning": "" },
-        { "at": 3684, "content": " the", "reasoning": "" },
-        { "at": 3749, "content": " **", "reasoning": "" },
-        { "at": 3784, "content": "KV", "reasoning": "" },
-        { "at": 3875, "content": " cache", "reasoning": "" },
-        { "at": 3906, "content": "**,", "reasoning": "" },
-        { "at": 3920, "content": " which", "reasoning": "" },
-        { "at": 4016, "content": " grows", "reasoning": "" },
-        { "at": 4054, "content": " linear", "reasoning": "" },
-        { "at": 4094, "content": "ly", "reasoning": "" },
-        { "at": 4160, "content": " with", "reasoning": "" },
-        { "at": 4305, "content": " sequence", "reasoning": "" },
-        { "at": 4370, "content": " length", "reasoning": "" },
-        { "at": 4404, "content": " and", "reasoning": "" },
-        { "at": 4447, "content": " batch", "reasoning": "" },
-        { "at": 4484, "content": " size", "reasoning": "" },
-        { "at": 4558, "content": ",", "reasoning": "" },
-        { "at": 4594, "content": " rapidly", "reasoning": "" },
-        { "at": 4625, "content": " consuming", "reasoning": "" },
-        { "at": 4654, "content": " memory", "reasoning": "" },
-        { "at": 4694, "content": " during", "reasoning": "" },
-        { "at": 4775, "content": " inference", "reasoning": "" },
-        { "at": 4815, "content": ".", "reasoning": "" },
-        { "at": 4845, "content": " Additionally", "reasoning": "" },
-        { "at": 4906, "content": ",", "reasoning": "" },
-        { "at": 4976, "content": " GPU", "reasoning": "" },
-        { "at": 5015, "content": " memory", "reasoning": "" },
-        { "at": 5035, "content": " must", "reasoning": "" },
-        { "at": 5085, "content": " hold", "reasoning": "" },
-        { "at": 5146, "content": " activations", "reasoning": "" },
-        { "at": 5186, "content": ",", "reasoning": "" },
-        { "at": 5206, "content": " optimizer", "reasoning": "" },
-        { "at": 5255, "content": " states", "reasoning": "" },
-        { "at": 5305, "content": " (", "reasoning": "" },
-        { "at": 5388, "content": "during", "reasoning": "" },
-        { "at": 5425, "content": " fine", "reasoning": "" },
-        { "at": 5455, "content": "-t", "reasoning": "" },
-        { "at": 5495, "content": "uning", "reasoning": "" },
-        { "at": 5623, "content": "),", "reasoning": "" },
-        { "at": 5655, "content": " and", "reasoning": "" },
-        { "at": 5695, "content": " intermediate", "reasoning": "" },
-        { "at": 5778, "content": " computation", "reasoning": "" },
-        { "at": 5816, "content": " buffers", "reasoning": "" },
-        { "at": 5835, "content": ".", "reasoning": "" },
-        { "at": 5917, "content": " Framework", "reasoning": "" },
-        { "at": 6005, "content": " overhead", "reasoning": "" },
-        { "at": 6020, "content": " and", "reasoning": "" },
-        { "at": 6067, "content": " memory", "reasoning": "" },
-        { "at": 6106, "content": " fragmentation", "reasoning": "" },
-        { "at": 6165, "content": " further", "reasoning": "" },
-        { "at": 6206, "content": " reduce", "reasoning": "" },
-        { "at": 6226, "content": " available", "reasoning": "" },
-        { "at": 6266, "content": " capacity", "reasoning": "" },
-        { "at": 6316, "content": ".", "reasoning": "" },
-        { "at": 6367, "content": " Consequently", "reasoning": "" },
-        { "at": 6406, "content": ",", "reasoning": "" },
-        { "at": 6439, "content": " even", "reasoning": "" },
-        { "at": 6496, "content": " if", "reasoning": "" },
-        { "at": 6548, "content": " weights", "reasoning": "" },
-        { "at": 6587, "content": " fit", "reasoning": "" },
-        { "at": 6606, "content": ",", "reasoning": "" },
-        { "at": 6647, "content": " the", "reasoning": "" },
-        { "at": 6696, "content": " total", "reasoning": "" },
-        { "at": 6759, "content": " memory", "reasoning": "" },
-        { "at": 6776, "content": " footprint", "reasoning": "" },
-        { "at": 6816, "content": " for", "reasoning": "" },
-        { "at": 6846, "content": " a", "reasoning": "" },
-        { "at": 6917, "content": " viable", "reasoning": "" },
-        { "at": 6964, "content": " serving", "reasoning": "" },
-        { "at": 6997, "content": " environment", "reasoning": "" },
-        { "at": 7027, "content": " often", "reasoning": "" },
-        { "at": 7077, "content": " exceeds", "reasoning": "" },
-        { "at": 7117, "content": " ", "reasoning": "" },
-        { "at": 7212, "content": "2", "reasoning": "" },
-        { "at": 7257, "content": "4", "reasoning": "" },
-        { "at": 7317, "content": " GB", "reasoning": "" },
-        { "at": 7379, "content": ",", "reasoning": "" },
-        { "at": 7417, "content": " necess", "reasoning": "" },
-        { "at": 7447, "content": "itating", "reasoning": "" },
-        { "at": 7518, "content": " larger", "reasoning": "" },
-        { "at": 7572, "content": " GPUs", "reasoning": "" },
-        { "at": 7607, "content": ",", "reasoning": "" },
-        { "at": 7627, "content": " quant", "reasoning": "" },
-        { "at": 7697, "content": "ization", "reasoning": "" },
-        { "at": 7797, "content": ",", "reasoning": "" },
-        { "at": 7807, "content": " or", "reasoning": "" },
-        { "at": 7837, "content": " off", "reasoning": "" },
-        { "at": 7867, "content": "loading", "reasoning": "" },
-        { "at": 7897, "content": " techniques", "reasoning": "" },
-        { "at": 7988, "content": " to", "reasoning": "" },
-        { "at": 8008, "content": " manage", "reasoning": "" },
-        { "at": 8028, "content": " the", "reasoning": "" },
-        { "at": 8068, "content": " dynamic", "reasoning": "" },
-        { "at": 8108, "content": " runtime", "reasoning": "" },
-        { "at": 8173, "content": " demands", "reasoning": "" },
-        { "at": 8208, "content": " effectively", "reasoning": "" },
-        { "at": 8321, "content": ".", "reasoning": "" }
+        { "at": 2592, "content": "Hot", "reasoning": "" },
+        { "at": 2650, "content": " experts", "reasoning": "" },
+        { "at": 2713, "content": " execute", "reasoning": "" },
+        { "at": 2767, "content": " directly", "reasoning": "" },
+        { "at": 2794, "content": " on", "reasoning": "" },
+        { "at": 2865, "content": " the", "reasoning": "" },
+        { "at": 2903, "content": " GPU", "reasoning": "" },
+        { "at": 2933, "content": " for", "reasoning": "" },
+        { "at": 2983, "content": " speed", "reasoning": "" },
+        { "at": 3023, "content": ",", "reasoning": "" },
+        { "at": 3115, "content": " while", "reasoning": "" },
+        { "at": 3153, "content": " warm", "reasoning": "" },
+        { "at": 3184, "content": " experts", "reasoning": "" },
+        { "at": 3203, "content": " stream", "reasoning": "" },
+        { "at": 3274, "content": " efficiently", "reasoning": "" },
+        { "at": 3295, "content": " from", "reasoning": "" },
+        { "at": 3314, "content": " pinned", "reasoning": "" },
+        { "at": 3344, "content": " RAM", "reasoning": "" },
+        { "at": 3373, "content": " via", "reasoning": "" },
+        { "at": 3404, "content": " PCIe", "reasoning": "" },
+        { "at": 3480, "content": ".", "reasoning": "" },
+        { "at": 3554, "content": " Meanwhile", "reasoning": "" },
+        { "at": 3573, "content": ",", "reasoning": "" },
+        { "at": 3593, "content": " cold", "reasoning": "" },
+        { "at": 3613, "content": " experts", "reasoning": "" },
+        { "at": 3690, "content": " run", "reasoning": "" },
+        { "at": 3724, "content": " on", "reasoning": "" },
+        { "at": 3744, "content": " the", "reasoning": "" },
+        { "at": 3804, "content": " CPU", "reasoning": "" },
+        { "at": 3860, "content": ",", "reasoning": "" },
+        { "at": 3894, "content": " fetching", "reasoning": "" },
+        { "at": 3914, "content": " weights", "reasoning": "" },
+        { "at": 3944, "content": " from", "reasoning": "" },
+        { "at": 3977, "content": " the", "reasoning": "" },
+        { "at": 4014, "content": " page", "reasoning": "" },
+        { "at": 4097, "content": " cache", "reasoning": "" },
+        { "at": 4134, "content": " or", "reasoning": "" },
+        { "at": 4194, "content": " NV", "reasoning": "" },
+        { "at": 4275, "content": "Me", "reasoning": "" },
+        { "at": 4294, "content": " storage", "reasoning": "" },
+        { "at": 4335, "content": " to", "reasoning": "" },
+        { "at": 4365, "content": " conserve", "reasoning": "" },
+        { "at": 4405, "content": " memory", "reasoning": "" },
+        { "at": 4479, "content": ".", "reasoning": "" },
+        { "at": 4515, "content": " After", "reasoning": "" },
+        { "at": 4554, "content": " individual", "reasoning": "" },
+        { "at": 4605, "content": " experts", "reasoning": "" },
+        { "at": 4680, "content": " compute", "reasoning": "" },
+        { "at": 4715, "content": " their", "reasoning": "" },
+        { "at": 4758, "content": " partial", "reasoning": "" },
+        { "at": 4785, "content": " outputs", "reasoning": "" },
+        { "at": 4855, "content": ",", "reasoning": "" },
+        { "at": 4913, "content": " a", "reasoning": "" },
+        { "at": 4945, "content": " gating", "reasoning": "" },
+        { "at": 4985, "content": " mechanism", "reasoning": "" },
+        { "at": 5015, "content": " calculates", "reasoning": "" },
+        { "at": 5102, "content": " relevance", "reasoning": "" },
+        { "at": 5135, "content": " scores", "reasoning": "" },
+        { "at": 5166, "content": " and", "reasoning": "" },
+        { "at": 5206, "content": " performs", "reasoning": "" },
+        { "at": 5287, "content": " a", "reasoning": "" },
+        { "at": 5365, "content": " weighted", "reasoning": "" },
+        { "at": 5385, "content": " sum", "reasoning": "" },
+        { "at": 5475, "content": " of", "reasoning": "" },
+        { "at": 5554, "content": " these", "reasoning": "" },
+        { "at": 5585, "content": " results", "reasoning": "" },
+        { "at": 5625, "content": " to", "reasoning": "" },
+        { "at": 5703, "content": " produce", "reasoning": "" },
+        { "at": 5716, "content": " the", "reasoning": "" },
+        { "at": 5756, "content": " final", "reasoning": "" },
+        { "at": 5806, "content": " next", "reasoning": "" },
+        { "at": 5904, "content": "-token", "reasoning": "" },
+        { "at": 5936, "content": " prediction", "reasoning": "" },
+        { "at": 5986, "content": ".", "reasoning": "" }
       ],
       "samples": [
         {
-          "at": 2435,
+          "at": 2564,
           "activity": {
             "hotHits": 0,
-            "warmHits": 12320,
+            "warmHits": 20160,
             "coldHits": 0,
             "unknownHits": 0,
-            "totalHits": 12320
+            "totalHits": 20160
           },
           "tiers": {
             "totalExperts": 24576,
@@ -155,737 +107,14 @@
             "hotBytes": 10405117440,
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
-          },
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
+          }
         },
         {
-          "at": 2603,
+          "at": 2663,
           "activity": {
-            "hotHits": 697,
-            "warmHits": 1120,
-            "coldHits": 103,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 1,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 2773,
-          "activity": {
-            "hotHits": 536,
-            "warmHits": 840,
-            "coldHits": 64,
-            "unknownHits": 0,
-            "totalHits": 1440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 1,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 3008,
-          "activity": {
-            "hotHits": 679,
-            "warmHits": 1120,
-            "coldHits": 121,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 1,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 3164,
-          "activity": {
-            "hotHits": 550,
-            "warmHits": 840,
-            "coldHits": 50,
-            "unknownHits": 0,
-            "totalHits": 1440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 1,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 3384,
-          "activity": {
-            "hotHits": 887,
-            "warmHits": 1400,
-            "coldHits": 113,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 1,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 3574,
-          "activity": {
-            "hotHits": 681,
-            "warmHits": 1120,
-            "coldHits": 119,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 3764,
-          "activity": {
-            "hotHits": 659,
-            "warmHits": 1120,
-            "coldHits": 141,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 4037,
-          "activity": {
-            "hotHits": 836,
-            "warmHits": 1400,
-            "coldHits": 164,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 4176,
-          "activity": {
-            "hotHits": 487,
-            "warmHits": 840,
-            "coldHits": 113,
-            "unknownHits": 0,
-            "totalHits": 1440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 4385,
-          "activity": {
-            "hotHits": 331,
-            "warmHits": 560,
-            "coldHits": 69,
-            "unknownHits": 0,
-            "totalHits": 960
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 4576,
-          "activity": {
-            "hotHits": 644,
-            "warmHits": 1120,
-            "coldHits": 156,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 4795,
-          "activity": {
-            "hotHits": 923,
-            "warmHits": 1400,
-            "coldHits": 77,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 4996,
-          "activity": {
-            "hotHits": 701,
-            "warmHits": 1120,
-            "coldHits": 99,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 5171,
-          "activity": {
-            "hotHits": 726,
-            "warmHits": 1120,
-            "coldHits": 74,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 5406,
-          "activity": {
-            "hotHits": 785,
-            "warmHits": 1400,
-            "coldHits": 215,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 5637,
-          "activity": {
-            "hotHits": 592,
-            "warmHits": 1120,
-            "coldHits": 208,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 5796,
-          "activity": {
-            "hotHits": 453,
-            "warmHits": 840,
-            "coldHits": 147,
-            "unknownHits": 0,
-            "totalHits": 1440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 5988,
-          "activity": {
-            "hotHits": 713,
-            "warmHits": 1120,
-            "coldHits": 87,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 6186,
-          "activity": {
-            "hotHits": 682,
-            "warmHits": 1120,
-            "coldHits": 118,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 6388,
-          "activity": {
-            "hotHits": 901,
-            "warmHits": 1400,
-            "coldHits": 99,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 6567,
-          "activity": {
-            "hotHits": 681,
-            "warmHits": 1120,
-            "coldHits": 119,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 6777,
-          "activity": {
-            "hotHits": 872,
-            "warmHits": 1400,
-            "coldHits": 128,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 3,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 6977,
-          "activity": {
-            "hotHits": 896,
-            "warmHits": 1400,
-            "coldHits": 104,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 3,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 7227,
-          "activity": {
-            "hotHits": 856,
-            "warmHits": 1400,
-            "coldHits": 144,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 3,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 7398,
-          "activity": {
-            "hotHits": 526,
-            "warmHits": 840,
-            "coldHits": 74,
-            "unknownHits": 0,
-            "totalHits": 1440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 3,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 7587,
-          "activity": {
-            "hotHits": 710,
-            "warmHits": 1120,
-            "coldHits": 90,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 3,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 7777,
-          "activity": {
-            "hotHits": 678,
-            "warmHits": 1120,
-            "coldHits": 122,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 3,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 8009,
-          "activity": {
-            "hotHits": 807,
-            "warmHits": 1400,
-            "coldHits": 193,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 3,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 8189,
-          "activity": {
-            "hotHits": 889,
-            "warmHits": 1400,
-            "coldHits": 111,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 3,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 8409,
-          "activity": {
-            "hotHits": 432,
-            "warmHits": 840,
-            "coldHits": 168,
-            "unknownHits": 0,
-            "totalHits": 1440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 3,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 8521,
-          "activity": {
-            "hotHits": 126,
+            "hotHits": 179,
             "warmHits": 280,
-            "coldHits": 74,
+            "coldHits": 21,
             "unknownHits": 0,
             "totalHits": 480
           },
@@ -899,339 +128,14 @@
             "hotBytes": 10405117440,
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
-          },
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 0
-        }
-      ],
-      "usage": { "prompt_tokens": 44, "completion_tokens": 123 },
-      "finishReason": "stop",
-      "durationMs": 8521,
-      "metrics": {
-        "ttftMs": 2434,
-        "generationMs": 5887,
-        "completionTokens": 123,
-        "tokensPerSecond": 20.723628333616443
-      }
-    },
-    {
-      "title": "Reading the post",
-      "prompt": "Read this draft post and summarize the three most useful changes and why they helped. Keep your answer under 180 words.\n\n---\ntitle: Serving larger-than-memory MoE models\ndate: 2026-09-01\ntags: inference, freetoken, moe, homelab\npublic: true\nsummary: How I was able to serve 100GB of weights (Qwen3.8-Flash-Next, 125B) on a consumer 24GB GPU.\n---\n\n## 1. FreeToken\n\n[FreeToken](https://github.com/FlashML-org/FreeToken) is FlashML's engine for running mixture-of-experts models. It serves models larger than VRAM by keeping the experts in pinned RAM and caching the hot ones in VRAM.\n\nThis does not work for my node with 24GB VRAM + 64GB RAM, this post (& [fork](https://github.com/jomcgi-org/freetoken-fork)) is an experiment where I spill experts to disk to accommodate a larger than memory model.\n\n## 2. Specifications\n\n| Part | Specification |\n|---|---|\n| Model | Qwen3.8-Flash-Next, 125B parameters, 6B active per token, NVFP4 |\n| Expert banks | 63.5 GB, 48 layers of 512 experts |\n| Dense layers | 9.2 GB: attention, GDN, embeddings, head |\n| Context window | 100k |\n| Per-layer embedding (PLE), n-gram lookup table | 27 GB |\n| Served in total | about 100 GB |\n| GPU | RTX 4090, 24 GB |\n| Host | Ryzen 7800X3D, 64 GB DDR5-6000, 1.9 TB NVMe |\n| Engine | [freetoken-fork](https://github.com/jomcgi-org/freetoken-fork) |\n| Upstream RAM requirement | 128 GB |\n\nThese weights don't fit in VRAM or RAM and I can't convince myself to upgrade in this RAM economy so here we are spilling to disk.\n\nThe first diagram uses September 1 budgets. Later updates sit beside each experiment.\n\n![Where are the weights?](figures/memory-tiers.svg)\n\n| Key | Part |\n|---|---|\n| 1 | RTX 4090, 24 GB. Dense layers, the KV cache and the expert slot cache. Everything else gets streamed in as required. |\n| 2 | PCIe 4.0 x16. The route for experts to get into VRAM. |\n| 3 | Pinned host memory: split between 40 GB of warm expert layers and 6 GB of hot rows. |\n| 4 | Page cache, about 16 GB. Kernel-managed cache that reduces the thrashing when accessing disk layers |\n| 5 | NVMe, 1.9 TB. All experts banked (63.5 GB) and the 27 GB lookup table |\n| 6 | CPU MoE executor, 8 cores, decoding the cold tail out of the page cache |\n\n## 3. Performance\n\n| | PoC (tok/s) | September 1 (tok/s) |\n|---|---:|---:|\n| Prefill, 441-token prompt, warm | 54 | 116 |\n| Single stream | 3.8 | 21 |\n| Eight streams, aggregate | 9.6 | 37 |\n\nUpstream wouldn't start. These are my first working results against September 1. September 4 warm single-stream probes reached 22 to 24 tok/s; I haven't rerun the full table.\n\n## 4. How does MoE inference work?\n\nWe generate a token by running every layer once. In a mixture-of-experts layer the router looks at your input and picks 10 of the 512 experts to run.\n\nThat means that most of the 63.5 GB of expert weights are idle during token generation. The work to optimize this in a resource-constrained environment is then less about the computation and more about getting the chosen experts to the most efficient place for that computation to happen.\n\nDecoding is one token at a time with a few experts per layer, and it is bottlenecked by the slowest tier that it has to reach into. Prefill pushes the whole prompt through at the same time, so it touches many experts per layer and looks more like compute, but on this box it still has to find the experts first.\n\n[Qwen3.8-Flash-Next](https://qwen.ai/blog?id=qwen3.8-flash-next) is an early preview of the Qwen4 architecture including an n-gram lookup table which is 27 GB of learned rows keyed by the last couple of tokens so that it can be retrieved during inference instead of computed.\n\nThe bandwidth tiers with time taken to move one 2.6 MB expert are:\n* VRAM (1 TB/s, ~3 us)\n* RAM over PCIe (25 GB/s, ~100 us)\n* Page cache (hit: RAM speed, ~40 us; miss: a 15 us fault per 4 KB page, ~10 ms)\n* NVMe (7 GB/s, ~370 us when read in bulk)\n\n## 5. Bottlenecks\n\nThe many problems I ran into trying to get this working with a reasonably responsive throughput.\n\n### 5.1 Pinning too much starved the page cache\n\nFreeToken pins expert banks into memory. My initial budget was 52/64 GB, which left nothing for the page cache to manage access to 59.5 GB of disk-resident expert banks.\n\nThis was terrible: 96k major faults per decode step and 3.8 tok/s.\n\nDropping the budget to 40 GB tripled throughput by letting the page cache manage the disk reads.\n\nI now budget pinning and paging together. Growing KV between requests instead of reserving the full 100k context also freed 14% more GPU expert slots at startup. Long conversations take those slots back.\n\n### 5.2 Random reads from disk (experts vs n-gram)\n\nRandom reads are fine for experts because on disk they are a read-only mmap of the weight file. Routing happens before the expert computes, so we know what we need to load before it gets used. With some batch deduplication I got under 10 major faults per step for managing them.\n\nThe n-gram lookup is different. It's touched on every token at random rows from inside a CUDA graph. Having the GPU read the host file mappings directly was faster than trying to manage this in the caching tiers. Switching to that almost doubled four-stream throughput from 14 to 26.5, and freed the pinned cache that the table had been using, leaving room to fit more experts onto higher-bandwidth tiers.\n\nThat didn't last. Two UVM kernel failures later I switched to `io_uring`: dedupe the known n-gram rows, stage them in pinned memory, then copy to GPU. September 3: 0.47 ms per decode step, zero PLE major faults. Expert-bank faults remained.\n\nAdvising already-resident pages cost time too. Skipping `MADV_WILLNEED` for experts used within 256 steps on the same layer cut about 8 ms from a 41 ms step. A fault guard restores conservative advice when needed.\n\n### 5.3 Prefill was copying whole layers\n\nThe upstream implementation streams whole expert layers to the GPU. For a disk-resident layer that meant paging in the entire bank regardless of prompt length.\n\nMy patch routed prefill for disk layers through the CPU executor which only touches experts that the router selected.\n\nThis reduced the time to process 441 tokens from 17 min to 29 s.\n\nWith some layers pinned and some on disk the pinned layers could overlap their PCIe transfer with compute while the disk layers prefilled on the CPU and chained the next pinned layer's prefetch. This took warm prefill from 54 to 116 tok/s.\n\n![Prefill chunk decisions](figures/prefill-chunk.svg)\n\n| Key | Part |\n|---|---|\n| 1 | Before the forward: the chunk's n-gram ids are computed from its input tokens and deduped. Nothing about them depends on the forward |\n| 2 | One read each: the deduped table rows arrive in one coalesced read into a pinned GPU bank; after each layer's routing, its expert rows are populated into the page cache with real reads instead of advisory hints |\n| 3 | Forward: the lookup resolves against the pinned bank by compact local id while the experts compute. Major faults per chunk fell from about 3.6 million to a few thousand |\n| A | GPU, with the pinned staging bank |\n| C | Page cache |\n| D | NVMe: lookup table and expert banks |\n| E | CPU MoE executor |\n\nAdding the GPU hot set and batching cold routes on CPU brought a new 26,812-token document to its first token in 77.4 seconds on September 3. Similar sizes took 7 to 14 minutes on September 1. This is separate from the short warm benchmark.\n\nOne trap here: a prefill benchmark has to miss the prefix cache. Otherwise I can measure how quickly I skipped the work and think I've improved it.\n\n### 5.4 CPU tier shifting experts on demand\n\nResidency was decided per layer, either pinned or on disk. But our router didn't spread load evenly across experts. Depending on the task a small number of experts may serve most of the routes while the rest are used occasionally.\n\nPinning the hot rows (about 6 GB covering 72% of routes) and sending them through the GPU's expert slot cache while keeping the cold tail on CPU decode took single-stream from 19.5 to 23.1 and eight streams from 34 to 42.2 at peak, which settles to the 21 and 37 in section 3 on mixed traffic.\n\nDistinct experts hitting the CPU per step fell from 58 to 18.\n\n![One decode step through one expert layer](figures/decode-step.svg)\n\n| Key | Part |\n|---|---|\n| 1 | Route: the router picks this token's experts from 512 in the layer. The n-gram ids are already known from the last few tokens |\n| 2 | Sort by residency: each chosen expert is hot (resident on the GPU), pinned (in host memory), or cold (on the NVMe, possibly in the page cache). About 58 distinct experts a step reached the CPU before the hot set, 18 after |\n| 3 | Move: pinned experts stream over PCIe into a GPU slot; cold experts are computed by the CPU out of the page cache, with recent-use checks avoiding redundant willneed advice. The n-gram rows are gathered into pinned staging and copied to the GPU before the forward |\n| 4 | Compute and tally: the GPU and CPU partial outputs sum, and every routed expert bumps a decayed counter |\n| A | RTX 4090: expert slot cache with the hot set resident, KV cache |\n| B | Pinned host memory, 40 GB of expert banks |\n| C | Page cache |\n| D | NVMe: expert banks 63.5 GB, lookup table 27 GB |\n| E | CPU MoE executor |\n\nThe CPU returns a small activation vector instead of megabytes of weights. Changing worker counts or barrier spinning didn't reliably help once I accounted for page-cache warming.\n\n### 5.5 Is it hot or not? Drifting expectations\n\n5.4 was a step in the right direction, but I hardcoded a captured routing profile. As soon as traffic changed the hit rate fell to 62%, wiping out the gain.\n\nI got this back by replacing the static profile with a decayed per-expert counter and bounded background swaps (retire, copy, flip). This recovered the perf lost on generic workloads and improved cold start as the hot set assembled itself.\n\n![How one hot-set slot changes hands without a stall](figures/hot-set-swap.svg)\n\n| Key | Part |\n|---|---|\n| 1 | Tick: every 1,000 steps the counters are re-ranked. We use that to swap up to 190 experts. |\n| 2 | Stage: a background thread copies the newly hot rows from the NVMe into staging, at most 0.5 GB a tick. The retiring expert keeps serving from where it was |\n| 3 | Flip: at a step boundary the mapping points at the staged row and the retired slot is free. No route ever sees a half-installed row |\n| A | GPU slot cache, one hot slot of the 6 GB |\n| D | NVMe expert banks |\n\nThen a long document flooded the counters and displaced experts needed by follow-up turns. I split prefill and decode histories and aimed the hot set at the current phase. The hot plan now survives restarts too.\n\nAfter a 76k-document prefill, position-matched follow-ups improved from 12.5 to 14.6 tok/s; prefill took 664 vs 652 seconds. An earlier version reached 19.2 tok/s but needed 885 seconds to prefill. I kept the version that didn't slow down reading.\n\nSeveral experiments never let the adapter tick. Quite difficult to measure an improvement that way.\n\n## 6. Ideas that didn't pan out\n\nI thought these should have worked. They measured as losses on this box.\n\n| Idea | Result | Conclusion |\n|---|---|---|\n| Fetch cold experts over PCIe | 10 vs 19.5 tok/s; slot-cache churn | CPU wins on the 4090 |\n| Split cold work between PCIe and CPU | 13.8 vs 19.5 tok/s | Extra transfers lose |\n| Userspace pager | 13 faults/step, still slower than kernel hints | Keep for larger banks with enough cache |\n| Prefetch before routing | 48% predictable; twice the pages read | Off |\n| Speculative decode | 12.6 vs 18.0 tok/s at 72% acceptance | Drafted tokens still pay the CPU cost |\n\n\n## 7. Trying a larger machine\n\nI also tried GLM 5.3 Flash NVFP4 on a GCE `g4-standard-48`: a 96 GB RTX PRO 6000 Blackwell, about 176 GB of reported host RAM, and four local NVMe SSDs in RAID 0. The converted checkpoint is 177 GiB.\n\n| Experiment | Result |\n|---|---:|\n| Single stream, September 4, pin budget 112 and hot budget 48 | 12.12 tok/s, mean of three runs |\n| Same setup with split histories and phase aim | 12.37 tok/s |\n| Cold tail on CPU, pin budget 8 and hot budget 60 | 9.80 tok/s |\n| Prefill, September 3, settled run with 2k cold prompts | 257 tok/s |\n| Four streams, September 3 | 19.3 tok/s aggregate |\n\nThe 4090 tuning didn't all carry over. With 29 of 42 layers pinned and 99.8% hot coverage in the disk layers, better hot-set selection barely helped. Pinned layers still transferred an estimated 3.1 GB per token over PCIe. The CPU path lost here.\n\nI got the storage wrong first: a 5,700-IOPS boot disk delivered 0.08 to 0.92 tok/s. Local NVMe recovered 12.1. A 64 GB host-memory cap was unusable too. The RAM and disks matter as much as the card here.\n\n## 8. What does this actually mean?\n\nShould you go out and buy a 4090 or an RTX 6000 to run models this way?\nProbably not. Inference over API is so cheap that unless you've already got the hardware it's likely cheaper to just pay for API pricing.\n\nMy takeaway is that frontier intelligence at home is closer than ever and that the serving methods and model releases will only become more efficient.\nI'm in the process of moving from Canada to the UK at the moment so this will shape the type of node that I buy when I get over there!\n\nIf you want to run it yourself, the quickstart for my fork is here: [QUICKSTART.md](https://github.com/jomcgi-org/freetoken-fork/blob/feat/moe-disk-tier/QUICKSTART.md).\n\nThe [benchmark notes](https://github.com/jomcgi-org/freetoken-fork/blob/0b7ad70f925c1a998e09d357243f8ea2e6f899af/bench/RESULTS.md) have the individual experiments and their conditions.\n\n## 9. Have a look\n\nWatch the 4090 work. Pick a turn, replay it, or select a tier to follow its activity.\n",
-      "events": [
-        { "at": 32992, "content": "Here", "reasoning": "" },
-        { "at": 32992, "content": " are", "reasoning": "" },
-        { "at": 33153, "content": " the", "reasoning": "" },
-        { "at": 33197, "content": " three", "reasoning": "" },
-        { "at": 33234, "content": " most", "reasoning": "" },
-        { "at": 33294, "content": " useful", "reasoning": "" },
-        { "at": 33371, "content": " changes", "reasoning": "" },
-        { "at": 33405, "content": " from", "reasoning": "" },
-        { "at": 33465, "content": " the", "reasoning": "" },
-        { "at": 33549, "content": " draft", "reasoning": "" },
-        { "at": 33583, "content": ":", "reasoning": "" },
-        { "at": 33624, "content": "\n\n", "reasoning": "" },
-        { "at": 33674, "content": "1", "reasoning": "" },
-        { "at": 33746, "content": ".", "reasoning": "" },
-        { "at": 33783, "content": " ", "reasoning": "" },
-        { "at": 33807, "content": " **", "reasoning": "" },
-        { "at": 33865, "content": "Reduc", "reasoning": "" },
-        { "at": 33934, "content": "ing", "reasoning": "" },
-        { "at": 33974, "content": " pinned", "reasoning": "" },
-        { "at": 34014, "content": " memory", "reasoning": "" },
-        { "at": 34063, "content": " budget", "reasoning": "" },
-        { "at": 34139, "content": ":**", "reasoning": "" },
-        { "at": 34175, "content": " Lower", "reasoning": "" },
-        { "at": 34204, "content": "ing", "reasoning": "" },
-        { "at": 34244, "content": " the", "reasoning": "" },
-        { "at": 34274, "content": " pinned", "reasoning": "" },
-        { "at": 34404, "content": " RAM", "reasoning": "" },
-        { "at": 34445, "content": " limit", "reasoning": "" },
-        { "at": 34477, "content": " from", "reasoning": "" },
-        { "at": 34556, "content": " ", "reasoning": "" },
-        { "at": 34594, "content": "5", "reasoning": "" },
-        { "at": 34666, "content": "2", "reasoning": "" },
-        { "at": 34697, "content": " GB", "reasoning": "" },
-        { "at": 34770, "content": " to", "reasoning": "" },
-        { "at": 34804, "content": " ", "reasoning": "" },
-        { "at": 34844, "content": "4", "reasoning": "" },
-        { "at": 34886, "content": "0", "reasoning": "" },
-        { "at": 34959, "content": " GB", "reasoning": "" },
-        { "at": 34994, "content": " allowed", "reasoning": "" },
-        { "at": 35021, "content": " the", "reasoning": "" },
-        { "at": 35085, "content": " OS", "reasoning": "" },
-        { "at": 35134, "content": " page", "reasoning": "" },
-        { "at": 35165, "content": " cache", "reasoning": "" },
-        { "at": 35185, "content": " to", "reasoning": "" },
-        { "at": 35216, "content": " manage", "reasoning": "" },
-        { "at": 35265, "content": " disk", "reasoning": "" },
-        { "at": 35285, "content": " access", "reasoning": "" },
-        { "at": 35344, "content": ".", "reasoning": "" },
-        { "at": 35367, "content": " This", "reasoning": "" },
-        { "at": 35420, "content": " triple", "reasoning": "" },
-        { "at": 35457, "content": "d", "reasoning": "" },
-        { "at": 35530, "content": " throughput", "reasoning": "" },
-        { "at": 35565, "content": " by", "reasoning": "" },
-        { "at": 35585, "content": " drastically", "reasoning": "" },
-        { "at": 35625, "content": " reducing", "reasoning": "" },
-        { "at": 35667, "content": " major", "reasoning": "" },
-        { "at": 35738, "content": " page", "reasoning": "" },
-        { "at": 35765, "content": " faults", "reasoning": "" },
-        { "at": 35786, "content": " during", "reasoning": "" },
-        { "at": 35816, "content": " decoding", "reasoning": "" },
-        { "at": 35865, "content": ".", "reasoning": "" },
-        { "at": 35928, "content": "\n", "reasoning": "" },
-        { "at": 35965, "content": "2", "reasoning": "" },
-        { "at": 36015, "content": ".", "reasoning": "" },
-        { "at": 36066, "content": " ", "reasoning": "" },
-        { "at": 36139, "content": " **", "reasoning": "" },
-        { "at": 36206, "content": "CPU", "reasoning": "" },
-        { "at": 36226, "content": " execution", "reasoning": "" },
-        { "at": 36246, "content": " for", "reasoning": "" },
-        { "at": 36296, "content": " disk", "reasoning": "" },
-        { "at": 36381, "content": "-res", "reasoning": "" },
-        { "at": 36416, "content": "ident", "reasoning": "" },
-        { "at": 36456, "content": " pre", "reasoning": "" },
-        { "at": 36496, "content": "fill", "reasoning": "" },
-        { "at": 36564, "content": ":**", "reasoning": "" },
-        { "at": 36596, "content": " Instead", "reasoning": "" },
-        { "at": 36628, "content": " of", "reasoning": "" },
-        { "at": 36677, "content": " streaming", "reasoning": "" },
-        { "at": 36741, "content": " entire", "reasoning": "" },
-        { "at": 36776, "content": " expert", "reasoning": "" },
-        { "at": 36807, "content": " layers", "reasoning": "" },
-        { "at": 36846, "content": " to", "reasoning": "" },
-        { "at": 36887, "content": " the", "reasoning": "" },
-        { "at": 36963, "content": " GPU", "reasoning": "" },
-        { "at": 36997, "content": " for", "reasoning": "" },
-        { "at": 37017, "content": " pre", "reasoning": "" },
-        { "at": 37046, "content": "fill", "reasoning": "" },
-        { "at": 37107, "content": ",", "reasoning": "" },
-        { "at": 37169, "content": " the", "reasoning": "" },
-        { "at": 37207, "content": " author", "reasoning": "" },
-        { "at": 37237, "content": " routed", "reasoning": "" },
-        { "at": 37278, "content": " disk", "reasoning": "" },
-        { "at": 37345, "content": "-res", "reasoning": "" },
-        { "at": 37399, "content": "ident", "reasoning": "" },
-        { "at": 37427, "content": " layers", "reasoning": "" },
-        { "at": 37477, "content": " through", "reasoning": "" },
-        { "at": 37535, "content": " the", "reasoning": "" },
-        { "at": 37557, "content": " CPU", "reasoning": "" },
-        { "at": 37597, "content": " executor", "reasoning": "" },
-        { "at": 37628, "content": ".", "reasoning": "" },
-        { "at": 37678, "content": " This", "reasoning": "" },
-        { "at": 37751, "content": " targeted", "reasoning": "" },
-        { "at": 37788, "content": " only", "reasoning": "" },
-        { "at": 37811, "content": " router", "reasoning": "" },
-        { "at": 37847, "content": "-selected", "reasoning": "" },
-        { "at": 37888, "content": " experts", "reasoning": "" },
-        { "at": 38005, "content": ",", "reasoning": "" },
-        { "at": 38017, "content": " cutting", "reasoning": "" },
-        { "at": 38037, "content": " pre", "reasoning": "" },
-        { "at": 38087, "content": "fill", "reasoning": "" },
-        { "at": 38169, "content": " time", "reasoning": "" },
-        { "at": 38198, "content": " for", "reasoning": "" },
-        { "at": 38238, "content": " ", "reasoning": "" },
-        { "at": 38291, "content": "4", "reasoning": "" },
-        { "at": 38399, "content": "4", "reasoning": "" },
-        { "at": 38410, "content": "1", "reasoning": "" },
-        { "at": 38448, "content": " tokens", "reasoning": "" },
-        { "at": 38509, "content": " from", "reasoning": "" },
-        { "at": 38567, "content": " ", "reasoning": "" },
-        { "at": 38598, "content": "1", "reasoning": "" },
-        { "at": 38648, "content": "7", "reasoning": "" },
-        { "at": 38708, "content": " minutes", "reasoning": "" },
-        { "at": 38775, "content": " to", "reasoning": "" },
-        { "at": 38808, "content": " ", "reasoning": "" },
-        { "at": 38859, "content": "2", "reasoning": "" },
-        { "at": 38909, "content": "9", "reasoning": "" },
-        { "at": 38977, "content": " seconds", "reasoning": "" },
-        { "at": 39008, "content": ".", "reasoning": "" },
-        { "at": 39058, "content": "\n", "reasoning": "" },
-        { "at": 39102, "content": "3", "reasoning": "" },
-        { "at": 39185, "content": ".", "reasoning": "" },
-        { "at": 39219, "content": " ", "reasoning": "" },
-        { "at": 39269, "content": " **", "reasoning": "" },
-        { "at": 39371, "content": "Dynamic", "reasoning": "" },
-        { "at": 39400, "content": " hot", "reasoning": "" },
-        { "at": 39509, "content": "-set", "reasoning": "" },
-        { "at": 39537, "content": " management", "reasoning": "" },
-        { "at": 39569, "content": ":**", "reasoning": "" },
-        { "at": 39589, "content": " Re", "reasoning": "" },
-        { "at": 39639, "content": "placing", "reasoning": "" },
-        { "at": 39711, "content": " static", "reasoning": "" },
-        { "at": 39792, "content": " routing", "reasoning": "" },
-        { "at": 39819, "content": " profiles", "reasoning": "" },
-        { "at": 39839, "content": " with", "reasoning": "" },
-        { "at": 39895, "content": " decay", "reasoning": "" },
-        { "at": 39970, "content": "ed", "reasoning": "" },
-        { "at": 40040, "content": " per", "reasoning": "" },
-        { "at": 40059, "content": "-exp", "reasoning": "" },
-        { "at": 40109, "content": "ert", "reasoning": "" },
-        { "at": 40213, "content": " counters", "reasoning": "" },
-        { "at": 40239, "content": " enabled", "reasoning": "" },
-        { "at": 40293, "content": " bounded", "reasoning": "" },
-        { "at": 40359, "content": " background", "reasoning": "" },
-        { "at": 40390, "content": " swaps", "reasoning": "" },
-        { "at": 40420, "content": ".", "reasoning": "" },
-        { "at": 40491, "content": " This", "reasoning": "" },
-        { "at": 40564, "content": " allowed", "reasoning": "" },
-        { "at": 40580, "content": " the", "reasoning": "" },
-        { "at": 40620, "content": " system", "reasoning": "" },
-        { "at": 40650, "content": " to", "reasoning": "" },
-        { "at": 40691, "content": " adapt", "reasoning": "" },
-        { "at": 40749, "content": "ively", "reasoning": "" },
-        { "at": 40760, "content": " keep", "reasoning": "" },
-        { "at": 40780, "content": " frequently", "reasoning": "" },
-        { "at": 40821, "content": " used", "reasoning": "" },
-        { "at": 40860, "content": " experts", "reasoning": "" },
-        { "at": 40902, "content": " in", "reasoning": "" },
-        { "at": 40978, "content": " faster", "reasoning": "" },
-        { "at": 41010, "content": " tiers", "reasoning": "" },
-        { "at": 41031, "content": ",", "reasoning": "" },
-        { "at": 41090, "content": " significantly", "reasoning": "" },
-        { "at": 41149, "content": " improving", "reasoning": "" },
-        { "at": 41191, "content": " throughput", "reasoning": "" },
-        { "at": 41216, "content": " and", "reasoning": "" },
-        { "at": 41261, "content": " cold", "reasoning": "" },
-        { "at": 41302, "content": "-start", "reasoning": "" },
-        { "at": 41385, "content": " performance", "reasoning": "" },
-        { "at": 41421, "content": " compared", "reasoning": "" },
-        { "at": 41454, "content": " to", "reasoning": "" },
-        { "at": 41502, "content": " fixed", "reasoning": "" },
-        { "at": 41560, "content": " residency", "reasoning": "" },
-        { "at": 41592, "content": " decisions", "reasoning": "" },
-        { "at": 41662, "content": ".", "reasoning": "" }
-      ],
-      "samples": [
-        { "at": 10204, "unavailable": true },
-        {
-          "at": 16847,
-          "activity": {
-            "hotHits": 0,
-            "warmHits": 573440,
-            "coldHits": 0,
-            "unknownHits": 0,
-            "totalHits": 573440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        { "at": 26861, "unavailable": true },
-        {
-          "at": 32948,
-          "activity": {
-            "hotHits": 0,
-            "warmHits": 549360,
-            "coldHits": 0,
-            "unknownHits": 0,
-            "totalHits": 549360
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
+          }
         },
         {
-          "at": 33216,
+          "at": 2875,
           "activity": {
-            "hotHits": 488,
-            "warmHits": 840,
-            "coldHits": 112,
-            "unknownHits": 0,
-            "totalHits": 1440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 63,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 33383,
-          "activity": {
-            "hotHits": 480,
-            "warmHits": 840,
-            "coldHits": 120,
-            "unknownHits": 0,
-            "totalHits": 1440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 63,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 33571,
-          "activity": {
-            "hotHits": 467,
-            "warmHits": 840,
-            "coldHits": 133,
-            "unknownHits": 0,
-            "totalHits": 1440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 63,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 33768,
-          "activity": {
-            "hotHits": 667,
+            "hotHits": 693,
             "warmHits": 1120,
-            "coldHits": 133,
+            "coldHits": 107,
             "unknownHits": 0,
             "totalHits": 1920
           },
@@ -1245,65 +149,14 @@
             "hotBytes": 10405117440,
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
-          },
-          "kvUsedPages": 63,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
+          }
         },
         {
-          "at": 33945,
+          "at": 3133,
           "activity": {
-            "hotHits": 658,
-            "warmHits": 1120,
-            "coldHits": 142,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 63,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 34155,
-          "activity": {
-            "hotHits": 757,
-            "warmHits": 1120,
-            "coldHits": 43,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 63,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 34387,
-          "activity": {
-            "hotHits": 915,
+            "hotHits": 898,
             "warmHits": 1400,
-            "coldHits": 85,
+            "coldHits": 102,
             "unknownHits": 0,
             "totalHits": 2400
           },
@@ -1317,373 +170,10 @@
             "hotBytes": 10405117440,
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
-          },
-          "kvUsedPages": 64,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
+          }
         },
         {
-          "at": 34574,
-          "activity": {
-            "hotHits": 538,
-            "warmHits": 840,
-            "coldHits": 62,
-            "unknownHits": 0,
-            "totalHits": 1440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 64,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 34785,
-          "activity": {
-            "hotHits": 650,
-            "warmHits": 1120,
-            "coldHits": 150,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 64,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 34976,
-          "activity": {
-            "hotHits": 636,
-            "warmHits": 1120,
-            "coldHits": 164,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 64,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 35145,
-          "activity": {
-            "hotHits": 728,
-            "warmHits": 1120,
-            "coldHits": 72,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 64,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 35356,
-          "activity": {
-            "hotHits": 1095,
-            "warmHits": 1680,
-            "coldHits": 105,
-            "unknownHits": 0,
-            "totalHits": 2880
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 64,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 35546,
-          "activity": {
-            "hotHits": 723,
-            "warmHits": 1120,
-            "coldHits": 77,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 64,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 35749,
-          "activity": {
-            "hotHits": 909,
-            "warmHits": 1400,
-            "coldHits": 91,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 64,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 35946,
-          "activity": {
-            "hotHits": 861,
-            "warmHits": 1400,
-            "coldHits": 139,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 64,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 36156,
-          "activity": {
-            "hotHits": 615,
-            "warmHits": 1120,
-            "coldHits": 185,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 64,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 36388,
-          "activity": {
-            "hotHits": 874,
-            "warmHits": 1400,
-            "coldHits": 126,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 64,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 36577,
-          "activity": {
-            "hotHits": 691,
-            "warmHits": 1120,
-            "coldHits": 109,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 64,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 36760,
-          "activity": {
-            "hotHits": 719,
-            "warmHits": 1120,
-            "coldHits": 81,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 64,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 36978,
-          "activity": {
-            "hotHits": 867,
-            "warmHits": 1400,
-            "coldHits": 133,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 64,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 37187,
-          "activity": {
-            "hotHits": 884,
-            "warmHits": 1400,
-            "coldHits": 116,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 65,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 37353,
-          "activity": {
-            "hotHits": 689,
-            "warmHits": 1120,
-            "coldHits": 111,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 65,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 37548,
+          "at": 3297,
           "activity": {
             "hotHits": 666,
             "warmHits": 1120,
@@ -1701,13 +191,115 @@
             "hotBytes": 10405117440,
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
-          },
-          "kvUsedPages": 65,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
+          }
         },
         {
-          "at": 37769,
+          "at": 3495,
+          "activity": {
+            "hotHits": 1008,
+            "warmHits": 1680,
+            "coldHits": 192,
+            "unknownHits": 0,
+            "totalHits": 2880
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          }
+        },
+        {
+          "at": 3705,
+          "activity": {
+            "hotHits": 849,
+            "warmHits": 1400,
+            "coldHits": 151,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          }
+        },
+        {
+          "at": 3874,
+          "activity": {
+            "hotHits": 636,
+            "warmHits": 1120,
+            "coldHits": 164,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          }
+        },
+        {
+          "at": 4115,
+          "activity": {
+            "hotHits": 993,
+            "warmHits": 1680,
+            "coldHits": 207,
+            "unknownHits": 0,
+            "totalHits": 2880
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          }
+        },
+        {
+          "at": 4285,
+          "activity": {
+            "hotHits": 436,
+            "warmHits": 840,
+            "coldHits": 164,
+            "unknownHits": 0,
+            "totalHits": 1440
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          }
+        },
+        {
+          "at": 4495,
           "activity": {
             "hotHits": 872,
             "warmHits": 1400,
@@ -1725,17 +317,35 @@
             "hotBytes": 10405117440,
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
-          },
-          "kvUsedPages": 65,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
+          }
         },
         {
-          "at": 37991,
+          "at": 4696,
           "activity": {
-            "hotHits": 870,
+            "hotHits": 630,
+            "warmHits": 1120,
+            "coldHits": 170,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          }
+        },
+        {
+          "at": 4917,
+          "activity": {
+            "hotHits": 727,
             "warmHits": 1400,
-            "coldHits": 130,
+            "coldHits": 273,
             "unknownHits": 0,
             "totalHits": 2400
           },
@@ -1749,17 +359,14 @@
             "hotBytes": 10405117440,
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
-          },
-          "kvUsedPages": 65,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
+          }
         },
         {
-          "at": 38180,
+          "at": 5116,
           "activity": {
-            "hotHits": 710,
+            "hotHits": 614,
             "warmHits": 1120,
-            "coldHits": 90,
+            "coldHits": 186,
             "unknownHits": 0,
             "totalHits": 1920
           },
@@ -1773,17 +380,14 @@
             "hotBytes": 10405117440,
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
-          },
-          "kvUsedPages": 65,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
+          }
         },
         {
-          "at": 38391,
+          "at": 5310,
           "activity": {
-            "hotHits": 649,
+            "hotHits": 582,
             "warmHits": 1120,
-            "coldHits": 151,
+            "coldHits": 218,
             "unknownHits": 0,
             "totalHits": 1920
           },
@@ -1797,17 +401,14 @@
             "hotBytes": 10405117440,
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
-          },
-          "kvUsedPages": 65,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
+          }
         },
         {
-          "at": 38579,
+          "at": 5558,
           "activity": {
-            "hotHits": 622,
+            "hotHits": 559,
             "warmHits": 1120,
-            "coldHits": 178,
+            "coldHits": 241,
             "unknownHits": 0,
             "totalHits": 1920
           },
@@ -1821,89 +422,14 @@
             "hotBytes": 10405117440,
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
-          },
-          "kvUsedPages": 65,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
+          }
         },
         {
-          "at": 38790,
+          "at": 5717,
           "activity": {
-            "hotHits": 593,
-            "warmHits": 1120,
-            "coldHits": 207,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 65,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 38989,
-          "activity": {
-            "hotHits": 543,
-            "warmHits": 1120,
-            "coldHits": 257,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 65,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 39199,
-          "activity": {
-            "hotHits": 595,
-            "warmHits": 1120,
-            "coldHits": 205,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 65,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 39372,
-          "activity": {
-            "hotHits": 456,
+            "hotHits": 446,
             "warmHits": 840,
-            "coldHits": 144,
+            "coldHits": 154,
             "unknownHits": 0,
             "totalHits": 1440
           },
@@ -1917,65 +443,14 @@
             "hotBytes": 10405117440,
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
-          },
-          "kvUsedPages": 65,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
+          }
         },
         {
-          "at": 39549,
+          "at": 5916,
           "activity": {
-            "hotHits": 544,
-            "warmHits": 840,
-            "coldHits": 56,
-            "unknownHits": 0,
-            "totalHits": 1440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 65,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 39800,
-          "activity": {
-            "hotHits": 913,
-            "warmHits": 1400,
-            "coldHits": 87,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 65,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 39982,
-          "activity": {
-            "hotHits": 698,
+            "hotHits": 640,
             "warmHits": 1120,
-            "coldHits": 102,
+            "coldHits": 160,
             "unknownHits": 0,
             "totalHits": 1920
           },
@@ -1989,17 +464,14 @@
             "hotBytes": 10405117440,
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
-          },
-          "kvUsedPages": 65,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
+          }
         },
         {
-          "at": 40231,
+          "at": 6136,
           "activity": {
-            "hotHits": 609,
+            "hotHits": 630,
             "warmHits": 1120,
-            "coldHits": 191,
+            "coldHits": 170,
             "unknownHits": 0,
             "totalHits": 1920
           },
@@ -2013,1006 +485,10 @@
             "hotBytes": 10405117440,
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
-          },
-          "kvUsedPages": 65,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
+          }
         },
         {
-          "at": 40371,
-          "activity": {
-            "hotHits": 558,
-            "warmHits": 840,
-            "coldHits": 42,
-            "unknownHits": 0,
-            "totalHits": 1440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 66,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 40572,
-          "activity": {
-            "hotHits": 713,
-            "warmHits": 1120,
-            "coldHits": 87,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 66,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 40752,
-          "activity": {
-            "hotHits": 925,
-            "warmHits": 1400,
-            "coldHits": 75,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 66,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 40992,
-          "activity": {
-            "hotHits": 1067,
-            "warmHits": 1680,
-            "coldHits": 133,
-            "unknownHits": 0,
-            "totalHits": 2880
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 66,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 41172,
-          "activity": {
-            "hotHits": 714,
-            "warmHits": 1120,
-            "coldHits": 86,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 66,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 41403,
-          "activity": {
-            "hotHits": 861,
-            "warmHits": 1400,
-            "coldHits": 139,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 66,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 41576,
-          "activity": {
-            "hotHits": 691,
-            "warmHits": 1120,
-            "coldHits": 109,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 66,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 41804,
-          "activity": {
-            "hotHits": 625,
-            "warmHits": 1120,
-            "coldHits": 175,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 66,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 43996,
-          "activity": {
-            "hotHits": 0,
-            "warmHits": 17640,
-            "coldHits": 0,
-            "unknownHits": 0,
-            "totalHits": 17640
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        }
-      ],
-      "usage": { "prompt_tokens": 4010, "completion_tokens": 184 },
-      "finishReason": "stop",
-      "durationMs": 43996,
-      "metrics": {
-        "ttftMs": 32992,
-        "generationMs": 8670,
-        "completionTokens": 184,
-        "tokensPerSecond": 21.10726643598616
-      }
-    },
-    {
-      "title": "A follow-up",
-      "note": "GLM was still PCIe-bound; the CPU path was slower.",
-      "prompt": "Based on the post, why did computing cold experts on the CPU help the 4090 but lose on the larger GLM machine? Answer in about 100 words.",
-      "events": [
-        { "at": 4651, "content": "On", "reasoning": "" },
-        { "at": 4651, "content": " the", "reasoning": "" },
-        { "at": 4720, "content": " ", "reasoning": "" },
-        { "at": 4807, "content": "4", "reasoning": "" },
-        { "at": 4843, "content": "0", "reasoning": "" },
-        { "at": 4911, "content": "9", "reasoning": "" },
-        { "at": 4982, "content": "0", "reasoning": "" },
-        { "at": 5010, "content": ",", "reasoning": "" },
-        { "at": 5061, "content": " CPU", "reasoning": "" },
-        { "at": 5101, "content": " execution", "reasoning": "" },
-        { "at": 5167, "content": " for", "reasoning": "" },
-        { "at": 5202, "content": " cold", "reasoning": "" },
-        { "at": 5231, "content": " experts", "reasoning": "" },
-        { "at": 5292, "content": " helped", "reasoning": "" },
-        { "at": 5357, "content": " because", "reasoning": "" },
-        { "at": 5391, "content": " PCIe", "reasoning": "" },
-        { "at": 5412, "content": " bandwidth", "reasoning": "" },
-        { "at": 5451, "content": " was", "reasoning": "" },
-        { "at": 5512, "content": " a", "reasoning": "" },
-        { "at": 5611, "content": " severe", "reasoning": "" },
-        { "at": 5612, "content": " bottleneck", "reasoning": "" },
-        { "at": 5642, "content": ";", "reasoning": "" },
-        { "at": 5702, "content": " fetching", "reasoning": "" },
-        { "at": 5762, "content": " weights", "reasoning": "" },
-        { "at": 5782, "content": " over", "reasoning": "" },
-        { "at": 5801, "content": " PCIe", "reasoning": "" },
-        { "at": 5833, "content": " caused", "reasoning": "" },
-        { "at": 5861, "content": " excessive", "reasoning": "" },
-        { "at": 5912, "content": " slot", "reasoning": "" },
-        { "at": 5969, "content": "-cache", "reasoning": "" },
-        { "at": 5991, "content": " churn", "reasoning": "" },
-        { "at": 6031, "content": ",", "reasoning": "" },
-        { "at": 6061, "content": " whereas", "reasoning": "" },
-        { "at": 6102, "content": " the", "reasoning": "" },
-        { "at": 6182, "content": " CPU", "reasoning": "" },
-        { "at": 6192, "content": " could", "reasoning": "" },
-        { "at": 6222, "content": " compute", "reasoning": "" },
-        { "at": 6252, "content": " directly", "reasoning": "" },
-        { "at": 6302, "content": " from", "reasoning": "" },
-        { "at": 6365, "content": " the", "reasoning": "" },
-        { "at": 6382, "content": " page", "reasoning": "" },
-        { "at": 6402, "content": " cache", "reasoning": "" },
-        { "at": 6432, "content": " without", "reasoning": "" },
-        { "at": 6462, "content": " moving", "reasoning": "" },
-        { "at": 6503, "content": " large", "reasoning": "" },
-        { "at": 6568, "content": " weight", "reasoning": "" },
-        { "at": 6603, "content": " tensors", "reasoning": "" },
-        { "at": 6622, "content": ".", "reasoning": "" },
-        { "at": 6674, "content": " Conversely", "reasoning": "" },
-        { "at": 6756, "content": ",", "reasoning": "" },
-        { "at": 6783, "content": " on", "reasoning": "" },
-        { "at": 6822, "content": " the", "reasoning": "" },
-        { "at": 6853, "content": " larger", "reasoning": "" },
-        { "at": 6893, "content": " GL", "reasoning": "" },
-        { "at": 6973, "content": "M", "reasoning": "" },
-        { "at": 7013, "content": " machine", "reasoning": "" },
-        { "at": 7033, "content": ",", "reasoning": "" },
-        { "at": 7065, "content": " the", "reasoning": "" },
-        { "at": 7103, "content": " faster", "reasoning": "" },
-        { "at": 7204, "content": " GPU", "reasoning": "" },
-        { "at": 7204, "content": " and", "reasoning": "" },
-        { "at": 7223, "content": " ample", "reasoning": "" },
-        { "at": 7263, "content": " host", "reasoning": "" },
-        { "at": 7303, "content": " memory", "reasoning": "" },
-        { "at": 7371, "content": " minimized", "reasoning": "" },
-        { "at": 7403, "content": " PCIe", "reasoning": "" },
-        { "at": 7423, "content": " pressure", "reasoning": "" },
-        { "at": 7464, "content": ".", "reasoning": "" },
-        { "at": 7513, "content": " Here", "reasoning": "" },
-        { "at": 7576, "content": ",", "reasoning": "" },
-        { "at": 7593, "content": " the", "reasoning": "" },
-        { "at": 7623, "content": " overhead", "reasoning": "" },
-        { "at": 7653, "content": " of", "reasoning": "" },
-        { "at": 7704, "content": " transferring", "reasoning": "" },
-        { "at": 7789, "content": " data", "reasoning": "" },
-        { "at": 7804, "content": " between", "reasoning": "" },
-        { "at": 7824, "content": " CPU", "reasoning": "" },
-        { "at": 7844, "content": " and", "reasoning": "" },
-        { "at": 7884, "content": " GPU", "reasoning": "" },
-        { "at": 7944, "content": " for", "reasoning": "" },
-        { "at": 7963, "content": " cold", "reasoning": "" },
-        { "at": 8018, "content": " experts", "reasoning": "" },
-        { "at": 8053, "content": " outweigh", "reasoning": "" },
-        { "at": 8063, "content": "ed", "reasoning": "" },
-        { "at": 8126, "content": " the", "reasoning": "" },
-        { "at": 8183, "content": " benefits", "reasoning": "" },
-        { "at": 8255, "content": " of", "reasoning": "" },
-        { "at": 8275, "content": " keeping", "reasoning": "" },
-        { "at": 8287, "content": " weights", "reasoning": "" },
-        { "at": 8356, "content": " off", "reasoning": "" },
-        { "at": 8394, "content": " VR", "reasoning": "" },
-        { "at": 8414, "content": "AM", "reasoning": "" },
-        { "at": 8444, "content": ",", "reasoning": "" },
-        { "at": 8504, "content": " causing", "reasoning": "" },
-        { "at": 8560, "content": " the", "reasoning": "" },
-        { "at": 8594, "content": " CPU", "reasoning": "" },
-        { "at": 8614, "content": " path", "reasoning": "" },
-        { "at": 8634, "content": " to", "reasoning": "" },
-        { "at": 8674, "content": " lose", "reasoning": "" },
-        { "at": 8786, "content": " performance", "reasoning": "" },
-        { "at": 8786, "content": " compared", "reasoning": "" },
-        { "at": 8800, "content": " to", "reasoning": "" },
-        { "at": 8834, "content": " simply", "reasoning": "" },
-        { "at": 8864, "content": " streaming", "reasoning": "" },
-        { "at": 8907, "content": " weights", "reasoning": "" },
-        { "at": 8981, "content": " over", "reasoning": "" },
-        { "at": 9015, "content": " the", "reasoning": "" },
-        { "at": 9047, "content": " robust", "reasoning": "" },
-        { "at": 9077, "content": " PCIe", "reasoning": "" },
-        { "at": 9116, "content": " connection", "reasoning": "" },
-        { "at": 9194, "content": ".", "reasoning": "" }
-      ],
-      "samples": [
-        {
-          "at": 319,
-          "activity": {
-            "hotHits": 1997,
-            "warmHits": 2800,
-            "coldHits": 3,
-            "unknownHits": 0,
-            "totalHits": 4800
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 529,
-          "activity": {
-            "hotHits": 1200,
-            "warmHits": 1680,
-            "coldHits": 0,
-            "unknownHits": 0,
-            "totalHits": 2880
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 4632,
-          "activity": {
-            "hotHits": 200,
-            "warmHits": 77840,
-            "coldHits": 0,
-            "unknownHits": 0,
-            "totalHits": 78040
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 4824,
-          "activity": {
-            "hotHits": 474,
-            "warmHits": 840,
-            "coldHits": 126,
-            "unknownHits": 0,
-            "totalHits": 1440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 67,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 4984,
-          "activity": {
-            "hotHits": 453,
-            "warmHits": 840,
-            "coldHits": 147,
-            "unknownHits": 0,
-            "totalHits": 1440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 67,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 5182,
-          "activity": {
-            "hotHits": 717,
-            "warmHits": 1120,
-            "coldHits": 83,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 67,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 5379,
-          "activity": {
-            "hotHits": 743,
-            "warmHits": 1120,
-            "coldHits": 57,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 67,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 5593,
-          "activity": {
-            "hotHits": 859,
-            "warmHits": 1400,
-            "coldHits": 141,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 67,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 5772,
-          "activity": {
-            "hotHits": 717,
-            "warmHits": 1120,
-            "coldHits": 83,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 67,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 5982,
-          "activity": {
-            "hotHits": 1083,
-            "warmHits": 1680,
-            "coldHits": 117,
-            "unknownHits": 0,
-            "totalHits": 2880
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 67,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 6193,
-          "activity": {
-            "hotHits": 906,
-            "warmHits": 1400,
-            "coldHits": 94,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 67,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 6383,
-          "activity": {
-            "hotHits": 923,
-            "warmHits": 1400,
-            "coldHits": 77,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 67,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 6583,
-          "activity": {
-            "hotHits": 1073,
-            "warmHits": 1680,
-            "coldHits": 127,
-            "unknownHits": 0,
-            "totalHits": 2880
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 68,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 6767,
-          "activity": {
-            "hotHits": 715,
-            "warmHits": 1120,
-            "coldHits": 85,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 68,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 6994,
-          "activity": {
-            "hotHits": 790,
-            "warmHits": 1400,
-            "coldHits": 210,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 68,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 7186,
-          "activity": {
-            "hotHits": 888,
-            "warmHits": 1400,
-            "coldHits": 112,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 68,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 7383,
-          "activity": {
-            "hotHits": 878,
-            "warmHits": 1400,
-            "coldHits": 122,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 68,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 7593,
-          "activity": {
-            "hotHits": 897,
-            "warmHits": 1400,
-            "coldHits": 103,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 68,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 7806,
-          "activity": {
-            "hotHits": 924,
-            "warmHits": 1400,
-            "coldHits": 76,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 68,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 8034,
-          "activity": {
-            "hotHits": 1203,
-            "warmHits": 1960,
-            "coldHits": 197,
-            "unknownHits": 0,
-            "totalHits": 3360
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 68,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 8196,
-          "activity": {
-            "hotHits": 745,
-            "warmHits": 1120,
-            "coldHits": 55,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 68,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 8379,
-          "activity": {
-            "hotHits": 752,
-            "warmHits": 1120,
-            "coldHits": 48,
-            "unknownHits": 0,
-            "totalHits": 1920
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 68,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 8574,
-          "activity": {
-            "hotHits": 910,
-            "warmHits": 1400,
-            "coldHits": 90,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 68,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 8794,
-          "activity": {
-            "hotHits": 1100,
-            "warmHits": 1680,
-            "coldHits": 100,
-            "unknownHits": 0,
-            "totalHits": 2880
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 68,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 8998,
-          "activity": {
-            "hotHits": 921,
-            "warmHits": 1400,
-            "coldHits": 79,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 68,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 9205,
-          "activity": {
-            "hotHits": 859,
-            "warmHits": 1400,
-            "coldHits": 141,
-            "unknownHits": 0,
-            "totalHits": 2400
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 69,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 9326,
-          "activity": {
-            "hotHits": 317,
-            "warmHits": 560,
-            "coldHits": 83,
-            "unknownHits": 0,
-            "totalHits": 960
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 0
-        },
-        {
-          "at": 9395,
+          "at": 6277,
           "activity": {
             "hotHits": 0,
             "warmHits": 0,
@@ -3030,20 +506,267 @@
             "hotBytes": 10405117440,
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
-          },
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 0
+          }
         }
       ],
-      "usage": { "prompt_tokens": 4245, "completion_tokens": 112 },
+      "statsSamples": [
+        {
+          "at": 250,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 331.1,
+          "decodeTps": 0
+        },
+        {
+          "at": 431,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 181.2,
+          "decodeTps": 0
+        },
+        {
+          "at": 661,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 119.2,
+          "decodeTps": 0
+        },
+        {
+          "at": 841,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 90.2,
+          "decodeTps": 0
+        },
+        {
+          "at": 1041,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 72,
+          "decodeTps": 0
+        },
+        {
+          "at": 1242,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 59.9,
+          "decodeTps": 0
+        },
+        {
+          "at": 1442,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 51.4,
+          "decodeTps": 0
+        },
+        {
+          "at": 1642,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 45,
+          "decodeTps": 0
+        },
+        {
+          "at": 1846,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 40,
+          "decodeTps": 0
+        },
+        {
+          "at": 2042,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 36,
+          "decodeTps": 0
+        },
+        {
+          "at": 2243,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 32.7,
+          "decodeTps": 0
+        },
+        {
+          "at": 2442,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 30,
+          "decodeTps": 0
+        },
+        {
+          "at": 2670,
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 27.4,
+          "decodeTps": 34
+        },
+        {
+          "at": 2854,
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 25.6,
+          "decodeTps": 21.1
+        },
+        {
+          "at": 3044,
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 23.9,
+          "decodeTps": 22.9
+        },
+        {
+          "at": 3254,
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 22.4,
+          "decodeTps": 22
+        },
+        {
+          "at": 3454,
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 21.1,
+          "decodeTps": 23.9
+        },
+        {
+          "at": 3654,
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 19.9,
+          "decodeTps": 24.1
+        },
+        {
+          "at": 3854,
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 18.9,
+          "decodeTps": 23.4
+        },
+        {
+          "at": 4054,
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 18,
+          "decodeTps": 24.3
+        },
+        {
+          "at": 4255,
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 17.1,
+          "decodeTps": 23.2
+        },
+        {
+          "at": 4454,
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 16.3,
+          "decodeTps": 23.4
+        },
+        {
+          "at": 4655,
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 15.6,
+          "decodeTps": 23.1
+        },
+        {
+          "at": 4855,
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 15,
+          "decodeTps": 22.8
+        },
+        {
+          "at": 5045,
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 0,
+          "decodeTps": 23
+        },
+        {
+          "at": 5261,
+          "kvUsedPages": 3,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 0,
+          "decodeTps": 22.7
+        },
+        {
+          "at": 5455,
+          "kvUsedPages": 3,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 0,
+          "decodeTps": 22.2
+        },
+        {
+          "at": 5645,
+          "kvUsedPages": 3,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 0,
+          "decodeTps": 22
+        },
+        {
+          "at": 5856,
+          "kvUsedPages": 3,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 0,
+          "decodeTps": 21.9
+        },
+        {
+          "at": 6057,
+          "kvUsedPages": 3,
+          "kvTotalPages": 1024,
+          "activeRequests": 1,
+          "prefillTps": 0,
+          "decodeTps": 21.5
+        },
+        {
+          "at": 6246,
+          "kvUsedPages": 0,
+          "kvTotalPages": 1024,
+          "activeRequests": 0,
+          "prefillTps": 0,
+          "decodeTps": 20.6
+        }
+      ],
+      "usage": { "prompt_tokens": 72, "completion_tokens": 75 },
       "finishReason": "stop",
-      "durationMs": 9395,
+      "durationMs": 6277,
       "metrics": {
-        "ttftMs": 4651,
-        "generationMs": 4543,
-        "completionTokens": 112,
-        "tokensPerSecond": 24.433193924719347
+        "ttftMs": 2592,
+        "generationMs": 3394,
+        "completionTokens": 75,
+        "tokensPerSecond": 21.803182086034177
       }
     }
   ]

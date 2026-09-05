@@ -1,12 +1,10 @@
 <script>
   import recording from "./qwen-replay.json";
 
-  let selected = $state(0);
-  let position = $state(recording.turns[0].durationMs);
+  const turn = recording.turns[0];
+  let position = $state(0);
   let playing = $state(false);
-  let speed = $state(1);
   let highlighted = $state(null);
-  let turn = $derived(recording.turns[selected]);
   let answer = $derived(
     turn.events
       .filter((event) => event.at <= position)
@@ -14,6 +12,10 @@
       .join(""),
   );
   let sample = $derived(turn.samples.findLast((item) => item.at <= position));
+  let statsSample = $derived(
+    turn.statsSamples.findLast((item) => item.at <= position),
+  );
+  let stats = $derived(statsSample?.unavailable ? null : statsSample);
   let routingSample = $derived(
     sample?.unavailable
       ? null
@@ -26,8 +28,8 @@
     position >= turn.durationMs
       ? "Complete"
       : position < turn.events[0].at
-        ? "Waiting"
-        : "Generating",
+        ? "Prefill"
+        : "Decode",
   );
   const tiers = [
     {
@@ -70,23 +72,17 @@
       return band;
     });
   }
-  function choose(index) {
-    playing = false;
-    selected = index;
-    position = recording.turns[index].durationMs;
-  }
   function toggle() {
     if (position >= turn.durationMs) position = 0;
     playing = !playing;
   }
   $effect(() => {
     if (!playing) return;
-    const rate = Number(speed);
     const duration = turn.durationMs;
     let previous = performance.now();
     const timer = setInterval(() => {
       const now = performance.now();
-      position = Math.min(duration, position + (now - previous) * rate);
+      position = Math.min(duration, position + now - previous);
       previous = now;
       if (position >= duration) playing = false;
     }, 50);
@@ -95,40 +91,41 @@
 </script>
 
 <section class="replay" aria-label="Recorded inference on the RTX 4090">
-  <nav class="turns" aria-label="Recorded turns">
-    {#each recording.turns as item, index}
-      <button
-        type="button"
-        aria-pressed={selected === index}
-        onclick={() => choose(index)}>{index + 1}. {item.title}</button
-      >
-    {/each}
-  </nav>
-
   <div class="instrument">
     <header class="instrument-heading">
-      <strong>RTX 4090 <span>· Qwen 125B</span></strong>
+      <span
+        >{phase === "Prefill"
+          ? "Processing the prompt."
+          : phase === "Decode"
+            ? "Generating one token at a time."
+            : "Session complete."}</span
+      >
       <span class="phase" data-phase={phase} role="status"><i></i>{phase}</span>
     </header>
     <dl
       class="measurements"
-      aria-label="Measurements for the complete recorded turn"
+      aria-label="Recorded service throughput and memory"
     >
       <div>
-        <dt>Decode · turn average</dt>
+        <dt>Prefill</dt>
         <dd>
-          {turn.metrics.tokensPerSecond == null
-            ? "--"
-            : turn.metrics.tokensPerSecond.toFixed(1)} <small>tok/s</small>
+          {stats?.prefillTps == null ? "--" : stats.prefillTps.toFixed(1)}
+          <small>tok/s</small>
         </dd>
       </div>
       <div>
-        <dt>First token</dt>
-        <dd>{seconds(turn.metrics.ttftMs)}</dd>
+        <dt>Decode</dt>
+        <dd>
+          {stats?.decodeTps == null ? "--" : stats.decodeTps.toFixed(1)}
+          <small>tok/s</small>
+        </dd>
       </div>
       <div>
-        <dt>Output tokens</dt>
-        <dd>{count(turn.metrics.completionTokens)}</dd>
+        <dt>KV pages</dt>
+        <dd>
+          {count(stats?.kvUsedPages)}
+          <small>/ {count(stats?.kvTotalPages)}</small>
+        </dd>
       </div>
     </dl>
 
@@ -251,10 +248,8 @@
             ? "Sample " + seconds(routingSample.at)
             : "No telemetry sample available"}</span
         >
-        <span
-          >KV {count(sample?.kvUsedPages)} / {count(sample?.kvTotalPages)} pages</span
-        >
-        <span>{count(sample?.activeRequests)} in flight</span>
+        <span>Stats {seconds(stats?.at)}</span>
+        <span>{count(stats?.activeRequests)} in flight</span>
       </div>
     </section>
   </div>
@@ -264,15 +259,8 @@
       >{playing
         ? "Pause"
         : position >= turn.durationMs
-          ? "Replay turn"
+          ? "Replay"
           : "Play"}</button
-    >
-    <label
-      >Speed <select bind:value={speed}
-        ><option value={1}>1×</option><option value={4}>4×</option><option
-          value={16}>16×</option
-        ></select
-      ></label
     >
     <label class="timeline"
       ><span class="sr-only">Recorded time</span><input
@@ -290,7 +278,7 @@
 
   <div class="conversation">
     <details class="prompt">
-      <summary>Prompt · {turn.title}</summary>
+      <summary>Prompt</summary>
       <pre>{turn.prompt}</pre>
     </details>
     <!-- Keyboard users need to focus this region to scroll a long answer. -->
@@ -302,28 +290,6 @@
         {turn.note}
       </p>{/if}
   </div>
-
-  <details class="recording-notes">
-    <summary
-      >Recording details · {recording.recordedAt.slice(0, 10)} UTC</summary
-    >
-    <p class="caption">
-      {recording.hardware}. Thinking off. Warm service with other traffic.
-    </p>
-    <p class="caption">
-      Routing and capacity are estimates from the live demo. Gaps indicate
-      missing or empty samples. Measurements use server token counts and
-      recorded timings, independent of playback speed. Capture target: {recording.sampleIntervalMs}
-      ms; prefill can delay replies.
-    </p>
-    <p class="caption">
-      Build <a
-        href={"https://github.com/jomcgi-org/freetoken-fork/commit/" +
-          recording.build}>{recording.build.slice(0, 7)}</a
-      >
-      · {count(turn.usage?.prompt_tokens)} prompt tokens · Finish: {turn.finishReason}
-    </p>
-  </details>
 </section>
 
 <style>
@@ -337,7 +303,6 @@
     font-size: 0.75rem;
     line-height: 1.5;
   }
-  .turns,
   .controls {
     display: flex;
     flex-wrap: wrap;
@@ -345,8 +310,7 @@
     align-items: center;
     margin: 0.9rem 0;
   }
-  button,
-  select {
+  button {
     font: inherit;
     color: var(--ink);
     background: var(--sheet);
@@ -355,15 +319,11 @@
     border-radius: 3px;
     cursor: pointer;
   }
-  .turns button {
-    font-size: 0.8rem;
-  }
   button[aria-pressed="true"] {
     background: var(--band);
     border-color: var(--accent-ink);
   }
   button:focus-visible,
-  select:focus-visible,
   input:focus-visible,
   summary:focus-visible,
   .answer:focus-visible {
@@ -387,10 +347,6 @@
     border-bottom: 1px solid var(--stroke);
     font-size: 0.9rem;
   }
-  .instrument-heading strong span {
-    color: var(--ink-2);
-    font-weight: 400;
-  }
   .phase {
     display: flex;
     align-items: center;
@@ -403,10 +359,10 @@
     border-radius: 50%;
     background: var(--ink-3);
   }
-  .phase[data-phase="Generating"] i {
+  .phase[data-phase="Decode"] i {
     background: var(--ok);
   }
-  .phase[data-phase="Waiting"] i {
+  .phase[data-phase="Prefill"] i {
     background: var(--accent);
   }
   .measurements {
@@ -589,9 +545,6 @@
     line-height: 1.6;
     margin: 0;
     color: var(--ink-2);
-  }
-  .recording-notes {
-    margin-top: 0.8rem;
   }
   .sr-only {
     position: absolute;
