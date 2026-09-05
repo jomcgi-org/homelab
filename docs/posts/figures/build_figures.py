@@ -333,33 +333,45 @@ def moe_selection() -> Figure:
 
 
 def expert_paths() -> Figure:
-    f = Figure(700, 286, "Expert transfer vs bandwidth")
-    f.text(18, 24, "WEIGHTS")
-    f.text(270, 24, "ACCESS / 2.6 MB", anchor="middle")
-    f.text(420, 24, "BANDWIDTH", anchor="middle")
-    f.text(616, 24, "COMPUTE", anchor="middle")
-    f.line(18, 36, 682, 36)
-    rows = [
-        ("HOT", "hot", "GPU VRAM", "~3 us", "1 TB/s"),
-        ("WARM", "warm", "Pinned RAM / PCIe", "~100 us", "25 GB/s"),
-        ("COLD", "cold", "Page cache hit", "~40 us", "RAM speed"),
-        ("COLD", "cold", "NVMe bulk read", "~370 us", "7 GB/s"),
-    ]
-    for i, (name, color, location, cost, bandwidth) in enumerate(rows):
-        y = 48 + i * 58
-        f.parts.append(
-            f'<rect x="18" y="{y}" width="5" height="40" fill="var(--replay-{color})"/>'
-        )
-        f.text(34, y + 13, name, weight="bold")
-        f.text(34, y + 32, location)
-        f.text(270, y + 27, cost, anchor="middle", size=18)
-        f.text(420, y + 26, bandwidth, anchor="middle", size=14)
-        f.line(496, y + 20, 525, y + 20)
-    for y, compute in ((48, "GPU"), (164, "CPU")):
-        f.line(525, y + 20, 525, y + 78)
-        f.arrow(525, y + 49, 557, y + 49)
-        f.box(567, y + 23, 98, 52)
-        f.text(616, y + 55, compute, anchor="middle", size=18, weight="bold")
+    f = Figure(700, 256, "Expert transfer vs bandwidth")
+    # Show transfer paths only; the memory figure owns capacities and budgets.
+    f.box(32, 24, 340, 76)
+    f.text(44, 43, "GPU", weight="bold")
+    f.hline(32, 372, 52)
+    f.parts.append(
+        '<rect x="44" y="65" width="4" height="22" fill="var(--replay-hot)"/>'
+    )
+    f.text(58, 82, "HOT experts")
+    f.arrow(144, 78, 273, 78)
+    f.text(209, 69, "1 TB/s", anchor="middle")
+    f.text(285, 82, "compute")
+
+    f.box(32, 181, 170, 51)
+    f.parts.append(
+        '<rect x="32" y="181" width="4" height="51" fill="var(--replay-warm)"/>'
+    )
+    f.text(46, 200, "WARM experts", weight="bold")
+    f.text(46, 220, "Pinned RAM")
+    f.path_arrow([(117, 181), (117, 134), (316, 134), (316, 100)])
+    f.text(211, 126, "PCIe / 25 GB/s", anchor="middle")
+
+    f.box(526, 24, 142, 76)
+    f.text(538, 43, "CPU", weight="bold")
+    f.hline(526, 668, 52)
+    f.text(597, 82, "compute", anchor="middle")
+    f.box(308, 181, 146, 51)
+    f.parts.append(
+        '<rect x="308" y="181" width="4" height="51" fill="var(--replay-cold)"/>'
+    )
+    f.text(322, 200, "COLD experts", weight="bold")
+    f.text(322, 220, "Page cache")
+    f.path_arrow([(381, 181), (381, 134), (597, 134), (597, 100)])
+    f.text(475, 126, "RAM speed", anchor="middle")
+    f.box(554, 181, 114, 51)
+    f.text(611, 211, "NVMe", anchor="middle", weight="bold")
+    f.arrow(554, 207, 454, 207)
+    f.text(504, 196, "7 GB/s", anchor="middle")
+    f.text(504, 225, "on miss", anchor="middle")
     return f
 
 
