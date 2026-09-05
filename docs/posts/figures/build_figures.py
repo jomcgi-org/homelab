@@ -342,8 +342,9 @@ def expert_paths() -> Figure:
         '<rect x="32" y="24" width="4" height="76" fill="var(--replay-hot)"/>'
     )
     f.parts.append('<g dominant-baseline="central">')
-    f.text(46, 78, "HOT experts")
-    f.text(285, 78, "compute")
+    # Optical offset aligns painted glyphs, rather than the font's em box.
+    f.text(46, 77.35, "HOT experts")
+    f.text(285, 77.35, "compute")
     f.parts.append("</g>")
     f.arrow(144, 78, 273, 78)
     f.text(209, 69, "1 TB/s", anchor="middle")
