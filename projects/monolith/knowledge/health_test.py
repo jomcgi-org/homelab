@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -21,9 +21,20 @@ class _Result:
     def scalar_one(self):
         return self.value
 
+    def one_or_none(self):
+        return self.value
+
 
 class _Session:
-    def __init__(self, queue, provenance, disputes=None, repo_diff=None, quality=None):
+    def __init__(
+        self,
+        queue,
+        provenance,
+        disputes=None,
+        repo_diff=None,
+        quality=None,
+        burst=None,
+    ):
         self.results = iter(
             [
                 _Result(queue),
@@ -38,6 +49,7 @@ class _Session:
                     )
                 ),
                 _Result(repo_diff or SimpleNamespace(last_sha=None, last_run_at=None)),
+                _Result(burst),
             ]
         )
         self.calls = []
@@ -126,3 +138,25 @@ def test_kg_health_reports_stale_open_disputes_and_last_sweep():
     assert result["swept_last_cycle"] == 7
     assert result["repo_diff_last_sha"] == "a" * 40
     assert result["repo_diff_last_run_at"] == "2026-09-03T13:00:00+00:00"
+
+
+def test_kg_health_reports_active_burst_and_remaining_allowance():
+    now = datetime.now(timezone.utc)
+    session = _Session(
+        SimpleNamespace(queued=0, oldest_seconds=None),
+        SimpleNamespace(failed_24h=0, atoms_24h=0, last_success_at=None),
+        burst=SimpleNamespace(
+            extra_jobs=1_000,
+            used_jobs=125,
+            created_at=now - timedelta(hours=1),
+            expires_at=now + timedelta(hours=2),
+            created_by="standing:operator@example.com",
+        ),
+    )
+
+    result = _kg_health_core(session, 150)
+
+    assert result["effective_cap"] == 1_025
+    assert result["burst"]["active"] is True
+    assert result["burst"]["remaining_jobs"] == 875
+    assert result["burst"]["expires_at"] is not None

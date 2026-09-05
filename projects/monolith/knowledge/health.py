@@ -9,6 +9,7 @@ import os
 from sqlalchemy import text
 from sqlmodel import Session
 
+from knowledge.burst import kg_burst_state
 from knowledge.extraction import EXTRACTION_VERSION, KG_JOB_KIND, KG_NODE_KEY
 
 _STALE_SECONDS = 6 * 60 * 60
@@ -124,6 +125,7 @@ def _kg_health_core(session: Session, cap: int) -> dict:
         ),
         {},
     ).one()
+    burst = kg_burst_state(session)
     oldest = max(0.0, float(queue.oldest_seconds or 0.0))
     oldest_dispute = max(0.0, float(disputes.oldest_open_dispute_seconds or 0.0))
     failed_24h = int(provenance.failed_24h)
@@ -143,6 +145,16 @@ def _kg_health_core(session: Session, cap: int) -> dict:
         "last_success_at": _iso(provenance.last_success_at),
         "jobs_today": int(jobs_today),
         "cap": cap,
+        "effective_cap": cap + burst.remaining_jobs,
+        "burst": {
+            "active": burst.active,
+            "extra_jobs": burst.extra_jobs,
+            "used_jobs": burst.used_jobs,
+            "remaining_jobs": burst.remaining_jobs,
+            "created_at": _iso(burst.created_at),
+            "expires_at": _iso(burst.expires_at),
+            "created_by": burst.created_by,
+        },
         "swept_last_cycle": _swept_last_cycle,
         "open_disputes": int(disputes.open_disputes),
         "oldest_open_dispute_seconds": oldest_dispute,
