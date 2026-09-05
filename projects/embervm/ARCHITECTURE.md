@@ -384,6 +384,16 @@ the noded pod IP and activator port as the activator endpoint,
 instance ids minted node-side carry `origin: ACTIVATOR` for the CP to adopt
 and backfill on reconcile. **Planned**: partially landed, soak ongoing.
 
+Published serving and stateful endpoints share one EDS assignment with their
+per-workload activator fallback at the next Envoy priority. Active TCP health
+checks eject unreachable live endpoints, so traffic falls through to the
+activator and returns to the live priority when it recovers. On the stateful L4
+path, a connection that reaches the activator withdraws the stale resident
+health fact before starting the ordinary rate-limited wake, unless a current
+healthy node status still reports that exact VM live, in which case the
+activator treats the failover as a transient and splices to the published
+endpoint.
+
 ### Sessions: the durability ladder
 
 | Tier | Window | Artifact | Pinning |

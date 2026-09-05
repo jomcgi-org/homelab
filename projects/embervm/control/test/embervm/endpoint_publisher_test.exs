@@ -17,6 +17,14 @@ defmodule Embervm.EndpointPublisherTest do
   alias Embervm.{EndpointPublisher, NodeCapacity, ServingStore, StatefulStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
 
+  @health_check %{
+    timeout_ms: 1_000,
+    interval_ms: 2_000,
+    no_traffic_interval_ms: 2_000,
+    unhealthy_threshold: 2,
+    healthy_threshold: 1
+  }
+
   # -- harness ---------------------------------------------------------------
 
   defp start_stack(opts \\ []) do
@@ -167,7 +175,7 @@ defmodule Embervm.EndpointPublisherTest do
     assert route.request_headers == %{"x-ember-workload" => "wl-a"}
   end
 
-  test "publishing an instance swaps the activator OUT for the real endpoint" do
+  test "a live serving workload renders priority-0 instances and priority-1 activator with health check" do
     ctx = start_stack()
     serving_workload(ctx, "wl-a", "wl-a.example")
     serving_node(ctx, "node-4")
@@ -177,8 +185,12 @@ defmodule Embervm.EndpointPublisherTest do
 
     assert [{"node-4", desired}] = last_puts(ctx)
     assert [cluster] = desired.clusters
-    assert cluster.endpoints == [%{ip: "10.99.0.5", port: 8080}]
-    refute Enum.any?(cluster.endpoints, &(&1.ip == "10.1.1.1"))
+    assert cluster.endpoints == [
+             %{ip: "10.99.0.5", port: 8080, priority: 0},
+             %{ip: "10.1.1.1", port: 7000, priority: 1}
+           ]
+
+    assert cluster.health_check == @health_check
   end
 
   test "ADR embervm/018: cold render prefers a READY node's advertised activator over the CP address" do
@@ -263,7 +275,13 @@ defmodule Embervm.EndpointPublisherTest do
 
     assert [{"node-4", desired}] = last_puts(ctx)
     assert [cluster] = desired.clusters
-    assert cluster.endpoints == [%{ip: "10.0.0.1", port: 8080}, %{ip: "10.0.0.2", port: 8080}]
+    assert cluster.endpoints == [
+             %{ip: "10.0.0.1", port: 8080, priority: 0},
+             %{ip: "10.0.0.2", port: 8080, priority: 0},
+             %{ip: "10.1.1.1", port: 7000, priority: 1}
+           ]
+
+    assert cluster.health_check == @health_check
   end
 
   # -- version format (D-R3.5.1) ---------------------------------------------
@@ -414,8 +432,8 @@ defmodule Embervm.EndpointPublisherTest do
 
   # -- stateful (L4) projection (R4) ------------------------------------------
 
-  test "a stateful workload with a live instance emits one listener + a cluster to the live endpoint" do
-    ctx = start_stack()
+  test "a live stateful workload emits priority-0 VM and priority-1 activator with health check" do
+    ctx = start_stack(activator_ip: "10.2.2.2")
     stateful_workload(ctx, "wl-s", 9100)
     serving_node(ctx, "node-4")
     start_stateful_serving(ctx, "sf-1", "wl-s", "10.99.0.7", 6000)
@@ -427,9 +445,14 @@ defmodule Embervm.EndpointPublisherTest do
     # Exactly one listener, named state-<listen_port>, targeting the stateful cluster.
     assert desired.listeners == [%{name: "state-9100", port: 9100, cluster: "state|wl-s"}]
 
-    # The stateful cluster carries the single live endpoint.
+    # The same EDS assignment carries the live VM and its per-workload fallback.
     cluster = Enum.find(desired.clusters, &(&1.name == "state|wl-s"))
-    assert cluster.endpoints == [%{ip: "10.99.0.7", port: 6000}]
+    assert cluster.endpoints == [
+             %{ip: "10.99.0.7", port: 6000, priority: 0},
+             %{ip: "10.2.2.2", port: 9100, priority: 1}
+           ]
+
+    assert cluster.health_check == @health_check
   end
 
   test "a stateful workload with no live instance falls back to {activator_ip, its own listen_port}" do
@@ -504,7 +527,7 @@ defmodule Embervm.EndpointPublisherTest do
     refute Map.has_key?(desired, :listeners)
   end
 
-  test "a node with zero stateful workloads emits a byte-identical serving-only payload (no listeners key)" do
+  test "a node with zero stateful workloads emits a serving-only payload with no listeners key" do
     # Baseline: a serving-only stack, no stateful catalog entries.
     ctx = start_stack()
     serving_workload(ctx, "wl-a", "wl-a.example")
@@ -514,11 +537,15 @@ defmodule Embervm.EndpointPublisherTest do
     :ok = EndpointPublisher.flush(ctx.pub)
     assert [{"node-4", desired}] = last_puts(ctx)
 
-    # The serving clusters + routes are exactly what the pre-R4 publisher emitted,
-    # and there is NO listeners key (the map does not carry it at all).
+    # There is no listeners key at all; the priority failover remains confined to
+    # the serving cluster shape.
     refute Map.has_key?(desired, :listeners)
-    assert [%{name: "serve|wl-a", endpoints: [%{ip: "10.99.0.5", port: 8080}]}] =
-             Enum.filter(desired.clusters, &String.starts_with?(&1.name, "serve|"))
+    assert [cluster] = Enum.filter(desired.clusters, &String.starts_with?(&1.name, "serve|"))
+
+    assert cluster.endpoints == [
+             %{ip: "10.99.0.5", port: 8080, priority: 0},
+             %{ip: "10.1.1.1", port: 7000, priority: 1}
+           ]
 
     assert [%{host: "wl-a.example", cluster: "serve|wl-a"}] =
              Enum.map(desired.routes, &Map.take(&1, [:host, :cluster]))

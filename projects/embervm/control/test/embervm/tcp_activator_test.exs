@@ -85,7 +85,7 @@ defmodule Embervm.TcpActivatorTest do
     # {:error, {:already_started, _}}. Synchronously stop any lingering one first so
     # the name is free (Agent.stop waits for termination). The whereis lookup and
     # the stop race: that lingering FakeManager is linked to a dead test process and
-    # can exit between the two, so Agent.stop then raises exit(:noproc) — swallow it,
+    # can exit between the two, so Agent.stop then raises exit(:noproc). Swallow it,
     # since a gone process is exactly the state we wanted.
     case Process.whereis(FakeManager) do
       nil ->
@@ -243,17 +243,21 @@ defmodule Embervm.TcpActivatorTest do
     def published_endpoint(_srv, _wl), do: nil
   end
 
-  test "a connection resolved to an ALREADY-live endpoint splices directly, no wake", ctx do
+  test "a connection for an already-published stateful endpoint delegates witnessed-connect handling", ctx do
     {_echo_pid, vm_port} = start_echo_server()
     Application.put_env(:embervm, :tcp_activator_test_vm_port, vm_port)
     on_exit(fn -> Application.delete_env(:embervm, :tcp_activator_test_vm_port) end)
 
-    start_activator(%{}, catalog_table: ctx.cat_table, store_mod: LiveEndpointStore)
+    start_activator(
+      %{"wl-a" => {:ok, %{ip: "127.0.0.1", port: vm_port}}},
+      catalog_table: ctx.cat_table,
+      store_mod: LiveEndpointStore
+    )
 
     sock = connect(@port_a)
     :ok = :gen_tcp.send(sock, "straggler")
     assert {:ok, "straggler"} = :gen_tcp.recv(sock, 9, 1_000)
-    refute_receive {:woke, _, _}, 200
+    assert_receive {:woke, "wl-a", _principal}, 1_000
     :gen_tcp.close(sock)
   end
 end

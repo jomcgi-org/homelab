@@ -8,8 +8,8 @@
 // connection manager stay STATIC in the bootstrap (byte-identical to R3); the
 // only listeners rendered here are the R4 stateful TCP-proxy listeners the
 // control plane publishes per workload, served dynamically over LDS on the same
-// ADS stream. A document with no `listeners` renders
-// exactly the R3 three-type snapshot (proven by a regression test). Keeping the
+// ADS stream. A document with no `listeners` renders the serving-only three-type
+// snapshot with no dynamic Listener resources. Keeping the
 // translation pure (stdlib + go-control-plane only) makes it unit-testable on a
 // workstation without an Envoy or a running server.
 package snapshot
@@ -68,16 +68,28 @@ type Desired struct {
 // timeout. Endpoints are served as a separate EDS resource (ClusterLoadAssignment
 // keyed by the cluster name), so endpoint churn does not re-push the CDS entry.
 type Cluster struct {
-	Name             string     `json:"name"`
-	Endpoints        []Endpoint `json:"endpoints"`
-	ConnectTimeoutMs int        `json:"connect_timeout_ms"`
+	Name             string       `json:"name"`
+	Endpoints        []Endpoint   `json:"endpoints"`
+	ConnectTimeoutMs int          `json:"connect_timeout_ms"`
+	HealthCheck      *HealthCheck `json:"health_check,omitempty"`
 }
 
 // Endpoint is one serving-VM tap IP + port. In v1 these are node-local routable
 // tap addresses the node Envoy dials directly over pod networking (PR-2 bridge).
 type Endpoint struct {
-	IP   string `json:"ip"`
-	Port int    `json:"port"`
+	IP       string `json:"ip"`
+	Port     int    `json:"port"`
+	Priority uint32 `json:"priority,omitempty"`
+}
+
+// HealthCheck configures the active TCP health check on priority-0 live
+// endpoints. Priority fallback endpoints opt out at EDS endpoint level.
+type HealthCheck struct {
+	TimeoutMs           int    `json:"timeout_ms"`
+	IntervalMs          int    `json:"interval_ms"`
+	NoTrafficIntervalMs int    `json:"no_traffic_interval_ms"`
+	UnhealthyThreshold  uint32 `json:"unhealthy_threshold"`
+	HealthyThreshold    uint32 `json:"healthy_threshold"`
 }
 
 // Route maps an inbound host + path prefix to a cluster, optionally injecting a
@@ -170,6 +182,17 @@ func (d *Desired) validate() error {
 			if e.Port < 1 || e.Port > 65535 {
 				return fmt.Errorf("cluster[%d].endpoints[%d]: port %d out of range", i, j, e.Port)
 			}
+			if e.Priority > 1 {
+				return fmt.Errorf("cluster[%d].endpoints[%d]: priority %d out of range", i, j, e.Priority)
+			}
+		}
+		if h := c.HealthCheck; h != nil {
+			if h.TimeoutMs <= 0 || h.IntervalMs <= 0 || h.NoTrafficIntervalMs <= 0 {
+				return fmt.Errorf("cluster[%d].health_check: durations must be positive", i)
+			}
+			if h.UnhealthyThreshold == 0 || h.HealthyThreshold == 0 {
+				return fmt.Errorf("cluster[%d].health_check: thresholds must be positive", i)
+			}
 		}
 	}
 
@@ -223,7 +246,7 @@ func buildCluster(c *Cluster) *clusterv3.Cluster {
 	if c.ConnectTimeoutMs > 0 {
 		timeout = time.Duration(c.ConnectTimeoutMs) * time.Millisecond
 	}
-	return &clusterv3.Cluster{
+	cluster := &clusterv3.Cluster{
 		Name:                 c.Name,
 		ConnectTimeout:       durationpb.New(timeout),
 		ClusterDiscoveryType: &clusterv3.Cluster_Type{Type: clusterv3.Cluster_EDS},
@@ -239,19 +262,38 @@ func buildCluster(c *Cluster) *clusterv3.Cluster {
 			ServiceName: c.Name,
 		},
 	}
+	if h := c.HealthCheck; h != nil {
+		cluster.HealthChecks = []*corev3.HealthCheck{
+			{
+				Timeout:            durationpb.New(time.Duration(h.TimeoutMs) * time.Millisecond),
+				Interval:           durationpb.New(time.Duration(h.IntervalMs) * time.Millisecond),
+				NoTrafficInterval:  durationpb.New(time.Duration(h.NoTrafficIntervalMs) * time.Millisecond),
+				UnhealthyThreshold: wrapperspb.UInt32(h.UnhealthyThreshold),
+				HealthyThreshold:   wrapperspb.UInt32(h.HealthyThreshold),
+				HealthChecker: &corev3.HealthCheck_TcpHealthCheck_{
+					TcpHealthCheck: &corev3.HealthCheck_TcpHealthCheck{},
+				},
+			},
+		}
+	}
+	return cluster
 }
 
-// buildEndpoint renders the EDS ClusterLoadAssignment for one cluster: a single
-// locality carrying every endpoint as a TCP SocketAddress. The assignment's
+// buildEndpoint renders the EDS ClusterLoadAssignment for one cluster: one
+// locality per priority carrying endpoints as TCP SocketAddresses. The assignment's
 // ClusterName MUST equal the cluster's EdsClusterConfig.ServiceName so Envoy
 // pairs them.
 func buildEndpoint(c *Cluster) *endpointv3.ClusterLoadAssignment {
-	lbEndpoints := make([]*endpointv3.LbEndpoint, 0, len(c.Endpoints))
+	priorities := make(map[uint32][]*endpointv3.LbEndpoint)
+	maxPriority := uint32(0)
 	for i := range c.Endpoints {
 		e := &c.Endpoints[i]
-		lbEndpoints = append(lbEndpoints, &endpointv3.LbEndpoint{
+		lbEndpoint := &endpointv3.LbEndpoint{
 			HostIdentifier: &endpointv3.LbEndpoint_Endpoint{
 				Endpoint: &endpointv3.Endpoint{
+					HealthCheckConfig: &endpointv3.Endpoint_HealthCheckConfig{
+						DisableActiveHealthCheck: e.Priority > 0,
+					},
 					Address: &corev3.Address{
 						Address: &corev3.Address_SocketAddress{
 							SocketAddress: &corev3.SocketAddress{
@@ -265,13 +307,25 @@ func buildEndpoint(c *Cluster) *endpointv3.ClusterLoadAssignment {
 					},
 				},
 			},
-		})
+		}
+		priorities[e.Priority] = append(priorities[e.Priority], lbEndpoint)
+		if e.Priority > maxPriority {
+			maxPriority = e.Priority
+		}
+	}
+
+	localities := make([]*endpointv3.LocalityLbEndpoints, 0, int(maxPriority)+1)
+	for priority := uint32(0); priority <= maxPriority; priority++ {
+		if lbs := priorities[priority]; len(lbs) > 0 {
+			localities = append(localities, &endpointv3.LocalityLbEndpoints{
+				Priority:    priority,
+				LbEndpoints: lbs,
+			})
+		}
 	}
 	return &endpointv3.ClusterLoadAssignment{
 		ClusterName: c.Name,
-		Endpoints: []*endpointv3.LocalityLbEndpoints{
-			{LbEndpoints: lbEndpoints},
-		},
+		Endpoints:   localities,
 	}
 }
 
