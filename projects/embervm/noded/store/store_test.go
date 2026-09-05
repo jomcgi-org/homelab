@@ -569,6 +569,7 @@ func TestExportWritesMetaLast(t *testing.T) {
 		"snapfile": "snap-content",
 		"memfile":  "mem-content",
 		"gen":      "7",
+		"rootfsid": "550e8400-e29b-41d4-a716-446655440000",
 	})
 	prefix := "stateful/scratch-postgres/state-abc"
 
@@ -579,7 +580,7 @@ func TestExportWritesMetaLast(t *testing.T) {
 	if skipped {
 		t.Fatal("first Export should not be skipped")
 	}
-	wantBytes := int64(len("snap-content") + len("mem-content") + len("7"))
+	wantBytes := int64(len("snap-content") + len("mem-content") + len("7") + len("550e8400-e29b-41d4-a716-446655440000"))
 	if moved != wantBytes {
 		t.Fatalf("Export bytesMoved = %d, want %d", moved, wantBytes)
 	}
@@ -603,6 +604,10 @@ func TestExportWritesMetaLast(t *testing.T) {
 	}
 	if !fake.has("/embervm/" + prefix + "/" + metaObject) {
 		t.Fatal("meta.json missing after Export")
+	}
+	_, _, _, _, _, rootfsID, _, _, err := s.ArtifactInfo(ctx, prefix)
+	if err != nil || rootfsID != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("ArtifactInfo rootfs ID = (%q, %v), want exported UUID", rootfsID, err)
 	}
 }
 
@@ -814,7 +819,7 @@ func TestEncryptedExportRoundTrip(t *testing.T) {
 	if fm.Sha256 != hex.EncodeToString(sum[:]) {
 		t.Fatalf("sha256 = %q, want plaintext digest %q", fm.Sha256, hex.EncodeToString(sum[:]))
 	}
-	_, _, _, _, _, _, gotEnvelope, err := s.ArtifactInfo(ctx, prefix)
+	_, _, _, _, _, _, _, gotEnvelope, err := s.ArtifactInfo(ctx, prefix)
 	if err != nil || !bytes.Equal(gotEnvelope, envelope) {
 		t.Fatalf("ArtifactInfo envelope = (%q, %v), want (%q, nil)", gotEnvelope, err, envelope)
 	}

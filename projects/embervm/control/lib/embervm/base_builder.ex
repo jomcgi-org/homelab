@@ -1062,6 +1062,25 @@ defmodule Embervm.BaseBuilder do
 
   defp hydrate_for_anchor(state, _workload, _node_id), do: state
 
+  # Preserve the state-only API for wake and scratch callers, but expose whether
+  # the dropped-base path actually started hydrate. :handled covers the inline
+  # force-rebuild path, while :noop means hydrate returned the original state.
+  defp hydrate_for_anchor_outcome(state, workload, node_id) do
+    was_hydrating? = MapSet.member?(state.hydrating, workload)
+    next_state = hydrate_for_anchor(state, workload, node_id)
+
+    cond do
+      not was_hydrating? and MapSet.member?(next_state.hydrating, workload) ->
+        {next_state, :hydrating}
+
+      next_state == state ->
+        {next_state, :noop}
+
+      true ->
+        {next_state, :handled}
+    end
+  end
+
   # The best build-eligible INSTANCE whose reported node_id is `node_id`. Reuses the
   # same eligibility and ranking as placement/3 so a hydrate never targets an
   # instance placement itself would reject.
@@ -1361,10 +1380,10 @@ defmodule Embervm.BaseBuilder do
         _ = other
         :hydrated
 
-      {:error, {:grpc, :failed_precondition, _msg}} ->
-        # S3 does not hold the ref (or the store is disabled): rebuild AT ONCE, no
-        # wait. This is the fast, distinguishable miss the async ack guarantees.
-        {:fallback, :not_present_in_store}
+      {:error, {:grpc, :failed_precondition, msg}} ->
+        # S3 does not hold the ref, the store is disabled, or noded synchronously
+        # refused an incompatible rootfs: rebuild AT ONCE, with no poll wait.
+        {:fallback, {:failed_precondition, msg}}
 
       {:error, reason} ->
         {:fallback, {:restore_failed, reason}}
@@ -1453,7 +1472,8 @@ defmodule Embervm.BaseBuilder do
 
   # Map a GRPC.RPCError to {:grpc, status_atom, message}; pass other errors through.
   # FAILED_PRECONDITION (status 9) is noded's S3-not-present / store-disabled /
-  # sku-mismatch signal, which run_hydrate treats as an immediate rebuild fallback.
+  # sku-mismatch / rootfs-mismatch signal, which run_hydrate treats as an
+  # immediate rebuild fallback.
   defp normalize_grpc_error(%GRPC.RPCError{status: 9, message: msg}),
     do: {:grpc, :failed_precondition, msg}
 
@@ -1567,48 +1587,96 @@ defmodule Embervm.BaseBuilder do
       # Capacity facts do not carry the node's ext4 UUID, so a durable dropped
       # ref is hydrated optimistically. Noded's identity gate refuses a rootfs
       # mismatch, and the existing hydrate fallback then drives direct BuildBase.
-      hydrate_for_anchor(state, name, anchor_node)
+      case hydrate_for_anchor_outcome(state, name, anchor_node) do
+        {state, :hydrating} ->
+          record_base_rebuild(
+            state.op_log_mod,
+            state.op_log,
+            state.tenant,
+            state.clock,
+            name,
+            instance_id,
+            cleared_ref,
+            "node dropped base, hydrating from store"
+          )
+
+          write_base_status(state, w, :building)
+
+        {state, :noop} ->
+          # Store durability alone does not prove the anchor vendor has a
+          # resolvable ref. Fall through to the direct build branch when hydrate
+          # made no progress.
+          enqueue_dropped_base_build(state, w, name, instance_id, anchor_node, cleared_ref)
+
+        {state, :handled} ->
+          record_base_rebuild(
+            state.op_log_mod,
+            state.op_log,
+            state.tenant,
+            state.clock,
+            name,
+            instance_id,
+            cleared_ref,
+            "node dropped base"
+          )
+
+          state
+      end
     else
-      w = clear_rebuild_record(state, w, anchor_node, keep_store_evidence: true)
-
-      Logger.warning(
-        "embervm base builder: node dropped non-durable base #{name}/#{cleared_ref}; enqueueing rebuild",
-        workload: name,
-        node_id: instance_id,
-        ref: cleared_ref
-      )
-
-      record_base_rebuild(
-        state.op_log_mod,
-        state.op_log,
-        state.tenant,
-        state.clock,
-        name,
-        instance_id,
-        cleared_ref
-      )
-
-      state
-      |> put_in([:workloads, name], w)
-      |> cancel_pending_retry(name)
-      # A non-durable ref cannot hydrate. Build directly instead of paying the
-      # download and poll budget for a store miss that is already known.
-      |> enqueue(instance_id, name)
-      |> write_base_status(w, :building)
-      |> maybe_start_build(instance_id)
+      enqueue_dropped_base_build(state, w, name, instance_id, anchor_node, cleared_ref)
     end
+  end
+
+  defp enqueue_dropped_base_build(state, w, name, instance_id, anchor_node, cleared_ref) do
+    w = clear_rebuild_record(state, w, anchor_node, keep_store_evidence: true)
+
+    Logger.warning(
+      "embervm base builder: node dropped base #{name}/#{cleared_ref}; enqueueing direct build",
+      workload: name,
+      node_id: instance_id,
+      ref: cleared_ref
+    )
+
+    record_base_rebuild(
+      state.op_log_mod,
+      state.op_log,
+      state.tenant,
+      state.clock,
+      name,
+      instance_id,
+      cleared_ref,
+      "node dropped base"
+    )
+
+    state
+    |> put_in([:workloads, name], w)
+    |> cancel_pending_retry(name)
+    # A ref that cannot hydrate must build directly instead of paying the
+    # download and poll budget for a store miss or re-entering on every update.
+    |> enqueue(instance_id, name)
+    |> write_base_status(w, :building)
+    |> maybe_start_build(instance_id)
   end
 
   # The :base_built kind existed in the proto enums but was never emitted until
   # now. The payload reason is the discriminator, so emit it only on this path.
-  defp record_base_rebuild(op_log_mod, op_log, tenant, clock, workload, node_id, ref) do
+  defp record_base_rebuild(
+         op_log_mod,
+         op_log,
+         tenant,
+         clock,
+         workload,
+         node_id,
+         ref,
+         reason
+       ) do
     op = %Embervm.OpLog.Op{
       kind: :base_built,
       tenant: tenant,
       principal: "system:base:#{workload}",
       workload: workload,
       ts: clock.(),
-      payload: %{reason: "node dropped base", node_id: node_id, ref: ref}
+      payload: %{reason: reason, node_id: node_id, ref: ref}
     }
 
     _ = op_log_mod.append(op_log, op)

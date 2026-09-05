@@ -21,9 +21,11 @@
 # digest, and e2fsprogs runs at the fixed 2024-01-01T00:00:00Z epoch. Changing
 # these mkfs flags or the e2fsprogs version changes the bytes. That is safe
 # because the base key includes rootfs identity. On the first roll after this
-# change, every stored base built against an older random-UUID rootfs fails the
-# identity gate once and is rebuilt. From then on, rebaking the same digest with
-# the same builder version reproduces the rootfs bytes and permits hydration.
+# change, every node misses the new bake-format cache name, rebakes once, and
+# relinks BASE_ROOTFS_PATH while leaving the old cache inode untouched for banked
+# sessions. Bases built against an older random-UUID rootfs then fail the identity
+# gate once and rebuild. The reproducibility guarantee starts only after that
+# first roll has completed on every node.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -296,7 +298,8 @@ data:
     # no uuidgen dependency in the builder image.
     uuid="${digest:0:8}-${digest:8:4}-4${digest:13:3}-8${digest:17:3}-${digest:20:12}"
     short="${digest:0:12}"
-    cache="$base_dir/rootfs-$short.ext4"
+    readonly bake_format=b2
+    cache="$base_dir/rootfs-$short-$bake_format.ext4"
     if [ -f "$cache" ]; then
       echo "rootfs cache hit $short for $GUEST_IMAGE"
     else
@@ -393,9 +396,29 @@ data:
     # snapshot that embedded either path restores against byte-identical content.
     ln -f "$cache" "$BASE_ROOTFS_PATH"
     echo "linked $BASE_ROOTFS_PATH -> $cache"
-    actual_uuid="$(LC_ALL=C tune2fs -l "$cache" 2>/dev/null | awk -F: '/^Filesystem UUID:/ {gsub(/[[:space:]]/, "", $2); print $2; exit}')"
-    echo "rootfs identity digest=sha256:$digest uuid=$actual_uuid expected_uuid=$uuid path=$cache"
-    if [ "$actual_uuid" != "$uuid" ]; then
-      echo "rootfs identity warning: cached rootfs predates deterministic UUID bake" >&2
+    # Read s_uuid directly from the primary ext4 superblock. The optional
+    # e2fsprogs-extra listing utility is deliberately absent from the image.
+    # The pipeline and its output validation are guarded because identity
+    # observability must never turn a successful bake into an init failure.
+    actual_uuid=""
+    if raw_uuid="$(dd if="$cache" bs=1 skip=1128 count=16 2>/dev/null | od -An -tx1 | tr -d ' \n')"; then
+      case "$raw_uuid" in
+        "" | *[!0-9a-fA-F]*)
+          echo "rootfs identity warning: invalid ext4 UUID bytes read from $cache" >&2
+          ;;
+        *)
+          if [ "${#raw_uuid}" -eq 32 ]; then
+            actual_uuid="${raw_uuid:0:8}-${raw_uuid:8:4}-${raw_uuid:12:4}-${raw_uuid:16:4}-${raw_uuid:20:12}"
+          else
+            echo "rootfs identity warning: short ext4 UUID read from $cache (${#raw_uuid} hex characters)" >&2
+          fi
+          ;;
+      esac
+    else
+      echo "rootfs identity warning: failed to read ext4 UUID from $cache" >&2
+    fi
+    echo "rootfs identity digest=sha256:$digest bake_format=$bake_format uuid=${actual_uuid:-unavailable} expected_uuid=$uuid path=$cache"
+    if [ -n "$actual_uuid" ] && [ "$actual_uuid" != "$uuid" ]; then
+      echo "rootfs identity warning: cached rootfs UUID differs from deterministic bake UUID" >&2
     fi
 {{- end }}

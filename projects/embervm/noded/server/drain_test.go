@@ -320,11 +320,14 @@ func TestWaitForManagedDrainDeadline(t *testing.T) {
 func TestWaitForBuildsOrAbortDeadline(t *testing.T) {
 	build := &fakeDriver{}
 	tr := &blockingTransport{started: make(chan struct{})}
+	// buildBaseImage reads the rootfs ext4 UUID for the base key, so the image
+	// needs a real superblock rather than a placeholder path.
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", "0123456789abcdef0123456789abcdef")
 	s := New(Options{
 		Config: config.Config{
 			Arch: "amd64", Node: "node-4", SnapshotRoot: t.TempDir(),
 			BootReadyTimeout: 30 * time.Second,
-			Images:           map[string]config.Image{"img:1": {RootfsPath: "/rootfs.ext4"}},
+			Images:           map[string]config.Image{"img:1": {RootfsPath: rootfs}},
 		},
 		Driver:         &fakeDriver{},
 		Transport:      tr,
@@ -383,7 +386,7 @@ func TestWaitForBuildsOrAbortDeadline(t *testing.T) {
 
 	// The base is left re-queueable: a later BuildBase can rebuild it, so its state
 	// is not READY.
-	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor)
+	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, testRootfsUUIDA)
 	if e, ok := s.bases.get(baseKey); ok && e.state == nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
 		t.Errorf("aborted base %q is READY; want re-queueable", baseKey)
 	}
