@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -841,7 +842,7 @@ func TestDriverSnapshotBaseRejectsFreshStagingDir(t *testing.T) {
 	}
 }
 
-func TestDriverSnapshotBaseRenamesAgedStagingDir(t *testing.T) {
+func TestDriverSnapshotBaseRemovesAgedStagingDir(t *testing.T) {
 	ctx := context.Background()
 	d := testDriver(t)
 	h, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "stale-building"})
@@ -873,20 +874,58 @@ func TestDriverSnapshotBaseRenamesAgedStagingDir(t *testing.T) {
 	}
 	staleDirs, err := filepath.Glob(buildingDir + ".stale.*")
 	if err != nil {
-		t.Fatalf("glob renamed stale dirs: %v", err)
+		t.Fatalf("glob stale dirs: %v", err)
 	}
-	if len(staleDirs) != 1 {
-		t.Fatalf("renamed stale dirs = %v, want exactly one", staleDirs)
+	if len(staleDirs) != 0 {
+		t.Fatalf("stale staging dir was renamed aside: %v", staleDirs)
 	}
-	for _, name := range []string{"snapfile.tmp", "memfile.tmp"} {
-		if _, err := os.Stat(filepath.Join(staleDirs[0], name)); err != nil {
-			t.Errorf("renamed stale %s missing: %v", name, err)
+	for name, want := range map[string]string{
+		"snapfile": "snap",
+		"memfile":  "mem-image-bytes",
+	} {
+		got, err := os.ReadFile(filepath.Join(d.baseDir(key), name))
+		if err != nil {
+			t.Errorf("read fresh base %s: %v", name, err)
+		} else if string(got) != want {
+			t.Errorf("fresh base %s = %q, want %q", name, got, want)
 		}
 	}
-	for _, name := range []string{"snapfile", "memfile"} {
-		if _, err := os.Stat(filepath.Join(d.baseDir(key), name)); err != nil {
-			t.Errorf("fresh base %s missing: %v", name, err)
-		}
+}
+
+func TestDriverSnapshotBaseTreatsWalkNotExistAsLiveStagingDir(t *testing.T) {
+	ctx := context.Background()
+	d := testDriver(t)
+	h, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "modified-building"})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	const key = "wl__modified-building"
+	buildingDir := d.baseDir(key) + ".building"
+	if err := os.MkdirAll(buildingDir, 0o750); err != nil {
+		t.Fatalf("mkdir building dir: %v", err)
+	}
+	memTmp := filepath.Join(buildingDir, "memfile.tmp")
+	if err := os.WriteFile(memTmp, []byte("live"), 0o600); err != nil {
+		t.Fatalf("write memfile: %v", err)
+	}
+
+	d.stagingDirStats = func(dir string) (time.Duration, int64, error) {
+		return baseStagingDirStatsWithWalk(dir, func(root string, walkFn filepath.WalkFunc) error {
+			return filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+				if path == memTmp && walkErr == nil {
+					if err := os.Remove(path); err != nil {
+						return err
+					}
+					return walkFn(path, nil, fs.ErrNotExist)
+				}
+				return walkFn(path, info, walkErr)
+			})
+		})
+	}
+
+	if _, err := d.SnapshotBase(ctx, h, key); err == nil || !strings.Contains(err.Error(), "mkdir base staging bundle:") || !strings.Contains(err.Error(), "file exists") {
+		t.Fatalf("SnapshotBase error = %v, want mkdir base staging bundle file exists", err)
 	}
 }
 

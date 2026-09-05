@@ -213,9 +213,9 @@ func TestClientLoadSnapshotResume(t *testing.T) {
 
 func TestSnapshotClientAllowsLongRequestWhileControlClientTimesOut(t *testing.T) {
 	t.Parallel()
-	c := New(startDelayedFakeFC(t, 45*time.Second))
+	c := newWithControlTimeout(startDelayedFakeFC(t, 2*time.Second), time.Second)
 
-	snapshotCtx, cancelSnapshot := context.WithTimeout(context.Background(), 2*time.Minute)
+	snapshotCtx, cancelSnapshot := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelSnapshot()
 	snapshotResult := make(chan error, 1)
 	controlResult := make(chan error, 1)
@@ -233,7 +233,7 @@ func TestSnapshotClientAllowsLongRequestWhileControlClientTimesOut(t *testing.T)
 	}()
 
 	if err := <-snapshotResult; err != nil {
-		t.Fatalf("CreateSnapshot with a 2 minute deadline: %v", err)
+		t.Fatalf("CreateSnapshot with a 10 second deadline: %v", err)
 	}
 	controlErr := <-controlResult
 	if controlErr == nil || !strings.Contains(controlErr.Error(), "Client.Timeout exceeded") {
