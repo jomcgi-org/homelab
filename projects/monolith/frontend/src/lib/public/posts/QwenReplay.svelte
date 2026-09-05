@@ -24,6 +24,7 @@
     1,
     ...prefillSamples.map((item) => item.prefillTps ?? 0),
   );
+  const prefillScale = Math.ceil(prefillPeak / 100) * 100;
   const history = decodeSamples.map((item) => {
     if (item.activity?.totalHits > 0) lastActivity = item.activity;
     return { ...item, activity: item.unavailable ? null : lastActivity };
@@ -251,35 +252,66 @@
 
       <div class="phase-charts">
         <div class="prefill-history">
-          <header>Prefill <small>service tok/s</small></header>
-          <svg
-            viewBox="0 0 300 100"
-            preserveAspectRatio="none"
-            role="img"
-            aria-label="Recorded prefill service throughput"
-          >
-            {#each prefillSamples as item, index}
-              {@const previous = prefillSamples[index - 1]}
-              {#if item.at <= position && !item.unavailable && item.prefillTps != null}
-                {#if previous && !previous.unavailable && previous.prefillTps != null}
+          <header>Prefill <small>Throughput (tok/s)</small></header>
+          <div class="prefill-plot">
+            <div class="prefill-axis" aria-hidden="true">
+              <span>{prefillScale}</span><span>{prefillScale / 2}</span><span
+                >0</span
+              >
+            </div>
+            <svg
+              viewBox="0 0 300 100"
+              preserveAspectRatio="none"
+              role="img"
+              aria-label="Recorded prefill service throughput"
+            >
+              <title
+                >Service throughput, 0 to {prefillScale} tok/s. Playback interpolates
+                between recorded samples.</title
+              >
+              {#each [10, 50, 90] as y}
+                <line
+                  x1="0"
+                  x2="300"
+                  y1={y}
+                  y2={y}
+                  stroke="var(--line)"
+                  stroke-width="1"
+                />
+              {/each}
+              {#each prefillSamples as item, index}
+                {@const previous = prefillSamples[index - 1]}
+                {#if previous && previous.at <= position && !previous.unavailable && previous.prefillTps != null && !item.unavailable && item.prefillTps != null}
+                  {@const progress = Math.min(
+                    1,
+                    (position - previous.at) / (item.at - previous.at),
+                  )}
+                  {@const at = previous.at + progress * (item.at - previous.at)}
+                  {@const rate =
+                    previous.prefillTps +
+                    progress * (item.prefillTps - previous.prefillTps)}
                   <line
+                    class="prefill-segment"
                     x1={(300 * previous.at) / decodeAt}
-                    y1={90 - (80 * previous.prefillTps) / prefillPeak}
-                    x2={(300 * item.at) / decodeAt}
-                    y2={90 - (80 * item.prefillTps) / prefillPeak}
+                    y1={90 - (80 * previous.prefillTps) / prefillScale}
+                    x2={(300 * at) / decodeAt}
+                    y2={90 - (80 * rate) / prefillScale}
                     stroke="var(--ink)"
                     stroke-width="2"
+                    stroke-linecap="round"
                   />
                 {/if}
-                <circle
-                  cx={(300 * item.at) / decodeAt}
-                  cy={90 - (80 * item.prefillTps) / prefillPeak}
-                  r="2"
-                  fill="var(--ink)"
-                />
-              {/if}
-            {/each}
-          </svg>
+                {#if item.at <= position && !item.unavailable && item.prefillTps != null}
+                  <circle
+                    cx={(300 * item.at) / decodeAt}
+                    cy={90 - (80 * item.prefillTps) / prefillScale}
+                    r="2"
+                    fill="var(--ink)"
+                  />
+                {/if}
+              {/each}
+            </svg>
+          </div>
           <div class="history-labels">
             <span>0 s</span><span>{seconds(decodeAt)}</span>
           </div>
@@ -571,6 +603,23 @@
     width: 100%;
     height: 4rem;
     background: var(--band);
+  }
+  .prefill-plot {
+    display: flex;
+    gap: 0.3rem;
+  }
+  .prefill-plot svg {
+    flex: 1;
+    min-width: 0;
+  }
+  .prefill-axis {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding-block: 0.2rem;
+    font: 0.6rem var(--font-code);
+    color: var(--ink-2);
+    text-align: right;
   }
   .routing-history rect {
     fill: var(--tier-color);
