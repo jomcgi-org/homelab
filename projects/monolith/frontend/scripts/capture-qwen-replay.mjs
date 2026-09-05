@@ -23,27 +23,10 @@ const get = async (path) => {
   if (!response.ok) throw new Error(`${path}: ${response.status}`);
   return response.json();
 };
-const source = await (
-  await import("node:fs/promises")
-).readFile(
-  new URL(
-    "../../../../docs/posts/2026-09-01-125b-on-a-4090.md",
-    import.meta.url,
-  ),
-  "utf8",
-);
 const prompts = [
   [
-    "A short question",
-    "In about 100 words, explain why a model's weights might fit on disk but still be difficult to serve on a 24 GB GPU.",
-  ],
-  [
-    "Reading the post",
-    `Read this draft post and summarize the three most useful changes and why they helped. Keep your answer under 180 words.\n\n${source}`,
-  ],
-  [
-    "A follow-up",
-    "Based on the post, why did computing cold experts on the CPU help the 4090 but lose on the larger GLM machine? Answer in about 100 words.",
+    "How this inference works",
+    "Explain this inference setup in three short sentences, under 80 words: hot experts stay on the GPU, warm experts transfer from pinned RAM over PCIe, and cold experts run on the CPU using weights from the page cache or NVMe. Explain how their outputs combine to generate the next token.",
   ],
 ];
 const recording = {
@@ -68,6 +51,7 @@ for (const [title, prompt] of prompts) {
     prompt,
     events: [],
     samples: [],
+    statsSamples: [],
     usage: null,
     finishReason: null,
   };
@@ -76,17 +60,11 @@ for (const [title, prompt] of prompts) {
   let stopped = false;
   const sample = async () => {
     try {
-      const [profile, stats] = await Promise.all([
-        get("/v1/moe-layer-profile"),
-        get("/v1/stats"),
-      ]);
+      const profile = await get("/v1/moe-layer-profile");
       turn.samples.push({
         at: elapsed(),
         activity: attributeExpertActivity(previous, profile, cache.geometry),
         tiers: calculateTierSummary(profile, cache.geometry),
-        kvUsedPages: stats.kv?.used_pages ?? null,
-        kvTotalPages: stats.kv?.total_pages ?? null,
-        activeRequests: stats.requests?.active ?? null,
       });
       previous = profile;
     } catch (error) {
@@ -94,7 +72,22 @@ for (const [title, prompt] of prompts) {
       console.error(`Telemetry unavailable: ${error.message}`);
     }
   };
-  const poll = (async () => {
+  const sampleStats = async () => {
+    try {
+      const stats = await get("/v1/stats");
+      turn.statsSamples.push({
+        at: elapsed(),
+        kvUsedPages: stats.kv?.used_pages ?? null,
+        kvTotalPages: stats.kv?.total_pages ?? null,
+        activeRequests: stats.requests?.active ?? null,
+        prefillTps: stats.throughput?.prefill_tps ?? null,
+        decodeTps: stats.throughput?.decode_tps ?? null,
+      });
+    } catch {
+      turn.statsSamples.push({ at: elapsed(), unavailable: true });
+    }
+  };
+  const pollEvery = async (task) => {
     let nextSampleAt = performance.now() + sampleIntervalMs;
     while (!stopped) {
       await new Promise((resolve) =>
@@ -102,9 +95,11 @@ for (const [title, prompt] of prompts) {
       );
       if (stopped) break;
       nextSampleAt = performance.now() + sampleIntervalMs;
-      await sample();
+      await task();
     }
-  })();
+  };
+  const profilePoll = pollEvery(sample);
+  const statsPoll = pollEvery(sampleStats);
   try {
     const response = await fetch(`${base}/v1/chat/completions`, {
       method: "POST",
@@ -151,12 +146,13 @@ for (const [title, prompt] of prompts) {
     turn.durationMs = elapsed();
   } finally {
     stopped = true;
-    await poll;
+    await Promise.all([profilePoll, statsPoll]);
   }
-  await sample();
+  await Promise.all([sample(), sampleStats()]);
   turn.durationMs = Math.max(
     turn.durationMs,
     ...turn.samples.map((sample) => sample.at),
+    ...turn.statsSamples.map((sample) => sample.at),
   );
   if (!turn.events.length || !turn.finishReason)
     throw new Error("Incomplete response; recording not saved.");
