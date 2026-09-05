@@ -602,97 +602,97 @@ defmodule Embervm.OpLog.SQLite do
 
   @impl Embervm.OpLog
   def append(server \\ __MODULE__, %Op{} = op) do
-    Embervm.OpLog.safe_server_call(server, {:append, op})
+    GenServer.call(server, {:append, op})
   end
 
   @impl Embervm.OpLog
   def read_from(server \\ __MODULE__, seq) do
-    Embervm.OpLog.safe_server_call(server, {:read_from, seq})
+    GenServer.call(server, {:read_from, seq})
   end
 
   @impl Embervm.OpLog
   def load_tasks(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_tasks)
+    GenServer.call(server, :load_tasks)
   end
 
   @impl Embervm.OpLog
   def load_sessions(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_sessions)
+    GenServer.call(server, :load_sessions)
   end
 
   @impl Embervm.OpLog
   def load_serving_instances(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_serving_instances)
+    GenServer.call(server, :load_serving_instances)
   end
 
   @impl Embervm.OpLog
   def load_stateful_instances(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_stateful_instances)
+    GenServer.call(server, :load_stateful_instances)
   end
 
   @impl Embervm.OpLog
   def load_volumes(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_volumes)
+    GenServer.call(server, :load_volumes)
   end
 
   @impl Embervm.OpLog
   def load_volume_blessing(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_volume_blessing)
+    GenServer.call(server, :load_volume_blessing)
   end
 
   @impl Embervm.OpLog
   def load_key_epochs(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_key_epochs)
+    GenServer.call(server, :load_key_epochs)
   end
 
   @impl Embervm.OpLog
   def load_blessing_leases(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_blessing_leases)
+    GenServer.call(server, :load_blessing_leases)
   end
 
   @impl Embervm.OpLog
   def load_checkpoint_dispatches(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_checkpoint_dispatches)
+    GenServer.call(server, :load_checkpoint_dispatches)
   end
 
   @impl Embervm.OpLog
   def load_group_instances(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_group_instances)
+    GenServer.call(server, :load_group_instances)
   end
 
   @impl Embervm.OpLog
   def load_group_members(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :load_group_members)
+    GenServer.call(server, :load_group_members)
   end
 
   @impl Embervm.OpLog
   def load_result(server \\ __MODULE__, task_id) do
-    Embervm.OpLog.safe_server_call(server, {:load_result, task_id})
+    GenServer.call(server, {:load_result, task_id})
   end
 
   @impl Embervm.OpLog
   def load_request(server \\ __MODULE__, task_id) do
-    Embervm.OpLog.safe_server_call(server, {:load_request, task_id})
+    GenServer.call(server, {:load_request, task_id})
   end
 
   @impl Embervm.OpLog
   def list_usage(server \\ __MODULE__, opts \\ []) do
-    Embervm.OpLog.safe_server_call(server, {:list_usage, opts})
+    GenServer.call(server, {:list_usage, opts})
   end
 
   @impl Embervm.OpLog
   def compact(server \\ __MODULE__, now_ms) do
-    Embervm.OpLog.safe_server_call(server, {:compact, now_ms})
+    GenServer.call(server, {:compact, now_ms})
   end
 
   @impl Embervm.OpLog
   def compacted_through(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :compacted_through)
+    GenServer.call(server, :compacted_through)
   end
 
   @impl Embervm.OpLog
   def evict_task(server \\ __MODULE__, task_id) do
-    Embervm.OpLog.safe_server_call(server, {:evict_task, task_id})
+    GenServer.call(server, {:evict_task, task_id})
   end
 
   # The op-log's database file size in bytes, for the sweeper's disk-usage log
@@ -701,7 +701,7 @@ defmodule Embervm.OpLog.SQLite do
   # (the main db is what the retention policy bounds).
   @spec db_size(GenServer.server()) :: {:ok, non_neg_integer()} | {:error, term()}
   def db_size(server \\ __MODULE__) do
-    Embervm.OpLog.safe_server_call(server, :db_size)
+    GenServer.call(server, :db_size)
   end
 
   # -- GenServer callbacks ------------------------------------------------

@@ -144,6 +144,8 @@ defmodule Embervm.RouterTest do
 
     def invoke(_srv, "s-live", _req), do: {:ok, %{status_code: 200, headers: %{"content-type" => "text/plain"}, body: "echoed"}}
     def invoke(_srv, "s-queue", _req), do: {:error, :queue_full}
+    def invoke(_srv, "s-unavailable", _req),
+      do: {:error, {:invoke_start_not_recorded, :unavailable}}
     def invoke(_srv, "s-pressure", _req), do: {:error, {:relight_failed, {:prime_failed, %GRPC.RPCError{status: 8, message: "pressure:mem"}}}}
     def invoke(_srv, "s-snapshot", _req), do: {:error, {:relight_failed, {:prime_failed, %GRPC.RPCError{status: 9, message: "snapshot lost"}}}}
     def invoke(_srv, _id, _req), do: {:error, :not_found}
@@ -174,6 +176,8 @@ defmodule Embervm.RouterTest do
     def verify_token(_srv, "s-live", "sess-token-live"), do: {:ok, %{session_id: "s-live"}}
     def verify_token(_srv, "s-live", _), do: {:error, :unauthorized}
     def verify_token(_srv, "s-queue", "sess-token-queue"), do: {:ok, %{session_id: "s-queue"}}
+    def verify_token(_srv, "s-unavailable", "sess-token-unavailable"),
+      do: {:ok, %{session_id: "s-unavailable"}}
     def verify_token(_srv, "s-pressure", "sess-token-pressure"), do: {:ok, %{session_id: "s-pressure"}}
     def verify_token(_srv, "s-snapshot", "sess-token-snapshot"), do: {:ok, %{session_id: "s-snapshot"}}
     def verify_token(_srv, "s-term", "sess-token-term"), do: {:error, :terminal}
@@ -1338,6 +1342,22 @@ defmodule Embervm.RouterTest do
     # s-queue authorizes with its own token and the manager fake returns :queue_full.
     resp = req(:post, "/v1/sessions/s-queue/invoke", auth("sess-token-queue"), "x")
     assert resp.status == 429
+  end
+
+  test "invoke-start op-log unavailability maps to a retryable 503" do
+    with_session_fakes()
+
+    resp =
+      req(
+        :post,
+        "/v1/sessions/s-unavailable/invoke",
+        auth("sess-token-unavailable"),
+        "x"
+      )
+
+    assert resp.status == 503
+    assert json(resp.body)["retryable"] == true
+    assert json(resp.body)["reason"] =~ "invoke_start_not_recorded"
   end
 
   test "invoke relight RESOURCE_EXHAUSTED is retryable" do

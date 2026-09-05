@@ -1402,10 +1402,18 @@ defmodule Embervm.Router do
             send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
 
           {:error, reason} ->
-            # A daemon transport/timeout failure: the session is now failed. 502 so
-            # the caller knows the invoke did not complete (at-most-once: it is NOT
-            # retried by the platform; the caller creates a fresh session).
-            send_json(conn, 502, %{error: "session invoke failed", reason: inspect(reason), session_id: session_id, retryable: classify_error_as_retryable(reason)})
+            # {:invoke_start_not_recorded, :unavailable} means the guest was never
+            # called and the session remains live. Any reason carrying unavailable
+            # is retryable and maps to 503; other failures retain the at-most-once
+            # 502 response.
+            status = if unavailable_error?(reason), do: 503, else: 502
+
+            send_json(conn, status, %{
+              error: "session invoke failed",
+              reason: inspect(reason),
+              session_id: session_id,
+              retryable: classify_error_as_retryable(reason)
+            })
         end
 
       {:error, :too_large} ->
@@ -1414,6 +1422,7 @@ defmodule Embervm.Router do
   end
 
   # Memory pressure is inherent to the claude fleet (4096 MiB VMs, single 16gi brick host); idle sessions park/evict on TTL, so RESOURCE_EXHAUSTED is transient and retryable.
+  def classify_error_as_retryable(:unavailable), do: true
   def classify_error_as_retryable(%GRPC.RPCError{status: 8}), do: true
   def classify_error_as_retryable(%GRPC.RPCError{}), do: false
   def classify_error_as_retryable(reason) when is_tuple(reason) do
@@ -1433,6 +1442,26 @@ defmodule Embervm.Router do
   end
 
   def classify_error_as_retryable(_reason), do: false
+
+  defp unavailable_error?(:unavailable), do: true
+
+  defp unavailable_error?(reason) when is_tuple(reason) do
+    reason
+    |> Tuple.to_list()
+    |> Enum.any?(&unavailable_error?/1)
+  end
+
+  defp unavailable_error?(reason) when is_list(reason) do
+    Enum.any?(reason, &unavailable_error?/1)
+  end
+
+  defp unavailable_error?(reason) when is_map(reason) do
+    reason
+    |> Map.values()
+    |> Enum.any?(&unavailable_error?/1)
+  end
+
+  defp unavailable_error?(_reason), do: false
 
   defp guest_path(conn) do
     # Only an EXPLICIT X-Ember-Guest-Path sets the guest path; absent, return nil so

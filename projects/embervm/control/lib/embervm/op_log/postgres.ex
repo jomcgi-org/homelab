@@ -15,9 +15,11 @@ defmodule Embervm.OpLog.Postgres do
   op-log directly (it reads ETS), so serializing here costs nothing on the
   critical path and keeps append ordering (and the compaction batch discipline)
   identical to SQLite's. A future PR may widen this to a pool once a real
-  workload demands concurrent readers. The single-writer design now survives
-  database stalls; widening it to a pool is the next step if throughput demands
-  concurrent access.
+  workload demands concurrent readers. The append rescue below has been in
+  place since 2026-08-24 (727ba1e7d, which traced the "stall" to a reaped idle
+  TCP flow rather than a slow database); #5235 added call-side timeout
+  protection, a narrow Postgrex error classification and a wider liveness
+  window. Widening to a pool is the next step if throughput demands it.
 
   `db_size/1` is NOT part of the behaviour (see `Embervm.OpLog`): there is no
   single PVC file to `File.stat/1` for a Postgres backend, so it always returns
@@ -515,7 +517,9 @@ defmodule Embervm.OpLog.Postgres do
     retention_ms = Keyword.get(opts, :retention_ms, @default_retention_ms)
     journal_horizon_ms = Keyword.get(opts, :journal_horizon_ms, @default_journal_horizon_ms)
     compact_batch_size = Keyword.get(opts, :compact_batch_size, @default_compact_batch_size)
+    # These seams keep connection classification testable without a live database.
     transaction_fun = Keyword.get(opts, :transaction_fun, &Postgrex.transaction/2)
+    query_fun = Keyword.get(opts, :query_fun, &Postgrex.query/3)
 
     with {:ok, conn, owns_conn} <- open_connection(opts) do
       Logger.info("embervm op-log opened against Postgres")
@@ -525,6 +529,7 @@ defmodule Embervm.OpLog.Postgres do
          conn: conn,
          owns_conn: owns_conn,
          transaction_fun: transaction_fun,
+         query_fun: query_fun,
          retention_ms: retention_ms,
          journal_horizon_ms: journal_horizon_ms,
          compact_batch_size: compact_batch_size
@@ -612,15 +617,21 @@ defmodule Embervm.OpLog.Postgres do
   end
 
   def handle_call({:read_from, seq}, _from, state) do
-    reply_connection_call(state, :read_from, fn -> do_read_from(state.conn, seq) end)
+    reply_connection_call(state, :read_from, fn ->
+      do_read_from(state.conn, seq, state.query_fun)
+    end)
   end
 
   def handle_call(:load_tasks, _from, state) do
-    reply_connection_call(state, :load_tasks, fn -> do_load_tasks(state.conn) end)
+    reply_connection_call(state, :load_tasks, fn ->
+      do_load_tasks(state.conn, state.query_fun)
+    end)
   end
 
   def handle_call(:load_sessions, _from, state) do
-    reply_connection_call(state, :load_sessions, fn -> do_load_sessions(state.conn) end)
+    reply_connection_call(state, :load_sessions, fn ->
+      do_load_sessions(state.conn, state.query_fun)
+    end)
   end
 
   def handle_call(:load_serving_instances, _from, state) do
@@ -690,7 +701,9 @@ defmodule Embervm.OpLog.Postgres do
   end
 
   def handle_call(:compacted_through, _from, state) do
-    reply_connection_call(state, :compacted_through, fn -> {:ok, read_marker(state.conn)} end)
+    reply_connection_call(state, :compacted_through, fn ->
+      read_marker(state.conn, state.query_fun)
+    end)
   end
 
   def handle_call({:evict_task, task_id}, _from, state) do
@@ -708,6 +721,9 @@ defmodule Embervm.OpLog.Postgres do
       connection_unavailable(operation, error)
 
     error in Postgrex.Error ->
+      # Defence in depth: every query in this module uses non-raising
+      # Postgrex.query/3, but preserve connection-loss handling if a future
+      # driver path raises instead of returning an error tuple.
       if postgres_connection_loss?(error) do
         connection_unavailable(operation, error)
       else
@@ -737,8 +753,6 @@ defmodule Embervm.OpLog.Postgres do
   end
 
   defp normalize_connection_result(_operation, result), do: result
-
-  defp postgres_connection_loss?(%Postgrex.Error{postgres: nil}), do: true
 
   defp postgres_connection_loss?(%Postgrex.Error{postgres: %{code: code}})
        when code in @connection_loss_codes,
@@ -2002,20 +2016,20 @@ defmodule Embervm.OpLog.Postgres do
 
   # -- reads -----------------------------------------------------------------
 
-  defp do_read_from(conn, seq) do
-    marker = read_marker(conn)
+  defp do_read_from(conn, seq, query_fun) do
+    with {:ok, marker} <- read_marker(conn, query_fun) do
+      if seq < marker do
+        {:error, {:compacted, marker}}
+      else
+        sql = """
+        SELECT seq, ts, tenant, principal, workload, task_id, session_id, serving_instance_id, stateful_instance_id, group_instance_id, kind, payload_blob
+        FROM ops WHERE seq > $1 ORDER BY seq ASC
+        """
 
-    if seq < marker do
-      {:error, {:compacted, marker}}
-    else
-      sql = """
-      SELECT seq, ts, tenant, principal, workload, task_id, session_id, serving_instance_id, stateful_instance_id, group_instance_id, kind, payload_blob
-      FROM ops WHERE seq > $1 ORDER BY seq ASC
-      """
-
-      case Postgrex.query(conn, sql, [seq]) do
-        {:ok, %Postgrex.Result{rows: rows}} -> {:ok, Enum.map(rows, &row_to_op/1)}
-        {:error, reason} -> {:error, reason}
+        case query_fun.(conn, sql, [seq]) do
+          {:ok, %Postgrex.Result{rows: rows}} -> {:ok, Enum.map(rows, &row_to_op/1)}
+          {:error, reason} -> {:error, reason}
+        end
       end
     end
   end
@@ -2050,13 +2064,13 @@ defmodule Embervm.OpLog.Postgres do
     }
   end
 
-  defp do_load_tasks(conn) do
+  defp do_load_tasks(conn, query_fun) do
     sql = """
     SELECT task_id, tenant, principal, workload, state, attempt, idempotency_key, submitted_at, updated_at, expires_at
     FROM tasks
     """
 
-    case Postgrex.query(conn, sql, []) do
+    case query_fun.(conn, sql, []) do
       {:ok, %Postgrex.Result{rows: rows}} -> {:ok, Enum.map(rows, &row_to_task/1)}
       {:error, reason} -> {:error, reason}
     end
@@ -2088,7 +2102,7 @@ defmodule Embervm.OpLog.Postgres do
     }
   end
 
-  defp do_load_sessions(conn) do
+  defp do_load_sessions(conn, query_fun) do
     sql = """
     SELECT session_id, tenant, principal, workload, state, node_id, volume_node_id,
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
@@ -2097,7 +2111,7 @@ defmodule Embervm.OpLog.Postgres do
     FROM sessions
     """
 
-    case Postgrex.query(conn, sql, []) do
+    case query_fun.(conn, sql, []) do
       {:ok, %Postgrex.Result{rows: rows}} -> {:ok, Enum.map(rows, &row_to_session/1)}
       {:error, reason} -> {:error, reason}
     end
@@ -2552,7 +2566,8 @@ defmodule Embervm.OpLog.Postgres do
            delete_terminal_stateful_instances(conn, now_ms, state.retention_ms, batch),
          {:ok, group_instances_compacted} <-
            delete_terminal_group_instances(conn, now_ms, state.retention_ms, batch),
-         {:ok, ops_compacted, marker} <- compact_ops(conn, now_ms, state.journal_horizon_ms, batch) do
+         {:ok, ops_compacted, marker} <-
+           compact_ops(conn, now_ms, state.journal_horizon_ms, batch, state.query_fun) do
       done =
         results_deleted < batch and tasks_compacted < batch and sessions_compacted < batch and
           serving_instances_compacted < batch and stateful_instances_compacted < batch and
@@ -2661,11 +2676,11 @@ defmodule Embervm.OpLog.Postgres do
     exec_changes(conn, sql, [cutoff, batch] ++ @terminal_states)
   end
 
-  defp compact_ops(conn, now_ms, journal_horizon_ms, batch) do
+  defp compact_ops(conn, now_ms, journal_horizon_ms, batch, query_fun) do
     cutoff = now_ms - journal_horizon_ms
-    current = read_marker(conn)
 
-    with {:ok, blocker} <- blocker_seq(conn, cutoff),
+    with {:ok, current} <- read_marker(conn, query_fun),
+         {:ok, blocker} <- blocker_seq(conn, cutoff),
          {:ok, candidate} <- marker_candidate(conn, blocker) do
       new_marker = max(current, candidate)
 
@@ -2740,11 +2755,11 @@ defmodule Embervm.OpLog.Postgres do
     exec_changes(conn, sql, [marker, batch])
   end
 
-  defp read_marker(conn) do
-    case Postgrex.query(conn, "SELECT value FROM meta WHERE key = $1", [@marker_key]) do
-      {:ok, %Postgrex.Result{rows: [[value]]}} -> value
-      {:ok, %Postgrex.Result{rows: []}} -> 0
-      {:error, _} -> 0
+  defp read_marker(conn, query_fun) do
+    case query_fun.(conn, "SELECT value FROM meta WHERE key = $1", [@marker_key]) do
+      {:ok, %Postgrex.Result{rows: [[value]]}} -> {:ok, value}
+      {:ok, %Postgrex.Result{rows: []}} -> {:ok, 0}
+      {:error, reason} -> {:error, reason}
     end
   end
 

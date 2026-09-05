@@ -59,11 +59,11 @@ defmodule Embervm.OpLog.PostgresTest do
     assert Postgres.db_size(:no_such_server) == {:error, :not_supported}
   end
 
-  test "client wrappers return unavailable when the server is not running" do
+  test "client wrappers propagate :noproc when the server is not running" do
     op = %Op{kind: :denied, tenant: "t1", ts: 1, payload: %{}}
 
-    assert Postgres.append(:op_log_not_running, op) == {:error, :unavailable}
-    assert Postgres.load_tasks(:op_log_not_running) == {:error, :unavailable}
+    assert {:noproc, _} = catch_exit(Postgres.append(:op_log_not_running, op))
+    assert {:noproc, _} = catch_exit(Postgres.load_tasks(:op_log_not_running))
   end
 
   test "a connection error from the transaction leaves the op-log alive" do
@@ -86,7 +86,15 @@ defmodule Embervm.OpLog.PostgresTest do
 
   test "a Postgrex connection-loss error leaves the op-log alive" do
     transaction_fun = fn _connection, _fun ->
-      raise Postgrex.Error, message: "tcp recv: closed"
+      raise %Postgrex.Error{
+        message: "tcp recv: closed",
+        postgres: %{
+          code: :connection_failure,
+          pg_code: "08006",
+          severity: "ERROR",
+          message: "tcp recv: closed"
+        }
+      }
     end
 
     {:ok, server} =
@@ -99,6 +107,79 @@ defmodule Embervm.OpLog.PostgresTest do
     op = %Op{kind: :denied, tenant: "t1", ts: 1, payload: %{}}
 
     assert Postgres.append(server, op) == {:error, :unavailable}
+    assert Process.alive?(server)
+  end
+
+  test "read handlers classify connection errors without stopping the op-log" do
+    {:ok, tasks_server} =
+      Postgres.start_link(
+        name: nil,
+        connection: self(),
+        query_fun: fn _connection, _sql, _params ->
+          {:error, %DBConnection.ConnectionError{message: "checkout timed out"}}
+        end
+      )
+
+    {:ok, sessions_server} =
+      Postgres.start_link(
+        name: nil,
+        connection: self(),
+        query_fun: fn _connection, _sql, _params ->
+          raise DBConnection.ConnectionError, message: "socket closed"
+        end
+      )
+
+    assert Postgres.load_tasks(tasks_server) == {:error, :unavailable}
+    assert Postgres.load_sessions(sessions_server) == {:error, :unavailable}
+    assert Process.alive?(tasks_server)
+    assert Process.alive?(sessions_server)
+  end
+
+  test "a returned client-side Postgrex error is not classified as unavailable" do
+    error = %Postgrex.Error{message: "parameter encode failed", postgres: nil}
+
+    {:ok, server} =
+      Postgres.start_link(
+        name: nil,
+        connection: self(),
+        query_fun: fn _connection, _sql, _params -> {:error, error} end
+      )
+
+    assert Postgres.load_tasks(server) == {:error, error}
+    assert Process.alive?(server)
+  end
+
+  test "a raised non-connection Postgrex error is reraised" do
+    transaction_fun = fn _connection, _fun ->
+      raise %Postgrex.Error{message: "parameter encode failed", postgres: nil}
+    end
+
+    {:ok, server} =
+      GenServer.start(Postgres,
+        name: nil,
+        connection: self(),
+        transaction_fun: transaction_fun
+      )
+
+    monitor = Process.monitor(server)
+    op = %Op{kind: :denied, tenant: "t1", ts: 1, payload: %{}}
+
+    assert catch_exit(Postgres.append(server, op))
+    assert_receive {:DOWN, ^monitor, :process, ^server, {%Postgrex.Error{}, _stacktrace}}
+  end
+
+  test "marker readers propagate query failures" do
+    error = %Postgrex.Error{message: "invalid marker parameter", postgres: nil}
+
+    {:ok, server} =
+      Postgres.start_link(
+        name: nil,
+        connection: self(),
+        query_fun: fn _connection, _sql, _params -> {:error, error} end
+      )
+
+    assert Postgres.compacted_through(server) == {:error, error}
+    assert Postgres.read_from(server, 0) == {:error, error}
     assert Process.alive?(server)
   end
 
