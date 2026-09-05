@@ -62,6 +62,11 @@ defmodule Embervm.SessionStore do
   # capacity until the node confirms teardown and the terminal destroyed op fires.
   @live_states [:creating, :running, :banking, :parking, :relighting, :destroying, :parked]
 
+  # The Session process must outlive the Postgres adapter's 20-second append
+  # budget so an invoke-start stamp can return a retryable unavailable result
+  # without taking down the live session process.
+  @record_invoke_started_timeout_ms 25_000
+
   # -- Client API ------------------------------------------------------------
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -159,7 +164,11 @@ defmodule Embervm.SessionStore do
   @spec record_invoke_started(GenServer.server(), String.t()) ::
           {:ok, map()} | {:error, term()}
   def record_invoke_started(store \\ __MODULE__, session_id) do
-    GenServer.call(store, {:record_invoke_started, session_id})
+    GenServer.call(
+      store,
+      {:record_invoke_started, session_id},
+      @record_invoke_started_timeout_ms
+    )
   end
 
   @doc "The session's hot-set row, or `:error` if unknown."

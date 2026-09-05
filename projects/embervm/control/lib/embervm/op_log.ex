@@ -281,7 +281,11 @@ defmodule Embervm.OpLog do
   def safe_server_call(server, request, timeout \\ 5_000) do
     GenServer.call(server, request, timeout)
   catch
-    :exit, reason ->
+    :exit, :timeout ->
+      Logger.warning("embervm op-log call timed out")
+      {:error, :unavailable}
+
+    :exit, {:timeout, _details} = reason ->
       Logger.warning("embervm op-log call unavailable", reason: inspect(reason))
       {:error, :unavailable}
   end

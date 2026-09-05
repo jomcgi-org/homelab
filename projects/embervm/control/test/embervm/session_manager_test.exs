@@ -47,6 +47,15 @@ defmodule Embervm.SessionManagerTest do
     end
   end
 
+  defmodule UnavailableInvokeOpLog do
+    def load_sessions(server), do: Embervm.OpLog.SQLite.load_sessions(server)
+
+    def append(_server, %Embervm.OpLog.Op{kind: :session_invoke_started}),
+      do: {:error, :unavailable}
+
+    def append(server, op), do: Embervm.OpLog.SQLite.append(server, op)
+  end
+
   defmodule CapabilityS3 do
     def get(agent, _key) do
       Agent.get_and_update(agent, fn state ->
@@ -99,7 +108,13 @@ defmodule Embervm.SessionManagerTest do
 
     {:ok, store} =
       SessionStore.start_link(
-        [name: nil, op_log: op_log, async_writer: writer, async_lifecycle_writes: async] ++
+        [
+          name: nil,
+          op_log: op_log,
+          op_log_mod: Keyword.get(opts, :store_op_log_mod, SQLite),
+          async_writer: writer,
+          async_lifecycle_writes: async
+        ] ++
           store_clock_opts
       )
 
@@ -947,6 +962,22 @@ defmodule Embervm.SessionManagerTest do
     # The invoke was recorded (last_invoke_at set, usage charged).
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert is_integer(session.last_invoke_at)
+  end
+
+  test "invoke-start op-log unavailability leaves the session in its prior live state" do
+    ctx = start_stack(store_op_log_mod: UnavailableInvokeOpLog)
+    put_session_workload(ctx, "wl-invoke-unavailable")
+
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-invoke-unavailable", "p1")
+    [{session_pid, _}] = Registry.lookup(ctx.registry, created.session_id)
+
+    assert SessionManager.invoke(ctx.mgr, created.session_id, %{body: "not-delivered"}) ==
+             {:error, {:invoke_start_not_recorded, :unavailable}}
+
+    assert Process.alive?(session_pid)
+    assert [{^session_pid, _}] = Registry.lookup(ctx.registry, created.session_id)
+    assert {:ok, %{state: :running, invoke_started_at: nil, last_invoke_at: nil}} =
+             SessionStore.get(ctx.store, created.session_id)
   end
 
   test "invoke on an unknown session is :not_found" do
