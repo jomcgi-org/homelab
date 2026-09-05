@@ -426,6 +426,14 @@ def test_noded_max_live_vms_accepts_per_class_override(tmp_path: Path):
           memory: 4Gi
         limits:
           memory: 4Gi
+    - name: open
+      maxLiveVMs: 0
+      resources:
+        requests:
+          cpu: "1"
+          memory: 8Gi
+        limits:
+          memory: 8Gi
   nodeFloors:
     - node: test-node
       class: small
@@ -441,9 +449,15 @@ def test_noded_max_live_vms_accepts_per_class_override(tmp_path: Path):
         for kind, name, doc in _docs(override_render)
         if kind == "Deployment" and "app.kubernetes.io/component: noded-brick" in doc
     }
-    assert len(override_bricks) == 3
+    assert len(override_bricks) == 4
     for name, deployment in override_bricks.items():
-        expected = "3" if "-brick-small" in name else fleet_value
+        if "-brick-small" in name:
+            expected = "3"
+        elif "-brick-open" in name:
+            # An explicit 0 must survive: noded reads it as no node-side ceiling.
+            expected = "0"
+        else:
+            expected = fleet_value
         assert max_live_vms(deployment) == expected
 
     for rendered in (default_render, override_render):
