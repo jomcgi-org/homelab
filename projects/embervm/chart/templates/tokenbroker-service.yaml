@@ -9,4 +9,7 @@ spec:
   selector: {{- include "embervm.tokenBroker.selectorLabels" . | nindent 4 }}
   ports:
     - { name: http, port: 8080, targetPort: http }
+    {{- if .Values.tokenBroker.spiffe.enabled }}
+    - { name: https, port: {{ .Values.tokenBroker.spiffe.tlsPort }}, targetPort: https }
+    {{- end }}
 {{- end }}

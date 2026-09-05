@@ -136,6 +136,23 @@ py_test(
 )
 
 py_test(
+    name = "chart_tokenbroker_spiffe_test",
+    srcs = ["chart_tokenbroker_spiffe_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = ["@pip//pytest"],
+)
+
+py_test(
     name = "chart_sync_wave_test",
     srcs = ["chart_sync_wave_test.py"],
     data = [

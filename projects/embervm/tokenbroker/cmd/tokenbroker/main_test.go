@@ -107,6 +107,7 @@ func newTestServer(st *fakeStore, adapter *fakeAdapter) *server {
 		startWaitTimeout: loginStartWaitTimeout, quotaStore: quota.NewStore(),
 		quotaProviders:     map[string]struct{}{"codex": {}, "claude": {}},
 		quotaProviderOrder: []string{"codex", "claude"},
+		tokenRequests:      newTokenRequestsCounter(),
 	}
 }
 
@@ -114,7 +115,7 @@ func requestGrant(t *testing.T, s *server, method, path string) *httptest.Respon
 	t.Helper()
 	req := httptest.NewRequest(method, path, nil)
 	recorder := httptest.NewRecorder()
-	s.grants(recorder, req)
+	s.grantsHandler(false, false).ServeHTTP(recorder, req)
 	return recorder
 }
 
@@ -146,7 +147,7 @@ func requestGrantAsync(s *server, ctx context.Context) <-chan *httptest.Response
 	go func() {
 		req := httptest.NewRequest(http.MethodPost, "/grants/codex-cluster/login/start", nil).WithContext(ctx)
 		recorder := httptest.NewRecorder()
-		s.grants(recorder, req)
+		s.grantsHandler(false, false).ServeHTTP(recorder, req)
 		result <- recorder
 	}()
 	return result
@@ -243,7 +244,10 @@ func TestQuotaGetListsAllowedProvidersIncludingUnobserved(t *testing.T) {
 
 func TestConfiguredQuotaProvidersOverride(t *testing.T) {
 	t.Setenv("TOKENBROKER_QUOTA_PROVIDERS", "claude")
-	providers := configuredQuotaProviders(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	providers, err := configuredQuotaProviders()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(providers) != 1 || providers[0] != "claude" {
 		t.Fatalf("providers = %v", providers)
 	}

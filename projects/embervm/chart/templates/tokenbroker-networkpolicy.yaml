@@ -21,6 +21,18 @@ spec:
             k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
             app.kubernetes.io/component: noded-brick
       toPorts: [{ ports: [{ port: "8080", protocol: TCP }] }]
+    {{- if .Values.tokenBroker.spiffe.enabled }}
+    # The whole policy is not rendered on the GKE hub because tokenBroker.networkPolicy.enabled
+    # is false in deploy/values-gke.yaml. This row is for Cilium-capable clusters; on the hub, mTLS client authorization is the control.
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
+            app.kubernetes.io/component: noded
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
+            app.kubernetes.io/component: noded-brick
+      toPorts: [{ ports: [{ port: {{ .Values.tokenBroker.spiffe.tlsPort | quote }}, protocol: TCP }] }]
+    {{- end }}
     # Kubelet liveness/readiness probes originate from the node host. Once
     # ingress is default-deny they must be allowed or the pod never goes Ready.
     - fromEntities:

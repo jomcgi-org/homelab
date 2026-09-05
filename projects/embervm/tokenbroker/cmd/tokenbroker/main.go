@@ -22,6 +22,10 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/store"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
+	"github.com/spiffe/go-spiffe/v2/svid/x509svid"
+	"github.com/spiffe/go-spiffe/v2/workloadapi"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -40,6 +44,11 @@ type forceRefreshState struct {
 	mu         sync.Mutex
 	lastForced time.Time
 }
+type listenerConfig struct {
+	listenAddr      string
+	tlsListenAddr   string
+	spiffeClientIDs []spiffeid.ID
+}
 type server struct {
 	broker             *broker.Broker
 	store              store.Store
@@ -52,6 +61,7 @@ type server struct {
 	quotaStore         *quota.Store
 	quotaProviders     map[string]struct{}
 	quotaProviderOrder []string
+	tokenRequests      *prometheus.CounterVec
 }
 
 const (
@@ -60,22 +70,41 @@ const (
 	// projects/monolith/frontend/src/routes/private/agents/codex-login/start/+server.js.
 	// Do not raise either timeout in isolation. Preserve headroom for monolith latency.
 	loginStartWaitTimeout = 5 * time.Second
+	// x509SourceTimeout is coupled to the chart's liveness probe, which kills the
+	// pod at roughly 70 seconds (initial delay 10, period 30, three failures).
+	// Raising this past that turns a clean fail-closed exit into a probe kill.
+	x509SourceTimeout = 60 * time.Second
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	quotaProviders := configuredQuotaProviders(logger)
+	if err := run(logger); err != nil {
+		logger.Error("token broker stopped", "err", err)
+		os.Exit(1)
+	}
+}
+
+func run(logger *slog.Logger) error {
+	listeners, err := configuredListeners()
+	if err != nil {
+		return err
+	}
+	quotaProviders, err := configuredQuotaProviders()
+	if err != nil {
+		return fmt.Errorf("invalid TOKENBROKER_QUOTA_PROVIDERS: %w", err)
+	}
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
-		logger.Error("in-cluster config failed", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("in-cluster config failed: %w", err)
 	}
 	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		logger.Error("kubernetes client failed", "err", err)
-		os.Exit(1)
+		return fmt.Errorf("kubernetes client failed: %w", err)
 	}
-	configs := configuredGrants(logger)
+	configs, err := configuredGrants()
+	if err != nil {
+		return fmt.Errorf("invalid TOKENBROKER_GRANTS: %w", err)
+	}
 	namespace := env("KUBERNETES_NAMESPACE", "embervm")
 	st := &store.SecretStore{Client: client, Namespace: namespace}
 	adapters := map[string]provider.Adapter{"codex-chatgpt": &codexchatgpt.Adapter{}}
@@ -99,7 +128,8 @@ func main() {
 	m := metrics.New()
 	m.Register(prometheus.DefaultRegisterer)
 	quotaStore := quota.NewStore()
-	prometheus.MustRegister(metrics.NewQuotaCollector(quotaStore, quotaProviders))
+	tokenRequests := newTokenRequestsCounter()
+	prometheus.MustRegister(metrics.NewQuotaCollector(quotaStore, quotaProviders), tokenRequests)
 	quotaProviderSet := make(map[string]struct{}, len(quotaProviders))
 	for _, provider := range quotaProviders {
 		quotaProviderSet[provider] = struct{}{}
@@ -108,39 +138,119 @@ func main() {
 		store: st, adapters: adapters, configs: configMap, logger: logger,
 		startWaitTimeout: loginStartWaitTimeout, quotaStore: quotaStore,
 		quotaProviders: quotaProviderSet, quotaProviderOrder: quotaProviders,
+		tokenRequests: tokenRequests,
 	}
 	s.broker = broker.New(st, adapters, minters, brokerConfigs, logger, m)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", s.health)
-	mux.Handle("/metrics", promhttp.Handler())
-	mux.HandleFunc("/grants/", s.grants)
-	mux.HandleFunc("/quota", s.quota)
-	mux.HandleFunc("/quota/", s.quota)
-	addr := env("BROKER_LISTEN_ADDR", ":8080")
-	logger.Info("token broker listening", "addr", addr)
-	if err = http.ListenAndServe(addr, mux); err != nil {
-		logger.Error("server stopped", "err", err)
-		os.Exit(1)
+	plaintextMux := http.NewServeMux()
+	plaintextMux.HandleFunc("/healthz", s.health)
+	plaintextMux.Handle("/metrics", promhttp.Handler())
+	plaintextMux.Handle("/grants/", s.grantsHandler(false, listeners.tlsListenAddr != ""))
+	plaintextMux.HandleFunc("/quota", s.quota)
+	plaintextMux.HandleFunc("/quota/", s.quota)
+	plaintextServer := &http.Server{
+		Addr:              listeners.listenAddr,
+		Handler:           plaintextMux,
+		ReadHeaderTimeout: 5 * time.Second,
 	}
+	if listeners.tlsListenAddr == "" {
+		logger.Info("token broker listening", "addr", listeners.listenAddr)
+		return plaintextServer.ListenAndServe()
+	}
+
+	serverErrors := make(chan error, 2)
+	go func() {
+		logger.Info("token broker plaintext listener started", "addr", listeners.listenAddr)
+		serverErrors <- fmt.Errorf("plaintext listener stopped: %w", plaintextServer.ListenAndServe())
+	}()
+
+	source, err := waitForX509Source(x509SourceTimeout, newWorkloadX509Source)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+
+	mtlsMux := http.NewServeMux()
+	mtlsMux.Handle("/grants/", s.grantsHandler(true, true))
+	mtlsMux.HandleFunc("/quota", s.quota)
+	mtlsMux.HandleFunc("/quota/", s.quota)
+	mtlsServer := &http.Server{
+		Addr:              listeners.tlsListenAddr,
+		Handler:           mtlsMux,
+		ReadHeaderTimeout: 5 * time.Second,
+		TLSConfig: tlsconfig.MTLSServerConfig(
+			source,
+			source,
+			tlsconfig.AuthorizeOneOf(listeners.spiffeClientIDs...),
+		),
+	}
+
+	go func() {
+		logger.Info("token broker SPIFFE mTLS listener started", "addr", listeners.tlsListenAddr)
+		serverErrors <- fmt.Errorf("SPIFFE mTLS listener stopped: %w", mtlsServer.ListenAndServeTLS("", ""))
+	}()
+	return <-serverErrors
 }
 
-func configuredGrants(logger *slog.Logger) []grantConfig {
+type x509SourceFactory func(context.Context) (*workloadapi.X509Source, error)
+
+func newWorkloadX509Source(ctx context.Context) (*workloadapi.X509Source, error) {
+	return workloadapi.NewX509Source(ctx)
+}
+
+func waitForX509Source(timeout time.Duration, create x509SourceFactory) (*workloadapi.X509Source, error) {
+	sourceContext, cancelSource := context.WithTimeout(context.Background(), timeout)
+	defer cancelSource()
+	source, err := create(sourceContext)
+	if err != nil {
+		return nil, fmt.Errorf("SPIFFE X509 source did not deliver an SVID within %s: %w", timeout, err)
+	}
+	if _, err := source.GetX509SVID(); err != nil {
+		source.Close()
+		return nil, fmt.Errorf("SPIFFE X509 source has no SVID: %w", err)
+	}
+	return source, nil
+}
+
+func configuredListeners() (listenerConfig, error) {
+	config := listenerConfig{
+		listenAddr:    env("BROKER_LISTEN_ADDR", ":8080"),
+		tlsListenAddr: os.Getenv("BROKER_TLS_LISTEN_ADDR"),
+	}
+	if config.tlsListenAddr == "" {
+		return config, nil
+	}
+	rawClientIDs := strings.TrimSpace(os.Getenv("BROKER_SPIFFE_CLIENT_IDS"))
+	if rawClientIDs == "" {
+		return listenerConfig{}, errors.New("BROKER_SPIFFE_CLIENT_IDS is required when BROKER_TLS_LISTEN_ADDR is set")
+	}
+	for _, rawClientID := range strings.Split(rawClientIDs, ",") {
+		clientID, err := spiffeid.FromString(strings.TrimSpace(rawClientID))
+		if err != nil {
+			return listenerConfig{}, fmt.Errorf("invalid BROKER_SPIFFE_CLIENT_IDS entry %q: %w", rawClientID, err)
+		}
+		config.spiffeClientIDs = append(config.spiffeClientIDs, clientID)
+	}
+	return config, nil
+}
+
+func configuredGrants() ([]grantConfig, error) {
 	raw := env("TOKENBROKER_GRANTS", `[{"name":"codex-cluster","provider":"codex-chatgpt"}]`)
 	var grants []grantConfig
-	if err := json.Unmarshal([]byte(raw), &grants); err != nil || len(grants) == 0 {
-		logger.Error("invalid TOKENBROKER_GRANTS", "err", err)
-		os.Exit(1)
+	if err := json.Unmarshal([]byte(raw), &grants); err != nil {
+		return nil, err
 	}
-	return grants
+	if len(grants) == 0 {
+		return nil, errors.New("at least one grant is required")
+	}
+	return grants, nil
 }
 
-func configuredQuotaProviders(logger *slog.Logger) []string {
+func configuredQuotaProviders() ([]string, error) {
 	providers, err := parseQuotaProviders(env("TOKENBROKER_QUOTA_PROVIDERS", "codex,claude"))
 	if err != nil {
-		logger.Error("invalid TOKENBROKER_QUOTA_PROVIDERS", "err", err)
-		os.Exit(1)
+		return nil, err
 	}
-	return providers
+	return providers, nil
 }
 
 func parseQuotaProviders(raw string) ([]string, error) {
@@ -235,9 +345,26 @@ func (s *server) acceptQuota(provider string, w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *server) grants(w http.ResponseWriter, r *http.Request) {
+func (s *server) grantsHandler(mtlsListener, mtlsEnabled bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.grants(w, r, mtlsListener, mtlsEnabled)
+	}
+}
+
+func (s *server) grants(w http.ResponseWriter, r *http.Request, mtlsListener, mtlsEnabled bool) {
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/grants/"), "/"), "/")
-	valid := (len(parts) == 2 && parts[1] == "token" && r.Method == http.MethodGet) ||
+	tokenRequest := len(parts) == 2 && parts[1] == "token" && r.Method == http.MethodGet
+	if tokenRequest && mtlsListener {
+		callerID := ""
+		if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+			if id, err := x509svid.IDFromCert(r.TLS.PeerCertificates[0]); err == nil {
+				callerID = id.String()
+			}
+		}
+		s.logger.Info("tokenbroker SPIFFE token request", "grant", parts[0], "spiffe_id", callerID)
+		s.tokenRequests.WithLabelValues("mtls", "served").Inc()
+	}
+	valid := tokenRequest ||
 		(len(parts) == 2 && parts[1] == "refresh" && r.Method == http.MethodPost) ||
 		(len(parts) == 3 && parts[1] == "login" && ((parts[2] == "start" && r.Method == http.MethodPost) || (parts[2] == "status" && r.Method == http.MethodGet)))
 	if !valid {
@@ -246,6 +373,14 @@ func (s *server) grants(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, ok := s.configs[parts[0]]; !ok {
 		http.NotFound(w, r)
+		return
+	}
+	if parts[1] == "token" && mtlsEnabled && !mtlsListener {
+		s.logger.Info("tokenbroker plaintext token request rejected", "path", r.URL.Path, "remote_addr", r.RemoteAddr)
+		s.tokenRequests.WithLabelValues("plaintext", "rejected_plaintext").Inc()
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("token endpoint requires mTLS on the SPIFFE port"))
 		return
 	}
 	switch {
@@ -258,6 +393,13 @@ func (s *server) grants(w http.ResponseWriter, r *http.Request) {
 	case parts[2] == "status":
 		s.loginStatus(parts[0], w, r)
 	}
+}
+
+func newTokenRequestsCounter() *prometheus.CounterVec {
+	return prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "tokenbroker_token_requests_total",
+		Help: "Token endpoint requests by listener and authorization outcome.",
+	}, []string{"listener", "outcome"})
 }
 
 func (s *server) forceRefresh(name string, w http.ResponseWriter, r *http.Request) {
