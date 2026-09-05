@@ -1,4 +1,5 @@
 from framework import Module as _Module
+from framework import register_leader_tasks
 
 
 def register(app) -> None:
@@ -19,11 +20,16 @@ async def _leader_start(app):
     from agent_sessions.mcp import start_pending_message_sweep
     from agent_sessions.titles import start_title_refresh_loop
 
-    return (
-        start_pending_message_sweep()
-        + start_title_refresh_loop()
-        + start_kg_feed_loop()
-    )
+    tasks = []
+    for start in (
+        start_pending_message_sweep,
+        start_title_refresh_loop,
+        start_kg_feed_loop,
+    ):
+        started = start()
+        register_leader_tasks(app, started)
+        tasks.extend(started)
+    return tasks
 
 
 MODULE = _Module(

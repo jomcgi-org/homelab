@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import platform
+import random
 from collections.abc import Awaitable, Callable
 
 from sqlmodel import Session, text
@@ -30,6 +31,11 @@ LEASE_KEY = "singletons"
 RENEW_INTERVAL = 2.0  # seconds between heartbeats
 LEASE_TTL = 5.0  # seconds of missed heartbeats before the lease can be stolen
 MAX_CONSECUTIVE_ACQUIRE_FAILURES = 3
+# Acquire-hook failures use a separate jittered exponential retry schedule so
+# expensive singleton startup failures cannot churn at the heartbeat cadence.
+ACQUIRE_BACKOFF_INITIAL = 5.0
+ACQUIRE_BACKOFF_MAX = 300.0
+ACQUIRE_BACKOFF_JITTER = 0.2
 
 # platform.node() is the pod name under Kubernetes (matches scheduler._HOSTNAME).
 HOLDER_ID = platform.node()
@@ -99,6 +105,21 @@ class LeaderElector:
     def acquire_failures_exceeded(self) -> bool:
         return self._consecutive_acquire_failures >= MAX_CONSECUTIVE_ACQUIRE_FAILURES
 
+    def _acquire_backoff(self) -> float:
+        exponent = max(0, self._consecutive_acquire_failures - 1)
+        base = ACQUIRE_BACKOFF_INITIAL
+        if base <= 0:
+            return 0
+        for _ in range(exponent):
+            base = min(base * 2, ACQUIRE_BACKOFF_MAX)
+            if base >= ACQUIRE_BACKOFF_MAX:
+                break
+        jittered = base * random.uniform(
+            1.0,
+            1.0 + ACQUIRE_BACKOFF_JITTER,
+        )
+        return min(jittered, ACQUIRE_BACKOFF_MAX)
+
     async def run(
         self,
         on_acquire: Callable[[], Awaitable[None]],
@@ -112,16 +133,23 @@ class LeaderElector:
         logger.info("leader election started as %s", HOLDER_ID)
         try:
             while True:
+                sleep_interval = RENEW_INTERVAL
                 try:
                     leader = await asyncio.to_thread(_acquire_or_renew, self._lease_key)
                 except Exception:
                     logger.exception("leader lease check failed; treating as follower")
                     leader = False
 
+                if not leader:
+                    self._consecutive_acquire_failures = 0
+
                 if leader and not self._is_leader:
                     self._is_leader = True
                     logger.info("became leader (%s)", HOLDER_ID)
                     try:
+                        # A hung hook still has no timeout and leaves the lease
+                        # unrenewed while it blocks. Adding a timeout is out of
+                        # scope here.
                         await on_acquire()
                     except Exception:
                         self._consecutive_acquire_failures += 1
@@ -151,6 +179,11 @@ class LeaderElector:
                             logger.exception(
                                 "leader lease release failed after acquire failure"
                             )
+                        sleep_interval = self._acquire_backoff()
+                        logger.info(
+                            "retrying leader acquisition in %.1f seconds",
+                            sleep_interval,
+                        )
                     else:
                         self._consecutive_acquire_failures = 0
                 elif not leader and self._is_leader:
@@ -158,9 +191,12 @@ class LeaderElector:
                     logger.warning(
                         "lost leadership (%s); stopping singletons", HOLDER_ID
                     )
-                    await on_resign()
+                    try:
+                        await on_resign()
+                    except Exception:
+                        logger.exception("leader resign hook failed after lease loss")
 
-                await asyncio.sleep(RENEW_INTERVAL)
+                await asyncio.sleep(sleep_interval)
         except asyncio.CancelledError:
             if self._is_leader:
                 try:

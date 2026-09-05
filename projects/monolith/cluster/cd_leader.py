@@ -15,7 +15,7 @@ import os
 
 from cluster.cd_health import cd_health
 from core.platform_probe import write_probe
-from framework import log_task_exception
+from framework import log_task_exception, register_leader_tasks
 
 logger = logging.getLogger(__name__)
 
@@ -50,4 +50,5 @@ async def _loop() -> None:
 async def leader_start(app) -> list[asyncio.Task]:
     task = asyncio.create_task(_loop(), name="cd-probe")
     task.add_done_callback(log_task_exception)
+    register_leader_tasks(app, [task])
     return [task]

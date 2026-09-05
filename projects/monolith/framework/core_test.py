@@ -11,7 +11,7 @@ import asyncio
 import dataclasses
 import json
 import logging
-from types import SimpleNamespace
+from unittest import mock
 
 import core.leadership as leadership
 import framework.core as framework_core
@@ -30,6 +30,7 @@ from framework import (
     build_app,
     build_private_lifespan,
     domain_profile,
+    register_leader_tasks,
     start_leader_singletons,
     stop_leader_singletons,
 )
@@ -448,17 +449,37 @@ def test_public_tier_health_crashing_component_reports_not_ok_not_500(
     )
 
 
-def test_leader_singleton_failure_is_fatal_and_follower_is_ok(_sqlite_engine):
+def test_leader_singleton_failure_is_fatal_and_follower_is_ok(
+    _sqlite_engine, monkeypatch
+):
     async def leader_start(app: FastAPI) -> list[asyncio.Task]:
         return []
 
+    monkeypatch.setenv("SWARM_ENABLED", "true")
     module = Module(name="swarm", leader_start=leader_start)
     app = FastAPI()
     framework_core._add_health(app, _PLAIN_PRIVATE, [module])
-    app.state.elector = SimpleNamespace(
-        is_leader=True,
-        acquire_failures_exceeded=False,
-    )
+    elector = leadership.LeaderElector()
+    app.state.elector = elector
+    elector._is_leader = True
+    elector._consecutive_acquire_failures = leadership.MAX_CONSECUTIVE_ACQUIRE_FAILURES
+    response = TestClient(app).get("/api/health")
+    assert response.status_code == 503
+    assert response.json()["components"]["leader_singletons"] == {
+        "ok": False,
+        "detail": "leader acquisition failed 3 consecutive times",
+    }
+
+    elector._is_leader = False
+    response = TestClient(app).get("/api/health")
+    assert response.status_code == 200
+    assert response.json()["components"]["leader_singletons"] == {
+        "ok": True,
+        "detail": "follower",
+    }
+
+    elector._is_leader = True
+    elector._consecutive_acquire_failures = 0
     app.state.leader_singleton_failures = {"broken_domain"}
     app.state.leader_singletons_dbos_launched = True
 
@@ -488,12 +509,39 @@ def test_leader_singleton_failure_is_fatal_and_follower_is_ok(_sqlite_engine):
     }
 
     app.state.leader_singleton_failures = {"broken_domain"}
-    app.state.elector.is_leader = False
+    app.state.elector._is_leader = False
     response = TestClient(app).get("/api/health")
     assert response.status_code == 200
     assert response.json()["components"]["leader_singletons"] == {
         "ok": True,
         "detail": "follower",
+    }
+
+
+def test_leader_health_does_not_require_dbos_when_features_disabled(
+    _sqlite_engine, monkeypatch
+):
+    async def leader_start(app: FastAPI) -> list[asyncio.Task]:
+        return []
+
+    monkeypatch.setenv("SWARM_ENABLED", "false")
+    monkeypatch.setenv("DRAINER_ENABLED", "false")
+    app = FastAPI()
+    framework_core._add_health(
+        app, _PLAIN_PRIVATE, [Module(name="swarm", leader_start=leader_start)]
+    )
+    elector = leadership.LeaderElector()
+    elector._is_leader = True
+    app.state.elector = elector
+    app.state.leader_singleton_failures = set()
+    app.state.leader_singletons_dbos_launched = False
+
+    response = TestClient(app).get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json()["components"]["leader_singletons"] == {
+        "ok": True,
+        "detail": "leader singletons healthy",
     }
 
 
@@ -813,14 +861,91 @@ async def test_failing_leader_start_records_failure_and_continues():
 
 
 @pytest.mark.asyncio
-async def test_swarm_leader_start_runs_before_unrelated_modules():
+async def test_failing_leader_start_keeps_incrementally_registered_task():
+    async def failing_start(app: FastAPI) -> list[asyncio.Task]:
+        task = asyncio.create_task(asyncio.Event().wait(), name="partial-start")
+        register_leader_tasks(app, [task])
+        raise RuntimeError("boom after task creation")
+
+    module = Module(name="partial", leader_start=failing_start)
+    app = FastAPI()
+
+    await start_leader_singletons(app, [module])
+
+    assert app.state.leader_singleton_failures == {"partial"}
+    assert len(app.state.singleton_tasks) == 1
+    task = app.state.singleton_tasks[0]
+    await stop_leader_singletons(app, [module])
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_successful_reacquire_clears_failure_set_and_health(
+    _sqlite_engine, monkeypatch
+):
+    monkeypatch.setattr(leadership, "_acquire_or_renew", lambda *_a: True)
+    monkeypatch.setattr(leadership, "_release", mock.Mock())
+    monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0)
+    monkeypatch.setattr(leadership, "ACQUIRE_BACKOFF_INITIAL", 0)
+    monkeypatch.setenv("SWARM_ENABLED", "false")
+    monkeypatch.setenv("DRAINER_ENABLED", "false")
+    attempts = 0
+    reacquired = asyncio.Event()
+
+    async def leader_start(app: FastAPI) -> list[asyncio.Task]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("first startup failed")
+        reacquired.set()
+        return []
+
+    module = Module(name="singleton", leader_start=leader_start)
+    app = FastAPI()
+    framework_core._add_health(app, _PLAIN_PRIVATE, [module])
+
+    async def on_acquire() -> None:
+        await start_leader_singletons(app, [module])
+        if app.state.leader_singleton_failures:
+            raise RuntimeError("leader startup incomplete")
+
+    elector = leadership.LeaderElector()
+    app.state.elector = elector
+    task = asyncio.create_task(
+        elector.run(
+            on_acquire,
+            lambda: stop_leader_singletons(app, [module]),
+        )
+    )
+    await asyncio.wait_for(reacquired.wait(), timeout=0.5)
+    await asyncio.sleep(0)
+
+    assert elector.is_leader is True
+    assert elector.consecutive_acquire_failures == 0
+    assert app.state.leader_singleton_failures == set()
+    response = TestClient(app).get("/api/health")
+    assert response.status_code == 200
+    assert response.json()["components"]["leader_singletons"] == {
+        "ok": True,
+        "detail": "leader singletons healthy",
+    }
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_leader_priority_orders_singleton_startup():
     log: list[str] = []
-    modules = [_leader_module("other", log), _leader_module("swarm", log)]
+    first = dataclasses.replace(_leader_module("first", log), leader_priority=0)
+    modules = [_leader_module("other", log), first]
     app = FastAPI()
 
     await start_leader_singletons(app, modules)
 
-    assert log == ["swarm:start", "other:start"]
+    assert log == ["first:start", "other:start"]
     await stop_leader_singletons(app, modules)
 
 

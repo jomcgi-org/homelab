@@ -12,7 +12,7 @@ import logging
 
 from fastapi import FastAPI
 
-from framework import log_task_exception
+from framework import log_task_exception, register_leader_tasks
 
 logger = logging.getLogger("monolith.ships.leader")
 
@@ -24,6 +24,7 @@ async def leader_start(app: FastAPI) -> list[asyncio.Task]:
     app.state.ships_stop = asyncio.Event()
     ships_task = asyncio.create_task(ais_stream_loop(app.state.ships_stop))
     ships_task.add_done_callback(log_task_exception)
+    register_leader_tasks(app, [ships_task])
     logger.info("Ships AISStream ingest started")
     return [ships_task]
 

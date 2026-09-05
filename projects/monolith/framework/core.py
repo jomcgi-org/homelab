@@ -146,10 +146,11 @@ class Module:
       side-effect import of the domain's ``@mcp.tool`` module).
     - ``startup``: awaited on every replica during private lifespan startup.
     - ``leader_start`` / ``leader_stop``: leader-elected singletons; start
-      returns the background tasks it spawned so the framework can track and
-      cancel them. The hook must attach ``log_task_exception`` as a
-      done-callback on each task it creates (at ``create_task`` time, so a
-      crash before the hook returns is still logged).
+      registers each background task with ``register_leader_tasks`` as soon as
+      it is created, then returns the tasks it spawned for compatibility. The
+      hook must attach ``log_task_exception`` as a done-callback on each task
+      at creation time. Immediate registration keeps tasks cancellable if the
+      hook raises before returning.
     - ``register_health``: optional ``{name: async check}`` components folded
       into the deep ``/api/health`` response (see ``_add_health``). A check
       returns ``{"ok": bool, "detail": str}``; a crashing check is caught by
@@ -172,6 +173,7 @@ class Module:
     register_health: dict[str, HealthCheck] | None = None
     register_health_advisory: dict[str, HealthCheck] | None = None
     requires_secrets: frozenset[str] = frozenset()
+    leader_priority: int = 100
 
 
 def log_task_exception(task: "asyncio.Task[object]") -> None:
@@ -180,6 +182,17 @@ def log_task_exception(task: "asyncio.Task[object]") -> None:
         logger.error(
             "Background task %s failed", task.get_name(), exc_info=task.exception()
         )
+
+
+def register_leader_tasks(app: FastAPI, new_tasks: Sequence["asyncio.Task"]) -> None:
+    """Track leader tasks immediately so partial startup remains cancellable."""
+    tasks = getattr(app.state, "singleton_tasks", None)
+    if tasks is None:
+        tasks = []
+        app.state.singleton_tasks = tasks
+    for task in new_tasks:
+        if task not in tasks:
+            tasks.append(task)
 
 
 def _validate(profile: Profile, modules: Sequence[Module]) -> None:
@@ -228,24 +241,20 @@ async def start_leader_singletons(app: FastAPI, modules: Sequence[Module]) -> No
     ``stop_leader_singletons`` can cancel them on resign or shutdown. Tracking
     is incremental (the state list is extended after each hook) so an
     exception in one module still leaves already-started tasks cancellable and
-    does not bench later modules. Swarm runs first because it launches DBOS,
-    which is the drain lane's dependency; HTTP route registration keeps the
-    composition order supplied by the caller. Hooks attach their own
-    ``log_task_exception`` done-callbacks at ``create_task`` time, so a task
-    that crashes before its hook returns is still logged.
+    does not bench later modules. Lower ``leader_priority`` values start first;
+    HTTP route registration keeps the composition order supplied by the
+    caller. Hooks register and attach ``log_task_exception`` to tasks at
+    creation time, so a hook failure cannot orphan an untracked task.
     """
-    tasks: list[asyncio.Task] = list(getattr(app.state, "singleton_tasks", []))
-    app.state.singleton_tasks = tasks
+    app.state.singleton_tasks = list(getattr(app.state, "singleton_tasks", []))
     failures: set[str] = set()
     app.state.leader_singleton_failures = failures
-    ordered_modules = [m for m in modules if m.name == "swarm"] + [
-        m for m in modules if m.name != "swarm"
-    ]
+    ordered_modules = sorted(modules, key=lambda m: m.leader_priority)
     for m in ordered_modules:
         if m.leader_start is None:
             continue
         try:
-            tasks.extend(await m.leader_start(app))
+            register_leader_tasks(app, await m.leader_start(app))
         except Exception:
             failures.add(m.name)
             logger.exception("leader_start for module %s failed", m.name)
@@ -306,13 +315,16 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
 
     leader_modules = [m for m in modules if m.leader_start is not None]
     if profile.leader_singletons and leader_modules:
-        dbos_required = any(m.name == "swarm" for m in leader_modules)
+        dbos_required = any(
+            os.environ.get(name, "false").lower() == "true"
+            for name in ("SWARM_ENABLED", "DRAINER_ENABLED")
+        )
 
         async def leader_singletons_health() -> dict:
             elector = getattr(app.state, "elector", None)
-            if elector is not None and getattr(
-                elector, "acquire_failures_exceeded", False
-            ):
+            if elector is None or not elector.is_leader:
+                return {"ok": True, "detail": "follower"}
+            if getattr(elector, "acquire_failures_exceeded", False):
                 failures = getattr(elector, "consecutive_acquire_failures", 0)
                 return {
                     "ok": False,
@@ -320,9 +332,6 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
                         f"leader acquisition failed {failures} consecutive times"
                     ),
                 }
-            if elector is None or not elector.is_leader:
-                return {"ok": True, "detail": "follower"}
-
             failures = sorted(getattr(app.state, "leader_singleton_failures", set()))
             if failures:
                 return {
