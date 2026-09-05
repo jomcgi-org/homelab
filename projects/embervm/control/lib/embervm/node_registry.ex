@@ -193,6 +193,10 @@ defmodule Embervm.NodeRegistry do
   @spec health_states() :: [atom()]
   def health_states, do: @health_states
 
+  @doc "Registry expiry bound shared by endpoint-withdrawal consumers."
+  @spec expire_after_ms() :: pos_integer()
+  def expire_after_ms, do: @expire_after_ms
+
   @doc """
   A snapshot of every configured node's health and last-known facts, for
   operational visibility (a `kubectl exec` IEx query verifies the live daemon
@@ -243,6 +247,19 @@ defmodule Embervm.NodeRegistry do
   @spec inject_status(GenServer.server(), String.t(), NodeStatus.t()) :: :ok
   def inject_status(server, node_id, %NodeStatus{} = status) do
     GenServer.call(server, {:inject_status, node_id, status})
+  end
+
+  @doc """
+  Records a VM that the control plane witnessed on a completed wake RPC.
+
+  The witness is scoped to the exact brick instance used for the RPC and remains
+  in its resident inventory until the next `NodeStatus` confirms or refutes it.
+  """
+  @spec witness_resident_vm(GenServer.server(), String.t(), :stateful | :serving, String.t()) ::
+          :ok | :unknown_node
+  def witness_resident_vm(server \\ __MODULE__, instance_id, kind, vm_id)
+      when kind in [:stateful, :serving] and is_binary(vm_id) and vm_id != "" do
+    GenServer.call(server, {:witness_resident_vm, instance_id, kind, vm_id})
   end
 
   @doc """
@@ -362,8 +379,9 @@ defmodule Embervm.NodeRegistry do
     # BaseBuilder callbacks above: NodeRegistry starts before the lifecycle stores,
     # and a missing, restarting, or slow store must never take registry liveness
     # down with it. The default scans the real store and flips only the rows whose
-    # vm_ids appeared in this brick instance's last NodeStatus. Tests can point the
-    # same production callback at unnamed real stores via the two store options.
+    # vm_ids appeared in this brick instance's resident inventory, from its last
+    # NodeStatus or a completed control-plane wake. Tests can point the same
+    # production callback at unnamed real stores via the two store options.
     resident_health_fun =
       Keyword.get(opts, :resident_health_fun, &default_withdraw_resident_health/4)
 
@@ -633,6 +651,23 @@ defmodule Embervm.NodeRegistry do
     end
   end
 
+  def handle_call({:witness_resident_vm, instance_id, kind, vm_id}, _from, state) do
+    case state.node_runtime[instance_id] do
+      nil ->
+        {:reply, :unknown_node, state}
+
+      rt ->
+        {inventory_key, final_interval_key} = resident_inventory_keys(kind)
+
+        rt =
+          rt
+          |> Map.update!(inventory_key, &append_vm_id(&1, vm_id))
+          |> Map.update!(final_interval_key, &append_vm_id(&1, vm_id))
+
+        {:reply, :ok, put_in(state.node_runtime[instance_id], rt)}
+    end
+  end
+
   def handle_call(:tick, _from, state) do
     now = state.clock.()
 
@@ -688,7 +723,9 @@ defmodule Embervm.NodeRegistry do
         health: :healthy,
         draining: status.draining,
         stateful_vm_ids: resident_vm_ids(status.stateful_vms),
-        serving_vm_ids: resident_vm_ids(status.serving_vms)
+        serving_vm_ids: resident_vm_ids(status.serving_vms),
+        final_interval_stateful_vm_ids: [],
+        final_interval_serving_vm_ids: []
     }
     state = put_in(state.node_runtime[instance_id], rt)
     Embervm.SpecTrace.emit(:adoption, :recv_status, %{
@@ -738,6 +775,14 @@ defmodule Embervm.NodeRegistry do
   end
 
   defp resident_vm_ids(_), do: []
+
+  defp resident_inventory_keys(:stateful),
+    do: {:stateful_vm_ids, :final_interval_stateful_vm_ids}
+
+  defp resident_inventory_keys(:serving),
+    do: {:serving_vm_ids, :final_interval_serving_vm_ids}
+
+  defp append_vm_id(vm_ids, vm_id), do: Enum.uniq(vm_ids ++ [vm_id])
 
   # On the RISING edge of draining (false -> true) notify the drain listener exactly
   # once with the instance's published deadline, so it force-banks the instance's
@@ -1743,6 +1788,12 @@ defmodule Embervm.NodeRegistry do
       # prevents expiry of one co-located brick from ejecting its healthy sibling.
       stateful_vm_ids: [],
       serving_vm_ids: [],
+      # VM ids witnessed in a successful control-plane wake after the last
+      # NodeStatus. The next status replaces the inventory and clears these
+      # markers, so expiry can distinguish ordinary expiry from the
+      # final-interval race.
+      final_interval_stateful_vm_ids: [],
+      final_interval_serving_vm_ids: [],
       gen: 0
     }
   end
@@ -1780,16 +1831,40 @@ defmodule Embervm.NodeRegistry do
         Embervm.StatefulStore,
         state.stateful_store,
         rt.configured_id,
-        rt.stateful_vm_ids
+        rt.stateful_vm_ids -- rt.final_interval_stateful_vm_ids,
+        :expiry
       )
+
+      if rt.final_interval_stateful_vm_ids != [] do
+        safe_withdraw_resident_health(
+          state.resident_health_fun,
+          Embervm.StatefulStore,
+          state.stateful_store,
+          rt.configured_id,
+          rt.final_interval_stateful_vm_ids,
+          :final_interval
+        )
+      end
 
       safe_withdraw_resident_health(
         state.resident_health_fun,
         Embervm.ServingStore,
         state.serving_store,
         rt.configured_id,
-        rt.serving_vm_ids
+        rt.serving_vm_ids -- rt.final_interval_serving_vm_ids,
+        :expiry
       )
+
+      if rt.final_interval_serving_vm_ids != [] do
+        safe_withdraw_resident_health(
+          state.resident_health_fun,
+          Embervm.ServingStore,
+          state.serving_store,
+          rt.configured_id,
+          rt.final_interval_serving_vm_ids,
+          :final_interval
+        )
+      end
     end
 
     state = retract_capacity(state, instance_id)
@@ -1949,7 +2024,8 @@ defmodule Embervm.NodeRegistry do
   # Withdraw endpoint health through the lifecycle store's lossy node-fact API.
   # Match both configured node and vm_id: store rows intentionally carry the node
   # name while the registry distinguishes co-located bricks by pod_uid, and the
-  # remembered VM inventory is what identifies residency on the expiring instance.
+  # remembered reported and control-plane-witnessed VM inventory is what identifies
+  # residency on the expiring instance.
   defp default_withdraw_resident_health(_store_mod, _store, _node_id, []), do: :ok
 
   defp default_withdraw_resident_health(store_mod, store, node_id, vm_ids) do
@@ -1970,10 +2046,20 @@ defmodule Embervm.NodeRegistry do
   # restarting when an expiry lands. Mirror safe_channel_remove and
   # safe_base_builder_update: swallow raises, exits, and call timeouts after logging
   # so endpoint cleanup remains best effort and never crashes the registry.
-  defp safe_withdraw_resident_health(nil, _store_mod, _store, _node_id, _vm_ids), do: :ok
+  defp safe_withdraw_resident_health(nil, _store_mod, _store, _node_id, _vm_ids, _reason), do: :ok
 
-  defp safe_withdraw_resident_health(withdrawer, store_mod, store, node_id, vm_ids) do
+  defp safe_withdraw_resident_health(withdrawer, store_mod, store, node_id, vm_ids, reason) do
     withdrawer.(store_mod, store, node_id, vm_ids)
+
+    if vm_ids != [] do
+      Logger.warning(
+        "embervm node registry: resident endpoint health withdrawn: #{withdrawal_reason(reason)}",
+        node_id: node_id,
+        reason: withdrawal_reason(reason),
+        vm_id: Enum.join(vm_ids, ",")
+      )
+    end
+
     :ok
   rescue
     e ->
@@ -1990,6 +2076,9 @@ defmodule Embervm.NodeRegistry do
 
       :ok
   end
+
+  defp withdrawal_reason(:final_interval), do: "final-interval"
+  defp withdrawal_reason(reason), do: Atom.to_string(reason)
 
   # Default: add/remove the instance on the singleton Embervm.BaseBuilder so
   # BuildBase placement learns the registered fleet (keyed by instance_id).

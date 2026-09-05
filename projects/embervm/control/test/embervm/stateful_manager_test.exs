@@ -79,6 +79,8 @@ defmodule Embervm.StatefulManagerTest do
         capacity_table: cap_table,
         catalog_table: cat_table,
         clock: Keyword.get(opts, :clock, fn -> 1_000 end),
+        resident_witness_fun:
+          Keyword.get(opts, :resident_witness_fun, fn _node_instance_id, _kind, _vm_id -> :ok end),
         channel_fun: Keyword.get(opts, :channel_fun, fn _node -> {:ok, :ch} end),
         invalidate_fun: Keyword.get(opts, :invalidate_fun, fn _node, _chan -> :ok end),
         start_stateful_fun: start_stateful_fun,
@@ -244,7 +246,15 @@ defmodule Embervm.StatefulManagerTest do
   # -- wake round-trip ---------------------------------------------------------
 
   test "a cold wake (first boot, no volume) FRESH-boots, publishes, and returns the endpoint" do
-    ctx = start_stack()
+    {:ok, witnesses} = Agent.start_link(fn -> [] end)
+
+    ctx =
+      start_stack(
+        resident_witness_fun: fn node_instance_id, kind, vm_id ->
+          Agent.update(witnesses, &[{node_instance_id, kind, vm_id} | &1])
+        end
+      )
+
     stateful_workload(ctx, "wl-a")
     stateful_node(ctx, "node-4")
 
@@ -254,10 +264,65 @@ defmodule Embervm.StatefulManagerTest do
     assert [instance] = StatefulStore.list(ctx.store, "wl-a")
     assert instance.state == :serving
     assert StatefulStore.published_endpoint(ctx.store, "wl-a") == %{ip: "10.88.0.5", port: 5432}
+    assert [{"node-4", :stateful, witnessed_vm_id}] = Agent.get(witnesses, & &1)
+    assert witnessed_vm_id == instance.vm_id
     assert FakePublisher.count(ctx.pub) >= 1
 
     {:ok, [row]} = SQLite.load_stateful_instances(ctx.op_log)
     assert row.state == "serving"
+  end
+
+  test "a cold wake succeeds when the resident witness returns :unknown_node" do
+    registry_table = :"unknown_witness_#{System.unique_integer([:positive])}"
+
+    {:ok, registry} =
+      NodeRegistry.start_link(
+        name: nil,
+        table: registry_table,
+        nodes: [],
+        watch_startup: false,
+        registry_resync_ms: 0
+      )
+
+    on_exit(fn -> Embervm.TestProcess.stop_safely(registry) end)
+
+    ctx =
+      start_stack(
+        resident_witness_fun: fn node_instance_id, kind, vm_id ->
+          Embervm.NodeRegistry.witness_resident_vm(registry, node_instance_id, kind, vm_id)
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-unregistered")
+
+    log =
+      capture_log(
+        [
+          level: :warning,
+          format: "$level $message $metadata\n",
+          metadata: [:node_id, :workload, :reason]
+        ],
+        fn ->
+          assert {:ok, _} =
+                   StatefulManager.wake(
+                     ctx.mgr,
+                     "wl-a",
+                     "system:stateful:wl-a"
+                   )
+        end
+      )
+
+    assert log =~ "warning embervm stateful: resident witness failed, continuing wake"
+    assert log =~ "node_id=node-unregistered"
+    assert log =~ "workload=wl-a"
+    assert log =~ "reason=:unknown_node"
+    assert length(Regex.scan(~r/resident witness failed, continuing wake/, log)) == 1
+
+    assert StatefulStore.published_endpoint(ctx.store, "wl-a") == %{
+             ip: "10.88.0.5",
+             port: 5432
+           }
   end
 
   # -- generation blessing (R7, ADR embervm/011, standing decision 4) ---------
@@ -1065,7 +1130,7 @@ defmodule Embervm.StatefulManagerTest do
       assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
 
       # Once adopted, the endpoint remains published after the boot-relative
-      # grace because its owner has reported at least once.
+      # floor because its owner is still reporting and refreshes its timestamp.
       Agent.update(now, fn _ -> 90_001 end)
       :ok = StatefulManager.reconcile(ctx.mgr)
       assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
@@ -1106,7 +1171,7 @@ defmodule Embervm.StatefulManagerTest do
       assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == nil
     end
 
-    test "a node that reported once is never withdrawn even if later silent" do
+    test "a live brick silent for less than the registry bound keeps its endpoint" do
       {:ok, now} = Agent.start_link(fn -> 0 end)
       clock = fn -> Agent.get(now, & &1) end
       ctx = start_stack(clock: clock)
@@ -1149,13 +1214,21 @@ defmodule Embervm.StatefulManagerTest do
       NodeCapacity.drop(ctx.cap_table, {"node-4", "grace-pod"})
       assert NodeCapacity.fetch(ctx.cap_table, "node-4") == :error
 
-      Agent.update(now, fn _ -> 90_001 end)
+      Agent.update(now, fn _ -> 89_999 end)
 
       for _ <- 1..3 do
         :ok = StatefulManager.reconcile(ctx.mgr)
       end
 
       assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
+
+      # A report grants one bounded silence interval, not permanent immunity.
+      # This models a brick class that is zeroed and never returns.
+      Agent.update(now, fn _ -> 90_001 end)
+      log = capture_log(fn -> :ok = StatefulManager.reconcile(ctx.mgr) end)
+
+      assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == nil
+      assert log =~ "node-report grace"
     end
   end
 

@@ -332,16 +332,19 @@ defmodule Embervm.StatefulManager do
       capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
       catalog_table: Keyword.get(opts, :catalog_table, WorkloadCatalog.table()),
       clock: clock,
+      resident_witness_fun:
+        Keyword.get(opts, :resident_witness_fun, &Embervm.NodeRegistry.witness_resident_vm/3),
       # The grace is control-plane-boot-relative, not first-reconcile-relative.
       # Capturing it in init prevents an empty capacity table from extending the
       # optimistic rebuild indefinitely when periodic reconcile starts late.
       booted_at_ms: clock.(),
       # Node names that have contributed capacity at least once since this
-      # manager booted. A later capacity retraction is handled by registry
-      # liveness, not by the durable-only endpoint grace.
+      # manager booted. Together with node_last_reported_at_ms this preserves a
+      # boot-relative floor without granting nodes permanent immunity after one
+      # report.
       seen_reporting_nodes: MapSet.new(),
       # node_id -> manager clock millisecond when the node last reported capacity.
-      # Used to distinguish temporary disconnects (within @delete_quiet_window_ms)
+      # Used to distinguish temporary disconnects (within the registry expiry bound)
       # from permanent disconnects. This is deliberately process-local: after a CP
       # restart the full window must elapse again.
       node_last_reported_at_ms: %{},
@@ -1731,8 +1734,8 @@ defmodule Embervm.StatefulManager do
 
     match?(:error, NodeCapacity.fetch(state.capacity_table, node_id)) and
       is_integer(missing_since) and
-      now - missing_since >= @anchor_expire_after_ms and
-      now - state.booted_at_ms >= @anchor_expire_after_ms
+      now - missing_since >= Embervm.NodeRegistry.expire_after_ms() and
+      now - state.booted_at_ms >= Embervm.NodeRegistry.expire_after_ms()
   end
 
   defp confirmed_anchor_gone?(_state_and_volume), do: false
@@ -2063,7 +2066,9 @@ defmodule Embervm.StatefulManager do
       case safe_start_stateful(state, dial_id, req) do
         {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation, was_relight: true}}
         when is_binary(vm_id) and vm_id != "" ->
-          {:ok, {:relit, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}}}
+          {:ok,
+           {:relit, instance.instance_id, node_id,
+            %{vm_id: vm_id, ip: ip, port: port, generation: generation, node_instance_id: dial_id}}}
 
         # A RELIGHT call that fell back to a cold boot on the daemon side
         # (generation mismatch discovered only at the daemon, or an unreadable
@@ -2072,7 +2077,9 @@ defmodule Embervm.StatefulManager do
         # a RELIGHT-mode response is exactly that fallback signal.
         {:ok, %StartStatefulResponse{vm_id: vm_id, ip: ip, port: port, generation: generation, was_relight: false, cold_boot_reason: reason}}
         when is_binary(vm_id) and vm_id != "" ->
-          {:ok, {:relight_fell_back, instance.instance_id, node_id, %{vm_id: vm_id, ip: ip, port: port, generation: generation}, reason}}
+          {:ok,
+           {:relight_fell_back, instance.instance_id, node_id,
+            %{vm_id: vm_id, ip: ip, port: port, generation: generation, node_instance_id: dial_id}, reason}}
 
         {:error, %GRPC.RPCError{status: 8}} = rejected ->
           {:reject, rejected}
@@ -2105,7 +2112,9 @@ defmodule Embervm.StatefulManager do
             volume_size_bytes: cold_volume_size_bytes(state, workload)
           }
 
-          {:ok, {:created, attrs, %{vm_id: vm_id, ip: ip, port: port}, mode, boot_ref, reason}}
+          {:ok,
+           {:created, attrs, %{vm_id: vm_id, ip: ip, port: port, node_instance_id: dial_id}, mode,
+            boot_ref, reason}}
 
         {:error, %GRPC.RPCError{status: 8}} = rejected ->
           {:reject, rejected}
@@ -2355,6 +2364,7 @@ defmodule Embervm.StatefulManager do
                      %{attributes: %{"ember.workload" => workload, "ember.instance_id" => instance_id}} do
       case StatefulStore.publish(state.store, instance_id, endpoint.ip, endpoint.port, reason) do
         {:ok, _} ->
+          :ok = witness_resident_vm(state, endpoint, workload)
           EndpointPublisher.publish(state.publisher)
 
           Logger.info("embervm stateful woken", workload: workload, instance_id: instance_id, reason: reason)
@@ -2369,6 +2379,32 @@ defmodule Embervm.StatefulManager do
       end
     end
   end
+
+  defp witness_resident_vm(state, %{node_instance_id: node_instance_id, vm_id: vm_id}, workload) do
+    result =
+      try do
+        state.resident_witness_fun.(node_instance_id, :stateful, vm_id)
+      rescue
+        error -> {:raised, error}
+      catch
+        kind, caught_reason -> {kind, caught_reason}
+      end
+
+    if result != :ok do
+      Logger.warning("embervm stateful: resident witness failed, continuing wake",
+        node_id: node_instance_id,
+        workload: workload,
+        reason: inspect(result)
+      )
+    end
+
+    :ok
+  end
+
+  # Adoption and recovery publications already derive from a NodeStatus, so the
+  # registry inventory contains their VM ids and no final-interval witness is
+  # needed.
+  defp witness_resident_vm(_state, _endpoint, _workload), do: :ok
 
   defp pop_waiters(state, workload) do
     waiters = wake_waiters(state, workload)
@@ -2721,12 +2757,6 @@ defmodule Embervm.StatefulManager do
   defp do_reconcile(state) do
     facts = NodeCapacity.all(state.capacity_table)
 
-    reporting_nodes =
-      facts
-      |> Enum.map(&Map.get(&1, :node_id))
-      |> Enum.reject(&is_nil/1)
-      |> MapSet.new()
-
     # Keyed on configured_id, NOT the fact's node_id, because every lookup is a
     # configured_id: nodes_with_volume/2 maps facts through configured_id and a
     # durable volume row's node_id is written from configured_id by
@@ -2749,7 +2779,7 @@ defmodule Embervm.StatefulManager do
 
     state = %{
       state
-      | seen_reporting_nodes: MapSet.union(state.seen_reporting_nodes, reporting_nodes),
+      | seen_reporting_nodes: MapSet.union(state.seen_reporting_nodes, MapSet.new(reporting_configured_ids)),
         node_last_reported_at_ms: last_reported
     }
     state = observe_missing_volume_anchors(state)
@@ -2778,8 +2808,8 @@ defmodule Embervm.StatefulManager do
     _ = StatefulStore.eager_evict_broken_pairs(state.store)
 
     # A store rebuild republishes a durable :serving row optimistically to avoid
-    # a deploy-time endpoint gap. If its owner never contributes a NodeCapacity
-    # fact, bound that optimism from CP boot and withdraw only the lossy health
+    # a deploy-time endpoint gap. Bound that optimism from CP boot and from the
+    # owner's most recent NodeCapacity fact, then withdraw only the lossy health
     # bit. The durable lifecycle stays :serving so a later NodeStatus can adopt
     # the guest and restore the endpoint without manufacturing a new lifecycle.
     state = withdraw_unreported_resident_health(state)
@@ -2799,25 +2829,30 @@ defmodule Embervm.StatefulManager do
   end
 
   defp withdraw_unreported_resident_health(state) do
-    elapsed_ms = state.clock.() - state.booted_at_ms
+    now = state.clock.()
+    elapsed_ms = now - state.booted_at_ms
 
-    if elapsed_ms >= @resident_health_grace_ms do
+    if elapsed_ms >= Embervm.NodeRegistry.expire_after_ms() do
       StatefulStore.all(state.store)
       |> Enum.filter(fn instance ->
         instance.state == :serving and instance.healthy and
-          not MapSet.member?(state.seen_reporting_nodes, instance.node_id)
+          node_silent_past_registry_expiry?(state, instance.node_id, now)
       end)
       |> Enum.each(fn instance ->
-        # Missing capacity is the expected never-reported case, and set_health/3
-        # is best-effort because the row can disappear between this scan and the
-        # call. Either result leaves reconcile live and the next pass convergent.
+        # Missing capacity is expected after a node stays silent past the bound,
+        # and set_health/3 is best-effort because the row can disappear between
+        # this scan and the call. Either result leaves reconcile live and the
+        # next pass convergent.
         case StatefulStore.set_health(state.store, instance.instance_id, false) do
           {:ok, _updated} ->
+            silence_ms = now - node_silence_started_at(state, instance.node_id)
+
             Logger.warning("embervm stateful endpoint withdrawn after node-report grace",
               instance_id: instance.instance_id,
               workload: instance.workload,
               node_id: instance.node_id,
-              elapsed_ms: elapsed_ms
+              elapsed_ms: silence_ms,
+              reason: "grace"
             )
 
           :error ->
@@ -2827,6 +2862,18 @@ defmodule Embervm.StatefulManager do
     end
 
     state
+  end
+
+  defp node_silent_past_registry_expiry?(state, node_id, now) do
+    now - node_silence_started_at(state, node_id) >= Embervm.NodeRegistry.expire_after_ms()
+  end
+
+  defp node_silence_started_at(state, node_id) do
+    if MapSet.member?(state.seen_reporting_nodes, node_id) do
+      Map.get(state.node_last_reported_at_ms, node_id, state.booted_at_ms)
+    else
+      state.booted_at_ms
+    end
   end
 
   # A destroying instance is re-driven only while its owner reports. If the owner
@@ -3369,8 +3416,8 @@ defmodule Embervm.StatefulManager do
       # plane restarted. A boot-relative floor resolves it the safe way, since
       # skipping here is what abandons an anchor and evicts its remote copy.
       # Mirrors withdraw_unreported_resident_health's use of the same floor.
-      nil -> now - state.booted_at_ms < @delete_quiet_window_ms
-      last_reported_at -> now - last_reported_at < @delete_quiet_window_ms
+      nil -> now - state.booted_at_ms < Embervm.NodeRegistry.expire_after_ms()
+      last_reported_at -> now - last_reported_at < Embervm.NodeRegistry.expire_after_ms()
     end
   end
 

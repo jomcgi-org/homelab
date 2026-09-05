@@ -1223,11 +1223,87 @@ defmodule Embervm.NodeRegistryTest do
 
     await_initial_status(reg, "#{node}/uid-expired")
     advance.(20_000)
-    :ok = NodeRegistry.tick(reg)
+    log = ExUnit.CaptureLog.capture_log(fn -> :ok = NodeRegistry.tick(reg) end)
 
     refute Map.has_key?(NodeRegistry.status(reg), "#{node}/uid-expired")
     assert StatefulStore.published_endpoint(stateful_store, stateful_workload) == nil
     assert ServingStore.published_endpoints(serving_store, serving_workload) == []
+    assert log =~ "resident endpoint health withdrawn: expiry"
+  end
+
+  test "a final-interval wake on a never-returning brick class is withdrawn by expiry" do
+    suffix = System.unique_integer([:positive, :monotonic])
+    path = Path.join(System.tmp_dir!(), "embervm_final_interval_expiry_test_#{suffix}.db")
+    on_exit(fn -> File.rm_rf!(path) end)
+
+    {:ok, op_log} = SQLite.start_link(name: nil, path: path)
+    {:ok, stateful_store} = StatefulStore.start_link(name: nil, op_log: op_log)
+
+    node = "never-returning-class-#{suffix}"
+    node_instance_id = "#{node}/final-pod"
+    instance_id = "stateful-final-interval-#{suffix}"
+    vm_id = "vm-final-interval-#{suffix}"
+    workload = "workload-final-interval-#{suffix}"
+    {clock, advance} = new_clock()
+
+    final_status = %NodeStatus{node_status(node_id: node) | stateful_vms: []}
+
+    watch_fun = fn _channel, _node_id, emit ->
+      emit.(final_status)
+      receive do: (:never -> {:ok, :closed})
+    end
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          clock: clock,
+          watch_fun: watch_fun,
+          stateful_store: stateful_store,
+          unknown_after_ms: 5_000,
+          down_after_ms: 15_000,
+          expire_after_ms: 20_000,
+          base_backoff_ms: 120_000,
+          max_backoff_ms: 120_000
+        )
+      )
+
+    :ok =
+      NodeRegistry.register(reg, %{
+        "node" => node,
+        "pod_uid" => "final-pod",
+        "address" => "10.0.0.19:9090"
+      })
+
+    await_initial_status(reg, node_instance_id)
+
+    # The wake RPC completes after the brick's final status. The endpoint is
+    # published from the RPC response, and the control plane witnesses the VM
+    # even though the never-returning class cannot report it in another status.
+    {:ok, _} =
+      StatefulStore.start(stateful_store, %{
+        instance_id: instance_id,
+        tenant: "homelab",
+        principal: "test",
+        workload: workload,
+        node_id: node,
+        vm_id: vm_id,
+        generation: 1
+      })
+
+    {:ok, _} = StatefulStore.publish(stateful_store, instance_id, "10.88.0.19", 5432, :started)
+    :ok = NodeRegistry.witness_resident_vm(reg, node_instance_id, :stateful, vm_id)
+
+    assert StatefulStore.published_endpoint(stateful_store, workload) == %{
+             ip: "10.88.0.19",
+             port: 5432
+           }
+
+    advance.(20_000)
+    log = ExUnit.CaptureLog.capture_log(fn -> :ok = NodeRegistry.tick(reg) end)
+
+    refute Map.has_key?(NodeRegistry.status(reg), node_instance_id)
+    assert StatefulStore.published_endpoint(stateful_store, workload) == nil
+    assert log =~ "resident endpoint health withdrawn: final-interval"
   end
 
   test "registration feeds instance add to the BaseBuilder (so BuildBase can place)" do
