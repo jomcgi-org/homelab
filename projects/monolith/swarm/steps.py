@@ -254,6 +254,13 @@ def send_agent_session_message(session_id: int, message: str) -> int:
 
 
 @DBOS.step()
+def observe_clock() -> str:
+    # This must be a step because workflow replay cannot read wall time directly.
+    # A durable observation lets timeout calculations use the recovered clock.
+    return datetime.now(timezone.utc).isoformat()
+
+
+@DBOS.step()
 def poll_turn(session_id: int, after_seq: int) -> dict | None:
     """One non-blocking look for the next turn of a session.
 

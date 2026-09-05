@@ -23,6 +23,7 @@ from swarm.steps import (
     get_decision,
     get_open_decision,
     open_decision,
+    observe_clock,
     pin_plan,
     poll_turn,
     read_branch_head,
@@ -114,8 +115,11 @@ def _queued_session(
 
 def _await_turn(session_id: int, after_seq: int, timeout_s: int) -> dict | None:
     """Wait for a session's next turn, checkpointing between polls."""
-    waited = 0
-    while waited < timeout_s:
+    started_at = _timestamp(observe_clock())
+    deadline = started_at + timedelta(seconds=timeout_s)
+    max_iterations = 2 * timeout_s // POLL_INTERVAL_SECONDS + 1
+
+    for iteration in range(max_iterations):
         turn = poll_turn(session_id, after_seq)
         # An interrupted attempt does not complete the workflow node or move
         # after_seq. Its replacement arrives at the same sequence.
@@ -124,8 +128,10 @@ def _await_turn(session_id: int, after_seq: int, timeout_s: int) -> dict | None:
             and turn.get("terminal_reason") not in INTERRUPTED_TERMINAL_REASONS
         ):
             return turn
-        DBOS.sleep(POLL_INTERVAL_SECONDS)
-        waited += POLL_INTERVAL_SECONDS
+        if _timestamp(observe_clock()) >= deadline:
+            return None
+        if iteration + 1 < max_iterations:
+            DBOS.sleep(POLL_INTERVAL_SECONDS)
     return None
 
 
