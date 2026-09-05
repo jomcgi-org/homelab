@@ -57,8 +57,8 @@ defmodule Embervm.EndpointPublisher do
   init) followed by a 20-digit zero-padded per-node monotonic counter. A
   control-plane restart re-pushes at a higher epoch, so every counter value is
   accepted afresh off Envoy's last-ACKed config; within a boot the counter
-  strictly increases. A bare or variable-width integer would break lexically
-  ("...10" < "...9"); the zero-padding is load-bearing.
+  strictly increases for every emitted version. A bare or variable-width integer
+  would break lexically ("...10" < "...9"); the zero-padding is load-bearing.
 
   ## debounce + level-triggered re-push
 
@@ -66,13 +66,16 @@ defmodule Embervm.EndpointPublisher do
       timer; many transitions in a window flush ONCE, and the flush computes the
       snapshot from the CURRENT facts (not the triggering event), so a burst never
       pushes a stale intermediate.
-    * a low-frequency periodic re-push (default 45s) re-PUTs the current desired
-      snapshot at a fresh version even when nothing changed. This is the
-      level-triggered safety net (ADR embervm/001): the sidecar holds no durable
-      state, so if the sidecar CONTAINER restarts on its own, its cache empties and
-      the node Envoy is left on its last-ACKed config with no fresh push until the
-      next fact change. The periodic re-push makes a sidecar restart self-healing
-      without coupling to the control plane's own lifecycle.
+    * each node's canonical rendered payload is hashed without its version. A
+      flush whose hash matches the last successfully pushed hash skips the PUT
+      and does not bump that node's version.
+    * the level-triggered safety net forces a fresh-version PUT when the node has
+      never acknowledged the current version, the previous PUT failed, or 45s
+      has elapsed since its last successful PUT. This interval keeps repushes well
+      above the normal 10-18s publish cadence, which removes duplicate noise while
+      bounding recovery when the sidecar CONTAINER restarts and loses its volatile
+      cache. A node re-registration or channel invalidation clears that node's
+      remembered hash so its snapshot is pushed again.
     * on BOOT the publisher does ONE synchronous publish before the process
       reports ready, so the fan-out reflects the rebuilt facts before any request
       can arrive (a control-plane restart republishes exactly the same endpoints).
@@ -168,6 +171,17 @@ defmodule Embervm.EndpointPublisher do
   @spec flush(GenServer.server()) :: :ok
   def flush(server \\ __MODULE__) do
     GenServer.call(server, :flush)
+  end
+
+  @doc """
+  Forgets the last successfully pushed snapshot for `node_id`. Call this when the
+  node's channel is invalidated, making the next flush push even when the rendered
+  facts are unchanged. Replacement registration identities are also detected from
+  node facts. A cast keeps lifecycle paths independent of the sidecar PUT.
+  """
+  @spec invalidate_node(GenServer.server(), String.t()) :: :ok
+  def invalidate_node(server \\ __MODULE__, node_id) when is_binary(node_id) do
+    GenServer.cast(server, {:invalidate_node, node_id})
   end
 
   @doc """
@@ -286,6 +300,16 @@ defmodule Embervm.EndpointPublisher do
       # PUT to that node (change-driven OR periodic), so even an unchanged re-push
       # carries a strictly greater version the sidecar accepts.
       counters: %{},
+      # Per-node successful-push state. The hash excludes the version so identical
+      # facts compare equal; the acknowledged version and failure bit preserve the
+      # level-triggered retry contract. Entries are cleared when a node disappears
+      # or its registration/channel owner explicitly invalidates it.
+      pushed: %{},
+      # The current serving-capable instance identities grouped by configured node.
+      # A changed set means the node re-registered through a replacement instance,
+      # which invalidates the successful-push hash even when its facts render the
+      # same payload.
+      registrations: %{},
       # Debounce bookkeeping: a pending timer ref (or nil) and whether a publish is
       # dirty (requested since the last flush).
       debounce_ref: nil,
@@ -321,6 +345,10 @@ defmodule Embervm.EndpointPublisher do
   @impl true
   def handle_cast(:publish, state) do
     {:noreply, arm_debounce(state)}
+  end
+
+  def handle_cast({:invalidate_node, node_id}, state) do
+    {:noreply, %{state | pushed: Map.delete(state.pushed, node_id)}}
   end
 
   @impl true
@@ -362,15 +390,18 @@ defmodule Embervm.EndpointPublisher do
 
   # -- flush -----------------------------------------------------------------
 
-  # Compute the desired snapshot from CURRENT facts and PUT it to every serving
-  # node, each at a freshly-incremented per-node version. A per-node PUT failure is
-  # logged and the node's counter is NOT advanced (so a retry re-PUTs at the same
-  # next version, still strictly greater than the last ACCEPTED one), leaving other
-  # nodes unaffected. Cancels any pending debounce timer it subsumes.
+  # Compute the desired snapshot from CURRENT facts and PUT it only where the
+  # canonical payload changed or a level-triggered safety condition requires it.
+  # A skipped node does not advance its version. A failed PUT does advance the
+  # counter, so an accept-then-lost-ACK retry uses a strictly greater version.
+  # Nodes are independent. Cancels any pending debounce timer it subsumes.
   defp do_flush(state) do
     state = cancel_debounce(state)
     ctx = render_ctx(state)
-    nodes = serving_nodes(state)
+    registrations = serving_registrations(ctx.node_facts)
+    nodes = registrations |> Map.keys() |> Enum.sort()
+    state = refresh_registrations(state, registrations)
+    now_ms = state.clock.()
     # The oldest pending fact-change this flush resolves (nil on a pure re-push). Used
     # as the publish_flush span start so gate 4's fact-change -> ACK p95 is derivable.
     dirty_since = state.dirty_since
@@ -378,36 +409,105 @@ defmodule Embervm.EndpointPublisher do
 
     state =
       Enum.reduce(nodes, state, fn node_id, acc ->
-        {version, acc} = next_version(acc, node_id)
-        desired = desired_for_node(ctx, version)
-        put_result = safe_put(acc.put_fun, node_id, desired)
-        emit_publish_flush_span(node_id, version, endpoint_count, dirty_since, put_result)
+        canonical = desired_for_node(ctx, "")
+        hash = snapshot_hash(canonical)
 
-        case put_result do
-          :ok ->
-            acc
+        if push_required?(acc, node_id, hash, now_ms) do
+          {version, acc} = next_version(acc, node_id)
+          desired = Map.put(canonical, :version, version)
+          put_result = safe_put(acc.put_fun, node_id, desired)
+          emit_publish_flush_span(node_id, version, endpoint_count, dirty_since, put_result)
 
-          {:error, reason} ->
-            Logger.error("embervm endpoint publisher: PUT to node #{node_id} failed",
-              reason: inspect(reason),
-              version: version
-            )
+          case put_result do
+            :ok ->
+              remember_success(acc, node_id, hash, version, now_ms)
 
-            # ALWAYS-INCREMENT: the counter is NOT rolled back on a failed PUT, so the
-            # next flush strictly ADVANCES the version. Rolling back would re-send the
-            # same version, which the sidecar 409s if the "failed" PUT was actually
-            # ACCEPTED but its HTTP ACK was lost (accept-then-lost-ACK) -- a wedge that
-            # only the periodic re-push could unstick. A gap in the version sequence is
-            # harmless: monotonicity needs only strictly-greater, and the next flush's
-            # higher version is accepted whether or not this PUT landed. Endpoints keep
-            # serving on Envoy's last-ACKed config until the retry lands.
-            acc
+            {:error, reason} ->
+              Logger.error("embervm endpoint publisher: PUT to node #{node_id} failed",
+                reason: inspect(reason),
+                version: version
+              )
+
+              # ALWAYS-INCREMENT: the counter is not rolled back on a failed PUT.
+              # If the sidecar accepted the snapshot but its HTTP ACK was lost,
+              # reusing the same version would 409. The failure marker forces the
+              # next tick to retry with a higher version, whether or not it landed.
+              remember_failure(acc, node_id)
+          end
+        else
+          acc
         end
       end)
 
     # The pending fact-change window is now resolved: clear the oldest-dirty stamp so
     # the next window opens a fresh one.
     %{state | dirty_since: nil}
+  end
+
+  defp snapshot_hash(desired) do
+    canonical = Map.delete(desired, :version)
+    :crypto.hash(:sha256, :erlang.term_to_binary(canonical, [:deterministic]))
+  end
+
+  defp push_required?(state, node_id, hash, now_ms) do
+    case Map.get(state.pushed, node_id) do
+      nil ->
+        true
+
+      pushed ->
+        pushed.hash != hash or
+          pushed.failed or
+          pushed.acknowledged_version != current_version(state, node_id) or
+          repush_elapsed?(state.repush_ms, pushed.last_success_at, now_ms)
+    end
+  end
+
+  defp repush_elapsed?(repush_ms, last_success_at, now_ms)
+       when repush_ms > 0 and is_integer(last_success_at),
+       do: now_ms - last_success_at >= repush_ms
+
+  defp repush_elapsed?(_repush_ms, _last_success_at, _now_ms), do: false
+
+  defp remember_success(state, node_id, hash, version, now_ms) do
+    pushed = %{
+      hash: hash,
+      acknowledged_version: version,
+      last_success_at: now_ms,
+      failed: false
+    }
+
+    %{state | pushed: Map.put(state.pushed, node_id, pushed)}
+  end
+
+  defp remember_failure(state, node_id) do
+    failed =
+      state.pushed
+      |> Map.get(node_id, %{
+        hash: nil,
+        acknowledged_version: nil,
+        last_success_at: nil,
+        failed: false
+      })
+      |> Map.put(:failed, true)
+
+    %{state | pushed: Map.put(state.pushed, node_id, failed)}
+  end
+
+  defp refresh_registrations(state, registrations) do
+    pushed =
+      Map.filter(state.pushed, fn {node_id, _} ->
+        Map.has_key?(registrations, node_id) and
+          Map.get(state.registrations, node_id) == Map.fetch!(registrations, node_id)
+      end)
+
+    %{state | pushed: pushed, registrations: registrations}
+  end
+
+  defp current_version(state, node_id) do
+    case Map.fetch(state.counters, node_id) do
+      {:ok, counter} -> format_version(state.epoch, counter)
+      :error -> nil
+    end
   end
 
   # The publish_flush span (Task 10): one span per node PUT, its start pinned to the
@@ -478,10 +578,18 @@ defmodule Embervm.EndpointPublisher do
   # (no serving node up yet) is a clean no-op: a workload defined before any
   # serving node exists is valid, it simply has nowhere to publish until a node
   # appears.
-  defp serving_nodes(state) do
-    NodeCapacity.all(state.capacity_table)
+  defp serving_registrations(node_facts) do
+    node_facts
     |> Enum.filter(&serving_capable?/1)
-    |> Enum.map(& &1.configured_id)
+    |> Enum.group_by(& &1.configured_id)
+    |> Map.new(fn {node_id, facts} ->
+      identities =
+        facts
+        |> Enum.map(&{Map.get(&1, :instance_id, ""), Map.get(&1, :pod_uid, "")})
+        |> Enum.sort()
+
+      {node_id, identities}
+    end)
   end
 
   defp serving_capable?(fact) do

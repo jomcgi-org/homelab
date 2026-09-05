@@ -1244,7 +1244,7 @@ defmodule Embervm.Application do
 
   # The publisher's level-triggered re-push cadence (EMBERVM_SERVING_REPUSH_MS),
   # the safety net that makes a sidecar-container restart self-healing; default
-  # 45s (module default). A 0 disables the periodic re-push (change-driven only).
+  # 180s (module default). A 0 disables the periodic re-push (change-driven only).
   defp repush_opt do
     case trimmed_env("EMBERVM_SERVING_REPUSH_MS") do
       "" -> []
