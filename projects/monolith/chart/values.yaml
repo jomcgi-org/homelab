@@ -146,11 +146,10 @@ agents:
 # concurrency, timeout, and history. The monolith does NOT manage these at
 # runtime - ArgoCD syncs the CRs like any other manifest.
 #
-# Cutover is per-job via `suspend`: with suspend=true the CronWorkflow is inert
-# and the in-process scheduler job (named by `replaces`) runs as before; flip to
-# suspend=false and the CronWorkflow takes over AND the deployment's ARGO_JOBS
-# env gains `replaces`, so on_startup_jobs skips the in-process job - both sides
-# in one git change.
+# Cutover is per-job via `replaces`: naming the old scheduler job adds it to the
+# deployment's ARGO_JOBS env, so on_startup_jobs skips in-process registration.
+# `suspend` controls only the recurring Argo schedule. A replacing, suspended
+# CronWorkflow remains available for manual one-off submission through run-now.
 #
 # jobs.image is injected (digest-pinned) at build time by helm_images_values
 # (see chart/BUILD images "jobs.image"); do not set it here.

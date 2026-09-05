@@ -105,20 +105,21 @@ def get_job(
 
 @jobs_app.command("run-now")
 def run_now(
-    name: str = typer.Argument(..., help="Job name (e.g. knowledge.gardener)"),
+    name: str = typer.Argument(..., help="Job whose Argo CronWorkflow should run once"),
     json_output: bool = typer.Option(False, "--json", help="Raw JSON output"),
 ) -> None:
-    """Schedule a job to run on the next scheduler tick."""
+    """Submit a job's Argo CronWorkflow as a one-off Workflow."""
     resp = _request("post", f"/api/scheduler/jobs/{name}/run-now")
     if resp.status_code == 404:
         typer.echo(f"Unknown job: {name}", err=True)
         raise typer.Exit(code=1)
     resp.raise_for_status()
-    job = resp.json()
+    workflow = resp.json()
 
     if json_output:
-        typer.echo(json.dumps(job, indent=2))
+        typer.echo(json.dumps(workflow, indent=2))
         return
 
-    typer.echo(f"Scheduled {name} for immediate run.")
-    _print_job(job)
+    typer.echo(
+        f"Submitted {workflow['workflow_name']} in {workflow['namespace']} for {name}."
+    )

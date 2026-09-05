@@ -103,7 +103,14 @@ class TestGetJob:
 
 class TestRunNow:
     def test_triggers_job(self, runner):
-        resp = _mock_response(JOB_A)
+        resp = _mock_response(
+            {
+                "job": "knowledge.gardener",
+                "workflow_name": "knowledge-gardener-manual-abc12",
+                "namespace": "monolith-workflows",
+            },
+            status_code=202,
+        )
         with patch("tools.cli.scheduler_cmd._request", return_value=resp) as mock_req:
             result = runner.invoke(
                 app, ["scheduler", "jobs", "run-now", "knowledge.gardener"]
@@ -113,7 +120,10 @@ class TestRunNow:
         mock_req.assert_called_once_with(
             "post", "/api/scheduler/jobs/knowledge.gardener/run-now"
         )
-        assert "Scheduled knowledge.gardener for immediate run." in result.output
+        assert (
+            "Submitted knowledge-gardener-manual-abc12 in monolith-workflows "
+            "for knowledge.gardener."
+        ) in result.output
 
     def test_404_exits_nonzero(self, runner):
         resp = _mock_response({"detail": "unknown job"}, status_code=404)

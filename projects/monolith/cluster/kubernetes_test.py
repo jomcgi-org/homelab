@@ -438,6 +438,32 @@ async def test_create_workflow_passes_correct_args_and_returns_name(k8s_client):
     assert name == "my-workflow-xyz"
 
 
+@pytest.mark.asyncio
+async def test_list_cronworkflows_passes_correct_args_and_returns_items(k8s_client):
+    mock_api = MagicMock()
+    mock_custom = MagicMock()
+    items = [{"metadata": {"name": "nightly"}}]
+    mock_custom.list_namespaced_custom_object = AsyncMock(return_value={"items": items})
+
+    with (
+        patch("cluster.kubernetes.config.load_incluster_config"),
+        patch("cluster.kubernetes.ApiClient", return_value=mock_api),
+        patch(
+            "cluster.kubernetes.client.CustomObjectsApi",
+            return_value=mock_custom,
+        ),
+    ):
+        result = await k8s_client.list_cronworkflows("monolith-workflows")
+
+    mock_custom.list_namespaced_custom_object.assert_awaited_once_with(
+        group="argoproj.io",
+        version="v1alpha1",
+        namespace="monolith-workflows",
+        plural="cronworkflows",
+    )
+    assert result == items
+
+
 # ---------------------------------------------------------------------------
 # count_pods
 # ---------------------------------------------------------------------------

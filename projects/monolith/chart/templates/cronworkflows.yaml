@@ -27,6 +27,10 @@ kind: CronWorkflow
 metadata:
   name: {{ .name }}
   namespace: {{ $.Values.jobs.workflowNamespace }}
+  {{- if .replaces }}
+  annotations:
+    monolith.jomcgi.dev/replaces: {{ .replaces | quote }}
+  {{- end }}
   labels:
     {{- include "monolith.labels" $ | nindent 4 }}
     app.kubernetes.io/component: cron-job

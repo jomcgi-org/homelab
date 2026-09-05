@@ -50,6 +50,8 @@ spec:
             # still submittable by hand.
             - name: ARGO_JOBS
               value: "{{- range .Values.jobs.cronWorkflows }}{{- if .replaces }}{{ .replaces }},{{- end }}{{- end }}"
+            - name: SCHEDULER_WORKFLOW_NAMESPACE
+              value: {{ .Values.jobs.workflowNamespace | quote }}
             # Side-effect mute for non-production deployments (#4695). A dev
             # instance fed by a copy of prod's database must start no leader
             # singletons: the chat outbox drain would repost prod's queued

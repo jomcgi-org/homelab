@@ -10,7 +10,7 @@ underscores; FastMCP's wire identifiers use the dashed form
   Locks    : acquire_lock, extend_lock, release_lock, list_locks
   Notify   : notify
   Check    : check_stuck_jobs, check_orphan_jobs, check_dead_letters
-  Trigger  : trigger_job  (scheduler.scheduled_jobs)
+  Trigger  : trigger_job  (Argo CronWorkflow one-off submission)
   Routine  : list_routine_jobs, claim_routine_job, complete_routine_job,
              register_routine_job, deregister_routine_job,
              trigger_routine_job  (claude_agent.routine_jobs)
@@ -163,8 +163,16 @@ async def monolith_agent_check_dead_letters(limit: int = 20) -> dict:
 
 @mcp.tool
 async def monolith_agent_trigger_job(name: str) -> dict:
-    """Kick a ``scheduler.scheduled_jobs`` row to run on the next tick."""
-    return {"ok": checks.trigger_job(name)}
+    """Submit the job's Argo CronWorkflow as a one-off Workflow."""
+    result = await checks.trigger_job(name)
+    return {
+        "ok": result.status_code == 202,
+        "job": result.job,
+        "workflow_name": result.workflow_name,
+        "namespace": result.namespace,
+        "status_code": result.status_code,
+        "message": result.message,
+    }
 
 
 # --- Routine jobs (claude_agent.routine_jobs) ----------------------------

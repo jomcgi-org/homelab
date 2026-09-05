@@ -24,8 +24,8 @@ def argo_handled(job_name: str) -> bool:
 
     on_startup_jobs callers skip register_job for these so the job does not run
     both in-process and as a CronWorkflow. ARGO_JOBS is a comma-separated list of
-    in-process job names, derived by the chart from the non-suspended
-    cronWorkflows entries (see chart/templates/deployment.yaml).
+    in-process job names, derived by the chart from cronWorkflows entries with
+    ``replaces`` set (see chart/templates/deployment.yaml).
     """
     handled = {
         n.strip() for n in os.environ.get("ARGO_JOBS", "").split(",") if n.strip()

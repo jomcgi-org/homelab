@@ -4,12 +4,14 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from core.db import get_session
 import dataclasses
 import scheduler.module
 from framework import PRIVATE_PROFILE, build_app
+from scheduler.service import RunNowResult
 from scheduler.views import SchedulerJobView
 
 # Compose only the scheduler domain instead of the whole monolith: the
@@ -83,21 +85,62 @@ class TestGetJob:
 
 
 class TestRunNow:
-    def test_returns_view_after_trigger(self, client):
+    def test_matching_cronworkflow_returns_202(self, client, fake_session):
         with patch(
-            "scheduler.router.service.mark_for_immediate_run",
-            return_value=_view("j"),
+            "scheduler.router.service.run_now",
+            return_value=RunNowResult(
+                job="j",
+                workflow_name="nightly-manual-abc12",
+                namespace="workflows-test",
+                status_code=202,
+            ),
         ) as mock_trigger:
             r = client.post("/api/scheduler/jobs/j/run-now")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["name"] == "j"
-        mock_trigger.assert_called_once()
+
+        assert r.status_code == 202
+        assert r.json() == {
+            "job": "j",
+            "workflow_name": "nightly-manual-abc12",
+            "namespace": "workflows-test",
+        }
+        mock_trigger.assert_awaited_once_with(fake_session, "j")
 
     def test_returns_404_for_missing(self, client):
         with patch(
-            "scheduler.router.service.mark_for_immediate_run",
-            return_value=None,
+            "scheduler.router.service.run_now",
+            side_effect=HTTPException(status_code=404, detail="unknown job: missing"),
         ):
             r = client.post("/api/scheduler/jobs/missing/run-now")
         assert r.status_code == 404
+
+    def test_returns_409_when_no_cronworkflow_matches(self, client):
+        with patch(
+            "scheduler.router.service.run_now",
+            return_value=RunNowResult(
+                job="j",
+                workflow_name=None,
+                namespace="workflows-test",
+                status_code=409,
+                message="no CronWorkflow replaces job j",
+            ),
+        ):
+            r = client.post("/api/scheduler/jobs/j/run-now")
+
+        assert r.status_code == 409
+        assert r.json()["detail"] == "no CronWorkflow replaces job j"
+
+    def test_returns_502_for_kubernetes_error(self, client):
+        with patch(
+            "scheduler.router.service.run_now",
+            return_value=RunNowResult(
+                job="j",
+                workflow_name=None,
+                namespace="workflows-test",
+                status_code=502,
+                message="Kubernetes API error: boom",
+            ),
+        ):
+            r = client.post("/api/scheduler/jobs/j/run-now")
+
+        assert r.status_code == 502
+        assert r.json()["detail"] == "Kubernetes API error: boom"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session
 
 from core.db import get_session
@@ -40,14 +40,20 @@ def get_job(
 
 @router.post(
     "/jobs/{name}/run-now",
-    response_model=SchedulerJobView,
-    summary="Schedule a job to run on the next scheduler tick",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Submit a job's Argo CronWorkflow as a one-off Workflow",
 )
-def run_now(
+async def run_now(
     name: str,
     session: Session = Depends(get_session),
-) -> SchedulerJobView:
-    job = service.mark_for_immediate_run(session, name)
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"unknown job: {name}")
-    return job
+) -> dict[str, str]:
+    """Run a job now by submitting its Argo CronWorkflow as a one-off Workflow."""
+    result = await service.run_now(session, name)
+    if result.status_code != status.HTTP_202_ACCEPTED:
+        raise HTTPException(status_code=result.status_code, detail=result.message)
+    assert result.workflow_name is not None
+    return {
+        "job": result.job,
+        "workflow_name": result.workflow_name,
+        "namespace": result.namespace,
+    }

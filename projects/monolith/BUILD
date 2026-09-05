@@ -503,11 +503,13 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":pkg_cluster",
         ":pkg_core",
         ":pkg_framework",
         "@pip//certifi",
         "@pip//fastapi",
         "@pip//httpx",
+        "@pip//kubernetes_asyncio",
         "@pip//opentelemetry_exporter_otlp_proto_http",
         "@pip//opentelemetry_instrumentation_fastapi",
         "@pip//opentelemetry_instrumentation_httpx",
@@ -7083,7 +7085,10 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_scheduler",
+        "@pip//fastapi",
+        "@pip//kubernetes_asyncio",
         "@pip//pytest",
+        "@pip//pytest_asyncio",
         "@pip//sqlmodel",
     ],
 )
