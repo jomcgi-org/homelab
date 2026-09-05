@@ -462,23 +462,25 @@
     border-bottom: 0;
   }
 
-  /* A subsection is a partition of its section panel: a hairline rule edge
-     to edge above the heading, the same way a part is divided inside its
-     outline in the figures. */
+  /* Only whole sections get framed bands. Subsections use typography. */
   .post-body :global(h3) {
-    margin: 1.6rem -1rem 0.55rem;
-    padding: 1rem 1rem 0;
-    border-top: 1px solid var(--line);
+    margin: 1.25rem 0 0.55rem;
+    padding: 0;
     font-family: var(--font-ui);
-    font-size: 0.95rem;
+    font-size: 0.85rem;
     font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.045em;
     line-height: 1.25;
+  }
+  .post-body :global(h2 + h3) {
+    margin-top: 0.85rem;
   }
 
   .post-body :global(h4),
   .post-body :global(h5),
   .post-body :global(h6) {
-    margin: 1.2rem 0 0.45rem;
+    margin: 0.8rem 0 0.45rem;
     font-family: var(--font-code);
     font-size: 0.82rem;
     font-weight: 600;
@@ -726,19 +728,19 @@
   }
 
   .post-body :global(td.key[data-tone="gpu"]) {
-    --key-tone: var(--ink);
+    --key-tone: var(--ref-gpu);
   }
 
   .post-body :global(td.key[data-tone="ram"]) {
-    --key-tone: var(--ink);
+    --key-tone: var(--ref-ram);
   }
 
   .post-body :global(td.key[data-tone="cache"]) {
-    --key-tone: var(--ink);
+    --key-tone: var(--ref-cache);
   }
 
   .post-body :global(td.key[data-tone="disk"]) {
-    --key-tone: var(--ink);
+    --key-tone: var(--ref-disk);
   }
 
   .post-body :global(td.key[data-tone="hot"]) {

@@ -1,8 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 632" role="img" aria-label="One decode step through one expert layer">
   <line x1="350" y1="0" x2="350" y2="632" stroke="currentColor" stroke-width="1.25"/>
   <line x1="0" y1="316" x2="700" y2="316" stroke="currentColor" stroke-width="1.25"/>
-  <circle cx="18" cy="18" r="9" fill="none" stroke="var(--accent-ink)" stroke-width="1" data-key="1" data-tone="reference"/>
-  <text x="18" y="22" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--accent-ink)" text-anchor="middle">1</text>
+  <circle cx="18" cy="18" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
+  <g color="currentColor">
+  <text x="18" y="22" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">1</text>
+  </g>
   <text x="34" y="22" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">Route</text>
   <rect x="48" y="40" width="210" height="62" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="54" y="54" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">GPU</text>
@@ -26,28 +28,40 @@
   <text x="54" y="250" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">63.5 GB</text>
   <text x="176" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">table</text>
   <text x="176" y="250" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">27 GB</text>
-  <circle cx="26" cy="71" r="9" fill="none" stroke="var(--accent-ink)" stroke-width="1" data-key="A" data-tone="reference"/>
-  <text x="26" y="75" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--accent-ink)" text-anchor="middle">A</text>
+  <circle cx="26" cy="71" r="9" fill="none" stroke="var(--ref-gpu)" stroke-width="1" data-key="A" data-tone="gpu"/>
+  <g color="var(--ref-gpu)">
+  <text x="26" y="75" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">A</text>
+  </g>
   <line x1="35.0" y1="71.0" x2="48" y2="71" stroke="currentColor" stroke-width="1"/>
   <circle cx="48" cy="71" r="2" fill="currentColor"/>
-  <circle cx="26" cy="138" r="9" fill="none" stroke="var(--accent-ink)" stroke-width="1" data-key="B" data-tone="reference"/>
-  <text x="26" y="142" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--accent-ink)" text-anchor="middle">B</text>
+  <circle cx="26" cy="138" r="9" fill="none" stroke="var(--ref-ram)" stroke-width="1" data-key="B" data-tone="ram"/>
+  <g color="var(--ref-ram)">
+  <text x="26" y="142" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">B</text>
+  </g>
   <line x1="35.0" y1="138.0" x2="48" y2="138" stroke="currentColor" stroke-width="1"/>
   <circle cx="48" cy="138" r="2" fill="currentColor"/>
-  <circle cx="26" cy="189" r="9" fill="none" stroke="var(--accent-ink)" stroke-width="1" data-key="C" data-tone="reference"/>
-  <text x="26" y="193" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--accent-ink)" text-anchor="middle">C</text>
+  <circle cx="26" cy="189" r="9" fill="none" stroke="var(--ref-cache)" stroke-width="1" data-key="C" data-tone="cache"/>
+  <g color="var(--ref-cache)">
+  <text x="26" y="193" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">C</text>
+  </g>
   <line x1="35.0" y1="189.0" x2="48" y2="189" stroke="currentColor" stroke-width="1"/>
   <circle cx="48" cy="189" r="2" fill="currentColor"/>
-  <circle cx="26" cy="240" r="9" fill="none" stroke="var(--accent-ink)" stroke-width="1" data-key="D" data-tone="reference"/>
-  <text x="26" y="244" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--accent-ink)" text-anchor="middle">D</text>
+  <circle cx="26" cy="240" r="9" fill="none" stroke="var(--ref-disk)" stroke-width="1" data-key="D" data-tone="disk"/>
+  <g color="var(--ref-disk)">
+  <text x="26" y="244" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">D</text>
+  </g>
   <line x1="35.0" y1="240.0" x2="48" y2="240" stroke="currentColor" stroke-width="1"/>
   <circle cx="48" cy="240" r="2" fill="currentColor"/>
-  <circle cx="300" cy="174" r="9" fill="none" stroke="var(--accent-ink)" stroke-width="1" data-key="E" data-tone="reference"/>
-  <text x="300" y="178" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--accent-ink)" text-anchor="middle">E</text>
+  <circle cx="300" cy="174" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
+  <g color="currentColor">
+  <text x="300" y="178" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">E</text>
+  </g>
   <line x1="300.0" y1="165.0" x2="300" y2="158" stroke="currentColor" stroke-width="1"/>
   <circle cx="300" cy="158" r="2" fill="currentColor"/>
-  <circle cx="368" cy="18" r="9" fill="none" stroke="var(--accent-ink)" stroke-width="1" data-key="2" data-tone="reference"/>
-  <text x="368" y="22" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--accent-ink)" text-anchor="middle">2</text>
+  <circle cx="368" cy="18" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
+  <g color="currentColor">
+  <text x="368" y="22" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">2</text>
+  </g>
   <text x="384" y="22" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">Sort by residency</text>
   <rect x="398" y="40" width="210" height="62" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="404" y="54" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">GPU</text>
@@ -71,8 +85,10 @@
   <text x="404" y="250" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">63.5 GB</text>
   <text x="526" y="236" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">table</text>
   <text x="526" y="250" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">27 GB</text>
-  <circle cx="18" cy="334" r="9" fill="none" stroke="var(--accent-ink)" stroke-width="1" data-key="3" data-tone="reference"/>
-  <text x="18" y="338" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--accent-ink)" text-anchor="middle">3</text>
+  <circle cx="18" cy="334" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
+  <g color="currentColor">
+  <text x="18" y="338" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">3</text>
+  </g>
   <text x="34" y="338" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">Move</text>
   <rect x="48" y="356" width="210" height="62" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="54" y="370" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">GPU</text>
@@ -96,8 +112,10 @@
   <text x="54" y="566" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">63.5 GB</text>
   <text x="176" y="552" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">table</text>
   <text x="176" y="566" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">27 GB</text>
-  <circle cx="368" cy="334" r="9" fill="none" stroke="var(--accent-ink)" stroke-width="1" data-key="4" data-tone="reference"/>
-  <text x="368" y="338" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--accent-ink)" text-anchor="middle">4</text>
+  <circle cx="368" cy="334" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
+  <g color="currentColor">
+  <text x="368" y="338" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">4</text>
+  </g>
   <text x="384" y="338" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">Compute and tally</text>
   <rect x="398" y="356" width="210" height="62" fill="none" stroke="currentColor" stroke-width="1.25"/>
   <text x="404" y="370" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">GPU</text>
@@ -190,8 +208,10 @@
   <text x="6" y="456" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">stage</text>
   <text x="54" y="598" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">table rows: gather into pinned staging,</text>
   <text x="54" y="612" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="start">then copy to GPU before the forward</text>
-  <circle cx="650" cy="404" r="9" fill="none" stroke="var(--accent-ink)" stroke-width="1" data-key="+" data-tone="reference"/>
-  <text x="650" y="408" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="var(--accent-ink)" text-anchor="middle">+</text>
+  <circle cx="650" cy="404" r="9" fill="none" stroke="currentColor" stroke-width="1"/>
+  <g color="currentColor">
+  <text x="650" y="408" font-family="ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace" font-size="11" fill="currentColor" text-anchor="middle">+</text>
+  </g>
   <line x1="608" y1="396" x2="641" y2="402" stroke="currentColor" stroke-width="1"/>
   <line x1="641" y1="402" x2="636.4944315002559" y2="404.1679143189053" stroke="currentColor" stroke-width="1"/>
   <line x1="641" y1="402" x2="637.5458937244942" y2="398.3848720855948" stroke="currentColor" stroke-width="1"/>
