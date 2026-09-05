@@ -208,6 +208,20 @@ def test_chat_max_tokens_defaults_to_empty_env(chart_context):
     )
 
 
+def test_knowledge_recall_defaults_off_with_five_notes(chart_context):
+    """The API deployment receives both knowledge recall controls."""
+    rendered = chart_context["rendered"]
+
+    assert re.search(
+        r'- name: KNOWLEDGE_RECALL_ENABLED\n\s+value: "false"',
+        rendered,
+    )
+    assert re.search(
+        r'- name: KNOWLEDGE_RECALL_LIMIT\n\s+value: "5"',
+        rendered,
+    )
+
+
 def test_hosted_chat_provider_renders_from_deploy_values(chart_context):
     """Production values route Discord chat through the hosted provider."""
     rendered = chart_context["rendered"]

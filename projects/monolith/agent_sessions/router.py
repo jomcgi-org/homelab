@@ -44,6 +44,7 @@ from agent_sessions.mcp import (
 from core.db import get_session
 from faas.embervm_client import EmberVMTransportError
 from goosecracker.api import REPO_CATALOG
+from knowledge.api import attach_recall
 from agent_sessions.rationale import parse_rationale
 from auth.api import Principal, current_principal, get_principal
 
@@ -802,7 +803,11 @@ def _persist_task_session_start(
                     start_request.branch,
                     selected_model,
                     start_request.repo,
-                    system_prompt=_append_rationale_trailer(None, start_request.repo),
+                    system_prompt=attach_recall(
+                        _append_rationale_trailer(None, start_request.repo),
+                        start_request.prompt,
+                        node_key=None,
+                    ),
                     reasoning=_resolve_reasoning(start_request),
                     triggered_by=triggered_by,
                 )
@@ -876,6 +881,7 @@ async def _start_session(
             selected_model,
             start_request.repo,
             system_prompt=_append_rationale_trailer(None, start_request.repo),
+            prompt=start_request.prompt,
             reasoning=_resolve_reasoning(start_request),
             triggered_by=triggered_by,
         )

@@ -9,6 +9,7 @@ import agent_sessions.mcp as mcp
 from agent_sessions.models import AgentSession
 from agent_sessions.transport import EmberSessionGone, Turn
 from faas.embervm_client import EmberVMTransportError
+import knowledge.recall as recall
 
 
 def _completed_synthetic_turn() -> Turn:
@@ -122,8 +123,8 @@ def test_run_synthetic_session_aborts_when_claim_stolen_mid_deliver(monkeypatch)
         assert delay == 10
         await real_sleep(0)
 
-    async def to_thread(function, *args):
-        return function(*args)
+    async def to_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
 
     def refresh_claim(session_id, turn_seq, claim_owner):
         refresh_calls.append((session_id, turn_seq, claim_owner))
@@ -337,6 +338,79 @@ def test_start_session_for_swarm_retry_preserves_original_workflow_id(
         for table in SQLModel.metadata.tables.values():
             if table.name in schemas:
                 table.schema = schemas[table.name]
+
+
+def test_persist_session_attaches_recall_to_system_prompt(monkeypatch, tmp_path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'recall_attach_test.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    captured = {}
+
+    def create_session(_session, *args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return AgentSession(
+            id=51,
+            local_session_id=args[0],
+            workspace=args[1],
+            branch=args[2],
+        )
+
+    monkeypatch.setattr(mcp, "get_engine", lambda: engine)
+    monkeypatch.setattr(recall, "recall_block", lambda _prompt: "fixed recall")
+    monkeypatch.setattr(mcp.store, "create_session", create_session)
+
+    mcp._persist_session(
+        "local-recall",
+        "<guest>",
+        "main",
+        "luna",
+        "jomcgi-org/homelab",
+        system_prompt="base prompt",
+        prompt="the first user task is long enough",
+        node_key="implement",
+    )
+
+    assert captured["kwargs"]["system_prompt"] == "base prompt\n\nfixed recall"
+    assert captured["kwargs"]["node_key"] == "implement"
+
+
+def test_start_session_for_swarm_passes_first_prompt_to_persistence(
+    monkeypatch, tmp_path
+):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'swarm_recall_test.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    captured = {}
+
+    def persist(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return AgentSession(
+            id=52,
+            local_session_id=args[0],
+            workspace=args[1],
+            branch=args[2],
+        )
+
+    monkeypatch.setattr(api, "_persist_session", persist)
+    monkeypatch.setattr(api, "_persist_pending_message", lambda *_args: 1)
+    monkeypatch.setattr(api, "_schedule_next_message", lambda _session_id: None)
+    monkeypatch.setattr(api, "get_engine", lambda: engine)
+    monkeypatch.setattr(api.store, "get_session_by_local_id", lambda *_args: None)
+
+    session_id = api.start_session_for_swarm(
+        "swarm-recall",
+        "the first swarm task prompt",
+        "luna",
+        "jomcgi-org/homelab",
+        "main",
+    )
+
+    assert session_id == 52
+    assert captured["kwargs"]["prompt"] == "the first swarm task prompt"
 
 
 @pytest.mark.asyncio

@@ -417,6 +417,10 @@ spec:
               value: {{ .Values.knowledge.defaultRepoScope | quote }}
             - name: KG_FEED_ENABLED
               value: {{ .Values.knowledge.feeds.emberSessions.enabled | quote }}
+            - name: KNOWLEDGE_RECALL_ENABLED
+              value: {{ .Values.knowledge.recall.enabled | quote }}
+            - name: KNOWLEDGE_RECALL_LIMIT
+              value: {{ .Values.knowledge.recall.limit | quote }}
             - name: KG_REPO_DIFF_ENABLED
               value: {{ .Values.knowledge.feeds.repoDiff.enabled | quote }}
             - name: KG_DOCFIX_REVIEW_ENABLED

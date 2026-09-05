@@ -22,6 +22,7 @@ from core.github import GITHUB_REPO
 from knowledge import raw_store
 from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.models import AtomRawProvenance, Dispute, Note, RawInput
+from knowledge.recall import _get_repo_scope, render_related_notes
 from shared.embedding import EmbeddingClient
 
 KG_JOB_KIND = "kg-drain"
@@ -46,12 +47,6 @@ REPO_DIFF_JOB_NAME = "kg-repo-diff"
 REPO_DIFF_INTERVAL_SECS = 3600
 REPO_DIFF_PATCH_CAP = 60_000
 DOC_DRIFT_CAP = 10
-DEFAULT_REPO_SCOPE = "repo:jomcgi-org/homelab"
-
-
-def _get_repo_scope() -> str:
-    """Get the scope to use for repo-scoped knowledge operations."""
-    return os.environ.get("KNOWLEDGE_DEFAULT_REPO_SCOPE", DEFAULT_REPO_SCOPE)
 
 
 _SCOPE_PATTERN = r"^(personal|org|repo|environment|session):.+$"
@@ -396,21 +391,7 @@ def build_extraction_prompt(session: Session, raw: RawInput) -> str:
         scope_filter=_get_repo_scope(),
         exclude_invalidated=True,
     )
-    related_lines = []
-    for item in related:
-        nonce = secrets.token_hex(6)
-        related_lines.append(
-            "- [{note_id}] {title} ({scope}, {verification_state}): "
-            "<<<RELATED NOTE {nonce}>>>{snippet}<<<END RELATED NOTE {nonce}>>>".format(
-                note_id=item.get("note_id", ""),
-                title=item.get("title", ""),
-                scope=item.get("scope") or "scope unknown",
-                verification_state=item.get("verification_state") or "legacy",
-                nonce=nonce,
-                snippet=item.get("snippet", ""),
-            )
-        )
-    related_text = "\n".join(related_lines) or "- none"
+    related_text = "\n".join(render_related_notes(related)) or "- none"
     raw_nonce = secrets.token_hex(6)
     output_contract = (
         "reply with exactly one fenced ```json block, last thing in the message, shaped "

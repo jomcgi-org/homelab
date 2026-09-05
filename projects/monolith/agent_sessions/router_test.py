@@ -968,8 +968,10 @@ def test_get_session_not_found(client):
 def test_start_session_happy_path(client, session, monkeypatch):
     monkeypatch.setattr(
         "agent_sessions.router._persist_session",
-        lambda local, workspace, branch, model, repo, **kwargs: store.create_session(
-            session, local, workspace, branch, model, repo, **kwargs
+        lambda local, workspace, branch, model, repo, prompt=None, **kwargs: (
+            store.create_session(
+                session, local, workspace, branch, model, repo, **kwargs
+            )
         ),
     )
     monkeypatch.setattr(
@@ -988,8 +990,10 @@ def test_start_session_happy_path(client, session, monkeypatch):
 def test_start_session_persists_repo(client, session, monkeypatch):
     monkeypatch.setattr(
         "agent_sessions.router._persist_session",
-        lambda local, workspace, branch, model, repo, **kwargs: store.create_session(
-            session, local, workspace, branch, model, repo, **kwargs
+        lambda local, workspace, branch, model, repo, prompt=None, **kwargs: (
+            store.create_session(
+                session, local, workspace, branch, model, repo, **kwargs
+            )
         ),
     )
     monkeypatch.setattr(
@@ -1013,8 +1017,10 @@ def test_start_session_persists_repo(client, session, monkeypatch):
 def test_start_session_persists_triggered_by_header(client, session, monkeypatch):
     monkeypatch.setattr(
         "agent_sessions.router._persist_session",
-        lambda local, workspace, branch, model, repo, **kwargs: store.create_session(
-            session, local, workspace, branch, model, repo, **kwargs
+        lambda local, workspace, branch, model, repo, prompt=None, **kwargs: (
+            store.create_session(
+                session, local, workspace, branch, model, repo, **kwargs
+            )
         ),
     )
     monkeypatch.setattr(
@@ -1044,8 +1050,10 @@ def test_start_session_without_triggered_by_header_succeeds(
 ):
     monkeypatch.setattr(
         "agent_sessions.router._persist_session",
-        lambda local, workspace, branch, model, repo, **kwargs: store.create_session(
-            session, local, workspace, branch, model, repo, **kwargs
+        lambda local, workspace, branch, model, repo, prompt=None, **kwargs: (
+            store.create_session(
+                session, local, workspace, branch, model, repo, **kwargs
+            )
         ),
     )
     monkeypatch.setattr(
@@ -1513,7 +1521,7 @@ def test_router_start_non_codex_models_enqueue_without_broker(
     monkeypatch.setattr(mcp, "_broker_request", broker_request)
     monkeypatch.setattr(
         "agent_sessions.router._persist_session",
-        lambda local, workspace, branch, selected_model, repo, **kwargs: (
+        lambda local, workspace, branch, selected_model, repo, prompt=None, **kwargs: (
             store.create_session(
                 session, local, workspace, branch, selected_model, repo, **kwargs
             )
@@ -1559,8 +1567,10 @@ def test_router_start_codex_login_required_preserves_session_and_watches(
     monkeypatch.setattr(mcp, "_broker_request", broker_request)
     monkeypatch.setattr(
         "agent_sessions.router._persist_session",
-        lambda local, workspace, branch, model, repo, **kwargs: store.create_session(
-            session, local, workspace, branch, model, repo, **kwargs
+        lambda local, workspace, branch, model, repo, prompt=None, **kwargs: (
+            store.create_session(
+                session, local, workspace, branch, model, repo, **kwargs
+            )
         ),
     )
     monkeypatch.setattr(
@@ -1815,7 +1825,7 @@ def test_mcp_tools_still_work(session, monkeypatch):
     monkeypatch.setattr(
         mcp,
         "_persist_session",
-        lambda local, workspace, branch, model, repo=None, **kwargs: (
+        lambda local, workspace, branch, model, repo=None, prompt=None, **kwargs: (
             store.create_session(
                 session, local, workspace, branch, model, repo, **kwargs
             )
@@ -1840,8 +1850,10 @@ def test_start_session_marks_message_ui_originated(client, session, monkeypatch)
     mcp._ui_originated.clear()
     monkeypatch.setattr(
         "agent_sessions.router._persist_session",
-        lambda local, workspace, branch, model, repo, **kwargs: store.create_session(
-            session, local, workspace, branch, model, repo, **kwargs
+        lambda local, workspace, branch, model, repo, prompt=None, **kwargs: (
+            store.create_session(
+                session, local, workspace, branch, model, repo, **kwargs
+            )
         ),
     )
     monkeypatch.setattr(
@@ -1915,8 +1927,10 @@ def test_start_session_reasoning_defaults_from_repo_presence(
     mcp._ui_originated.clear()
     monkeypatch.setattr(
         "agent_sessions.router._persist_session",
-        lambda local, workspace, branch, model, repo, **kwargs: store.create_session(
-            session, local, workspace, branch, model, repo, **kwargs
+        lambda local, workspace, branch, model, repo, prompt=None, **kwargs: (
+            store.create_session(
+                session, local, workspace, branch, model, repo, **kwargs
+            )
         ),
     )
     monkeypatch.setattr(
@@ -1944,7 +1958,7 @@ def test_start_session_for_discord_thread_adds_rationale_prompt(session, monkeyp
     monkeypatch.setattr(
         api,
         "_persist_session",
-        lambda local, workspace, branch, model, repo=None, **kwargs: (
+        lambda local, workspace, branch, model, repo=None, prompt=None, **kwargs: (
             store.create_session(
                 session, local, workspace, branch, model, repo, **kwargs
             )

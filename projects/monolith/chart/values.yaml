@@ -1047,6 +1047,11 @@ knowledge:
   enabled: false
   # Scope assigned to repository knowledge reports when callers propose repo.
   defaultRepoScope: "repo:jomcgi-org/homelab"
+  # Recall top knowledge-graph facts into every Ember session's system prompt
+  # (ADR agents/063 read side). kg-drain sessions are always excluded.
+  recall:
+    enabled: false
+    limit: 5
   feeds:
     emberSessions:
       # Export finished Ember sessions only after this dark feed is verified.
