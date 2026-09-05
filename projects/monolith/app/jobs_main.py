@@ -122,11 +122,23 @@ def agent_drain_trigger() -> None:
     _post_internal("/internal/agent/drain", "agent-drain-trigger", timeout=90)
 
 
-_INTERNAL_POST_ATTEMPTS = 6
-_INTERNAL_POST_RETRY_SECONDS = 2.0
+# Hub evidence from 2026-09-05 showed rollout disconnects at 07:30 and 08:40.
+# Keep retries bounded while covering the normal monolith rollout window.
+_INTERNAL_POST_RETRY_DELAYS_S = (2.0, 5.0, 10.0, 20.0, 30.0)
+_INTERNAL_POST_RETRY_STATUS_CODES = frozenset({502, 503, 504})
 
 
 def _post_internal(path: str, name: str, timeout: int = 180) -> None:
+    """POST an idempotent internal trigger, retrying rollout failures.
+
+    Retrying POST is safe here because every caller targets an idempotent
+    ``/internal/*-trigger`` endpoint. Each endpoint starts or enqueues at most
+    one run and treats a duplicate as an already-running success. A future
+    non-idempotent endpoint must not use this retrying helper. The internal
+    URL is the plain Service, so a follower replica answers 503 for the
+    leader-only endpoints (#5590) and a rollout drops the connection
+    mid-request (#5715); both are covered by the same ladder.
+    """
     import httpx
 
     configure_logging()
@@ -134,29 +146,53 @@ def _post_internal(path: str, name: str, timeout: int = 180) -> None:
     if not url:
         raise RuntimeError("MONOLITH_INTERNAL_URL is not set")
     logger.info("%s: POST %s%s", name, url, path)
-    # The internal URL is the plain Service, so with two replicas about half
-    # the calls land on the follower. The drain endpoint now answers from any
-    # replica, while the other _post_internal endpoints still answer 503 from
-    # followers because DBOS is launched on the leader only. Each attempt is a
-    # fresh connection, so a retry lands on another backend; six attempts make
-    # a follower-only streak vanishingly rare (#5590).
-    resp = None
-    for attempt in range(_INTERNAL_POST_ATTEMPTS):
-        resp = httpx.post(f"{url}{path}", timeout=timeout)
-        if resp.status_code != 503:
-            break
-        logger.warning(
-            "%s: 503 from %s%s (attempt %d/%d), retrying",
-            name,
-            url,
-            path,
-            attempt + 1,
-            _INTERNAL_POST_ATTEMPTS,
-        )
-        time.sleep(_INTERNAL_POST_RETRY_SECONDS)
-    assert resp is not None
-    resp.raise_for_status()
-    logger.info("%s: %s", name, resp.json())
+    request_url = f"{url}{path}"
+    attempts = len(_INTERNAL_POST_RETRY_DELAYS_S) + 1
+    for attempt in range(1, attempts + 1):
+        retry_error: httpx.HTTPError | None = None
+        try:
+            resp = httpx.post(request_url, timeout=timeout)
+        except (
+            httpx.RemoteProtocolError,
+            httpx.ConnectError,
+            httpx.ReadError,
+            httpx.ReadTimeout,
+        ) as exc:
+            retry_error = exc
+        else:
+            if resp.status_code in _INTERNAL_POST_RETRY_STATUS_CODES:
+                try:
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    retry_error = exc
+
+        if retry_error is not None:
+            if attempt == attempts:
+                raise retry_error
+
+            delay = _INTERNAL_POST_RETRY_DELAYS_S[attempt - 1]
+            logger.warning(
+                "%s: retryable %s on attempt %d/%d, retrying POST %s in %.0fs",
+                name,
+                type(retry_error).__name__,
+                attempt,
+                attempts,
+                request_url,
+                delay,
+            )
+            time.sleep(delay)
+            continue
+
+        resp.raise_for_status()
+        if attempt > 1:
+            logger.info(
+                "%s: POST %s succeeded after %d retries",
+                name,
+                request_url,
+                attempt - 1,
+            )
+        logger.info("%s: %s", name, resp.json())
+        return
 
 
 @app.callback()
