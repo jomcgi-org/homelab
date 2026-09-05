@@ -79,6 +79,18 @@ defmodule Embervm.SchedulerTest do
     assert Scheduler.base_ready?(brick(workloads: ready("wl", %{base_state: 3})), "wl")
   end
 
+  test "base readiness uses the public enum predicate for every representation" do
+    for state <- [:BASE_BUILD_STATE_READY, 3] do
+      assert Scheduler.base_state_ready?(state)
+      assert Scheduler.base_ready?(brick(workloads: ready("wl", %{base_state: state})), "wl")
+    end
+
+    for state <- [:BASE_BUILD_STATE_NONE, :BASE_BUILD_STATE_UNSPECIFIED, 0, "READY", nil] do
+      refute Scheduler.base_state_ready?(state)
+      refute Scheduler.base_ready?(brick(workloads: ready("wl", %{base_state: state})), "wl")
+    end
+  end
+
   test "base ready is false when workloads is missing" do
     refute Scheduler.base_ready?(%{instance_id: "node/pod"}, "wl")
   end

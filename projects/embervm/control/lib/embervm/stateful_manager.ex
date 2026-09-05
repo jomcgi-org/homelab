@@ -3354,6 +3354,9 @@ defmodule Embervm.StatefulManager do
   # full local base inventory and be READY there too. Rootfs identity rejection
   # can remove the inventory entry before the summary changes, which made the old
   # predicate launch a wake that placement could never satisfy.
+  # An empty inventory is deliberately authoritative because that is the incident
+  # signature. This fail-closed path assumes a well-behaved daemon always populates
+  # local_bases; one that never does would prevent every pinned workload from waking.
   defp live_base_ready_somewhere?(facts, workload) do
     Enum.any?(facts, fn fact ->
       case get_in(fact, [:workloads, workload]) do
@@ -3361,7 +3364,7 @@ defmodule Embervm.StatefulManager do
           Embervm.Scheduler.base_ready?(fact, workload) and
             Enum.any?(Map.get(fact, :local_bases, []) || [], fn base ->
               Map.get(base, :workload) == workload and Map.get(base, :ref) == ref and
-                Map.get(base, :base_state) in [:BASE_BUILD_STATE_READY, 3]
+                Scheduler.base_state_ready?(Map.get(base, :base_state))
             end)
 
         _ ->

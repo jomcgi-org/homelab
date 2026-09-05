@@ -1800,7 +1800,7 @@ defmodule Embervm.BaseBuilderTest do
     assert Agent.get(builds, & &1) == 2
   end
 
-  test "capacity inventory drop clears the recorded base and enqueues one audited rebuild" do
+  test "non-READY inventory entry clears the recorded base and enqueues one audited rebuild" do
     table = new_cap_table()
     put_brick(table, "node-4", "uid", cpu_vendor: "amd")
     test_pid = self()
@@ -1836,8 +1836,10 @@ defmodule Embervm.BaseBuilderTest do
       BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1"
     end)
 
+    store_evidence = %{ref: "snap-1", confirmed_at: 1}
+
     :sys.replace_state(builder, fn state ->
-      put_in(state.workloads["w"].store_confirmed["amd"], %{ref: "snap-1", confirmed_at: 1})
+      put_in(state.workloads["w"].store_confirmed["amd"], store_evidence)
     end)
 
     put_node_local_bases_fact(table, "node-4", "uid", "w", "snap-1", true, [
@@ -1848,7 +1850,8 @@ defmodule Embervm.BaseBuilderTest do
     _ = :sys.get_state(builder)
     assert Agent.get(builds, & &1) == 1
 
-    put_node_local_bases_fact(table, "node-4", "uid", "w", "snap-1", true, [])
+    dropped_base = %{ready_base("snap-1", "w", 1) | base_state: :BASE_BUILD_STATE_NONE}
+    put_node_local_bases_fact(table, "node-4", "uid", "w", "snap-1", true, [dropped_base])
     :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
 
     assert_receive {:op_appended, %{kind: :base_built} = op}, 1_000
@@ -1860,10 +1863,14 @@ defmodule Embervm.BaseBuilderTest do
     assert_receive {:dropped_rebuild_started, worker}, 1_000
     assert Agent.get(builds, & &1) == 2
 
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    _ = :sys.get_state(builder)
+    assert Agent.get(builds, & &1) == 2
+
     dropped = BaseBuilder.status(builder).workloads["w"]
     assert dropped.snapshot_ref == nil
     assert dropped.vendor_built == %{}
-    assert dropped.store_confirmed == %{}
+    assert dropped.store_confirmed == %{"amd" => store_evidence}
 
     send(worker, :finish_dropped_rebuild)
   end
@@ -1872,6 +1879,7 @@ defmodule Embervm.BaseBuilderTest do
     table = new_cap_table()
     put_brick(table, "node-4", "uid", cpu_vendor: "amd")
     {:ok, builds} = Agent.start_link(fn -> 0 end)
+    {:ok, clock} = Agent.start_link(fn -> 10_000 end)
 
     build_fun = fn :fake_channel, _req ->
       count = Agent.get_and_update(builds, fn n -> {n + 1, n + 1} end)
@@ -1884,9 +1892,9 @@ defmodule Embervm.BaseBuilderTest do
         capacity_table: table,
         status_writer: fn _, _, _ -> :ok end,
         build_fun: build_fun,
-        clock: fn -> 10_000 end,
+        clock: fn -> Agent.get(clock, & &1) end,
         base_backoff_ms: 1_000
-    )
+      )
 
     :ok = BaseBuilder.reconcile(builder, desc())
 
@@ -1914,6 +1922,15 @@ defmodule Embervm.BaseBuilderTest do
     _ = :sys.get_state(builder)
 
     assert Agent.get(builds, & &1) == 2
+
+    Agent.update(clock, &(&1 + 1_001))
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-3"
+    end)
+
+    assert Agent.get(builds, & &1) == 3
   end
 
   test "inventory drop does not enqueue while a build worker or hydrate is in flight" do
@@ -2870,8 +2887,15 @@ defmodule Embervm.BaseBuilderTest do
     :ok = BaseBuilder.reconcile(builder, desc(%{generation: 2, image_ref: "imgI"}))
     assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "intel-i" end)
 
+    :sys.replace_state(builder, fn state ->
+      state
+      |> put_in([:workloads, "w", :store_confirmed, "amd"], %{ref: "amd-a", confirmed_at: 1})
+      |> put_in([:workloads, "w", :store_confirmed, "intel"], %{ref: "intel-i", confirmed_at: 2})
+    end)
+
     before_force = :sys.get_state(builder).workloads["w"]
     assert Map.keys(before_force.vendor_built) |> Enum.sort() == ["amd", "intel"]
+    assert Map.keys(before_force.store_confirmed) |> Enum.sort() == ["amd", "intel"]
 
     GenServer.cast(
       builder,
@@ -2882,6 +2906,8 @@ defmodule Embervm.BaseBuilderTest do
     during_force = :sys.get_state(builder).workloads["w"]
     assert Map.keys(during_force.vendor_built) == ["amd"]
     assert during_force.vendor_built["amd"].ref == "amd-a"
+    assert Map.keys(during_force.store_confirmed) == ["amd"]
+    assert during_force.store_confirmed["amd"].ref == "amd-a"
     assert during_force.snapshot_ref == nil
 
     send(worker, :finish_forced_rebuild)

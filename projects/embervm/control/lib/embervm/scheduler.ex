@@ -118,7 +118,9 @@ defmodule Embervm.Scheduler do
   # The daemon reports base_state as a proto enum. Accept the protobuf-elixir atom
   # form AND the raw integer 3 defensively: both shapes reach us off the wire, and
   # matching only the atom silently reads a READY brick as not-ready.
-  defp base_state_ready?(:BASE_BUILD_STATE_READY), do: true
-  defp base_state_ready?(3), do: true
-  defp base_state_ready?(_), do: false
+  @doc "Whether a daemon base state uses either supported READY representation."
+  @spec base_state_ready?(term()) :: boolean()
+  def base_state_ready?(:BASE_BUILD_STATE_READY), do: true
+  def base_state_ready?(3), do: true
+  def base_state_ready?(_), do: false
 end
