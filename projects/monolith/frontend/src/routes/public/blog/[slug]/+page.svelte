@@ -223,10 +223,10 @@
         </article>
 
         <!-- One panel per numbered section: a page flip between them. -->
-        {#each data.sections as section, index}
+        {#each data.sections as section}
           <section class="edition post-body">
             {@html section}
-            {#if data.slug === "125b-on-a-4090" && index === data.sections.length - 1}
+            {#if data.slug === "125b-on-a-4090" && section.startsWith('<h2 id="demo"')}
               {#await import("$lib/public/posts/QwenReplay.svelte")}
                 <p>Loading the recorded conversation...</p>
               {:then replay}
@@ -720,23 +720,29 @@
   }
 
   .post-body :global(td.key[data-tone="gpu"]) {
-    --key-tone: var(--tone-gpu);
+    --key-tone: var(--ink);
   }
 
   .post-body :global(td.key[data-tone="ram"]) {
-    --key-tone: var(--tone-ram);
+    --key-tone: var(--ink);
   }
 
   .post-body :global(td.key[data-tone="cache"]) {
-    --key-tone: var(--tone-cache);
+    --key-tone: var(--ink);
   }
 
   .post-body :global(td.key[data-tone="disk"]) {
-    --key-tone: var(--tone-disk);
+    --key-tone: var(--ink);
   }
 
   .post-body :global(td.key[data-tone="hot"]) {
-    --key-tone: var(--tone-hot);
+    --key-tone: var(--replay-hot);
+  }
+  .post-body :global(td.key[data-tone="warm"]) {
+    --key-tone: var(--replay-warm);
+  }
+  .post-body :global(td.key[data-tone="cold"]) {
+    --key-tone: var(--replay-cold);
   }
 
   @media (max-width: 760px) {
