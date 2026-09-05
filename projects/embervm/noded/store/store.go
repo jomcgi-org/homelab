@@ -114,8 +114,10 @@ type FileMeta struct {
 // (0 for kinds with no generation); CreatedAtUnixMs records when the export ran.
 // CpuVendor and CpuTemplate (PR-E) stamp the exporting node's cpu_sku onto the
 // artifact. RootfsID records the ext4 UUID from a base's rootfsid sidecar so a
-// target node can reject incompatible bytes from this marker alone. All three
-// are omitempty for backward-compatible metadata. In particular, an artifact
+// target node can reject incompatible bytes from this marker alone. ImageRef
+// records the runtime image ref from a base's imageref sidecar so a zip-lane
+// restore can resolve its rootfs without a workload-keyed image entry. These
+// fields are omitempty for backward-compatible metadata. In particular, an artifact
 // exported before PR-E serializes with NEITHER CPU field present, which is the
 // grandfather rule's UNSTAMPED case.
 type Meta struct {
@@ -125,6 +127,7 @@ type Meta struct {
 	CpuVendor       string              `json:"cpuVendor,omitempty"`
 	CpuTemplate     string              `json:"cpuTemplate,omitempty"`
 	RootfsID        string              `json:"rootfsId,omitempty"`
+	ImageRef        string              `json:"imageRef,omitempty"`
 	Envelope        []byte              `json:"envelope,omitempty"`
 }
 
@@ -446,6 +449,13 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 			}
 			meta.RootfsID = strings.TrimSpace(string(rootfsID))
 		}
+		if name == "imageref" {
+			imageRef, rerr := os.ReadFile(path)
+			if rerr != nil {
+				return 0, false, fmt.Errorf("store: read artifact imageref: %w", rerr)
+			}
+			meta.ImageRef = strings.TrimSpace(string(imageRef))
+		}
 	}
 	var opts ExportOptions
 	if len(options) > 0 {
@@ -459,6 +469,24 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 	if !opts.Overwrite {
 		if present, remoteMeta, merr := s.getMeta(ctx, prefix); merr == nil && present {
 			if sameFiles(remoteMeta.Files, meta.Files) {
+				markerChanged := false
+				if meta.RootfsID != "" && remoteMeta.RootfsID != meta.RootfsID {
+					remoteMeta.RootfsID = meta.RootfsID
+					markerChanged = true
+				}
+				if meta.ImageRef != "" && remoteMeta.ImageRef != meta.ImageRef {
+					remoteMeta.ImageRef = meta.ImageRef
+					markerChanged = true
+				}
+				if markerChanged {
+					metaBytes, jerr := json.Marshal(remoteMeta)
+					if jerr != nil {
+						return 0, false, fmt.Errorf("store: marshal metadata backfill: %w", jerr)
+					}
+					if perr := s.Put(ctx, prefix+"/"+metaObject, bytes.NewReader(metaBytes), int64(len(metaBytes))); perr != nil {
+						return 0, false, fmt.Errorf("store: write metadata backfill: %w", perr)
+					}
+				}
 				return 0, true, nil
 			}
 			// Content DIFFERS. Before this fence that fell straight through to a full
@@ -828,28 +856,28 @@ func (s *Store) ListRefs(ctx context.Context, prefix string, limit int) (refs []
 }
 
 // ArtifactInfo reports completeness-marker fields used by list and restore:
-// created-at, summed file size, vendor stamp, rootfs UUID, generation, and
-// opaque envelope.
+// created-at, summed file size, vendor stamp, rootfs UUID, runtime image ref,
+// generation, and opaque envelope.
 //
 // Returned flat rather than as a Meta so callers depend only on the fields they
 // consume. Same contract as getMeta: an absent marker is (false, ...) with a nil
 // error, so an incomplete artifact reads as not present.
-func (s *Store) ArtifactInfo(ctx context.Context, prefix string) (present bool, createdAtUnixMs int64, sizeBytes uint64, cpuVendor, cpuTemplate, rootfsID string, generation uint64, envelope []byte, err error) {
+func (s *Store) ArtifactInfo(ctx context.Context, prefix string) (present bool, createdAtUnixMs int64, sizeBytes uint64, cpuVendor, cpuTemplate, rootfsID, imageRef string, generation uint64, envelope []byte, err error) {
 	if s == nil {
-		return false, 0, 0, "", "", "", 0, nil, nil
+		return false, 0, 0, "", "", "", "", 0, nil, nil
 	}
 	ok, meta, merr := s.getMeta(ctx, prefix)
 	if merr != nil {
-		return false, 0, 0, "", "", "", 0, nil, merr
+		return false, 0, 0, "", "", "", "", 0, nil, merr
 	}
 	if !ok {
-		return false, 0, 0, "", "", "", 0, nil, nil
+		return false, 0, 0, "", "", "", "", 0, nil, nil
 	}
 	var total int64
 	for _, fm := range meta.Files {
 		total += fm.Size
 	}
-	return true, meta.CreatedAtUnixMs, uint64(total), meta.CpuVendor, meta.CpuTemplate, meta.RootfsID, meta.Generation, append([]byte(nil), meta.Envelope...), nil
+	return true, meta.CreatedAtUnixMs, uint64(total), meta.CpuVendor, meta.CpuTemplate, meta.RootfsID, meta.ImageRef, meta.Generation, append([]byte(nil), meta.Envelope...), nil
 }
 
 // ArtifactFileSHA256 reports the checksum recorded for one file in an

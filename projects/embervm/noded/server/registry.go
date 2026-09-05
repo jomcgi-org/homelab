@@ -516,7 +516,7 @@ func (b *baseRegistry) readyBuild(ref, workload, imageDigest, rootfsPath, readyP
 }
 
 // failBuild records a failed base build with its error, surfaced in NodeStatus.
-func (b *baseRegistry) failBuild(ref, buildErr string) {
+func (b *baseRegistry) failBuild(ref, workload, rootfsPath, readyPath, buildErr string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if e, ok := b.bases[ref]; ok {
@@ -526,6 +526,9 @@ func (b *baseRegistry) failBuild(ref, buildErr string) {
 	}
 	b.bases[ref] = &baseEntry{
 		snapshotRef: ref,
+		workload:    workload,
+		rootfsPath:  rootfsPath,
+		readyPath:   readyPath,
 		state:       nodev1.BaseBuildState_BASE_BUILD_STATE_FAILED,
 		buildErr:    buildErr,
 	}

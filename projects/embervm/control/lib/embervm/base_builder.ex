@@ -956,52 +956,46 @@ defmodule Embervm.BaseBuilder do
   # nor rebuild here), or nobody holds it (then force the rebuild directly, the
   # same convergence the FAILED_PRECONDITION fallback produces without the doomed
   # RPC). The `hydrating` guard dedupes so a 10s retry loop spawns one worker.
-  defp hydrate_for_anchor(state, workload, node_id) when is_binary(workload) and is_binary(node_id) do
+  defp hydrate_for_anchor(state, workload, node_id) do
+    case hydrate_for_anchor_outcome(state, workload, node_id) do
+      {next_state, :noop} -> maybe_force_rebuild_after_hydrate_noop(next_state, workload, node_id)
+      {next_state, _outcome} -> next_state
+    end
+  end
+
+  defp hydrate_for_anchor_outcome(state, workload, node_id)
+       when is_binary(workload) and is_binary(node_id) do
     w = Map.get(state.workloads, workload)
+
+    anchor_vendor =
+      state.capacity_table
+      |> Embervm.NodeCapacity.vendor_for(node_id)
+      |> to_string()
+      |> String.trim()
+
+    ref_to_use = if is_nil(w), do: nil, else: ref_for_vendor(state, w, anchor_vendor)
 
     cond do
       is_nil(w) ->
-        state
+        {state, :noop}
 
       not is_binary(w.snapshot_ref) ->
         # Nothing recorded to hydrate FROM: a first build has to happen normally.
-        state
+        {state, :noop}
 
       w.built_signature != signature(w) ->
         # The spec moved under us; a rebuild owns this, not a hydrate.
-        state
+        {state, :noop}
 
       MapSet.member?(state.hydrating, workload) ->
-        state
+        {state, :noop}
 
       true ->
-        anchor_vendor =
-          state.capacity_table
-          |> Embervm.NodeCapacity.vendor_for(node_id)
-          |> to_string()
-          |> String.trim()
-
-        # Resolve the anchor vendor's own ref, preferring the DURABLE per-vendor
-        # build record over the fleet view (#4893 site 3): the observed map is
-        # built from whichever nodes reported last, while vendor_built carries
-        # signature currency. Fall back to the observed refs (sorted, so the
-        # pick is deterministic) only when no durable record exists.
-        ref_to_use =
-          case Map.get(w.vendor_built, anchor_vendor) do
-            %{signature: sig, ref: ref} when is_binary(ref) and ref != "" ->
-              if sig == signature(w), do: ref, else: nil
-
-            _ ->
-              snapshot_refs_by_vendor(state, w)
-              |> Map.get(anchor_vendor, [])
-              |> List.first()
-          end
-
         case {ref_to_use, build_instance_on_node(state, w, node_id)} do
           {nil, _} ->
             # No vendor ref available for anchor. Skip hydrate to avoid wrong
             # vendor stamp. Return unchanged.
-            state
+            {state, :noop}
 
           {_ref, nil} ->
             # No build-eligible instance on the anchor node. Loud, because the wake
@@ -1012,7 +1006,7 @@ defmodule Embervm.BaseBuilder do
                 "and no build-eligible instance exists there to hydrate onto"
             )
 
-            state
+            {state, :noop}
 
           {ref_to_use, instance_id} ->
             cond do
@@ -1024,60 +1018,78 @@ defmodule Embervm.BaseBuilder do
                     "after its anchor node #{node_id} reported no local base"
                 )
 
-                state
-                |> mark_hydrating(workload)
-                |> spawn_hydrate(
-                  %{w | node_id: instance_id, snapshot_ref: ref_to_use},
-                  anchor_node
-                )
+                next_state =
+                  state
+                  |> mark_hydrating(workload)
+                  |> spawn_hydrate(
+                    %{w | node_id: instance_id, snapshot_ref: ref_to_use},
+                    anchor_node
+                  )
 
-              ref_present_on_any_node?(state, workload, ref_to_use) ->
-                # A surviving local copy exists but the store does not (yet)
-                # hold it: export first, hydrate later. Forcing a rebuild here
-                # would bake bytes another node already has.
+                {next_state, :hydrating}
+
+              ref_ready_in_inventory_elsewhere?(state, workload, ref_to_use, node_id) ->
+                # A surviving local copy exists on ANOTHER node but the store does
+                # not (yet) hold it: export first, hydrate later. Forcing a rebuild
+                # here would bake bytes another node already has. The anchor node
+                # itself is excluded: it is the node that just dropped the ref, and
+                # its workload fact can lag the inventory that reported the drop.
                 Logger.info(
                   "embervm base builder: node reports no base for #{workload} on #{node_id} and " <>
                     "#{ref_to_use} has no confirmed store copy yet; waiting for the export " <>
                     "backstop before hydrating"
                 )
 
-                state
+                {state, :waiting_export}
 
               true ->
-                # Recorded, absent on the anchor, nowhere local, nowhere in the
-                # store: converge to BuildBase now (#4865/#4891).
-                Logger.warning(
-                  "embervm base builder: recorded base #{workload}/#{ref_to_use} is absent " <>
-                    "everywhere and not fetchable from the store; forcing a rebuild"
-                )
-
-                # Run inline inside the hydrating dedupe branch. Clearing
-                # snapshot_ref makes a repeated post-status check a no-op instead
-                # of queueing a second multi-GB rebuild.
-                force_rebuild(state, w, workload, signature(w), node_id)
+                {state, :noop}
             end
         end
     end
   end
 
-  defp hydrate_for_anchor(state, _workload, _node_id), do: state
+  defp hydrate_for_anchor_outcome(state, _workload, _node_id), do: {state, :noop}
 
-  # Preserve the state-only API for wake and scratch callers, but expose whether
-  # the dropped-base path actually started hydrate. :handled covers the inline
-  # force-rebuild path, while :noop means hydrate returned the original state.
-  defp hydrate_for_anchor_outcome(state, workload, node_id) do
-    was_hydrating? = MapSet.member?(state.hydrating, workload)
-    next_state = hydrate_for_anchor(state, workload, node_id)
+  # Resolve the anchor vendor's own ref, preferring the durable per-vendor build
+  # record over the fleet view. The observed map is built from whichever nodes
+  # reported last, while vendor_built carries signature currency.
+  defp ref_for_vendor(state, w, vendor) do
+    case Map.get(w.vendor_built, vendor) do
+      %{signature: sig, ref: ref} when is_binary(ref) and ref != "" ->
+        if sig == signature(w), do: ref, else: nil
 
-    cond do
-      not was_hydrating? and MapSet.member?(next_state.hydrating, workload) ->
-        {next_state, :hydrating}
+      _ ->
+        state
+        |> snapshot_refs_by_vendor(w)
+        |> Map.get(vendor, [])
+        |> List.first()
+    end
+  end
 
-      next_state == state ->
-        {next_state, :noop}
+  # State-only wake and scratch callers retain the direct-build convergence that
+  # predates the outcome API. A deliberate export wait is not a noop and never
+  # reaches this fallback.
+  defp maybe_force_rebuild_after_hydrate_noop(state, workload, node_id) do
+    w = Map.get(state.workloads, workload)
+    vendor = pinned_vendor(state, node_id)
+    ref_to_use = if is_nil(w), do: nil, else: ref_for_vendor(state, w, vendor)
+    instance_id = if is_nil(w), do: nil, else: build_instance_on_node(state, w, node_id)
 
-      true ->
-        {next_state, :handled}
+    if not is_nil(w) and is_binary(w.snapshot_ref) and
+         w.built_signature == signature(w) and is_binary(ref_to_use) and
+         not is_nil(instance_id) and
+         not MapSet.member?(state.hydrating, workload) and
+         not store_fetchable?(state, w, vendor, ref_to_use) and
+         not ref_present_on_any_node?(state, workload, ref_to_use) do
+      Logger.warning(
+        "embervm base builder: recorded base #{workload}/#{ref_to_use} is absent " <>
+          "everywhere and not fetchable from the store; forcing a rebuild"
+      )
+
+      force_rebuild(state, w, workload, signature(w), node_id)
+    else
+      state
     end
   end
 
@@ -1237,6 +1249,22 @@ defmodule Embervm.BaseBuilder do
         %{snapshot_ref: ^ref, base_state: :BASE_BUILD_STATE_READY},
         get_in(fact, [:workloads, name])
       )
+    end)
+  end
+
+  # Some node OTHER than `except_node` lists `ref` as a READY entry in its local
+  # base inventory. Reads the same inventory the dropped-base detector trusts, so
+  # a node that just dropped the ref cannot count as still holding it while its
+  # per-workload fact lags.
+  defp ref_ready_in_inventory_elsewhere?(state, name, ref, except_node) do
+    state.capacity_table
+    |> Embervm.NodeCapacity.all()
+    |> Enum.any?(fn fact ->
+      node_name(to_string(Map.get(fact, :configured_id, ""))) != except_node and
+        Enum.any?(Map.get(fact, :local_bases, []) || [], fn base ->
+          Map.get(base, :workload) == name and Map.get(base, :ref) == ref and
+            Embervm.Scheduler.base_state_ready?(Map.get(base, :base_state))
+        end)
     end)
   end
 
@@ -1583,47 +1611,31 @@ defmodule Embervm.BaseBuilder do
     anchor_node = node_name(instance_id)
     state = put_in(state, [:dropped_at, {name, instance_id}], now)
 
-    if store_fetchable?(state, w, pinned_vendor(state, instance_id), cleared_ref) do
-      # Capacity facts do not carry the node's ext4 UUID, so a durable dropped
-      # ref is hydrated optimistically. Noded's identity gate refuses a rootfs
-      # mismatch, and the existing hydrate fallback then drives direct BuildBase.
-      case hydrate_for_anchor_outcome(state, name, anchor_node) do
-        {state, :hydrating} ->
-          record_base_rebuild(
-            state.op_log_mod,
-            state.op_log,
-            state.tenant,
-            state.clock,
-            name,
-            instance_id,
-            cleared_ref,
-            "node dropped base, hydrating from store"
-          )
+    # hydrate_for_anchor_outcome owns the decision: a store-durable ref hydrates,
+    # a ref another node still holds READY waits for that node's export, and
+    # anything else (including a ref only the dropping node ever had) builds.
+    case hydrate_for_anchor_outcome(state, name, anchor_node) do
+      {state, :hydrating} ->
+        record_base_rebuild(
+          state.op_log_mod,
+          state.op_log,
+          state.tenant,
+          state.clock,
+          name,
+          instance_id,
+          cleared_ref,
+          "node dropped base, hydrating from store"
+        )
 
-          write_base_status(state, w, :building)
+        write_base_status(state, w, :building)
 
-        {state, :noop} ->
-          # Store durability alone does not prove the anchor vendor has a
-          # resolvable ref. Fall through to the direct build branch when hydrate
-          # made no progress.
-          enqueue_dropped_base_build(state, w, name, instance_id, anchor_node, cleared_ref)
+      {state, :waiting_export} ->
+        # Another node holds the ref and its export backstop owns progress.
+        # Keep the state and the dropped_at redrive bound as hydrate left them.
+        state
 
-        {state, :handled} ->
-          record_base_rebuild(
-            state.op_log_mod,
-            state.op_log,
-            state.tenant,
-            state.clock,
-            name,
-            instance_id,
-            cleared_ref,
-            "node dropped base"
-          )
-
-          state
-      end
-    else
-      enqueue_dropped_base_build(state, w, name, instance_id, anchor_node, cleared_ref)
+      {state, :noop} ->
+        enqueue_dropped_base_build(state, w, name, instance_id, anchor_node, cleared_ref)
     end
   end
 
