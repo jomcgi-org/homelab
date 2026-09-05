@@ -11,6 +11,11 @@ backend:
 postgres:
   storage:
     storageClass: standard-rwo
+  # SPIRE server datastore role and database on monolith-pg (ADR embervm/041,
+  # #5706 phase 1). Hub only: the on-prem cluster gets SPIRE later. Requires the
+  # out-of-band monolith-pg-spire basic-auth Secret, see deploy/spire-db-secret.md.
+  spire:
+    enabled: true
   # The hub has no monolith-dev-pg (no dev lane on GKE), so the nightly
   # refresh dumped into nothing, hung on its 1h activeDeadlineSeconds and
   # failed every day (cnpg-dev-refresh-1788580800, 2026-09-05). Off until a
