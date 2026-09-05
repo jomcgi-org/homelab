@@ -1010,9 +1010,23 @@ defmodule Embervm.Dispatcher do
         end
 
       {:error, :no_channel, reason} ->
+        Embervm.SpecTrace.emit(:adoption, :dispatch_failed, %{
+          "task_id" => ctx.task_id,
+          "workload" => ctx.workload,
+          "reason" => "no_channel",
+          "node_id" => ctx.node_id
+        })
+
         {:failed, :transport, {:no_channel, reason}, nil}
 
       {:error, :prime_failed, reason} ->
+        Embervm.SpecTrace.emit(:adoption, :dispatch_failed, %{
+          "task_id" => ctx.task_id,
+          "workload" => ctx.workload,
+          "reason" => "prime_failed",
+          "node_id" => ctx.node_id
+        })
+
         classify_error(reason)
     end
   end

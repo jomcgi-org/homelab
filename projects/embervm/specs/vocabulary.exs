@@ -236,6 +236,7 @@
     adopt_inventory: "dispatcher.ex",
     dispatch_warm: "dispatcher.ex",
     dispatch_miss: "dispatcher.ex",
+    dispatch_failed: "dispatcher.ex",
     age_to_unknown: "node_registry.ex",
     age_to_down: "node_registry.ex",
     reconnect: "node_registry.ex",
@@ -309,7 +310,11 @@
         "two observable moments, so one spec action maps to two records. That " <>
         "is a legitimate many-to-one refinement, and writing it down is what " <>
         "stops the coverage check reading begin_destroy as an unmodeled " <>
-        "invention."
+        "invention.",
+    dispatch_failed:
+      "a pre-dispatch failure observation, not an adoption.tla action. It records " <>
+        "that acquisition failed before any VM was assigned, so the checker can " <>
+        "distinguish repeated queueing from a silent absence of dispatch records."
   },
 
   # Runtime scope decisions, distinct from both of the above: not a prose action
