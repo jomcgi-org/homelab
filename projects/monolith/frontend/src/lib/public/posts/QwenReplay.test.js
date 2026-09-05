@@ -129,3 +129,18 @@ test("initial placement stays stable until polling and controls precede the inst
   await seek(0);
   expect(bar.innerHTML).toBe(starting);
 });
+
+test("the final routing split reaches the end without displaying idle samples as gaps", async () => {
+  const view = await render();
+  await seek(turn.durationMs);
+  expect(view.querySelector(".sample-status")).toBeNull();
+  const hot = [...view.querySelectorAll(".routing-history rect.hot")]
+    .filter((rect) => Number(rect.getAttribute("width")) > 0)
+    .at(-1);
+  expect(
+    Number(hot.getAttribute("x")) + Number(hot.getAttribute("width")),
+  ).toBeCloseTo(700);
+  expect(view.querySelector(".tier.hot strong").textContent).toContain(
+    "of routes",
+  );
+});

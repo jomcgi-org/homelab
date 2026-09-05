@@ -11,6 +11,11 @@
     unknownHits: 0,
     totalHits: initialSample.tiers.totalExperts,
   };
+  let lastActivity;
+  const history = turn.samples.map((item) => {
+    if (item.activity?.totalHits > 0) lastActivity = item.activity;
+    return { ...item, activity: item.unavailable ? null : lastActivity };
+  });
   let position = $state(0);
   let playing = $state(false);
   let highlighted = $state(null);
@@ -103,7 +108,12 @@
 
 <section class="replay" aria-label="Recorded inference on the RTX 4090">
   <div class="controls">
-    <button type="button" onclick={toggle}
+    <button
+      type="button"
+      onclick={toggle}
+      onpointerdown={(event) => (event.currentTarget.dataset.pointer = "true")}
+      onkeydown={(event) => delete event.currentTarget.dataset.pointer}
+      onblur={(event) => delete event.currentTarget.dataset.pointer}
       >{playing
         ? "Pause"
         : position >= turn.durationMs
@@ -210,11 +220,11 @@
             onclick={() =>
               (highlighted = highlighted === tier.key ? null : tier.key)}
           >
-            <span class="tier-label"
-              ><i></i>{tier.name} <small>{tier.location}</small></span
-            >
+            <span class="tier-label"><i></i>{tier.name}</span>
+            <span class="tier-location">{tier.location}</span>
             <strong
-              >{percent(activity?.[tier.hits], activity?.totalHits)}</strong
+              >{percent(activity?.[tier.hits], activity?.totalHits)}
+              <small>{initial ? "of experts" : "of routes"}</small></strong
             >
             <span class="capacity">{gb(placement?.[tier.bytes])} capacity</span>
           </button>
@@ -246,15 +256,19 @@
               height={band.height}
             />
           {/each}
-          {#each turn.samples as item, index}
-            {@const start = index ? turn.samples[index - 1].at : item.at}
+          {#each history as item, index}
+            {@const start = item.at}
+            {@const end = Math.min(
+              position,
+              history[index + 1]?.at ?? turn.durationMs,
+            )}
             {#if item.at <= position}
               {#if item.unavailable || !item.activity?.totalHits}
                 <rect
                   class="unknown"
                   x={(700 * start) / turn.durationMs}
                   y="0"
-                  width={(700 * (item.at - start)) / turn.durationMs}
+                  width={(700 * (end - start)) / turn.durationMs}
                   height="100"
                   opacity="0.25"
                 />
@@ -265,7 +279,7 @@
                     class:dimmed={highlighted && highlighted !== band.key}
                     x={(700 * start) / turn.durationMs}
                     y={band.y}
-                    width={(700 * (item.at - start)) / turn.durationMs}
+                    width={(700 * (end - start)) / turn.durationMs}
                     height={band.height}
                   />
                 {/each}
@@ -286,17 +300,6 @@
             >{seconds(turn.durationMs)}</span
           >
         </div>
-      </div>
-      <div class="sample-status">
-        <span
-          >{initial
-            ? "Starting split: first recorded placement"
-            : routingSample
-              ? "Sample " + seconds(routingSample.at)
-              : "No telemetry sample available"}</span
-        >
-        <span>Stats {seconds(stats?.at)}</span>
-        <span>{count(stats?.activeRequests)} in flight</span>
       </div>
     </section>
   </div>
@@ -334,6 +337,13 @@
     gap: 0.5rem;
     align-items: center;
     margin: 0.9rem 0;
+  }
+  .controls button {
+    width: 5.5rem;
+    flex-shrink: 0;
+  }
+  .controls :global(button[data-pointer]:focus) {
+    outline: none;
   }
   button {
     font: inherit;
@@ -451,22 +461,27 @@
   .tiers {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 0.65rem;
-    margin: 1rem 0;
+    gap: 0;
+    margin: 0.8rem -1rem 1rem;
+    border-block: 1px solid var(--line);
   }
   .tier {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: 0.25rem;
     min-width: 0;
     text-align: left;
-    padding: 0.5rem;
-    border-color: transparent;
+    padding: 0.75rem 1rem;
+    border: 0;
+    border-radius: 0;
     background: transparent;
   }
   .tier[aria-pressed="true"] {
-    border-color: var(--tier-color);
+    box-shadow: inset 0 3px var(--tier-color);
     background: var(--band);
+  }
+  .tier + .tier {
+    border-left: 1px solid var(--line);
   }
   .dimmed {
     opacity: 0.15;
@@ -477,20 +492,27 @@
     flex-wrap: wrap;
     gap: 0.3rem;
     font-size: 0.75rem;
+    font-weight: 600;
   }
   .tier-label i {
     width: 0.5rem;
     height: 0.5rem;
     background: var(--tier-color);
   }
-  .tier-label small,
+  .tier-location,
   .capacity {
     font-size: 0.65rem;
     color: var(--ink-2);
   }
   .tier > strong {
-    font: 1.6rem var(--font-code);
+    margin-block: 0.25rem;
+    font: 1.65rem var(--font-code);
     color: color-mix(in srgb, var(--tier-color) 45%, var(--ink));
+  }
+  .tier > strong small {
+    display: block;
+    font: 0.65rem var(--font-ui);
+    color: var(--ink-2);
   }
   .routing-history svg {
     display: block;
@@ -501,8 +523,7 @@
   .routing-history rect {
     fill: var(--tier-color);
   }
-  .history-labels,
-  .sample-status {
+  .history-labels {
     display: flex;
     justify-content: space-between;
     flex-wrap: wrap;
@@ -510,11 +531,6 @@
     color: var(--ink-2);
     font: 0.65rem var(--font-code);
     margin-top: 0.4rem;
-  }
-  .sample-status {
-    border-top: 1px solid var(--line);
-    padding-top: 0.65rem;
-    margin-top: 0.8rem;
   }
   .controls {
     font-size: 0.75rem;
