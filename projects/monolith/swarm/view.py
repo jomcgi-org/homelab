@@ -103,6 +103,8 @@ def _steps(dbos: Any, workflow_id: str) -> list[Any]:
         row
         for row in rows
         if "poll_turn" not in str(_value(row, "function_name", _value(row, "name", "")))
+        and "observe_clock"
+        not in str(_value(row, "function_name", _value(row, "name", "")))
         and "DBOS.sleep"
         not in str(_value(row, "function_name", _value(row, "name", "")))
     ]

@@ -114,7 +114,13 @@ def _queued_session(
 
 
 def _await_turn(session_id: int, after_seq: int, timeout_s: int) -> dict | None:
-    """Wait for a session's next turn, checkpointing between polls."""
+    """Wait for a session's next turn, checkpointing between polls.
+
+    The bound is wall clock from the first observation, so time a recovered
+    workflow spent down counts against it: a wait that outlives its budget
+    during an outage returns None on the first poll after recovery, after one
+    last look for a turn that finished meanwhile.
+    """
     started_at = _timestamp(observe_clock())
     deadline = started_at + timedelta(seconds=timeout_s)
     max_iterations = 2 * timeout_s // POLL_INTERVAL_SECONDS + 1
