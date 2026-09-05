@@ -622,6 +622,11 @@ PI_COMPACTION_KEEP_RECENT_TOKENS = 8000
 # is progress, which is exactly what polling is.
 PI_MAX_IDENTICAL_TOOL_CALLS = 20
 PI_WEB_RESEARCH_EXTENSION = "/usr/share/ember-pi/extensions/web-research.ts"
+# Pi has no MCP client. This image-owned extension bridges the ONE MCP server a
+# guest may reach (the monolith-agents tier) into pi tools, and is loaded only
+# when EMBER_AGENT_MCP_URL is set and the endpoint answered the probe, so the
+# prompt's claim that the tools exist stays true (#5569).
+PI_AGENT_MCP_EXTENSION = "/usr/share/ember-pi/extensions/agent-mcp.ts"
 MAX_REQUEST_BODY_BYTES = 1 << 20
 MAX_TOOL_INPUT_BYTES = 4096
 # Cap on the proxy request head the egress forwarder reads before it knows the
@@ -3274,6 +3279,16 @@ class PiProcess:
         pi_home = child_env["PI_HOME"]
         self._write_model_config(pi_home)
         self._write_settings_json(pi_home)
+        agent_mcp_url = os.environ.get(AGENT_MCP_URL_ENV)
+        agent_mcp_configured = bool(agent_mcp_url) and _agent_mcp_endpoint_alive(
+            agent_mcp_url
+        )
+        if agent_mcp_url and not agent_mcp_configured:
+            sys.stderr.write(
+                "ember-claude-shim: warning: agent MCP endpoint %s is not "
+                "reachable: pi starts without the agents extension\n" % agent_mcp_url
+            )
+            sys.stderr.flush()
         command = [
             self.executable,
             "--mode",
@@ -3283,7 +3298,10 @@ class PiProcess:
             "--model",
             model_name,
             "--system-prompt",
-            "You are a focused coding agent. " + compose_system_prompt(system_prompt),
+            "You are a focused coding agent. "
+            + compose_system_prompt(
+                system_prompt, agent_mcp_configured=agent_mcp_configured
+            ),
             "--no-context-files",
             "--no-extensions",
             "--no-skills",
@@ -3300,6 +3318,11 @@ class PiProcess:
             "--session-dir",
             os.path.join(pi_home, "sessions"),
         ]
+        if agent_mcp_configured:
+            # The MCP bridge reads EMBER_AGENT_MCP_URL from its own environment
+            # (child_env is a copy of ours). Listed after web-research so the
+            # existing argv assertions on the first --extension keep holding.
+            command.extend(["--extension", PI_AGENT_MCP_EXTENSION])
         process = subprocess.Popen(
             command,
             cwd=self.workspace,

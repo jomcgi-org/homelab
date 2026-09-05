@@ -6231,6 +6231,80 @@ def test_pi_argv_does_not_allowlist_away_extension_tools(tmp_path, monkeypatch):
     manager._close_process()
 
 
+def _pi_argv(tmp_path):
+    return json.loads((tmp_path / "pi-args.jsonl").read_text().splitlines()[0])
+
+
+def _extension_args(argv):
+    return [argv[i + 1] for i, flag in enumerate(argv) if flag == "--extension"]
+
+
+def test_pi_loads_agent_mcp_extension_when_endpoint_alive(tmp_path, monkeypatch):
+    """A configured, reachable agent MCP endpoint adds the bridge and the prompt."""
+    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, "http://agents.test:8092/mcp")
+    probed = []
+    monkeypatch.setattr(
+        shim, "_agent_mcp_endpoint_alive", lambda url: probed.append(url) or True
+    )
+    manager = _pi_manager(tmp_path, monkeypatch)
+    manager.turn("hello", model="spark")
+    argv = _pi_argv(tmp_path)
+
+    assert probed == ["http://agents.test:8092/mcp"]
+    # web-research stays first, the MCP bridge follows, nothing else is loaded.
+    assert _extension_args(argv) == [
+        shim.PI_WEB_RESEARCH_EXTENSION,
+        shim.PI_AGENT_MCP_EXTENSION,
+    ]
+    assert "--no-extensions" in argv
+    system_prompt = argv[argv.index("--system-prompt") + 1]
+    assert (
+        "only in-cluster service you can reach is the `agents` MCP server"
+        in system_prompt
+    )
+    assert "in-cluster services are not" not in system_prompt
+    manager._close_process()
+
+
+def test_pi_skips_agent_mcp_extension_when_probe_fails(tmp_path, monkeypatch, capsys):
+    """A dead endpoint means no bridge and no prompt claim, with a warning."""
+    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, "http://agents.test:8092/mcp")
+    monkeypatch.setattr(shim, "_agent_mcp_endpoint_alive", lambda _url: False)
+    manager = _pi_manager(tmp_path, monkeypatch)
+    manager.turn("hello", model="spark")
+    argv = _pi_argv(tmp_path)
+
+    assert _extension_args(argv) == [shim.PI_WEB_RESEARCH_EXTENSION]
+    system_prompt = argv[argv.index("--system-prompt") + 1]
+    assert "in-cluster services are not" in system_prompt
+    assert "agent MCP endpoint http://agents.test:8092/mcp is not reachable" in (
+        capsys.readouterr().err
+    )
+    manager._close_process()
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_pi_without_agent_mcp_url_is_unchanged(tmp_path, monkeypatch, value):
+    """Unset or empty (the home cluster today): no probe, no bridge, old prompt."""
+    if value is None:
+        monkeypatch.delenv(shim.AGENT_MCP_URL_ENV, raising=False)
+    else:
+        monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, value)
+
+    def _never(_url):
+        raise AssertionError("probe must not run without a URL")
+
+    monkeypatch.setattr(shim, "_agent_mcp_endpoint_alive", _never)
+    manager = _pi_manager(tmp_path, monkeypatch)
+    manager.turn("hello", model="spark")
+    argv = _pi_argv(tmp_path)
+
+    assert _extension_args(argv) == [shim.PI_WEB_RESEARCH_EXTENSION]
+    system_prompt = argv[argv.index("--system-prompt") + 1]
+    assert "in-cluster services are not" in system_prompt
+    manager._close_process()
+
+
 def test_pi_models_json_declares_correct_context_window(tmp_path, monkeypatch):
     """models.json must declare the bounded per-session NInfer budget.
 

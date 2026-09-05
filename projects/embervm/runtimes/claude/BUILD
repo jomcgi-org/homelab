@@ -151,6 +151,9 @@ apko_image(
         # Pi's search and page-fetch tools. This path must exist in both runtime
         # images because the shared shim can route qwen through either one.
         "//projects/embervm/runtimes/pi:web_research_extension_tar",
+        # Pi's bridge to the agents MCP server, loaded by the shim only when the
+        # endpoint is configured and reachable (#5569).
+        "//projects/embervm/runtimes/pi:agent_mcp_extension_tar",
     ],
 )
 
