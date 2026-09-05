@@ -246,7 +246,7 @@ async def test_trigger_job_calls_scheduler_run_now(monkeypatch) -> None:
         status_code=202,
     )
     run_now = AsyncMock(return_value=result)
-    monkeypatch.setattr(checks.scheduler_service, "run_now", run_now)
+    monkeypatch.setattr(checks, "scheduler_run_now", run_now)
 
     assert await checks.trigger_job("knowledge.layout") == result
     run_now.assert_awaited_once_with(session, "knowledge.layout")

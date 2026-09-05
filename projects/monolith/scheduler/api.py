@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from sqlmodel import Field, Session, SQLModel
 
 if TYPE_CHECKING:
+    from scheduler.service import RunNowResult
     from scheduler.views import SchedulerJobView
 
 logger = logging.getLogger("monolith.scheduler")
@@ -144,3 +145,15 @@ def register_job(
     logger.info(
         "Registered job %s (interval=%ds, ttl=%ds)", name, interval_secs, ttl_secs
     )
+
+
+async def run_now(session: Session, name: str) -> "RunNowResult":
+    """Submit the Argo CronWorkflow replacing ``name`` as a one-off Workflow.
+
+    Cross-domain entry point (agent checks, the MCP trigger tool). The
+    implementation lives in ``scheduler.service``, imported lazily because
+    that module imports this one.
+    """
+    from scheduler.service import run_now as _run_now  # noqa: PLC0415
+
+    return await _run_now(session, name)

@@ -21,7 +21,7 @@ from sqlalchemy import text
 from sqlmodel import Session
 
 from core.db import get_engine
-from scheduler import service as scheduler_service
+from scheduler.api import run_now as scheduler_run_now
 
 
 def check_stuck_jobs(threshold_mins: int = 10) -> list[dict]:
@@ -136,7 +136,7 @@ def check_dead_letters(limit: int = 20) -> list[dict]:
     ]
 
 
-async def trigger_job(name: str) -> scheduler_service.RunNowResult:
+async def trigger_job(name: str):
     """Submit the CronWorkflow replacing ``name`` as a one-off Workflow."""
     with Session(get_engine()) as session:
-        return await scheduler_service.run_now(session, name)
+        return await scheduler_run_now(session, name)

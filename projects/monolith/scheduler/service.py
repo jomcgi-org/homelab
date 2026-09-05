@@ -9,7 +9,7 @@ import os
 from kubernetes_asyncio.client.exceptions import ApiException
 from sqlmodel import Session, select
 
-from cluster.kubernetes import KubernetesClient
+from cluster.api import KubernetesClient
 from scheduler.api import ScheduledJob, is_registered
 from scheduler.views import SchedulerJobView
 
