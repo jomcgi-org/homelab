@@ -11,6 +11,12 @@ backend:
 postgres:
   storage:
     storageClass: standard-rwo
+  # The hub has no monolith-dev-pg (no dev lane on GKE), so the nightly
+  # refresh dumped into nothing, hung on its 1h activeDeadlineSeconds and
+  # failed every day (cnpg-dev-refresh-1788580800, 2026-09-05). Off until a
+  # dev lane exists here.
+  devRefresh:
+    enabled: false
   bootstrap:
     recovery:
       # CNPG 1.30 behavior: The recovery-minted app Secret password overwrites
