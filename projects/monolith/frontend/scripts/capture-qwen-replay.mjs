@@ -26,11 +26,11 @@ const get = async (path) => {
 const prompts = [
   [
     "How this inference works",
-    "Explain this inference setup in three short sentences, under 80 words: hot experts stay on the GPU, warm experts transfer from pinned RAM over PCIe, and cold experts run on the CPU using weights from the page cache or NVMe. Explain how their outputs combine to generate the next token.",
+    "Walk through one token on this 4090 in three short sentences, under 80 words. Hot experts stay on the GPU. Warm experts transfer from pinned RAM over PCIe. Cold experts run on the CPU using weights from the page cache or NVMe. Explain how their outputs combine to generate the next token.",
   ],
 ];
 const recording = {
-  version: 1,
+  version: 2,
   recordedAt: new Date().toISOString(),
   build,
   model: "Qwen3.8-Flash-Next, 125B, NVFP4",
@@ -38,7 +38,7 @@ const recording = {
   thinking: false,
   sampleIntervalMs,
   conditions:
-    "Existing warm service, default sampling, shared with normal traffic. Client timings include transport. This is a walkthrough, not an isolated benchmark.",
+    "Shared serving setup, default sampling, one request observed during capture. Client timings include transport. Prefill rates use completed CUDA event intervals, including transfers and host dispatch gaps, not queueing or transport. This is a walkthrough, not an isolated benchmark.",
   turns: [],
 };
 const messages = [];
@@ -46,12 +46,22 @@ for (const [title, prompt] of prompts) {
   messages.push({ role: "user", content: prompt });
   let previous = await get("/v1/moe-layer-profile");
   const cache = await get("/v1/cache/status");
+  const before = await get("/v1/stats");
+  if (before.requests.active !== 0 || !previous.prefill?.chunks) {
+    throw new Error(
+      "Capture requires an idle service with prefill chunk telemetry.",
+    );
+  }
+  const baselineSequence = previous.prefill.chunks.at(-1)?.sequence ?? 0;
+  const seenChunks = new Set();
+  let invalidCapture = false;
   const turn = {
     title,
     prompt,
     events: [],
     samples: [],
     statsSamples: [],
+    prefillChunks: [],
     usage: null,
     finishReason: null,
   };
@@ -61,6 +71,24 @@ for (const [title, prompt] of prompts) {
   const sample = async () => {
     try {
       const profile = await get("/v1/moe-layer-profile");
+      for (const chunk of profile.prefill?.chunks ?? []) {
+        if (
+          chunk.sequence <= baselineSequence ||
+          seenChunks.has(chunk.sequence)
+        )
+          continue;
+        seenChunks.add(chunk.sequence);
+        turn.prefillChunks.push({
+          // Availability is the receipt time. Do not pretend host observation
+          // timestamps identify exact CUDA completion times on the client.
+          at: elapsed(),
+          sequence: chunk.sequence,
+          elapsedMs: chunk.elapsed_ms,
+          tokens: chunk.tokens,
+          tokensPerSecond: chunk.tokens_per_second,
+          requests: chunk.requests,
+        });
+      }
       turn.samples.push({
         at: elapsed(),
         activity: attributeExpertActivity(previous, profile, cache.geometry),
@@ -75,12 +103,13 @@ for (const [title, prompt] of prompts) {
   const sampleStats = async () => {
     try {
       const stats = await get("/v1/stats");
+      if (stats.instance_id !== before.instance_id || stats.requests.active > 1)
+        invalidCapture = true;
       turn.statsSamples.push({
         at: elapsed(),
         kvUsedPages: stats.kv?.used_pages ?? null,
         kvTotalPages: stats.kv?.total_pages ?? null,
         activeRequests: stats.requests?.active ?? null,
-        prefillTps: stats.throughput?.prefill_tps ?? null,
         decodeTps: stats.throughput?.decode_tps ?? null,
       });
     } catch {
@@ -158,11 +187,57 @@ for (const [title, prompt] of prompts) {
     throw new Error("Incomplete response; recording not saved.");
   const first = turn.events[0].at;
   const last = turn.events.at(-1).at;
+  const after = await get("/v1/stats");
+  const uids = new Set(
+    turn.prefillChunks.flatMap((chunk) => chunk.requests.map((r) => r.uid)),
+  );
+  const processedTokens = turn.prefillChunks.reduce(
+    (sum, chunk) => sum + chunk.tokens,
+    0,
+  );
+  if (
+    invalidCapture ||
+    after.instance_id !== before.instance_id ||
+    after.requests.active !== 0 ||
+    after.requests.completed !== before.requests.completed + 1 ||
+    !Number.isInteger(turn.usage?.prompt_tokens) ||
+    uids.size !== 1 ||
+    !turn.prefillChunks.length ||
+    processedTokens > turn.usage?.prompt_tokens ||
+    turn.prefillChunks.at(-1)?.requests[0]?.completed_tokens !==
+      turn.usage?.prompt_tokens ||
+    turn.prefillChunks.some(
+      (chunk, index) =>
+        chunk.requests.length !== 1 ||
+        !Number.isFinite(chunk.elapsedMs) ||
+        !(chunk.elapsedMs > 0) ||
+        chunk.sequence !== baselineSequence + index + 1 ||
+        (index > 0 &&
+          chunk.requests[0].completed_tokens !==
+            turn.prefillChunks[index - 1].requests[0].completed_tokens +
+              chunk.tokens),
+    )
+  ) {
+    throw new Error(
+      "Incomplete or mixed-request prefill telemetry; recording not saved.",
+    );
+  }
+  // Internal request ids are only needed for attribution checks, not publication.
+  for (const chunk of turn.prefillChunks) {
+    chunk.completedTokens = chunk.requests[0].completed_tokens;
+    delete chunk.requests;
+  }
   turn.metrics = {
     ttftMs: first,
     generationMs: last - first,
     // Usage is reported by the server. Never count streamed chunks as tokens.
     completionTokens: turn.usage?.completion_tokens ?? null,
+    prefillTokens: processedTokens,
+    cachedPromptTokens: turn.usage.prompt_tokens - processedTokens,
+    prefillMs: turn.prefillChunks.reduce(
+      (sum, chunk) => sum + chunk.elapsedMs,
+      0,
+    ),
     tokensPerSecond:
       Number.isInteger(turn.usage?.completion_tokens) && last > first
         ? ((turn.usage.completion_tokens - 1) * 1000) / (last - first)
