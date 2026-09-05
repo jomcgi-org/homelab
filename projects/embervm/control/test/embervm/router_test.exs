@@ -55,6 +55,10 @@ defmodule Embervm.RouterTest do
     def authenticate_identity(_), do: {:error, :unauthenticated}
   end
 
+  defmodule UnavailableTaskStore do
+    def submit(_server, _attrs), do: {:error, :unavailable}
+  end
+
   # Fakes for the R2 session routes: the router resolves the session manager/store
   # from app-env (the :session_manager / :session_store_mod keys), so a request test
   # can drive the HTTP surface, and especially the SESSION-TOKEN auth boundary,
@@ -395,6 +399,7 @@ defmodule Embervm.RouterTest do
       Application.delete_env(:embervm, :artifact_encryption)
       Application.delete_env(:embervm, :artifact_key_service)
       Application.delete_env(:embervm, :artifact_principal)
+      Application.delete_env(:embervm, :task_store_mod)
     end)
 
     :ok
@@ -819,6 +824,15 @@ defmodule Embervm.RouterTest do
     assert view["state"] == "queued"
     assert view["workload"] == wl
     assert view["attempt"] == 1
+  end
+
+  test "submit returns a retryable 503 while the op-log is unavailable" do
+    Application.put_env(:embervm, :task_store_mod, UnavailableTaskStore)
+
+    resp = req(:post, "/v1/workloads/#{unique("wl")}/tasks", auth("good"), "source")
+
+    assert resp.status == 503
+    assert json(resp.body) == %{"error" => "submit failed", "retryable" => true}
   end
 
   test "a submit without X-Ember-Guest-Path stores NO path, so the workload invokePath applies" do

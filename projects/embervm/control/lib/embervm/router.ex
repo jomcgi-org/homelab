@@ -370,9 +370,13 @@ defmodule Embervm.Router do
           request: build_request_env(conn, body)
         }
 
-        case TaskStore.submit(store(), attrs) do
+        case task_store().submit(store(), attrs) do
           {:ok, _created_or_existing, task_id} ->
             respond_submit(conn, task_id, principal)
+
+          {:error, :unavailable} ->
+            Logger.warning("embervm submit unavailable")
+            send_json(conn, 503, %{error: "submit failed", retryable: true})
 
           {:error, reason} ->
             Logger.error("embervm submit failed: #{inspect(reason)}")
@@ -2223,6 +2227,7 @@ defmodule Embervm.Router do
   # The submit API reads/writes only through TaskStore (ETS + result store),
   # never the op-log internals. The store is resolvable from app env for symmetry
   # with the authenticator, defaulting to the supervised singleton.
+  defp task_store, do: Application.get_env(:embervm, :task_store_mod, Embervm.TaskStore)
   defp store, do: Application.get_env(:embervm, :task_store, Embervm.TaskStore)
 
   defp now_ms, do: System.system_time(:millisecond)

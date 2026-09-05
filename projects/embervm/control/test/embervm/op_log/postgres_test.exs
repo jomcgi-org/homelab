@@ -13,6 +13,7 @@ defmodule Embervm.OpLog.PostgresTest do
   use ExUnit.Case, async: true
 
   alias Embervm.OpLog.Postgres
+  alias Embervm.OpLog.Op
 
   @dsn "postgres://embervm:secret@monolith-pg-rw.monolith.svc.cluster.local:5432/embervm_oplog"
 
@@ -56,6 +57,49 @@ defmodule Embervm.OpLog.PostgresTest do
     # No connection is started; db_size/1 never touches the GenServer or dials
     # out, so this is safe to call against an address with nothing listening.
     assert Postgres.db_size(:no_such_server) == {:error, :not_supported}
+  end
+
+  test "client wrappers return unavailable when the server is not running" do
+    op = %Op{kind: :denied, tenant: "t1", ts: 1, payload: %{}}
+
+    assert Postgres.append(:op_log_not_running, op) == {:error, :unavailable}
+    assert Postgres.load_tasks(:op_log_not_running) == {:error, :unavailable}
+  end
+
+  test "a connection error from the transaction leaves the op-log alive" do
+    transaction_fun = fn _connection, _fun ->
+      raise DBConnection.ConnectionError, message: "checkout timed out"
+    end
+
+    {:ok, server} =
+      Postgres.start_link(
+        name: nil,
+        connection: self(),
+        transaction_fun: transaction_fun
+      )
+
+    op = %Op{kind: :denied, tenant: "t1", ts: 1, payload: %{}}
+
+    assert Postgres.append(server, op) == {:error, :unavailable}
+    assert Process.alive?(server)
+  end
+
+  test "a Postgrex connection-loss error leaves the op-log alive" do
+    transaction_fun = fn _connection, _fun ->
+      raise Postgrex.Error, message: "tcp recv: closed"
+    end
+
+    {:ok, server} =
+      Postgres.start_link(
+        name: nil,
+        connection: self(),
+        transaction_fun: transaction_fun
+      )
+
+    op = %Op{kind: :denied, tenant: "t1", ts: 1, payload: %{}}
+
+    assert Postgres.append(server, op) == {:error, :unavailable}
+    assert Process.alive?(server)
   end
 
   describe "connect_opts/1" do

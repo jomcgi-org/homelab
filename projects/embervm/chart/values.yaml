@@ -86,6 +86,11 @@ resources:
   limits:
     memory: 512Mi
 
+controlPlaneLivenessProbe:
+  # Issue #5235: at the 10-second period, allow up to 60 seconds for an internal
+  # recovery. Readiness stays unchanged and removes an unhealthy pod promptly.
+  failureThreshold: 6
+
 # The op-log volume. persistentVolume is TRUE now that the SQLite-WAL op-log ships
 # (Task 6/7): the control plane's durable book-of-record (ops, tasks, results) lives
 # at EMBERVM_OPLOG_PATH on this RWO Longhorn PVC, which provides DURABILITY, not

@@ -14,6 +14,8 @@ defmodule Embervm.OpLog do
   projection on boot (Task 7).
   """
 
+  require Logger
+
   defmodule Op do
     @moduledoc """
     One op-log entry. `seq` is nil until the backend assigns it on append
@@ -273,6 +275,16 @@ defmodule Embervm.OpLog do
   def kinds, do: @kinds
 
   @type server :: GenServer.server()
+
+  @doc false
+  @spec safe_server_call(server(), term(), timeout()) :: term()
+  def safe_server_call(server, request, timeout \\ 5_000) do
+    GenServer.call(server, request, timeout)
+  catch
+    :exit, reason ->
+      Logger.warning("embervm op-log call unavailable", reason: inspect(reason))
+      {:error, :unavailable}
+  end
 
   @callback append(server(), Op.t()) :: {:ok, seq :: pos_integer()} | {:error, term()}
   # Reads every op strictly after `seq` in ascending seq order. Because the ops

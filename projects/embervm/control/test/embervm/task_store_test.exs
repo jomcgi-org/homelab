@@ -12,6 +12,11 @@ defmodule Embervm.TaskStoreTest do
   alias Embervm.TaskStore
   alias Embervm.WorkloadCatalog
 
+  defmodule UnavailableOpLog do
+    def load_tasks(_server), do: {:ok, []}
+    def append(_server, _op), do: {:error, :unavailable}
+  end
+
   setup do
     path = Path.join(System.tmp_dir!(), "embervm_taskstore_test_#{System.unique_integer([:positive, :monotonic])}.db")
     on_exit(fn -> File.rm_rf!(path) end)
@@ -82,6 +87,21 @@ defmodule Embervm.TaskStoreTest do
     {:ok, ops} = SQLite.read_from(op_log, 0)
     kinds = ops |> Enum.filter(&(&1.task_id == task_id)) |> Enum.map(& &1.kind)
     assert kinds == [:submitted, :assigned, :started, :succeeded]
+  end
+
+  test "submit returns unavailable without stopping the store" do
+    {:ok, store} =
+      TaskStore.start_link(
+        name: nil,
+        op_log: :unavailable_op_log,
+        op_log_mod: UnavailableOpLog,
+        on_queued: fn _ -> :ok end
+      )
+
+    assert TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: "wl-a"}) ==
+             {:error, :unavailable}
+
+    assert Process.alive?(store)
   end
 
   test "idempotency dedupe: same {workload, idempotency_key} returns the existing task, no new op", %{

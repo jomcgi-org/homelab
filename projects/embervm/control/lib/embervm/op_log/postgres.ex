@@ -15,7 +15,9 @@ defmodule Embervm.OpLog.Postgres do
   op-log directly (it reads ETS), so serializing here costs nothing on the
   critical path and keeps append ordering (and the compaction batch discipline)
   identical to SQLite's. A future PR may widen this to a pool once a real
-  workload demands concurrent readers; R0 does not need it.
+  workload demands concurrent readers. The single-writer design now survives
+  database stalls; widening it to a pool is the next step if throughput demands
+  concurrent access.
 
   `db_size/1` is NOT part of the behaviour (see `Embervm.OpLog`): there is no
   single PVC file to `File.stat/1` for a Postgres backend, so it always returns
@@ -110,6 +112,21 @@ defmodule Embervm.OpLog.Postgres do
   # Postgrex's own query timeout, made explicit rather than inherited, because
   # the append budget below is defined RELATIVE to it.
   @query_timeout_ms 15_000
+
+  @connection_loss_codes [
+    :connection_exception,
+    :connection_does_not_exist,
+    :connection_failure,
+    :sqlclient_unable_to_establish_sqlconnection,
+    :sqlserver_rejected_establishment_of_sqlconnection,
+    :protocol_violation,
+    :admin_shutdown,
+    :crash_shutdown,
+    :cannot_connect_now,
+    :database_dropped,
+    :idle_session_timeout,
+    :idle_in_transaction_session_timeout
+  ]
 
   # The append call budget, deliberately ABOVE @query_timeout_ms. The old value
   # was the implicit GenServer 5000, which expired BEFORE the database layer's
@@ -391,97 +408,97 @@ defmodule Embervm.OpLog.Postgres do
 
   @impl Embervm.OpLog
   def append(server \\ __MODULE__, %Op{} = op) do
-    GenServer.call(server, {:append, op}, @append_timeout_ms)
+    Embervm.OpLog.safe_server_call(server, {:append, op}, @append_timeout_ms)
   end
 
   @impl Embervm.OpLog
   def read_from(server \\ __MODULE__, seq) do
-    GenServer.call(server, {:read_from, seq})
+    Embervm.OpLog.safe_server_call(server, {:read_from, seq})
   end
 
   @impl Embervm.OpLog
   def load_tasks(server \\ __MODULE__) do
-    GenServer.call(server, :load_tasks)
+    Embervm.OpLog.safe_server_call(server, :load_tasks)
   end
 
   @impl Embervm.OpLog
   def load_sessions(server \\ __MODULE__) do
-    GenServer.call(server, :load_sessions)
+    Embervm.OpLog.safe_server_call(server, :load_sessions)
   end
 
   @impl Embervm.OpLog
   def load_serving_instances(server \\ __MODULE__) do
-    GenServer.call(server, :load_serving_instances)
+    Embervm.OpLog.safe_server_call(server, :load_serving_instances)
   end
 
   @impl Embervm.OpLog
   def load_stateful_instances(server \\ __MODULE__) do
-    GenServer.call(server, :load_stateful_instances)
+    Embervm.OpLog.safe_server_call(server, :load_stateful_instances)
   end
 
   @impl Embervm.OpLog
   def load_volumes(server \\ __MODULE__) do
-    GenServer.call(server, :load_volumes)
+    Embervm.OpLog.safe_server_call(server, :load_volumes)
   end
 
   @impl Embervm.OpLog
   def load_volume_blessing(server \\ __MODULE__) do
-    GenServer.call(server, :load_volume_blessing)
+    Embervm.OpLog.safe_server_call(server, :load_volume_blessing)
   end
 
   @impl Embervm.OpLog
   def load_key_epochs(server \\ __MODULE__) do
-    GenServer.call(server, :load_key_epochs)
+    Embervm.OpLog.safe_server_call(server, :load_key_epochs)
   end
 
   @impl Embervm.OpLog
   def load_blessing_leases(server \\ __MODULE__) do
-    GenServer.call(server, :load_blessing_leases)
+    Embervm.OpLog.safe_server_call(server, :load_blessing_leases)
   end
 
   @impl Embervm.OpLog
   def load_checkpoint_dispatches(server \\ __MODULE__) do
-    GenServer.call(server, :load_checkpoint_dispatches)
+    Embervm.OpLog.safe_server_call(server, :load_checkpoint_dispatches)
   end
 
   @impl Embervm.OpLog
   def load_group_instances(server \\ __MODULE__) do
-    GenServer.call(server, :load_group_instances)
+    Embervm.OpLog.safe_server_call(server, :load_group_instances)
   end
 
   @impl Embervm.OpLog
   def load_group_members(server \\ __MODULE__) do
-    GenServer.call(server, :load_group_members)
+    Embervm.OpLog.safe_server_call(server, :load_group_members)
   end
 
   @impl Embervm.OpLog
   def load_result(server \\ __MODULE__, task_id) do
-    GenServer.call(server, {:load_result, task_id})
+    Embervm.OpLog.safe_server_call(server, {:load_result, task_id})
   end
 
   @impl Embervm.OpLog
   def load_request(server \\ __MODULE__, task_id) do
-    GenServer.call(server, {:load_request, task_id})
+    Embervm.OpLog.safe_server_call(server, {:load_request, task_id})
   end
 
   @impl Embervm.OpLog
   def list_usage(server \\ __MODULE__, opts \\ []) do
-    GenServer.call(server, {:list_usage, opts})
+    Embervm.OpLog.safe_server_call(server, {:list_usage, opts})
   end
 
   @impl Embervm.OpLog
   def compact(server \\ __MODULE__, now_ms) do
-    GenServer.call(server, {:compact, now_ms})
+    Embervm.OpLog.safe_server_call(server, {:compact, now_ms})
   end
 
   @impl Embervm.OpLog
   def compacted_through(server \\ __MODULE__) do
-    GenServer.call(server, :compacted_through)
+    Embervm.OpLog.safe_server_call(server, :compacted_through)
   end
 
   @impl Embervm.OpLog
   def evict_task(server \\ __MODULE__, task_id) do
-    GenServer.call(server, {:evict_task, task_id})
+    Embervm.OpLog.safe_server_call(server, {:evict_task, task_id})
   end
 
   # db_size/1 is NOT an Embervm.OpLog callback (see moduledoc): there is no
@@ -495,24 +512,38 @@ defmodule Embervm.OpLog.Postgres do
 
   @impl true
   def init(opts) do
-    dsn = Keyword.fetch!(opts, :dsn)
     retention_ms = Keyword.get(opts, :retention_ms, @default_retention_ms)
     journal_horizon_ms = Keyword.get(opts, :journal_horizon_ms, @default_journal_horizon_ms)
     compact_batch_size = Keyword.get(opts, :compact_batch_size, @default_compact_batch_size)
+    transaction_fun = Keyword.get(opts, :transaction_fun, &Postgrex.transaction/2)
 
-    with {:ok, conn} <- connect(dsn),
-         :ok <- apply_ddl(conn) do
+    with {:ok, conn, owns_conn} <- open_connection(opts) do
       Logger.info("embervm op-log opened against Postgres")
 
       {:ok,
        %{
          conn: conn,
+         owns_conn: owns_conn,
+         transaction_fun: transaction_fun,
          retention_ms: retention_ms,
          journal_horizon_ms: journal_horizon_ms,
          compact_batch_size: compact_batch_size
        }}
     else
       {:error, reason} -> {:stop, {:connect_failed, reason}}
+    end
+  end
+
+  defp open_connection(opts) do
+    case Keyword.fetch(opts, :connection) do
+      {:ok, conn} ->
+        {:ok, conn, false}
+
+      :error ->
+        with {:ok, conn} <- opts |> Keyword.fetch!(:dsn) |> connect(),
+             :ok <- apply_ddl(conn) do
+          {:ok, conn, true}
+        end
     end
   end
 
@@ -566,122 +597,170 @@ defmodule Embervm.OpLog.Postgres do
   defp nil_if_empty(v), do: v
 
   @impl true
-  def terminate(_reason, %{conn: conn}) do
+  def terminate(_reason, %{conn: conn, owns_conn: true}) do
     GenServer.stop(conn)
     :ok
   end
 
+  def terminate(_reason, _state), do: :ok
+
   @impl true
   def handle_call({:append, %Op{} = op}, _from, state) do
-    case do_append(state.conn, op) do
-      {:ok, seq} -> {:reply, {:ok, seq}, state}
-      {:error, reason} -> {:reply, {:error, reason}, state}
-    end
+    reply_connection_call(state, :append, fn ->
+      do_append(state.conn, op, state.transaction_fun)
+    end)
   end
 
   def handle_call({:read_from, seq}, _from, state) do
-    {:reply, do_read_from(state.conn, seq), state}
+    reply_connection_call(state, :read_from, fn -> do_read_from(state.conn, seq) end)
   end
 
   def handle_call(:load_tasks, _from, state) do
-    {:reply, do_load_tasks(state.conn), state}
+    reply_connection_call(state, :load_tasks, fn -> do_load_tasks(state.conn) end)
   end
 
   def handle_call(:load_sessions, _from, state) do
-    {:reply, do_load_sessions(state.conn), state}
+    reply_connection_call(state, :load_sessions, fn -> do_load_sessions(state.conn) end)
   end
 
   def handle_call(:load_serving_instances, _from, state) do
-    {:reply, do_load_serving_instances(state.conn), state}
+    reply_connection_call(state, :load_serving_instances, fn ->
+      do_load_serving_instances(state.conn)
+    end)
   end
 
   def handle_call(:load_stateful_instances, _from, state) do
-    {:reply, do_load_stateful_instances(state.conn), state}
+    reply_connection_call(state, :load_stateful_instances, fn ->
+      do_load_stateful_instances(state.conn)
+    end)
   end
 
   def handle_call(:load_volumes, _from, state) do
-    {:reply, do_load_volumes(state.conn), state}
+    reply_connection_call(state, :load_volumes, fn -> do_load_volumes(state.conn) end)
   end
 
   def handle_call(:load_volume_blessing, _from, state) do
-    {:reply, do_load_volume_blessing(state.conn), state}
+    reply_connection_call(state, :load_volume_blessing, fn ->
+      do_load_volume_blessing(state.conn)
+    end)
   end
 
   def handle_call(:load_key_epochs, _from, state) do
-    {:reply, do_load_key_epochs(state.conn), state}
+    reply_connection_call(state, :load_key_epochs, fn -> do_load_key_epochs(state.conn) end)
   end
 
   def handle_call(:load_blessing_leases, _from, state) do
-    {:reply, do_load_blessing_leases(state.conn), state}
+    reply_connection_call(state, :load_blessing_leases, fn ->
+      do_load_blessing_leases(state.conn)
+    end)
   end
 
   def handle_call(:load_checkpoint_dispatches, _from, state) do
-    {:reply, do_load_checkpoint_dispatches(state.conn), state}
+    reply_connection_call(state, :load_checkpoint_dispatches, fn ->
+      do_load_checkpoint_dispatches(state.conn)
+    end)
   end
 
   def handle_call(:load_group_instances, _from, state) do
-    {:reply, do_load_group_instances(state.conn), state}
+    reply_connection_call(state, :load_group_instances, fn ->
+      do_load_group_instances(state.conn)
+    end)
   end
 
   def handle_call(:load_group_members, _from, state) do
-    {:reply, do_load_group_members(state.conn), state}
+    reply_connection_call(state, :load_group_members, fn ->
+      do_load_group_members(state.conn)
+    end)
   end
 
   def handle_call({:load_result, task_id}, _from, state) do
-    {:reply, do_load_result(state.conn, task_id), state}
+    reply_connection_call(state, :load_result, fn -> do_load_result(state.conn, task_id) end)
   end
 
   def handle_call({:load_request, task_id}, _from, state) do
-    {:reply, do_load_request(state.conn, task_id), state}
+    reply_connection_call(state, :load_request, fn -> do_load_request(state.conn, task_id) end)
   end
 
   def handle_call({:list_usage, opts}, _from, state) do
-    {:reply, do_list_usage(state.conn, opts), state}
+    reply_connection_call(state, :list_usage, fn -> do_list_usage(state.conn, opts) end)
   end
 
   def handle_call({:compact, now_ms}, _from, state) do
-    {:reply, do_compact(state.conn, now_ms, state), state}
+    reply_connection_call(state, :compact, fn -> do_compact(state.conn, now_ms, state) end)
   end
 
   def handle_call(:compacted_through, _from, state) do
-    {:reply, {:ok, read_marker(state.conn)}, state}
+    reply_connection_call(state, :compacted_through, fn -> {:ok, read_marker(state.conn)} end)
   end
 
   def handle_call({:evict_task, task_id}, _from, state) do
-    {:reply, do_evict_task(state.conn, task_id), state}
+    reply_connection_call(state, :evict_task, fn -> do_evict_task(state.conn, task_id) end)
+  end
+
+  defp reply_connection_call(state, operation, fun) do
+    {:reply, protect_connection(operation, fun), state}
+  end
+
+  defp protect_connection(operation, fun) do
+    normalize_connection_result(operation, fun.())
+  rescue
+    error in DBConnection.ConnectionError ->
+      connection_unavailable(operation, error)
+
+    error in Postgrex.Error ->
+      if postgres_connection_loss?(error) do
+        connection_unavailable(operation, error)
+      else
+        reraise error, __STACKTRACE__
+      end
+
+  catch
+    :exit, reason ->
+      Logger.warning("embervm Postgres op-log #{operation} connection exited",
+        reason: inspect(reason)
+      )
+
+      {:error, :unavailable}
+  end
+
+  defp normalize_connection_result(
+         operation,
+         {:error, %DBConnection.ConnectionError{} = error}
+       ) do
+    connection_unavailable(operation, error)
+  end
+
+  defp normalize_connection_result(operation, {:error, %Postgrex.Error{} = error} = result) do
+    if postgres_connection_loss?(error),
+      do: connection_unavailable(operation, error),
+      else: result
+  end
+
+  defp normalize_connection_result(_operation, result), do: result
+
+  defp postgres_connection_loss?(%Postgrex.Error{postgres: nil}), do: true
+
+  defp postgres_connection_loss?(%Postgrex.Error{postgres: %{code: code}})
+       when code in @connection_loss_codes,
+       do: true
+
+  defp postgres_connection_loss?(%Postgrex.Error{}), do: false
+
+  defp connection_unavailable(operation, error) do
+    Logger.warning("embervm Postgres op-log #{operation} unavailable",
+      error: Exception.message(error)
+    )
+
+    {:error, :unavailable}
   end
 
   # -- append + projection -------------------------------------------------
 
-  # A transport fault must NOT kill this GenServer. It is the FIRST child under
-  # :rest_for_one (see Embervm.Application), so its death restarts every store
-  # behind it and Bandit last, which is how a dropped connection turned into a
-  # failed liveness probe and a control-plane restart. Postgrex reconnects on
-  # its own, so the honest answer to the caller is that this append did not
-  # land. Callers already match on {:error, _}.
-  defp do_append(conn, %Op{} = op) do
-    do_append_now(conn, op)
-  rescue
-    error in DBConnection.ConnectionError ->
-      Logger.warning(
-        "embervm op-log append failed on a dead connection: #{Exception.message(error)}"
-      )
-
-      {:error, :unavailable}
-  catch
-    # DBConnection raises for a broken socket but EXITS when the connection
-    # process itself is gone. Both are the same event to a caller, and neither
-    # may take this GenServer with it.
-    :exit, reason ->
-      Logger.warning("embervm op-log append exited: #{inspect(reason)}")
-      {:error, :unavailable}
-  end
-
-  defp do_append_now(conn, %Op{} = op) do
+  defp do_append(conn, %Op{} = op, transaction_fun) do
     if op.kind not in Embervm.OpLog.kinds() do
       {:error, {:unknown_kind, op.kind}}
     else
-      case Postgrex.transaction(conn, fn tx ->
+      case transaction_fun.(conn, fn tx ->
              with {:ok, seq} <- insert_op(tx, op),
                   :ok <- project(tx, op, seq) do
                seq
