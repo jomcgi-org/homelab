@@ -19,27 +19,12 @@
   );
   const routingAt = decodeSamples[0].at;
   const routingDuration = turn.durationMs - routingAt;
-  let processed = 0;
-  const prefillSamples = (turn.prefillChunks ?? []).map((item) => {
-    const startTokens = processed;
-    processed += item.tokens;
-    return { ...item, startTokens, endTokens: processed };
-  });
-  const prefillTokens = processed;
-  const prefillPeak = Math.max(
-    1,
-    ...prefillSamples.map((item) => item.tokensPerSecond),
-  );
-  const prefillScale = Math.ceil(prefillPeak / 100) * 100;
   const history = decodeSamples.map((item) => {
     if (item.activity?.totalHits > 0) lastActivity = item.activity;
     return { ...item, activity: item.unavailable ? null : lastActivity };
   });
   let position = $state(0);
   let playing = $state(false);
-  let prefillSample = $derived(
-    prefillSamples.findLast((item) => item.at <= position),
-  );
   let highlighted = $state(null);
   let answer = $derived(
     turn.events
@@ -171,10 +156,10 @@
       aria-label="Recorded service throughput and memory"
     >
       <div>
-        <dt>Prefill</dt>
+        <dt>First token</dt>
         <dd>
-          {prefillSample ? prefillSample.tokensPerSecond.toFixed(1) : "--"}
-          <small>tok/s</small>
+          {(turn.metrics.ttftMs / 1000).toFixed(1)}
+          <small>s</small>
         </dd>
       </div>
       <div>
@@ -260,78 +245,6 @@
         </p>{/if}
 
       <div class="phase-charts">
-        <div class="prefill-history">
-          <header>Prefill <small>Chunk throughput (tok/s)</small></header>
-          <div class="prefill-plot">
-            <div class="prefill-axis" aria-hidden="true">
-              <span>{prefillScale}</span><span>{prefillScale / 2}</span><span
-                >&nbsp;</span
-              >
-            </div>
-            <svg
-              viewBox="0 0 300 100"
-              preserveAspectRatio="none"
-              role="img"
-              aria-label="Measured prefill chunk throughput"
-            >
-              <title
-                >Completed chunk averages, 0 to {prefillScale} tok/s across {prefillTokens}
-                processed tokens. No rate is available before a completed chunk is
-                received.</title
-              >
-              {#each [0, 50, 100] as y}
-                <line
-                  x1="0"
-                  x2="300"
-                  y1={y}
-                  y2={y}
-                  stroke="var(--line)"
-                  stroke-width="1"
-                />
-              {/each}
-              {#each prefillSamples as item}
-                {#if item.at <= position}
-                  <line
-                    class="prefill-segment"
-                    x1={(300 * item.startTokens) / prefillTokens}
-                    y1={100 - (100 * item.tokensPerSecond) / prefillScale}
-                    x2={(300 * item.endTokens) / prefillTokens}
-                    y2={100 - (100 * item.tokensPerSecond) / prefillScale}
-                    stroke="var(--ink)"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                  />
-                  <circle
-                    cx={(150 * (item.startTokens + item.endTokens)) /
-                      prefillTokens}
-                    cy={100 - (100 * item.tokensPerSecond) / prefillScale}
-                    r="2"
-                    fill="var(--ink)"
-                  />
-                {/if}
-              {/each}
-              {#if !prefillSample}
-                <text
-                  x="150"
-                  y="58"
-                  text-anchor="middle"
-                  fill="var(--muted)"
-                  font-size="12">Awaiting completed chunk</text
-                >
-              {/if}
-            </svg>
-          </div>
-          <div class="history-labels">
-            <span class="origin">0</span><span
-              >{count(prefillTokens)} tokens</span
-            >
-          </div>
-          <small class="caption"
-            >First token {seconds(decodeAt)} · {count(
-              turn.metrics.cachedPromptTokens ?? 0,
-            )} cached tokens</small
-          >
-        </div>
         <div class="routing-history">
           <header>Experts <small>decode routing</small></header>
           <svg
@@ -602,7 +515,7 @@
   }
   .phase-charts {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+    grid-template-columns: minmax(0, 1fr);
     gap: 1rem;
   }
   .phase-charts header {
@@ -619,31 +532,6 @@
     width: 100%;
     height: 4rem;
     background: var(--band);
-  }
-  .prefill-plot {
-    display: flex;
-    gap: 0.3rem;
-  }
-  .prefill-plot svg {
-    flex: 1;
-    min-width: 0;
-  }
-  .prefill-axis {
-    width: 1.6rem;
-    flex-shrink: 0;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    padding-block: 0.2rem;
-    font: 0.6rem var(--font-code);
-    color: var(--ink-2);
-    text-align: right;
-  }
-  .prefill-history .history-labels {
-    margin-left: 1.9rem;
-  }
-  .origin {
-    transform: translateX(-50%);
   }
   .routing-history rect {
     fill: var(--tier-color);

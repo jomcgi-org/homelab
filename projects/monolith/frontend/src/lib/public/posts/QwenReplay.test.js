@@ -28,26 +28,21 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-test("seeking restores recorded output and independent prefill statistics", async () => {
+test("first-token timing stays fixed when seeking, without a prefill rate or chart", async () => {
   const view = await render();
+  const timing = view.querySelector(".measurements > div");
+  expect(timing.textContent).toContain("First token");
+  expect(timing.textContent).toContain((turn.metrics.ttftMs / 1000).toFixed(1));
+  const initial = timing.textContent;
+  for (const at of [1000, turn.metrics.ttftMs, turn.durationMs, 0]) {
+    await seek(at);
+    expect(timing.textContent).toBe(initial);
+    expect(view.querySelector(".prefill-history")).toBeNull();
+    expect(view.querySelector(".prefill-segment")).toBeNull();
+  }
   await seek(turn.durationMs);
   expect(view.querySelector(".answer").textContent.trim()).toBe(
     turn.events.map((e) => e.content).join(""),
-  );
-  await seek(0);
-  expect(view.querySelector(".answer").textContent).toContain(
-    "Waiting for the first token",
-  );
-  expect(view.querySelector(".telemetry").textContent).toContain(
-    "Initial placement",
-  );
-  const prefill = turn.prefillChunks[0];
-  expect(prefill).toBeDefined();
-  await seek(prefill.at - 1);
-  expect(view.querySelector(".measurements dd").textContent).toContain("--");
-  await seek(prefill.at);
-  expect(view.querySelector(".measurements").textContent).toContain(
-    prefill.tokensPerSecond.toFixed(1),
   );
 });
 
@@ -121,7 +116,7 @@ test("initial placement stays stable until polling and controls precede the inst
   await seek(first.at - 1);
   expect(bar.innerHTML).toBe(starting);
   expect(view.querySelector(".routing-history rect.hot")).toBeNull();
-  expect(view.querySelector(".prefill-history line")).not.toBeNull();
+  expect(view.querySelector(".prefill-history")).toBeNull();
   await seek(first.at);
   expect(view.querySelector(".routing-heading").textContent).toContain(
     "activations",
@@ -148,54 +143,15 @@ test("the final routing split reaches the end without displaying idle samples as
   );
 });
 
-test("prefill and boundary routing samples are excluded without fabricating sparkline points", async () => {
+test("prefill and boundary intervals stay out of the decode routing chart", async () => {
   const view = await render();
-  expect(view.querySelectorAll(".prefill-history circle")).toHaveLength(0);
   await seek(turn.events[0].at);
   expect(view.querySelectorAll(".routing-history rect")).toHaveLength(0);
   expect(view.querySelector(".routing-heading").textContent).toContain(
     "Initial placement",
   );
-  const expected = turn.prefillChunks;
-  expect(view.querySelectorAll(".prefill-history circle")).toHaveLength(
-    expected.filter((item) => item.at <= turn.events[0].at).length,
-  );
   await seek(turn.durationMs);
-  expect(view.querySelectorAll(".prefill-history circle")).toHaveLength(
-    expected.length,
-  );
-  expect(view.textContent).not.toContain("No routing samples");
-});
-
-test("prefill displays only measured chunk averages, with token and throughput units", async () => {
-  const view = await render();
-  const a = turn.prefillChunks[0];
-  await seek(a.at / 2);
-  expect(view.querySelector(".prefill-segment")).toBeNull();
-  await seek(a.at);
-  const segment = view.querySelector(".prefill-segment");
-  expect(Number(segment.getAttribute("x2"))).toBeCloseTo(
-    (300 * a.tokens) / turn.metrics.prefillTokens,
-  );
-  expect(segment.getAttribute("y1")).toBe(segment.getAttribute("y2"));
-  const y = segment.getAttribute("y1");
-  await seek(turn.durationMs);
-  expect(view.querySelector(".prefill-segment").getAttribute("y1")).toBe(y);
-  expect(view.querySelector(".prefill-history header").textContent).toContain(
-    "tok/s",
-  );
-  expect(
-    view.querySelector(".prefill-history .history-labels").textContent,
-  ).toContain("tokens");
-  expect(view.querySelector(".prefill-history .caption").textContent).toContain(
-    "First token",
-  );
-  for (const chunk of turn.prefillChunks) {
-    expect(chunk.tokensPerSecond).toBeCloseTo(
-      (chunk.tokens * 1000) / chunk.elapsedMs,
-    );
-  }
-  expect(turn.statsSamples.every((item) => item.prefillTps === undefined)).toBe(
-    true,
+  expect(view.querySelectorAll(".routing-history rect").length).toBeGreaterThan(
+    0,
   );
 });
