@@ -233,3 +233,26 @@ semgrep_test(
     srcs = ["noded_networkpolicy_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
+
+py_test(
+    name = "chart_brick_floor_test",
+    srcs = ["chart_brick_floor_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = ["@pip//pytest"],
+)
+
+semgrep_test(
+    name = "chart_brick_floor_test_semgrep_test",
+    srcs = ["chart_brick_floor_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
