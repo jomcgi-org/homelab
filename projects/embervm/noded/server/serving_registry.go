@@ -163,6 +163,14 @@ func (r *servingImageRegistry) get(baseKey string) (servingImageEntry, bool) {
 	return *e, true
 }
 
+// remove forgets a serving image after its colocated base bundle is reclaimed.
+// Idempotent so a repeated base-eviction instruction also reconciles memory.
+func (r *servingImageRegistry) remove(baseKey string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.images, baseKey)
+}
+
 // snapshot returns a copy of every built serving image, for NodeStatus projection.
 func (r *servingImageRegistry) snapshot() []servingImageEntry {
 	r.mu.Lock()

@@ -840,13 +840,11 @@ defmodule Embervm.BaseBuilderTest do
     assert Process.alive?(builder)
   end
 
-  # R3: the refcount seam accepts a :serving count (a future ServingStore,
-  # Task 9, would report it), but eviction is NOT yet gated on it: nothing
-  # reports :serving today, so requiring it would silently wedge eviction for
-  # every workload (task and session included), not just serving ones. This
-  # test is the no-regression proof: primed:0, sessions:0 alone still evicts,
-  # with or without a :serving count ever reported.
-  test "a :serving refcount is accepted but not yet required for eviction (D-R3.3.1 precursor)" do
+  # The event-driven refcount seam still accepts the legacy :serving count, but
+  # serving safety is owned by the disk-driven reconcile below. Requiring the
+  # legacy term here would wedge task and session eviction because those callers
+  # never report it.
+  test "a legacy :serving refcount does not alter task and session eviction" do
     agent = start_recorder()
     test_pid = self()
 
@@ -942,6 +940,156 @@ defmodule Embervm.BaseBuilderTest do
     %{ref: ref, workload: workload, size_bytes: bytes, base_state: :BASE_BUILD_STATE_READY,
       created_at_unix_ms: System.system_time(:millisecond) - 3_601_000,
       snapshot_path: "/var/lib/embervm/scratch/embervm-noded/snapshots/bases/#{ref}"}
+  end
+
+  # Serving retention uses the BaseBuilder-published base as CURRENT and the
+  # serving image as the matching cold-boot artifact.
+  defp put_serving_local_bases_fact(table, node_id, workload, current_ref, local_bases) do
+    NodeCapacity.put(table, {node_id, "ds"}, %{
+      node_id: node_id,
+      configured_id: node_id,
+      instance_id: node_id,
+      cpu_vendor: "amd",
+      size_class: "8gi",
+      mem_budget_mib: 8_192,
+      mem_headroom_mib: 8_000,
+      live_vms: 0,
+      max_live_vms: 8,
+      workloads: %{
+        workload => %{
+          # Serving workloads do not publish a task/session snapshot ref. The
+          # retention arm must select serving_image_ref to find the node's
+          # current cold-boot bundle.
+          snapshot_ref: "",
+          serving_image_ref: current_ref,
+          base_state: :BASE_BUILD_STATE_READY,
+          exported: true
+        }
+      },
+      local_bases: local_bases,
+      serving_vms: [],
+      serving_snapshots: [],
+      updated_at: 0
+    })
+  end
+
+  defp start_serving_retention_builder(instances) do
+    test_pid = self()
+    status_agent = start_recorder()
+    {:ok, instances_agent} = Agent.start_link(fn -> instances end)
+    table = new_cap_table()
+    put_node_capacity_fact(table, "w", "placeholder", true)
+
+    builder =
+      start_builder(
+        nodes: [@node, %{id: "node-5", address: "node-5:9090"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(status_agent),
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__current")} end,
+        evict_fun: fn :fake_channel, workload, ref ->
+          send(test_pid, {:serving_base_evicted, workload, ref})
+          {:ok, %Embervm.Node.V1.EvictArtifactResponse{}}
+        end,
+        list_fun: fn :fake_channel, _workload, _vendor -> {:ok, [], false} end,
+        serving_store: instances_agent,
+        serving_instances_fun: fn agent -> Agent.get(agent, & &1) end,
+        retention_sweep_enabled: true,
+        retention_disk_driven_enabled: true
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{class: "serving"}))
+    assert_eventually(fn ->
+      match?(%{"snapshotRef" => "w__current"}, latest(status_agent, "w"))
+    end)
+    {builder, table, instances_agent}
+  end
+
+  test "serving retention evicts an unreferenced superseded base on every reporting node" do
+    {builder, table, _instances} = start_serving_retention_builder([])
+
+    local_bases = [
+      ready_base("w__current", "w", 512),
+      ready_base("w__old", "w", 2_048)
+    ]
+
+    put_serving_local_bases_fact(table, "node-4", "w", "w__current", local_bases)
+    put_serving_local_bases_fact(table, "node-5", "w", "w__current", local_bases)
+
+    plan = BaseBuilder.retention_sweep_now(builder)
+    assert Enum.count(plan, &(&1.evict_refs == ["w__old"])) == 2
+    assert_receive {:serving_base_evicted, "w", "w__old"}, 1_000
+    assert_receive {:serving_base_evicted, "w", "w__old"}, 1_000
+    refute_receive {:serving_base_evicted, "w", "w__current"}, 100
+  end
+
+  test "serving retention keeps an old base referenced by a banked instance" do
+    banked =
+      %{instance_id: "srv-banked", workload: "w", state: :banked, base_snapshot_ref: "w__old"}
+
+    {builder, table, _instances} = start_serving_retention_builder([banked])
+
+    put_serving_local_bases_fact(table, "node-4", "w", "w__current", [
+      ready_base("w__current", "w", 512),
+      ready_base("w__old", "w", 2_048)
+    ])
+
+    [entry] = BaseBuilder.retention_sweep_now(builder)
+    assert entry.evict_refs == []
+    refute_receive {:serving_base_evicted, "w", "w__old"}, 200
+  end
+
+  test "serving retention keeps an old base referenced by a live instance" do
+    live =
+      %{instance_id: "srv-live", workload: "w", state: :published, base_snapshot_ref: "w__old"}
+
+    {builder, table, _instances} = start_serving_retention_builder([live])
+
+    put_serving_local_bases_fact(table, "node-4", "w", "w__current", [
+      ready_base("w__current", "w", 512),
+      ready_base("w__old", "w", 2_048)
+    ])
+
+    [entry] = BaseBuilder.retention_sweep_now(builder)
+    assert entry.evict_refs == []
+    refute_receive {:serving_base_evicted, "w", "w__old"}, 200
+  end
+
+  test "serving retention never selects the node or BaseBuilder current refs with no instances" do
+    {builder, table, _instances} = start_serving_retention_builder([])
+
+    put_serving_local_bases_fact(table, "node-4", "w", "w__node_current", [
+      ready_base("w__current", "w", 512),
+      ready_base("w__node_current", "w", 512),
+      ready_base("w__old", "w", 2_048)
+    ])
+
+    [entry] = BaseBuilder.retention_sweep_now(builder)
+    assert entry.evict_refs == ["w__old"]
+    assert Enum.map(entry.candidates, &Path.basename(&1.path)) == ["w__old"]
+    assert_receive {:serving_base_evicted, "w", "w__old"}, 1_000
+    refute_receive {:serving_base_evicted, "w", "w__current"}, 200
+    refute_receive {:serving_base_evicted, "w", "w__node_current"}, 200
+  end
+
+  test "a second serving retention pass is a no-op after NodeStatus drops the old base" do
+    {builder, table, _instances} = start_serving_retention_builder([])
+
+    put_serving_local_bases_fact(table, "node-4", "w", "w__current", [
+      ready_base("w__current", "w", 512),
+      ready_base("w__old", "w", 2_048)
+    ])
+
+    [first] = BaseBuilder.retention_sweep_now(builder)
+    assert first.evict_refs == ["w__old"]
+    assert_receive {:serving_base_evicted, "w", "w__old"}, 1_000
+
+    put_serving_local_bases_fact(table, "node-4", "w", "w__current", [
+      ready_base("w__current", "w", 512)
+    ])
+
+    [second] = BaseBuilder.retention_sweep_now(builder)
+    assert second.evict_refs == []
+    refute_receive {:serving_base_evicted, "w", _ref}, 200
   end
 
   test "unknown base age is treated as new and is not a retention candidate" do

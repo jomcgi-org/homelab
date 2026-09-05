@@ -1059,11 +1059,23 @@ func (s *Server) evictBaseLocal(ref *nodev1.ArtifactRef) (*nodev1.EvictArtifactR
 	}
 
 	// Remove the on-disk dir (idempotent: RemoveAll on an absent path is nil) and
-	// forget any registry entry so NodeStatus stops advertising it.
+	// forget both projections of the bundle so NodeStatus cannot advertise a deleted
+	// base snapshot or serving handler artifact. The serving-image removal matters
+	// when a code-only roll leaves old and new bundles on the same runtime: without
+	// it the map-backed capacity projection can select the deleted handler again.
+	_, statErr := os.Stat(dir)
+	existed := !os.IsNotExist(statErr)
 	if err := os.RemoveAll(dir); err != nil {
 		return nil, status.Errorf(codes.Internal, "noded: evict base %q: %v", baseRef, err)
 	}
 	s.bases.remove(baseRef)
+	s.servingImage.remove(baseRef)
+	if existed {
+		s.logger.Info("noded: removed base bundle",
+			"workload_id", ref.GetWorkload(),
+			"base_id", baseRef,
+			"reason", "superseded_base_reconcile")
+	}
 	s.signalChange()
 	return &nodev1.EvictArtifactResponse{}, nil
 }
