@@ -713,7 +713,8 @@ SANDBOX_AGENT_MCP_PROMPT = (
     "- All network egress is proxied. The public internet is reachable; the "
     "only in-cluster service you can reach is the `agents` MCP server, already "
     "configured in your CLI, which carries the knowledge tools "
-    "search_knowledge, report_knowledge, dispute_fact and report_distress. "
+    "search_knowledge, report_knowledge, dispute_fact and report_distress, "
+    "exposed to you as mcp__agents__<name>. "
     "Call search_knowledge before investigating anything that may have been "
     "seen before, and report_knowledge for findings another agent will need. "
     "You hold no credentials: the proxy attaches them on the way out, so no "
@@ -4740,28 +4741,37 @@ def build_server(manager):
 
 def main():
     install_child_reaper()
-    manager = ProcessManager(
-        claude_executable="claude", codex_executable="codex", pi_executable="pi"
-    )
-    server = build_server(manager)
     egress_port = int(os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT)))
     egress = VsockEgressForwarder(egress_port)
+    # Listen BEFORE ProcessManager starts its prewarm thread. The prewarm spawn
+    # probes the agent MCP endpoint through this local proxy; a probe that
+    # arrives first takes connection-refused, parks a CLI without the MCP tools
+    # and with the non-MCP prompt, and a later turn reuses that process none
+    # the wiser.
+    egress.listen()
+    sys.stderr.write(
+        "ember-claude-shim: egress listening on %s:%s\n"
+        % (EGRESS_LOCALHOST, egress.port)
+    )
+    sys.stderr.flush()
+    manager = None
+    server = None
     try:
-        egress.listen()
-        sys.stderr.write(
-            "ember-claude-shim: egress listening on %s:%s\n"
-            % (EGRESS_LOCALHOST, egress.port)
+        manager = ProcessManager(
+            claude_executable="claude", codex_executable="codex", pi_executable="pi"
         )
-        sys.stderr.flush()
+        server = build_server(manager)
         sys.stderr.write(
             "ember-claude-shim: listening on vsock port %s\n" % server.server_port
         )
         sys.stderr.flush()
         server.serve_forever()
     finally:
-        server.server_close()
+        if server is not None:
+            server.server_close()
         egress.close()
-        manager._close_process(kill=True)
+        if manager is not None:
+            manager._close_process(kill=True)
     return 0
 
 
