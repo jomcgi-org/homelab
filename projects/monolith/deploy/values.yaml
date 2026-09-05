@@ -195,7 +195,9 @@ chat:
       embedColor: "0x2ECC71"
       intervalHours: 1
       commitFilter: "^(feat)(\\(.+?\\))?!?:\\s"
-      roastChance: 0.1
+      # Off while the changelog summarizer runs on Meta Spark, which refuses
+      # the roast prompt and posts a "keeping it friendly" notice instead.
+      roastChance: 0
     - name: "colin-homelab"
       channelId: "1491186550472708117"
       githubRepo: "ColinCee/homelab"
@@ -203,7 +205,7 @@ chat:
       embedTitle: "Colin - Homelab"
       embedColor: "0x2ECC71"
       intervalHours: 1
-      roastChance: 0.1
+      roastChance: 0
     - name: "loom"
       channelId: "1512815661531795618"
       githubRepo: "weave-hand/loom"
