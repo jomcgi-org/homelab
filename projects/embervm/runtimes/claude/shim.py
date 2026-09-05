@@ -521,6 +521,7 @@ CLAUDE_MODELS = {
 }
 DEFAULT_CODEX_MODEL = "luna"
 CODEX_SUBSCRIPTION_BASE_URL_ENV = "CODEX_SUBSCRIPTION_BASE_URL"
+AGENT_MCP_URL_ENV = "EMBER_AGENT_MCP_URL"
 DEFAULT_CODEX_SUBSCRIPTION_BASE_URL = "http://chatgpt.com/backend-api/"
 CODEX_DUMMY_ACCOUNT_ID = "guest-subscription-account"
 PI_MODELS = {
@@ -697,6 +698,21 @@ DEFAULT_CLI_GID = 65532
 PERSISTENCE_MOUNT_PATH_ENV = "EMBER_PERSISTENCE_MOUNT_PATH"
 DEFAULT_PERSISTENCE_MOUNT_PATH = "/session"
 GUEST_INIT_PATH = "/usr/local/bin/ember-runtime-guest-init"
+SANDBOX_NETWORK_EGRESS_PROMPT = (
+    "- All network egress is proxied. The public internet is reachable and "
+    "in-cluster services are not. You hold no credentials: the proxy attaches "
+    "them on the way out, so no token is readable from in here.\n"
+)
+SANDBOX_AGENT_MCP_PROMPT = (
+    "- All network egress is proxied. The public internet is reachable; the "
+    "only in-cluster service you can reach is the `agents` MCP server, already "
+    "configured in your CLI, which carries the knowledge tools "
+    "search_knowledge, report_knowledge, dispute_fact and report_distress. "
+    "Call search_knowledge before investigating anything that may have been "
+    "seen before, and report_knowledge for findings another agent will need. "
+    "You hold no credentials: the proxy attaches them on the way out, so no "
+    "token is readable from in here.\n"
+)
 SANDBOX_PROMPT = (
     "Facts about the sandbox you are running in. They override any assumption "
     "you would otherwise make, and none of them are problems to debug.\n"
@@ -715,10 +731,8 @@ SANDBOX_PROMPT = (
     "you still hold none.\n"
     "- Your git identity is already configured. Do not set user.name or "
     "user.email.\n"
-    "- All network egress is proxied. The public internet is reachable and "
-    "in-cluster services are not. You hold no credentials: the proxy attaches "
-    "them on the way out, so no token is readable from in here.\n"
-    "- gh reaches GitHub even though `gh auth status` reports you are not "
+    + SANDBOX_NETWORK_EGRESS_PROMPT
+    + "- gh reaches GitHub even though `gh auth status` reports you are not "
     "logged in. That report is expected, because it inspects local credentials "
     "and the real one is never local. Judge by whether the request succeeds.\n"
 )
@@ -726,9 +740,14 @@ SANDBOX_PROMPT = (
 
 def compose_system_prompt(caller_prompt=None):
     """Join the shim-owned sandbox prompt with an optional caller prompt."""
+    sandbox_prompt = SANDBOX_PROMPT
+    if os.environ.get(AGENT_MCP_URL_ENV):
+        sandbox_prompt = sandbox_prompt.replace(
+            SANDBOX_NETWORK_EGRESS_PROMPT, SANDBOX_AGENT_MCP_PROMPT
+        )
     if caller_prompt and caller_prompt.strip():
-        return SANDBOX_PROMPT + "\n" + caller_prompt.strip()
-    return SANDBOX_PROMPT
+        return sandbox_prompt + "\n" + caller_prompt.strip()
+    return sandbox_prompt
 
 
 def _workspace_identity(path):
@@ -801,6 +820,8 @@ def _workspace_ready_for_spawn(workspace, requires_git_checkout):
 
 
 GIT_PROXY_PATH = "/tmp/ember-git-proxy"
+CLAUDE_MCP_CONFIG_DIR = "/tmp/ember-mcp"
+CLAUDE_MCP_CONFIG_PATH = "/tmp/ember-mcp/claude-mcp.json"
 
 # The guest env var holding gh's login-gate dummy. Named here rather than
 # inlined because it is the SAME switch two consumers flip: gh sends it as a
@@ -1132,6 +1153,19 @@ def _ensure_cli_dir(path):
     kwargs = _cli_privilege_kwargs()
     if kwargs:
         os.chown(path, kwargs["user"], kwargs["group"])
+
+
+def _write_read_only_file(path, content):
+    """Rewrite shim-owned configuration and leave it read-only."""
+    if os.path.lexists(path):
+        if _cli_privilege_kwargs():
+            # Recreate the inode so a legacy CLI-owned copy becomes root-owned.
+            os.unlink(path)
+        else:
+            os.chmod(path, 0o644)
+    with open(path, "w") as stream:
+        stream.write(content)
+    os.chmod(path, 0o444)
 
 
 def _persistence_mount_path():
@@ -1864,6 +1898,22 @@ class ClaudeProcess:
             command.extend(["--model", CLAUDE_MODELS.get(model, model)])
         if session_id:
             command.extend(["--resume", session_id])
+        agent_mcp_url = os.environ.get(AGENT_MCP_URL_ENV)
+        if agent_mcp_url:
+            os.makedirs(CLAUDE_MCP_CONFIG_DIR, mode=0o755, exist_ok=True)
+            if _cli_privilege_kwargs():
+                os.chown(CLAUDE_MCP_CONFIG_DIR, 0, 0)
+            os.chmod(CLAUDE_MCP_CONFIG_DIR, 0o755)
+            mcp_config = {
+                "mcpServers": {"agents": {"type": "http", "url": agent_mcp_url}}
+            }
+            _write_read_only_file(
+                CLAUDE_MCP_CONFIG_PATH,
+                json.dumps(mcp_config),
+            )
+            command.extend(
+                ["--mcp-config", CLAUDE_MCP_CONFIG_PATH, "--strict-mcp-config"]
+            )
         command.extend(["--append-system-prompt", compose_system_prompt(system_prompt)])
         child_env = os.environ.copy()
         child_env.update(egress_proxy_env())
@@ -2486,8 +2536,15 @@ name = "ember-openai"
 base_url = %s
 wire_api = "responses"
 """ % (json.dumps(base_url), json.dumps(provider_base_url))
-        with open(os.path.join(codex_home, "config.toml"), "w") as stream:
-            stream.write(config)
+        agent_mcp_url = os.environ.get(AGENT_MCP_URL_ENV)
+        if agent_mcp_url:
+            config += """
+# Written by the shim (#5569). The egress sidecar attaches the credential, so
+# the guest holds none; the file is regenerated on every spawn.
+[mcp_servers.agents]
+url = %s
+""" % json.dumps(agent_mcp_url)
+        _write_read_only_file(os.path.join(codex_home, "config.toml"), config)
 
     def _spawn(self):
         if not _workspace_ready_for_spawn(self.workspace, self.requires_git_checkout):

@@ -1314,6 +1314,43 @@ def test_codex_config_uses_subscription_endpoint_override(tmp_path, monkeypatch)
     assert config["model_providers"]["ember-openai"]["wire_api"] == "responses"
 
 
+def test_codex_config_includes_only_configured_agent_mcp(tmp_path, monkeypatch):
+    manager = _codex_manager(tmp_path, monkeypatch)
+    child_env = manager._child_env()
+    config_path = tmp_path / "workspace" / ".codex" / "config.toml"
+
+    monkeypatch.delenv(shim.AGENT_MCP_URL_ENV, raising=False)
+    manager._write_model_config(child_env["CODEX_HOME"])
+    assert "mcp_servers" not in tomllib.loads(config_path.read_text())
+
+    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, "")
+    manager._write_model_config(child_env["CODEX_HOME"])
+    assert "mcp_servers" not in tomllib.loads(config_path.read_text())
+
+    agent_mcp_url = 'http://agents.test:8092/mcp?label="guest"'
+    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, agent_mcp_url)
+    manager._write_model_config(child_env["CODEX_HOME"])
+    config = tomllib.loads(config_path.read_text())
+    assert config["mcp_servers"] == {"agents": {"url": agent_mcp_url}}
+
+
+def test_codex_spawn_rewrites_read_only_mcp_config(tmp_path, monkeypatch):
+    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, "http://agents.test:8092/mcp")
+    manager = _codex_manager(tmp_path, monkeypatch)
+    config_path = tmp_path / "workspace" / ".codex" / "config.toml"
+
+    manager._spawn()
+    assert config_path.stat().st_mode & 0o777 == 0o444
+    manager._close_process(kill=True)
+
+    manager._spawn()
+    assert tomllib.loads(config_path.read_text())["mcp_servers"]["agents"]["url"] == (
+        "http://agents.test:8092/mcp"
+    )
+    assert config_path.stat().st_mode & 0o777 == 0o444
+    manager._close_process(kill=True)
+
+
 def test_codex_config_appends_codex_to_no_slash_endpoint(tmp_path, monkeypatch):
     manager = _codex_manager(tmp_path, monkeypatch)
     endpoint = "http://broker.test/backend-api"
@@ -3462,6 +3499,48 @@ def test_claude_spawn_includes_include_partial_messages(tmp_path, monkeypatch):
     manager._close_process(kill=True)
 
 
+def test_claude_spawn_uses_strict_agent_mcp_config(tmp_path, monkeypatch):
+    config_dir = tmp_path / "ember-mcp"
+    config_path = config_dir / "claude-mcp.json"
+    args_path = tmp_path / "args.json"
+    agent_mcp_url = "http://agents.test:8092/mcp"
+    monkeypatch.setattr(shim, "CLAUDE_MCP_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(shim, "CLAUDE_MCP_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, agent_mcp_url)
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+
+    manager = _manager(tmp_path, monkeypatch)
+    manager.turn("make changes")
+    argv = json.loads(args_path.read_text())
+    assert argv[argv.index("--mcp-config") + 1] == str(config_path)
+    assert "--strict-mcp-config" in argv
+    assert json.loads(config_path.read_text()) == {
+        "mcpServers": {"agents": {"type": "http", "url": agent_mcp_url}}
+    }
+    assert config_path.stat().st_mode & 0o777 == 0o444
+    assert config_dir.stat().st_mode & 0o777 == 0o755
+    manager._close_process(kill=True)
+
+
+@pytest.mark.parametrize("agent_mcp_url", [None, ""])
+def test_claude_spawn_omits_mcp_flags_when_unconfigured(
+    tmp_path, monkeypatch, agent_mcp_url
+):
+    args_path = tmp_path / "args.json"
+    if agent_mcp_url is None:
+        monkeypatch.delenv(shim.AGENT_MCP_URL_ENV, raising=False)
+    else:
+        monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, agent_mcp_url)
+    monkeypatch.setenv("FAKE_ARGS", str(args_path))
+
+    manager = _manager(tmp_path, monkeypatch)
+    manager.turn("make changes")
+    argv = json.loads(args_path.read_text())
+    assert "--mcp-config" not in argv
+    assert "--strict-mcp-config" not in argv
+    manager._close_process(kill=True)
+
+
 def test_claude_system_prompt_is_composed_at_spawn(tmp_path, monkeypatch):
     args_path = tmp_path / "args.json"
     monkeypatch.setenv("FAKE_ARGS", str(args_path))
@@ -3687,12 +3766,29 @@ def test_progress_pusher_collapses_rapid_events_to_latest():
     assert pushed == ["second"]
 
 
-def test_compose_system_prompt():
+def test_compose_system_prompt(monkeypatch):
+    monkeypatch.delenv(shim.AGENT_MCP_URL_ENV, raising=False)
     assert shim.compose_system_prompt(None) == shim.SANDBOX_PROMPT
     assert shim.compose_system_prompt("  ") == shim.SANDBOX_PROMPT
+    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, "")
+    assert shim.compose_system_prompt(None) == shim.SANDBOX_PROMPT
     composed = shim.compose_system_prompt("X")
     assert composed.startswith(shim.SANDBOX_PROMPT + "\n")
     assert "X" in composed
+
+
+def test_compose_system_prompt_describes_configured_agent_mcp(monkeypatch):
+    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, "http://agents.test:8092/mcp")
+    composed = shim.compose_system_prompt()
+    assert (
+        "only in-cluster service you can reach is the `agents` MCP server" in composed
+    )
+    assert "in-cluster services are not" not in composed
+
+    monkeypatch.delenv(shim.AGENT_MCP_URL_ENV)
+    composed = shim.compose_system_prompt()
+    assert "in-cluster services are not" in composed
+    assert "only in-cluster service you can reach" not in composed
 
 
 def test_system_prompt_validation_and_forwarding():
