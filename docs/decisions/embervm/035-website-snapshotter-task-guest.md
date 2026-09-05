@@ -8,7 +8,7 @@
 (the warm-snapshot-as-task-base pattern this repeats for a browser instead of
 a JVM), [ADR agents/023](../agents/023-egress-secret-proxy.md) (the
 split-horizon egress guardrail and credential-injection sidecar this decision
-sits behind), [ADR tooling/010](../tooling/010-hermetic-visual-regression.md)
+sits behind), ADR tooling/010 (rolled into `bazel/ARCHITECTURE.md`)
 (Deprecated, prior art: a Playwright capture harness for PR regression
 testing, a different problem this decision does not revive)
 
@@ -206,7 +206,7 @@ The implementation work this decision implies is tracked in GitHub issue
 | [ADR embervm/001](001-embervm-beam-firecracker-workload-orchestrator.md) | Task class, the workload shape this reuses |
 | [ADR embervm/010](010-bazel-skyframe-snapshot-query-demo.md) | The warm-snapshot-as-task-base pattern this repeats for a browser |
 | [ADR agents/023](../agents/023-egress-secret-proxy.md) | Split-horizon egress guardrail and the credential-injection sidecar this decision's in-guest allowlist sits ahead of |
-| [ADR tooling/010](../tooling/010-hermetic-visual-regression.md) (Deprecated) | Prior art: a Playwright regression harness for a different problem, kept for its apko package-resolution method |
+| ADR tooling/010 (rolled into `bazel/ARCHITECTURE.md`) (Deprecated) | Prior art: a Playwright regression harness for a different problem, kept for its apko package-resolution method |
 | `projects/embervm/ARCHITECTURE.md` | Current state of task-class guests, warm-snapshot timing, and the threat model this decision's egress control sits inside |
 | `projects/embervm/runtimes/bazel/README.md` | The two warm-snapshot failure modes (cold snapshot, warm/serve flag drift) and how the existing demo closes them |
 | `projects/firecracker/substrate/egress-proxy/cmd/swap.go` | The sidecar's credential-injection behaviour and its "never touch the URL" guarantee, both cited in section 3 and 4 |

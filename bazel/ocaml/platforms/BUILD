@@ -3,7 +3,7 @@ load("//bazel/ocaml/toolchain:arches.bzl", "declare_ocaml_platforms")
 
 # One `platform` per entry in OCAML_ARCHES (linux x86_64 + aarch64 today). Inert
 # until selected via --platforms or a toolchain's *_compatible_with; see
-# docs/decisions/tooling/006-extensible-multiarch-ocaml-toolchains.md.
+# bazel/ARCHITECTURE.md (OCaml section).
 declare_ocaml_platforms()
 
 # Executor-arch probe: records `uname -m` from whatever executor Bazel routes

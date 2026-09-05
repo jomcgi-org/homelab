@@ -1,6 +1,6 @@
 """Single source of truth for the architectures the OCaml toolchain targets.
 
-Per docs/decisions/tooling/006-extensible-multiarch-ocaml-toolchains.md: adding
+Per bazel/ARCHITECTURE.md (OCaml section): adding
 an architecture is one entry in OCAML_ARCHES (plus a BuildBuddy executor pool
 that satisfies its constraints). linux x86_64 + aarch64 are live today and the
 design is open-ended, so a future production arch is the same one-line edit.

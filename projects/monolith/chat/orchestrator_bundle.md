@@ -135,4 +135,3 @@ docs/decisions/ categories:
 - repo
 - security
 - services
-- tooling
