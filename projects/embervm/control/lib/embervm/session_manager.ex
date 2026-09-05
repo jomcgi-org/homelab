@@ -88,6 +88,10 @@ defmodule Embervm.SessionManager do
   # control plane must not even ISSUE a second one and stack the I/O).
   @default_bank_concurrency 1
 
+  # Global concurrent-create cap: claim/prime workers perform expensive guest
+  # operations, so a burst must not launch an unbounded number at once.
+  @default_create_concurrency 16
+
   # Wake-rate limit: relight-triggering invokes per principal per window. A relight
   # restores a full 2 GiB snapshot, so a burst of misses is an asymmetric-cost DoS
   # lever; excess relights get 429 WITHOUT touching the node.
@@ -143,7 +147,7 @@ defmodule Embervm.SessionManager do
   `{:ok, %{session_id, lineage_id, token, expires_at, base_digest, restored}}`
   (the token is returned ONCE, here; `lineage_id` equals `session_id` for a
   normal create), or `{:error, {:denied, reason}}` for a capacity/quota denial
-  (`:session_cap`, `:workload_cap`, `:quota`, `:no_capacity`,
+  (`:create_saturated`, `:session_cap`, `:workload_cap`, `:quota`, `:no_capacity`,
   `:unknown_workload`, `:not_session_class`) that the router maps to a
   429/403. `restored` is always `false` here (no restore requested); see
   `create/4`.
@@ -155,6 +159,18 @@ defmodule Embervm.SessionManager do
 
   @doc false
   def create_worker_timeout_ms, do: @create_worker_timeout_ms
+
+  @doc "Replies from the manager mailbox without touching lifecycle state."
+  @spec ping(GenServer.server(), timeout()) :: :pong
+  def ping(server, timeout) do
+    GenServer.call(server, :ping, timeout)
+  end
+
+  @doc "Returns the number of create workers in flight and the admission cap."
+  @spec create_admission_stats(GenServer.server()) :: {non_neg_integer(), pos_integer()}
+  def create_admission_stats(server \\ __MODULE__) do
+    GenServer.call(server, :create_admission_stats)
+  end
 
   @doc false
   def default_pressure_retry_interval_ms, do: @default_pressure_retry_interval_ms
@@ -366,6 +382,7 @@ defmodule Embervm.SessionManager do
       monotonic_clock: Keyword.get(opts, :monotonic_clock, fn -> System.monotonic_time(:millisecond) end),
       quota_table: Keyword.get(opts, :quota_table, Embervm.Metering.table()),
       quota_config: Keyword.get(opts, :quota_config, Embervm.Metering.quota_config()),
+      metering: Keyword.get(opts, :metering, Embervm.Metering),
       # Injected for tests; production uses the real claim/prime/channel seams.
       claim_fun: Keyword.get(opts, :claim_fun, &default_claim/3),
       id_fun: Keyword.get(opts, :id_fun),
@@ -416,6 +433,12 @@ defmodule Embervm.SessionManager do
       # slice 3); idempotency_key is nil for an unkeyed create (#4919).
       create_inflight: %{},
       create_next_ref: 0,
+      create_concurrency:
+        Keyword.get(
+          opts,
+          :create_concurrency,
+          Application.get_env(:embervm, :create_concurrency, @default_create_concurrency)
+        ),
       create_workers: %{},
       # #4919: {principal, key} -> create_ref for creates currently mid-flight,
       # and {principal, key} -> [from] callers parked behind them. Claimed
@@ -555,6 +578,14 @@ defmodule Embervm.SessionManager do
   end
 
   @impl true
+  def handle_call(:ping, _from, state) do
+    {:reply, :pong, state}
+  end
+
+  def handle_call(:create_admission_stats, _from, state) do
+    {:reply, {map_size(state.create_workers), state.create_concurrency}, state}
+  end
+
   def handle_call({:create, workload, principal, restore_lineage, idempotency_key}, from, state) do
     cond do
       # A present-but-malformed key is a client bug: deny before anything runs.
@@ -592,73 +623,93 @@ defmodule Embervm.SessionManager do
   defp create_unbound(state, from, workload, principal, restore_lineage, idempotency_key) do
     waiter_key = {principal, idempotency_key}
 
-    if idempotency_key != nil and Map.has_key?(state.idempotency_inflight, waiter_key) do
-      # The first same-key create has not settled yet. Park this caller; it is
-      # replied when finish_create drains the key (same result shape, replay view).
-      waiters = Map.get(state.idempotency_waiters, waiter_key, [])
-      {:noreply, %{state | idempotency_waiters: Map.put(state.idempotency_waiters, waiter_key, [from | waiters])}}
-    else
-      case do_create_inline(state, workload, principal, restore_lineage) do
-        {:ok,
-         %{entry: entry, node_id: node_id, dial_id: dial_id, snapshot_ref: snapshot_ref, lineage_id: lineage_id}} ->
-          ref = state.create_next_ref
+    cond do
+      idempotency_key != nil and Map.has_key?(state.idempotency_inflight, waiter_key) ->
+        # The first same-key create has not settled yet. Park this caller; it is
+        # replied when finish_create drains the key (same result shape, replay view).
+        waiters = Map.get(state.idempotency_waiters, waiter_key, [])
+        {:noreply, %{state | idempotency_waiters: Map.put(state.idempotency_waiters, waiter_key, [from | waiters])}}
 
-          state =
-            put_in(
-              state.create_inflight[ref],
-              {from, lineage_id, workload, principal, entry, node_id, snapshot_ref, dial_id, restore_lineage,
-               idempotency_key}
-            )
+      map_size(state.create_workers) >= state.create_concurrency ->
+        inflight = map_size(state.create_workers)
 
-          # #4306/#4313 review fix 2: mark the lineage in flight in the SAME
-          # state update, synchronously, before this handle_call returns (so
-          # the very next {:create,...} this GenServer processes, for any
-          # caller, sees it).
-          state =
-            if restore_lineage do
-              %{state | inflight_restore_lineages: MapSet.put(state.inflight_restore_lineages, restore_lineage)}
-            else
-              state
-            end
-
-          # #4919: claim the key in the SAME synchronous update, so any later
-          # same-key create sees it parked rather than racing a duplicate.
-          state =
-            if idempotency_key do
-              %{
-                state
-                | idempotency_inflight: Map.put(state.idempotency_inflight, waiter_key, ref),
-                  idempotency_waiters: Map.put(state.idempotency_waiters, waiter_key, [])
-              }
-            else
-              state
-            end
-
-          state = %{state | create_next_ref: ref + 1}
-
-          {state, worker} =
-            spawn_create_worker(
-              state,
-              ref,
-              node_id,
-              dial_id,
-              workload,
-              snapshot_ref,
-              entry,
-              lineage_id,
-              restore_lineage,
-              principal
-            )
-
-          {:noreply, put_in(state.create_workers[ref], worker)}
-
-        {:error, {:denied, reason}} = error_result ->
-          # Bind the FULL {:error, {:denied, _}} tuple: binding the inner term
-          # replied {:denied, reason} and every denial test failed on the shape.
-          audit_denial(state, principal, workload, reason)
-          log_create_result(error_result, workload, principal)
+        Tracer.with_span "embervm.session.create",
+                         %{
+                           attributes: %{
+                             "ember.workload" => workload,
+                             "ember.principal" => principal,
+                             "ember.create.inflight" => inflight,
+                             "ember.create.concurrency" => state.create_concurrency
+                           }
+                         } do
+          error_result = {:error, {:denied, :create_saturated}}
+          audit_denial(state, principal, workload, :create_saturated)
+          log_create_result(error_result, workload, principal, inflight, state.create_concurrency)
           {:reply, error_result, state}
-      end
+        end
+
+      true ->
+        case do_create_inline(state, workload, principal, restore_lineage) do
+          {:ok,
+           %{entry: entry, node_id: node_id, dial_id: dial_id, snapshot_ref: snapshot_ref, lineage_id: lineage_id}} ->
+            ref = state.create_next_ref
+
+            state =
+              put_in(
+                state.create_inflight[ref],
+                {from, lineage_id, workload, principal, entry, node_id, snapshot_ref, dial_id, restore_lineage,
+                 idempotency_key}
+              )
+
+            # #4306/#4313 review fix 2: mark the lineage in flight in the SAME
+            # state update, synchronously, before this handle_call returns (so
+            # the very next {:create,...} this GenServer processes, for any
+            # caller, sees it).
+            state =
+              if restore_lineage do
+                %{state | inflight_restore_lineages: MapSet.put(state.inflight_restore_lineages, restore_lineage)}
+              else
+                state
+              end
+
+            # #4919: claim the key in the SAME synchronous update, so any later
+            # same-key create sees it parked rather than racing a duplicate.
+            state =
+              if idempotency_key do
+                %{
+                  state
+                  | idempotency_inflight: Map.put(state.idempotency_inflight, waiter_key, ref),
+                    idempotency_waiters: Map.put(state.idempotency_waiters, waiter_key, [])
+                }
+              else
+                state
+              end
+
+            state = %{state | create_next_ref: ref + 1}
+
+            {state, worker} =
+              spawn_create_worker(
+                state,
+                ref,
+                node_id,
+                dial_id,
+                workload,
+                snapshot_ref,
+                entry,
+                lineage_id,
+                restore_lineage,
+                principal
+              )
+
+            {:noreply, put_in(state.create_workers[ref], worker)}
+
+          {:error, {:denied, reason}} = error_result ->
+            # Bind the FULL {:error, {:denied, _}} tuple: binding the inner term
+            # replied {:denied, reason} and every denial test failed on the shape.
+            audit_denial(state, principal, workload, reason)
+            log_create_result(error_result, workload, principal)
+            {:reply, error_result, state}
+        end
     end
   end
 
@@ -923,7 +974,9 @@ defmodule Embervm.SessionManager do
                      %{
                        attributes: %{
                          "ember.workload" => workload,
-                         "ember.principal" => principal
+                         "ember.principal" => principal,
+                         "ember.create.inflight" => map_size(state.create_workers) + 1,
+                         "ember.create.concurrency" => state.create_concurrency
                        }
                      } do
       with {:ok, entry} <- fetch_session_workload(state, workload),
@@ -1236,6 +1289,21 @@ defmodule Embervm.SessionManager do
       workload: workload,
       principal: principal,
       reason: inspect(reason)
+    )
+  end
+
+  defp log_create_result(
+         {:error, {:denied, :create_saturated}},
+         workload,
+         principal,
+         inflight,
+         concurrency
+       ) do
+    Logger.warning(
+      "create denied: saturated inflight=#{inflight} cap=#{concurrency} workload=#{workload}",
+      workload: workload,
+      principal: principal,
+      reason: :create_saturated
     )
   end
 
@@ -4652,7 +4720,7 @@ defmodule Embervm.SessionManager do
   # Audit a create denial as one op-log append (D12.2 cadence). Capacity/quota
   # denials are principal-attributable and request-bounded, so they are appended
   # (unlike per-tick dispatch saturation). Reuses the metering denial reason space.
-  defp audit_denial(_state, principal, workload, reason) do
+  defp audit_denial(state, principal, workload, reason) do
     metering_reason =
       case reason do
         :quota -> :quota
@@ -4664,7 +4732,7 @@ defmodule Embervm.SessionManager do
         _ -> :denied
       end
 
-    Embervm.Metering.record_denial(principal, workload, metering_reason)
+    Embervm.Metering.record_denial(state.metering, principal, workload, metering_reason)
     :ok
   end
 

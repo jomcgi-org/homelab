@@ -27,6 +27,13 @@ defmodule Embervm.SessionManagerTest do
     end
   end
 
+  defmodule MeteringOpLogRecorder do
+    def append(test_pid, op) do
+      send(test_pid, {:metering_op, op})
+      {:ok, 1}
+    end
+  end
+
   # A stub op-log whose append/2 blocks until the test sends :go, so a test can hold
   # one async write "in flight" (pending) while it runs a reconcile pass, modelling
   # the writer-stalled-between-RPC-and-append window the adopt-and-backfill repair
@@ -183,6 +190,7 @@ defmodule Embervm.SessionManagerTest do
         session_opts: session_opts,
         async_writer: writer,
         async_lifecycle_writes: async,
+        metering: Keyword.get(opts, :metering, Embervm.Metering),
         op_log: manager_op_log,
         op_log_mod: Keyword.get(opts, :op_log_mod, SQLite),
         tenant: Keyword.get(opts, :tenant, "homelab")
@@ -190,6 +198,7 @@ defmodule Embervm.SessionManagerTest do
         Keyword.take(opts, [
           :quota_config,
           :quota_table,
+          :create_concurrency,
           :node_confirmed_destroy,
           :destroying_alarm_ms,
           :orphan_grace_ms,
@@ -784,6 +793,57 @@ defmodule Embervm.SessionManagerTest do
     assert session.state == :running
     # A live session has a process registered under its id.
     assert [{_pid, _}] = Registry.lookup(ctx.registry, created.session_id)
+  end
+
+  test "create admission denies saturation, audits it, and reopens after a worker finishes" do
+    parent = self()
+    meter_table = :"create_admission_meter_#{System.unique_integer([:positive])}"
+
+    {:ok, metering} =
+      Embervm.Metering.start_link(
+        name: nil,
+        op_log: parent,
+        op_log_mod: MeteringOpLogRecorder,
+        table: meter_table,
+        rebuild: false
+      )
+
+    claim_fun = fn _dispatcher, _node, _workload ->
+      send(parent, {:create_claim_started, self()})
+
+      receive do
+        :release -> {:ok, "vm-#{System.unique_integer([:positive])}"}
+      end
+    end
+
+    ctx = start_stack(create_concurrency: 1, metering: metering, claim_fun: claim_fun)
+    put_session_workload(ctx, "wl-create-admission")
+
+    first = Task.async(fn -> SessionManager.create(ctx.mgr, "wl-create-admission", "p1") end)
+    assert_receive {:create_claim_started, first_worker}, 1_000
+    assert SessionManager.create_admission_stats(ctx.mgr) == {1, 1}
+
+    second = Task.async(fn -> SessionManager.create(ctx.mgr, "wl-create-admission", "p2") end)
+
+    assert Task.await(second, 250) == {:error, {:denied, :create_saturated}}
+
+    assert_receive {:metering_op,
+                    %Embervm.OpLog.Op{
+                      kind: :denied,
+                      principal: "p2",
+                      workload: "wl-create-admission",
+                      payload: %{reason: :create_saturated}
+                    }},
+                   1_000
+
+    send(first_worker, :release)
+    assert {:ok, _created} = Task.await(first, 1_000)
+    assert SessionManager.create_admission_stats(ctx.mgr) == {0, 1}
+
+    third = Task.async(fn -> SessionManager.create(ctx.mgr, "wl-create-admission", "p3") end)
+    assert_receive {:create_claim_started, third_worker}, 1_000
+    send(third_worker, :release)
+    assert {:ok, _created} = Task.await(third, 1_000)
   end
 
   test "records primed op on successful session create prime" do

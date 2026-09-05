@@ -107,6 +107,10 @@ spec:
               value: {{ mul .Values.opLog.sweepIntervalSeconds 1000 | quote }}
             - name: EMBERVM_OPLOG_JOURNAL_HORIZON_MS
               value: {{ mul .Values.opLog.journalHorizonDays 86400 1000 | quote }}
+            # Issue #5291: cap concurrent claim/prime workers so create bursts
+            # do not drive every guest to the worker timeout at once.
+            - name: EMBERVM_CREATE_CONCURRENCY
+              value: {{ .Values.controlPlane.createConcurrency | quote }}
             # Node-confirmed destroy ordering (ADR embervm/014 decision 5).
             #
             # #4758: application.ex has read this gate since the ADR landed, and

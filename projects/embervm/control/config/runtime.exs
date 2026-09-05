@@ -7,6 +7,11 @@ import Config
 # exports nothing. The endpoint-less case is exactly CI and any local mix run.
 otlp_endpoint = System.get_env("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 
+config :embervm,
+  create_concurrency:
+    System.get_env("EMBERVM_CREATE_CONCURRENCY", "16")
+    |> String.to_integer()
+
 if otlp_endpoint != "" do
   config :opentelemetry, traces_exporter: :otlp
 
