@@ -6,12 +6,12 @@ resources:
   - ./atlas-operator # Atlas CRDs required by the monolith chart
   - ./cert-manager # Certificate controller and cluster certificate APIs
   - ./cloudnative-pg # CloudNativePG operator for PostgreSQL clusters
-  - ./authentik # Dormant identity provider cutover destination
-  - ./argo-workflows # Dormant workflow engine cutover destination
+  - ./authentik # Identity provider, live on the hub since the 2026-08-31 cutover
+  - ./argo-workflows # CronWorkflow executor for the monolith jobs, live since the cutover
   - ./otel-collector # GKE telemetry export to Honeycomb
-  - ./cloudflare-gateway # Envoy Gateway active, Cloudflare Tunnel armed but off
+  - ./cloudflare-gateway # Envoy Gateway plus the Cloudflare Tunnel; two connectors since the 2026-08-31 ingress flip
   - ./tailscale # Tailscale operator and tailnet egress services
   - ./kyverno # Secret cloning into monolith-workflows (job pods were secretless on the hub)
   - ./priority-classes # Cluster-scoped tiers (embervm's disposable tier depends on homelab-disposable)
   - ./kargo # Promotion controller; owns targetRevision for the apps in its pipelines
-  - ./spire # SPIFFE identity control plane (ADR embervm/041, #5706); phase 1, no consumer yet
+  - ./spire # SPIFFE identity control plane (ADR embervm/041, #5706); server plus ClusterSPIFFEIDs live, no consumer validates an SVID yet (#5759)

@@ -7,7 +7,7 @@
 Reviewer-Verdict Feedback](038-autonomous-work-queue-tiered-gating.md) (named
 `claude_agent.work_queue` as the entry point for autonomous dispatch and never
 built it); [014 - A Stateless Merge-Queue Reconciler, with Deterministic
-Escalation to Sol](../platform/014-stateless-merge-queue-reconciler.md) (the
+Escalation to Sol](../../../projects/platform/ARCHITECTURE.md) (the
 `jobs_main.py` trigger idiom and the same-tick, exit-clean shape this ADR's
 tick borrows); [022 - Firecracker Snapshot/Restore Controller for
 AgentWorkflow](022-firecracker-snapshot-restore-controller.md) (the EmberVM
@@ -246,7 +246,7 @@ runaway feeder without touching any other agent path.
 | -------- | --------- |
 | [#5301](https://github.com/jomcgi/homelab/issues/5301) | The issue this ADR records the decision for |
 | [ADR 038](038-autonomous-work-queue-tiered-gating.md) | Named `claude_agent.work_queue` as the queue's entry point; this ADR fulfils that role with `routine_jobs` instead |
-| [ADR platform/014](../platform/014-stateless-merge-queue-reconciler.md) | The `jobs_main.py`-triggers-an-internal-endpoint, tick-and-exit shape this ADR's CronWorkflow follows |
+| [ADR platform/014](../../../projects/platform/ARCHITECTURE.md) | The `jobs_main.py`-triggers-an-internal-endpoint, tick-and-exit shape this ADR's CronWorkflow follows |
 | [ADR 022](022-firecracker-snapshot-restore-controller.md) | The EmberVM session runtime, `maxLifetimeSeconds`, each drained job dispatches into |
 | `projects/monolith/agent/routine_jobs.py` | `claim_job` / `complete_job`, the SKIP LOCKED lease this drainer reuses |
 | `projects/monolith/agent/mcp.py:219,249` | `monolith_agent_register_routine_job` / `_deregister_routine_job`, the existing enqueue surface |

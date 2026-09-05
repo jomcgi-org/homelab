@@ -47,6 +47,10 @@ COVERAGE=(
 	"buildbuddy.yaml bazel/ARCHITECTURE.md"
 	"bazel/semgrep/ bazel/ARCHITECTURE.md"
 	"bazel/ocaml/ bazel/ARCHITECTURE.md"
+	"projects/platform/ projects/platform/ARCHITECTURE.md"
+	"projects/platform-gke/ projects/platform/ARCHITECTURE.md"
+	"projects/gke-apps/ projects/platform/ARCHITECTURE.md"
+	"projects/gke-cluster/ projects/platform/ARCHITECTURE.md"
 )
 
 for pair in "${COVERAGE[@]}"; do

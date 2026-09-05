@@ -4,7 +4,7 @@
 **Status:** Accepted
 **Created:** 2026-06-14
 **Accepted:** 2026-06-18
-**Relates to:** [ADR 001: Cloudflare + Envoy Gateway](../networking/001-cloudflare-envoy-gateway.md), [ADR 002: Path-Based Ingress Tiers](../networking/002-path-based-ingress-tiers.md)
+**Relates to:** [ADR 001: Cloudflare + Envoy Gateway](../../../projects/platform/ARCHITECTURE.md), [ADR 002: Path-Based Ingress Tiers](../../../projects/platform/ARCHITECTURE.md)
 
 ---
 
@@ -167,8 +167,8 @@ Builds on the `docs/security.md` baseline (Cloudflare Tunnel perimeter, Linkerd 
 
 | Resource                                                                                                      | Relevance                                                  |
 | ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| [ADR 001: Cloudflare + Envoy Gateway](../networking/001-cloudflare-envoy-gateway.md)                          | Ingress foundation this isolation sits behind              |
-| [ADR 002: Path-Based Ingress Tiers](../networking/002-path-based-ingress-tiers.md)                            | Public/private tier model and hostname scheme              |
+| [ADR 001: Cloudflare + Envoy Gateway](../../../projects/platform/ARCHITECTURE.md)                          | Ingress foundation this isolation sits behind              |
+| [ADR 002: Path-Based Ingress Tiers](../../../projects/platform/ARCHITECTURE.md)                            | Public/private tier model and hostname scheme              |
 | [ADR 001: Obsidian Vault to Monolith Migration](../platform/001-obsidian-vault-monolith-migration.md)         | Context for Postgres as the served-content store for notes |
 | [ADR 006: Obsidian Decommission, Postgres Interim](../platform/006-obsidian-decommission-postgres-interim.md) | Context for Postgres authority over note content           |
 | [CloudNativePG replicas and `-ro` service](https://cloudnative-pg.io/documentation/current/replica_cluster/)  | Streaming standby and read-only service endpoint behavior  |

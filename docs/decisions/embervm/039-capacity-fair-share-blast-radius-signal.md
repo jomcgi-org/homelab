@@ -3,7 +3,7 @@
 **Author:** Joe McGinley
 **Status:** Accepted
 **Created:** 2026-09-01
-**Relates to:** [ADR embervm/013](013-substrate-lanes-brick-sizing-capacity-tiers.md) (bricks as the single capacity unit), [ADR embervm/016](016-kubernetes-scheduling-integration-contract.md) (PriorityClass projection this extends), [ADR embervm/021](021-workload-resource-model-memory-pivot.md) (Draft; already argues CPU should be a jailer weight, not a quota, at the guest layer), [ADR platform/010](../platform/010-memory-oversubscription-burstable-priorityclass.md) (the designated-victim pattern this applies to bricks)
+**Relates to:** [ADR embervm/013](013-substrate-lanes-brick-sizing-capacity-tiers.md) (bricks as the single capacity unit), [ADR embervm/016](016-kubernetes-scheduling-integration-contract.md) (PriorityClass projection this extends), [ADR embervm/021](021-workload-resource-model-memory-pivot.md) (Draft; already argues CPU should be a jailer weight, not a quota, at the guest layer), [ADR platform/010](../../../projects/platform/ARCHITECTURE.md) (the designated-victim pattern this applies to bricks)
 
 ---
 
@@ -331,4 +331,4 @@ ranking outcome.
 | [ADR embervm/013](013-substrate-lanes-brick-sizing-capacity-tiers.md) | Bricks as the single capacity unit; in-place resize retired for both tiers, deliberately (decision 7 does not reopen this) |
 | [ADR embervm/016](016-kubernetes-scheduling-integration-contract.md) | The PriorityClass projection this ADR extends, and the mass-VM-death concern decision 5 reopens and only partially answers |
 | [ADR embervm/021](021-workload-resource-model-memory-pivot.md) | Draft; already decided guest CPU should be a jailer weight, not a quota, the same shape decision 1 applies to the brick pod layer |
-| [ADR platform/010](../platform/010-memory-oversubscription-burstable-priorityclass.md) | The designated-victim, request-below-peak pattern this ADR applies to bricks |
+| [ADR platform/010](../../../projects/platform/ARCHITECTURE.md) | The designated-victim, request-below-peak pattern this ADR applies to bricks |

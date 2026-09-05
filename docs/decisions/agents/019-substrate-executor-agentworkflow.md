@@ -5,7 +5,7 @@
 **Created:** 2026-06-21
 **Revisits:** [015 - Temporal as Orchestration Substrate](015-temporal-orchestration-substrate.md) (its dismissal of warm pools as "not load-bearing")
 **Superseded in part:** [022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md) decision 6 drops the `AgentWorkflow` (Argo Workflows) hot-path framing for the snapshot-managed agent-thread tier, in favour of the Postgres-reconcile controller (the `job-mcp` branch). Argo Workflows is retained only for batch CronWorkflows and optional future multi-agent DAG fan-out above the controller.
-**Builds on:** [014 - AX + Substrate Agent Runtime](014-ax-substrate-agent-runtime.md) (the executor abstraction, not its rejected implementations), [security/003 - gVisor RuntimeClass](../security/003-gvisor-runtime-class.md)
+**Builds on:** [014 - AX + Substrate Agent Runtime](014-ax-substrate-agent-runtime.md) (the executor abstraction, not its rejected implementations), [security/003 - gVisor RuntimeClass](../../../projects/platform/ARCHITECTURE.md)
 
 ---
 
@@ -177,7 +177,7 @@ Latency is not critical today, so the work splits into two independent tracks. T
 Baseline in `docs/security.md`. Deviations and notes:
 
 - **Trusted-only today.** Harnesses are our own; no VM boundary required yet. A standing assumption, not permanent.
-- **Isolation path for untrusted work** is pre-designed: gVisor (`runsc`) per [security/003](../security/003-gvisor-runtime-class.md) and/or Kata Firecracker via `runtimeClassName`. Adopting untrusted execution is gated on this boundary being in place first.
+- **Isolation path for untrusted work** is pre-designed: gVisor (`runsc`) per [security/003](../../../projects/platform/ARCHITECTURE.md) and/or Kata Firecracker via `runtimeClassName`. Adopting untrusted execution is gated on this boundary being in place first.
 - **Clean isolation by construction** (warm pool): a `SandboxClaim` adopts a fresh pod and destroys it on release while the pool replenishes a clean one. Verify the controller destroys rather than recycles (Open Questions).
 - **Snapshots are never load-bearing.** Snapshot memory is ephemeral; durable state always lives in monolith Postgres, echoing ADR 014.
 - **Memory is the binding cluster resource.** Cold-on-demand spends none; warm pools spend standing RAM per image; snapshots trade RAM for disk. The executor sequence is partly a memory-budget decision.
@@ -219,7 +219,7 @@ These are answered during execution, not gates on the decision.
 | [014 - AX + Substrate Agent Runtime](014-ax-substrate-agent-runtime.md)                                         | Origin of the executor abstraction; implementations rejected                                                                                                  |
 | [015 - Temporal as Orchestration Substrate](015-temporal-orchestration-substrate.md)                            | Dismissed warm pools; stronger on etcd decoupling; this ADR revisits both                                                                                     |
 | [007 - Agent Run Orchestration Service](007-agent-orchestrator.md)                                              | Earlier dispatch plumbing, retired                                                                                                                            |
-| [security/003 - gVisor RuntimeClass](../security/003-gvisor-runtime-class.md)                                   | Isolation boundary for the untrusted future                                                                                                                   |
+| [security/003 - gVisor RuntimeClass](../../../projects/platform/ARCHITECTURE.md)                                   | Isolation boundary for the untrusted future                                                                                                                   |
 | [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)                               | `Substrate` impl: Sandbox / SandboxClaim / SandboxWarmPool                                                                                                    |
 | [Argo: Running at Massive Scale](https://argo-workflows.readthedocs.io/en/latest/running-at-massive-scale/)     | Argo's own acknowledgement of the etcd ceiling                                                                                                                |
 | [Argo: Offloading Large Workflows](https://argo-workflows.readthedocs.io/en/latest/offloading-large-workflows/) | node-status offload to Postgres/MySQL; evidence of the object-size limit                                                                                      |

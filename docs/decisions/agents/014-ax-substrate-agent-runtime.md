@@ -4,7 +4,7 @@
 **Status:** Deprecated (AX+Substrate not adopted)
 **Created:** 2026-05-22
 **Supersedes:** None (retires the dispatch plumbing of [007-agent-orchestrator](007-agent-orchestrator.md) and the autonomous-loop plumbing of [008-cluster-patrol-loop-resilience](008-cluster-patrol-loop-resilience.md))
-**Depends on:** [security/003 — gVisor RuntimeClass](../security/003-gvisor-runtime-class.md)
+**Depends on:** [security/003 — gVisor RuntimeClass](../../../projects/platform/ARCHITECTURE.md)
 
 ---
 
@@ -36,7 +36,7 @@ Adopt AX and Substrate in a **split-roles architecture** — not as a wholesale 
 | Dispatch / queue | NATS JetStream + custom Go consumer                                  | **AX event log** (gRPC, durable, resumable)                                    |
 | Agentic loop     | Per-recipe Go shell-out inside orchestrator                          | **AX runtime** (single-writer controller, automatic recovery)                  |
 | Pod lifecycle    | `kubernetes-sigs/agent-sandbox` (`SandboxClaim` / `SandboxWarmPool`) | **Substrate** (`ateapi`, `atelet`, `atecontroller`, `ateom-gvisor`)            |
-| Sandbox kernel   | Host kernel (runc)                                                   | **gVisor (runsc)** per [security/003](../security/003-gvisor-runtime-class.md) |
+| Sandbox kernel   | Host kernel (runc)                                                   | **gVisor (runsc)** per [security/003](../../../projects/platform/ARCHITECTURE.md) |
 | Inference        | vLLM                                                                 | vLLM (unchanged)                                                               |
 | Harnesses        | Goose recipes, Claude CLI subprocess                                 | Goose recipes, Claude CLI subprocess (unchanged)                               |
 | Tool gateway     | Context Forge                                                        | Context Forge (unchanged)                                                      |
@@ -120,13 +120,13 @@ Detailed task tracking lives in GitHub Issues if needed, this ADR records the de
 
 ## Security
 
-- **gVisor isolation** per [security/003](../security/003-gvisor-runtime-class.md) is a hard prerequisite. Substrate's actor multiplexing shares a warm pool across N actors, so the host kernel boundary must hold at runsc.
+- **gVisor isolation** per [security/003](../../../projects/platform/ARCHITECTURE.md) is a hard prerequisite. Substrate's actor multiplexing shares a warm pool across N actors, so the host kernel boundary must hold at runsc.
 - **Event log durability** lives in the monolith's postgres via the AX adapter. The knowledge graph is the durable source of truth for "what agents did"; AX's in-process event log is allowed to be ephemeral and replayable.
 - **Substrate's `atelet`** runs privileged-ish on agent-worker nodes (it coordinates with gVisor and CRI). Privilege is scoped to agent-worker nodes only via taint + Kyverno service-account allowlist.
 - **No new ingress.** AX and Substrate's `ateapi` are internal-only. External access continues through monolith → Cloudflare → CF Tunnel.
 - **Snapshot safety.** Substrate pod snapshots include process memory. Treat them as ephemeral, never load-bearing; durable state always lives in monolith Postgres + the knowledge graph. Never snapshot a pod whose in-memory state we wouldn't want persisted to disk.
 
-See `docs/security.md` for baseline. The only deviation introduced here — `atelet` privilege on agent-worker nodes — is documented in [security/003](../security/003-gvisor-runtime-class.md).
+See `docs/security.md` for baseline. The only deviation introduced here — `atelet` privilege on agent-worker nodes — is documented in [security/003](../../../projects/platform/ARCHITECTURE.md).
 
 ---
 
@@ -164,7 +164,7 @@ These are questions to answer during execution, not gates that block the decisio
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
 | [google/ax](https://github.com/google/ax)                                                                                                                                               | Distributed agent runtime; v0.1.0 May 2026   |
 | [agent-substrate/substrate](https://github.com/agent-substrate/substrate)                                                                                                               | K8s actor multiplexer; v0.0.0                |
-| [security/003 — gVisor RuntimeClass](../security/003-gvisor-runtime-class.md)                                                                                                           | Hard prerequisite                            |
+| [security/003 — gVisor RuntimeClass](../../../projects/platform/ARCHITECTURE.md)                                                                                                           | Hard prerequisite                            |
 | [007 — Agent Run Orchestration Service](007-agent-orchestrator.md)                                                                                                                      | Dispatch plumbing retired by this ADR        |
 | [008 — Cluster Patrol Loop Resilience](008-cluster-patrol-loop-resilience.md)                                                                                                           | Autonomous-loop plumbing retired by this ADR |
 | [003 — Context Forge](003-context-forge.md)                                                                                                                                             | MCP gateway, unchanged                       |
