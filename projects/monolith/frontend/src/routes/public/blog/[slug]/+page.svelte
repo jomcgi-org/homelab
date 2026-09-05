@@ -224,9 +224,14 @@
 
         <!-- One panel per numbered section: a page flip between them. -->
         {#each data.sections as section}
+          {@const replayBoundary = section.indexOf('<h3 id="32-improvements"')}
+          {@const showReplay =
+            data.slug === "125b-on-a-4090" &&
+            section.includes('<h3 id="31-4090-demo"') &&
+            replayBoundary >= 0}
           <section class="edition post-body">
-            {@html section}
-            {#if data.slug === "125b-on-a-4090" && section.startsWith('<h2 id="demo"')}
+            {@html showReplay ? section.slice(0, replayBoundary) : section}
+            {#if showReplay}
               {#await import("$lib/public/posts/QwenReplay.svelte")}
                 <p>Loading the recorded conversation...</p>
               {:then replay}
@@ -237,6 +242,7 @@
                   try again.
                 </p>
               {/await}
+              {@html section.slice(replayBoundary)}
             {/if}
           </section>
         {/each}
@@ -743,6 +749,9 @@
   }
   .post-body :global(td.key[data-tone="cold"]) {
     --key-tone: var(--replay-cold);
+  }
+  .post-body :global(td.key[data-tone="reference"]) {
+    --key-tone: var(--accent-ink);
   }
 
   @media (max-width: 760px) {
