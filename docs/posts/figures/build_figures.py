@@ -305,12 +305,81 @@ def prefill_chunk() -> Figure:
     return f
 
 
+def moe_selection() -> Figure:
+    f = Figure(700, 250, "One MoE layer: route, run selected experts, combine")
+    f.text(18, 20, "ONE MoE LAYER", size=13, weight="bold")
+    f.text(682, 20, "repeated through the model", anchor="end")
+    f.text(18, 125, "input")
+    f.arrow(58, 121, 95, 121)
+    f.box(95, 96, 100, 50)
+    f.text(145, 117, "ROUTER", anchor="middle", weight="bold")
+    f.text(145, 133, "pick + weight", anchor="middle")
+    f.text(330, 44, "EXPERT POOL", anchor="middle")
+    for i in range(5):
+        y = 58 + 31 * i
+        selected = i in (1, 3)
+        f.box(285, y, 90, 23, dashed=not selected, weight=2 if selected else 1)
+        f.text(330, y + 16, f"expert {i + 1}", anchor="middle")
+        if selected:
+            f.path_arrow([(195, 121), (235, 121), (235, y + 11), (285, y + 11)])
+            f.path_arrow([(375, y + 11), (420, y + 11), (420, 121), (465, 121)])
+    f.box(465, 96, 112, 50)
+    f.text(521, 117, "WEIGHTED SUM", anchor="middle", weight="bold")
+    f.text(521, 133, "combine outputs", anchor="middle")
+    f.arrow(577, 121, 630, 121)
+    f.text(640, 125, "output")
+    f.text(330, 225, "solid: selected   dashed: idle", anchor="middle")
+    return f
+
+
+def expert_paths() -> Figure:
+    f = Figure(700, 284, "Selected experts: three paths to computation")
+    f.text(18, 20, "WHERE THE WEIGHTS LIVE", size=13, weight="bold")
+    f.text(682, 20, "illustrative 2.6 MB expert", anchor="end")
+    rows = [
+        ("HOT", "hot", "GPU VRAM", "~3 us read", "1 TB/s", "GPU compute"),
+        ("WARM", "warm", "Pinned RAM", "~100 us over PCIe", "25 GB/s", "GPU compute"),
+        (
+            "COLD",
+            "cold",
+            "Page cache / NVMe",
+            "~40 us hit / ~370 us bulk read",
+            "RAM / 7 GB/s NVMe",
+            "CPU compute",
+        ),
+    ]
+    for i, (name, color, location, cost, bandwidth, compute) in enumerate(rows):
+        y = 43 + i * 68
+        f.parts.append(
+            f'<rect x="18" y="{y}" width="5" height="48" fill="var(--replay-{color})"/>'
+        )
+        f.text(34, y + 17, name, weight="bold")
+        f.text(34, y + 35, location)
+        f.text(375, y + 12, cost, anchor="middle")
+        f.arrow(192, y + 24, 557, y + 24)
+        f.text(375, y + 43, bandwidth, anchor="middle")
+        f.box(567, y, 115, 48)
+        f.text(624, y + 28, compute, anchor="middle")
+    f.line(18, 241, 682, 241)
+    f.text(
+        18, 259, "Weight access estimates, not compute time. Paths are not to scale."
+    )
+    f.text(
+        18,
+        276,
+        "Cold 4 KB page faults can cost ~10 ms per expert instead of a bulk read.",
+    )
+    return f
+
+
 def main() -> None:
     for name, build in {
         "memory-tiers": memory_tiers,
         "decode-step": decode_step,
         "hot-set-swap": hot_set_swap,
         "prefill-chunk": prefill_chunk,
+        "moe-selection": moe_selection,
+        "expert-paths": expert_paths,
     }.items():
         (HERE / f"{name}.svg").write_text(build().svg(), encoding="utf-8")
 
