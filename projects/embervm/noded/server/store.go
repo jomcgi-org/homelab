@@ -1173,10 +1173,10 @@ func (s *Server) startExportQueue(ctx context.Context) {
 }
 
 // enqueueExport schedules an artifact for async write-back. It is non-blocking:
-// a full queue or an already-queued key (same prefix) drops the enqueue silently
-// (the next reconcile re-enqueues a still-missing copy). It no-ops when the store
-// is disabled or the queue is not started. It NEVER blocks the caller (the bank
-// path / drain deadline), by design.
+// a full queue, an already-queued key, or a terminally refused key drops the
+// enqueue silently. Retryable drops can be re-enqueued by the next reconcile.
+// It no-ops when the store is disabled or the queue is not started. It NEVER
+// blocks the caller (the bank path / drain deadline), by design.
 func (s *Server) enqueueExport(ref *nodev1.ArtifactRef) {
 	if s.store == nil || s.exportCh == nil {
 		return
@@ -1186,6 +1186,10 @@ func (s *Server) enqueueExport(ref *nodev1.ArtifactRef) {
 		return
 	}
 	s.exportDedupeMu.Lock()
+	if _, terminal := s.unexportable[key]; terminal {
+		s.exportDedupeMu.Unlock()
+		return
+	}
 	if _, queued := s.exportDedupe[key]; queued {
 		s.exportDedupeMu.Unlock()
 		return // already queued; a re-enqueue is a no-op
@@ -1225,8 +1229,9 @@ func (s *Server) exportWorker(ctx context.Context) {
 
 // runExportJob performs one queued export. For a VOLUME it short-circuits when
 // the current generation is already exported (the store's own Head-compare would
-// also skip, but this avoids the round-trip). It always clears the dedupe key so
-// a subsequent change can re-enqueue.
+// also skip, but this avoids the round-trip). It always clears the dedupe key.
+// A terminal wrap refusal separately enters the unexportable set so subsequent
+// reconciles cannot enqueue the same key again.
 //
 // No OpenTelemetry span is emitted here (R6, Task 11): noded has no Go otel tracer
 // wired (unlike the control plane), and inventing a tracing dependency for one span
@@ -1332,6 +1337,22 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 		return
 	}
 	_, skipped, err := s.exportWithKeys(ctx, job.ref, job.key, localDir, files, generation)
+	if reason, terminal := terminalArtifactWrapFailure(err); terminal {
+		s.exportDedupeMu.Lock()
+		s.unexportable[job.key] = reason
+		s.exportDedupeMu.Unlock()
+		s.logger.Warn("noded: async export failed",
+			"artifact", job.key,
+			"kind", job.ref.GetKind().String(),
+			"classification", "terminal",
+			"reason", reason,
+			"err", err)
+		// A permanent control-plane refusal means this retired session workspace
+		// no longer has an authoritative owner. Complete its existing node-owned
+		// retirement instead of retaining and retrying the orphan forever.
+		s.completeRetirement(job.ref)
+		return
+	}
 	// Not a transport failure and NOT retryable: retrying cannot make our older
 	// copy newer. Only BASE rides this queue today (generation 0, so the fence
 	// cannot fire), but handling it here keeps the log honest if another kind is
@@ -1339,11 +1360,11 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 	if errors.Is(err, store.ErrStaleGeneration) {
 		s.logger.Warn("noded: async export REFUSED, store holds a newer generation (divergent copies)",
 			"artifact", job.key, "kind", job.ref.GetKind().String(),
-			"localGeneration", generation, "err", err)
+			"localGeneration", generation, "classification", "terminal", "err", err)
 		return
 	}
 	if err != nil {
-		s.logger.Warn("noded: async export failed (will retry on reconcile)", "artifact", job.key, "err", err)
+		s.logger.Warn("noded: async export failed", "artifact", job.key, "classification", "retryable", "err", err)
 		return
 	}
 	s.exported.mark(job.key, generation)
@@ -1352,6 +1373,24 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 	}
 	s.signalChange()
 	s.completeRetirement(job.ref)
+}
+
+// terminalArtifactWrapFailure recognizes only an HTTP refusal from the wrap
+// endpoint. Transport errors and 5xx responses remain retryable. errors.As
+// reaches through store.Export's contextual %w wrapper without parsing text.
+func terminalArtifactWrapFailure(err error) (string, bool) {
+	var wrapErr *artifactWrapRequestError
+	if !errors.As(err, &wrapErr) || wrapErr.StatusCode < 400 || wrapErr.StatusCode >= 500 {
+		return "", false
+	}
+	return wrapErr.reason(), true
+}
+
+func (s *Server) unexportableReason(key string) (string, bool) {
+	s.exportDedupeMu.Lock()
+	defer s.exportDedupeMu.Unlock()
+	reason, ok := s.unexportable[key]
+	return reason, ok
 }
 
 func (s *Server) completeRetirement(ref *nodev1.ArtifactRef) {
@@ -1368,7 +1407,9 @@ func (s *Server) completeRetirement(ref *nodev1.ArtifactRef) {
 }
 
 // enqueueRetirementSweep resumes every durable intent after a crash and keeps
-// failed exports retryable on the same cadence as the ordinary export sweep.
+// retryable exports on the same cadence as the ordinary export sweep. A
+// terminally refused export skips the queue but retries local cleanup, so a
+// transient filesystem error cannot strand its retirement intent forever.
 func (s *Server) enqueueRetirementSweep(ctx context.Context) {
 	if s.store == nil || s.volumes == nil {
 		return
@@ -1382,7 +1423,12 @@ func (s *Server) enqueueRetirementSweep(ctx context.Context) {
 			lineageDir := filepath.Dir(path)
 			lineageID := filepath.Base(lineageDir)
 			workload := filepath.Base(filepath.Dir(lineageDir))
-			s.enqueueExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: workload, Ref: lineageID})
+			ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: workload, Ref: lineageID}
+			if _, terminal := s.unexportableReason(artifactPrefix(ref, s.cfg.CpuVendor)); terminal {
+				s.completeRetirement(ref)
+				return nil
+			}
+			s.enqueueExport(ref)
 			return nil
 		})
 	}

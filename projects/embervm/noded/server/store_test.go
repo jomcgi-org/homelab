@@ -1,9 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -38,6 +40,7 @@ type fakeStore struct {
 	exportCalls     map[string]int
 	overwriteCalls  map[string]int
 	dataKeyCalls    map[string]int
+	dataKeyErr      error
 	rewrapCh        chan fakeRewrapCall
 	artifactFileErr error
 	// reachable is what Reachable reports.
@@ -95,6 +98,9 @@ func (f *fakeStore) Export(_ context.Context, prefix, localDir string, files []s
 	var envelope []byte
 	if len(options) > 0 && options[0].Kind != "" {
 		f.dataKeyCalls[prefix]++
+		if f.dataKeyErr != nil {
+			return 0, false, fmt.Errorf("store: get data key for %q: %w", prefix, f.dataKeyErr)
+		}
 		envelope = []byte("fake-envelope")
 	}
 	// Read the local files into memory, mirroring the real client's read-then-put.
@@ -2116,6 +2122,122 @@ func TestRetireVolumeFastACKDeletesOnlyAfterDurableExport(t *testing.T) {
 	}
 	if s.volumes.HasRetirementIntent("sbx", "lineage-retire") {
 		t.Fatal("retirement intent remained after durable export")
+	}
+}
+
+func TestAsyncExportWrapFailureClassification(t *testing.T) {
+	t.Run("404 is terminal and retires the workspace", func(t *testing.T) {
+		fs := newFakeStore()
+		fs.dataKeyErr = &artifactWrapRequestError{StatusCode: 404, Reason: "unknown_artifact"}
+		s := newStoreTestServer(t, fs)
+		s.cfg.StoreEncrypt = true
+		var logs bytes.Buffer
+		s.logger = slog.New(slog.NewTextHandler(&logs, nil))
+		s.exportCh = make(chan exportJob, 1)
+
+		const workload = "pi-runtime"
+		const lineage = "s-orphan"
+		if err := s.volumes.CreateSession(workload, lineage, 1<<20); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.volumes.WriteRetirementIntent(workload, lineage); err != nil {
+			t.Fatal(err)
+		}
+		ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: workload, Ref: lineage}
+		key := artifactPrefix(ref, s.cfg.CpuVendor)
+
+		s.runExportJob(context.Background(), exportJob{ref: ref, key: key})
+
+		if reason, ok := s.unexportableReason(key); !ok || reason != "unknown_artifact (status 404)" {
+			t.Fatalf("unexportable reason = %q, %v", reason, ok)
+		}
+		if _, err := os.Stat(s.volumes.SessionVolumePath(workload, lineage)); !os.IsNotExist(err) {
+			t.Fatalf("retired workspace still exists: %v", err)
+		}
+		if s.volumes.HasRetirementIntent(workload, lineage) {
+			t.Fatal("retirement intent remained after terminal refusal")
+		}
+		if got := logs.String(); !strings.Contains(got, "noded: async export failed") ||
+			!strings.Contains(got, "classification=terminal") ||
+			!strings.Contains(got, "unknown_artifact") || strings.Contains(got, "will retry on reconcile") {
+			t.Fatalf("terminal warning = %q", got)
+		}
+
+		// A later retirement reconcile reaches enqueueExport with the same ref.
+		// The daemon-local refusal set must suppress it without logging again.
+		s.enqueueExport(ref)
+		if got := len(s.exportCh); got != 0 {
+			t.Fatalf("terminal artifact was re-enqueued: queue length = %d", got)
+		}
+		if got := strings.Count(logs.String(), "noded: async export failed"); got != 1 {
+			t.Fatalf("terminal warning count = %d, want 1; logs = %q", got, logs.String())
+		}
+	})
+
+	t.Run("503 stays retryable", func(t *testing.T) {
+		fs := newFakeStore()
+		fs.dataKeyErr = &artifactWrapRequestError{StatusCode: 503, Reason: "key_service_unavailable"}
+		s := newStoreTestServer(t, fs)
+		s.cfg.StoreEncrypt = true
+		var logs bytes.Buffer
+		s.logger = slog.New(slog.NewTextHandler(&logs, nil))
+		s.exportCh = make(chan exportJob, 1)
+
+		const workload = "pi-runtime"
+		const lineage = "s-retry"
+		if err := s.volumes.CreateSession(workload, lineage, 1<<20); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.volumes.WriteRetirementIntent(workload, lineage); err != nil {
+			t.Fatal(err)
+		}
+		ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE, Workload: workload, Ref: lineage}
+		key := artifactPrefix(ref, s.cfg.CpuVendor)
+
+		s.runExportJob(context.Background(), exportJob{ref: ref, key: key})
+
+		if reason, ok := s.unexportableReason(key); ok {
+			t.Fatalf("retryable artifact marked unexportable with reason %q", reason)
+		}
+		if _, err := os.Stat(s.volumes.SessionVolumePath(workload, lineage)); err != nil {
+			t.Fatalf("retryable workspace was retired: %v", err)
+		}
+		if !s.volumes.HasRetirementIntent(workload, lineage) {
+			t.Fatal("retryable workspace lost its retirement intent")
+		}
+		if got := logs.String(); !strings.Contains(got, "noded: async export failed") ||
+			!strings.Contains(got, "classification=retryable") || strings.Contains(got, "will retry on reconcile") {
+			t.Fatalf("retryable warning = %q", got)
+		}
+		s.enqueueExport(ref)
+		if got := len(s.exportCh); got != 1 {
+			t.Fatalf("retryable artifact queue length = %d, want 1", got)
+		}
+	})
+}
+
+func TestTerminalArtifactWrapFailureUsesHTTPStatus(t *testing.T) {
+	tests := []struct {
+		status   int
+		terminal bool
+	}{
+		{status: 400, terminal: true},
+		{status: 403, terminal: true},
+		{status: 404, terminal: true},
+		{status: 499, terminal: true},
+		{status: 503, terminal: false},
+	}
+	for _, tt := range tests {
+		t.Run(strconv.Itoa(tt.status), func(t *testing.T) {
+			err := fmt.Errorf("store wrapper: %w", &artifactWrapRequestError{StatusCode: tt.status, Reason: "refused"})
+			_, terminal := terminalArtifactWrapFailure(err)
+			if terminal != tt.terminal {
+				t.Fatalf("terminalArtifactWrapFailure(status %d) = %v, want %v", tt.status, terminal, tt.terminal)
+			}
+		})
+	}
+	if _, terminal := terminalArtifactWrapFailure(fmt.Errorf("post artifact wrap request: connection reset")); terminal {
+		t.Fatal("transport error classified terminal")
 	}
 }
 

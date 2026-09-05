@@ -325,11 +325,14 @@ type Server struct {
 	// Volume.exported_generation.
 	exported *exportedCache
 	// exportCh is the bounded async export queue; exportDedupe drops a re-enqueue
-	// of an already-queued prefix. Both nil/empty until startExportQueue runs.
+	// of an already-queued prefix. unexportable records wrap refusals that cannot
+	// succeed on a later reconcile, keyed by prefix with the refusal reason. The
+	// mutex protects both maps. The channel stays nil until startExportQueue runs.
 	exportCh       chan exportJob
 	exportOnce     sync.Once
 	exportDedupeMu sync.Mutex
 	exportDedupe   map[string]struct{}
+	unexportable   map[string]string
 	// restoreCh is the bounded async BASE-restore queue; restoreDedupe drops a
 	// re-enqueue of an already-in-flight prefix (held enqueue-through-completion,
 	// so a re-triggered restore of a base still downloading is a no-op). Both
@@ -454,6 +457,7 @@ func New(opts Options) *Server {
 		signStoreRequest: opts.SignStoreRequest,
 		exported:         newExportedCache(),
 		exportDedupe:     make(map[string]struct{}),
+		unexportable:     make(map[string]string),
 		restoreDedupe:    make(map[string]struct{}),
 		subs:             make(map[chan struct{}]struct{}),
 		activeBuilds:     make(map[string]context.CancelFunc),

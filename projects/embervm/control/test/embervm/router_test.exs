@@ -605,6 +605,38 @@ defmodule Embervm.RouterTest do
     assert wrong_sa.status == 403
   end
 
+  test "POST /v1/artifacts/wrap logs an unknown session workspace" do
+    Application.put_env(:embervm, :artifact_encryption, true)
+    Application.put_env(:embervm, :noded_service_account, @allowed)
+    Application.put_env(:embervm, :session_store_mod, FakeSessionStore)
+    Application.put_env(:embervm, :session_store, :fake)
+    parent = self()
+
+    log =
+      capture_log(
+        [level: :info, format: "$message $metadata\n", metadata: [:kind, :workload, :ref]],
+        fn ->
+          resp =
+            req(
+              :post,
+              "/v1/artifacts/wrap",
+              auth("good"),
+              wrap_body("session-workspace", "pi-runtime", "s-unknown")
+            )
+
+          send(parent, {:unknown_workspace_wrap_response, resp})
+        end
+      )
+
+    assert_receive {:unknown_workspace_wrap_response, resp}
+    assert resp.status == 404
+    assert json(resp.body) == %{"error" => "unknown_artifact"}
+    assert log =~ "embervm artifact wrap unknown_artifact"
+    assert log =~ "kind=session-workspace"
+    assert log =~ "workload=pi-runtime"
+    assert log =~ "ref=s-unknown"
+  end
+
   test "POST /v1/artifacts/wrap returns a session-owned data key and envelope" do
     service = key_service(:binary.copy(<<9>>, 32))
     Application.put_env(:embervm, :artifact_encryption, true)

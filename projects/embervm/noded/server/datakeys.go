@@ -24,6 +24,30 @@ type cpDataKeyProvider struct {
 	doer            httpDoer
 }
 
+// artifactWrapRequestError preserves a control-plane refusal as it passes
+// through store.Export's error wrapping. The async export worker uses the HTTP
+// status for retry classification, while Reason retains the stable JSON error
+// returned by the control plane for operator-facing logs.
+type artifactWrapRequestError struct {
+	StatusCode int
+	Reason     string
+}
+
+func (e *artifactWrapRequestError) Error() string {
+	message := fmt.Sprintf("control plane rejected artifact wrap request: status %d", e.StatusCode)
+	if e.Reason != "" {
+		message += ": " + e.Reason
+	}
+	return message
+}
+
+func (e *artifactWrapRequestError) reason() string {
+	if e.Reason != "" {
+		return fmt.Sprintf("%s (status %d)", e.Reason, e.StatusCode)
+	}
+	return fmt.Sprintf("status %d", e.StatusCode)
+}
+
 // NewCPDataKeyProvider creates the dial-home HTTP implementation of
 // store.DataKeyProvider. It reads the projected ServiceAccount token fresh for
 // every request and applies a 10-second request timeout.
@@ -62,8 +86,12 @@ func (p *cpDataKeyProvider) DataKey(ctx context.Context, kind, workload, ref str
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
-		return nil, nil, fmt.Errorf("control plane rejected artifact wrap request: status %d", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		var payload struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(body, &payload)
+		return nil, nil, &artifactWrapRequestError{StatusCode: resp.StatusCode, Reason: payload.Error}
 	}
 	var out struct {
 		DataKey  []byte `json:"data_key"`

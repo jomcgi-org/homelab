@@ -53,6 +53,24 @@ func TestCPDataKeyProvider(t *testing.T) {
 	}
 }
 
+func TestCPDataKeyProviderWrapRejectionIsTyped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"unknown_artifact"}`))
+	}))
+	defer srv.Close()
+
+	p := newCPDataKeyProvider(srv.URL, "", srv.Client())
+	_, _, err := p.DataKey(context.Background(), "session-workspace", "pi-runtime", "s-orphan")
+	wrapErr, ok := err.(*artifactWrapRequestError)
+	if !ok {
+		t.Fatalf("DataKey error = %T %v, want *artifactWrapRequestError", err, err)
+	}
+	if wrapErr.StatusCode != http.StatusNotFound || wrapErr.Reason != "unknown_artifact" {
+		t.Fatalf("wrap error = %#v", wrapErr)
+	}
+}
+
 func TestCPDataKeyProviderRewrapEnvelope(t *testing.T) {
 	oldEnvelope := []byte("old-envelope")
 	newEnvelope := []byte("new-envelope")

@@ -890,7 +890,7 @@ defmodule Embervm.Router do
     with {:ok, body, conn} <- read_capped_body(conn),
          {:ok, request} <- decode_artifact_wrap(body),
          {:ok, principal} <-
-           principal_resolver.resolve(request["kind"], request["workload"], request["ref"]),
+           resolve_artifact_wrap_principal(principal_resolver, request),
          {:ok, data_key, envelope} <-
            Embervm.KeyService.issue_data_key(key_service, principal, request) do
       send_json(conn, 200, %{
@@ -903,6 +903,27 @@ defmodule Embervm.Router do
       {:error, :too_large} -> send_json(conn, 413, %{error: "request body too large"})
       {:error, :bad_request} -> send_json(conn, 400, %{error: "bad_request"})
       {:error, _reason} -> send_json(conn, 503, %{error: "key_service_unavailable"})
+    end
+  end
+
+  defp resolve_artifact_wrap_principal(principal_resolver, request) do
+    result =
+      principal_resolver.resolve(request["kind"], request["workload"], request["ref"])
+
+    case result do
+      {:error, :unknown_artifact} = error ->
+        if request["kind"] == "session-workspace" do
+          Logger.info("embervm artifact wrap unknown_artifact",
+            kind: request["kind"],
+            workload: request["workload"],
+            ref: request["ref"]
+          )
+        end
+
+        error
+
+      other ->
+        other
     end
   end
 
