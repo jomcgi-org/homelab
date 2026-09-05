@@ -728,15 +728,24 @@ func (s *Server) restoreDataKey(raw []byte, ref *nodev1.ArtifactRef, generation 
 }
 
 func (s *Server) exportWithKeys(ctx context.Context, ref *nodev1.ArtifactRef, prefix, localDir string, files []string, generation uint64) (int64, bool, error) {
-	var options []store.ExportOptions
+	opts := store.ExportOptions{}
 	if s.cfg.StoreEncrypt && isPrincipalKind(ref.GetKind()) {
-		options = append(options, store.ExportOptions{
-			Kind:     artifactKindStr(ref.GetKind()),
-			Workload: ref.GetWorkload(),
-			Ref:      ref.GetRef(),
-		})
+		opts.Kind = artifactKindStr(ref.GetKind())
+		opts.Workload = ref.GetWorkload()
+		opts.Ref = ref.GetRef()
 	}
-	return s.store.Export(ctx, prefix, localDir, files, generation, time.Now().UnixMilli(), s.cfg.CpuVendor, s.cfg.CpuTemplate, options...)
+	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_BASE && s.baseNeedsRepublish(prefix) {
+		opts.Overwrite = true
+	}
+	var options []store.ExportOptions
+	if opts != (store.ExportOptions{}) {
+		options = append(options, opts)
+	}
+	moved, skipped, err := s.store.Export(ctx, prefix, localDir, files, generation, time.Now().UnixMilli(), s.cfg.CpuVendor, s.cfg.CpuTemplate, options...)
+	if err == nil && opts.Overwrite {
+		s.clearBaseRepublish(prefix)
+	}
+	return moved, skipped, err
 }
 
 // resolveRestorePrefix composes the store prefix a restore reads from. It
@@ -1274,6 +1283,7 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 	// delete newer local bytes while the store still holds an older copy.
 	// Export's own checksum compare is the idempotency gate for this kind.
 	if job.ref.GetKind() != nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE &&
+		!s.baseNeedsRepublish(job.key) &&
 		s.alreadyDurable(ctx, job.ref, job.key) {
 		s.logger.Info("noded: export skipped, artifact already durable in store",
 			"artifact", job.key, "kind", job.ref.GetKind().String())
@@ -1582,6 +1592,11 @@ func (s *Server) runRestoreJob(ctx context.Context, job restoreJob) {
 		return
 	}
 	s.reregisterRestored(job.ref)
+	if s.baseNeedsRepublish(job.prefix) {
+		s.logger.Warn("noded: restored base refused by rootfs identity gate", "artifact", job.prefix)
+		s.signalChange()
+		return
+	}
 	s.exported.mark(job.prefix, generation)
 	s.logger.Info("noded: restored base off store", "artifact", job.prefix, "bytesMoved", moved, "generation", generation)
 	s.signalChange()
@@ -1679,4 +1694,31 @@ func (c *exportedCache) generation(prefix string) (uint64, bool) {
 	defer c.mu.RUnlock()
 	g, ok := c.gens[prefix]
 	return g, ok
+}
+
+func (s *Server) markBaseRepublish(prefix string) {
+	if prefix == "" {
+		return
+	}
+	s.republishMu.Lock()
+	if s.republish == nil {
+		s.republish = make(map[string]bool)
+	}
+	s.republish[prefix] = true
+	s.republishMu.Unlock()
+	if s.exported != nil {
+		s.exported.clear(prefix)
+	}
+}
+
+func (s *Server) baseNeedsRepublish(prefix string) bool {
+	s.republishMu.Lock()
+	defer s.republishMu.Unlock()
+	return s.republish[prefix]
+}
+
+func (s *Server) clearBaseRepublish(prefix string) {
+	s.republishMu.Lock()
+	delete(s.republish, prefix)
+	s.republishMu.Unlock()
 }

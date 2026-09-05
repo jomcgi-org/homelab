@@ -491,7 +491,29 @@ func primeSessionVM(t *testing.T, srv *Server, drv *fakeDriver, sessionID, workl
 }
 
 func seedBase(s *Server, snapshotRef, workload string) {
-	s.bases.readyBuild(snapshotRef, workload, "img@sha256:deadbeef", "", "/shim/ready", 2048)
+	rootfsDir := filepath.Join(s.cfg.SnapshotRoot, "test-rootfs")
+	baseDir := filepath.Join(s.cfg.SnapshotRoot, "bases", snapshotRef)
+	if err := os.MkdirAll(rootfsDir, 0o700); err != nil {
+		panic(err)
+	}
+	if err := os.MkdirAll(baseDir, 0o700); err != nil {
+		panic(err)
+	}
+	data := make([]byte, 0x48c)
+	data[ext4MagicOffset] = 0x53
+	data[ext4MagicOffset+1] = 0xef
+	copy(data[ext4UUIDOffset:], []byte{0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66, 0x55, 0x44, 0x00, 0x00})
+	rootfsPath := filepath.Join(rootfsDir, snapshotRef+".ext4")
+	if err := os.WriteFile(rootfsPath, data, 0o600); err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(filepath.Join(baseDir, "rootfspath"), []byte(rootfsPath), 0o600); err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(filepath.Join(baseDir, "rootfsid"), []byte(testRootfsUUIDA), 0o600); err != nil {
+		panic(err)
+	}
+	s.bases.readyBuild(snapshotRef, workload, "img@sha256:deadbeef", rootfsPath, "/shim/ready", 2048)
 }
 
 func contains(ids []string, id string) bool {
@@ -1037,10 +1059,7 @@ func TestBuildBaseAdoptsSiblingBundleFromDisk(t *testing.T) {
 	// The backing rootfs must EXIST: adoption declines a bundle whose recorded
 	// rootfs is missing (it could not restore), so a nonexistent path here would
 	// silently exercise the decline path instead of the adoption path.
-	rootfs := filepath.Join(t.TempDir(), "rootfs.ext4")
-	if err := os.WriteFile(rootfs, []byte("rootfs"), 0o600); err != nil {
-		t.Fatalf("write rootfs: %v", err)
-	}
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
 	s := New(Options{
 		Config: config.Config{
 			Arch: "amd64", Node: "node-4", SnapshotRoot: t.TempDir(),
@@ -1057,9 +1076,11 @@ func TestBuildBaseAdoptsSiblingBundleFromDisk(t *testing.T) {
 	memBytes := strings.Repeat("m", 100)
 	snapBytes := strings.Repeat("s", 50)
 	for name, content := range map[string]string{
-		"imageref": "img:1",
-		"memfile":  memBytes,
-		"snapfile": snapBytes,
+		"imageref":   "img:1",
+		"memfile":    memBytes,
+		"rootfsid":   testRootfsUUIDA,
+		"rootfspath": rootfs,
+		"snapfile":   snapBytes,
 	} {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			t.Fatalf("mkdir bundle dir: %v", err)
@@ -1119,10 +1140,7 @@ func TestBuildBaseIncompleteBundleFallsThroughToBuild(t *testing.T) {
 	// The backing rootfs must EXIST: adoption declines a bundle whose recorded
 	// rootfs is missing (it could not restore), so a nonexistent path here would
 	// silently exercise the decline path instead of the adoption path.
-	rootfs := filepath.Join(t.TempDir(), "rootfs.ext4")
-	if err := os.WriteFile(rootfs, []byte("rootfs"), 0o600); err != nil {
-		t.Fatalf("write rootfs: %v", err)
-	}
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
 	s := New(Options{
 		Config: config.Config{
 			Arch: "amd64", Node: "node-4", SnapshotRoot: t.TempDir(),
@@ -2976,8 +2994,8 @@ func TestStaleRegistryRefusesColdPrimeButServesWarm(t *testing.T) {
 	s.registry.synced = false
 	s.registry.mu.Unlock()
 	// Register a READY base for two workloads so Prime gets past the base checks.
-	s.bases.readyBuild("snap-cold", "wl-cold", "img-a", "", "/shim/ready", 2048)
-	s.bases.readyBuild("snap-warm", "wl-warm", "img-a", "", "/shim/ready", 2048)
+	seedBase(s, "snap-cold", "wl-cold")
+	seedBase(s, "snap-warm", "wl-warm")
 	// Seed an EXISTING primed VM for wl-warm so it counts as already-warm.
 	s.vms.add(&vmEntry{id: "vm-warm-1", workload: "wl-warm", snapshotRef: "snap-warm", state: vmPrimed})
 
@@ -3042,6 +3060,13 @@ func writeReconcileBase(t *testing.T, basesDir, baseKey, ref string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(d, "memfile"), []byte("mem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootfs := writeExt4Rootfs(t, filepath.Join(filepath.Dir(basesDir), "test-rootfs"), baseKey+".ext4", testRootfsUUIDA)
+	if err := os.WriteFile(filepath.Join(d, "rootfspath"), []byte(rootfs), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, "rootfsid"), []byte(testRootfsUUIDA), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if ref != "" {

@@ -1,14 +1,48 @@
 package server
 
 import (
+	"context"
+	"encoding/hex"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
+
+	"github.com/jomcgi/homelab/projects/embervm/noded/config"
 )
+
+const (
+	testRootfsUUIDA = "550e8400-e29b-41d4-a716-446655440000"
+	testRootfsUUIDB = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+)
+
+func writeExt4Rootfs(t *testing.T, dir, name, uuid string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	rawUUID, err := hex.DecodeString(strings.ReplaceAll(uuid, "-", ""))
+	if err != nil || len(rawUUID) != 16 {
+		t.Fatalf("decode test UUID %q: %v", uuid, err)
+	}
+	data := make([]byte, 0x48c)
+	data[ext4MagicOffset] = 0x53
+	data[ext4MagicOffset+1] = 0xef
+	copy(data[ext4UUIDOffset:], rawUUID)
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	return path
+}
 
 // writeRootfs creates a rootfs file with a given age, mirroring what the
 // rootfs-builder bakes.
@@ -17,15 +51,88 @@ func writeRootfs(t *testing.T, dir, name string, age time.Duration) string {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir %s: %v", dir, err)
 	}
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte("rootfs"), 0o600); err != nil {
-		t.Fatalf("write %s: %v", path, err)
-	}
+	path := writeExt4Rootfs(t, dir, name, testRootfsUUIDA)
 	when := time.Now().Add(-age)
 	if err := os.Chtimes(path, when, when); err != nil {
 		t.Fatalf("chtimes %s: %v", path, err)
 	}
 	return path
+}
+
+func TestExt4UUID_Happy(t *testing.T) {
+	path := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	got, err := ext4UUID(path)
+	if err != nil {
+		t.Fatalf("ext4UUID: %v", err)
+	}
+	if got != testRootfsUUIDA {
+		t.Fatalf("ext4UUID = %q, want %q", got, testRootfsUUIDA)
+	}
+}
+
+func TestExt4UUID_ShortFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "short.ext4")
+	if err := os.WriteFile(path, make([]byte, ext4MagicOffset), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ext4UUID(path); err == nil {
+		t.Fatal("ext4UUID accepted a short file")
+	}
+}
+
+func TestExt4UUID_BadMagic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-ext4.img")
+	if err := os.WriteFile(path, make([]byte, 0x48c), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ext4UUID(path); err == nil || !strings.Contains(err.Error(), "magic") {
+		t.Fatalf("ext4UUID bad magic error = %v", err)
+	}
+}
+
+func TestWriteAndReadBaseRootfsID(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	baseKey := "echo__rootfsid"
+	if err := os.MkdirAll(filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	if err := s.writeBaseRootfsID(baseKey, rootfs); err != nil {
+		t.Fatalf("writeBaseRootfsID: %v", err)
+	}
+	if got := s.readBaseRootfsID(baseKey); got != testRootfsUUIDA {
+		t.Fatalf("readBaseRootfsID = %q, want %q", got, testRootfsUUIDA)
+	}
+}
+
+func TestBaseRootfsMatches_NoRootfsID(t *testing.T) {
+	dir := t.TempDir()
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	if ok, reason := baseRootfsMatches(dir, rootfs); ok || !strings.Contains(reason, "rootfsid") {
+		t.Fatalf("baseRootfsMatches = (%v, %q), want false with rootfsid reason", ok, reason)
+	}
+}
+
+func TestBaseRootfsMatches_MismatchedUUID(t *testing.T) {
+	dir := t.TempDir()
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDB)
+	if err := os.WriteFile(filepath.Join(dir, "rootfsid"), []byte(testRootfsUUIDA), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ok, reason := baseRootfsMatches(dir, rootfs); ok || reason != testRootfsUUIDB {
+		t.Fatalf("baseRootfsMatches = (%v, %q), want false with actual UUID", ok, reason)
+	}
+}
+
+func TestBaseRootfsMatches_MatchedUUID(t *testing.T) {
+	dir := t.TempDir()
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	if err := os.WriteFile(filepath.Join(dir, "rootfsid"), []byte(testRootfsUUIDA), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ok, reason := baseRootfsMatches(dir, rootfs); !ok || reason != "" {
+		t.Fatalf("baseRootfsMatches = (%v, %q), want true with no reason", ok, reason)
+	}
 }
 
 // TestSweepRootfsRemovesUnreferencedKeepsCurrent proves the core reclaim: with a
@@ -213,8 +320,8 @@ func TestSweepRootfsTemporaryFiles(t *testing.T) {
 		if removed != 1 {
 			t.Fatalf("removed = %d, want 1", removed)
 		}
-		if freed != int64(len("rootfs")) {
-			t.Fatalf("freed = %d, want %d", freed, len("rootfs"))
+		if freed != 0x48c {
+			t.Fatalf("freed = %d, want %d", freed, 0x48c)
 		}
 		if _, err := os.Stat(temporary); !os.IsNotExist(err) {
 			t.Fatalf("orphaned temporary should be gone, stat error = %v", err)
@@ -321,6 +428,7 @@ func TestReconcileBasesAcceptsExistingRootfs(t *testing.T) {
 		"snapfile":   "snap",
 		"imageref":   "img",
 		"rootfspath": rootfs,
+		"rootfsid":   testRootfsUUIDA,
 	} {
 		if err := os.WriteFile(filepath.Join(baseDir, name), []byte(contents), 0o644); err != nil {
 			t.Fatalf("write %s: %v", name, err)
@@ -337,5 +445,181 @@ func TestReconcileBasesAcceptsExistingRootfs(t *testing.T) {
 	}
 	if got.buildErr != "" {
 		t.Fatalf("build error = %q, want empty", got.buildErr)
+	}
+}
+
+func writeIdentityBaseBundle(t *testing.T, s *Server, baseKey, rootfsPath, recordedID string) string {
+	t.Helper()
+	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey)
+	files := map[string]string{
+		"imageref":   "img",
+		"memfile":    "mem",
+		"rootfspath": rootfsPath,
+		"snapfile":   "snap",
+	}
+	if recordedID != "" {
+		files["rootfsid"] = recordedID
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	return dir
+}
+
+func TestReconcileBasesRemovesMissingRootfsID(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	baseKey := "echo__missing-rootfsid"
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	dir := writeIdentityBaseBundle(t, s, baseKey, rootfs, "")
+
+	if err := s.ReconcileBasesFromDisk(); err != nil {
+		t.Fatalf("ReconcileBasesFromDisk: %v", err)
+	}
+	if _, ok := s.bases.get(baseKey); ok {
+		t.Fatal("base without rootfsid was registered")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("base without rootfsid was not removed: %v", err)
+	}
+}
+
+func TestReconcileBasesRemovesMismatched(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	baseKey := "echo__mismatched-rootfsid"
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDB)
+	dir := writeIdentityBaseBundle(t, s, baseKey, rootfs, testRootfsUUIDA)
+
+	if err := s.ReconcileBasesFromDisk(); err != nil {
+		t.Fatalf("ReconcileBasesFromDisk: %v", err)
+	}
+	if _, ok := s.bases.get(baseKey); ok {
+		t.Fatal("base with mismatched rootfsid was registered")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("mismatched base was not removed: %v", err)
+	}
+	prefix := "base/amd/echo/" + baseKey
+	if !s.baseNeedsRepublish(prefix) {
+		t.Fatalf("mismatched restored base did not mark %q for republish", prefix)
+	}
+}
+
+func TestReconcileBasesRegisterMatched(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	baseKey := "echo__matched-rootfsid"
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	dir := writeIdentityBaseBundle(t, s, baseKey, rootfs, testRootfsUUIDA)
+
+	if err := s.ReconcileBasesFromDisk(); err != nil {
+		t.Fatalf("ReconcileBasesFromDisk: %v", err)
+	}
+	got, ok := s.bases.get(baseKey)
+	if !ok || got.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+		t.Fatalf("matched base = %+v, ok=%v, want READY", got, ok)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("matched base was removed: %v", err)
+	}
+}
+
+func TestAdoptSiblingBaseBundleRootfsIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		recordedID string
+		want       bool
+	}{
+		{name: "missing", recordedID: "", want: false},
+		{name: "mismatched", recordedID: testRootfsUUIDB, want: false},
+		{name: "matched", recordedID: testRootfsUUIDA, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStoreTestServer(t, newFakeStore())
+			baseKey := "echo__adopt-" + tc.name
+			rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+			writeIdentityBaseBundle(t, s, baseKey, rootfs, tc.recordedID)
+			_, got := s.adoptSiblingBaseBundle(baseKey, "echo", "img", rootfs, "/shim/ready")
+			if got != tc.want {
+				t.Fatalf("adoptSiblingBaseBundle accepted = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAdoptSiblingRefuseMismatched(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	baseKey := "echo__adopt-mismatch"
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	writeIdentityBaseBundle(t, s, baseKey, rootfs, testRootfsUUIDB)
+	if _, ok := s.adoptSiblingBaseBundle(baseKey, "echo", "img", rootfs, "/shim/ready"); ok {
+		t.Fatal("adoptSiblingBaseBundle accepted a mismatched rootfs UUID")
+	}
+}
+
+func TestBootRejectsBaseRootfsMismatch(t *testing.T) {
+	drv := &fakeDriver{}
+	s := New(Options{
+		Config:    config.Config{Arch: "amd64", Node: "node-4", MaxLiveVMs: 4, SnapshotRoot: t.TempDir()},
+		Driver:    drv,
+		Transport: &fakeTransport{},
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	baseKey := "echo__boot-mismatch"
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDB)
+	writeIdentityBaseBundle(t, s, baseKey, rootfs, testRootfsUUIDA)
+	s.bases.readyBuild(baseKey, "echo", "img", rootfs, "/shim/ready", 2048)
+
+	_, err := s.Prime(context.Background(), &nodev1.PrimeRequest{SnapshotRef: baseKey})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "base rootfs identity mismatch") {
+		t.Fatalf("Prime error = %v, want distinct rootfs identity mismatch", err)
+	}
+	if claims, _, _, _ := drv.counts(); claims != 0 {
+		t.Fatalf("driver claims = %d, want 0 before identity gate", claims)
+	}
+}
+
+func TestBaseRepublishOverwritesRefusedStoreBundle(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	baseKey := "echo__republish"
+	rootfsDir := t.TempDir()
+	rootfs := writeExt4Rootfs(t, rootfsDir, "rootfs.ext4", testRootfsUUIDB)
+	writeIdentityBaseBundle(t, s, baseKey, rootfs, testRootfsUUIDA)
+	prefix := "base/amd/echo/" + baseKey
+	files := map[string]string{
+		"imageref":   "img",
+		"memfile":    "mem",
+		"rootfsid":   testRootfsUUIDA,
+		"rootfspath": rootfs,
+		"snapfile":   "snap",
+	}
+	fs.seedArtifact(prefix, files, 0, "amd", "")
+
+	if err := s.ReconcileBasesFromDisk(); err != nil {
+		t.Fatalf("ReconcileBasesFromDisk: %v", err)
+	}
+	if !s.baseNeedsRepublish(prefix) {
+		t.Fatal("refused restored bundle was not marked for republish")
+	}
+
+	writeExt4Rootfs(t, rootfsDir, "rootfs.ext4", testRootfsUUIDA)
+	writeIdentityBaseBundle(t, s, baseKey, rootfs, testRootfsUUIDA)
+	s.runExportJob(context.Background(), exportJob{
+		key: prefix,
+		ref: &nodev1.ArtifactRef{
+			Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_BASE,
+			Workload: "echo",
+			Ref:      baseKey,
+		},
+	})
+	if got := fs.overwrites(prefix); got != 1 {
+		t.Fatalf("overwrite exports = %d, want 1", got)
+	}
+	if s.baseNeedsRepublish(prefix) {
+		t.Fatal("republish intent was not cleared after successful export")
 	}
 }

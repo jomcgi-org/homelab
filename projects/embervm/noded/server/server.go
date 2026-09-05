@@ -324,6 +324,11 @@ type Server struct {
 	// NodeStatus projection for the per-artifact `exported` bool and
 	// Volume.exported_generation.
 	exported *exportedCache
+	// republish tracks base store prefixes whose restored bundle was rejected for
+	// a rootfs identity mismatch. The next rebuilt-base export must overwrite the
+	// stale store object even when its checksums happen to match.
+	republishMu sync.Mutex
+	republish   map[string]bool
 	// exportCh is the bounded async export queue; exportDedupe drops a re-enqueue
 	// of an already-queued prefix. Both nil/empty until startExportQueue runs.
 	exportCh       chan exportJob
@@ -453,6 +458,7 @@ func New(opts Options) *Server {
 		store:            opts.Store,
 		signStoreRequest: opts.SignStoreRequest,
 		exported:         newExportedCache(),
+		republish:        make(map[string]bool),
 		exportDedupe:     make(map[string]struct{}),
 		restoreDedupe:    make(map[string]struct{}),
 		subs:             make(map[chan struct{}]struct{}),
@@ -840,6 +846,7 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 	// it is unbootable. Best-effort: a missing ref file just forces a rebuild.
 	s.writeBaseImageRef(baseKey, imageDigest)
 	s.writeBaseRootfsPath(baseKey, img.RootfsPath)
+	_ = s.writeBaseRootfsID(baseKey, img.RootfsPath)
 
 	// Serving base (R3, D-R3.11.2): additionally persist a cold-boot-readable handler
 	// artifact from the SAME verified archive bytes noded already holds, so a serving
@@ -906,8 +913,8 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 // caller proceeds with a normal build. The checks mirror reconcile's adoption
 // gates: the same completeness rule as the inventory scan (isCompleteBase), the
 // register-time snapshot-format validation (#4407: never adopt a snapshot this
-// node cannot load), and the rootfs rule (a recorded-but-missing backing rootfs
-// cannot restore; an unrecorded path stays adoptable).
+// node cannot load), and the rootfs rules. The backing file must exist and its
+// ext4 UUID must match the identity captured with the bundle.
 func (s *Server) adoptSiblingBaseBundle(baseKey, workload, imageDigest, rootfsPath, readyPath string) (*nodev1.BuildBaseResponse, bool) {
 	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey)
 	if !isCompleteBase(dir, nodev1.BaseBuildState_BASE_BUILD_STATE_UNSPECIFIED) {
@@ -925,6 +932,11 @@ func (s *Server) adoptSiblingBaseBundle(baseKey, workload, imageDigest, rootfsPa
 				"base", baseKey, "rootfs", rootfsPath, "err", err)
 			return nil, false
 		}
+	}
+	if ok, reason := baseRootfsMatches(dir, rootfsPath); !ok {
+		s.logger.Warn("noded: declining to adopt sibling base bundle with rootfs identity mismatch",
+			"base", baseKey, "expected", s.readBaseRootfsID(baseKey), "actual", reason)
+		return nil, false
 	}
 	fi, err := os.Stat(snapfile)
 	if err != nil {
@@ -1104,6 +1116,16 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 	}
 	if base.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: base %q not ready (state %s)", ref, base.state)
+	}
+	rootfsPath := s.readBaseRootfsPath(ref)
+	if rootfsPath == "" {
+		rootfsPath = base.rootfsPath
+	}
+	baseDir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref)
+	if ok, reason := baseRootfsMatches(baseDir, rootfsPath); !ok {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"noded: base rootfs identity mismatch: base %s recorded %s, rootfs %s has %s",
+			ref, s.readBaseRootfsID(ref), rootfsPath, reason)
 	}
 	if req.GetLineageId() == "" && (req.GetVolumeMount() != "" || req.GetVolumeSizeBytes() != 0) {
 		return nil, status.Error(codes.InvalidArgument, "noded: lineage_id required for session volume fields")
@@ -2953,10 +2975,8 @@ func (s *Server) ReconcileBasesFromDisk() error {
 		// `:BASE_BUILD_STATE_NONE` and nothing there matches FAILED, so a FAILED base
 		// would be both unusable AND never recovered.
 		//
-		// An UNRECORDED path (a base built before this field existed) is UNKNOWN, not
-		// missing, so it stays READY: we never invalidate a working base on absent
-		// information. sweepRootfs applies the matching rule from the other side and
-		// declines to sweep that workload's directory at all.
+		// A missing backing file retains the historical NONE registration and is not
+		// removed. It may become available again if the mount is repaired.
 		rootfsPath := s.readBaseRootfsPath(baseKey)
 		state := nodev1.BaseBuildState_BASE_BUILD_STATE_READY
 		buildErr := ""
@@ -2978,6 +2998,25 @@ func (s *Server) ReconcileBasesFromDisk() error {
 		// a downgrade would make it usable again, and reclaiming superseded bases
 		// is retention's job, not adoption's.
 		if state == nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+			baseDir := filepath.Join(root, baseKey)
+			if ok, reason := baseRootfsMatches(baseDir, rootfsPath); !ok {
+				expected := s.readBaseRootfsID(baseKey)
+				s.logger.Warn("noded: removing base with rootfs identity mismatch during reconcile",
+					"base", baseKey, "expected", expected, "actual", reason)
+				prefix := artifactPrefix(&nodev1.ArtifactRef{
+					Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_BASE,
+					Workload: workloadFromBaseKey(baseKey),
+					Ref:      baseKey,
+				}, s.cfg.CpuVendor)
+				s.markBaseRepublish(prefix)
+				if err := os.RemoveAll(baseDir); err != nil {
+					s.logger.Warn("noded: remove base with rootfs identity mismatch", "base", baseKey, "err", err)
+				} else {
+					gc++
+				}
+				s.bases.remove(baseKey)
+				continue
+			}
 			if refusal := s.snapshotFormatRefusal(snapfile); refusal != "" {
 				state = nodev1.BaseBuildState_BASE_BUILD_STATE_NONE
 				buildErr = refusal
@@ -3145,6 +3184,33 @@ func (s *Server) writeBaseRootfsPath(baseKey, rootfsPath string) {
 // metadata is absent.
 func (s *Server) readBaseRootfsPath(baseKey string) string {
 	b, err := os.ReadFile(filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey, "rootfspath"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// writeBaseRootfsID persists the ext4 UUID of the rootfs captured by a base.
+// A UUID read failure leaves the sidecar absent, which makes the base fail every
+// restore and adoption identity gate.
+func (s *Server) writeBaseRootfsID(baseKey, rootfsPath string) error {
+	id, err := ext4UUID(rootfsPath)
+	if err != nil {
+		s.logger.Warn("noded: persist base rootfs identity skipped", "base", baseKey, "rootfs", rootfsPath, "err", err)
+		return fmt.Errorf("read base rootfs identity: %w", err)
+	}
+	path := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey, "rootfsid")
+	if err := os.WriteFile(path, []byte(id), 0o644); err != nil {
+		s.logger.Warn("noded: persist base rootfs identity", "base", baseKey, "err", err)
+		return fmt.Errorf("write base rootfs identity: %w", err)
+	}
+	return nil
+}
+
+// readBaseRootfsID reads the ext4 UUID captured with a base, or "" when the
+// metadata is absent or unreadable.
+func (s *Server) readBaseRootfsID(baseKey string) string {
+	b, err := os.ReadFile(filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey, "rootfsid"))
 	if err != nil {
 		return ""
 	}
