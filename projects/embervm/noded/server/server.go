@@ -803,6 +803,32 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 	if resp, ok := s.adoptSiblingBaseBundle(baseKey, workload, imageDigest, img.RootfsPath, readyPath); ok {
 		return resp, nil
 	}
+
+	// Coordinate the node-shared staging path across co-located brick processes.
+	// A held filesystem lock is positive evidence that a sibling owns the build,
+	// while an unlocked leftover <base>.building directory is stale and safe to
+	// reclaim. The lock is held across the full build and released on every exit.
+	ownership, acquired, err := s.acquireBaseBuildOwnership(baseKey)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "noded: acquire base build ownership for %q: %v", baseKey, err)
+	}
+	if !acquired {
+		return nil, status.Errorf(codes.Aborted, "noded: sibling base build in progress for %q; retry later", baseKey)
+	}
+	defer ownership.release()
+
+	// Close the check-to-lock race. A sibling may have published after the first
+	// adoption check but before we acquired ownership; use the same complete-bundle
+	// evidence and adopt it instead of deleting or rebuilding it.
+	if resp, ok := s.adoptSiblingBaseBundle(baseKey, workload, imageDigest, img.RootfsPath, readyPath); ok {
+		return resp, nil
+	}
+	if reclaimed, err := s.reclaimStaleBaseStaging(baseKey); err != nil {
+		return nil, status.Errorf(codes.Internal, "noded: reclaim stale base staging for %q: %v", baseKey, err)
+	} else if reclaimed {
+		s.logger.Warn("noded: reclaimed stale base staging directory", "base", baseKey)
+	}
+
 	// Serialize builds per key. A concurrent duplicate is rejected rather than
 	// double-booting a build guest.
 	if !s.bases.beginBuild(baseKey, workload, img.RootfsPath, readyPath) {
@@ -1032,6 +1058,10 @@ func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, workload
 	}
 	ref, err := bd.SnapshotBase(ctx, h, baseKey)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			s.logger.Warn("noded: base snapshot create timed out",
+				"base", baseKey, "concurrent_builds", s.activeBuildCount(), "err", err)
+		}
 		return 0, fmt.Errorf("snapshot: %w", err)
 	}
 	return ref.SizeBytes, nil
@@ -2692,6 +2722,61 @@ func (s *Server) registerBuild(baseKey string, cancel context.CancelFunc) {
 	s.buildsMu.Unlock()
 }
 
+func (s *Server) activeBuildCount() int {
+	s.buildsMu.Lock()
+	defer s.buildsMu.Unlock()
+	return len(s.activeBuilds)
+}
+
+type baseBuildOwnership struct {
+	file *os.File
+}
+
+func (o *baseBuildOwnership) release() {
+	if o == nil || o.file == nil {
+		return
+	}
+	_ = unix.Flock(int(o.file.Fd()), unix.LOCK_UN)
+	_ = o.file.Close()
+}
+
+// acquireBaseBuildOwnership obtains a non-blocking advisory lock beside the
+// shared staging directory. Lock files remain as inert filesystem entries so a
+// release cannot race another process that already opened the same inode.
+func (s *Server) acquireBaseBuildOwnership(baseKey string) (*baseBuildOwnership, bool, error) {
+	root := filepath.Join(s.cfg.SnapshotRoot, "bases")
+	if err := os.MkdirAll(root, 0o750); err != nil {
+		return nil, false, err
+	}
+	lockPath := filepath.Join(root, baseKey+".building.lock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = f.Close()
+		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return &baseBuildOwnership{file: f}, true, nil
+}
+
+func (s *Server) reclaimStaleBaseStaging(baseKey string) (bool, error) {
+	stagingDir := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey+".building")
+	if _, err := os.Stat(stagingDir); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if err := os.RemoveAll(stagingDir); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // finishBuild deregisters a build once driveBuild returns (built, failed, or
 // aborted). It cancels the build context (releasing its resources on the normal
 // path too) and drops the wait-group count.
@@ -3194,10 +3279,9 @@ func (s *Server) refreshScratchGeneration() (string, error) {
 	return generation, nil
 }
 
-// CleanupStagingDirs removes abandoned .building/ staging directories.
-// Called only from daemon startup because ReconcileBasesFromDisk also runs at
-// runtime via reregisterRestored after a base hydrate, where a build may be in
-// flight. Startup-only placement ensures no build can be harmed.
+// CleanupStagingDirs removes abandoned .building/ staging directories. It uses
+// the same shared ownership lock as BuildBase, so one brick starting while a
+// sibling is already building cannot remove the sibling's live staging path.
 func (s *Server) CleanupStagingDirs() {
 	root := filepath.Join(s.cfg.SnapshotRoot, "bases")
 	ents, err := os.ReadDir(root)
@@ -3208,10 +3292,21 @@ func (s *Server) CleanupStagingDirs() {
 		if !ent.IsDir() || !strings.HasSuffix(ent.Name(), ".building") {
 			continue
 		}
+		baseKey := strings.TrimSuffix(ent.Name(), ".building")
+		ownership, acquired, lockErr := s.acquireBaseBuildOwnership(baseKey)
+		if lockErr != nil {
+			s.logger.Warn("noded: inspect staging ownership", "base", baseKey, "err", lockErr)
+			continue
+		}
+		if !acquired {
+			s.logger.Info("noded: preserving sibling-owned staging directory", "base", baseKey)
+			continue
+		}
 		stagingPath := filepath.Join(root, ent.Name())
 		if err := os.RemoveAll(stagingPath); err != nil {
 			s.logger.Warn("noded: cleanup stale staging dir", "path", stagingPath, "err", err)
 		}
+		ownership.release()
 	}
 }
 

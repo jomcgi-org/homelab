@@ -1198,6 +1198,97 @@ func TestBuildBaseIncompleteBundleFallsThroughToBuild(t *testing.T) {
 	}
 }
 
+func TestBuildBaseReclaimsStaleBuildingDirectory(t *testing.T) {
+	snapshotRoot := t.TempDir()
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	build := &fakeDriver{snapshotRoot: snapshotRoot}
+	s := New(Options{
+		Config: config.Config{
+			Arch: "amd64", Node: "node-4", SnapshotRoot: snapshotRoot,
+			BootReadyTimeout: time.Second,
+			Images:           map[string]config.Image{"img:1": {RootfsPath: rootfs}},
+		},
+		Driver:         &fakeDriver{},
+		Transport:      &fakeTransport{},
+		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor)
+	stagingDir := filepath.Join(snapshotRoot, "bases", baseKey+".building")
+	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
+		t.Fatalf("mkdir stale staging: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stagingDir, "snapfile.tmp"), []byte("stale"), 0o600); err != nil {
+		t.Fatalf("write stale staging marker: %v", err)
+	}
+
+	resp, err := s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
+		Trace:            &nodev1.Trace{Workload: "echo"},
+		ImageRef:         "img:1",
+		WorkloadRevision: "r1",
+		ReadyPath:        "/shim/ready",
+	})
+	if err != nil {
+		t.Fatalf("BuildBase with stale staging: %v", err)
+	}
+	if resp.GetAlreadyBuilt() {
+		t.Fatalf("response = %+v, want a fresh build", resp)
+	}
+	if _, err := os.Stat(stagingDir); !os.IsNotExist(err) {
+		t.Fatalf("stale staging directory survived rebuild, stat err=%v", err)
+	}
+	if claims, _, _, _ := build.counts(); claims != 1 || build.snapshots != 1 {
+		t.Fatalf("build counts claims=%d snapshots=%d, want 1/1", claims, build.snapshots)
+	}
+}
+
+func TestBuildBaseReturnsRetryLaterForSiblingOwnedBuildingDirectory(t *testing.T) {
+	snapshotRoot := t.TempDir()
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	build := &fakeDriver{snapshotRoot: snapshotRoot}
+	s := New(Options{
+		Config: config.Config{
+			Arch: "amd64", Node: "node-4", SnapshotRoot: snapshotRoot,
+			BootReadyTimeout: time.Second,
+			Images:           map[string]config.Image{"img:1": {RootfsPath: rootfs}},
+		},
+		Driver:         &fakeDriver{},
+		Transport:      &fakeTransport{},
+		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor)
+
+	siblingOwner, acquired, err := s.acquireBaseBuildOwnership(baseKey)
+	if err != nil || !acquired {
+		t.Fatalf("acquire sibling ownership: acquired=%v err=%v", acquired, err)
+	}
+	defer siblingOwner.release()
+	stagingDir := filepath.Join(snapshotRoot, "bases", baseKey+".building")
+	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
+		t.Fatalf("mkdir sibling staging: %v", err)
+	}
+
+	_, err = s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
+		Trace:            &nodev1.Trace{Workload: "echo"},
+		ImageRef:         "img:1",
+		WorkloadRevision: "r1",
+		ReadyPath:        "/shim/ready",
+	})
+	if status.Code(err) != codes.Aborted {
+		t.Fatalf("BuildBase code = %v, want Aborted retry-later outcome: %v", status.Code(err), err)
+	}
+	if !strings.Contains(err.Error(), "sibling base build in progress") || !strings.Contains(err.Error(), "retry later") {
+		t.Fatalf("BuildBase error = %q, want sibling retry-later reason", err)
+	}
+	if claims, _, _, _ := build.counts(); claims != 0 || build.snapshots != 0 {
+		t.Fatalf("losing sibling build counts claims=%d snapshots=%d, want 0/0", claims, build.snapshots)
+	}
+	if _, err := os.Stat(stagingDir); err != nil {
+		t.Fatalf("losing sibling disturbed owned staging directory: %v", err)
+	}
+}
+
 // newZipTestServer wires a Server for the zip lane: a build driver recorder, a
 // fake transport (the hydrate seam), a fake archive HTTP server serving
 // archiveBytes, and the runtime image provisioned in the config table. Returns the
