@@ -14,6 +14,7 @@ from agent import config as agent_config
 from agent_sessions.constants import (
     CLEAN_TERMINAL_REASONS,
     DRAINER_NODE_KEY,
+    INTERRUPTED_TERMINAL_REASONS,
     KG_NODE_KEY,
 )
 from knowledge.api import (
@@ -519,6 +520,8 @@ def _retry_or_dead_letter_kg(
 def _completed_output(turn: dict) -> str:
     output = _summary(turn.get("result_text"))
     terminal_reason = turn.get("terminal_reason")
+    if terminal_reason in INTERRUPTED_TERMINAL_REASONS:
+        raise RuntimeError("interrupted turn cannot be completed")
     if terminal_reason not in CLEAN_TERMINAL_REASONS:
         raise RuntimeError(
             output or f"turn ended with {terminal_reason or 'no terminal reason'}"

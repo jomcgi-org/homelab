@@ -21,6 +21,7 @@ import zlib
 from typing import Awaitable, Callable, NamedTuple, Protocol
 
 import httpx
+from opentelemetry import trace
 
 import agent_sessions
 from agent_sessions import model_family
@@ -32,6 +33,7 @@ from faas.embervm_client import (
 from shared.k8s_auth import auth_headers
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 # Session listing is an in-memory control-plane read serving the console's
 # VM-state poll; it must never inherit the turn-sized read timeout.
@@ -56,6 +58,21 @@ def _retryable_from_response(exc: httpx.HTTPStatusError) -> bool:
         return isinstance(body, dict) and body.get("retryable") is True
     except Exception:
         return False
+
+
+def _brick_gone_from_response(response: httpx.Response) -> "EmberBrickGone | None":
+    """Classify the control plane's additive brick-preemption contract."""
+    try:
+        body = response.json()
+    except Exception:
+        return None
+    if not isinstance(body, dict) or body.get("reason") != "brick_gone":
+        return None
+    return EmberBrickGone(
+        lineage_id=body.get("lineage_id"),
+        session_state=body.get("session_state"),
+        node_id=body.get("node_id"),
+    )
 
 
 # Reasons EmberVM returns on a 429 that mean "no slot right now", as opposed
@@ -209,6 +226,48 @@ class EmberSessionGone(EmberVMTransportError):
     pass
 
 
+class EmberBrickGone(EmberVMTransportError):
+    """Raised when the control plane confirms that a Spot brick was preempted."""
+
+    def __init__(
+        self,
+        lineage_id: str | None,
+        session_state: str | None,
+        node_id: str | None,
+    ) -> None:
+        super().__init__("brick preempted")
+        self.lineage_id = lineage_id
+        self.session_state = session_state
+        self.node_id = node_id
+
+
+def _brick_gone_event(
+    *,
+    session_id: int | None,
+    lineage_id: str | None,
+    dispatch_count: int,
+    outcome: str,
+) -> None:
+    attributes = {
+        "session_id": session_id,
+        "lineage_id": lineage_id,
+        "dispatch_count": dispatch_count,
+        "outcome": outcome,
+    }
+    trace.get_current_span().add_event(
+        "agent_sessions.brick_gone",
+        {key: value for key, value in attributes.items() if value is not None},
+    )
+    logger.warning(
+        "agent_sessions.brick_gone session_id=%s lineage_id=%s "
+        "dispatch_count=%s outcome=%s",
+        session_id,
+        lineage_id,
+        dispatch_count,
+        outcome,
+    )
+
+
 class Turn(NamedTuple):
     result: str
     terminal_reason: str | None
@@ -359,6 +418,7 @@ class EmberSession(NamedTuple):
     # denied restore, which raises instead of returning a session at all).
     lineage_id: str | None = None
     restored: bool = False
+    workspace_lost: bool = False
 
 
 class ShimTransport(Protocol):
@@ -376,6 +436,8 @@ class ShimTransport(Protocol):
         system_prompt: str | None = None,
         reasoning: bool = False,
         artifact_path: str | None = None,
+        agent_session_id: int | None = None,
+        dispatch_count: int = 0,
     ) -> tuple[Turn, EmberSession]: ...
 
 
@@ -699,6 +761,43 @@ class EmberVmShimTransport:
         system_prompt: str | None = None,
         reasoning: bool = False,
         artifact_path: str | None = None,
+        agent_session_id: int | None = None,
+        dispatch_count: int = 0,
+    ) -> tuple[Turn, EmberSession]:
+        with tracer.start_as_current_span("agent_sessions.deliver"):
+            return await self._deliver(
+                ember,
+                cli_session_id,
+                message,
+                model=model,
+                restore_from=restore_from,
+                on_create=on_create,
+                repo=repo,
+                branch=branch,
+                progress_token=progress_token,
+                system_prompt=system_prompt,
+                reasoning=reasoning,
+                artifact_path=artifact_path,
+                agent_session_id=agent_session_id,
+                dispatch_count=dispatch_count,
+            )
+
+    async def _deliver(
+        self,
+        ember: EmberSession | None,
+        cli_session_id: str | None,
+        message: str,
+        model: str | None = None,
+        restore_from: str | None = None,
+        on_create: Callable[[EmberSession, str | None], Awaitable[None]] | None = None,
+        repo: str | None = None,
+        branch: str | None = None,
+        progress_token: str | None = None,
+        system_prompt: str | None = None,
+        reasoning: bool = False,
+        artifact_path: str | None = None,
+        agent_session_id: int | None = None,
+        dispatch_count: int = 0,
     ) -> tuple[Turn, EmberSession]:
         """Execute one turn on the guest session and return the result.
 
@@ -812,6 +911,13 @@ class EmberVmShimTransport:
                     response = await client.post(
                         url, content=body.encode(), headers=headers
                     )
+                    brick_gone = _brick_gone_from_response(response)
+                    if brick_gone is not None:
+                        logger.warning(
+                            "embervm invoke found preempted brick for session %s",
+                            current.session_id,
+                        )
+                        raise brick_gone
                     response.raise_for_status()
                     guest_data = response.json()
                     return Turn(
@@ -871,6 +977,87 @@ class EmberVmShimTransport:
             if workspace_recovery is not None:
                 turn = turn._replace(workspace_recovery=workspace_recovery)
             return turn, ember
+        except EmberBrickGone as exc:
+            # Import at runtime to avoid the store -> transport type import
+            # cycle. This is the existing pending-message dispatch bound, not
+            # a second recovery counter.
+            from agent_sessions.store import MAX_PENDING_DISPATCHES
+
+            lineage_id = ember.lineage_id or exc.lineage_id
+            if dispatch_count > MAX_PENDING_DISPATCHES:
+                _brick_gone_event(
+                    session_id=agent_session_id,
+                    lineage_id=lineage_id,
+                    dispatch_count=dispatch_count,
+                    outcome="exhausted",
+                )
+                raise
+
+            if exc.session_state in {"banked", "parked"}:
+                _brick_gone_event(
+                    session_id=agent_session_id,
+                    lineage_id=lineage_id,
+                    dispatch_count=dispatch_count,
+                    outcome="relit",
+                )
+                try:
+                    turn = await _invoke_with_retryable_backoff(
+                        lambda: invoke(ember, cli_session_id)
+                    )
+                except httpx.HTTPStatusError as retry_exc:
+                    raise EmberVMTransportError(
+                        _status_error_detail(retry_exc)
+                    ) from retry_exc
+                if workspace_recovery is not None:
+                    turn = turn._replace(workspace_recovery=workspace_recovery)
+                return turn, ember
+
+            new_ember = None
+            if lineage_id:
+                try:
+                    new_ember = await self.create_session(
+                        restore_from=lineage_id, model=model
+                    )
+                except EmberVMTransportError as restore_exc:
+                    logger.warning(
+                        "embervm preemption restore denied for lineage %s, "
+                        "creating a blank session: %s",
+                        lineage_id,
+                        restore_exc,
+                    )
+
+            if new_ember is not None and new_ember.restored:
+                cli_for_binding = cli_session_id
+                outcome = "restored"
+            else:
+                if new_ember is None:
+                    new_ember = await self.create_session(model=model)
+                new_ember = new_ember._replace(workspace_lost=True)
+                cli_for_binding = None
+                outcome = "recreated"
+
+            if on_create is not None:
+                await on_create(new_ember, cli_for_binding)
+            _brick_gone_event(
+                session_id=agent_session_id,
+                lineage_id=lineage_id,
+                dispatch_count=dispatch_count,
+                outcome=outcome,
+            )
+            workspace_recovery = {
+                "created": True,
+                "restored": bool(new_ember.restored),
+                "degraded": None if new_ember.restored else "brick_preempted",
+            }
+            try:
+                turn = await _invoke_with_retryable_backoff(
+                    lambda: invoke(new_ember, cli_for_binding)
+                )
+            except httpx.HTTPStatusError as retry_exc:
+                raise EmberVMTransportError(
+                    _status_error_detail(retry_exc)
+                ) from retry_exc
+            return turn._replace(workspace_recovery=workspace_recovery), new_ember
         except httpx.HTTPStatusError as exc:
             if created or exc.response.status_code not in (403, 410):
                 raise EmberVMTransportError(_status_error_detail(exc)) from exc

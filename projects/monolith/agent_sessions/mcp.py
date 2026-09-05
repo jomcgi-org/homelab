@@ -20,10 +20,15 @@ import httpx
 import agent.api as agent_api
 from agent_sessions import store, voice, voice_ui
 from agent_sessions import model_family, normalize_model
-from agent_sessions.constants import CLEAN_TERMINAL_REASONS, DRAINER_NODE_KEY
+from agent_sessions.constants import (
+    CLEAN_TERMINAL_REASONS,
+    DRAINER_NODE_KEY,
+    INTERRUPTED_TERMINAL_REASONS,
+)
 from agent_sessions.rationale import rationale_trailer_instruction
 from agent_sessions.models import AgentSession, AgentTurn
 from agent_sessions.transport import (
+    EmberBrickGone,
     EmberSession,
     EmberSessionGone,
     EmberVmShimTransport,
@@ -197,6 +202,20 @@ def _persist_ember_session_and_cli(
         )
 
 
+def _replace_ember_session_after_preemption(
+    session_id: int, ember: EmberSession
+) -> None:
+    with Session(get_engine()) as db_session:
+        store.replace_ember_session_after_preemption(
+            db_session,
+            session_id,
+            ember.session_id,
+            ember.session_token,
+            ember.expires_at,
+            ember.lineage_id,
+        )
+
+
 def _clear_ember_bindings_for(ember_id: str) -> list[int]:
     with Session(get_engine()) as db_session:
         return store.clear_ember_bindings_by_ember_id(db_session, ember_id)
@@ -259,6 +278,8 @@ def _persist_session(
 
 
 def _turn_status(turn: Turn) -> str:
+    if turn.terminal_reason in INTERRUPTED_TERMINAL_REASONS:
+        return "recovering"
     # permission_denials is the signal for "agent blocked waiting on user";
     # stop_reason enum (end_turn, max_tokens, etc.) never indicates user input needed
     if turn.permission_denials:
@@ -406,6 +427,10 @@ def _mark_turn_error_sync(session_id: int, turn_seq: int, error_msg: str) -> Non
     store.mark_turn_error_sync(session_id, turn_seq, error_msg)
 
 
+def _mark_turn_interrupted_sync(session_id: int, turn_seq: int) -> None:
+    store.mark_turn_interrupted_sync(session_id, turn_seq)
+
+
 def _clear_ember_session_sync(session_id: int) -> None:
     with Session(get_engine()) as db_session:
         store.clear_ember_session(db_session, session_id)
@@ -537,6 +562,7 @@ async def _execute_pending_message(session_id: int) -> None:
     # Set once the claim is lost to another replica; checked before starting and
     # again after deliver, so a stolen claim never persists a duplicate turn.
     claim_stolen = False
+    claim_released = False
     stolen_exit_logged = False
     refresh_task = None
 
@@ -640,12 +666,19 @@ async def _execute_pending_message(session_id: int) -> None:
                 nonlocal fresh_binding_persisted
                 if await _abort_stolen_executor_confirmed("binding persistence"):
                     raise _ClaimStolen
-                await asyncio.to_thread(
-                    _persist_ember_session_and_cli,
-                    session_id,
-                    ember,
-                    cli_for_binding,
-                )
+                if ember.workspace_lost:
+                    await asyncio.to_thread(
+                        _replace_ember_session_after_preemption,
+                        session_id,
+                        ember,
+                    )
+                else:
+                    await asyncio.to_thread(
+                        _persist_ember_session_and_cli,
+                        session_id,
+                        ember,
+                        cli_for_binding,
+                    )
                 fresh_binding_persisted = True
 
             if existing_ember is None and session_row.prior_ember_lineage_id:
@@ -665,6 +698,8 @@ async def _execute_pending_message(session_id: int) -> None:
                 "restore_from": restore_from,
                 "on_create": persist_callback,
                 "progress_token": session_row.progress_token,
+                "agent_session_id": session_id,
+                "dispatch_count": row.dispatch_count,
             }
             if session_row.repo is not None:
                 deliver_kwargs["repo"] = session_row.repo
@@ -688,6 +723,27 @@ async def _execute_pending_message(session_id: int) -> None:
                 # Safety: re-persist for transports without on_create support
                 await asyncio.to_thread(_persist_ember_session, session_id, ember)
         except _ClaimStolen:
+            return
+        except EmberBrickGone as exc:
+            nonlocal claim_released
+            if await _abort_stolen_executor_confirmed("brick_gone recovery"):
+                return
+            if row.dispatch_count > store.MAX_PENDING_DISPATCHES:
+                await asyncio.to_thread(
+                    _mark_turn_error_sync, session_id, claimed_seq, str(exc)
+                )
+            else:
+                await asyncio.to_thread(
+                    _mark_turn_interrupted_sync, session_id, claimed_seq
+                )
+                await asyncio.to_thread(
+                    _release_pending_message_claim_sync,
+                    session_id,
+                    claimed_seq,
+                    claim_owner,
+                )
+                claim_released = True
+            _clear_negative_oracle_verdict(session_id)
             return
         except EmberSessionGone as exc:
             if await _abort_stolen_executor_confirmed("missing-guest error"):
@@ -769,7 +825,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 await refresh_task
             except asyncio.CancelledError:
                 pass
-        if not claim_stolen:
+        if not claim_stolen and not claim_released:
             await asyncio.to_thread(
                 _release_pending_message_claim_sync,
                 session_id,

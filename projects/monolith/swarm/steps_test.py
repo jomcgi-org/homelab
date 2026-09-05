@@ -166,6 +166,45 @@ def test_poll_turn_includes_rationale(monkeypatch):
     }
 
 
+def test_poll_turn_skips_interrupted_turn(monkeypatch):
+    import sqlmodel
+
+    class Query:
+        def where(self, *args):
+            return self
+
+        def order_by(self, *args):
+            return self
+
+    class Result:
+        def first(self):
+            return type(
+                "Turn",
+                (),
+                {
+                    "seq": 2,
+                    "terminal_reason": "interrupted",
+                    "usage_json": None,
+                },
+            )()
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def exec(self, query):
+            return Result()
+
+    monkeypatch.setattr(sqlmodel, "Session", lambda engine: Session())
+    monkeypatch.setattr(sqlmodel, "select", lambda model: Query())
+    monkeypatch.setattr("core.db.get_engine", lambda: object())
+
+    assert steps.poll_turn.__wrapped__(101, 1) is None
+
+
 def test_usage_counts_parses_well_formed_payload():
     assert steps._usage_counts(
         '{"activities": [{"type": "tool"}, {"type": "tool"}], "input_tokens": "42"}'

@@ -7,12 +7,14 @@ import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, exists, func, text, update
+from sqlalchemy import and_, exists, func, or_, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from agent_sessions.constants import (
+    CLEAN_TERMINAL_REASONS,
+    INTERRUPTED_TERMINAL_REASONS,
     LEGACY_QWEN_SYNTHETIC_PROMPT,
     SYNTHETIC_SESSION_PREFIX,
 )
@@ -250,6 +252,34 @@ def set_ember_session(
     if is_restored:
         row.prior_ember_lineage_id = None
         row.prior_cli_session_id = None
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def replace_ember_session_after_preemption(
+    session: Session,
+    session_id: int,
+    ember_id: str,
+    ember_token: str,
+    ember_expires_at: int | None,
+    ember_lineage_id: str | None,
+) -> AgentSession:
+    """Persist a blank replacement while retaining the preempted generation."""
+    row = session.get(AgentSession, session_id)
+    if row is None:
+        raise ValueError(f"Unknown agent session {session_id}")
+    if row.ember_lineage_id:
+        row.prior_ember_lineage_id = row.ember_lineage_id
+    if row.cli_session_id:
+        row.prior_cli_session_id = row.cli_session_id
+    row.ember_session_id = ember_id
+    row.ember_session_token = ember_token
+    row.ember_session_expires_at = ember_expires_at
+    row.ember_lineage_id = ember_lineage_id
+    row.cli_session_id = None
+    row.recovery_workspace_loss = True
     session.add(row)
     session.commit()
     session.refresh(row)
@@ -1031,6 +1061,13 @@ def persist_turn_from_pending_sync(
                 artifact_path = None
                 artifact_blob = None
                 artifact_outcome = None
+        existing_turn = get_turn(session, session_id, turn_seq)
+        if (
+            existing_turn is not None
+            and existing_turn.terminal_reason in INTERRUPTED_TERMINAL_REASONS
+        ):
+            session.delete(existing_turn)
+            session.flush()
         row = create_turn(
             session,
             session_id,
@@ -1053,6 +1090,13 @@ def persist_turn_from_pending_sync(
             artifact_blob=artifact_blob,
             artifact_outcome=artifact_outcome,
         )
+        if (
+            turn.terminal_reason in CLEAN_TERMINAL_REASONS
+            and sess_row.recovery_workspace_loss is not None
+        ):
+            sess_row.recovery_workspace_loss = None
+            sess_row.recovery_completed_at = datetime.now(timezone.utc)
+            session.add(sess_row)
         # The guest-reported CLI session_id is authoritative for this VM.
         if cli_session_id:
             sess_row.cli_session_id = cli_session_id
@@ -1081,8 +1125,15 @@ def mark_turn_error_sync(session_id: int, turn_seq: int, error_msg: str) -> None
     """
     with Session(get_engine()) as session:
         row = get_pending_message(session, session_id, turn_seq)
-        if row is None or get_turn(session, session_id, turn_seq) is not None:
+        existing_turn = get_turn(session, session_id, turn_seq)
+        if row is None or (
+            existing_turn is not None
+            and existing_turn.terminal_reason not in INTERRUPTED_TERMINAL_REASONS
+        ):
             return
+        if existing_turn is not None:
+            session.delete(existing_turn)
+            session.flush()
         error_summary = "Error: " + error_msg[:100]
         create_turn(
             session,
@@ -1103,6 +1154,36 @@ def mark_turn_error_sync(session_id: int, turn_seq: int, error_msg: str) -> None
         # Delete the pending row to stop infinite retries
         session.delete(row)
         session.commit()
+
+
+def mark_turn_interrupted_sync(session_id: int, turn_seq: int) -> None:
+    """Record a preempted attempt without consuming its pending message."""
+    with Session(get_engine()) as session:
+        pending = get_pending_message(session, session_id, turn_seq)
+        if pending is None:
+            return
+        existing_turn = get_turn(session, session_id, turn_seq)
+        if existing_turn is None:
+            create_turn(
+                session,
+                session_id,
+                turn_seq,
+                pending.message_text,
+                "Resuming after preemption",
+                "The VM running this turn was preempted; the turn will be re-run.",
+                terminal_reason="interrupted",
+                stop_reason="brick_preempted",
+                permission_denials=[],
+                commit_sha=None,
+                usage={},
+                cost_usd=0.0,
+                model=pending.model,
+            )
+        elif existing_turn.terminal_reason not in INTERRUPTED_TERMINAL_REASONS:
+            return
+        update_session_status(
+            session, session_id, "recovering", "Resuming after preemption"
+        )
 
 
 def reclaim_stale_claims_sync() -> int:
@@ -1187,9 +1268,15 @@ def get_all_pending_messages_sync() -> list[PendingMessage]:
                 select(PendingMessage)
                 .join(AgentSession, AgentSession.id == PendingMessage.session_id)
                 .where(
-                    AgentSession.status.notin_(
-                        {"awaiting_login", "failed", "recovering"}
-                    )
+                    AgentSession.status.notin_({"awaiting_login", "failed"}),
+                    or_(
+                        AgentSession.status != "recovering",
+                        exists().where(
+                            AgentTurn.session_id == PendingMessage.session_id,
+                            AgentTurn.seq == PendingMessage.seq,
+                            AgentTurn.terminal_reason.in_(INTERRUPTED_TERMINAL_REASONS),
+                        ),
+                    ),
                 )
             ).all()
         )

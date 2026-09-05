@@ -10,6 +10,44 @@ test.each([
   [{ status: "needs_input" }, "needs input", "needs_input"],
   [{ status: "awaiting_login" }, "awaiting login", "awaiting_login"],
   [{ status: "recovering" }, "recovering", "recovering"],
+  [
+    { status: "recovering", terminal_reason: "interrupted" },
+    "Resuming after preemption",
+    "recovering",
+  ],
+  [
+    { status: "recovering", stop_reason: "brick_preempted" },
+    "Resuming after preemption",
+    "recovering",
+  ],
+  [
+    {
+      status: "completed",
+      terminal_reason: "interrupted",
+      stop_reason: "brick_preempted",
+    },
+    "completed",
+    "completed",
+  ],
+  [
+    {
+      status: "running",
+      pending_count: 1,
+      terminal_reason: "interrupted",
+      stop_reason: "brick_preempted",
+    },
+    "working",
+    "working",
+  ],
+  [
+    {
+      status: "recovering",
+      terminal_reason: "completed",
+      stop_reason: "brick_preempted",
+    },
+    "recovering",
+    "recovering",
+  ],
   [{ status: "unknown" }, "completed", "completed"],
   [null, "completed", "completed"],
 ])("maps %j to label %s and class %s", (session, label, className) => {

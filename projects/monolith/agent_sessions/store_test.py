@@ -533,6 +533,65 @@ def test_claim_records_dispatch_count_and_time(monkeypatch, tmp_path):
         _restore_schemas(schemas)
 
 
+def test_release_preserves_interrupted_turn_and_pending_row(monkeypatch, tmp_path):
+    engine, schemas = _database(monkeypatch, tmp_path)
+    try:
+        with Session(engine) as session:
+            row = store.create_session(session, "interrupted", "<guest>", "main")
+            pending = store.create_pending_message(session, row.id, "retry me", "luna")
+            session_id = row.id
+            turn_seq = pending.seq
+
+        assert store.claim_pending_message_for_session_sync(session_id, "pod-a") == 1
+        store.mark_turn_interrupted_sync(session_id, turn_seq)
+        store.release_pending_message_claim_sync(session_id, turn_seq, "pod-a")
+
+        with Session(engine) as session:
+            interrupted = store.get_turn(session, session_id, turn_seq)
+            retry = store.get_pending_message(session, session_id, turn_seq)
+            assert interrupted.terminal_reason == "interrupted"
+            assert interrupted.stop_reason == "brick_preempted"
+            assert retry.claimed_by_replica is None
+            assert store.get_session(session, session_id).status == "recovering"
+    finally:
+        _restore_schemas(schemas)
+
+
+def test_preemption_replacement_demotes_old_binding_and_marks_workspace_loss(
+    monkeypatch, tmp_path
+):
+    engine, schemas = _database(monkeypatch, tmp_path)
+    try:
+        with Session(engine) as session:
+            row = store.create_session(session, "preempted", "<guest>", "main")
+            store.set_ember_session(
+                session,
+                row.id,
+                "ember-old",
+                "token-old",
+                None,
+                "lineage-old",
+                cli_session_id="cli-old",
+            )
+            replaced = store.replace_ember_session_after_preemption(
+                session,
+                row.id,
+                "ember-new",
+                "token-new",
+                None,
+                "lineage-new",
+            )
+
+            assert replaced.ember_session_id == "ember-new"
+            assert replaced.ember_lineage_id == "lineage-new"
+            assert replaced.cli_session_id is None
+            assert replaced.prior_ember_lineage_id == "lineage-old"
+            assert replaced.prior_cli_session_id == "cli-old"
+            assert replaced.recovery_workspace_loss is True
+    finally:
+        _restore_schemas(schemas)
+
+
 def test_zombie_detector_limits_each_sweep_to_five(monkeypatch, tmp_path):
     engine, schemas = _database(monkeypatch, tmp_path)
     now = datetime.now(timezone.utc)
