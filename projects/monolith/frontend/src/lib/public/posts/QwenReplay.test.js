@@ -172,3 +172,23 @@ test("prefill and boundary routing samples are excluded without fabricating spar
   );
   expect(view.textContent).not.toContain("No routing samples");
 });
+
+test("prefill playback reveals partial segments between samples with a labeled scale", async () => {
+  const view = await render();
+  const [a, b] = turn.statsSamples.filter(
+    (item) =>
+      item.at < turn.events[0].at &&
+      !item.unavailable &&
+      item.prefillTps != null,
+  );
+  await seek((a.at + b.at) / 2);
+  const segment = view.querySelector(".prefill-segment");
+  expect(Number(segment.getAttribute("x2"))).toBeCloseTo(
+    (300 * (a.at + b.at)) / 2 / turn.events[0].at,
+  );
+  expect(view.querySelectorAll(".prefill-history circle")).toHaveLength(1);
+  expect(view.querySelector(".prefill-axis").textContent).toContain("400");
+  expect(view.querySelector(".prefill-history header").textContent).toContain(
+    "tok/s",
+  );
+});
