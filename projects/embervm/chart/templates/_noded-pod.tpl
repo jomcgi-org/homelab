@@ -495,9 +495,9 @@ containers:
       {{- fail (printf "egress.secrets entry for %v must set exactly one of secretRef or brokerGrant, and secretRef entries need env" $s.egressTo) }}
       {{- end }}
       {{- if $hasBrokerGrant }}
-      {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "basicUser" ($s.basicUser | default "") "brokerGrant" $s.brokerGrant "egressTo" $s.egressTo "claimHeader" ($s.claimHeader | default "") "claimPath" ($s.claimPath | default "") "injectAlwaysPaths" ($s.injectAlwaysPaths | default (list))) }}
+      {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "basicUser" ($s.basicUser | default "") "brokerGrant" $s.brokerGrant "egressTo" $s.egressTo "claimHeader" ($s.claimHeader | default "") "claimPath" ($s.claimPath | default "") "injectAlwaysPaths" ($s.injectAlwaysPaths | default (list)) "plaintextUpstream" ($s.plaintextUpstream | default false)) }}
       {{- else }}
-      {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "basicUser" ($s.basicUser | default "") "env" $s.env "egressTo" $s.egressTo "claimHeader" ($s.claimHeader | default "") "claimPath" ($s.claimPath | default "") "injectAlwaysPaths" ($s.injectAlwaysPaths | default (list))) }}
+      {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "basicUser" ($s.basicUser | default "") "env" $s.env "egressTo" $s.egressTo "claimHeader" ($s.claimHeader | default "") "claimPath" ($s.claimPath | default "") "injectAlwaysPaths" ($s.injectAlwaysPaths | default (list)) "plaintextUpstream" ($s.plaintextUpstream | default false)) }}
       {{- end }}
       {{- end }}
       - name: EGRESS_SECRETS

@@ -6,6 +6,8 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -475,5 +477,103 @@ func TestMirrorLaneFailClosedWhenUnset(t *testing.T) {
 	got := driveHandle(t, p, "git-mirror.egress.internal:9419\nGET / HTTP/1.1\r\n\r\n")
 	if got != "" {
 		t.Errorf("disabled mirror lane answered %q, want silence + close", got)
+	}
+}
+
+func TestPlaintextUpstreamInjectsCredentialToInternalDestination(t *testing.T) {
+	type receivedRequest struct {
+		authorization string
+		tls           bool
+	}
+	received := make(chan receivedRequest, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- receivedRequest{
+			authorization: r.Header.Get("Authorization"),
+			tls:           r.TLS != nil,
+		}
+		w.Header().Set("Connection", "close")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	dialAddr := strings.TrimPrefix(upstream.URL, "http://")
+	dialHost, port, err := net.SplitHostPort(dialAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dialHost != "127.0.0.1" {
+		t.Fatalf("test upstream host = %q, want 127.0.0.1 loopback", dialHost)
+	}
+	if port == "443" {
+		t.Fatal("test upstream unexpectedly uses port 443")
+	}
+
+	const host = "internal-api.example"
+	p := &proxy{
+		internalDefaultAllow: true,
+		lookupIP: func(gotHost string) ([]net.IP, error) {
+			if gotHost != host {
+				t.Errorf("lookup host = %q, want %q", gotHost, host)
+				return nil, &net.DNSError{Name: gotHost, Err: "unexpected host"}
+			}
+			return []net.IP{net.ParseIP("127.0.0.1")}, nil
+		},
+		secrets: []secretEntry{{
+			Header:            "Authorization",
+			EgressTo:          []string{host},
+			PlaintextUpstream: true,
+			value:             "internal-credential",
+		}},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	request := "GET http://" + net.JoinHostPort(host, port) + "/v1/data HTTP/1.1\r\n" +
+		"Host: " + net.JoinHostPort(host, port) + "\r\n" +
+		"Authorization: guest-placeholder\r\n" +
+		"Connection: close\r\n\r\n"
+	response := driveHandle(t, p, net.JoinHostPort(host, port)+"\n"+request)
+	if !strings.Contains(response, "204 No Content") {
+		t.Fatalf("response = %q, want upstream 204", response)
+	}
+
+	select {
+	case got := <-received:
+		if got.authorization != "internal-credential" {
+			t.Errorf("Authorization = %q, want injected credential", got.authorization)
+		}
+		if got.tls {
+			t.Error("internal plaintext upstream received a TLS request")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("internal plaintext upstream did not receive the request")
+	}
+}
+
+func TestPlaintextUpstreamDeniesPublicDestination(t *testing.T) {
+	var logs bytes.Buffer
+	const host = "public-api.example"
+	p := &proxy{
+		externalAllow: true,
+		lookupIP: func(gotHost string) ([]net.IP, error) {
+			if gotHost != host {
+				t.Errorf("lookup host = %q, want %q", gotHost, host)
+				return nil, &net.DNSError{Name: gotHost, Err: "unexpected host"}
+			}
+			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+		},
+		secrets: []secretEntry{{
+			Header:            "Authorization",
+			EgressTo:          []string{host},
+			PlaintextUpstream: true,
+			value:             "must-not-leak",
+		}},
+		logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+
+	got := driveHandle(t, p, host+":8080\nGET / HTTP/1.1\r\nHost: "+host+"\r\nAuthorization: guest-placeholder\r\n\r\n")
+	if got != "" {
+		t.Errorf("denied public plaintext upstream answered %q, want silence + close", got)
+	}
+	if !strings.Contains(logs.String(), "egress denied: plaintextUpstream entry resolved to a public address; refusing to send a credential in cleartext") {
+		t.Fatalf("deny log missing from %q", logs.String())
 	}
 }

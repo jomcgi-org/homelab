@@ -1782,6 +1782,7 @@ egress:
   #     env: EMBER_ANTHROPIC_OAUTH_TOKEN           # sidecar env carrying it
   #     egressTo: [api.anthropic.com]              # exact hosts, no wildcards
   #     secretRef: {name: <secret>, key: <key>}    # the ONLY delivery path
+  #     plaintextUpstream: false                    # opt in only for internal HTTP
   #
   #   - header: Authorization                      # a second provider example
   #     valuePrefix: "Bearer "
@@ -1795,6 +1796,10 @@ egress:
   # supplying its own token. An entry whose secret fails to resolve DENIES its
   # egressTo hosts rather than tunnelling them, because a guest on the cleartext
   # lane would otherwise put its whole request on the public internet.
+  # `plaintextUpstream: true` sends the injected request over plain TCP to the
+  # pinned destination and is accepted only for internal IPs. It is intended for
+  # in-cluster services that do not terminate TLS; public destinations are always
+  # denied to prevent sending a credential over the internet in cleartext.
   secrets: []
   # 1Password item backing the secretRefs above, synced by the operator into a
   # Secret of the same name as the CR. Empty creates no item.

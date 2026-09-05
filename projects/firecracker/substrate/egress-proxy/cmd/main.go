@@ -32,7 +32,8 @@
 //     us, so there is nothing to terminate: we inject and originate TLS on 443.
 //     The guest hop is a host-local vsock with no network segment on it, so
 //     guest-side TLS would be encrypting against an attacker who cannot be there.
-//     This is the lane the embervm claude runtime uses.
+//     This is the lane the embervm claude runtime uses. An entry may explicitly
+//     opt into a plain TCP upstream, but only when its pinned address is internal.
 //   - TLS (0x16). The guest speaks https:// and the sidecar MITMs it with a leaf
 //     minted from the egress CA, which the guest must already trust. Needs
 //     EGRESS_CA_CERT_FILE/KEY; without them this falls through to a blind tunnel
@@ -363,9 +364,31 @@ func (p *proxy) handle(client net.Conn) {
 		case err != nil:
 			// Nothing to classify; fall through to the blind tunnel below.
 		case first[0] != 0x16:
-			// The guest speaks http:// to us over its host-local vsock, so there is no
-			// TLS to terminate. Re-run the guardrail on 443 rather than rewriting the
-			// port after the fact, so the zone decision and the dial cannot diverge.
+			if sec.PlaintextUpstream {
+				dialHost, _, splitErr := net.SplitHostPort(dialAddr)
+				ip := net.ParseIP(dialHost)
+				if splitErr != nil || ip == nil || !p.isInternal(ip) {
+					p.logger.Warn("egress denied: plaintextUpstream entry resolved to a public address; refusing to send a credential in cleartext", "dest", dest, "dial", dialAddr)
+					return
+				}
+				up, dialErr := net.DialTimeout("tcp", dialAddr, dialTimeout)
+				if dialErr != nil {
+					p.logger.Error("egress plaintext upstream dial failed", "dest", dest, "dial", dialAddr, "err", dialErr)
+					return
+				}
+				if tcpConn, ok := up.(*net.TCPConn); ok {
+					_ = tcpConn.SetNoDelay(true)
+				}
+				defer up.Close()
+				p.logger.Info("egress allowed (inject, plaintext upstream)", "dest", dest, "dial", dialAddr)
+				_ = client.SetReadDeadline(time.Time{})
+				p.swapPump(br, client, client, up, host, sec)
+				return
+			}
+			// Without the internal-only plaintext upstream opt-in, the guest speaks
+			// http:// to us over its host-local vsock, so there is no TLS to terminate.
+			// Re-run the guardrail on 443 rather than rewriting the port after the fact,
+			// so the zone decision and the dial cannot diverge.
 			tlsAddr, ok := p.route(host, "443")
 			if !ok {
 				p.logger.Warn("egress denied", "dest", net.JoinHostPort(host, "443"))
