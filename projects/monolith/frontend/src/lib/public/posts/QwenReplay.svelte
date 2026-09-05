@@ -12,7 +12,19 @@
     totalHits: initialSample.tiers.totalExperts,
   };
   let lastActivity;
-  const history = turn.samples.map((item) => {
+  const decodeAt = turn.events[0].at;
+  // Exclude intervals that overlap prefill, including the boundary sample.
+  const decodeSamples = turn.samples.filter(
+    (item, index) => index > 0 && turn.samples[index - 1].at >= decodeAt,
+  );
+  const routingAt = decodeSamples[0].at;
+  const routingDuration = turn.durationMs - routingAt;
+  const prefillSamples = turn.statsSamples.filter((item) => item.at < decodeAt);
+  const prefillPeak = Math.max(
+    1,
+    ...prefillSamples.map((item) => item.prefillTps ?? 0),
+  );
+  const history = decodeSamples.map((item) => {
     if (item.activity?.totalHits > 0) lastActivity = item.activity;
     return { ...item, activity: item.unavailable ? null : lastActivity };
   });
@@ -33,11 +45,11 @@
   let routingSample = $derived(
     sample?.unavailable
       ? null
-      : turn.samples.findLast(
+      : decodeSamples.findLast(
           (item) => item.at <= position && item.activity?.totalHits > 0,
         ),
   );
-  let initial = $derived(position < initialSample.at);
+  let initial = $derived(position < routingAt);
   let activity = $derived(initial ? initialPlacement : routingSample?.activity);
   let placement = $derived(initial ? initialSample.tiers : sample?.tiers);
   let phase = $derived(
@@ -237,72 +249,94 @@
           {percent(activity.unknownHits, activity.totalHits)} unclassified
         </p>{/if}
 
-      <div class="routing-history">
-        <svg
-          viewBox="0 0 700 100"
-          preserveAspectRatio="none"
-          role="img"
-          aria-label="Recorded routing only; the interval before the first sample is unmeasured"
-        >
-          <title>Routing mix over recorded time</title>
-          <rect
-            class="unmeasured"
-            x="0"
-            y="0"
-            width={(700 * initialSample.at) / turn.durationMs}
-            height="100"
-            fill="var(--band)"
-          />
-          <text
-            x={(350 * initialSample.at) / turn.durationMs}
-            y="56"
-            text-anchor="middle"
-            font-size="18"
-            fill="var(--ink-2)">No routing samples</text
+      <div class="phase-charts">
+        <div class="prefill-history">
+          <header>Prefill <small>service tok/s</small></header>
+          <svg
+            viewBox="0 0 300 100"
+            preserveAspectRatio="none"
+            role="img"
+            aria-label="Recorded prefill service throughput"
           >
-          {#each history as item, index}
-            {@const start = item.at}
-            {@const end = Math.min(
-              position,
-              history[index + 1]?.at ?? turn.durationMs,
-            )}
-            {#if item.at <= position}
-              {#if item.unavailable || !item.activity?.totalHits}
-                <rect
-                  class="unknown"
-                  x={(700 * start) / turn.durationMs}
-                  y="0"
-                  width={(700 * (end - start)) / turn.durationMs}
-                  height="100"
-                  opacity="0.25"
-                />
-              {:else}
-                {#each bands(item.activity) as band}
-                  <rect
-                    class={band.key}
-                    class:dimmed={highlighted && highlighted !== band.key}
-                    x={(700 * start) / turn.durationMs}
-                    y={band.y}
-                    width={(700 * (end - start)) / turn.durationMs}
-                    height={band.height}
+            {#each prefillSamples as item, index}
+              {@const previous = prefillSamples[index - 1]}
+              {#if item.at <= position && !item.unavailable && item.prefillTps != null}
+                {#if previous && !previous.unavailable && previous.prefillTps != null}
+                  <line
+                    x1={(300 * previous.at) / decodeAt}
+                    y1={90 - (80 * previous.prefillTps) / prefillPeak}
+                    x2={(300 * item.at) / decodeAt}
+                    y2={90 - (80 * item.prefillTps) / prefillPeak}
+                    stroke="var(--ink)"
+                    stroke-width="2"
                   />
-                {/each}
+                {/if}
+                <circle
+                  cx={(300 * item.at) / decodeAt}
+                  cy={90 - (80 * item.prefillTps) / prefillPeak}
+                  r="2"
+                  fill="var(--ink)"
+                />
               {/if}
-            {/if}
-          {/each}
-          <line
-            x1={(700 * position) / turn.durationMs}
-            x2={(700 * position) / turn.durationMs}
-            y1="0"
-            y2="100"
-            stroke="var(--ink)"
-            stroke-width="3"
-          />
-        </svg>
-        <div class="history-labels">
-          <span>0 s</span><span>Routing mix over time</span><span
-            >{seconds(turn.durationMs)}</span
+            {/each}
+          </svg>
+          <div class="history-labels">
+            <span>0 s</span><span>{seconds(decodeAt)}</span>
+          </div>
+        </div>
+        <div class="routing-history">
+          <header>Experts <small>decode routing</small></header>
+          <svg
+            viewBox="0 0 700 100"
+            preserveAspectRatio="none"
+            role="img"
+            aria-label="Expert routing from fully decoded sample intervals only"
           >
+            <title>Routing mix over recorded time</title>
+            {#each history as item, index}
+              {@const start = item.at}
+              {@const end = Math.min(
+                position,
+                history[index + 1]?.at ?? turn.durationMs,
+              )}
+              {#if item.at <= position}
+                {#if item.unavailable || !item.activity?.totalHits}
+                  <rect
+                    class="unknown"
+                    x={(700 * (start - routingAt)) / routingDuration}
+                    y="0"
+                    width={(700 * (end - start)) / routingDuration}
+                    height="100"
+                    opacity="0.25"
+                  />
+                {:else}
+                  {#each bands(item.activity) as band}
+                    <rect
+                      class={band.key}
+                      class:dimmed={highlighted && highlighted !== band.key}
+                      x={(700 * (start - routingAt)) / routingDuration}
+                      y={band.y}
+                      width={(700 * (end - start)) / routingDuration}
+                      height={band.height}
+                    />
+                  {/each}
+                {/if}
+              {/if}
+            {/each}
+            <line
+              x1={(700 * Math.max(0, position - routingAt)) / routingDuration}
+              x2={(700 * Math.max(0, position - routingAt)) / routingDuration}
+              y1="0"
+              y2="100"
+              stroke="var(--ink)"
+              stroke-width="3"
+            />
+          </svg>
+          <div class="history-labels">
+            <span>{seconds(routingAt)}</span><span
+              >{seconds(turn.durationMs)}</span
+            >
+          </div>
         </div>
       </div>
     </section>
@@ -518,7 +552,21 @@
     font: 0.65rem var(--font-ui);
     color: var(--ink-2);
   }
-  .routing-history svg {
+  .phase-charts {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+    gap: 1rem;
+  }
+  .phase-charts header {
+    font-size: 0.75rem;
+    margin-bottom: 0.5rem;
+  }
+  .phase-charts header small {
+    display: block;
+    font-size: 0.65rem;
+    color: var(--ink-2);
+  }
+  .phase-charts svg {
     display: block;
     width: 100%;
     height: 4rem;
@@ -526,9 +574,6 @@
   }
   .routing-history rect {
     fill: var(--tier-color);
-  }
-  .routing-history .unmeasured {
-    fill: var(--band);
   }
   .history-labels {
     display: flex;
