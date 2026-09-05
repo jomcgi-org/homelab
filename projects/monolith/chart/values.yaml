@@ -177,6 +177,10 @@ jobs:
           memory: 256Mi
     # Reconcile marked FaaS Workloads left by failed registry handovers.
     # Hourly cleanup for #3955 also keeps an explicit dry-run CLI available.
+    # Only CRs created or re-registered after this rollout carry the marker.
+    # Older orphans stay untouched and need a manual delete. The live embervm
+    # namespace has 13 chart-managed unmarked Workloads; this sweep is inert
+    # for all of them.
     - name: faas-reconcile
       args: ["faas-reconcile"]
       schedule: "0 * * * *"

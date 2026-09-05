@@ -1,9 +1,16 @@
-"""Reconcile registry-owned FaaS Workload custom resources."""
+"""Reconcile registry-owned FaaS Workload custom resources.
+
+Only CRs created or re-registered after this rollout carry the FaaS ownership
+marker. Orphans that predate it stay untouched and need a manual delete. The
+live ``embervm`` namespace has 13 chart-managed unmarked Workloads today, and
+the sweep is inert for all of them.
+"""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from sqlmodel import select
 
@@ -11,6 +18,8 @@ from faas import workload
 from faas.models import Function
 
 logger = logging.getLogger(__name__)
+
+ORPHAN_MIN_AGE_S = 900
 
 
 @dataclass
@@ -22,6 +31,7 @@ class ReconcileReport:
     deleted: list[str]
     kept: list[str]
     skipped_unmarked: int
+    skipped_young: int
 
 
 def _registered_function_names() -> set[str]:
@@ -54,12 +64,26 @@ async def reconcile_orphan_workloads(*, dry_run: bool = False) -> ReconcileRepor
     deleted: list[str] = []
     kept: list[str] = []
     skipped_unmarked = 0
+    skipped_young = 0
 
     for item in items:
         metadata = item.get("metadata") or {}
         labels = metadata.get("labels") or {}
         if labels.get(workload.MANAGED_BY_LABEL) != workload.MANAGED_BY_VALUE:
             skipped_unmarked += 1
+            continue
+
+        creation_timestamp = metadata.get("creationTimestamp")
+        try:
+            if creation_timestamp.endswith("Z"):
+                creation_timestamp = f"{creation_timestamp[:-1]}+00:00"
+            created_at = datetime.fromisoformat(creation_timestamp)
+            age_s = (datetime.now(timezone.utc) - created_at).total_seconds()
+        except (AttributeError, TypeError, ValueError):
+            skipped_young += 1
+            continue
+        if age_s < ORPHAN_MIN_AGE_S:
+            skipped_young += 1
             continue
 
         name = metadata["name"]
@@ -89,4 +113,5 @@ async def reconcile_orphan_workloads(*, dry_run: bool = False) -> ReconcileRepor
         deleted=deleted,
         kept=kept,
         skipped_unmarked=skipped_unmarked,
+        skipped_young=skipped_young,
     )

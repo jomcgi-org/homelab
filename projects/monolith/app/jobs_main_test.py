@@ -93,6 +93,7 @@ def test_faas_reconcile_dispatches_and_prints_json():
         deleted=[],
         kept=["serving"],
         skipped_unmarked=0,
+        skipped_young=0,
     )
     reconcile = mock.AsyncMock(return_value=report)
     with (
@@ -109,7 +110,28 @@ def test_faas_reconcile_dispatches_and_prints_json():
         "orphans": ["orphan"],
         "scanned": 2,
         "skipped_unmarked": 0,
+        "skipped_young": 0,
     }
+
+
+def test_faas_reconcile_failed_delete_exits_nonzero():
+    report = ReconcileReport(
+        scanned=1,
+        orphans=["stuck"],
+        deleted=[],
+        kept=[],
+        skipped_unmarked=0,
+        skipped_young=0,
+    )
+    reconcile = mock.AsyncMock(return_value=report)
+    with (
+        mock.patch("faas.reconcile.reconcile_orphan_workloads", new=reconcile),
+        mock.patch.object(jobs_main, "configure_logging"),
+    ):
+        result = runner.invoke(jobs_main.app, ["faas-reconcile"])
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["orphans"] == ["stuck"]
 
 
 def test_no_args_lists_commands():

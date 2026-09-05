@@ -94,7 +94,7 @@ def fakes(monkeypatch):
         lambda name, sha: state["delete_archive_calls"].append((name, sha)),
     )
 
-    async def _upsert(name, spec):
+    async def _upsert(name, spec, **_kwargs):
         state["upsert_calls"].append((name, spec))
 
     async def _wait_ready(name, timeout_s=180):
@@ -293,6 +293,27 @@ def test_zip_over_cap_rejected(client, session, fakes):
     assert resp.status_code == 413
     assert get_function(session, "echo-fn") is None
     assert fakes["put_calls"] == []
+
+
+def test_platform_workload_name_is_reserved(client, session, fakes, monkeypatch):
+    from faas import router as router_mod
+
+    async def _reserved(name, spec, **_kwargs):
+        raise router_mod.workload.WorkloadReserved(name)
+
+    monkeypatch.setattr(router_mod.workload, "upsert_workload", _reserved)
+
+    resp = _post(client, name="semgrep")
+
+    assert resp.status_code == 409
+    assert _detail(resp) == "name is reserved by a platform workload"
+    assert get_function(session, "semgrep") is None
+    # The archive is stored before the CR is touched (the base build fetches it
+    # from the code_uri), so a reserved name rolls it back rather than never
+    # storing it.
+    assert len(fakes["put_calls"]) == 1
+    assert fakes["delete_archive_calls"] == [fakes["put_calls"][0][:2]]
+    assert fakes["delete_workload_calls"] == []
 
 
 # --------------------------------------------------------------------------- #

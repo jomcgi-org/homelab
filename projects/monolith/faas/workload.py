@@ -34,6 +34,10 @@ MANAGED_BY_LABEL = "monolith.jomcgi.dev/managed-by"
 MANAGED_BY_VALUE = "faas"
 
 
+class WorkloadReserved(Exception):
+    """Raised when a Workload name belongs to a non-FaaS owner."""
+
+
 async def _custom_objects_api() -> "client.CustomObjectsApi":
     """Build a namespaced CustomObjectsApi for the embervm CR group.
 
@@ -79,7 +83,9 @@ def build_workload_spec(
     }
 
 
-async def upsert_workload(name: str, spec: dict) -> None:
+async def upsert_workload(
+    name: str, spec: dict, *, adopt_unmarked: bool = False
+) -> None:
     """Create the Workload CR, or merge-patch its spec if it already exists.
 
     Last-write-wins registration (standing decision 6): a re-registered name
@@ -109,6 +115,16 @@ async def upsert_workload(name: str, spec: dict) -> None:
     except client.exceptions.ApiException as exc:
         if exc.status != 409:
             raise
+        existing = await api.get_namespaced_custom_object(
+            group=GROUP,
+            version=VERSION,
+            namespace=NAMESPACE,
+            plural=PLURAL,
+            name=name,
+        )
+        labels = (existing.get("metadata") or {}).get("labels") or {}
+        if labels.get(MANAGED_BY_LABEL) != MANAGED_BY_VALUE and not adopt_unmarked:
+            raise WorkloadReserved(name) from exc
         # Already exists: merge-patch the spec (last-write-wins).
         await api.patch_namespaced_custom_object(
             group=GROUP,

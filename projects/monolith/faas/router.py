@@ -162,13 +162,22 @@ async def register_function(
     )
 
     # --- Orchestrate (the registry row is written LAST, only after a green smoke) ---
-    storage.put_archive(name, sha256, zipbytes)
     uri = storage.code_uri(name, sha256)
 
     spec = workload.build_workload_spec(
         code_uri=uri, sha256=sha256, handler=handler, runtime=runtime
     )
-    await workload.upsert_workload(name, spec)
+    storage.put_archive(name, sha256, zipbytes)
+    try:
+        # A prior registry row proves the name is ours even when its CR predates
+        # the ownership marker; without one, an existing unmarked CR belongs to
+        # the platform and must not be overwritten (or later swept).
+        await workload.upsert_workload(name, spec, adopt_unmarked=prior is not None)
+    except workload.WorkloadReserved as exc:
+        storage.delete_archive(name, sha256)
+        raise HTTPException(
+            status_code=409, detail="name is reserved by a platform workload"
+        ) from exc
 
     ok, msg = await workload.wait_ready(name, timeout_s=_READY_TIMEOUT_S)
     if not ok:
