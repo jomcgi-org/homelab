@@ -1800,6 +1800,183 @@ defmodule Embervm.BaseBuilderTest do
     assert Agent.get(builds, & &1) == 2
   end
 
+  test "capacity inventory drop clears the recorded base and enqueues one audited rebuild" do
+    table = new_cap_table()
+    put_brick(table, "node-4", "uid", cpu_vendor: "amd")
+    test_pid = self()
+    {:ok, builds} = Agent.start_link(fn -> 0 end)
+
+    build_fun = fn :fake_channel, _req ->
+      count = Agent.get_and_update(builds, fn n -> {n + 1, n + 1} end)
+
+      if count == 2 do
+        send(test_pid, {:dropped_rebuild_started, self()})
+
+        receive do
+          :finish_dropped_rebuild -> :ok
+        end
+      end
+
+      {:ok, resp("snap-#{count}")}
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/uid", address: "node-4:9090"}],
+        capacity_table: table,
+        status_writer: fn _, _, _ -> :ok end,
+        build_fun: build_fun,
+        op_log: test_pid,
+        op_log_mod: __MODULE__.FakeOpLog
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1"
+    end)
+
+    :sys.replace_state(builder, fn state ->
+      put_in(state.workloads["w"].store_confirmed["amd"], %{ref: "snap-1", confirmed_at: 1})
+    end)
+
+    put_node_local_bases_fact(table, "node-4", "uid", "w", "snap-1", true, [
+      ready_base("snap-1", "w", 1)
+    ])
+
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    _ = :sys.get_state(builder)
+    assert Agent.get(builds, & &1) == 1
+
+    put_node_local_bases_fact(table, "node-4", "uid", "w", "snap-1", true, [])
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+
+    assert_receive {:op_appended, %{kind: :base_built} = op}, 1_000
+    assert op.workload == "w"
+    assert op.payload.reason == "node dropped base"
+    assert op.payload.node_id == "node-4/uid"
+    assert op.payload.ref == "snap-1"
+
+    assert_receive {:dropped_rebuild_started, worker}, 1_000
+    assert Agent.get(builds, & &1) == 2
+
+    dropped = BaseBuilder.status(builder).workloads["w"]
+    assert dropped.snapshot_ref == nil
+    assert dropped.vendor_built == %{}
+    assert dropped.store_confirmed == %{}
+
+    send(worker, :finish_dropped_rebuild)
+  end
+
+  test "repeated inventory drop inside base backoff does not enqueue another build" do
+    table = new_cap_table()
+    put_brick(table, "node-4", "uid", cpu_vendor: "amd")
+    {:ok, builds} = Agent.start_link(fn -> 0 end)
+
+    build_fun = fn :fake_channel, _req ->
+      count = Agent.get_and_update(builds, fn n -> {n + 1, n + 1} end)
+      {:ok, resp("snap-#{count}")}
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/uid", address: "node-4:9090"}],
+        capacity_table: table,
+        status_writer: fn _, _, _ -> :ok end,
+        build_fun: build_fun,
+        clock: fn -> 10_000 end,
+        base_backoff_ms: 1_000
+    )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1"
+    end)
+
+    put_node_local_bases_fact(table, "node-4", "uid", "w", "snap-1", false, [
+      ready_base("snap-1", "w", 1)
+    ])
+
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    _ = :sys.get_state(builder)
+    assert Agent.get(builds, & &1) == 1
+
+    put_node_local_bases_fact(table, "node-4", "uid", "w", "snap-1", false, [])
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-2"
+    end)
+
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    _ = :sys.get_state(builder)
+
+    assert Agent.get(builds, & &1) == 2
+  end
+
+  test "inventory drop does not enqueue while a build worker or hydrate is in flight" do
+    table = new_cap_table()
+    put_brick(table, "node-4", "uid", cpu_vendor: "amd")
+    {:ok, builds} = Agent.start_link(fn -> 0 end)
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/uid", address: "node-4:9090"}],
+        capacity_table: table,
+        status_writer: fn _, _, _ -> :ok end,
+        build_fun: fn :fake_channel, _req ->
+          count = Agent.get_and_update(builds, fn n -> {n + 1, n + 1} end)
+          {:ok, resp("snap-#{count}")}
+        end
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+
+    assert_eventually(fn ->
+      BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1"
+    end)
+
+    put_node_local_bases_fact(table, "node-4", "uid", "w", "snap-1", false, [
+      ready_base("snap-1", "w", 1)
+    ])
+
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    _ = :sys.get_state(builder)
+    assert Agent.get(builds, & &1) == 1
+
+    put_node_local_bases_fact(table, "node-4", "uid", "w", "snap-1", false, [])
+
+    fake_worker =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    :sys.replace_state(builder, fn state ->
+      put_in(state.workers[fake_worker], %{name: "w", node_id: "node-4/uid", signature: :fake})
+    end)
+
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    _ = :sys.get_state(builder)
+    assert Agent.get(builds, & &1) == 1
+    assert BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1"
+
+    :sys.replace_state(builder, fn state ->
+      state
+      |> update_in([:workers], &Map.delete(&1, fake_worker))
+      |> update_in([:hydrating], &MapSet.put(&1, "w"))
+    end)
+
+    send(fake_worker, :stop)
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    _ = :sys.get_state(builder)
+    assert Agent.get(builds, & &1) == 1
+    assert BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1"
+  end
+
   test "fact-less instances are excluded from build placement" do
     test_pid = self()
     table = new_cap_table()
@@ -2149,9 +2326,9 @@ defmodule Embervm.BaseBuilderTest do
 
   # -- base export durability (base-durability PR-1) --------------------------
 
-  # A fake op-log module: append/2 forwards the op to the test pid so a test can
-  # assert the :artifact_exported audit entry was written. Matches the
-  # {op_log, op} arg order the real Embervm.OpLog.SQLite.append/2 takes.
+  # A fake op-log module: append/2 forwards the op to the test pid so tests can
+  # assert audit entries were written. Matches the {op_log, op} arg order the
+  # real Embervm.OpLog.SQLite.append/2 takes.
   defmodule FakeOpLog do
     def append(pid, op) when is_pid(pid) do
       send(pid, {:op_appended, op})

@@ -415,6 +415,10 @@ defmodule Embervm.StatefulManager do
       # reserves an unattended auto-wake. The token identifies async results
       # and timers belonging to this exact wake, not merely this workload.
       waking: %{},
+      # Workloads for which auto-wake already reported a stale READY summary
+      # with no matching ref in the live local base inventory. The marker is
+      # cleared when readiness becomes live again or the stale summary clears.
+      auto_wake_missing_logged: MapSet.new(),
       # workload -> monotonic expiry for a definitive unusable store consult.
       negative_store_truth: %{},
       # workload -> %{reason: atom, at_ms: manager clock}. These refusal outcomes
@@ -3265,13 +3269,37 @@ defmodule Embervm.StatefulManager do
   # attempt. A successful unattended wake simply publishes the endpoint for the next
   # connection (reply_all([]) is a no-op).
   defp auto_wake_ready_workloads(state, facts) do
-    WorkloadCatalog.all_names(state.catalog_table)
+    workloads = WorkloadCatalog.all_names(state.catalog_table)
+
+    state = %{
+      state
+      | auto_wake_missing_logged:
+          MapSet.intersection(state.auto_wake_missing_logged, MapSet.new(workloads))
+    }
+
+    workloads
     |> Enum.reduce(state, fn workload, acc ->
-      if auto_wake_eligible?(acc, workload, facts) do
-        Logger.info("embervm stateful: auto-waking workload after base READY", workload: workload)
-        start_unattended_wake(acc, workload)
-      else
-        acc
+      reported_ready? = reported_base_ready_somewhere?(facts, workload)
+      live_ready? = live_base_ready_somewhere?(facts, workload)
+      eligible? = auto_wake_eligible?(acc, workload)
+
+      acc =
+        if live_ready? or not reported_ready? do
+          update_in(acc.auto_wake_missing_logged, &MapSet.delete(&1, workload))
+        else
+          acc
+        end
+
+      cond do
+        eligible? and live_ready? ->
+          Logger.info("embervm stateful: auto-waking workload after base READY", workload: workload)
+          start_unattended_wake(acc, workload)
+
+        eligible? and reported_ready? ->
+          log_missing_auto_wake_once(acc, workload)
+
+        true ->
+          acc
       end
     end)
   end
@@ -3286,11 +3314,22 @@ defmodule Embervm.StatefulManager do
     start_wake(state, workload)
   end
 
-  defp auto_wake_eligible?(state, workload, facts) do
+  defp auto_wake_eligible?(state, workload) do
     auto_wake_workload?(state, workload) and
       not Map.has_key?(state.waking, workload) and
-      not has_nonterminal_instance?(state, workload) and
-      base_ready_somewhere?(facts, workload)
+      not has_nonterminal_instance?(state, workload)
+  end
+
+  defp log_missing_auto_wake_once(state, workload) do
+    if MapSet.member?(state.auto_wake_missing_logged, workload) do
+      state
+    else
+      Logger.info("embervm stateful: skipping auto-wake because base is absent from live inventory",
+        workload: workload
+      )
+
+      update_in(state.auto_wake_missing_logged, &MapSet.put(&1, workload))
+    end
   end
 
   defp auto_wake_workload?(state, workload) do
@@ -3305,12 +3344,30 @@ defmodule Embervm.StatefulManager do
     |> Enum.any?(&(not StatefulState.terminal?(&1.state)))
   end
 
-  # Whether some reporting instance advertises this workload's base as READY (the
-  # signal that a wake can resolve a boot_image_ref and cold-boot). Reuses the
-  # shared Scheduler.base_ready?/2 predicate so the READY representation (proto atom
-  # or the integer form) can never drift from the cold-placement paths.
-  defp base_ready_somewhere?(facts, workload) do
+  # The summarized workload entry is retained only to recognize the stale READY
+  # condition and emit one diagnostic. It is not sufficient to start a wake.
+  defp reported_base_ready_somewhere?(facts, workload) do
     Enum.any?(facts, fn fact -> Embervm.Scheduler.base_ready?(fact, workload) end)
+  end
+
+  # Auto-wake readiness requires the summarized READY ref to exist in the node's
+  # full local base inventory and be READY there too. Rootfs identity rejection
+  # can remove the inventory entry before the summary changes, which made the old
+  # predicate launch a wake that placement could never satisfy.
+  defp live_base_ready_somewhere?(facts, workload) do
+    Enum.any?(facts, fn fact ->
+      case get_in(fact, [:workloads, workload]) do
+        %{snapshot_ref: ref} when is_binary(ref) and ref != "" ->
+          Embervm.Scheduler.base_ready?(fact, workload) and
+            Enum.any?(Map.get(fact, :local_bases, []) || [], fn base ->
+              Map.get(base, :workload) == workload and Map.get(base, :ref) == ref and
+                Map.get(base, :base_state) in [:BASE_BUILD_STATE_READY, 3]
+            end)
+
+        _ ->
+          false
+      end
+    end)
   end
 
   defp index_stateful_vms(facts) do
