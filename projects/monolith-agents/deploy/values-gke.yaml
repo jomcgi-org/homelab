@@ -1,0 +1,12 @@
+# GKE hub destination overrides, layered after deploy/values.yaml by
+# projects/gke-apps/monolith-agents/application.yaml.
+
+# GKE Dataplane V2 ships Cilium but not the CiliumNetworkPolicy CRD, so the
+# ADR platform/012 policy cannot sync there ("no matches for kind
+# CiliumNetworkPolicy" wedges the Application on its first sync). Same override
+# as monolith and monolith-public on the hub. This leaves the tier with NO
+# network policy on GKE until an equivalent lands (tracked on #5656): the
+# other two isolation legs (pruned source glob, GRANT-bounded agents_writer)
+# still hold.
+ciliumPolicy:
+  enabled: false

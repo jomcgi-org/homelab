@@ -6,10 +6,11 @@ metadata:
   finalizers:
     - resources-finalizer.argocd.argoproj.io
   annotations:
-    # After monolith (wave 1): the tier needs the monolith Postgres, its
-    # migrations (agents_writer role) and the 1Password operator before it can
-    # start. Not Kargo-managed: this pin is the deploy lever and follows the
-    # gke-apps rule that write-back does NOT maintain these pins.
+    # Wave 2 like every other gke-apps Application (monolith included), so this
+    # buys no ordering against the monolith Postgres or its migrations; the
+    # workload is off until both exist and the 1Password operator is installed
+    # out of band. Not Kargo-managed: this pin is the deploy lever and follows
+    # the gke-apps rule that write-back does NOT maintain these pins.
     argocd.argoproj.io/sync-wave: "2"
 spec:
   project: default
@@ -23,6 +24,7 @@ spec:
         releaseName: monolith-agents
         valueFiles:
           - $values/projects/monolith-agents/deploy/values.yaml
+          - $values/projects/monolith-agents/deploy/values-gke.yaml
         ignoreMissingValueFiles: false
     - repoURL: https://github.com/jomcgi-org/homelab.git
       targetRevision: HEAD
