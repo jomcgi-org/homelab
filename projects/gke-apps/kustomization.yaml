@@ -6,5 +6,6 @@ resources:
   - ./embervm
   - ./monolith
   - ./monolith-public
+  - ./monolith-agents
   - ./inference
   - ./context-forge-gateway
