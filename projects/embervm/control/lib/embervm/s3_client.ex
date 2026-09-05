@@ -2,7 +2,7 @@ defmodule Embervm.S3Client do
   @moduledoc """
   Minimal raw-HTTP S3 client for the control plane's S3-direct warmth GC
   (task #39): ListObjectsV2 (with pagination), GET, PUT, and single-key DELETE
-  against the in-cluster SeaweedFS S3 gateway, over the shared `Embervm.Finch`
+  against the configured S3 gateway, over the dedicated `Embervm.StoreFinch`
   pool. The structural mirror of noded's non-SDK store client
   (noded/store/store.go): plain HTTP verbs on `<endpoint>/<bucket>/<key>`,
   optionally SigV4-authenticated, nil-safe on a disabled store.
@@ -42,13 +42,14 @@ defmodule Embervm.S3Client do
   @enforce_keys [:endpoint, :bucket]
   alias Embervm.S3Client.SigV4
 
-  defstruct [:endpoint, :bucket, :access_key_id, :secret_access_key]
+  defstruct [:endpoint, :bucket, :access_key_id, :secret_access_key, :finch]
 
   @type t :: %__MODULE__{
           endpoint: String.t(),
           bucket: String.t(),
           access_key_id: String.t() | nil,
-          secret_access_key: String.t() | nil
+          secret_access_key: String.t() | nil,
+          finch: GenServer.server()
         }
 
   @typedoc "One listed object: key, byte size, Last-Modified as unix ms."
@@ -84,8 +85,35 @@ defmodule Embervm.S3Client do
       endpoint: String.trim_trailing(endpoint, "/"),
       bucket: bucket,
       access_key_id: Keyword.get(opts, :access_key_id),
-      secret_access_key: Keyword.get(opts, :secret_access_key)
+      secret_access_key: Keyword.get(opts, :secret_access_key),
+      finch: Keyword.get(opts, :finch, Embervm.StoreFinch)
     }
+  end
+
+  @doc """
+  Perform the boot-time TLS verification request against the bucket root.
+
+  Any HTTP response proves that DNS, TCP, and TLS completed. In particular, an
+  authenticated store may answer 403 and an absent bucket may answer 404. This
+  probe is deliberately attempted once and does not use the ordinary retry
+  policy.
+  """
+  @spec probe(t()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def probe(%__MODULE__{} = client) do
+    method = :head
+    url = client.endpoint <> "/" <> client.bucket <> "/"
+    creds = %{access_key_id: client.access_key_id, secret_access_key: client.secret_access_key}
+    headers = SigV4.sign(method, url, [], SigV4.unsigned_payload(), creds, DateTime.utc_now())
+    req = Finch.build(method, url, headers, "")
+
+    case Finch.request(req, client.finch, receive_timeout: @receive_timeout) do
+      {:ok, %Finch.Response{status: status}} -> {:ok, status}
+      {:error, reason} -> {:error, reason}
+    end
+  rescue
+    e -> {:error, {:raised, e}}
+  catch
+    kind, reason -> {:error, {kind, reason}}
   end
 
   @doc """
@@ -285,7 +313,7 @@ defmodule Embervm.S3Client do
     headers = SigV4.sign(method, url, request_headers, SigV4.unsigned_payload(), creds, DateTime.utc_now())
     req = Finch.build(method, url, headers, body)
 
-    case Finch.request(req, Embervm.Finch, receive_timeout: @receive_timeout) do
+    case Finch.request(req, client.finch, receive_timeout: @receive_timeout) do
       {:ok, %Finch.Response{status: status}} when status >= 500 ->
         retry_or_fail(client, method, url, body, request_headers, attempt, {:unexpected_status, status})
 

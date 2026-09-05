@@ -711,6 +711,13 @@ namespaced by workload (and vendor, below); a principal-scoped
 implemented: `ArtifactRef` is `{kind, workload, ref}` with keys
 `<kind>/<vendor>/<workload>/<ref>/<file>`.
 
+The control plane uses separate TLS trust domains for these calls: the object
+store client trusts the operating system CA bundle, while the Kubernetes API
+client remains pinned to the pod's mounted service-account CA. At boot a
+configured store receives one bucket-root TLS probe, and
+`GET /v1/health/durability` reports the result in `store_tls` as `verified`,
+`failed`, or `unconfigured`, including the last error when verification failed.
+
 **Planned rootfs plane (ADR 028, #4182)**: OCI images convert to deterministic
 flattened EROFS manifests and immutable chunks. Private chunks deduplicate under
 `rootfs/account/<account>/...`; allow-listed published platform chunks may use

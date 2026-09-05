@@ -27,6 +27,10 @@ defmodule Embervm.LogFormatter do
     :kind,
     :mfa,
     :error,
+    # Object-store TLS trust and boot probe.
+    :ca_source,
+    :endpoint,
+    :status,
     # CapacityObserver metadata.
     :instance_id,
     :vm_id,

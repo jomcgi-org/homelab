@@ -49,12 +49,21 @@ defmodule Embervm.RouterDurabilityTest do
     end
   end
 
+  defmodule StubStoreTLS do
+    def snapshot do
+      Application.get_env(:embervm, :store_tls_stub_report, %{store_tls: "unconfigured"})
+    end
+  end
+
   setup do
     Application.put_env(:embervm, :authenticator, FakeAuth)
+    Application.put_env(:embervm, :store_tls, StubStoreTLS)
     on_exit(fn ->
       Application.delete_env(:embervm, :authenticator)
       Application.delete_env(:embervm, :durability)
       Application.delete_env(:embervm, :durability_stub_report)
+      Application.delete_env(:embervm, :store_tls)
+      Application.delete_env(:embervm, :store_tls_stub_report)
     end)
 
     :ok
@@ -84,6 +93,24 @@ defmodule Embervm.RouterDurabilityTest do
     assert body["ok"] == true
     assert body["tier1"]["verdict"] == "ok"
     assert body["tier2"]["verdict"] == "ok"
+    assert body["store_tls"] == "unconfigured"
+  end
+
+  test "the durability response renders a failed store TLS probe and its error" do
+    Application.put_env(:embervm, :durability, StubDurability)
+    Application.put_env(:embervm, :durability_stub_report, @healthy_report)
+
+    Application.put_env(:embervm, :store_tls_stub_report, %{
+      store_tls: "failed",
+      store_tls_error: "{:tls_alert, {:unknown_ca, []}}"
+    })
+
+    resp = req(:get, "/v1/health/durability", auth("good"))
+    assert resp.status == 503
+    body = :json.decode(resp.body)
+    assert body["ok"] == false
+    assert body["store_tls"] == "failed"
+    assert body["store_tls_error"] =~ "unknown_ca"
   end
 
   test "an unhealthy report answers 503 with the SAME report body (never green)" do

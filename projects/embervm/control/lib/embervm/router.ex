@@ -588,13 +588,21 @@ defmodule Embervm.Router do
         send_json(conn, 404, %{error: "not found"})
 
       {:error, reason} ->
-        send_json(conn, 503, %{
-          ok: false,
-          error: "durability evaluation failed",
-          detail: inspect(reason)
-        })
+        send_json(
+          conn,
+          503,
+          Map.merge(
+            %{
+              ok: false,
+              error: "durability evaluation failed",
+              detail: inspect(reason)
+            },
+            store_tls_snapshot()
+          )
+        )
 
       report when is_map(report) ->
+        report = merge_store_tls(report)
         status = if report.ok, do: 200, else: 503
         send_json(conn, status, json_nullify(report))
     end
@@ -606,6 +614,23 @@ defmodule Embervm.Router do
     :exit, reason -> {:error, reason}
   rescue
     e -> {:error, e}
+  end
+
+  defp store_tls_snapshot do
+    mod = Application.get_env(:embervm, :store_tls, Embervm.StoreTLS)
+
+    mod.snapshot()
+  catch
+    :exit, reason -> %{store_tls: "failed", store_tls_error: inspect(reason)}
+  rescue
+    e -> %{store_tls: "failed", store_tls_error: inspect(e)}
+  end
+
+  defp merge_store_tls(report) do
+    tls = store_tls_snapshot()
+    report = Map.merge(report, tls)
+
+    if tls.store_tls == "failed", do: Map.put(report, :ok, false), else: report
   end
 
   defp conformance_view(query_params) do

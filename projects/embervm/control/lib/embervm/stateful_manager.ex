@@ -482,10 +482,12 @@ defmodule Embervm.StatefulManager do
           {:noreply, resume_wake_after_store_consult(state, workload)}
 
         {:error, reason} ->
-          Logger.warning("embervm stateful: store export discovery failed closed",
-            workload: workload,
-            reason: inspect(reason)
-          )
+          unless reason == :store_tls_failed do
+            Logger.warning("embervm stateful: store export discovery failed closed",
+              workload: workload,
+              reason: inspect(reason)
+            )
+          end
 
           state = maybe_memoize_negative_store_truth(state, workload, reason)
           send(self(), {:wake_done, workload, {:error, :volume_node_gone}})
@@ -1300,7 +1302,8 @@ defmodule Embervm.StatefulManager do
               :invalid_volume_metadata,
               :invalid_volume_prefix,
               :generation_mismatch,
-              :store_unconfigured
+              :store_unconfigured,
+              :store_tls_failed
             ] do
     expires_at = state.mono_clock.() + @negative_store_truth_ttl_ms
     %{state | negative_store_truth: Map.put(state.negative_store_truth, workload, expires_at)}
@@ -1324,6 +1327,25 @@ defmodule Embervm.StatefulManager do
     do: {:error, :store_unconfigured}
 
   defp fetch_exported_generation_from_store(state, volume) do
+    with :ok <- store_tls_permit(volume.workload),
+         result <- do_fetch_exported_generation_from_store(state, volume) do
+      result
+    else
+      {:error, {:store_tls_failed, _reason}} -> {:error, :store_tls_failed}
+      other -> other
+    end
+  end
+
+  defp store_tls_permit(workload) do
+    mod = Application.get_env(:embervm, :store_tls, Embervm.StoreTLS)
+    mod.permit_restore(workload)
+  catch
+    :exit, _reason -> :ok
+  rescue
+    _ -> :ok
+  end
+
+  defp do_fetch_exported_generation_from_store(state, volume) do
     workload = Map.get(volume, :workload)
     prefix = ArtifactPrefix.prefix(:ARTIFACT_KIND_VOLUME, workload, "", "", nil)
 
@@ -3317,11 +3339,13 @@ defmodule Embervm.StatefulManager do
         :ok
 
       other ->
-        Logger.warning("embervm stateful: bundle restore-on-miss failed, degrading to cold",
-          workload: workload,
-          snapshot_ref: snapshot_ref,
-          reason: inspect(other)
-        )
+        unless store_tls_capability_refusal?(workload, other) do
+          Logger.warning("embervm stateful: bundle restore-on-miss failed, degrading to cold",
+            workload: workload,
+            snapshot_ref: snapshot_ref,
+            reason: inspect(other)
+          )
+        end
 
         :error
     end
@@ -3348,10 +3372,12 @@ defmodule Embervm.StatefulManager do
         :ok
 
       other ->
-        Logger.warning("embervm stateful: volume restore-on-miss failed, degrading to cold",
-          workload: workload,
-          reason: inspect(other)
-        )
+        unless store_tls_capability_refusal?(workload, other) do
+          Logger.warning("embervm stateful: volume restore-on-miss failed, degrading to cold",
+            workload: workload,
+            reason: inspect(other)
+          )
+        end
 
         :error
     end
@@ -3385,6 +3411,12 @@ defmodule Embervm.StatefulManager do
       end
     end
   end
+
+  defp store_tls_capability_refusal?(workload, {:error, :capability_refused}) do
+    match?({:error, {:store_tls_failed, _reason}}, store_tls_permit(workload))
+  end
+
+  defp store_tls_capability_refusal?(_workload, _result), do: false
 
   defp restore_brick(table, dial_id, node_id) do
     case Enum.find(NodeCapacity.all(table), &(Map.get(&1, :instance_id) == dial_id)) do

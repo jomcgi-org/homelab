@@ -2569,11 +2569,13 @@ defmodule Embervm.SessionManager do
         :ok
 
       other ->
-        Logger.warning("embervm session: bundle restore-on-miss failed, degrading to snapshot_lost path",
-          workload: workload,
-          snapshot_ref: snapshot_ref,
-          reason: inspect(other)
-        )
+        unless store_tls_capability_refusal?(workload, other) do
+          Logger.warning("embervm session: bundle restore-on-miss failed, degrading to snapshot_lost path",
+            workload: workload,
+            snapshot_ref: snapshot_ref,
+            reason: inspect(other)
+          )
+        end
 
         :error
     end
@@ -2615,6 +2617,17 @@ defmodule Embervm.SessionManager do
       end
     end
   end
+
+  defp store_tls_capability_refusal?(workload, {:error, :capability_refused}) do
+    mod = Application.get_env(:embervm, :store_tls, Embervm.StoreTLS)
+    match?({:error, {:store_tls_failed, _reason}}, mod.permit_restore(workload))
+  catch
+    :exit, _reason -> false
+  rescue
+    _ -> false
+  end
+
+  defp store_tls_capability_refusal?(_workload, _result), do: false
 
   defp restore_brick(table, dial_id, node_id) do
     case Enum.find(NodeCapacity.all(table), &(Map.get(&1, :instance_id) == dial_id)) do

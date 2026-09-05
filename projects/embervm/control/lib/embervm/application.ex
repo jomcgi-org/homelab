@@ -142,9 +142,12 @@ defmodule Embervm.Application do
          async_writer: Embervm.AsyncWriter,
          async_lifecycle_writes: async_lifecycle_writes_enabled()
        ]},
-      # Finch (the shared HTTP pool, TLS-pinned to the K8s CA in-cluster) before
-      # Embervm.Auth, whose TokenReview reviewer dials the API server over it.
+      # Keep Kubernetes and public object-store trust in separate pools. The
+      # former is pinned to the mounted service-account CA in-cluster; the latter
+      # trusts the operating system CA bundle and is probed once at boot.
       Embervm.K8s.finch_child_spec(),
+      {Embervm.StoreFinch, endpoint: trimmed_env("EMBERVM_STORE_ENDPOINT")},
+      {Embervm.StoreTLS, store_tls_opts()},
       {Embervm.Auth, allowed: allowed_service_accounts()},
       # The base builder (Task 10): drives the node daemon's BuildBase RPC on
       # Workload admission / spec change and writes status.snapshotRef +
@@ -904,6 +907,15 @@ defmodule Embervm.Application do
       sweep_interval_ms: int_env_or_nil("EMBERVM_DURABILITY_GC_SWEEP_INTERVAL_MS")
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  defp store_tls_opts do
+    [
+      endpoint: trimmed_env("EMBERVM_STORE_ENDPOINT"),
+      bucket: store_bucket(),
+      access_key_id: trimmed_env("EMBERVM_STORE_ACCESS_KEY_ID"),
+      secret_access_key: trimmed_env("EMBERVM_STORE_SECRET_ACCESS_KEY")
+    ]
   end
 
   @doc false

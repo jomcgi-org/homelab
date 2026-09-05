@@ -90,4 +90,26 @@ defmodule Embervm.LogFormatterTest do
     assert decoded["from"] == "high"
     assert decoded["to"] == "shedding"
   end
+
+  test "preserves object-store TLS probe fields in structured JSON" do
+    metadata = %{
+      ca_source: "otp_os_store",
+      endpoint: "https://storage.googleapis.com",
+      status: 403,
+      error: "{:tls_alert, {:unknown_ca, []}}"
+    }
+
+    line =
+      Embervm.LogFormatter.format(
+        %{level: :warning, msg: {:string, "embervm store TLS probe failed"}, meta: metadata},
+        %{}
+      )
+      |> IO.iodata_to_binary()
+
+    decoded = :json.decode(line)
+
+    for {key, value} <- metadata do
+      assert Map.get(decoded, Atom.to_string(key)) == value
+    end
+  end
 end

@@ -27,6 +27,11 @@ defmodule Embervm.RestoreCapabilityTest do
       do: Agent.get(agent, &Map.get(&1, :unwrap, {:error, :auth_failed}))
   end
 
+  defmodule FailedStoreTLS do
+    def permit_restore(_workload),
+      do: {:error, {:store_tls_failed, {:tls_alert, {:unknown_ca, []}}}}
+  end
+
   setup do
     {:ok, s3} = Agent.start_link(fn -> %{calls: [], reply: {:error, :not_found}} end)
     {:ok, keys} = Agent.start_link(fn -> %{epoch: 0, unwrap: {:ok, :binary.copy(<<7>>, 32)}} end)
@@ -88,6 +93,22 @@ defmodule Embervm.RestoreCapabilityTest do
                %{node_id: "node-a", pod_uid: "uid-a"},
                %{},
                Keyword.put(opts, :enabled?, false)
+             )
+
+    assert Agent.get(s3, & &1.calls) == []
+  end
+
+  test "a failed TLS probe refuses before the metadata request retry path", %{
+    s3: s3,
+    req: req,
+    opts: opts
+  } do
+    assert {:error, :capability_refused} =
+             RestoreCapability.stamp(
+               req,
+               %{node_id: "node-a", pod_uid: "uid-a"},
+               %{principal: "acct:alice", lineage: "lineage-42", generation: 7},
+               Keyword.put(opts, :store_tls, FailedStoreTLS)
              )
 
     assert Agent.get(s3, & &1.calls) == []

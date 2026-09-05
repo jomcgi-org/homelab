@@ -57,7 +57,8 @@ defmodule Embervm.RestoreCapability do
       workload = Map.get(artifact, :workload, "")
       ref = Map.get(artifact, :ref, "") || ""
 
-      with true <- valid_brick?(brick),
+      with :ok <- store_tls_permit(opts, workload),
+           true <- valid_brick?(brick),
            prefix when is_binary(prefix) <-
              ArtifactPrefix.prefix(kind, workload, ref, vendor, lineage),
            {:ok, meta} <-
@@ -82,6 +83,7 @@ defmodule Embervm.RestoreCapability do
 
         {:ok, %{req | capability: mint(mac_key, data_key, expiry, scope)}}
       else
+        {:error, {:store_tls_failed, _reason}} -> {:error, :capability_refused}
         :plaintext -> {:ok, req}
         {:error, :not_found} -> {:ok, req}
         _ -> refuse(ctx, artifact)
@@ -197,6 +199,25 @@ defmodule Embervm.RestoreCapability do
   defp json_string(value), do: Jason.encode!(value)
   defp clock(opts), do: Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end)
   defp artifact_store_client, do: Application.get_env(:embervm, :artifact_store_client)
+
+  defp store_tls_permit(opts, workload) do
+    store_tls =
+      Keyword.get(
+        opts,
+        :store_tls,
+        Application.get_env(:embervm, :store_tls, Embervm.StoreTLS)
+      )
+
+    case store_tls do
+      nil -> :ok
+      {module, server} -> module.permit_restore(server, workload)
+      module when is_atom(module) -> module.permit_restore(workload)
+    end
+  catch
+    :exit, _reason -> :ok
+  rescue
+    _ -> :ok
+  end
 
   defp valid_brick?(brick) do
     is_binary(Map.get(brick, :node_id)) and Map.get(brick, :node_id) != "" and

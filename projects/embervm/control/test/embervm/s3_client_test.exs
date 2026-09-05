@@ -38,11 +38,28 @@ defmodule Embervm.S3ClientTest do
   end
 
   @port 18_092
+  @configured_finch __MODULE__.ConfiguredStoreFinch
   @auth_shape ~r/^AWS4-HMAC-SHA256 Credential=embervm\/\d{8}\/us-east-1\/s3\/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=[0-9a-f]{64}$/
 
   setup do
     start_supervised!({Bandit, plug: {RecordingPlug, self()}, scheme: :http, port: @port})
+    start_supervised!({Finch, name: @configured_finch})
     :ok
+  end
+
+  test "requests dispatch through the configured store pool seam" do
+    client =
+      S3Client.new("http://127.0.0.1:#{@port}", "embervm", finch: @configured_finch)
+
+    assert client.finch == @configured_finch
+    refute client.finch == Embervm.Finch
+    assert {:ok, "ok"} = S3Client.get(client, "base/amd/demo/meta.json")
+    assert_receive {:s3_request, "GET", _path, _query, []}
+  end
+
+  test "the default client is bound to StoreFinch" do
+    client = S3Client.new("http://127.0.0.1:#{@port}", "embervm")
+    assert client.finch == Embervm.StoreFinch
   end
 
   test "GET, PUT, DELETE, and ListObjectsV2 are signed when credentials are set" do
