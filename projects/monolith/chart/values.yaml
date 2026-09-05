@@ -175,6 +175,21 @@ jobs:
           memory: 256Mi
         limits:
           memory: 256Mi
+    # Reconcile marked FaaS Workloads left by failed registry handovers.
+    # Hourly cleanup for #3955 also keeps an explicit dry-run CLI available.
+    - name: faas-reconcile
+      args: ["faas-reconcile"]
+      schedule: "0 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 120
+      suspend: false
+      serviceAccountName: monolith-stats
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 256Mi
     # worldcup.refresh cut over to Argo 2026-06-22, then the tournament it
     # models resolved on 2026-06-28: all 72 group fixtures finished and
     # qualification went final (16 eliminated / 32 qualified). The sim
