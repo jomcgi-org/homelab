@@ -792,6 +792,13 @@ def _persist_task_session_start(
     from sqlalchemy.exc import IntegrityError
 
     local_session_id = f"swarm-task:{task_id}"
+    # Computed before the session opens: recall blocks on an embedding call,
+    # and holding a pooled connection through it starves other handlers.
+    system_prompt = attach_recall(
+        _append_rationale_trailer(None, start_request.repo),
+        start_request.prompt,
+        node_key=None,
+    )
     with Session(get_engine()) as db_session:
         row = store.get_session_by_local_id(db_session, local_session_id)
         if row is None:
@@ -803,11 +810,7 @@ def _persist_task_session_start(
                     start_request.branch,
                     selected_model,
                     start_request.repo,
-                    system_prompt=attach_recall(
-                        _append_rationale_trailer(None, start_request.repo),
-                        start_request.prompt,
-                        node_key=None,
-                    ),
+                    system_prompt=system_prompt,
                     reasoning=_resolve_reasoning(start_request),
                     triggered_by=triggered_by,
                 )

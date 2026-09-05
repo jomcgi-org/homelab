@@ -59,7 +59,8 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
         "main",
         model,
         None,
-        prompt=prompt,
+        # No prompt on purpose: the synthetic probes assert an exact reply and
+        # report lane latency, so they must not carry a recall block.
     )
     assert row.id is not None
     turn_seq = await asyncio.to_thread(_persist_pending_message, row.id, prompt, model)

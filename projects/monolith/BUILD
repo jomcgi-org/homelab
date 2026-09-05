@@ -4535,6 +4535,7 @@ py_test(
     srcs = ["knowledge/recall_test.py"],
     imports = ["."],
     deps = [
+        ":pkg_agent_sessions",
         ":pkg_knowledge",
         "@pip//pytest",
         "@pip//pytest_asyncio",
