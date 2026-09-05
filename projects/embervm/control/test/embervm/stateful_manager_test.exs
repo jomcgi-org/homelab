@@ -195,6 +195,10 @@ defmodule Embervm.StatefulManagerTest do
         # the base snapshot key the daemon resolves against its base registry.
         "wl-a" => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "snap-a"}
       },
+      local_bases:
+        Keyword.get(opts, :local_bases, [
+          %{workload: "wl-a", ref: "snap-a", base_state: :BASE_BUILD_STATE_READY}
+        ]),
       stateful_vms: Keyword.get(opts, :stateful_vms, []),
       stateful_bundles: Keyword.get(opts, :stateful_bundles, []),
       volumes: Keyword.get(opts, :volumes, []),
@@ -3153,6 +3157,46 @@ defmodule Embervm.StatefulManagerTest do
 
     assert Agent.get(wakes, & &1) == 1
     assert StatefulStore.published_endpoint(ctx.store, "wl-a") == %{ip: "10.88.0.5", port: 5432}
+  end
+
+  test "auto-wake skips a stale READY base missing from live inventory and logs once" do
+    {:ok, wakes} = Agent.start_link(fn -> 0 end)
+
+    ctx =
+      start_stack(
+        start_stateful_fun: fn _ch, _req ->
+          Agent.update(wakes, &(&1 + 1))
+
+          {:ok,
+           %StartStatefulResponse{
+             vm_id: "vm-unexpected",
+             ip: "10.88.0.5",
+             port: 5432,
+             generation: 1,
+             was_relight: false
+           }}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a", %{auto_wake: true})
+    stateful_node(ctx, "node-4-a", local_bases: [])
+    stateful_node(ctx, "node-4-b", local_bases: [])
+
+    log =
+      capture_log(fn ->
+        :ok = StatefulManager.reconcile(ctx.mgr)
+        :ok = StatefulManager.reconcile(ctx.mgr)
+      end)
+
+    assert Agent.get(wakes, & &1) == 0
+    assert StatefulStore.list(ctx.store, "wl-a") == []
+
+    assert length(
+             Regex.scan(
+               ~r/embervm stateful: skipping auto-wake because base is absent from live inventory/,
+               log
+             )
+           ) == 1
   end
 
   test "manual wake joins an in-flight auto-wake and receives its shared result" do
