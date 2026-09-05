@@ -698,11 +698,7 @@
     text-align: center;
   }
 
-  /* The key column carries the part's tier colour as the cell itself: the
-     colour fills the cell edge to edge and the table rules close it on all
-     four sides, so each key is a box in the grid, joined to the drawing by
-     colour. Keys without a tone (ink parts, stage numbers) keep the box and
-     stay ink. */
+  /* Keys match figure callouts by number or letter, without color coding. */
 
   .post-body :global(table.fig-key th:first-child),
   .post-body :global(table.fig-key td.key) {
@@ -717,43 +713,6 @@
     font-family: var(--font-code);
     font-size: 0.85rem;
     font-weight: 600;
-  }
-
-  /* A solid block of a tone reads heavier than the 1.25px outline it
-     stands for, so the cell carries a tint of the tone and the letter the
-     tone itself: the same hue as the drawing's lines, at line weight. */
-  .post-body :global(td.key[data-tone]) {
-    background: color-mix(in srgb, var(--key-tone) 18%, var(--sheet));
-    color: color-mix(in srgb, var(--key-tone) var(--key-letter), var(--ink));
-  }
-
-  .post-body :global(td.key[data-tone="gpu"]) {
-    --key-tone: var(--ref-gpu);
-  }
-
-  .post-body :global(td.key[data-tone="ram"]) {
-    --key-tone: var(--ref-ram);
-  }
-
-  .post-body :global(td.key[data-tone="cache"]) {
-    --key-tone: var(--ref-cache);
-  }
-
-  .post-body :global(td.key[data-tone="disk"]) {
-    --key-tone: var(--ref-disk);
-  }
-
-  .post-body :global(td.key[data-tone="hot"]) {
-    --key-tone: var(--replay-hot);
-  }
-  .post-body :global(td.key[data-tone="warm"]) {
-    --key-tone: var(--replay-warm);
-  }
-  .post-body :global(td.key[data-tone="cold"]) {
-    --key-tone: var(--replay-cold);
-  }
-  .post-body :global(td.key[data-tone="reference"]) {
-    --key-tone: var(--accent-ink);
   }
 
   @media (max-width: 760px) {

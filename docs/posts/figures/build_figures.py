@@ -4,7 +4,7 @@ Run from anywhere: `python3 docs/posts/figures/build_figures.py`. Each
 function is one figure; the layout numbers are the drawing, so a change to a
 figure is a change here, and the SVG is regenerated rather than edited.
 
-Static figures use muted hardware colors for callouts and reference keys.
+Static figures and their numbered or lettered reference keys are monochrome.
 Hardware, expert labels, and transfer arrows stay neutral. Red/yellow/blue
 remain reserved for the replay's explicit hot/warm/cold routing display.
 
