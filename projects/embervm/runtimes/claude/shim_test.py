@@ -345,13 +345,16 @@ assert sys.argv[sys.argv.index("--extension") + 1] == "/usr/share/ember-pi/exten
 assert "--tools" not in sys.argv
 assert "disposable Firecracker microVM" in sys.argv[sys.argv.index("--system-prompt") + 1]
 rpc_path = os.environ.get("FAKE_PI_RPC")
-state = {"sessionId": "pi-session", "model": {"id": "muse-spark-1.3-contributor"}}
+state = {"sessionId": os.environ.get("FAKE_PI_SESSION_ID", "pi-session"),
+         "model": {"id": "muse-spark-1.3-contributor"}}
 def record(value):
     if rpc_path:
         with open(rpc_path, "a") as stream:
             json.dump(value, stream)
             stream.write("\n")
 def emit(value):
+    if os.environ.get("FAKE_PI_RECORD_EVENTS"):
+        record(value)
     print(json.dumps(value), flush=True)
 def response(command, success=True, data=None):
     value = {"type": "response", "command": command, "success": success}
@@ -648,7 +651,9 @@ def test_pi_tool_call_leak_balanced_block_fails_turn(tmp_path, monkeypatch, caps
     assert "pi-tool-call-leak terminal_reason=stop" in capsys.readouterr().err
 
 
-def test_pi_leaked_tool_call_closes_and_prevents_resume(tmp_path, monkeypatch):
+def test_pi_leaked_tool_call_closes_and_prevents_resume_without_session_id(
+    tmp_path, monkeypatch
+):
     """First turn with leaked tool-call closes process; second turn spawns fresh."""
     monkeypatch.setenv("FAKE_PI_MODE", "tool-call-leak-balanced")
     manager = _pi_manager(tmp_path, monkeypatch)
@@ -673,7 +678,49 @@ def test_pi_leaked_tool_call_closes_and_prevents_resume(tmp_path, monkeypatch):
     assert record["result"]
 
 
-def test_pi_empty_output_closes_and_prevents_resume(tmp_path, monkeypatch):
+def test_pi_leaked_tool_call_closes_and_prevents_resume(tmp_path, monkeypatch, capsys):
+    """A caller-resupplied poisoned ID is discarded before the next turn."""
+    monkeypatch.setenv("FAKE_PI_MODE", "tool-call-leak-balanced")
+    monkeypatch.setenv("FAKE_PI_RECORD_EVENTS", "1")
+    monkeypatch.setenv("FAKE_PI_SESSION_ID", "poisoned-pi-session")
+    manager = _pi_manager(tmp_path, monkeypatch)
+    manager._spawn("spark")
+    poisoned_id = manager.session_id
+
+    with pytest.raises(RuntimeError, match="tool-call syntax"):
+        manager.turn("hello", model="spark")
+
+    assert manager.process is None
+    assert manager.session_id is None
+    assert poisoned_id in manager._poisoned_sessions
+
+    monkeypatch.delenv("FAKE_PI_MODE")
+    monkeypatch.setenv("FAKE_PI_SESSION_ID", "fresh-pi-session")
+    record = manager.turn("next turn", session_id=poisoned_id, model="spark")
+    manager._close_process()
+
+    rpc_events = [
+        json.loads(line)
+        for line in (tmp_path / "pi-rpc.jsonl").read_text().splitlines()
+    ]
+    message_ends = [event for event in rpc_events if event["type"] == "message_end"]
+    assert len(message_ends) == 2
+    poisoned_text = message_ends[0]["message"]["content"][0]["text"]
+    fresh_text = message_ends[1]["message"]["content"][0]["text"]
+    assert record["session_id"] != poisoned_id
+    assert record["session_id"] == "fresh-pi-session"
+    assert [event["type"] for event in rpc_events].count("switch_session") == 0
+    assert "<tool_call>" in poisoned_text
+    assert fresh_text == "Done <voice>Pi completed the work.</voice>"
+    assert (
+        "discarding poisoned pi session %s, forcing fresh session" % poisoned_id
+        in capsys.readouterr().err
+    )
+
+
+def test_pi_empty_output_closes_and_prevents_resume_without_session_id(
+    tmp_path, monkeypatch
+):
     """First empty turn closes process; second turn spawns fresh."""
     monkeypatch.setenv("FAKE_PI_MODE", "no-output")
     manager = _pi_manager(tmp_path, monkeypatch)
@@ -696,6 +743,44 @@ def test_pi_empty_output_closes_and_prevents_resume(tmp_path, monkeypatch):
     assert len(spawns) == 2
     assert [request["type"] for request in requests].count("switch_session") == 0
     assert record["result"]
+
+
+def test_pi_empty_output_closes_and_prevents_resume(tmp_path, monkeypatch, capsys):
+    """An empty turn's caller-resupplied ID cannot restore its session."""
+    monkeypatch.setenv("FAKE_PI_MODE", "no-output")
+    monkeypatch.setenv("FAKE_PI_RECORD_EVENTS", "1")
+    monkeypatch.setenv("FAKE_PI_SESSION_ID", "poisoned-pi-session")
+    manager = _pi_manager(tmp_path, monkeypatch)
+    manager._spawn("spark")
+    poisoned_id = manager.session_id
+
+    with pytest.raises(RuntimeError, match="no output"):
+        manager.turn("hello", model="spark")
+
+    assert manager.process is None
+    assert manager.session_id is None
+    assert poisoned_id in manager._poisoned_sessions
+
+    monkeypatch.delenv("FAKE_PI_MODE")
+    monkeypatch.setenv("FAKE_PI_SESSION_ID", "fresh-pi-session")
+    record = manager.turn("next turn", session_id=poisoned_id, model="spark")
+    manager._close_process()
+
+    rpc_events = [
+        json.loads(line)
+        for line in (tmp_path / "pi-rpc.jsonl").read_text().splitlines()
+    ]
+    message_ends = [event for event in rpc_events if event["type"] == "message_end"]
+    assert len(message_ends) == 1
+    fresh_text = message_ends[0]["message"]["content"][0]["text"]
+    assert record["session_id"] != poisoned_id
+    assert record["session_id"] == "fresh-pi-session"
+    assert [event["type"] for event in rpc_events].count("switch_session") == 0
+    assert fresh_text == "Done <voice>Pi completed the work.</voice>"
+    assert (
+        "discarding poisoned pi session %s, forcing fresh session" % poisoned_id
+        in capsys.readouterr().err
+    )
 
 
 def test_pi_prose_tool_call_mention_is_untouched(tmp_path, monkeypatch):
