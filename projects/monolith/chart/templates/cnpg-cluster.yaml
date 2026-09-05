@@ -43,6 +43,21 @@ spec:
         passwordSecret:
           name: monolith-pg-public-reader
         comment: "Read-only public surface (ADR 004); GRANTs in Atlas migration"
+      # The monolith-agents tier's identity (#5656). Same mechanism and the same
+      # reason as public_reader above: CNPG is the only superuser, so it creates
+      # the role, while the GRANTs live in
+      # chart/migrations/20260904180000_agents_writer_role.sql because CNPG does
+      # not manage privileges.
+      #
+      # Higher value than public_reader (it can write raws, disputes and outbox
+      # rows), so the scoping in that migration is what bounds it: read across
+      # knowledge, insert on three tables, and nothing outside those schemas.
+      - name: agents_writer
+        ensure: present
+        login: true
+        passwordSecret:
+          name: monolith-pg-agents-writer
+        comment: "monolith-agents tier (#5656); GRANTs in Atlas migration"
       {{- if .Values.postgres.embervmOpLog.enabled }}
       # The EmberVM control-plane op-log owner (ADR embervm/007). Owns its own
       # database (templates/cnpg-database-embervm.yaml) and nothing in the

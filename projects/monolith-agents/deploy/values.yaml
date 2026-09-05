@@ -39,5 +39,10 @@ discord:
 #
 # To arm, in order: create the scoped role, put its uri in 1Password, set
 # onepassword.itemPath here, then flip this to true.
+# The tier's database credential, synced from the 1Password item that also
+# backs the CNPG role password (see projects/monolith/deploy/agents-writer-secret.md).
+onepassword:
+  itemPath: "vaults/k8s-homelab/items/agents-writer-db"
+
 agents:
   enabled: false
