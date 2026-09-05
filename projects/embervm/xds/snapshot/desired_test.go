@@ -1,6 +1,7 @@
 package snapshot
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	tcpproxyv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/tcp_proxy/v3"
 	resourcev3 "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func TestBuild_translatesPriorityEndpointsHealthCheckAndRoutes(t *testing.T) {
@@ -210,6 +213,104 @@ func TestBuild_defaultsConnectTimeoutAndPathPrefix(t *testing.T) {
 	rc := snap.GetResources(resourcev3.RouteType)[routeConfigName].(*routev3.RouteConfiguration)
 	if got := rc.GetVirtualHosts()[0].GetRoutes()[0].GetMatch().GetPrefix(); got != "/" {
 		t.Errorf("default path prefix = %q, want /", got)
+	}
+}
+
+func TestBuild_ordersDeniedPrefixesBeforeCatchAll(t *testing.T) {
+	d := &Desired{
+		Version:  "1",
+		Clusters: []Cluster{{Name: "c1", Endpoints: []Endpoint{{IP: "10.0.0.1", Port: 80}}}},
+		Routes: []Route{{
+			Host:         "h",
+			PathPrefix:   "/",
+			DenyPrefixes: []string{"/shim/"},
+			Cluster:      "c1",
+		}},
+	}
+
+	snap, err := Build(d)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	rc := snap.GetResources(resourcev3.RouteType)[routeConfigName].(*routev3.RouteConfiguration)
+	routes := rc.GetVirtualHosts()[0].GetRoutes()
+	if len(routes) != 2 {
+		t.Fatalf("routes = %d, want denied prefix then catch-all", len(routes))
+	}
+
+	denied := routes[0]
+	if got := denied.GetMatch().GetPrefix(); got != "/shim/" {
+		t.Errorf("denied route prefix = %q, want /shim/", got)
+	}
+	if got := denied.GetDirectResponse().GetStatus(); got != 404 {
+		t.Errorf("denied route status = %d, want 404", got)
+	}
+	if got := denied.GetDirectResponse().GetBody().GetInlineString(); got != "not found\n" {
+		t.Errorf("denied route body = %q, want plain-text not found body", got)
+	}
+	responseHeaders := denied.GetResponseHeadersToAdd()
+	if len(responseHeaders) != 1 || responseHeaders[0].GetHeader().GetKey() != "content-type" || responseHeaders[0].GetHeader().GetValue() != "text/plain; charset=utf-8" {
+		t.Errorf("denied route response headers = %v, want text/plain content type", responseHeaders)
+	}
+
+	catchAll := routes[1]
+	if got := catchAll.GetMatch().GetPrefix(); got != "/" {
+		t.Errorf("catch-all route prefix = %q, want /", got)
+	}
+	if got := catchAll.GetRoute().GetCluster(); got != "c1" {
+		t.Errorf("catch-all route cluster = %q, want c1", got)
+	}
+}
+
+func TestBuild_routeWithoutDenyPrefixesIsByteIdentical(t *testing.T) {
+	route := Route{
+		Host:           "h",
+		PathPrefix:     "/",
+		Cluster:        "c1",
+		RequestHeaders: map[string]string{"x-ember-workload": "wl-a"},
+	}
+	got := buildRouteConfig([]Route{route})
+	want := &routev3.RouteConfiguration{
+		Name: routeConfigName,
+		VirtualHosts: []*routev3.VirtualHost{
+			{
+				Name:    "vh-0-h",
+				Domains: []string{"h"},
+				Routes: []*routev3.Route{
+					{
+						Match: &routev3.RouteMatch{
+							PathSpecifier: &routev3.RouteMatch_Prefix{Prefix: "/"},
+						},
+						Action: &routev3.Route_Route{
+							Route: &routev3.RouteAction{
+								ClusterSpecifier: &routev3.RouteAction_Cluster{Cluster: "c1"},
+							},
+						},
+						RequestHeadersToAdd: []*corev3.HeaderValueOption{
+							{
+								Header:         &corev3.HeaderValue{Key: "x-ember-workload", Value: "wl-a"},
+								AppendAction:   corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+								KeepEmptyValue: false,
+							},
+						},
+					},
+				},
+			},
+		},
+		ValidateClusters: wrapperspb.Bool(false),
+	}
+
+	marshal := proto.MarshalOptions{Deterministic: true}
+	gotBytes, err := marshal.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal rendered route config: %v", err)
+	}
+	wantBytes, err := marshal.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshal original route config: %v", err)
+	}
+	if !bytes.Equal(gotBytes, wantBytes) {
+		t.Errorf("route without deny_prefixes changed bytes:\n got %x\nwant %x", gotBytes, wantBytes)
 	}
 }
 

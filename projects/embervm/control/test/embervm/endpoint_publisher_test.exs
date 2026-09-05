@@ -180,6 +180,7 @@ defmodule Embervm.EndpointPublisherTest do
     assert [route] = desired.routes
     assert route.host == "wl-a.example"
     assert route.path_prefix == "/"
+    assert route.deny_prefixes == ["/shim/"]
     assert route.cluster == "serve|wl-a"
     assert route.request_headers == %{"x-ember-workload" => "wl-a"}
   end

@@ -33,5 +33,7 @@ go_test(
         "@com_github_envoyproxy_go_control_plane_envoy//config/listener/v3:listener",
         "@com_github_envoyproxy_go_control_plane_envoy//config/route/v3:route",
         "@com_github_envoyproxy_go_control_plane_envoy//extensions/filters/network/tcp_proxy/v3:tcp_proxy",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//types/known/wrapperspb",
     ],
 )

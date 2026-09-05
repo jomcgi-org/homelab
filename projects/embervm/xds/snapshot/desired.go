@@ -95,12 +95,12 @@ type HealthCheck struct {
 	HealthyThreshold    uint32 `json:"healthy_threshold"`
 }
 
-// Route maps an inbound host + path prefix to a cluster, optionally injecting a
-// fixed set of request headers on match (the seam the control plane later uses
-// for per-tenant / per-function routing metadata).
+// Route maps an inbound host + path prefix to a cluster after any denied
+// prefixes, optionally injecting a fixed set of request headers on match.
 type Route struct {
 	Host           string            `json:"host"`
 	PathPrefix     string            `json:"path_prefix"`
+	DenyPrefixes   []string          `json:"deny_prefixes,omitempty"`
 	Cluster        string            `json:"cluster"`
 	RequestHeaders map[string]string `json:"request_headers"`
 }
@@ -347,8 +347,9 @@ func buildEndpoint(c *Cluster) *endpointv3.ClusterLoadAssignment {
 }
 
 // buildRouteConfig renders the single RouteConfiguration: one virtual host per
-// desired host, each with one prefix route to its cluster and any request-header
-// injection. Hosts are exact (the domains array is the host); a catch-all
+// desired host, each with any denied prefixes followed by one prefix route to
+// its cluster and any request-header injection. Hosts are exact (the domains
+// array is the host); a catch-all
 // wildcard is intentionally not added, so an unmatched host returns Envoy's 404
 // rather than silently falling through to an arbitrary cluster.
 func buildRouteConfig(routes []Route) *routev3.RouteConfiguration {
@@ -371,24 +372,51 @@ func buildRouteConfig(routes []Route) *routev3.RouteConfiguration {
 			})
 		}
 
+		catchAllRoute := &routev3.Route{
+			Match: &routev3.RouteMatch{
+				PathSpecifier: &routev3.RouteMatch_Prefix{Prefix: prefix},
+			},
+			Action: &routev3.Route_Route{
+				Route: &routev3.RouteAction{
+					ClusterSpecifier: &routev3.RouteAction_Cluster{Cluster: r.Cluster},
+				},
+			},
+			RequestHeadersToAdd: headers,
+		}
+
+		renderedRoutes := []*routev3.Route{catchAllRoute}
+		if len(r.DenyPrefixes) > 0 {
+			renderedRoutes = make([]*routev3.Route, 0, len(r.DenyPrefixes)+1)
+			for _, deniedPrefix := range r.DenyPrefixes {
+				renderedRoutes = append(renderedRoutes, &routev3.Route{
+					Match: &routev3.RouteMatch{
+						PathSpecifier: &routev3.RouteMatch_Prefix{Prefix: deniedPrefix},
+					},
+					Action: &routev3.Route_DirectResponse{
+						DirectResponse: &routev3.DirectResponseAction{
+							Status: 404,
+							Body: &corev3.DataSource{
+								Specifier: &corev3.DataSource_InlineString{InlineString: "not found\n"},
+							},
+						},
+					},
+					ResponseHeadersToAdd: []*corev3.HeaderValueOption{
+						{
+							Header:       &corev3.HeaderValue{Key: "content-type", Value: "text/plain; charset=utf-8"},
+							AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+						},
+					},
+				})
+			}
+			renderedRoutes = append(renderedRoutes, catchAllRoute)
+		}
+
 		vhosts = append(vhosts, &routev3.VirtualHost{
 			// Unique per index: two routes for the same host would otherwise collide
 			// on the virtual-host name. The host string itself is the match domain.
 			Name:    fmt.Sprintf("vh-%d-%s", i, r.Host),
 			Domains: []string{r.Host},
-			Routes: []*routev3.Route{
-				{
-					Match: &routev3.RouteMatch{
-						PathSpecifier: &routev3.RouteMatch_Prefix{Prefix: prefix},
-					},
-					Action: &routev3.Route_Route{
-						Route: &routev3.RouteAction{
-							ClusterSpecifier: &routev3.RouteAction_Cluster{Cluster: r.Cluster},
-						},
-					},
-					RequestHeadersToAdd: headers,
-				},
-			},
+			Routes:  renderedRoutes,
 		})
 	}
 	return &routev3.RouteConfiguration{
