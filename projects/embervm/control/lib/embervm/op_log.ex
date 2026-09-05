@@ -100,6 +100,7 @@ defmodule Embervm.OpLog do
     :session_created,
     :session_invoke_started,
     :session_invoked,
+    :session_brick_gone,
     :session_banked,
     :session_parked,
     :session_parking,

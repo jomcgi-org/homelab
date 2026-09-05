@@ -77,6 +77,25 @@ defmodule Embervm.SessionManagerTest do
 
   # -- harness ---------------------------------------------------------------
 
+  test "invoke error classifier combines the error with registry health" do
+    healthy = %{health: :healthy, draining: false, tombstoned: false}
+    down = %{healthy | health: :down}
+    draining = %{healthy | draining: true}
+
+    cases = [
+      {%GRPC.RPCError{status: 9}, healthy, {{:rpc, 9}, false}},
+      {:closed, healthy, {:closed, true}},
+      {:closed, down, {:brick_gone, true}},
+      {%GRPC.RPCError{status: 14}, draining, {:brick_gone, false}},
+      {%GRPC.RPCError{status: 14}, healthy, {{:rpc, 14}, false}}
+    ]
+
+    for {error, status, {reason, invalidate_channel}} <- cases do
+      assert %{reason: ^reason, invalidate_channel: ^invalidate_channel} =
+               Embervm.Session.classify_invoke_error(error, status)
+    end
+  end
+
   defp start_stack(opts \\ []) do
     suffix = System.unique_integer([:positive])
     cap_table = :"scap_#{suffix}"
@@ -131,6 +150,10 @@ defmodule Embervm.SessionManagerTest do
       assign_fun: assign_fun,
       destroy_fun: Keyword.get(opts, :destroy_fun, fn _ch, _vm -> {:ok, %{teardown_confirmed: true}} end),
       invalidate_fun: fn _node, _ch -> :ok end,
+      brick_status_fun:
+        Keyword.get(opts, :brick_status_fun, fn _node ->
+          %{health: :healthy, draining: false, tombstoned: false, pod_uid: "pod-node-4"}
+        end),
       # Test-only watchdog budget (#4434); nil keeps the production formula.
       invoke_watchdog_ms: Keyword.get(opts, :invoke_watchdog_ms)
     ]
@@ -2257,6 +2280,140 @@ defmodule Embervm.SessionManagerTest do
     running = wait_for_state(ctx, created.session_id, :running)
     assert running.state == :running
     assert running.volume_node_id == nil
+  end
+
+  test "brick_gone with an existing bank returns the session to banked" do
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-brick-bank")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-brick-bank", "p1")
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    banked = wait_for_state(ctx, created.session_id, :banked)
+
+    SessionStore.adopt_state(ctx.store, created.session_id, :running)
+    assert {:ok, :banked} = SessionManager.brick_gone(ctx.mgr, created.session_id, %{node_id: "node-4", pod_uid: "pod-1"})
+
+    {:ok, recovered} = SessionStore.get(ctx.store, created.session_id)
+    assert recovered.state == :banked
+    assert recovered.snapshot_ref == banked.snapshot_ref
+    assert :session_brick_gone in op_kinds_for(ctx, created.session_id)
+
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    brick_op = Enum.find(ops, &(&1.session_id == created.session_id and &1.kind == :session_brick_gone))
+    assert brick_op.payload["node_id"] == "node-4"
+    assert brick_op.payload["pod_uid"] == "pod-1"
+  end
+
+  test "brick_gone without a bank fails with a machine-readable terminal reason" do
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-brick-empty")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-brick-empty", "p1")
+
+    assert {:ok, :failed} = SessionManager.brick_gone(ctx.mgr, created.session_id, %{node_id: "node-4", pod_uid: "pod-1"})
+    {:ok, failed} = SessionStore.get(ctx.store, created.session_id)
+    assert failed.state == :failed
+    assert failed.terminal_reason == "brick_gone"
+  end
+
+  test "drain skips an in-flight invoke and its transport loss returns brick_gone" do
+    parent = self()
+
+    assign_fun = fn _channel, _req ->
+      send(parent, {:brick_invoke_started, self()})
+
+      receive do
+        :brick_preempted -> {:error, %GRPC.RPCError{status: 14, message: "unavailable"}}
+      end
+    end
+
+    ctx =
+      start_stack(
+        assign_fun: assign_fun,
+        brick_status_fun: fn _node ->
+          %{health: :healthy, draining: true, tombstoned: false, pod_uid: "pod-draining"}
+        end
+      )
+
+    put_session_workload(ctx, "wl-drain-busy")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-drain-busy", "p1")
+    invoke = Task.async(fn -> SessionManager.invoke(ctx.mgr, created.session_id, %{body: "turn"}) end)
+    assert_receive {:brick_invoke_started, worker}, 1_000
+
+    assert SessionManager.drain_node(ctx.mgr, "node-4") == 0
+    assert [{pid, _}] = Registry.lookup(ctx.registry, created.session_id)
+    assert Process.alive?(pid)
+
+    send(worker, :brick_preempted)
+    assert {:error, :brick_gone} = Task.await(invoke, 2_000)
+    assert {:ok, %{state: :failed, terminal_reason: "brick_gone"}} =
+             SessionStore.get(ctx.store, created.session_id)
+  end
+
+  test "node-down sweep settles running, relighting, and creating sessions" do
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-node-down")
+
+    {:ok, with_bank} = SessionManager.create(ctx.mgr, "wl-node-down", "p1")
+    assert :ok = SessionManager.bank(ctx.mgr, with_bank.session_id)
+    _ = wait_for_state(ctx, with_bank.session_id, :banked)
+    SessionStore.adopt_state(ctx.store, with_bank.session_id, :running)
+
+    {:ok, without_bank} = SessionManager.create(ctx.mgr, "wl-node-down", "p2")
+
+    {:ok, relighting} = SessionManager.create(ctx.mgr, "wl-node-down", "p3")
+    assert :ok = SessionManager.bank(ctx.mgr, relighting.session_id)
+    _ = wait_for_state(ctx, relighting.session_id, :banked)
+    assert {:ok, %{state: :relighting}} = SessionStore.mark(ctx.store, relighting.session_id, :relight)
+
+    {:ok, creating} = SessionManager.create(ctx.mgr, "wl-node-down", "p4")
+    {:ok, creating_row} = SessionStore.get(ctx.store, creating.session_id)
+
+    # session_created currently projects directly to running, so synthesize the
+    # durable creating row that restart adoption accepts but no public store API
+    # creates. This exercises the node-down recovery arm instead of only its FSM.
+    :sys.replace_state(ctx.store, fn store_state ->
+      :ets.insert(store_state.sessions, {creating.session_id, %{creating_row | state: :creating}})
+      store_state
+    end)
+
+    assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-dead"}) == 4
+
+    assert {:ok, %{state: :banked}} = SessionStore.get(ctx.store, with_bank.session_id)
+    assert {:ok, %{state: :failed, terminal_reason: "brick_gone"}} =
+             SessionStore.get(ctx.store, without_bank.session_id)
+    assert {:ok, %{state: :banked}} = SessionStore.get(ctx.store, relighting.session_id)
+    assert {:ok, %{state: :failed, terminal_reason: "brick_gone"}} =
+             SessionStore.get(ctx.store, creating.session_id)
+
+    refute Enum.any?(
+             SessionStore.all(ctx.store),
+             &(&1.node_id == "node-4" and &1.state in [:running, :relighting, :creating])
+           )
+  end
+
+  test "node-down sweep preserves a missing-dial session reported by a co-located sibling" do
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-node-sibling")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-node-sibling", "p1")
+    {:ok, row} = SessionStore.get(ctx.store, created.session_id)
+
+    refute Map.has_key?(:sys.get_state(ctx.mgr).session_dials, created.session_id)
+
+    NodeCapacity.put(ctx.cap_table, {"node-4", "pod-healthy"}, %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      pod_uid: "pod-healthy",
+      instance_id: "node-4/pod-healthy",
+      session_vms: [%{session_id: created.session_id, vm_id: row.vm_id}],
+      session_snapshots: [],
+      session_volumes: [],
+      workloads: %{},
+      updated_at: 5_000_001
+    })
+
+    assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-dead"}) == 0
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
+    assert [{pid, _}] = Registry.lookup(ctx.registry, created.session_id)
+    assert Process.alive?(pid)
   end
 
   test "the queue cap rejects pile-ups past invokeQueueCap with :queue_full" do

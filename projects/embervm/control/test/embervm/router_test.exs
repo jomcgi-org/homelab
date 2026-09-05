@@ -148,6 +148,7 @@ defmodule Embervm.RouterTest do
       do: {:error, {:invoke_start_not_recorded, :unavailable}}
     def invoke(_srv, "s-pressure", _req), do: {:error, {:relight_failed, {:prime_failed, %GRPC.RPCError{status: 8, message: "pressure:mem"}}}}
     def invoke(_srv, "s-snapshot", _req), do: {:error, {:relight_failed, {:prime_failed, %GRPC.RPCError{status: 9, message: "snapshot lost"}}}}
+    def invoke(_srv, "s-brick-gone", _req), do: {:error, :brick_gone}
     def invoke(_srv, _id, _req), do: {:error, :not_found}
 
     def destroy(_srv, "s-live"), do: {:ok, :destroyed}
@@ -180,7 +181,10 @@ defmodule Embervm.RouterTest do
       do: {:ok, %{session_id: "s-unavailable"}}
     def verify_token(_srv, "s-pressure", "sess-token-pressure"), do: {:ok, %{session_id: "s-pressure"}}
     def verify_token(_srv, "s-snapshot", "sess-token-snapshot"), do: {:ok, %{session_id: "s-snapshot"}}
+    def verify_token(_srv, "s-brick-gone", "sess-token-brick"),
+      do: {:ok, %{session_id: "s-brick-gone", lineage_id: "lineage-brick", node_id: "node-4", state: :running}}
     def verify_token(_srv, "s-term", "sess-token-term"), do: {:error, :terminal}
+    def verify_token(_srv, "s-brick-failed", "sess-token-brick-failed"), do: {:error, :terminal}
     def verify_token(_srv, _id, _token), do: {:error, :not_found}
 
     def get(_srv, "s-live"),
@@ -188,6 +192,12 @@ defmodule Embervm.RouterTest do
 
     def get(_srv, "s-term"),
       do: {:ok, %{session_id: "s-term", workload: "wl-ok", principal: "p", state: :destroyed, generation: 0, base_digest: "sha256:x", created_at: 1, last_invoke_at: nil, expires_at: 9_000_000, updated_at: 1, terminal_reason: "destroyed"}}
+
+    def get(_srv, "s-brick-gone"),
+      do: {:ok, %{session_id: "s-brick-gone", lineage_id: "lineage-brick", workload: "wl-ok", principal: "p", node_id: "node-4", state: :banked, generation: 2, base_digest: "sha256:x", created_at: 1, invoke_started_at: 2, last_invoke_at: nil, expires_at: 9_000_000, updated_at: 3, terminal_reason: nil}}
+
+    def get(_srv, "s-brick-failed"),
+      do: {:ok, %{session_id: "s-brick-failed", workload: "wl-ok", principal: "p", node_id: "node-4", state: :failed, generation: 0, base_digest: "sha256:x", created_at: 1, last_invoke_at: nil, expires_at: 9_000_000, updated_at: 2, terminal_reason: "brick_gone"}}
 
     def get(_srv, _id), do: :error
 
@@ -338,8 +348,8 @@ defmodule Embervm.RouterTest do
 
     def list(_srv, _wl), do: []
 
-    def get_volume(_srv, "wl-live"), do: %{workload: "wl-live", generation: 3, allocated_bytes: 111}
-    def get_volume(_srv, "wl-banked"), do: %{workload: "wl-banked", generation: 2, allocated_bytes: 222}
+    def get_volume(_srv, "wl-live"), do: %{workload: "wl-live", node_id: "node-4", generation: 3, allocated_bytes: 111}
+    def get_volume(_srv, "wl-banked"), do: %{workload: "wl-banked", node_id: "node-4", generation: 2, allocated_bytes: 222}
     def get_volume(_srv, _wl), do: nil
 
     def pair_valid?(_srv, "wl-banked"), do: true
@@ -362,6 +372,14 @@ defmodule Embervm.RouterTest do
   # cleanly; wl-blocked's delete_volume refuses with :instance_exists (409);
   # wl-boom's delete_volume raises a generic store error (500).
   defmodule FakeStatefulManager do
+    def recovery_status(_srv, "wl-live") do
+      %{anchor: %{node_id: "node-4", health: :healthy, draining: false, missing_since_ms: nil}, recovery: nil}
+    end
+
+    def recovery_status(_srv, "wl-banked") do
+      %{anchor: %{node_id: "node-4", health: :down, draining: false, missing_since_ms: 12_345}, recovery: :anchor_lost}
+    end
+
     def destroy_instance(_srv, "wl-live"), do: %{destroyed: 1, evicted: 0}
     def destroy_instance(_srv, "wl-empty"), do: %{destroyed: 0, evicted: 0}
     def destroy_instance(_srv, _wl), do: %{destroyed: 0, evicted: 1}
@@ -412,6 +430,7 @@ defmodule Embervm.RouterTest do
   defp with_stateful_fakes do
     Application.put_env(:embervm, :stateful_store_mod, FakeStatefulStore)
     Application.put_env(:embervm, :workload_catalog_mod, FakeCatalog)
+    Application.put_env(:embervm, :stateful_manager_mod, FakeStatefulManager)
   end
 
   defp with_stateful_manager_fake do
@@ -448,7 +467,10 @@ defmodule Embervm.RouterTest do
 
   defp auth(token), do: [{"authorization", "Bearer " <> token}]
 
-  defp json(body), do: :json.decode(body)
+  defp json(body) do
+    {decoded, :ok, <<>>} = :json.decode(body, :ok, %{null: nil})
+    decoded
+  end
 
   defp key_service(root, opts \\ []) do
     start_supervised!(
@@ -1376,7 +1398,26 @@ defmodule Embervm.RouterTest do
     assert json(resp.body)["retryable"] == false
   end
 
+  test "brick_gone invoke is a retryable 503 with lineage and resting state" do
+    with_session_fakes()
+
+    resp = req(:post, "/v1/sessions/s-brick-gone/invoke", auth("sess-token-brick"), "turn")
+    assert resp.status == 503
+
+    assert json(resp.body) == %{
+             "error" => "brick preempted",
+             "reason" => "brick_gone",
+             "retryable" => true,
+             "lineage_id" => "lineage-brick",
+             "session_state" => "banked",
+             "node_id" => "node-4"
+           }
+  end
+
   test "classify_error_as_retryable handles nested errors and other statuses" do
+    assert Embervm.Router.classify_error_as_retryable(:brick_gone)
+    refute Embervm.Router.classify_error_as_retryable(%GRPC.RPCError{status: 14})
+    refute Embervm.Router.classify_error_as_retryable(%GRPC.RPCError{status: 4})
     assert Embervm.Router.classify_error_as_retryable({:relight_failed, {:prime_failed, %GRPC.RPCError{status: 8}}})
     refute Embervm.Router.classify_error_as_retryable({:relight_failed, {:prime_failed, %GRPC.RPCError{status: 9}}})
     refute Embervm.Router.classify_error_as_retryable({:relight_failed, {:prime_failed, %GRPC.RPCError{status: 2}}})
@@ -1395,6 +1436,7 @@ defmodule Embervm.RouterTest do
     assert a.status == 200
     assert json(a.body)["session_id"] == "s-live"
     assert json(a.body)["invoke_started_at"] == 123
+    assert json(a.body)["node"] == %{"node_id" => nil, "health" => nil, "draining" => false}
 
     # Management token (TokenReview via FakeAuth "good").
     b = req(:get, "/v1/sessions/s-live", auth("good"))
@@ -1405,6 +1447,17 @@ defmodule Embervm.RouterTest do
 
     # No token is 401.
     assert req(:get, "/v1/sessions/s-live").status == 401
+  end
+
+  test "GET /v1/sessions/:id carries node health and terminal_reason" do
+    with_session_fakes()
+
+    resp = req(:get, "/v1/sessions/s-brick-failed", auth("sess-token-brick-failed"))
+    assert resp.status == 200
+    assert json(resp.body)["terminal_reason"] == "brick_gone"
+    assert json(resp.body)["node"]["node_id"] == "node-4"
+    assert Map.has_key?(json(resp.body)["node"], "health")
+    assert Map.has_key?(json(resp.body)["node"], "draining")
   end
 
   test "DELETE /v1/sessions/:id destroys (management auth)" do
@@ -1515,6 +1568,14 @@ defmodule Embervm.RouterTest do
     # wl-banked is paired), volume_bytes surfaced from the volume row.
     assert body["volume_bytes"] == 111
     assert body["published_endpoint"] == %{"ip" => "10.99.0.7", "port" => 6000}
+    assert body["anchor"] == %{
+             "node_id" => "node-4",
+             "health" => "healthy",
+             "draining" => false,
+             "missing_since_ms" => nil
+           }
+    assert Map.has_key?(body, "recovery")
+    assert body["recovery"] == nil
 
     inst = body["instance"]
     assert inst["instance_id"] == "sf-live"
@@ -1540,6 +1601,10 @@ defmodule Embervm.RouterTest do
     # A banked instance holds no live endpoint.
     assert body["published_endpoint"] == nil
     assert body["instance"]["state"] == "banked"
+    assert body["anchor"]["node_id"] == "node-4"
+    assert body["anchor"]["health"] == "down"
+    assert body["anchor"]["missing_since_ms"] == 12_345
+    assert body["recovery"] == "anchor_lost"
   end
 
   test "GET /v1/stateful/:name is 404 for an unknown or non-stateful workload" do

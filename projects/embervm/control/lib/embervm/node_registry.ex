@@ -203,6 +203,12 @@ defmodule Embervm.NodeRegistry do
     GenServer.call(server, :status)
   end
 
+  @doc "Health and drain state for a configured node, including expired-instance tombstones."
+  @spec brick_status(GenServer.server(), String.t()) :: map()
+  def brick_status(server \\ __MODULE__, node_id) do
+    GenServer.call(server, {:brick_status, node_id})
+  end
+
   @doc "Return the health state for every registered node instance."
   @spec node_health(GenServer.server()) :: %{String.t() => atom()}
   def node_health(server \\ __MODULE__) do
@@ -292,6 +298,7 @@ defmodule Embervm.NodeRegistry do
     control_plane_activator_ip = Keyword.get(opts, :control_plane_activator_ip, "") || ""
     clock = Keyword.get(opts, :clock, &default_clock/0)
     reassign_fun = Keyword.get(opts, :reassign_fun, &default_reassign/1)
+    session_sweep_fun = Keyword.get(opts, :session_sweep_fun, &default_session_sweep/2)
     unknown_after = Keyword.get(opts, :unknown_after_ms, @unknown_after_ms)
     down_after = Keyword.get(opts, :down_after_ms, @down_after_ms)
     age_check = Keyword.get(opts, :age_check_ms, @age_check_ms)
@@ -372,6 +379,7 @@ defmodule Embervm.NodeRegistry do
       sync_registry_fun: sync_registry_fun,
       control_plane_activator_ip: control_plane_activator_ip,
       reassign_fun: reassign_fun,
+      session_sweep_fun: session_sweep_fun,
       unknown_after_ms: unknown_after,
       down_after_ms: down_after,
       age_check_ms: age_check,
@@ -583,6 +591,43 @@ defmodule Embervm.NodeRegistry do
       end
 
     {:reply, snapshot, state}
+  end
+
+  def handle_call({:brick_status, node_id}, _from, state) do
+    runtimes =
+      state.node_runtime
+      |> Enum.filter(fn {instance_id, rt} -> instance_id == node_id or rt.configured_id == node_id end)
+      |> Enum.map(fn {_instance_id, rt} -> rt end)
+
+    tombstone =
+      Enum.find(state.instance_tombstones, fn {instance_id, entry} ->
+        instance_id == node_id or Map.get(entry, :configured_id) == node_id
+      end)
+
+    reply =
+      case runtimes do
+        [] ->
+          %{
+            node_id: node_id,
+            health: if(tombstone, do: :down, else: :unknown),
+            draining: false,
+            tombstoned: not is_nil(tombstone),
+            pod_uid: tombstone && elem(tombstone, 1).pod_uid
+          }
+
+        rows ->
+          row = Enum.find(rows, &(&1.draining or &1.health == :down)) || List.first(rows)
+
+          %{
+            node_id: node_id,
+            health: row.health,
+            draining: Enum.any?(rows, & &1.draining),
+            tombstoned: false,
+            pod_uid: row.pod_uid
+          }
+      end
+
+    {:reply, reply, state}
   end
 
   def handle_call(:expected_instances, _from, state) do
@@ -1263,10 +1308,10 @@ defmodule Embervm.NodeRegistry do
     end
   end
 
-  # The node crossed into :down. If it has reported status, reassign its in-flight
-  # tasks (at-least-once, via the existing Retry policy) exactly once, then drop
-  # the current streamer if any so a wedged connection is torn down and
-  # reconnected.
+  # The node crossed into :down. Sweep sessions even if this registry process has
+  # not yet received a status, because durable rows can predate a control-plane
+  # restart. If the node did report status, also reassign its in-flight tasks via
+  # the existing Retry policy. Then tear down a wedged current streamer.
   #
   # Ordering matters: we FORGET the streamer's pid before killing it, so a
   # NodeStatus the streamer enqueued concurrently with this down-transition (a
@@ -1291,6 +1336,16 @@ defmodule Embervm.NodeRegistry do
       rescue
         e -> Logger.error("embervm node registry: reassign for #{node_id} raised: #{inspect(e)}")
       end
+    end
+
+    try do
+      rt = state.node_runtime[node_id]
+      state.session_sweep_fun.(rt.configured_id, rt.pod_uid)
+    rescue
+      e -> Logger.error("embervm node registry: session sweep for #{node_id} raised: #{inspect(e)}")
+    catch
+      kind, reason ->
+        Logger.error("embervm node registry: session sweep for #{node_id} exited: #{inspect({kind, reason})}")
     end
 
     case state.node_runtime[node_id].streamer do
@@ -2238,6 +2293,18 @@ defmodule Embervm.NodeRegistry do
     Logger.warning("embervm node registry: reassigning in-flight tasks from downed node #{node_id}")
     Embervm.TaskStore.reassign_in_flight()
     :ok
+  end
+
+  defp default_session_sweep(node_id, pod_uid) do
+    Embervm.SessionManager.node_down(Embervm.SessionManager, node_id, %{pod_uid: pod_uid})
+  rescue
+    e ->
+      Logger.error("embervm node registry: session sweep for #{node_id} raised: #{inspect(e)}")
+      :ok
+  catch
+    kind, reason ->
+      Logger.error("embervm node registry: session sweep for #{node_id} exited: #{inspect({kind, reason})}")
+      :ok
   end
 
   defp default_clock, do: System.monotonic_time(:millisecond)

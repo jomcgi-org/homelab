@@ -236,6 +236,14 @@ paths:
         "413": { description: Body exceeds 8 MiB. }
         "429": { description: Per-session invoke queue is full. }
         "502": { description: The invoke failed at the daemon; the session is now failed. }
+        "503":
+          description: >-
+            The bound brick was preempted. The control plane does not replay a
+            turn that may have been partially applied. The caller may re-issue
+            the turn against the banked or parked session when available.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BrickGone" }
   /v1/sessions/{id}:
     get:
       summary: Session state and metadata (management OR the session's own token).
@@ -260,6 +268,37 @@ paths:
       responses:
         "200": { description: Destroyed (idempotent for an already-terminal session). }
         "404": { description: No such session. }
+  /v1/stateful/{name}:
+    get:
+      summary: Stateful workload status, volume anchor, and recovery state (management auth).
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The singleton instance, durable volume anchor, and recovery status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatefulView" }
+        "404": { description: Unknown or non-stateful workload. }
+  /v1/nodes:
+    get:
+      summary: Registered brick health, drain, connection, and capacity snapshot (management auth).
+      responses:
+        "200":
+          description: Current node registry snapshot.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nodes, dispatch]
+                properties:
+                  nodes:
+                    type: array
+                    items: { $ref: "#/components/schemas/NodeView" }
+                  dispatch:
+                    oneOf:
+                      - { $ref: "#/components/schemas/DispatchSnapshot" }
+                      - { type: "null" }
 components:
   securitySchemes:
     bearerAuth:
@@ -308,6 +347,16 @@ components:
         session_id: { type: string }
         reason: { type: string, description: Machine-readable denial/error reason. }
         retryable: { type: boolean }
+    BrickGone:
+      type: object
+      required: [error, reason, retryable, lineage_id, session_state, node_id]
+      properties:
+        error: { type: string, enum: [brick preempted] }
+        reason: { type: string, enum: [brick_gone] }
+        retryable: { type: boolean, enum: [true] }
+        lineage_id: { type: string }
+        session_state: { type: string, enum: [banked, parked, failed] }
+        node_id: { type: string }
     SessionCreated:
       type: object
       properties:
@@ -334,20 +383,30 @@ components:
         replayed: { type: boolean, enum: [true] }
     SessionView:
       type: object
+      required: [node, terminal_reason]
       properties:
         session_id: { type: string }
         workload: { type: string }
         principal: { type: string }
         state:
           type: string
-          enum: [creating, running, banking, banked, relighting, expired, evicted, destroyed, failed]
+          enum: [creating, running, banking, parking, banked, parked, relighting, destroying, expired, evicted, destroyed, failed]
         generation: { type: integer, description: Increments on every bank (lineage). }
         base_digest: { type: string }
         created_at: { type: integer, description: epoch ms }
         last_invoke_at: { type: integer, description: epoch ms }
         expires_at: { type: integer, description: epoch ms }
         updated_at: { type: integer, description: epoch ms }
-        terminal_reason: { type: string, description: Set once the session is terminal. }
+        terminal_reason: { type: [string, "null"], description: Set once the session is terminal. }
+        node:
+          $ref: "#/components/schemas/SessionNode"
+    SessionNode:
+      type: object
+      required: [node_id, health, draining]
+      properties:
+        node_id: { type: [string, "null"] }
+        health: { type: [string, "null"], enum: [starting, healthy, unknown, down, null] }
+        draining: { type: boolean }
     SessionPage:
       type: object
       properties:
@@ -358,3 +417,107 @@ components:
         total: { type: integer }
         limit: { type: integer }
         offset: { type: integer }
+    StatefulView:
+      type: object
+      required: [workload, anchor, recovery, pair_valid]
+      properties:
+        workload: { type: string }
+        instance:
+          oneOf:
+            - { $ref: "#/components/schemas/StatefulInstance" }
+            - { type: "null" }
+        state: { type: [string, "null"] }
+        generation: { type: [integer, "null"] }
+        bundle_generation: { type: [integer, "null"] }
+        pair_valid: { type: boolean }
+        volume_bytes: { type: [integer, "null"] }
+        published_endpoint:
+          oneOf:
+            - { $ref: "#/components/schemas/PublishedEndpoint" }
+            - { type: "null" }
+        anchor:
+          $ref: "#/components/schemas/StatefulAnchor"
+        recovery:
+          type: [string, "null"]
+          enum: [anchor_lost, restoring, cold, null]
+    StatefulInstance:
+      type: object
+      properties:
+        instance_id: { type: string }
+        workload: { type: string }
+        state: { type: string }
+        healthy: { type: boolean }
+        node_id: { type: [string, "null"] }
+        ip: { type: [string, "null"] }
+        port: { type: [integer, "null"] }
+        generation: { type: integer }
+        created_at: { type: integer }
+        last_active_at: { type: [integer, "null"] }
+        last_park_ms: { type: [integer, "null"] }
+        last_park_at: { type: [integer, "null"] }
+        park_seq: { type: [integer, "null"] }
+        updated_at: { type: integer }
+        terminal_reason: { type: [string, "null"] }
+    PublishedEndpoint:
+      type: object
+      required: [ip, port]
+      properties:
+        ip: { type: string }
+        port: { type: integer }
+    StatefulAnchor:
+      type: object
+      required: [node_id, health, draining, missing_since_ms]
+      properties:
+        node_id: { type: [string, "null"] }
+        health: { type: [string, "null"], enum: [starting, healthy, unknown, down, null] }
+        draining: { type: boolean }
+        missing_since_ms: { type: [integer, "null"], description: Manager clock timestamp when anchor absence was first observed. }
+    NodeView:
+      type: object
+      required: [node_id, health, draining, dispatchable, connected, address, facts]
+      properties:
+        node_id: { type: string }
+        health: { type: string, enum: [starting, healthy, unknown, down] }
+        draining: { type: boolean }
+        dispatchable: { type: boolean }
+        connected: { type: boolean }
+        address: { type: [string, "null"] }
+        facts:
+          oneOf:
+            - { $ref: "#/components/schemas/NodeFacts" }
+            - { type: "null" }
+    NodeFacts:
+      type: object
+      properties:
+        live_vms: { type: integer }
+        max_live_vms: { type: integer }
+        mem_headroom_mib: { type: integer }
+        updated_at: { type: integer }
+        workloads:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/NodeWorkloadFacts" }
+    NodeWorkloadFacts:
+      type: object
+      properties:
+        free_primed_slots: { type: integer }
+        base_state: { type: string }
+        snapshot_ref: { type: [string, "null"] }
+        primed_vm_ids:
+          type: array
+          items: { type: string }
+    DispatchSnapshot:
+      type: object
+      properties:
+        denials:
+          type: object
+          additionalProperties: { type: integer }
+        warm_hits: { type: integer }
+        misses: { type: integer }
+        queued: { type: integer }
+        workers: { type: integer }
+        queue_depth:
+          type: object
+          additionalProperties: { type: integer }
+        inventory:
+          type: object
+          additionalProperties: { type: integer }

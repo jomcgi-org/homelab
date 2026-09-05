@@ -119,7 +119,9 @@
       # not a memory snapshot, so it pairs with no generation).
       # session_rejoined is not modeled by bank_relight.tla (filesystem lineage,
       # no generation pairing).
-      ~w(session_parking session_parked session_rejoined)a ++
+      # session_brick_gone is an audit-only node-loss outcome. The modeled
+      # session transitions already cover the resulting banked or failed state.
+      ~w(session_parking session_parked session_rejoined session_brick_gone)a ++
         ~w(started vm_destroyed base_built denied drain retried
            redrive dead_lettered failed)a ++
         # Remaining R2 session lifecycle kinds still out of scope. The bank/relight,
