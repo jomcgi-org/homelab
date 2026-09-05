@@ -288,8 +288,10 @@ func (*fakeServer) DeleteGroupNetwork(_ context.Context, _ *nodev1.DeleteGroupNe
 // member boot path crosses the wire. RELIGHT scripts the clock-resync outcome off
 // the snapshot_ref content ("clockfail" -> FAILED_PRECONDITION with a clock-delta
 // detail, otherwise a verified warm relight), which is how the round-trip test
-// exercises the resync-failure branch against a stateless fake. FRESH cold-boots
-// from source and echoes the pinned ip.
+// exercises the resync-failure branch against a stateless fake. A successful
+// RELIGHT echoes subnet_cidr through endpoint_ip so the cross-language test can
+// prove the new request field crossed the wire. FRESH cold-boots from source and
+// echoes the pinned ip.
 func (*fakeServer) StartGroupMember(_ context.Context, req *nodev1.StartGroupMemberRequest) (*nodev1.StartGroupMemberResponse, error) {
 	if req.GetMode() == nodev1.StartGroupMemberMode_START_GROUP_MEMBER_MODE_RELIGHT {
 		ref := req.GetSnapshotRef()
@@ -298,6 +300,7 @@ func (*fakeServer) StartGroupMember(_ context.Context, req *nodev1.StartGroupMem
 		}
 		return &nodev1.StartGroupMemberResponse{
 			VmId: "vm:" + ref, Ip: req.GetIp(), WasRelight: true,
+			EndpointIp: req.GetSubnetCidr(),
 		}, nil
 	}
 	// FRESH: cold boot from the source, echo the pinned ip. The R6 request fields

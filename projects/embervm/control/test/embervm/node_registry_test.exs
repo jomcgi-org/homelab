@@ -522,7 +522,7 @@ defmodule Embervm.NodeRegistryTest do
     assert_receive {:synced, "node-4", 3}, 1_000
   end
 
-  test "a node-local-wake composite registry plan carries the group's ready budget" do
+  test "a node-local-wake composite registry plan carries its ready budget and stored subnet" do
     workload = "registry-group-#{System.unique_integer([:positive])}"
 
     WorkloadCatalog.upsert(WorkloadCatalog.table(), workload, %{
@@ -552,6 +552,9 @@ defmodule Embervm.NodeRegistryTest do
           send(test_pid, {:registry_sync, request})
           :ok
         end,
+        group_subnet_cidr_fun: fn "node-4", name ->
+          if name == workload, do: "10.101.7.0/24", else: ""
+        end,
         disconnect_fun: fn ch -> send(test_pid, {:disconnected, ch}) end,
         age_check_ms: 60_000,
         unknown_after_ms: 60_000,
@@ -563,6 +566,7 @@ defmodule Embervm.NodeRegistryTest do
 
     assert Enum.map(entry.group_member_plan, & &1.member_name) == ["api", "worker-0", "worker-1"]
     assert Enum.all?(entry.group_member_plan, &(&1.ready_budget_seconds == 47))
+    assert Enum.all?(entry.group_member_plan, &(&1.subnet_cidr == "10.101.7.0/24"))
   end
 
   test "registry resync grants a lease for a stateful node-local-wake workload" do

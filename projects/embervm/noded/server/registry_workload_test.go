@@ -27,6 +27,7 @@ func TestGroupByListenPortRequiresNodeLocalWakeAndPlan(t *testing.T) {
 			HealthPort:         6443,
 			EntryGuestPort:     6443,
 			ReadyBudgetSeconds: 180,
+			SubnetCidr:         "10.101.1.0/24",
 			Sizing:             &nodev1.ResourceSpec{Vcpus: 2, MemMib: 1024},
 		}},
 	})
@@ -40,6 +41,9 @@ func TestGroupByListenPortRequiresNodeLocalWakeAndPlan(t *testing.T) {
 	}
 	if got.GroupMemberPlan[0].ReadyBudgetSeconds != 180 {
 		t.Errorf("group ready budget = %d, want 180", got.GroupMemberPlan[0].ReadyBudgetSeconds)
+	}
+	if got.GroupMemberPlan[0].SubnetCIDR != "10.101.1.0/24" {
+		t.Errorf("group subnet CIDR = %q, want 10.101.1.0/24", got.GroupMemberPlan[0].SubnetCIDR)
 	}
 
 	group.NodeLocalWake = false

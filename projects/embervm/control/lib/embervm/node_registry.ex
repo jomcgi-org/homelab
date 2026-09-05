@@ -299,6 +299,8 @@ defmodule Embervm.NodeRegistry do
     # channel. Tests inject a fake to assert the replay fires (and with what
     # entries) without a real daemon or catalog.
     sync_registry_fun = Keyword.get(opts, :sync_registry_fun, &default_sync_registry/3)
+    group_subnet_cidr_fun =
+      Keyword.get(opts, :group_subnet_cidr_fun, &default_group_subnet_cidr/2)
     # ADR embervm/018 Phase 3: when a brick cannot complete a node-local group
     # relight, it forwards the held connection to the control plane's own L4
     # activator. This is the CP address, never a daemon-advertised activator_ip.
@@ -384,6 +386,7 @@ defmodule Embervm.NodeRegistry do
       watch_fun: watch_fun,
       disconnect_fun: disconnect_fun,
       sync_registry_fun: sync_registry_fun,
+      group_subnet_cidr_fun: group_subnet_cidr_fun,
       control_plane_activator_ip: control_plane_activator_ip,
       reassign_fun: reassign_fun,
       session_sweep_fun: session_sweep_fun,
@@ -546,6 +549,7 @@ defmodule Embervm.NodeRegistry do
     connect_fun = state.connect_fun
     disconnect_fun = state.disconnect_fun
     sync_registry_fun = state.sync_registry_fun
+    group_subnet_cidr_fun = state.group_subnet_cidr_fun
 
     for {_id, rt} <- state.node_runtime, not is_nil(rt.streamer) do
       address = rt.address
@@ -555,7 +559,13 @@ defmodule Embervm.NodeRegistry do
         case connect_fun.(address) do
           {:ok, channel} ->
             try do
-              sync_registry(sync_registry_fun, channel, node_id, state.control_plane_activator_ip)
+              sync_registry(
+                sync_registry_fun,
+                channel,
+                node_id,
+                state.control_plane_activator_ip,
+                group_subnet_cidr_fun
+              )
             after
               disconnect_fun.(channel)
             end
@@ -1414,6 +1424,7 @@ defmodule Embervm.NodeRegistry do
     watch_fun = state.watch_fun
     disconnect_fun = state.disconnect_fun
     sync_registry_fun = state.sync_registry_fun
+    group_subnet_cidr_fun = state.group_subnet_cidr_fun
 
     {pid, ref} =
       spawn_monitor(fn ->
@@ -1435,7 +1446,13 @@ defmodule Embervm.NodeRegistry do
                 # reconnect. A push failure is logged and non-fatal (the daemon
                 # simply stays not-ready and the next reconnect retries); we still
                 # enter the watch so capacity facts flow either way.
-                sync_registry(sync_registry_fun, channel, configured_id, state.control_plane_activator_ip)
+                sync_registry(
+                  sync_registry_fun,
+                  channel,
+                  configured_id,
+                  state.control_plane_activator_ip,
+                  group_subnet_cidr_fun
+                )
 
                 watch_fun.(channel, configured_id, fn status ->
                   send(owner, {:node_status, streamer, status})
@@ -2084,8 +2101,33 @@ defmodule Embervm.NodeRegistry do
       :ok
   end
 
-  defp sync_registry(sync_registry_fun, channel, node_id, control_plane_activator_ip) do
-    sync_registry_fun.(channel, node_id, sync_registry_request(control_plane_activator_ip, node_id))
+  defp default_group_subnet_cidr(node_id, workload) do
+    Embervm.GroupStore.list(workload)
+    |> Enum.find_value("", fn
+      %{node_id: ^node_id, state: :banked, subnet_cidr: cidr}
+      when is_binary(cidr) and cidr != "" ->
+        cidr
+
+      _ ->
+        nil
+    end)
+  rescue
+    _ -> ""
+  catch
+    _, _ -> ""
+  end
+
+  defp sync_registry(
+         sync_registry_fun,
+         channel,
+         node_id,
+         control_plane_activator_ip,
+         group_subnet_cidr_fun
+       ) do
+    request =
+      sync_registry_request(control_plane_activator_ip, node_id, group_subnet_cidr_fun)
+
+    sync_registry_fun.(channel, node_id, request)
   rescue
     e ->
       Logger.warning("embervm node registry: SyncRegistry to #{node_id} raised: #{inspect(e)}")
@@ -2096,9 +2138,9 @@ defmodule Embervm.NodeRegistry do
       :ok
   end
 
-  defp sync_registry_request(control_plane_activator_ip, node_id) do
+  defp sync_registry_request(control_plane_activator_ip, node_id, group_subnet_cidr_fun) do
     %SyncRegistryRequest{
-      entries: registry_entries(node_id),
+      entries: registry_entries(node_id, group_subnet_cidr_fun),
       control_plane_activator_ip: control_plane_activator_ip
     }
   end
@@ -2114,7 +2156,7 @@ defmodule Embervm.NodeRegistry do
   # not know still gets an entry (empty rootfs/harness), so the CP stays
   # authoritative for the SET of workloads regardless; the daemon then falls back
   # to its configured defaults for the missing node-side facts.
-  defp registry_entries(node_id) do
+  defp registry_entries(node_id, group_subnet_cidr_fun) do
     identity = node_image_identity()
 
     catalog_entries =
@@ -2148,6 +2190,13 @@ defmodule Embervm.NodeRegistry do
             Map.get(stateful, :node_local_wake, false) or
             Map.get(group, :node_local_wake, false)
 
+        group_subnet_cidr =
+          if Map.get(group, :node_local_wake, false) do
+            group_subnet_cidr_fun.(node_id, name) || ""
+          else
+            ""
+          end
+
         %RegistryEntry{
           workload: name,
           image_digest: "",
@@ -2162,7 +2211,8 @@ defmodule Embervm.NodeRegistry do
           stateful_port: Map.get(stateful, :port) || 0,
           stateful_volume_mount: Map.get(stateful, :volume_mount_path) || "",
           group_listen_port: group_listen_port(group, node_local_wake),
-          group_member_plan: group_member_plan(group, node_local_wake),
+          group_member_plan:
+            group_member_plan(group, node_local_wake, group_subnet_cidr),
           blessing_leases: blessing_leases_for(node_id, name, stateful)
         }
       end
@@ -2236,7 +2286,7 @@ defmodule Embervm.NodeRegistry do
 
   defp group_listen_port(_group, false), do: 0
 
-  defp group_member_plan(group, true) do
+  defp group_member_plan(group, true, subnet_cidr) do
     entry = Map.get(group, :entry, %{})
     entry_member = Map.get(entry, :member)
     entry_port = Map.get(entry, :port) || 0
@@ -2254,12 +2304,13 @@ defmodule Embervm.NodeRegistry do
         health_port: member.health_port,
         entry_guest_port: if(member.name == entry_member, do: entry_port, else: 0),
         sizing: %ResourceSpec{vcpus: member.vcpus, mem_mib: member.mem_mib},
-        ready_budget_seconds: ready_budget_seconds
+        ready_budget_seconds: ready_budget_seconds,
+        subnet_cidr: subnet_cidr
       }
     end)
   end
 
-  defp group_member_plan(_group, false), do: []
+  defp group_member_plan(_group, false, _subnet_cidr), do: []
 
   defp expand_group_member(member) do
     replicas =

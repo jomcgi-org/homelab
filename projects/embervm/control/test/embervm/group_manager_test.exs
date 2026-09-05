@@ -108,6 +108,7 @@ defmodule Embervm.GroupManagerTest do
       # Additive record of the forwarded readiness budget (the G-fix lane: the
       # daemon gate must share the workload's wake policy).
       record(rec, {:start_member_budget, req.member_name, req.ready_budget_seconds})
+      record(rec, {:start_member_subnet, req.member_name, req.mode, req.subnet_cidr})
       vm_id = "vm-#{req.member_name}"
 
       cond do
@@ -495,6 +496,13 @@ defmodule Embervm.GroupManagerTest do
     # The network was re-created on the wake (the bridge dies with the noded pod).
     creates = Enum.count(events(ctx.rec), &match?({:create_network, "g-1", _}, &1))
     assert creates >= 2
+
+    relight_subnets =
+      for {:start_member_subnet, _name, :START_GROUP_MEMBER_MODE_RELIGHT, cidr} <-
+            events(ctx.rec),
+          do: cidr
+
+    assert relight_subnets == ["10.101.0.0/24", "10.101.0.0/24", "10.101.0.0/24"]
   end
 
   test "wake_group falls back to a FRESH boot (same call) when a member relight fails, evicting the set" do

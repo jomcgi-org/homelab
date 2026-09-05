@@ -648,7 +648,7 @@ defmodule Embervm.GroupManager do
     case GroupStore.mark(state.store, instance.instance_id, :relight) do
       {:ok, _} ->
         with {:ok, _net} <- create_network(state, subnet_cidr),
-             :ok <- resume_members_ordered(state, plan) do
+             :ok <- resume_members_ordered(state, plan, subnet_cidr) do
           # relighting -> creating (durable group_relit), then publish -> running.
           case GroupStore.transition(state.store, instance.instance_id, :relight_ready, :group_relit, %{}, %{}) do
             {:ok, _} ->
@@ -801,7 +801,7 @@ defmodule Embervm.GroupManager do
   # whole relight). A member with NO banked snapshot_ref is a partial set the wake
   # brain should already have fresh-booted, but guard it here as a relight failure
   # so a stale set never resumes half-warm.
-  defp resume_members_ordered(state, plan) do
+  defp resume_members_ordered(state, plan, subnet_cidr) do
     # Capture the OTel ctx on the manager process (inside the `relight` root span) so
     # each spawned resume Task attaches it and its per-member child span nests under
     # the root, exactly as start_members_ordered does for a fresh create.
@@ -813,21 +813,21 @@ defmodule Embervm.GroupManager do
       |> Enum.sort_by(fn {order, _} -> order end)
 
     Enum.reduce_while(orders, :ok, fn {_order, members}, :ok ->
-      case resume_order_parallel(state, members, otel_ctx) do
+      case resume_order_parallel(state, members, subnet_cidr, otel_ctx) do
         :ok -> {:cont, :ok}
         {:error, _reason} = error -> {:halt, error}
       end
     end)
   end
 
-  defp resume_order_parallel(state, members, otel_ctx) do
+  defp resume_order_parallel(state, members, subnet_cidr, otel_ctx) do
     members
     |> Enum.map(fn member ->
       Task.async(fn ->
         _ = OpenTelemetry.Ctx.attach(otel_ctx)
 
         try do
-          resume_one_member(state, member)
+          resume_one_member(state, member, subnet_cidr)
         rescue
           e -> {:error, {:member_relight_crashed, member.expanded_name, e}}
         catch
@@ -846,14 +846,14 @@ defmodule Embervm.GroupManager do
   # clock-resync-failed derivation the Task 11 gate reads (a relight the daemon could
   # not verify within its one-second clock bound). The span attribute is set from the
   # RPC reply inside do_resume_one_member so it reflects the actual verdict.
-  defp resume_one_member(state, member) do
+  defp resume_one_member(state, member, subnet_cidr) do
     Tracer.with_span "embervm.group.member_relight",
                      %{attributes: member_span_attrs(member.expanded_name, true, -1)} do
-      do_resume_one_member(state, member)
+      do_resume_one_member(state, member, subnet_cidr)
     end
   end
 
-  defp do_resume_one_member(state, member) do
+  defp do_resume_one_member(state, member, subnet_cidr) do
     case member.snapshot_ref do
       ref when is_binary(ref) and ref != "" ->
         req = %StartGroupMemberRequest{
@@ -870,7 +870,8 @@ defmodule Embervm.GroupManager do
           env: %{},
           # Same one-policy budget forwarding as the FRESH path: the daemon's
           # readiness gate must not undercut the wake bound this relight runs under.
-          ready_budget_seconds: wake_budget_seconds(state)
+          ready_budget_seconds: wake_budget_seconds(state),
+          subnet_cidr: subnet_cidr
         }
 
         # Node-anchored: a group member RELIGHT resumes its banked bundle on the SAME
