@@ -216,6 +216,12 @@ defmodule Embervm.NodeRegistry do
     GenServer.call(server, {:brick_statuses, node_ids})
   end
 
+  @doc "Last NodeStatus time by configured node, observed against the registry's expiry clock."
+  @spec report_recency(GenServer.server()) :: map()
+  def report_recency(server \\ __MODULE__) do
+    GenServer.call(server, :report_recency)
+  end
+
   @doc "Return the health state for every registered node instance."
   @spec node_health(GenServer.server()) :: %{String.t() => atom()}
   def node_health(server \\ __MODULE__) do
@@ -607,6 +613,24 @@ defmodule Embervm.NodeRegistry do
   def handle_call({:brick_statuses, node_ids}, _from, state) do
     snapshot = Map.new(node_ids, &{&1, brick_status_view(state, &1)})
     {:reply, snapshot, state}
+  end
+
+  def handle_call(:report_recency, _from, state) do
+    last_reported_at_ms =
+      Enum.reduce(state.node_runtime, %{}, fn {_instance_id, rt}, acc ->
+        if is_integer(rt.last_status_at) do
+          Map.update(acc, rt.configured_id, rt.last_status_at, &max(&1, rt.last_status_at))
+        else
+          acc
+        end
+      end)
+
+    {:reply,
+     %{
+       observed_at_ms: state.clock.(),
+       expire_after_ms: state.expire_after_ms,
+       last_reported_at_ms: last_reported_at_ms
+     }, state}
   end
 
   def handle_call(:expected_instances, _from, state) do

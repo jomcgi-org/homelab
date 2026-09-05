@@ -48,6 +48,11 @@ defmodule Embervm.StatefulManagerTest do
 
     {:ok, starts} = Agent.start_link(fn -> 0 end)
 
+    registry =
+      if opts[:grace_registry] do
+        start_grace_registry(cap_table, Keyword.fetch!(opts, :clock), store)
+      end
+
     start_stateful_fun =
       Keyword.get(opts, :start_stateful_fun, fn _ch, _req ->
         Agent.update(starts, &(&1 + 1))
@@ -78,6 +83,7 @@ defmodule Embervm.StatefulManagerTest do
         publisher: pub,
         capacity_table: cap_table,
         catalog_table: cat_table,
+        node_registry: registry || Keyword.get(opts, :node_registry, NodeRegistry),
         clock: Keyword.get(opts, :clock, fn -> 1_000 end),
         channel_fun: Keyword.get(opts, :channel_fun, fn _node -> {:ok, :ch} end),
         invalidate_fun: Keyword.get(opts, :invalidate_fun, fn _node, _chan -> :ok end),
@@ -114,7 +120,8 @@ defmodule Embervm.StatefulManagerTest do
       starts: starts,
       pub: pub,
       op_log: op_log,
-      secret_reads: secret_reads
+      secret_reads: secret_reads,
+      registry: registry
     }
   end
 
@@ -202,17 +209,14 @@ defmodule Embervm.StatefulManagerTest do
     })
   end
 
-  # Replace the helper-owned empty capacity table with a real NodeRegistry-owned
-  # table. Registration opens a deliberately blocked fake WatchNode stream, and
-  # each test injects NodeStatus explicitly so no wall-clock sleep decides when
-  # the capacity fact appears.
-  defp register_grace_node(ctx, clock) do
-    true = :ets.delete(ctx.cap_table)
-
+  # Registration opens a deliberately blocked fake WatchNode stream, and each
+  # test injects NodeStatus explicitly so no wall-clock sleep decides when the
+  # capacity fact appears.
+  defp start_grace_registry(cap_table, clock, stateful_store) do
     {:ok, registry} =
       NodeRegistry.start_link(
         name: nil,
-        table: ctx.cap_table,
+        table: cap_table,
         nodes: [],
         watch_startup: false,
         registry_resync_ms: 0,
@@ -226,19 +230,25 @@ defmodule Embervm.StatefulManagerTest do
         channel_updater_fun: fn _instance_id, _address -> :ok end,
         channel_remover_fun: fn _instance_id -> :ok end,
         base_builder_updater_fun: fn _update -> :ok end,
-        reassign_fun: fn _node_id -> :ok end
+        reassign_fun: fn _node_id -> :ok end,
+        session_sweep_fun: fn _node_id, _pod_uid -> :ok end,
+        stateful_store: stateful_store
       )
 
     on_exit(fn -> Embervm.TestProcess.stop_safely(registry) end)
 
+    registry
+  end
+
+  defp register_grace_node(ctx) do
     :ok =
-      NodeRegistry.register(registry, %{
+      NodeRegistry.register(ctx.registry, %{
         "node" => "node-4",
         "pod_uid" => "grace-pod",
         "address" => "10.0.0.4:9090"
       })
 
-    {registry, "node-4/grace-pod"}
+    {ctx.registry, "node-4/grace-pod"}
   end
 
   # -- wake round-trip ---------------------------------------------------------
@@ -1016,7 +1026,7 @@ defmodule Embervm.StatefulManagerTest do
     test "a serving stateful instance within the grace window never loses its endpoint" do
       {:ok, now} = Agent.start_link(fn -> 0 end)
       clock = fn -> Agent.get(now, & &1) end
-      ctx = start_stack(clock: clock)
+      ctx = start_stack(clock: clock, grace_registry: true)
 
       {:ok, _} =
         StatefulStore.start(ctx.store, %{
@@ -1033,7 +1043,7 @@ defmodule Embervm.StatefulManagerTest do
       endpoint = %{ip: "10.88.0.9", port: 5432}
       assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
 
-      {registry, instance_id} = register_grace_node(ctx, clock)
+      {registry, instance_id} = register_grace_node(ctx)
 
       # The capacity table is empty until the first NodeStatus. Reconcile several
       # times during that ordinary deploy gap and prove the optimistic rebuilt
@@ -1065,16 +1075,57 @@ defmodule Embervm.StatefulManagerTest do
       assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
 
       # Once adopted, the endpoint remains published after the boot-relative
-      # grace because its owner has reported at least once.
+      # grace because its owner's latest report is still recent.
       Agent.update(now, fn _ -> 90_001 end)
       :ok = StatefulManager.reconcile(ctx.mgr)
       assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
     end
 
-    test "a stateful instance whose node never reports loses its endpoint after grace expires" do
+    test "a recently reporting node keeps a post-status RPC wake endpoint" do
       {:ok, now} = Agent.start_link(fn -> 0 end)
       clock = fn -> Agent.get(now, & &1) end
-      ctx = start_stack(clock: clock)
+      ctx = start_stack(clock: clock, grace_registry: true)
+
+      {registry, instance_id} = register_grace_node(ctx)
+      Agent.update(now, fn _ -> 20_000 end)
+
+      :ok =
+        NodeRegistry.inject_status(registry, instance_id, %NodeStatus{
+          node_id: "node-4",
+          stateful_vms: []
+        })
+
+      :ok = StatefulManager.reconcile(ctx.mgr)
+      assert MapSet.member?(:sys.get_state(ctx.mgr).seen_reporting_nodes, "node-4")
+
+      {:ok, _} =
+        StatefulStore.start(ctx.store, %{
+          instance_id: "stf-grace-live",
+          tenant: "homelab",
+          principal: "test",
+          workload: "wl-grace",
+          node_id: "node-4",
+          vm_id: "vm-grace-live",
+          generation: 1
+        })
+
+      {:ok, _} = StatefulStore.publish(ctx.store, "stf-grace-live", "10.88.0.9", 5432, :started)
+      endpoint = %{ip: "10.88.0.9", port: 5432}
+      assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
+
+      # The wake completed by RPC after the last NodeStatus, so registry expiry's
+      # resident inventory cannot name this VM. While that report is still recent,
+      # loss of the capacity projection must not withdraw its endpoint.
+      NodeCapacity.drop(ctx.cap_table, {"node-4", "grace-pod"})
+      Agent.update(now, fn _ -> 109_999 end)
+      :ok = StatefulManager.reconcile(ctx.mgr)
+      assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
+    end
+
+    test "a fresh control plane preserves an unreported endpoint until the boot floor" do
+      {:ok, now} = Agent.start_link(fn -> 0 end)
+      clock = fn -> Agent.get(now, & &1) end
+      ctx = start_stack(clock: clock, grace_registry: true)
 
       {:ok, _} =
         StatefulStore.start(ctx.store, %{
@@ -1091,7 +1142,7 @@ defmodule Embervm.StatefulManagerTest do
       endpoint = %{ip: "10.88.0.9", port: 5432}
       assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
 
-      {_registry, _instance_id} = register_grace_node(ctx, clock)
+      {_registry, _instance_id} = register_grace_node(ctx)
 
       # Registration alone contributes no NodeCapacity row. The durable serving
       # endpoint remains optimistic through the final millisecond of grace.
@@ -1106,10 +1157,25 @@ defmodule Embervm.StatefulManagerTest do
       assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == nil
     end
 
-    test "a node that reported once is never withdrawn even if later silent" do
+    test "a stale report withdraws a post-status RPC wake endpoint" do
       {:ok, now} = Agent.start_link(fn -> 0 end)
       clock = fn -> Agent.get(now, & &1) end
-      ctx = start_stack(clock: clock)
+      ctx = start_stack(clock: clock, grace_registry: true)
+
+      {registry, instance_id} = register_grace_node(ctx)
+      Agent.update(now, fn _ -> 20_000 end)
+
+      # This status predates the RPC wake and therefore cannot put the VM in the
+      # registry expiry path's resident inventory.
+      :ok =
+        NodeRegistry.inject_status(registry, instance_id, %NodeStatus{
+          node_id: "node-4",
+          stateful_vms: []
+        })
+
+      assert {:ok, %{node_id: "node-4"}} = NodeCapacity.fetch(ctx.cap_table, "node-4")
+      :ok = StatefulManager.reconcile(ctx.mgr)
+      assert MapSet.member?(:sys.get_state(ctx.mgr).seen_reporting_nodes, "node-4")
 
       {:ok, _} =
         StatefulStore.start(ctx.store, %{
@@ -1124,38 +1190,22 @@ defmodule Embervm.StatefulManagerTest do
 
       {:ok, _} = StatefulStore.publish(ctx.store, "stf-grace-seen", "10.88.0.9", 5432, :started)
       endpoint = %{ip: "10.88.0.9", port: 5432}
-      {registry, instance_id} = register_grace_node(ctx, clock)
-
-      :ok =
-        NodeRegistry.inject_status(registry, instance_id, %NodeStatus{
-          node_id: "node-4",
-          stateful_vms: [
-            %StatefulVm{
-              vm_id: "vm-grace-seen",
-              workload: "wl-grace",
-              ip: "10.88.0.9",
-              port: 5432,
-              healthy: true,
-              generation: 1
-            }
-          ]
-        })
-
-      assert {:ok, %{node_id: "node-4"}} = NodeCapacity.fetch(ctx.cap_table, "node-4")
-      :ok = StatefulManager.reconcile(ctx.mgr)
       assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
-      assert MapSet.member?(:sys.get_state(ctx.mgr).seen_reporting_nodes, "node-4")
 
-      NodeCapacity.drop(ctx.cap_table, {"node-4", "grace-pod"})
+      Agent.update(now, fn _ -> 110_001 end)
+
+      # Registry expiry sees no resident VM in its last status, so Half A cannot
+      # withdraw the endpoint created after that status.
+      :ok = NodeRegistry.tick(registry)
       assert NodeCapacity.fetch(ctx.cap_table, "node-4") == :error
-
-      Agent.update(now, fn _ -> 90_001 end)
+      assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
 
       for _ <- 1..3 do
         :ok = StatefulManager.reconcile(ctx.mgr)
       end
 
-      assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == endpoint
+      assert StatefulStore.published_endpoint(ctx.store, "wl-grace") == nil
+      assert MapSet.member?(:sys.get_state(ctx.mgr).seen_reporting_nodes, "node-4")
     end
   end
 

@@ -149,7 +149,16 @@ defmodule Embervm.StatefulManager do
 
   require OpenTelemetry.Tracer, as: Tracer
 
-  alias Embervm.{ArtifactPrefix, Brick, EndpointPublisher, NodeCapacity, StatefulState, StatefulStore, WorkloadCatalog}
+  alias Embervm.{
+    ArtifactPrefix,
+    Brick,
+    EndpointPublisher,
+    NodeCapacity,
+    NodeRegistry,
+    StatefulState,
+    StatefulStore,
+    WorkloadCatalog
+  }
 
   alias Embervm.Node.V1.{
     ArtifactRef,
@@ -331,14 +340,15 @@ defmodule Embervm.StatefulManager do
       publisher: Keyword.get(opts, :publisher, EndpointPublisher),
       capacity_table: Keyword.get(opts, :capacity_table, NodeCapacity.table()),
       catalog_table: Keyword.get(opts, :catalog_table, WorkloadCatalog.table()),
+      node_registry: Keyword.get(opts, :node_registry, NodeRegistry),
       clock: clock,
       # The grace is control-plane-boot-relative, not first-reconcile-relative.
       # Capturing it in init prevents an empty capacity table from extending the
       # optimistic rebuild indefinitely when periodic reconcile starts late.
       booted_at_ms: clock.(),
       # Node names that have contributed capacity at least once since this
-      # manager booted. A later capacity retraction is handled by registry
-      # liveness, not by the durable-only endpoint grace.
+      # manager booted. Retained as the fail-safe fallback while NodeRegistry is
+      # restarting and its authoritative report recency is unavailable.
       seen_reporting_nodes: MapSet.new(),
       # node_id -> manager clock millisecond when the node last reported capacity.
       # Used to distinguish temporary disconnects (within @delete_quiet_window_ms)
@@ -2778,10 +2788,10 @@ defmodule Embervm.StatefulManager do
     _ = StatefulStore.eager_evict_broken_pairs(state.store)
 
     # A store rebuild republishes a durable :serving row optimistically to avoid
-    # a deploy-time endpoint gap. If its owner never contributes a NodeCapacity
-    # fact, bound that optimism from CP boot and withdraw only the lossy health
-    # bit. The durable lifecycle stays :serving so a later NodeStatus can adopt
-    # the guest and restore the endpoint without manufacturing a new lifecycle.
+    # a deploy-time endpoint gap. If its owner has not contributed a recent
+    # NodeStatus, bound that optimism from CP boot and withdraw only the lossy
+    # health bit. The durable lifecycle stays :serving so a later NodeStatus can
+    # adopt the guest and restore the endpoint without manufacturing a lifecycle.
     state = withdraw_unreported_resident_health(state)
 
     state =
@@ -2802,15 +2812,21 @@ defmodule Embervm.StatefulManager do
     elapsed_ms = state.clock.() - state.booted_at_ms
 
     if elapsed_ms >= @resident_health_grace_ms do
+      report_recency = safe_report_recency(state.node_registry)
+
       StatefulStore.all(state.store)
       |> Enum.filter(fn instance ->
         instance.state == :serving and instance.healthy and
-          not MapSet.member?(state.seen_reporting_nodes, instance.node_id)
+          report_expired?(
+            report_recency,
+            instance.node_id,
+            MapSet.member?(state.seen_reporting_nodes, instance.node_id)
+          )
       end)
       |> Enum.each(fn instance ->
-        # Missing capacity is the expected never-reported case, and set_health/3
-        # is best-effort because the row can disappear between this scan and the
-        # call. Either result leaves reconcile live and the next pass convergent.
+        # Missing capacity is expected for both never-reported and expired nodes.
+        # set_health/3 is best-effort because the row can disappear between this
+        # scan and the call. Either result leaves reconcile live and convergent.
         case StatefulStore.set_health(state.store, instance.instance_id, false) do
           {:ok, _updated} ->
             Logger.warning("embervm stateful endpoint withdrawn after node-report grace",
@@ -2827,6 +2843,38 @@ defmodule Embervm.StatefulManager do
     end
 
     state
+  end
+
+  defp report_expired?(
+         %{
+           observed_at_ms: observed_at_ms,
+           expire_after_ms: expire_after_ms,
+           last_reported_at_ms: last_reported_at_ms
+         },
+         node_id,
+         _seen_reporting?
+       )
+       when is_integer(observed_at_ms) and is_integer(expire_after_ms) and
+              is_map(last_reported_at_ms) do
+    case Map.get(last_reported_at_ms, node_id) do
+      last_reported_at_ms when is_integer(last_reported_at_ms) ->
+        observed_at_ms - last_reported_at_ms >= expire_after_ms
+
+      nil ->
+        true
+    end
+  end
+
+  # If the registry is restarting, retain Half B's prior never-reported fallback.
+  # A node already seen by this manager remains optimistic until registry recovers.
+  defp report_expired?(_recency, _node_id, seen_reporting?), do: not seen_reporting?
+
+  defp safe_report_recency(node_registry) do
+    NodeRegistry.report_recency(node_registry)
+  rescue
+    _ -> :unavailable
+  catch
+    :exit, _ -> :unavailable
   end
 
   # A destroying instance is re-driven only while its owner reports. If the owner
