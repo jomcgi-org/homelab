@@ -19,31 +19,40 @@ import (
 	"time"
 )
 
+const defaultControlTimeout = 30 * time.Second
+
 // Client talks to a single Firecracker process over its API socket.
 type Client struct {
-	http          *http.Client
-	httpNoTimeout *http.Client
-	socketPath    string
+	http           *http.Client
+	httpNoTimeout  *http.Client
+	socketPath     string
+	controlTimeout time.Duration
 }
 
 // New returns a client bound to the Firecracker API socket at socketPath.
 func New(socketPath string) *Client {
+	return newWithControlTimeout(socketPath, defaultControlTimeout)
+}
+
+// newWithControlTimeout keeps the production transport setup available to tests
+// that need a shorter control timeout. Snapshot requests remain timeout-free.
+func newWithControlTimeout(socketPath string, controlTimeout time.Duration) *Client {
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, "unix", socketPath)
 		},
 	}
-	return &Client{
-		socketPath: socketPath,
-		http: &http.Client{
-			Timeout:   30 * time.Second,
-			Transport: transport,
-		},
-		httpNoTimeout: &http.Client{
-			Transport: transport,
-		},
+	client := &Client{
+		socketPath:     socketPath,
+		controlTimeout: controlTimeout,
 	}
+	client.http = &http.Client{
+		Timeout:   client.controlTimeout,
+		Transport: transport,
+	}
+	client.httpNoTimeout = &http.Client{Transport: transport}
+	return client
 }
 
 // MachineConfig is the body of PUT /machine-config.

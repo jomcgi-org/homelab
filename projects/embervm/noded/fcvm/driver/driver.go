@@ -214,6 +214,9 @@ type Driver struct {
 	// Production uses mergeMemoryDiff; tests replace it to exercise failure and
 	// atomic-publication paths without executing a Linux binary on macOS.
 	mergeDiffMemory func(context.Context, string, string, string) error
+	// stagingDirStats is injectable so tests can reproduce a path disappearing
+	// after Walk has discovered it but before the callback observes it.
+	stagingDirStats func(string) (time.Duration, int64, error)
 }
 
 // statefulCheckpoint is one paused-awaiting-resolve stateful VM (ADR embervm/008):
@@ -265,12 +268,13 @@ func New(cfg Config, launcher Launcher, newClient func(socketPath string) fcAPI)
 	}
 	cfg = cfg.withDefaults()
 	d := &Driver{
-		cfg:         cfg,
-		diffBanking: cfg.DiffBanking,
-		launcher:    launcher,
-		newClient:   newClient,
-		live:        make(map[string]*instance),
-		checkpoints: make(map[string]*statefulCheckpoint),
+		cfg:             cfg,
+		diffBanking:     cfg.DiffBanking,
+		launcher:        launcher,
+		newClient:       newClient,
+		live:            make(map[string]*instance),
+		checkpoints:     make(map[string]*statefulCheckpoint),
+		stagingDirStats: baseStagingDirStats,
 	}
 	if d.diffBanking {
 		info, err := os.Stat(cfg.SnapshotEditorPath)
@@ -1500,10 +1504,10 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: mkdir base root: %w", err)
 	}
 	// SnapshotRoot is shared by co-located processes, so an existing staging
-	// directory might still belong to a sibling build. Only rename it aside once
+	// directory might still belong to a sibling build. Only remove it once
 	// it is older than a full snapshot timeout plus a grace period.
 	if _, err := os.Lstat(buildingDir); err == nil {
-		age, sizeBytes, statErr := baseStagingDirStats(buildingDir)
+		age, sizeBytes, statErr := d.stagingDirStats(buildingDir)
 		if statErr != nil {
 			return substrate.SnapshotRef{}, fmt.Errorf("driver: inspect base staging bundle: %w", statErr)
 		}
@@ -1516,16 +1520,14 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 				"total_size_bytes", sizeBytes,
 			)
 		} else {
-			staleDir := fmt.Sprintf("%s.stale.%d", buildingDir, time.Now().UnixNano())
-			if err := os.Rename(buildingDir, staleDir); err != nil {
-				return substrate.SnapshotRef{}, fmt.Errorf("driver: rename stale base staging bundle: %w", err)
+			if err := os.RemoveAll(buildingDir); err != nil {
+				return substrate.SnapshotRef{}, fmt.Errorf("driver: remove orphaned base staging bundle: %w", err)
 			}
-			slog.Warn("driver: renamed orphaned base staging bundle",
+			slog.Warn("driver: removed orphaned base staging bundle",
 				"path", buildingDir,
 				"age", age,
 				"stale_after", staleAfter,
 				"total_size_bytes", sizeBytes,
-				"stale_path", staleDir,
 			)
 		}
 	} else if !os.IsNotExist(err) {
@@ -1600,14 +1602,20 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 }
 
 func baseStagingDirStats(dir string) (age time.Duration, sizeBytes int64, err error) {
+	return baseStagingDirStatsWithWalk(dir, filepath.Walk)
+}
+
+func baseStagingDirStatsWithWalk(dir string, walk func(string, filepath.WalkFunc) error) (age time.Duration, sizeBytes int64, err error) {
 	var newestModTime time.Time
-	err = filepath.Walk(dir, func(path string, _ os.FileInfo, walkErr error) error {
+	var dirModTime time.Time
+	concurrentlyModified := false
+	err = walk(dir, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
+			concurrentlyModified = true
 			return walkErr
 		}
-		info, lstatErr := os.Lstat(path)
-		if lstatErr != nil {
-			return lstatErr
+		if path == dir {
+			dirModTime = info.ModTime()
 		}
 		if path != dir && !info.IsDir() && info.ModTime().After(newestModTime) {
 			newestModTime = info.ModTime()
@@ -1617,15 +1625,14 @@ func baseStagingDirStats(dir string) (age time.Duration, sizeBytes int64, err er
 		}
 		return nil
 	})
+	if concurrentlyModified {
+		return 0, sizeBytes, nil
+	}
 	if err != nil {
 		return 0, sizeBytes, err
 	}
 	if newestModTime.IsZero() {
-		info, lstatErr := os.Lstat(dir)
-		if lstatErr != nil {
-			return 0, sizeBytes, lstatErr
-		}
-		newestModTime = info.ModTime()
+		newestModTime = dirModTime
 	}
 	age = time.Since(newestModTime)
 	if age < 0 {
