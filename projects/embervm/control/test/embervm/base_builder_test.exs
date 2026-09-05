@@ -2225,7 +2225,7 @@ defmodule Embervm.BaseBuilderTest do
     assert Agent.get(builds, & &1) == 2
   end
 
-  test "non-READY inventory entry clears the recorded base and enqueues one audited rebuild" do
+  test "non-durable inventory drop clears the recorded base and enqueues one audited rebuild" do
     table = new_cap_table()
     put_brick(table, "node-4", "uid", cpu_vendor: "amd")
     test_pid = self()
@@ -2261,13 +2261,7 @@ defmodule Embervm.BaseBuilderTest do
       BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1"
     end)
 
-    store_evidence = %{ref: "snap-1", confirmed_at: 1}
-
-    :sys.replace_state(builder, fn state ->
-      put_in(state.workloads["w"].store_confirmed["amd"], store_evidence)
-    end)
-
-    put_node_local_bases_fact(table, "node-4", "uid", "w", "snap-1", true, [
+    put_node_local_bases_fact(table, "node-4", "uid", "w", "snap-1", false, [
       ready_base("snap-1", "w", 1)
     ])
 
@@ -2276,7 +2270,7 @@ defmodule Embervm.BaseBuilderTest do
     assert Agent.get(builds, & &1) == 1
 
     dropped_base = %{ready_base("snap-1", "w", 1) | base_state: :BASE_BUILD_STATE_NONE}
-    put_node_local_bases_fact(table, "node-4", "uid", "w", "snap-1", true, [dropped_base])
+    put_node_local_bases_fact(table, "node-4", "uid", "w", "snap-1", false, [dropped_base])
     :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
 
     assert_receive {:op_appended, %{kind: :base_built} = op}, 1_000
@@ -2295,12 +2289,127 @@ defmodule Embervm.BaseBuilderTest do
     dropped = BaseBuilder.status(builder).workloads["w"]
     assert dropped.snapshot_ref == nil
     assert dropped.vendor_built == %{}
-    assert dropped.store_confirmed == %{"amd" => store_evidence}
+    assert dropped.store_confirmed == %{}
 
     send(worker, :finish_dropped_rebuild)
   end
 
-  test "repeated inventory drop inside base backoff does not enqueue another build" do
+  test "store-durable inventory drop hydrates without rebuilding" do
+    table = new_cap_table()
+    put_brick(table, "node-4", "uid", cpu_vendor: "amd")
+    test_pid = self()
+    {:ok, builds} = Agent.start_link(fn -> 0 end)
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/uid", address: "node-4:9090"}],
+        capacity_table: table,
+        status_writer: fn _, _, _ -> :ok end,
+        build_fun: fn :fake_channel, _req ->
+          count = Agent.get_and_update(builds, fn n -> {n + 1, n + 1} end)
+          {:ok, resp("snap-#{count}")}
+        end,
+        restore_fun: fn :fake_channel, %Embervm.Node.V1.RestoreArtifactRequest{artifact: ref} ->
+          send(test_pid, {:restore_called, ref.ref})
+          {:ok, %Embervm.Node.V1.RestoreArtifactResponse{accepted: true}}
+        end,
+        hydrate_poll_interval_ms: 5,
+        hydrate_poll_max: 50
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1" end)
+
+    :sys.replace_state(builder, fn state ->
+      put_in(state.workloads["w"].store_confirmed["amd"], %{ref: "snap-1", confirmed_at: 1})
+    end)
+
+    put_node_local_bases_fact(table, "node-4", "uid", "w", "", false, [])
+    put_base_fact(table, "node-4", "uid", "w", "", :BASE_BUILD_STATE_NONE, false)
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+
+    assert_receive {:restore_called, "snap-1"}, 1_000
+    assert Agent.get(builds, & &1) == 1
+    assert BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1"
+
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    refute_receive {:restore_called, _ref}, 100
+
+    put_node_local_bases_fact(table, "node-4", "uid", "w", "snap-1", true, [
+      ready_base("snap-1", "w", 1)
+    ])
+
+    assert_eventually(fn -> not MapSet.member?(:sys.get_state(builder).hydrating, "w") end)
+
+    # A second loss inside base_backoff_ms remains bounded even after the first
+    # hydrate worker has completed and released its in-flight guard.
+    put_node_local_bases_fact(table, "node-4", "uid", "w", "", false, [])
+    put_base_fact(table, "node-4", "uid", "w", "", :BASE_BUILD_STATE_NONE, false)
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    _ = :sys.get_state(builder)
+    refute_receive {:restore_called, _ref}, 100
+    assert Agent.get(builds, & &1) == 1
+  end
+
+  test "store-durable inventory drop falls back to BuildBase on rootfs gate refusal" do
+    table = new_cap_table()
+    put_brick(table, "node-4", "uid", cpu_vendor: "amd")
+    test_pid = self()
+    {:ok, builds} = Agent.start_link(fn -> 0 end)
+
+    build_fun = fn :fake_channel, _req ->
+      count = Agent.get_and_update(builds, fn n -> {n + 1, n + 1} end)
+
+      if count == 2 do
+        send(test_pid, {:fallback_build_started, self()})
+
+        receive do
+          :finish_fallback_build -> :ok
+        end
+      end
+
+      {:ok, resp("snap-#{count}")}
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/uid", address: "node-4:9090"}],
+        capacity_table: table,
+        status_writer: fn _, _, _ -> :ok end,
+        build_fun: build_fun,
+        restore_fun: fn :fake_channel, _req ->
+          send(test_pid, :restore_refused_by_rootfs_gate)
+          {:error, %GRPC.RPCError{status: 9, message: "base rootfs identity mismatch"}}
+        end,
+        hydrate_poll_interval_ms: 5,
+        hydrate_poll_max: 50
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1" end)
+
+    :sys.replace_state(builder, fn state ->
+      put_in(state.workloads["w"].store_confirmed["amd"], %{ref: "snap-1", confirmed_at: 1})
+    end)
+
+    put_node_local_bases_fact(table, "node-4", "uid", "w", "", false, [])
+    put_base_fact(table, "node-4", "uid", "w", "", :BASE_BUILD_STATE_NONE, false)
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+
+    assert_receive :restore_refused_by_rootfs_gate, 1_000
+    assert_receive {:fallback_build_started, worker}, 1_000
+    assert Agent.get(builds, & &1) == 2
+    assert BaseBuilder.status(builder).workloads["w"].snapshot_ref == nil
+
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    _ = :sys.get_state(builder)
+    assert Agent.get(builds, & &1) == 2
+
+    send(worker, :finish_fallback_build)
+  end
+
+  test "repeated non-durable inventory drop inside base backoff does not enqueue another build" do
     table = new_cap_table()
     put_brick(table, "node-4", "uid", cpu_vendor: "amd")
     {:ok, builds} = Agent.start_link(fn -> 0 end)
