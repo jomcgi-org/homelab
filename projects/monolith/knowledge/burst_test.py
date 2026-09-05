@@ -43,14 +43,17 @@ def test_effective_cap_without_grant_equals_base_cap_exactly():
     assert kg_effective_cap(_Session(None), 150, now=NOW) == 150
 
 
-def test_active_grant_adds_only_its_remaining_allowance():
+@pytest.mark.parametrize("used_jobs", [0, 125, 999])
+def test_active_grant_adds_its_full_size_regardless_of_use(used_jobs):
+    # jobs_today already counts the used jobs, so subtracting them here too
+    # halved every burst (#5778).
     row = _grant_row(
         extra_jobs=1_000,
-        used_jobs=125,
+        used_jobs=used_jobs,
         expires_at=NOW + timedelta(hours=2),
     )
 
-    assert kg_effective_cap(_Session(row), 150, now=NOW) == 1_025
+    assert kg_effective_cap(_Session(row), 150, now=NOW) == 1_150
 
 
 def test_expired_grant_contributes_zero_even_when_unused():

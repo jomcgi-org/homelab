@@ -98,8 +98,16 @@ def kg_burst_state(session: Session, *, now: datetime | None = None) -> KGBurstS
 def kg_effective_cap(
     session: Session, base_cap: int, *, now: datetime | None = None
 ) -> int:
-    """Add only the remaining allowance of a usable burst to the base cap."""
-    return base_cap + kg_burst_state(session, now=now).remaining_jobs
+    """Add the full size of a usable burst to the base cap.
+
+    The drainer compares this cap to ``kg_jobs_today()``, which already counts
+    every session created since the grant. Adding only the remaining allowance
+    subtracted the used jobs on one side while counting them on the other, so
+    a grant stalled at half its size (#5778). The grant's own ceiling still
+    holds: ``active`` is false once ``remaining_jobs`` reaches zero.
+    """
+    state = kg_burst_state(session, now=now)
+    return base_cap + (state.extra_jobs if state.active else 0)
 
 
 def create_kg_burst_grant(
