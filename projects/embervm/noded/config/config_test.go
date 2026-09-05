@@ -424,6 +424,9 @@ func TestLoadDefaults(t *testing.T) {
 	if c.StoreEncrypt {
 		t.Error("StoreEncrypt should default false for the two-phase rollout")
 	}
+	if c.UnexportableTTL != 24*time.Hour {
+		t.Errorf("UnexportableTTL = %v, want 24h", c.UnexportableTTL)
+	}
 	if c.RequireRestoreCapability {
 		t.Error("RequireRestoreCapability should default false for the two-phase rollout")
 	}
@@ -473,6 +476,7 @@ func TestLoadPreemptionOverrides(t *testing.T) {
 func TestLoadArtifactEncryptionOverrides(t *testing.T) {
 	t.Setenv("EMBERVM_NODED_STORE_ENCRYPT", "true")
 	t.Setenv("EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY", "true")
+	t.Setenv("EMBERVM_NODED_UNEXPORTABLE_TTL", "90m")
 	c, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -482,6 +486,9 @@ func TestLoadArtifactEncryptionOverrides(t *testing.T) {
 	}
 	if !c.RequireRestoreCapability {
 		t.Error("RequireRestoreCapability should parse EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY=true")
+	}
+	if c.UnexportableTTL != 90*time.Minute {
+		t.Errorf("UnexportableTTL = %v, want 90m", c.UnexportableTTL)
 	}
 }
 

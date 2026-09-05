@@ -1,11 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -40,6 +43,9 @@ type fakeStore struct {
 	dataKeyCalls    map[string]int
 	rewrapCh        chan fakeRewrapCall
 	artifactFileErr error
+	// dataKeyErr simulates the error returned by the store's data-key provider
+	// before any encrypted artifact bytes are uploaded.
+	dataKeyErr error
 	// reachable is what Reachable reports.
 	reachable bool
 	// order records prefixes in export order (for asserting meta-last is N/A here;
@@ -95,7 +101,13 @@ func (f *fakeStore) Export(_ context.Context, prefix, localDir string, files []s
 	var envelope []byte
 	if len(options) > 0 && options[0].Kind != "" {
 		f.dataKeyCalls[prefix]++
+		if f.dataKeyErr != nil {
+			return 0, false, fmt.Errorf("store: get data key for %q: %w", prefix, f.dataKeyErr)
+		}
 		envelope = []byte("fake-envelope")
+		if options[0].DataKeySucceededFn != nil {
+			options[0].DataKeySucceededFn()
+		}
 	}
 	// Read the local files into memory, mirroring the real client's read-then-put.
 	got := make(map[string]string, len(files))
@@ -2116,6 +2128,240 @@ func TestRetireVolumeFastACKDeletesOnlyAfterDurableExport(t *testing.T) {
 	}
 	if s.volumes.HasRetirementIntent("sbx", "lineage-retire") {
 		t.Fatal("retirement intent remained after durable export")
+	}
+}
+
+func TestRunExportJob404WrapRefusalIsTerminalAndRetiresWorkspace(t *testing.T) {
+	fs := newFakeStore()
+	fs.dataKeyErr = &WrapRejectedError{StatusCode: 404, Reason: "unknown_artifact"}
+	s := newStoreTestServer(t, fs)
+	s.cfg.StoreEncrypt = true
+	s.exportCh = make(chan exportJob, 1)
+	var logs bytes.Buffer
+	s.logger = slog.New(slog.NewTextHandler(&logs, nil))
+
+	const workload = "sbx"
+	const lineage = "lineage-orphan"
+	if err := s.volumes.CreateSession(workload, lineage, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.volumes.WriteRetirementIntent(workload, lineage); err != nil {
+		t.Fatal(err)
+	}
+	ref := &nodev1.ArtifactRef{
+		Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE,
+		Workload: workload,
+		Ref:      lineage,
+	}
+	key := artifactPrefix(ref, s.cfg.CpuVendor)
+	s.runExportJob(context.Background(), exportJob{ref: ref, key: key})
+
+	if got := strings.Count(logs.String(), "noded: async export refused permanently, control plane does not know this artifact"); got != 1 {
+		t.Fatalf("permanent refusal log count = %d, want 1; logs=%s", got, logs.String())
+	}
+	entries := s.unexportable.snapshot()
+	if len(entries) != 1 || entries[0].Artifact != key || entries[0].Status != 404 || entries[0].Reason != "unknown_artifact" {
+		t.Fatalf("unexportable entries = %#v", entries)
+	}
+	if s.volumes.HasRetirementIntent(workload, lineage) {
+		t.Fatal("404 terminal refusal must clear retirement intent through completeRetirement")
+	}
+	if _, err := os.Stat(s.volumes.SessionLineageDir(workload, lineage)); !os.IsNotExist(err) {
+		t.Fatalf("retired workspace directory still exists: %v", err)
+	}
+
+	// Exercise the same helper used by the reconcile sweep. The active
+	// unexportable entry must stop it before another job reaches the queue.
+	s.enqueueIfMissing(context.Background(), ref)
+	if got := len(s.exportCh); got != 0 {
+		t.Fatalf("reconcile re-enqueued terminal 404 refusal, queue length = %d", got)
+	}
+	if got := fs.dataKeyCalls[key]; got != 1 {
+		t.Fatalf("data-key calls = %d, want one terminal attempt", got)
+	}
+}
+
+func TestRunExportJobSkipsJobMarkedUnexportableAfterEnqueue(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	s.cfg.StoreEncrypt = true
+	s.exportCh = make(chan exportJob, 1)
+
+	ref := &nodev1.ArtifactRef{
+		Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE,
+		Workload: "sbx",
+		Ref:      "lineage-marked-after-enqueue",
+	}
+	if err := s.volumes.CreateSession(ref.GetWorkload(), ref.GetRef(), 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	key := artifactPrefix(ref, s.cfg.CpuVendor)
+	s.enqueueExport(ref)
+	job := <-s.exportCh
+	s.unexportable.mark(key, ref.GetKind().String(), http.StatusNotFound, "unknown_artifact")
+
+	s.runExportJob(context.Background(), job)
+
+	if got := fs.dataKeyCalls[key]; got != 0 {
+		t.Fatalf("data-key calls for job marked after enqueue = %d, want 0", got)
+	}
+	if fs.has(key) {
+		t.Fatal("job marked unexportable after enqueue reached the artifact store")
+	}
+}
+
+func TestRunExportJobWrapRefusalStaysRetryable(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		reason string
+	}{
+		{name: "bad request", status: http.StatusBadRequest, reason: "bad_request"},
+		{name: "forbidden", status: http.StatusForbidden, reason: "not the noded service account"},
+		{name: "unknown kind", status: http.StatusNotFound, reason: "unknown_kind"},
+		{name: "service unavailable", status: http.StatusServiceUnavailable, reason: "key_service_unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := newFakeStore()
+			fs.dataKeyErr = &WrapRejectedError{StatusCode: tc.status, Reason: tc.reason}
+			s := newStoreTestServer(t, fs)
+			s.cfg.StoreEncrypt = true
+			s.exportCh = make(chan exportJob, 1)
+			var logs bytes.Buffer
+			s.logger = slog.New(slog.NewTextHandler(&logs, nil))
+
+			const workload = "sbx"
+			lineage := "lineage-retry-" + strconv.Itoa(tc.status)
+			if err := s.volumes.CreateSession(workload, lineage, 1<<20); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.volumes.WriteRetirementIntent(workload, lineage); err != nil {
+				t.Fatal(err)
+			}
+			ref := &nodev1.ArtifactRef{
+				Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE,
+				Workload: workload,
+				Ref:      lineage,
+			}
+			key := artifactPrefix(ref, s.cfg.CpuVendor)
+			s.runExportJob(context.Background(), exportJob{ref: ref, key: key})
+
+			if len(s.unexportable.snapshot()) != 0 {
+				t.Fatalf("status %d reason %q populated the unexportable set", tc.status, tc.reason)
+			}
+			if !s.volumes.HasRetirementIntent(workload, lineage) {
+				t.Fatalf("status %d reason %q cleared retirement intent", tc.status, tc.reason)
+			}
+			if !strings.Contains(logs.String(), "artifact wrap endpoint rejected export, retryable") ||
+				!strings.Contains(logs.String(), "status="+strconv.Itoa(tc.status)) ||
+				!strings.Contains(logs.String(), tc.reason) {
+				t.Fatalf("retryable warning does not name status and reason: %s", logs.String())
+			}
+			s.enqueueIfMissing(context.Background(), ref)
+			if got := len(s.exportCh); got != 1 {
+				t.Fatalf("reconcile queue length after retryable refusal = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestSuccessfulDataKeyClearsUnexportableEntry(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	s.cfg.StoreEncrypt = true
+	ref := &nodev1.ArtifactRef{
+		Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE,
+		Workload: "sbx",
+		Ref:      "lineage-known-again",
+	}
+	if err := s.volumes.CreateSession(ref.GetWorkload(), ref.GetRef(), 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	prefix := artifactPrefix(ref, s.cfg.CpuVendor)
+	s.unexportable.mark(prefix, ref.GetKind().String(), http.StatusNotFound, "unknown_artifact")
+	files, err := enumerateArtifactFiles(s.artifactLocalDir(ref))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.exportWithKeys(context.Background(), ref, prefix, s.artifactLocalDir(ref), files, 0); err != nil {
+		t.Fatalf("exportWithKeys: %v", err)
+	}
+	if s.unexportable.contains(prefix) {
+		t.Fatal("successful DataKey did not clear the unexportable entry")
+	}
+}
+
+func TestUnexportableTTLExpiryAllowsRetry(t *testing.T) {
+	fs := newFakeStore()
+	fs.dataKeyErr = &WrapRejectedError{StatusCode: 404, Reason: "unknown_artifact"}
+	s := newStoreTestServer(t, fs)
+	s.cfg.StoreEncrypt = true
+	s.exportCh = make(chan exportJob, 1)
+	base := time.Unix(1_800_000_000, 0)
+	now := base
+	s.unexportable.ttl = time.Hour
+	s.unexportable.now = func() time.Time { return now }
+
+	const workload = "sbx"
+	const lineage = "lineage-later-known"
+	if err := s.volumes.CreateSession(workload, lineage, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	ref := &nodev1.ArtifactRef{
+		Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE,
+		Workload: workload,
+		Ref:      lineage,
+	}
+	key := artifactPrefix(ref, s.cfg.CpuVendor)
+	s.runExportJob(context.Background(), exportJob{ref: ref, key: key})
+	s.enqueueIfMissing(context.Background(), ref)
+	if got := len(s.exportCh); got != 0 {
+		t.Fatalf("reconcile queued before TTL expiry, length = %d", got)
+	}
+
+	now = base.Add(time.Hour)
+	fs.dataKeyErr = nil
+	s.enqueueIfMissing(context.Background(), ref)
+	if got := len(s.exportCh); got != 1 {
+		t.Fatalf("reconcile queue length at TTL expiry = %d, want 1", got)
+	}
+	job := <-s.exportCh
+	s.runExportJob(context.Background(), job)
+	if !fs.has(key) {
+		t.Fatal("artifact was not retried successfully after TTL expiry")
+	}
+	if len(s.unexportable.snapshot()) != 0 {
+		t.Fatal("expired unexportable entry was not removed")
+	}
+}
+
+func TestPrimeCreateClearsUnexportableWorkspace(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	const workload = "sbx"
+	const lineage = "lineage-recreated"
+	ref := &nodev1.ArtifactRef{
+		Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE,
+		Workload: workload,
+		Ref:      lineage,
+	}
+	prefix := artifactPrefix(ref, s.cfg.CpuVendor)
+	s.unexportable.mark(prefix, ref.GetKind().String(), http.StatusNotFound, "unknown_artifact")
+
+	seedBase(s, "sbx__deadbeef03", workload)
+	resp, err := s.Prime(context.Background(), &nodev1.PrimeRequest{
+		SnapshotRef:     "sbx__deadbeef03",
+		LineageId:       lineage,
+		VolumeMount:     "/session",
+		VolumeSizeBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	if resp.GetVmId() == "" {
+		t.Fatal("Prime returned empty vm_id")
+	}
+	if s.unexportable.contains(prefix) {
+		t.Fatal("local session workspace create did not clear the unexportable entry")
 	}
 }
 

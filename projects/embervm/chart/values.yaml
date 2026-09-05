@@ -1430,6 +1430,9 @@ noded:
     # writer inert. Arm only after every daemon can read enveloped artifacts and
     # the control plane wrap endpoint is available.
     encrypt: false
+    # Optional override for the daemon's retry suppression period after an
+    # artifact-specific control-plane wrap refusal. Empty uses the Go default.
+    unexportableTTL: ""
     # One 1Password item named embervm-store supplies access_key_id and
     # secret_access_key. These are the same keys used by the embervm identity in
     # the SeaweedFS identities policy. The env names rendered when enabled are

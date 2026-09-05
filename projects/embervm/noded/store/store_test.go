@@ -774,9 +774,18 @@ func TestEncryptedExportRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	prefix := "session/amd/sandbox/session-1"
-	opts := ExportOptions{Kind: "session", Workload: "sandbox", Ref: "session-1"}
+	dataKeySucceeded := false
+	opts := ExportOptions{
+		Kind:               "session",
+		Workload:           "sandbox",
+		Ref:                "session-1",
+		DataKeySucceededFn: func() { dataKeySucceeded = true },
+	}
 	if _, _, err := s.Export(ctx, prefix, srcDir, []string{"memfile"}, 0, 1, "amd", "T2", opts); err != nil {
 		t.Fatalf("Export: %v", err)
+	}
+	if !dataKeySucceeded {
+		t.Fatal("successful DataKey did not invoke its observer")
 	}
 
 	stored := fake.object("/embervm/" + prefix + "/memfile")

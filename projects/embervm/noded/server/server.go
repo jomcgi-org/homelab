@@ -330,6 +330,10 @@ type Server struct {
 	exportOnce     sync.Once
 	exportDedupeMu sync.Mutex
 	exportDedupe   map[string]struct{}
+	// unexportable suppresses artifact-specific control-plane wrap refusals until
+	// their TTL expires. This prevents every reconcile pass from retrying an
+	// orphan the control plane no longer recognizes.
+	unexportable *unexportableSet
 	// restoreCh is the bounded async BASE-restore queue; restoreDedupe drops a
 	// re-enqueue of an already-in-flight prefix (held enqueue-through-completion,
 	// so a re-triggered restore of a base still downloading is a no-op). Both
@@ -454,6 +458,7 @@ func New(opts Options) *Server {
 		signStoreRequest: opts.SignStoreRequest,
 		exported:         newExportedCache(),
 		exportDedupe:     make(map[string]struct{}),
+		unexportable:     newUnexportableSet(opts.Config.UnexportableTTL, time.Now),
 		restoreDedupe:    make(map[string]struct{}),
 		subs:             make(map[chan struct{}]struct{}),
 		activeBuilds:     make(map[string]context.CancelFunc),
@@ -1179,6 +1184,11 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		if err := s.volumes.CreateSession(base.workload, req.GetLineageId(), req.GetVolumeSizeBytes()); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: provision session volume: %v", err)
 		}
+		s.noteArtifactCreated(&nodev1.ArtifactRef{
+			Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE,
+			Workload: base.workload,
+			Ref:      req.GetLineageId(),
+		})
 		// #4306 slice 2: cancel any pending node-owned retirement for this lineage
 		// BEFORE the attach (AttachLineage below, after boot) completes. Expiry may
 		// already have enqueued export-then-delete for this lineage (RetireVolume);
@@ -1634,7 +1644,7 @@ func (s *Server) Bank(ctx context.Context, req *nodev1.BankRequest) (*nodev1.Ban
 	})
 	// Async off-node write-back (R6): the banked bundle is now crash-consistent on
 	// disk, so enqueue its export fire-and-forget (never blocking this bank path).
-	s.enqueueExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, Workload: req.GetTrace().GetWorkload(), Ref: ref.ID})
+	s.enqueueCreatedExport(&nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, Workload: req.GetTrace().GetWorkload(), Ref: ref.ID})
 	s.signalChange()
 	return &nodev1.BankResponse{SnapshotRef: ref.ID, SizeBytes: uint64(ref.SizeBytes)}, nil
 }

@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/jomcgi/homelab/projects/embervm/noded/config"
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/store"
@@ -736,6 +739,7 @@ func (s *Server) exportWithKeys(ctx context.Context, ref *nodev1.ArtifactRef, pr
 		opts.Kind = artifactKindStr(ref.GetKind())
 		opts.Workload = ref.GetWorkload()
 		opts.Ref = ref.GetRef()
+		opts.DataKeySucceededFn = func() { s.unexportable.clear(prefix) }
 	}
 	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_BASE {
 		stale, err := s.baseStoreCopyIsStale(ctx, prefix, localDir)
@@ -747,7 +751,7 @@ func (s *Server) exportWithKeys(ctx context.Context, ref *nodev1.ArtifactRef, pr
 		}
 	}
 	var options []store.ExportOptions
-	if opts != (store.ExportOptions{}) {
+	if opts.Kind != "" || opts.Overwrite {
 		options = append(options, opts)
 	}
 	moved, skipped, err := s.store.Export(ctx, prefix, localDir, files, generation, time.Now().UnixMilli(), s.cfg.CpuVendor, s.cfg.CpuTemplate, options...)
@@ -1142,12 +1146,109 @@ const exportQueueWorkers = 2
 // reconcile re-enqueues any artifact whose store copy is still missing.
 const exportQueueDepth = 256
 
+// unexportableArtifact is one active artifact-specific wrap refusal.
+type unexportableArtifact struct {
+	Artifact  string    `json:"artifact"`
+	Kind      string    `json:"kind"`
+	Status    int       `json:"status"`
+	Reason    string    `json:"reason"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type unexportableSet struct {
+	mu      sync.Mutex
+	ttl     time.Duration
+	now     func() time.Time
+	entries map[string]unexportableArtifact
+}
+
+func newUnexportableSet(ttl time.Duration, now func() time.Time) *unexportableSet {
+	if ttl <= 0 {
+		// Only tests construct Server with a zero Config. Production receives the
+		// default from config.Load, which is the source of truth for this value.
+		ttl = config.DefaultUnexportableTTL
+	}
+	return &unexportableSet{ttl: ttl, now: now, entries: make(map[string]unexportableArtifact)}
+}
+
+func (u *unexportableSet) mark(artifact, kind string, status int, reason string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	now := u.now()
+	u.purgeExpiredLocked(now)
+	if reason == "" {
+		reason = http.StatusText(status)
+	}
+	u.entries[artifact] = unexportableArtifact{
+		Artifact:  artifact,
+		Kind:      kind,
+		Status:    status,
+		Reason:    reason,
+		ExpiresAt: now.Add(u.ttl),
+	}
+}
+
+func (u *unexportableSet) clear(artifact string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	delete(u.entries, artifact)
+}
+
+func (u *unexportableSet) contains(artifact string) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	entry, ok := u.entries[artifact]
+	if !ok {
+		return false
+	}
+	if !u.now().Before(entry.ExpiresAt) {
+		delete(u.entries, artifact)
+		return false
+	}
+	return true
+}
+
+func (u *unexportableSet) snapshot() []unexportableArtifact {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.purgeExpiredLocked(u.now())
+	out := make([]unexportableArtifact, 0, len(u.entries))
+	for _, entry := range u.entries {
+		out = append(out, entry)
+	}
+	slices.SortFunc(out, func(a, b unexportableArtifact) int {
+		return strings.Compare(a.Artifact, b.Artifact)
+	})
+	return out
+}
+
+func (u *unexportableSet) purgeExpiredLocked(now time.Time) {
+	for artifact, entry := range u.entries {
+		if !now.Before(entry.ExpiresAt) {
+			delete(u.entries, artifact)
+		}
+	}
+}
+
 // exportJob names one artifact to export, carrying enough to compose its prefix
 // and local dir. It is keyed (in the dedupe set) by its store prefix so a
 // re-enqueue of an already-queued artifact is dropped.
 type exportJob struct {
 	ref *nodev1.ArtifactRef
 	key string // the store prefix, the dedupe key
+}
+
+// noteArtifactCreated invalidates an orphan verdict for a reused prefix. A new
+// local artifact is new evidence and must not inherit the prior artifact's TTL.
+func (s *Server) noteArtifactCreated(ref *nodev1.ArtifactRef) {
+	if key := artifactPrefix(ref, s.cfg.CpuVendor); key != "" {
+		s.unexportable.clear(key)
+	}
+}
+
+func (s *Server) enqueueCreatedExport(ref *nodev1.ArtifactRef) {
+	s.noteArtifactCreated(ref)
+	s.enqueueExport(ref)
 }
 
 // startExportQueue launches the bounded export- AND restore-worker pools. It is
@@ -1183,6 +1284,9 @@ func (s *Server) enqueueExport(ref *nodev1.ArtifactRef) {
 	}
 	key := artifactPrefix(ref, s.cfg.CpuVendor)
 	if key == "" {
+		return
+	}
+	if s.unexportable.contains(key) {
 		return
 	}
 	s.exportDedupeMu.Lock()
@@ -1240,6 +1344,11 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 		delete(s.exportDedupe, job.key)
 		s.exportDedupeMu.Unlock()
 	}()
+	// Check again at job entry because a permanent refusal can be recorded after
+	// this job was enqueued but before a worker starts it.
+	if s.unexportable.contains(job.key) {
+		return
+	}
 
 	generation := s.artifactGeneration(job.ref)
 	// OBSERVE-ONLY blessing check for a VOLUME. ADR 011 says an unblessed
@@ -1342,8 +1451,32 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 			"localGeneration", generation, "err", err)
 		return
 	}
+	var wrapRejected *WrapRejectedError
+	if errors.As(err, &wrapRejected) {
+		reason := wrapRejected.Reason
+		if reason == "" {
+			reason = http.StatusText(wrapRejected.StatusCode)
+		}
+		if wrapRejected.Permanent() {
+			s.unexportable.mark(job.key, job.ref.GetKind().String(), wrapRejected.StatusCode, reason)
+			s.logger.Warn("noded: async export refused permanently, control plane does not know this artifact",
+				"artifact", job.key,
+				"kind", job.ref.GetKind().String(),
+				"status", wrapRejected.StatusCode,
+				"reason", reason)
+			s.completeRetirement(job.ref)
+			return
+		}
+		s.logger.Warn("noded: artifact wrap endpoint rejected export, retryable (will retry on reconcile)",
+			"artifact", job.key,
+			"kind", job.ref.GetKind().String(),
+			"status", wrapRejected.StatusCode,
+			"reason", reason)
+		return
+	}
 	if err != nil {
-		s.logger.Warn("noded: async export failed (will retry on reconcile)", "artifact", job.key, "err", err)
+		s.logger.Warn("noded: async export failed, retryable (will retry on reconcile)",
+			"artifact", job.key, "kind", job.ref.GetKind().String(), "class", "retryable", "err", err)
 		return
 	}
 	s.exported.mark(job.key, generation)
@@ -1450,6 +1583,9 @@ func (s *Server) enqueueReconcileExports(ctx context.Context) {
 func (s *Server) enqueueIfMissing(ctx context.Context, ref *nodev1.ArtifactRef) {
 	prefix := artifactPrefix(ref, s.cfg.CpuVendor)
 	if prefix == "" {
+		return
+	}
+	if s.unexportable.contains(prefix) {
 		return
 	}
 	// A vendor-bound kind already durable under the legacy un-vendored prefix

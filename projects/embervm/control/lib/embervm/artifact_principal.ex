@@ -9,7 +9,7 @@ defmodule Embervm.ArtifactPrincipal do
   alias Embervm.SessionStore
 
   @spec resolve(atom() | String.t(), String.t(), String.t()) ::
-          {:ok, String.t()} | {:error, :unknown_artifact}
+          {:ok, String.t()} | {:error, :unknown_artifact | :unknown_kind}
   def resolve(kind, workload, ref) do
     case normalize_kind(kind) do
       :session -> session_principal(ref)
@@ -18,7 +18,7 @@ defmodule Embervm.ArtifactPrincipal do
       :volume -> {:ok, "system:stateful:" <> workload}
       :group_set -> {:ok, "system:group:" <> workload}
       :serving -> {:ok, "system:serving:" <> workload}
-      :unknown -> {:error, :unknown_artifact}
+      :unknown -> {:error, :unknown_kind}
     end
   end
 

@@ -868,6 +868,7 @@ defmodule Embervm.Router do
       })
     else
       {:error, :unknown_artifact} -> send_json(conn, 404, %{error: "unknown_artifact"})
+      {:error, :unknown_kind} -> send_json(conn, 404, %{error: "unknown_kind"})
 
       {:error, reason}
       when reason in [:custody_mismatch, :customer_kms_not_configured, :below_floor] ->
@@ -890,7 +891,7 @@ defmodule Embervm.Router do
     with {:ok, body, conn} <- read_capped_body(conn),
          {:ok, request} <- decode_artifact_wrap(body),
          {:ok, principal} <-
-           principal_resolver.resolve(request["kind"], request["workload"], request["ref"]),
+           resolve_wrap_principal(principal_resolver, request),
          {:ok, data_key, envelope} <-
            Embervm.KeyService.issue_data_key(key_service, principal, request) do
       send_json(conn, 200, %{
@@ -898,11 +899,28 @@ defmodule Embervm.Router do
         envelope: envelope |> Embervm.KeyService.Envelope.encode() |> Base.encode64()
       })
     else
+      {:error, {:unknown_artifact, request}} ->
+        Logger.info("artifact wrap refused: unknown artifact",
+          kind: request["kind"],
+          workload: request["workload"],
+          ref: request["ref"]
+        )
+
+        send_json(conn, 404, %{error: "unknown_artifact"})
+
       {:error, :unknown_artifact} -> send_json(conn, 404, %{error: "unknown_artifact"})
+      {:error, :unknown_kind} -> send_json(conn, 404, %{error: "unknown_kind"})
       {:error, :no_root} -> send_json(conn, 503, %{error: "no_root"})
       {:error, :too_large} -> send_json(conn, 413, %{error: "request body too large"})
       {:error, :bad_request} -> send_json(conn, 400, %{error: "bad_request"})
       {:error, _reason} -> send_json(conn, 503, %{error: "key_service_unavailable"})
+    end
+  end
+
+  defp resolve_wrap_principal(principal_resolver, request) do
+    case principal_resolver.resolve(request["kind"], request["workload"], request["ref"]) do
+      {:error, :unknown_artifact} -> {:error, {:unknown_artifact, request}}
+      result -> result
     end
   end
 
@@ -912,7 +930,7 @@ defmodule Embervm.Router do
       when is_binary(kind) and is_binary(workload) and workload != "" and is_binary(ref) ->
         if Embervm.ArtifactPrefix.kind_string(kind),
           do: {:ok, request},
-          else: {:error, :unknown_artifact}
+          else: {:error, :unknown_kind}
 
       _ ->
         {:error, :bad_request}
@@ -930,6 +948,7 @@ defmodule Embervm.Router do
          {:ok, envelope} <- Embervm.KeyService.Envelope.decode(bytes) do
       {:ok, request, envelope}
     else
+      {:error, reason} when reason in [:bad_request, :unknown_kind] -> {:error, reason}
       _ -> {:error, :bad_envelope}
     end
   end

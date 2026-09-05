@@ -385,6 +385,10 @@ containers:
         value: {{ $ctx.Values.noded.store.compress | quote }}
       - name: EMBERVM_NODED_STORE_ENCRYPT
         value: {{ $ctx.Values.noded.store.encrypt | quote }}
+      {{- with $ctx.Values.noded.store.unexportableTTL }}
+      - name: EMBERVM_NODED_UNEXPORTABLE_TTL
+        value: {{ . | quote }}
+      {{- end }}
       {{- if $ctx.Values.noded.store.credentials.enabled }}
       - name: EMBERVM_NODED_STORE_ACCESS_KEY_ID
         valueFrom:
