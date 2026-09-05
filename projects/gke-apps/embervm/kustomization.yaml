@@ -3,3 +3,4 @@ kind: Kustomization
 
 resources:
   - application.yaml
+  - onepassworditem-tokenbroker-authentik.yaml

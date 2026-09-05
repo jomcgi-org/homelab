@@ -39,6 +39,27 @@ tokenBroker:
   enabled: true
   networkPolicy:
     enabled: false
+  # authentik client_credentials minter (#5633 1f). The agent tier lives on the
+  # hub, so this is where the grant is minted. authentik itself is on the home
+  # cluster, reached over its public hostname.
+  authentik:
+    enabled: true
+    tokenEndpoint: "https://auth.jomcgi.dev/application/o/token/"
+    clientID: "mcp-agents"
+    scope: "openid profile email"
+    username: "kg-agent-sa"
+    appPasswordRef:
+      name: embervm-authentik-agent
+      key: app-password
+  # Helm replaces lists rather than merging them, so codex-cluster is repeated
+  # here; dropping it would delete the codex lane's grant.
+  grants:
+    - name: codex-cluster
+      provider: codex-chatgpt
+      fqdn: auth.openai.com
+    - name: agent-mcp
+      provider: authentik
+      fqdn: auth.jomcgi.dev
 
 # 2gi bricks scale horizontally for the small guests; the 4gi class exists
 # because the fleet has consumers that cannot fit a 2gi brick at all: the
@@ -83,6 +104,8 @@ egress:
       - monolith.monolith.svc.cluster.local:3000
       - monolith-searxng.monolith.svc.cluster.local:8080
       - inference-embeddings.inference.svc.cluster.local:8080
+      # The agent MCP surface (#5633 1g). Port 8092 only: the tier has no other listener.
+      - monolith-agents-agents.monolith-agents.svc.cluster.local:8092
 
 # Home provisions node scratch out of band (dedicated NVMe); the hub has no
 # such bootstrap, so the chart actuator provisions the capped ext4 loop file
@@ -95,4 +118,3 @@ scratchPrep:
 # the big classes are capped off, including the chart default 16gi warm floor
 # (a home policy for the scratch-k8s composite). Revisit the session-class
 # ceiling and group-spread when the Spark lane revives (#5459, #5461).
-
