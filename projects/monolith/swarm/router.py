@@ -15,6 +15,7 @@ from goosecracker.api import REPO_CATALOG
 from framework import log_task_exception
 import shared.inference
 from swarm import config, runtime
+from swarm.budget import effective_budget
 from swarm.compare_router import router as compare_router
 from swarm.compare_router import compare_stats
 from agent_sessions.rationale import parse_rationale
@@ -120,6 +121,13 @@ class PromoteSessionResponse(BaseModel):
 class DecisionRequest(BaseModel):
     decision: str
     note: str | None = Field(default=None, max_length=2000)
+
+
+class BudgetRaiseRequest(BaseModel):
+    budget_usd: float = Field(gt=0)
+
+
+_BUDGET_RAISE_LOCK = asyncio.Lock()
 
 
 def _dbos():
@@ -295,6 +303,36 @@ def _record_decision_sync(
             actor_authority,
         )
         return store.decision_response(row, idempotent)
+
+
+def _workflow_attributes(dbos, workflow_id: str) -> dict:
+    handle = dbos.retrieve_workflow(workflow_id)
+    status = handle.get_status() if hasattr(handle, "get_status") else handle
+    attributes = getattr(status, "attributes", None)
+    return attributes if isinstance(attributes, dict) else {}
+
+
+def _resolve_budget_decision_sync(
+    workflow_id: str, actor_subject: str, actor_authority: str
+) -> None:
+    """Resolve the run's open budget decision after its ceiling is raised."""
+    from core.db import get_engine
+    from sqlmodel import Session
+    from swarm import store
+
+    with Session(get_engine()) as session:
+        for row in store.list_open_decisions(session, workflow_id):
+            if row.kind != "budget":
+                continue
+            store.record_decision(
+                session,
+                workflow_id,
+                row.node_key,
+                "raise",
+                None,
+                actor_subject,
+                actor_authority,
+            )
 
 
 @router.post("/runs")
@@ -1219,4 +1257,73 @@ async def cancel_run(workflow_id: str, request: Request) -> dict:
         "workflow_id": workflow_id,
         "cancelled": True,
         "guest_sessions": guest_sessions,
+    }
+
+
+@router.post("/runs/{workflow_id}/budget")
+async def raise_budget(
+    workflow_id: str, body: BudgetRaiseRequest, request: Request
+) -> dict:
+    """Raise the budget ceiling for a run and release its budget boundary."""
+    dbos = _dbos()
+    header_actor = request.headers.get("Cf-Access-Authenticated-User-Email")
+    actor_subject = header_actor or "operator"
+    actor_authority = "cloudflare-access" if header_actor else "anonymous"
+
+    # This endpoint is served only by the DBOS leader. Serialize its
+    # read-modify-write so simultaneous raises cannot discard one another.
+    async with _BUDGET_RAISE_LOCK:
+        run = await asyncio.to_thread(_compose_run_view, dbos, workflow_id)
+        plan = run.get("plan") or {}
+        if plan.get("budget_usd") is None:
+            raise HTTPException(status_code=400, detail="run has no pinned budget")
+
+        attributes = await asyncio.to_thread(_workflow_attributes, dbos, workflow_id)
+        current_effective = effective_budget(plan, attributes)
+        if current_effective is None:
+            raise HTTPException(status_code=400, detail="run has no pinned budget")
+        if body.budget_usd <= current_effective:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"new budget ${body.budget_usd:.2f} must exceed current "
+                    f"${current_effective:.2f}"
+                ),
+            )
+
+        budget_raises = attributes.get("budget_raises", [])
+        if not isinstance(budget_raises, list):
+            budget_raises = []
+        raised_at = datetime.now(timezone.utc).isoformat()
+        new_raise = {
+            "from": current_effective,
+            "to": body.budget_usd,
+            "actor_subject": actor_subject,
+            "actor_authority": actor_authority,
+            "at": raised_at,
+        }
+        await merge_workflow_attributes(
+            dbos,
+            workflow_id,
+            {"budget_raises": [*budget_raises, new_raise]},
+        )
+        try:
+            await asyncio.to_thread(
+                _resolve_budget_decision_sync,
+                workflow_id,
+                actor_subject,
+                actor_authority,
+            )
+        except Exception:  # noqa: BLE001 - the persisted raise is authoritative
+            logger.warning(
+                "failed to resolve budget decision for workflow %s",
+                workflow_id,
+                exc_info=True,
+            )
+
+    return {
+        "workflow_id": workflow_id,
+        "budget_usd": body.budget_usd,
+        "actor": actor_subject,
+        "raised_at": raised_at,
     }

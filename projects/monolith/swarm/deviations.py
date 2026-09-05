@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from swarm.budget import effective_budget
+
 
 def _deviation(code: str, node_key: str, evidence: str, text: str) -> dict:
     return {"code": code, "node_key": node_key, "evidence": evidence, "text": text}
@@ -78,7 +80,8 @@ def compute_deviations(run: dict) -> list[dict]:
                 )
 
         cost = run.get("cost_usd")
-        budget = plan.get("budget_usd")
+        attributes = run.get("attributes") or {}
+        budget = effective_budget(plan, attributes)
         if cost is not None and budget is not None:
             try:
                 exceeded = float(cost) > float(budget)
@@ -94,8 +97,8 @@ def compute_deviations(run: dict) -> list[dict]:
                     _deviation(
                         "budget_exceeded",
                         "run",
-                        f"cost_usd: {spent}; pinned budget_usd: {ceiling}",
-                        f"run spent {spent} against a pinned {ceiling} budget.",
+                        f"cost_usd: {spent}; effective budget_usd: {ceiling}",
+                        f"run spent {spent} against effective {ceiling} budget.",
                     )
                 )
 

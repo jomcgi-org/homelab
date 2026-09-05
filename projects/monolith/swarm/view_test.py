@@ -232,9 +232,74 @@ def test_compose_master_needs_fires_for_open_human_decision():
     assert result["runs"][0]["current"] == {"label": "review", "state": "blocked"}
     assert result["runs"][0]["needs"] == {
         "kind": "human",
-        "reason": "waiting on your decision",
+        "reason": "The retry did not move the branch.",
         "decision_kind": "review_escalation",
     }
+
+
+def test_compose_run_surfaces_effective_budget_and_raise_history():
+    status = Status("wf-budget", "PENDING", ["task", "repo", "main", 1.0])
+    raises = [
+        {
+            "from": 1.0,
+            "to": 2.0,
+            "actor_subject": "alice@example.com",
+            "actor_authority": "cloudflare-access",
+            "at": "2026-08-22T12:30:00+00:00",
+        }
+    ]
+
+    run = compose_run(
+        DBOS(
+            Workflow(
+                status,
+                {
+                    "plan": {**FX4_EXPECTED_PLAN, "budget_usd": 1.0},
+                    "budget_raises": raises,
+                },
+            )
+        ),
+        status.workflow_id,
+        [],
+        "unknown",
+    )
+
+    assert run["plan"]["budget_usd"] == 1.0
+    assert run["effective_budget_usd"] == 2.0
+    assert run["budget_raises"] == raises
+
+
+def test_compose_run_renders_budget_block_on_owning_node():
+    status = Status("wf-budget-block", "PENDING", ["task", "repo", "main", 1.0])
+    note = "spent $1.00 of $1.00 budget before review; raise the budget or stop the run"
+
+    run = compose_run(
+        DBOS(
+            Workflow(
+                status,
+                {"plan": {**FX4_EXPECTED_PLAN, "budget_usd": 1.0}},
+            )
+        ),
+        status.workflow_id,
+        [],
+        "unknown",
+        [
+            {
+                "id": 44,
+                "node_key": "review",
+                "kind": "budget",
+                "options": ["raise", "stop"],
+                "note": note,
+                "requested_at": datetime(2026, 8, 22, tzinfo=timezone.utc),
+            }
+        ],
+    )
+
+    review = next(node for node in run["nodes"] if node["key"] == "review")
+    assert review["state"] == "blocked"
+    assert review["blocked_on"]["decision_kind"] == "budget"
+    assert review["blocked_on"]["note"] == note
+    assert review["blocked_on"]["options"] == ["raise", "stop"]
 
 
 @pytest.mark.parametrize("decision", ["send_back", "expired"])

@@ -23,6 +23,43 @@ class FakeClient:
         return self.response
 
 
+def test_read_workflow_attributes(monkeypatch):
+    class FakeDBOS:
+        @staticmethod
+        def get_workflow_status(workflow_id):
+            assert workflow_id == "wf-1"
+            return type("Status", (), {"attributes": {"budget_raises": []}})()
+
+    monkeypatch.setattr(steps, "DBOS", FakeDBOS)
+
+    assert steps.read_workflow_attributes.__wrapped__("wf-1") == {"budget_raises": []}
+
+
+@pytest.mark.parametrize("status", [None, object()])
+def test_read_workflow_attributes_returns_empty_for_missing_attributes(
+    monkeypatch, status
+):
+    class FakeDBOS:
+        @staticmethod
+        def get_workflow_status(workflow_id):
+            return status
+
+    monkeypatch.setattr(steps, "DBOS", FakeDBOS)
+
+    assert steps.read_workflow_attributes.__wrapped__("wf-1") == {}
+
+
+def test_read_workflow_attributes_returns_empty_on_error(monkeypatch):
+    class FakeDBOS:
+        @staticmethod
+        def get_workflow_status(workflow_id):
+            raise RuntimeError("unavailable")
+
+    monkeypatch.setattr(steps, "DBOS", FakeDBOS)
+
+    assert steps.read_workflow_attributes.__wrapped__("wf-1") == {}
+
+
 def test_pin_plan_resolves_config_once(monkeypatch):
     monkeypatch.setenv("SWARM_MAX_ATTEMPTS", "0")
     monkeypatch.setenv("SWARM_IMPLEMENTER_MODEL", "implementer")

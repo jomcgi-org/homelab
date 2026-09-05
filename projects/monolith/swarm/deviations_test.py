@@ -76,6 +76,17 @@ def test_budget_exceeded():
     assert "$1.25" in deviation["text"]
 
 
+def test_budget_raise_prevents_exceeded_deviation():
+    run = {
+        "plan": plan(),
+        "cost_usd": 1.25,
+        "attributes": {"budget_raises": [{"from": 1.0, "to": 1.5}]},
+        "nodes": [],
+    }
+
+    assert compute_deviations(run) == []
+
+
 def test_pin_dependent_deviations_are_absent_when_plan_is_unpinned():
     run = {
         "state": "escalated",

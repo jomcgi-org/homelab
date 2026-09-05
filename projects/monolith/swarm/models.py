@@ -116,7 +116,7 @@ class SwarmDecision(SQLModel, table=True):
     __tablename__ = "swarm_decision"
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('push_gate', 'review_escalation')",
+            "kind IN ('push_gate', 'review_escalation', 'budget')",
             name="swarm_decision_kind_check",
         ),
         Index(

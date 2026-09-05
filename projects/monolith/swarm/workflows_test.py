@@ -55,6 +55,7 @@ def run(
     intents=None,
     decisions=None,
     decision_timeout=60,
+    attributes=None,
 ):
     sessions = iter(turns)
     calls = []
@@ -68,12 +69,18 @@ def run(
 
     class FakeDBOS:
         workflow_id = "wf-1"
+        workflow_attributes = dict(attributes or {})
 
         @staticmethod
         def update_workflow_attributes(workflow_id, values):
             pass
 
     monkeypatch.setattr(workflows, "DBOS", FakeDBOS)
+    monkeypatch.setattr(
+        workflows,
+        "read_workflow_attributes",
+        lambda workflow_id: dict(FakeDBOS.workflow_attributes),
+    )
     monkeypatch.setattr(
         workflows,
         "pin_plan",
@@ -145,6 +152,161 @@ def test_commit_on_first_attempt_goes_to_review(monkeypatch):
     assert len(calls) == 2
     assert calls[0][-2:] == ("implement", 1)
     assert calls[1][-2:] == ("review", 1)
+
+
+def test_budget_blocks_before_review(monkeypatch):
+    decision_calls = []
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+        },
+        decisions=[decision_row("stop", node_key="review", kind="budget")],
+    )
+    original_await = workflows._await_decision
+    monkeypatch.setattr(
+        workflows,
+        "_await_decision",
+        lambda *args: decision_calls.append(args) or original_await(*args),
+    )
+
+    result = workflow("task", "jomcgi/homelab", "main", budget_usd=1)
+
+    assert result["status"] == "budget_exhausted"
+    assert result["cost_usd"] == 1
+    assert result["decision"]["kind"] == "budget"
+    assert result["decision"]["node_key"] == "review"
+    assert [call[-2:] for call in calls] == [("implement", 1)]
+    assert decision_calls[0][1:4] == ("review", "budget", ["raise", "stop"])
+    assert "before review" in decision_calls[0][4]
+
+
+def test_budget_raise_with_sufficient_ceiling_resumes_review(monkeypatch):
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+            201: {
+                "commit_sha": None,
+                "result_text": "VERDICT: APPROVE",
+                "cost_usd": 1,
+            },
+        },
+    )
+    decisions = []
+
+    def raise_budget(*args):
+        decisions.append(args)
+        workflows.DBOS.workflow_attributes["budget_raises"] = [{"from": 1, "to": 2}]
+        return decision_row("raise", node_key="review", kind="budget")
+
+    monkeypatch.setattr(workflows, "_await_decision", raise_budget)
+
+    result = workflow("task", "jomcgi/homelab", "main", budget_usd=1)
+
+    assert result["status"] == "review"
+    assert result["review_verdict"] == "approve"
+    assert [call[-2:] for call in calls] == [("implement", 1), ("review", 1)]
+    assert len(decisions) == 1
+
+
+def test_budget_block_uses_implement_node_for_review_send_back(monkeypatch):
+    decision_calls = []
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 0.5},
+            201: {
+                "commit_sha": None,
+                "result_text": "VERDICT: REQUEST_CHANGES",
+                "cost_usd": 0.5,
+            },
+        },
+        heads=[None, "abc"],
+        decisions=[decision_row("stop", node_key="implement", kind="budget")],
+    )
+    original_await = workflows._await_decision
+    monkeypatch.setattr(
+        workflows,
+        "_await_decision",
+        lambda *args: decision_calls.append(args) or original_await(*args),
+    )
+
+    result = workflow("task", "jomcgi/homelab", "main", budget_usd=1)
+
+    assert result["status"] == "budget_exhausted"
+    assert result["decision"]["node_key"] == "implement"
+    assert [call[-2:] for call in calls] == [("implement", 1), ("review", 1)]
+    assert decision_calls[0][1:4] == ("implement", "budget", ["raise", "stop"])
+
+
+@pytest.mark.parametrize("decision", ["stop", "expired"])
+def test_budget_stop_or_expiry_ends_run(monkeypatch, decision):
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+        },
+        decisions=[decision_row(decision, node_key="review", kind="budget")],
+    )
+
+    result = workflow("task", "jomcgi/homelab", "main", budget_usd=1)
+
+    assert result["status"] == "budget_exhausted"
+    assert result["decision"]["decision"] == decision
+    assert [call[-2:] for call in calls] == [("implement", 1)]
+
+
+def test_run_under_budget_never_opens_budget_decision(monkeypatch):
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+            201: {
+                "commit_sha": None,
+                "result_text": "VERDICT: APPROVE",
+                "cost_usd": 1,
+            },
+        },
+    )
+    decision_calls = []
+    monkeypatch.setattr(
+        workflows,
+        "_await_decision",
+        lambda *args: decision_calls.append(args) or decision_row(),
+    )
+
+    result = workflow("task", "jomcgi/homelab", "main", budget_usd=3)
+
+    assert result["status"] == "review"
+    assert len(calls) == 2
+    assert decision_calls == []
+
+
+def test_run_without_budget_never_opens_budget_decision(monkeypatch):
+    calls = run(
+        monkeypatch,
+        {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+            201: {
+                "commit_sha": None,
+                "result_text": "VERDICT: APPROVE",
+                "cost_usd": 1,
+            },
+        },
+    )
+    decision_calls = []
+    monkeypatch.setattr(
+        workflows,
+        "_await_decision",
+        lambda *args: decision_calls.append(args) or decision_row(),
+    )
+
+    result = workflow("task", "jomcgi/homelab", "main", budget_usd=None)
+
+    assert result["status"] == "review"
+    assert len(calls) == 2
+    assert decision_calls == []
 
 
 def test_explicit_model_is_used_by_implementer(monkeypatch):
