@@ -306,9 +306,8 @@ def prefill_chunk() -> Figure:
 
 
 def moe_selection() -> Figure:
-    f = Figure(700, 250, "One MoE layer: route, run selected experts, combine")
-    f.text(18, 20, "ONE MoE LAYER", size=13, weight="bold")
-    f.text(682, 20, "repeated through the model", anchor="end")
+    f = Figure(700, 226, "One MoE layer: route, run selected experts, combine")
+    f.parts.append('<g transform="translate(0 -24)">')
     f.text(18, 125, "input")
     f.arrow(58, 121, 95, 121)
     f.box(95, 96, 100, 50)
@@ -329,46 +328,38 @@ def moe_selection() -> Figure:
     f.arrow(577, 121, 630, 121)
     f.text(640, 125, "output")
     f.text(330, 225, "solid: selected   dashed: idle", anchor="middle")
+    f.parts.append("</g>")
     return f
 
 
 def expert_paths() -> Figure:
-    f = Figure(700, 284, "Selected experts: three paths to computation")
-    f.text(18, 20, "WHERE THE WEIGHTS LIVE", size=13, weight="bold")
-    f.text(682, 20, "illustrative 2.6 MB expert", anchor="end")
+    f = Figure(700, 286, "Expert transfer vs bandwidth")
+    f.text(18, 24, "WEIGHTS")
+    f.text(270, 24, "ACCESS / 2.6 MB", anchor="middle")
+    f.text(420, 24, "BANDWIDTH", anchor="middle")
+    f.text(616, 24, "COMPUTE", anchor="middle")
+    f.line(18, 36, 682, 36)
     rows = [
-        ("HOT", "hot", "GPU VRAM", "~3 us read", "1 TB/s", "GPU compute"),
-        ("WARM", "warm", "Pinned RAM", "~100 us over PCIe", "25 GB/s", "GPU compute"),
-        (
-            "COLD",
-            "cold",
-            "Page cache / NVMe",
-            "~40 us hit / ~370 us bulk read",
-            "RAM / 7 GB/s NVMe",
-            "CPU compute",
-        ),
+        ("HOT", "hot", "GPU VRAM", "~3 us", "1 TB/s"),
+        ("WARM", "warm", "Pinned RAM / PCIe", "~100 us", "25 GB/s"),
+        ("COLD", "cold", "Page cache hit", "~40 us", "RAM speed"),
+        ("COLD", "cold", "NVMe bulk read", "~370 us", "7 GB/s"),
     ]
-    for i, (name, color, location, cost, bandwidth, compute) in enumerate(rows):
-        y = 43 + i * 68
+    for i, (name, color, location, cost, bandwidth) in enumerate(rows):
+        y = 48 + i * 58
         f.parts.append(
-            f'<rect x="18" y="{y}" width="5" height="48" fill="var(--replay-{color})"/>'
+            f'<rect x="18" y="{y}" width="5" height="40" fill="var(--replay-{color})"/>'
         )
-        f.text(34, y + 17, name, weight="bold")
-        f.text(34, y + 35, location)
-        f.text(375, y + 12, cost, anchor="middle")
-        f.arrow(192, y + 24, 557, y + 24)
-        f.text(375, y + 43, bandwidth, anchor="middle")
-        f.box(567, y, 115, 48)
-        f.text(624, y + 28, compute, anchor="middle")
-    f.line(18, 241, 682, 241)
-    f.text(
-        18, 259, "Weight access estimates, not compute time. Paths are not to scale."
-    )
-    f.text(
-        18,
-        276,
-        "Cold 4 KB page faults can cost ~10 ms per expert instead of a bulk read.",
-    )
+        f.text(34, y + 13, name, weight="bold")
+        f.text(34, y + 32, location)
+        f.text(270, y + 27, cost, anchor="middle", size=18)
+        f.text(420, y + 26, bandwidth, anchor="middle", size=14)
+        f.line(496, y + 20, 525, y + 20)
+    for y, compute in ((48, "GPU"), (164, "CPU")):
+        f.line(525, y + 20, 525, y + 78)
+        f.arrow(525, y + 49, 557, y + 49)
+        f.box(567, y + 23, 98, 52)
+        f.text(616, y + 55, compute, anchor="middle", size=18, weight="bold")
     return f
 
 
