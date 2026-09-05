@@ -29,7 +29,6 @@ spec:
         valueFiles:
           - $values/projects/embervm/deploy/values.yaml
           - $values/projects/embervm/deploy/values-gke.yaml
-        ignoreMissingValueFiles: false
     - repoURL: https://github.com/jomcgi-org/homelab.git
       targetRevision: HEAD
       ref: values

@@ -25,7 +25,6 @@ spec:
         valueFiles:
           - $values/projects/monolith/deploy/values.yaml
           - $values/projects/monolith/deploy/values-gke.yaml
-        ignoreMissingValueFiles: false
     - repoURL: https://github.com/jomcgi-org/homelab.git
       targetRevision: HEAD
       ref: values
