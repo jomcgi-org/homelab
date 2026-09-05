@@ -7,6 +7,14 @@ metadata:
     app.kubernetes.io/part-of: shared-infrastructure
   annotations:
     argocd.argoproj.io/sync-wave: "2"
+    # Server-side diff for this app. ArgoCD 3.1 forces structured-merge diff
+    # for any app with ServerSideApply=true, and that path re-serializes
+    # volumeClaimTemplates[].metadata.creationTimestamp: null into the
+    # predicted state AFTER ignoreDifferences ran, so spire-server read
+    # OutOfSync forever (argoproj/argo-cd#24791, open at v3.1.8). The
+    # server-side path normalizes the predicted state after its dry run,
+    # so the jqPathExpressions below actually apply to it.
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
