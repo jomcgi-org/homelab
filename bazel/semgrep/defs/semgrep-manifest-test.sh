@@ -65,6 +65,11 @@ cp "$SEMGREP_PRO_ENGINE" "$PRO_DIR/semgrep-core-proprietary"
 chmod 755 "$PRO_DIR/semgrep-core-proprietary"
 ENGINE="$PRO_DIR/semgrep-core-proprietary"
 
+# Copy libs beside the Pro binary so RPATH=$ORIGIN/libs works
+if [[ -d "$(dirname "$SEMGREP_CORE")/libs" ]]; then
+	cp -r "$(dirname "$SEMGREP_CORE")/libs" "$PRO_DIR/"
+fi
+
 # Pro engine requires a non-empty SEMGREP_APP_TOKEN for interfile analysis.
 # Redirect the API endpoint to a dead socket so the engine never phones home
 # (interfile analysis works offline; token is only checked for presence).

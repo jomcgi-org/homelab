@@ -130,8 +130,26 @@ jobs:
                 unzip -p "/tmp/semgrep-${arch}.whl" "*/semgrep/bin/semgrep-core" > "${dir}/semgrep-core"
                 chmod 755 "${dir}/semgrep-core"
 
+                if [[ "${arch}" == "amd64" || "${arch}" == "arm64" ]]; then
+                  if ! unzip -j "/tmp/semgrep-${arch}.whl" "*/semgrep/bin/libs/*" -d "${dir}/libs"; then
+                    echo "ERROR: no libs extracted for ${arch}"
+                    exit 1
+                  fi
+                  if [ ! -d "${dir}/libs" ] || [ -z "$(ls -A "${dir}/libs")" ]; then
+                    echo "ERROR: no libs extracted for ${arch}"
+                    exit 1
+                  fi
+                else
+                  # macOS engines do not rely on RPATH=$ORIGIN/libs, so libs are optional.
+                  unzip -j "/tmp/semgrep-${arch}.whl" "*/semgrep/bin/libs/*" -d "${dir}/libs" 2>/dev/null || true
+                fi
+
                 SIZE=$(stat --format=%s "${dir}/semgrep-core")
-                echo "[oss-engine-${arch}] Extracted (${SIZE} bytes)"
+                LIB_COUNT=0
+                if [ -d "${dir}/libs" ]; then
+                  LIB_COUNT=$(find "${dir}/libs" -type f | wc -l)
+                fi
+                echo "[oss-engine-${arch}] Extracted ${SIZE} bytes, ${LIB_COUNT} libraries"
                 if [ "${SIZE}" -lt 30000000 ]; then
                   echo "ERROR: oss-engine-${arch} is suspiciously small (${SIZE} bytes, expected >30MB)"
                   exit 1
