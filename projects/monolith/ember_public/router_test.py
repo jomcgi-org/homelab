@@ -11,7 +11,6 @@ demos/firecracker_api_test.py.
 from __future__ import annotations
 
 import re
-import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -101,6 +100,73 @@ def test_postgres_status_shapes_control_plane_payload(monkeypatch):
     assert body["pair_valid"] is True
     assert body["healthy"] is True
     assert body["last_active_at"] == "2026-07-17T10:00:00Z"
+    assert body["anchor"] is None
+    assert body["recovery"] is None
+    assert body["preempted"] is None
+
+
+@pytest.mark.parametrize(
+    ("anchor", "recovery", "phase", "expected_since_ms"),
+    [
+        (
+            {
+                "node_id": "spot-a",
+                "health": "down",
+                "draining": False,
+                "missing_since_ms": None,
+            },
+            None,
+            "confirming",
+            None,
+        ),
+        (
+            {
+                "node_id": "spot-a",
+                "health": "unknown",
+                "draining": False,
+                "missing_since_ms": 1_700_000_000_000,
+            },
+            "restoring",
+            "restoring",
+            5000,
+        ),
+        (
+            {
+                "node_id": "spot-a",
+                "health": "unknown",
+                "draining": False,
+                "missing_since_ms": 1_700_000_000_000,
+            },
+            "cold",
+            "cold",
+            5000,
+        ),
+    ],
+)
+def test_postgres_status_shapes_preemption_phases(
+    monkeypatch, anchor, recovery, phase, expected_since_ms
+):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "http://embervm")
+    monkeypatch.setattr(core, "time", lambda: 1_700_000_005.0)
+
+    async def fake_status():
+        return _pg_status_payload(anchor=anchor, recovery=recovery)
+
+    async def fake_record(_state, _generation):
+        return None
+
+    monkeypatch.setattr(core, "fetch_demo_pg_status", fake_status)
+    monkeypatch.setattr(core, "record_demo_pg_savings", fake_record)
+
+    body = _client().get("/api/ember/postgres/status").json()
+
+    assert body["anchor"] == anchor
+    assert body["recovery"] == recovery
+    assert body["preempted"] == {
+        "since_ms": expected_since_ms,
+        "phase": phase,
+    }
 
 
 def test_shape_pg_status_includes_park_fields():
@@ -401,6 +467,34 @@ def test_postgres_query_connect_failure_is_in_band(monkeypatch):
     assert body["classification"] == "warm"
 
 
+def test_postgres_query_preemption_hides_driver_error(monkeypatch):
+    monkeypatch.setenv("DEMO_POSTGRES_DSN", "postgresql://x")
+    monkeypatch.setattr(core, "EMBERVM_URL", "http://embervm")
+
+    async def fake_status():
+        return _pg_status_payload(
+            state="serving",
+            anchor={"health": "down", "draining": False},
+            recovery="restoring",
+        )
+
+    def fake_roundtrip(_dsn, _mode, _session_tag):
+        raise OSError("server closed the connection unexpectedly")
+
+    monkeypatch.setattr(core, "fetch_demo_pg_status", fake_status)
+    monkeypatch.setattr(core, "demo_pg_orders_roundtrip", fake_roundtrip)
+
+    body = _client().post("/api/ember/postgres/query", json={}).json()
+
+    assert body["classification"] == "preempted"
+    assert body["error"] == (
+        "the brick hosting this demo was preempted, the control plane is restoring it"
+    )
+    assert body["phase_before"] == "serving"
+    assert body["total_ms"] >= 0
+    assert "server closed" not in body["error"]
+
+
 def test_presence_ttl_prunes_and_counts(monkeypatch):
     core._presence.clear()
     clock = {"t": 1000.0}
@@ -445,6 +539,32 @@ def test_classify_wake_paths():
     assert core.classify_wake({"state": "banked", "pair_valid": False}) == "cold"
     assert core.classify_wake({"state": None}) == "cold"
     assert core.classify_wake({"state": "relighting"}) == "transitional"
+    assert (
+        core.classify_wake(
+            {
+                "state": None,
+                "recovery": "cold",
+                "anchor": {"health": "healthy", "draining": False},
+            }
+        )
+        == "cold"
+    )
+    assert (
+        core.classify_wake(
+            {"state": "serving", "recovery": "anchor_lost", "anchor": None}
+        )
+        == "preempted"
+    )
+    assert (
+        core.classify_wake(
+            {
+                "state": "banked",
+                "pair_valid": True,
+                "anchor": {"health": "healthy", "draining": True},
+            }
+        )
+        == "preempted"
+    )
 
 
 def test_postgres_session_mint_without_turnstile_secret(monkeypatch):

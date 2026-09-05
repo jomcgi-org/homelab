@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import ember_public.core as core
 from ember_public.synthetic import read_probe
 
 # All four of the ORIGINAL synthetic probes run in the one ember-synthetic
@@ -36,6 +37,34 @@ def synthetic_probe_health(demo: str, staleness_s: float):
             return {"ok": True, "detail": "no probe recorded yet"}
         if not row.ok:
             detail = row.detail
+            preempted = None
+            if demo == "postgres" and core.EMBERVM_URL:
+                try:
+                    live_status = await core.cached_demo_pg_status()
+                    preempted = core.preemption_status(live_status)
+                except Exception:  # noqa: BLE001 - attribution is best-effort
+                    preempted = None
+            if preempted is not None:
+                downtime_ms = preempted["since_ms"]
+                if downtime_ms is None and row.last_ok_at is not None:
+                    last_ok_at = (
+                        row.last_ok_at.replace(tzinfo=timezone.utc)
+                        if row.last_ok_at.tzinfo is None
+                        else row.last_ok_at
+                    )
+                    downtime_ms = max(
+                        0.0,
+                        (datetime.now(timezone.utc) - last_ok_at).total_seconds()
+                        * 1000,
+                    )
+                prefix = "brick preempted, control plane restoring"
+                if downtime_ms is not None:
+                    prefix += f", down for {downtime_ms / 60_000:.0f}m"
+                return {
+                    "ok": False,
+                    "detail": f"{prefix}: {detail}",
+                    "cause": "preemption",
+                }
             if row.last_ok_at is not None:
                 now = datetime.now(timezone.utc)
                 last_ok_at = (

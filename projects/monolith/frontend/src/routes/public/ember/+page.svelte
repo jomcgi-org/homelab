@@ -33,16 +33,26 @@
     cold_booting: "waking",
     starting: "waking",
     serving: "awake",
+    failed: "offline",
+    evicted: "offline",
+    destroying: "offline",
+    destroyed: "offline",
+    preempted: "rehoming",
   };
 
   let status = $state(data.status);
-  let stateWord = $derived(STATE_WORD[status?.state ?? ""] ?? null);
+  let isPreempted = $derived(!!status?.preempted);
+  let stateWord = $derived(
+    STATE_WORD[isPreempted ? "preempted" : (status?.state ?? "")] ?? "offline",
+  );
   let dotClass = $derived(
-    stateWord === "awake"
-      ? "live"
-      : stateWord === "waking" || stateWord === "falling asleep"
-        ? "waking"
-        : "cold",
+    isPreempted
+      ? "preempted"
+      : stateWord === "awake"
+        ? "live"
+        : stateWord === "waking" || stateWord === "falling asleep"
+          ? "waking"
+          : "cold",
   );
 
   // Mirrors EmberStage.gbHours: raw MiB·s from the backend, shown as GB·h.
@@ -125,15 +135,22 @@
       <p class="live">
         <span class="dot {dotClass}"></span>
         <span class="live-text">
-          {#if stateWord === "awake"}
+          {#if isPreempted}
+            the demo Postgres is being rehomed after a Spot preemption.
+            <a href="/ember/postgres">watch the automatic recovery</a>
+          {:else if stateWord === "awake"}
             the demo Postgres is <b>awake</b> right now.
             <a href="/ember/postgres">open the console</a>
           {:else if stateWord === "waking" || stateWord === "falling asleep"}
             the demo Postgres is <b>{stateWord}</b>.
             <a href="/ember/postgres">watch it on the live demo</a>
           {:else}
-            the demo Postgres is <b>asleep</b> right now.
-            <a href="/ember/postgres">wake it yourself on the live demo</a>
+            the demo Postgres is <b>{stateWord}</b> right now.
+            {#if stateWord === "asleep"}
+              <a href="/ember/postgres">wake it yourself on the live demo</a>
+            {:else}
+              <a href="/ember/postgres">open the console</a>
+            {/if}
           {/if}
         </span>
       </p>
@@ -142,7 +159,7 @@
         <span class="sep">·</span>
         <span><b>~{vmRestore} ms</b> VM restore</span>
         <span class="sep">·</span>
-        <span>{stateWord ?? "asleep"} now</span>
+        <span>{stateWord} now</span>
         <span class="sep">·</span>
         <a
           class="src"
@@ -710,6 +727,13 @@ serving                            → plain HTTP, straight into the VM</pre>
     animation: breathe-warm 0.9s ease-in-out infinite;
   }
 
+  .dot.preempted {
+    background: var(--em-amber);
+    box-shadow: 0 0 10px 2px
+      color-mix(in srgb, var(--em-amber) 55%, transparent);
+    animation: breathe-warm 0.9s ease-in-out infinite;
+  }
+
   .dot.live {
     background: radial-gradient(
       circle at 35% 35%,
@@ -1235,6 +1259,7 @@ serving                            → plain HTTP, straight into the VM</pre>
 
     .dot.cold,
     .dot.waking,
+    .dot.preempted,
     .dot.live {
       animation: none;
     }

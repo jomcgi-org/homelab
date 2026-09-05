@@ -38,6 +38,7 @@ export async function GET({ fetch }) {
     // detail strings. Advisory components are listed separately under degraded.
     let failing = [];
     let degraded = [];
+    let causes;
     try {
       const body = await res.json();
       // Guard the shape once: a non-array degraded (an older backend, a
@@ -49,6 +50,13 @@ export async function GET({ fetch }) {
         .filter(([name, c]) => !c?.ok && !advisoryNames.has(name))
         .map(([name]) => name)
         .sort();
+      if (
+        body?.causes &&
+        typeof body.causes === "object" &&
+        !Array.isArray(body.causes)
+      ) {
+        causes = body.causes;
+      }
     } catch {
       // Non-JSON or unreadable error body: names are simply unavailable.
     }
@@ -58,6 +66,7 @@ export async function GET({ fetch }) {
         backendStatus: res.status,
         ...(failing.length ? { failing } : {}),
         ...(degraded.length ? { degraded } : {}),
+        ...(causes ? { causes } : {}),
       },
       { status: 503 },
     );

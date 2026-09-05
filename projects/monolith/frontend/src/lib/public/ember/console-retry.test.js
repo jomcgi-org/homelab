@@ -95,6 +95,7 @@ describe("phaseLabel", () => {
     ["starting", "restoring"],
     ["cold_booting", "cold booting"],
     ["banked", "waking"],
+    ["preempted", "rehoming"],
   ])("labels %s", (state, expected) => {
     expect(phaseLabel(state)).toBe(expected);
   });

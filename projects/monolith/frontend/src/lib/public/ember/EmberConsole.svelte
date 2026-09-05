@@ -40,6 +40,8 @@
 
   const API = "/ember/postgres/api";
   const POLL_MS = 700;
+  const PREEMPTION_COPY =
+    "The Spot node hosting this Postgres was preempted. The control plane is restoring the volume from the object store.";
 
   // Clicks during a lifecycle transition (mid-bank, wake-rate limiter) fail
   // transiently; retry the same request under the still-ticking stopwatch so
@@ -78,9 +80,13 @@
     : initialSavings
       ? { total_saved_mib_s: initialSavings.total_saved_mib_s }
       : null;
-  let statusError = $state("");
+  let statusError = $state(status?.preempted ? PREEMPTION_COPY : "");
   let lastRun = $state(null);
   let runError = $state("");
+  let runErrorKind = $state("");
+  let livePhase = $derived(
+    phaseLabel(status?.preempted ? "preempted" : status?.state),
+  );
 
   // Which result shape the right column shows. INSERT lands on the orders
   // grid; the aggregate query switches to the summary table.
@@ -314,7 +320,7 @@
         statusError = body.error;
         return;
       }
-      statusError = "";
+      statusError = body.preempted ? PREEMPTION_COPY : "";
       // Stale-poll guard: the status read is cached ~500ms and polled at
       // 700ms, so right after a completed run the poll can still say
       // "banked" while we already know the VM served us. Accepting that
@@ -428,7 +434,12 @@
       };
     }
     if (body.error) {
-      return { ok: false, error: body.error };
+      return {
+        ok: false,
+        classification: body.classification,
+        error:
+          body.classification === "preempted" ? PREEMPTION_COPY : body.error,
+      };
     }
     return { ok: true, body };
   }
@@ -437,11 +448,13 @@
     if (running) return;
     running = true;
     runError = "";
+    runErrorKind = "";
     startStopwatch();
     try {
       const result = await fetchWithBackoff(() => attemptQuery(mode));
       if (!result.ok) {
         runError = result.error;
+        runErrorKind = result.classification ?? "";
         return;
       }
       const body = result.body;
@@ -700,10 +713,17 @@
     </div>
 
     {#if runError}
-      <p class="run-error">{runError}</p>
+      <p
+        class="run-error"
+        class:preempted-notice={runErrorKind === "preempted"}
+      >
+        {runError}
+      </p>
     {/if}
     {#if statusError}
-      <p class="soft-error">status: {statusError}</p>
+      <p class="soft-error" class:preempted-notice={!!status?.preempted}>
+        status: {statusError}
+      </p>
     {/if}
 
     <div class="stats-card">
@@ -716,8 +736,8 @@
               <span class="fade-swap" in:fade={{ duration: 220 }}>
                 {running ? ms(stopwatchMs) : ms(lastRun?.connect_ms)}
               </span>
-              {#if running && phaseLabel(status?.state)}
-                <span class="stat-phase">{phaseLabel(status?.state)}</span>
+              {#if running && livePhase}
+                <span class="stat-phase">{livePhase}</span>
               {/if}
             {/key}
           </span>
@@ -1108,6 +1128,13 @@
     margin: 0;
     color: var(--em-ember-deep);
     font-size: 13px;
+  }
+
+  .preempted-notice {
+    color: var(--em-ink);
+    background: color-mix(in srgb, var(--em-amber) 25%, transparent);
+    border-left: 3px solid var(--em-amber);
+    padding: 6px 9px;
   }
 
   .stats-card {
