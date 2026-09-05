@@ -62,3 +62,30 @@ test("switching turns stops playback, and replay never calls the live service", 
   );
   expect(fetch).not.toHaveBeenCalled();
 });
+
+test("tier keys highlight matching routing and history above the transcript", async () => {
+  const view = await render();
+  const telemetry = view.querySelector(".telemetry");
+  expect(
+    telemetry.compareDocumentPosition(view.querySelector(".answer")) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  const hot = view.querySelector("button.tier.hot");
+  hot.click();
+  await tick();
+  expect(hot.getAttribute("aria-pressed")).toBe("true");
+  expect(
+    view.querySelector(".activity-bar .warm").classList.contains("dimmed"),
+  ).toBe(true);
+  expect(
+    view
+      .querySelector(".routing-history rect.hot")
+      .classList.contains("dimmed"),
+  ).toBe(false);
+  expect(view.querySelector(".tier-description").textContent).toContain(
+    "GPU slots",
+  );
+  hot.click();
+  await tick();
+  expect(view.querySelectorAll(".dimmed").length).toBe(0);
+});
