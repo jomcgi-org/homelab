@@ -1029,6 +1029,7 @@ defmodule Embervm.Application do
       node_confirmed_destroy: node_confirmed_destroy_enabled(),
       destroying_alarm_ms: destroying_alarm_ms(),
       orphan_grace_ms: orphan_grace_ms(),
+      create_concurrency: session_create_concurrency(),
       # #4355 pressure-parked wake retry cadence and bound.
       pressure_retry_interval_ms: session_pressure_retry_interval_ms(),
       pressure_wait_bound_ms: session_pressure_wait_bound_ms(),
@@ -1038,6 +1039,13 @@ defmodule Embervm.Application do
       async_lifecycle_writes: async_lifecycle_writes_enabled(),
       async_writer: Embervm.AsyncWriter
     ] ++ wake_opts()
+  end
+
+  defp session_create_concurrency do
+    case trimmed_env("EMBERVM_CREATE_CONCURRENCY") do
+      "" -> Embervm.SessionManager.default_create_concurrency()
+      raw -> String.to_integer(raw)
+    end
   end
 
   # Retry cadence for a wake parked behind node memory pressure (#4355;

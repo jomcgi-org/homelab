@@ -12,6 +12,7 @@ defmodule Embervm.SessionManagerTest do
   isolated from the application's supervised session subtree.
   """
   use ExUnit.Case, async: false
+  import ExUnit.CaptureLog
 
   alias Embervm.{Dispatcher, NodeCapacity, SessionManager, SessionStore, TaskStore, WorkloadCatalog}
   alias Embervm.KeyService.Envelope
@@ -795,9 +796,10 @@ defmodule Embervm.SessionManagerTest do
     assert [{_pid, _}] = Registry.lookup(ctx.registry, created.session_id)
   end
 
-  test "create admission denies saturation, audits it, and reopens after a worker finishes" do
+  test "create admission rate-limits saturation warnings without metering and reopens" do
     parent = self()
     meter_table = :"create_admission_meter_#{System.unique_integer([:positive])}"
+    {:ok, monotonic_clock} = Agent.start_link(fn -> 1_000 end)
 
     {:ok, metering} =
       Embervm.Metering.start_link(
@@ -816,34 +818,168 @@ defmodule Embervm.SessionManagerTest do
       end
     end
 
-    ctx = start_stack(create_concurrency: 1, metering: metering, claim_fun: claim_fun)
+    ctx =
+      start_stack(
+        create_concurrency: 1,
+        metering: metering,
+        claim_fun: claim_fun,
+        monotonic_clock: fn -> Agent.get(monotonic_clock, & &1) end
+      )
+
     put_session_workload(ctx, "wl-create-admission")
 
     first = Task.async(fn -> SessionManager.create(ctx.mgr, "wl-create-admission", "p1") end)
     assert_receive {:create_claim_started, first_worker}, 1_000
-    assert SessionManager.create_admission_stats(ctx.mgr) == {1, 1}
+    assert SessionManager.create_admission_stats(ctx.mgr) == {1, 1, 0}
 
-    second = Task.async(fn -> SessionManager.create(ctx.mgr, "wl-create-admission", "p2") end)
+    log =
+      capture_log(fn ->
+        second = Task.async(fn -> SessionManager.create(ctx.mgr, "wl-create-admission", "p2") end)
 
-    assert Task.await(second, 250) == {:error, {:denied, :create_saturated}}
+        assert Task.await(second, 1_000) == {:error, {:denied, :create_saturated}}
 
-    assert_receive {:metering_op,
-                    %Embervm.OpLog.Op{
-                      kind: :denied,
-                      principal: "p2",
-                      workload: "wl-create-admission",
-                      payload: %{reason: :create_saturated}
-                    }},
-                   1_000
+        assert SessionManager.create(ctx.mgr, "wl-create-admission", "p3") ==
+                 {:error, {:denied, :create_saturated}}
+      end)
+
+    assert length(Regex.scan(~r/create denied: saturated/, log)) == 1
+    assert log =~ "inflight=1 cap=1 workload=wl-create-admission, suppressed=0 since last line"
+    assert SessionManager.create_admission_stats(ctx.mgr) == {1, 1, 2}
+    assert :sys.get_state(ctx.mgr).saturation_suppressed == 1
+
+    Agent.update(monotonic_clock, &(&1 + 10_000))
+
+    next_log =
+      capture_log(fn ->
+        assert SessionManager.create(ctx.mgr, "wl-create-admission", "p4") ==
+                 {:error, {:denied, :create_saturated}}
+      end)
+
+    assert length(Regex.scan(~r/create denied: saturated/, next_log)) == 1
+    assert next_log =~ "suppressed=1 since last line"
+    assert SessionManager.create_admission_stats(ctx.mgr) == {1, 1, 3}
+    refute_receive {:metering_op, %Embervm.OpLog.Op{kind: :denied}}, 100
 
     send(first_worker, :release)
     assert {:ok, _created} = Task.await(first, 1_000)
-    assert SessionManager.create_admission_stats(ctx.mgr) == {0, 1}
+    assert SessionManager.create_admission_stats(ctx.mgr) == {0, 1, 3}
 
-    third = Task.async(fn -> SessionManager.create(ctx.mgr, "wl-create-admission", "p3") end)
-    assert_receive {:create_claim_started, third_worker}, 1_000
-    send(third_worker, :release)
-    assert {:ok, _created} = Task.await(third, 1_000)
+    after_release = Task.async(fn -> SessionManager.create(ctx.mgr, "wl-create-admission", "p5") end)
+    assert_receive {:create_claim_started, after_release_worker}, 1_000
+    send(after_release_worker, :release)
+    assert {:ok, _created} = Task.await(after_release, 1_000)
+  end
+
+  test "a crashed create worker releases its admission slot" do
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    claim_fun = fn _dispatcher, _node, _workload ->
+      case Agent.get_and_update(calls, fn count -> {count, count + 1} end) do
+        0 -> raise "claim crashed"
+        _ -> {:ok, "vm-after-crash"}
+      end
+    end
+
+    ctx = start_stack(create_concurrency: 1, claim_fun: claim_fun)
+    put_session_workload(ctx, "wl-create-crash")
+
+    assert {:error,
+            {:denied,
+             {:create_worker_crashed, %RuntimeError{message: "claim crashed"}}}} =
+             SessionManager.create(ctx.mgr, "wl-create-crash", "p1")
+
+    assert SessionManager.create_admission_stats(ctx.mgr) == {0, 1, 0}
+    assert {:ok, _created} = SessionManager.create(ctx.mgr, "wl-create-crash", "p2")
+  end
+
+  test "a same-key waiter parks before the create concurrency check" do
+    parent = self()
+
+    claim_fun = fn _dispatcher, _node, _workload ->
+      send(parent, {:create_claim_started, self()})
+
+      receive do
+        :release -> {:ok, "vm-keyed-create"}
+      end
+    end
+
+    ctx = start_stack(create_concurrency: 1, claim_fun: claim_fun)
+    put_session_workload(ctx, "wl-create-keyed")
+
+    first =
+      Task.async(fn ->
+        SessionManager.create(ctx.mgr, "wl-create-keyed", "p1", nil,
+          idempotency_key: "same-key"
+        )
+      end)
+
+    assert_receive {:create_claim_started, first_worker}, 1_000
+
+    waiter =
+      Task.async(fn ->
+        SessionManager.create(ctx.mgr, "wl-create-keyed", "p1", nil,
+          idempotency_key: "same-key"
+        )
+      end)
+
+    assert Task.yield(waiter, 50) == nil
+
+    different_key =
+      Task.async(fn ->
+        SessionManager.create(ctx.mgr, "wl-create-keyed", "p1", nil,
+          idempotency_key: "different-key"
+        )
+      end)
+
+    assert Task.await(different_key, 1_000) ==
+             {:error, {:denied, :create_saturated}}
+
+    send(first_worker, :release)
+    assert {:ok, created} = Task.await(first, 1_000)
+    assert {:ok, replayed} = Task.await(waiter, 1_000)
+    assert replayed.session_id == created.session_id
+    assert replayed.replayed == true
+    refute Map.has_key?(replayed, :token)
+  end
+
+  test "create_concurrency zero admits all creates" do
+    parent = self()
+
+    claim_fun = fn _dispatcher, _node, _workload ->
+      send(parent, {:create_claim_started, self()})
+
+      receive do
+        :release -> {:ok, "vm-#{System.unique_integer([:positive])}"}
+      end
+    end
+
+    ctx = start_stack(create_concurrency: 0, claim_fun: claim_fun)
+    put_session_workload(ctx, "wl-create-unlimited")
+
+    creates =
+      for principal <- ["p1", "p2", "p3"] do
+        Task.async(fn ->
+          SessionManager.create(ctx.mgr, "wl-create-unlimited", principal)
+        end)
+      end
+
+    workers =
+      Enum.map(1..3, fn _ ->
+        assert_receive {:create_claim_started, worker}, 1_000
+        worker
+      end)
+
+    assert SessionManager.create_admission_stats(ctx.mgr) == {3, 0, 0}
+    Enum.each(workers, &send(&1, :release))
+    Enum.each(creates, fn create -> assert {:ok, _created} = Task.await(create, 1_000) end)
+  end
+
+  test "create_concurrency rejects values that are not non-negative integers" do
+    for invalid <- [-1, 1.5, "1", nil] do
+      assert_raise ArgumentError, ~r/create_concurrency must be a non-negative integer/, fn ->
+        SessionManager.init(create_concurrency: invalid)
+      end
+    end
   end
 
   test "records primed op on successful session create prime" do
