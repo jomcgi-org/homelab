@@ -18,13 +18,17 @@ async def _leader_start(app):
     from swarm import runtime
 
     runtime.launch()
+    app.state.leader_singletons_dbos_launched = runtime.is_launched()
     return []
 
 
 async def _leader_stop(app):
     from swarm import runtime
 
-    runtime.shutdown()
+    try:
+        runtime.shutdown()
+    finally:
+        app.state.leader_singletons_dbos_launched = False
 
 
 MODULE = _Module(

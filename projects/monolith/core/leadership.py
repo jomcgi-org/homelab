@@ -29,6 +29,7 @@ logger = logging.getLogger("monolith.leadership")
 LEASE_KEY = "singletons"
 RENEW_INTERVAL = 2.0  # seconds between heartbeats
 LEASE_TTL = 5.0  # seconds of missed heartbeats before the lease can be stolen
+MAX_CONSECUTIVE_ACQUIRE_FAILURES = 3
 
 # platform.node() is the pod name under Kubernetes (matches scheduler._HOSTNAME).
 HOLDER_ID = platform.node()
@@ -84,10 +85,19 @@ class LeaderElector:
     def __init__(self, lease_key: str = LEASE_KEY) -> None:
         self._is_leader = False
         self._lease_key = lease_key
+        self._consecutive_acquire_failures = 0
 
     @property
     def is_leader(self) -> bool:
         return self._is_leader
+
+    @property
+    def consecutive_acquire_failures(self) -> int:
+        return self._consecutive_acquire_failures
+
+    @property
+    def acquire_failures_exceeded(self) -> bool:
+        return self._consecutive_acquire_failures >= MAX_CONSECUTIVE_ACQUIRE_FAILURES
 
     async def run(
         self,
@@ -111,7 +121,38 @@ class LeaderElector:
                 if leader and not self._is_leader:
                     self._is_leader = True
                     logger.info("became leader (%s)", HOLDER_ID)
-                    await on_acquire()
+                    try:
+                        await on_acquire()
+                    except Exception:
+                        self._consecutive_acquire_failures += 1
+                        logger.exception(
+                            "leader acquire hook failed (%d consecutive); resigning",
+                            self._consecutive_acquire_failures,
+                        )
+                        if (
+                            self._consecutive_acquire_failures
+                            == MAX_CONSECUTIVE_ACQUIRE_FAILURES
+                        ):
+                            logger.critical(
+                                "leader acquire hook failed %d consecutive times",
+                                self._consecutive_acquire_failures,
+                            )
+                        self._is_leader = False
+                        try:
+                            await on_resign()
+                        except Exception:
+                            logger.exception(
+                                "leader resign hook failed after acquire failure"
+                            )
+                        try:
+                            await asyncio.to_thread(_release, self._lease_key)
+                            logger.info("released leader lease after acquire failure")
+                        except Exception:
+                            logger.exception(
+                                "leader lease release failed after acquire failure"
+                            )
+                    else:
+                        self._consecutive_acquire_failures = 0
                 elif not leader and self._is_leader:
                     self._is_leader = False
                     logger.warning(

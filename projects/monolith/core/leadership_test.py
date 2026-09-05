@@ -72,6 +72,72 @@ async def test_db_error_is_follower(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_acquire_hook_failure_resigns_and_reacquires(monkeypatch):
+    monkeypatch.setattr(leadership, "_acquire_or_renew", lambda *_a: True)
+    monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0)
+    released = mock.Mock()
+    monkeypatch.setattr(leadership, "_release", released)
+    reacquired = asyncio.Event()
+    acquire_calls = 0
+
+    async def on_acquire():
+        nonlocal acquire_calls
+        acquire_calls += 1
+        if acquire_calls == 1:
+            raise RuntimeError("singleton startup failed")
+        reacquired.set()
+
+    on_resign = mock.AsyncMock()
+    elector = leadership.LeaderElector()
+    task = asyncio.create_task(elector.run(on_acquire, on_resign))
+
+    await asyncio.wait_for(reacquired.wait(), timeout=0.5)
+
+    assert not task.done()
+    assert elector.is_leader is True
+    assert elector.consecutive_acquire_failures == 0
+    on_resign.assert_awaited_once()
+    released.assert_called_once()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_repeated_acquire_hook_failures_trip_health_flag(monkeypatch):
+    monkeypatch.setattr(leadership, "_acquire_or_renew", lambda *_a: True)
+    monkeypatch.setattr(leadership, "_release", mock.Mock())
+    monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0)
+    next_attempt_started = asyncio.Event()
+    acquire_calls = 0
+
+    async def on_acquire():
+        nonlocal acquire_calls
+        acquire_calls += 1
+        if acquire_calls <= leadership.MAX_CONSECUTIVE_ACQUIRE_FAILURES:
+            raise RuntimeError("singleton startup failed")
+        next_attempt_started.set()
+        await asyncio.Event().wait()
+
+    elector = leadership.LeaderElector()
+    task = asyncio.create_task(elector.run(on_acquire, mock.AsyncMock()))
+
+    await asyncio.wait_for(next_attempt_started.wait(), timeout=0.5)
+
+    assert not task.done()
+    assert elector.acquire_failures_exceeded is True
+    assert (
+        elector.consecutive_acquire_failures
+        == leadership.MAX_CONSECUTIVE_ACQUIRE_FAILURES
+    )
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
 async def test_releases_lease_on_cancel_when_leader(monkeypatch):
     monkeypatch.setattr(leadership, "_acquire_or_renew", lambda *_a: True)
     monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0)
