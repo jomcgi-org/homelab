@@ -8,6 +8,7 @@ and this client returns the guest response verbatim.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 
@@ -94,10 +95,14 @@ async def _run_embervm(payload: dict, language: str) -> dict:
     if not EMBERVM_URL:
         return {"error": "EMBERVM_URL is not configured"}
 
-    key_parts = [language, payload.get("code", "")]
-    for file in sorted(payload.get("files", []), key=lambda item: item["name"]):
-        key_parts.extend((file["name"], file["content"]))
-    key_material = "\0".join(key_parts).encode()
+    # Each file is hashed as its canonical JSON so the key makes no assumption
+    # about the guest's file-dict shape; sorting the dumps makes list order
+    # irrelevant.
+    file_parts = sorted(
+        json.dumps(item, sort_keys=True, ensure_ascii=True)
+        for item in payload.get("files", [])
+    )
+    key_material = "\0".join([language, payload.get("code", ""), *file_parts]).encode()
     key = hashlib.sha256(key_material).hexdigest()
     headers = {**auth_headers(), "Idempotency-Key": key}
     timeout = httpx.Timeout(SANDBOX_READ_TIMEOUT, connect=SANDBOX_CONNECT_TIMEOUT)
