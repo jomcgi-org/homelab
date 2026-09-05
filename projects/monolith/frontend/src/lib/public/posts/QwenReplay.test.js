@@ -41,17 +41,13 @@ test("seeking restores recorded output and independent prefill statistics", asyn
   expect(view.querySelector(".telemetry").textContent).toContain(
     "Initial placement",
   );
-  const prefill = turn.statsSamples.find(
-    (sample) => !sample.unavailable && sample.at < turn.samples[0].at,
-  );
+  const prefill = turn.prefillChunks[0];
   expect(prefill).toBeDefined();
+  await seek(prefill.at - 1);
+  expect(view.querySelector(".measurements dd").textContent).toContain("--");
   await seek(prefill.at);
-  expect(view.querySelector(".phase").textContent).toContain("Prefill");
   expect(view.querySelector(".measurements").textContent).toContain(
-    prefill.prefillTps.toFixed(1),
-  );
-  expect(view.querySelector(".telemetry").textContent).toContain(
-    "Initial placement",
+    prefill.tokensPerSecond.toFixed(1),
   );
 });
 
@@ -112,7 +108,10 @@ test("initial placement stays stable until polling and controls precede the inst
   );
   const bar = view.querySelector(".activity-bar");
   const starting = bar.innerHTML;
-  expect(view.querySelector(".capacity").textContent).toContain("10.4 GB");
+  const capacity = turn.samples.find((item) => item.tiers).tiers.hotBytes;
+  expect(view.querySelector(".capacity").textContent).toContain(
+    (capacity / 1e9).toFixed(1) + " GB",
+  );
   expect(
     view
       .querySelector(".controls")
@@ -157,14 +156,9 @@ test("prefill and boundary routing samples are excluded without fabricating spar
   expect(view.querySelector(".routing-heading").textContent).toContain(
     "Initial placement",
   );
-  const expected = turn.statsSamples.filter(
-    (item) =>
-      item.at < turn.events[0].at &&
-      !item.unavailable &&
-      item.prefillTps != null,
-  );
+  const expected = turn.prefillChunks;
   expect(view.querySelectorAll(".prefill-history circle")).toHaveLength(
-    expected.length,
+    expected.filter((item) => item.at <= turn.events[0].at).length,
   );
   await seek(turn.durationMs);
   expect(view.querySelectorAll(".prefill-history circle")).toHaveLength(
@@ -173,22 +167,35 @@ test("prefill and boundary routing samples are excluded without fabricating spar
   expect(view.textContent).not.toContain("No routing samples");
 });
 
-test("prefill playback reveals partial segments between samples with a labeled scale", async () => {
+test("prefill displays only measured chunk averages, with token and throughput units", async () => {
   const view = await render();
-  const [a, b] = turn.statsSamples.filter(
-    (item) =>
-      item.at < turn.events[0].at &&
-      !item.unavailable &&
-      item.prefillTps != null,
-  );
-  await seek((a.at + b.at) / 2);
+  const a = turn.prefillChunks[0];
+  await seek(a.at / 2);
+  expect(view.querySelector(".prefill-segment")).toBeNull();
+  await seek(a.at);
   const segment = view.querySelector(".prefill-segment");
   expect(Number(segment.getAttribute("x2"))).toBeCloseTo(
-    (300 * (a.at + b.at)) / 2 / turn.events[0].at,
+    (300 * a.tokens) / turn.metrics.prefillTokens,
   );
-  expect(view.querySelectorAll(".prefill-history circle")).toHaveLength(1);
-  expect(view.querySelector(".prefill-axis").textContent).toContain("400");
+  expect(segment.getAttribute("y1")).toBe(segment.getAttribute("y2"));
+  const y = segment.getAttribute("y1");
+  await seek(turn.durationMs);
+  expect(view.querySelector(".prefill-segment").getAttribute("y1")).toBe(y);
   expect(view.querySelector(".prefill-history header").textContent).toContain(
     "tok/s",
+  );
+  expect(
+    view.querySelector(".prefill-history .history-labels").textContent,
+  ).toContain("tokens");
+  expect(view.querySelector(".prefill-history .caption").textContent).toContain(
+    "First token",
+  );
+  for (const chunk of turn.prefillChunks) {
+    expect(chunk.tokensPerSecond).toBeCloseTo(
+      (chunk.tokens * 1000) / chunk.elapsedMs,
+    );
+  }
+  expect(turn.statsSamples.every((item) => item.prefillTps === undefined)).toBe(
+    true,
   );
 });

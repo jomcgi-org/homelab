@@ -19,10 +19,16 @@
   );
   const routingAt = decodeSamples[0].at;
   const routingDuration = turn.durationMs - routingAt;
-  const prefillSamples = turn.statsSamples.filter((item) => item.at < decodeAt);
+  let processed = 0;
+  const prefillSamples = (turn.prefillChunks ?? []).map((item) => {
+    const startTokens = processed;
+    processed += item.tokens;
+    return { ...item, startTokens, endTokens: processed };
+  });
+  const prefillTokens = processed;
   const prefillPeak = Math.max(
     1,
-    ...prefillSamples.map((item) => item.prefillTps ?? 0),
+    ...prefillSamples.map((item) => item.tokensPerSecond),
   );
   const prefillScale = Math.ceil(prefillPeak / 100) * 100;
   const history = decodeSamples.map((item) => {
@@ -31,6 +37,9 @@
   });
   let position = $state(0);
   let playing = $state(false);
+  let prefillSample = $derived(
+    prefillSamples.findLast((item) => item.at <= position),
+  );
   let highlighted = $state(null);
   let answer = $derived(
     turn.events
@@ -164,7 +173,7 @@
       <div>
         <dt>Prefill</dt>
         <dd>
-          {stats?.prefillTps == null ? "--" : stats.prefillTps.toFixed(1)}
+          {prefillSample ? prefillSample.tokensPerSecond.toFixed(1) : "--"}
           <small>tok/s</small>
         </dd>
       </div>
@@ -252,7 +261,7 @@
 
       <div class="phase-charts">
         <div class="prefill-history">
-          <header>Prefill <small>Throughput (tok/s)</small></header>
+          <header>Prefill <small>Chunk throughput (tok/s)</small></header>
           <div class="prefill-plot">
             <div class="prefill-axis" aria-hidden="true">
               <span>{prefillScale}</span><span>{prefillScale / 2}</span><span
@@ -263,11 +272,12 @@
               viewBox="0 0 300 100"
               preserveAspectRatio="none"
               role="img"
-              aria-label="Recorded prefill service throughput"
+              aria-label="Measured prefill chunk throughput"
             >
               <title
-                >Service throughput, 0 to {prefillScale} tok/s. Playback interpolates
-                between recorded samples.</title
+                >Completed chunk averages, 0 to {prefillScale} tok/s across {prefillTokens}
+                processed tokens. No rate is available before a completed chunk is
+                received.</title
               >
               {#each [0, 50, 100] as y}
                 <line
@@ -279,42 +289,48 @@
                   stroke-width="1"
                 />
               {/each}
-              {#each prefillSamples as item, index}
-                {@const previous = prefillSamples[index - 1]}
-                {#if previous && previous.at <= position && !previous.unavailable && previous.prefillTps != null && !item.unavailable && item.prefillTps != null}
-                  {@const progress = Math.min(
-                    1,
-                    (position - previous.at) / (item.at - previous.at),
-                  )}
-                  {@const at = previous.at + progress * (item.at - previous.at)}
-                  {@const rate =
-                    previous.prefillTps +
-                    progress * (item.prefillTps - previous.prefillTps)}
+              {#each prefillSamples as item}
+                {#if item.at <= position}
                   <line
                     class="prefill-segment"
-                    x1={(300 * previous.at) / decodeAt}
-                    y1={100 - (100 * previous.prefillTps) / prefillScale}
-                    x2={(300 * at) / decodeAt}
-                    y2={100 - (100 * rate) / prefillScale}
+                    x1={(300 * item.startTokens) / prefillTokens}
+                    y1={100 - (100 * item.tokensPerSecond) / prefillScale}
+                    x2={(300 * item.endTokens) / prefillTokens}
+                    y2={100 - (100 * item.tokensPerSecond) / prefillScale}
                     stroke="var(--ink)"
                     stroke-width="2"
                     stroke-linecap="round"
                   />
-                {/if}
-                {#if item.at <= position && !item.unavailable && item.prefillTps != null}
                   <circle
-                    cx={(300 * item.at) / decodeAt}
-                    cy={100 - (100 * item.prefillTps) / prefillScale}
+                    cx={(150 * (item.startTokens + item.endTokens)) /
+                      prefillTokens}
+                    cy={100 - (100 * item.tokensPerSecond) / prefillScale}
                     r="2"
                     fill="var(--ink)"
                   />
                 {/if}
               {/each}
+              {#if !prefillSample}
+                <text
+                  x="150"
+                  y="58"
+                  text-anchor="middle"
+                  fill="var(--muted)"
+                  font-size="12">Awaiting completed chunk</text
+                >
+              {/if}
             </svg>
           </div>
           <div class="history-labels">
-            <span class="origin">0</span><span>{seconds(decodeAt)}</span>
+            <span class="origin">0</span><span
+              >{count(prefillTokens)} tokens</span
+            >
           </div>
+          <small class="caption"
+            >First token {seconds(decodeAt)} · {count(
+              turn.metrics.cachedPromptTokens ?? 0,
+            )} cached tokens</small
+          >
         </div>
         <div class="routing-history">
           <header>Experts <small>decode routing</small></header>
