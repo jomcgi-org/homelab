@@ -75,6 +75,14 @@ spec:
           name: {{ .Values.postgres.embervmOpLog.passwordSecret }}
         comment: "EmberVM op-log owner (ADR embervm/007); owns only its own database"
       {{- end }}
+      {{- if .Values.postgres.spire.enabled }}
+      - name: {{ .Values.postgres.spire.role }}
+        ensure: present
+        login: true
+        passwordSecret:
+          name: {{ .Values.postgres.spire.passwordSecret }}
+        comment: "SPIRE server datastore owner (ADR embervm/041); owns only its own database"
+      {{- end }}
       {{- if .Values.postgres.devRefresh.enabled }}
       # This role exists solely so the dev refresh can dump production without
       # using a superuser. pg_read_all_data is a PostgreSQL predefined role, so

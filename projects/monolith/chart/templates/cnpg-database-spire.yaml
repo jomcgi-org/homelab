@@ -1,0 +1,22 @@
+{{- if .Values.postgres.spire.enabled }}
+# The SPIRE server datastore, hosted on this cluster rather than a dedicated
+# CNPG cluster. As with the EmberVM op-log, a separate cluster would spend
+# substantial memory and storage on a database that is only a few percent
+# utilised. SPIRE runs its own schema migrations, so CNPG only hands it an empty
+# database and an owner.
+#
+# databaseReclaimPolicy is retain: dropping this CR must not drop the datastore.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: {{ include "monolith.fullname" . }}-pg-spire
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+spec:
+  cluster:
+    name: {{ include "monolith.fullname" . }}-pg
+  name: {{ .Values.postgres.spire.database }}
+  owner: {{ .Values.postgres.spire.role }}
+  ensure: present
+  databaseReclaimPolicy: retain
+{{- end }}

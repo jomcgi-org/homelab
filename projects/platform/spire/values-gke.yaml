@@ -1,0 +1,6 @@
+spire:
+  spire-server:
+    nodeSelector:
+      cloud.google.com/gke-nodepool: core-e2
+    persistence:
+      storageClass: standard-rwo

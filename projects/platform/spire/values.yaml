@@ -1,0 +1,90 @@
+spire-crds: {}
+spire:
+  global:
+    installAndUpgradeHooks:
+      enabled: false        # ArgoCD renders with helm template; no Helm hook Jobs
+    deleteHooks:
+      enabled: false
+    spire:
+      clusterName: homelab-hub    # overridden per cluster in values-<cluster>.yaml
+      trustDomain: embervm.jomcgi.dev   # ADR embervm/041 decision 1
+      caSubject:
+        country: GB
+        organization: jomcgi
+        commonName: embervm.jomcgi.dev
+      ingressControllerType: other
+      namespaces:
+        create: false
+      recommendations:
+        enabled: true
+        namespaceLayout: false   # one namespace (the release namespace), not spire-system/spire-server
+        namespacePSS: false
+        priorityClassName: false
+        strictMode: true
+        securityContexts: true
+        prometheus: false        # no Prometheus operator CRDs on the hub
+  spire-server:
+    controllerManager:
+      enabled: true
+      installAndUpgradeHook:
+        enabled: false
+      deleteHook:
+        enabled: false
+      identities:
+        clusterSPIFFEIDs:
+          default:
+            enabled: false     # Phase 1 registers nothing; Phase 2 adds explicit identities
+          oidc-discovery-provider:
+            enabled: false
+          test-keys:
+            enabled: false
+      resources:
+        requests: {cpu: 50m, memory: 128Mi}
+        limits: {memory: 128Mi}
+    dataStore:
+      sql:
+        databaseType: postgres
+        databaseName: spire
+        host: monolith-pg-rw.monolith.svc
+        username: spire
+        externalSecret:
+          enabled: true
+          name: spire-db
+          key: password
+    persistence:
+      type: pvc
+      size: 1Gi
+    caTTL: 24h
+    defaultX509SvidTTL: 4h
+    defaultJwtSvidTTL: 1h
+    resources:
+      requests: {cpu: 100m, memory: 256Mi}
+      limits: {memory: 256Mi}
+  spire-agent:
+    authorizedDelegates: []
+    tolerations:
+      - key: embervm.jomcgi.dev/node
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
+    resources:
+      requests: {cpu: 50m, memory: 128Mi}
+      limits: {memory: 128Mi}
+  spiffe-csi-driver:
+    enabled: true
+    tolerations:
+      - key: embervm.jomcgi.dev/node
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
+    resources:
+      requests: {cpu: 10m, memory: 32Mi}
+      limits: {memory: 32Mi}
+  spiffe-oidc-discovery-provider:
+    enabled: false
+  tornjak-frontend:
+    enabled: false
+
+onepassword:
+  spireDb:
+    itemPath: "vaults/k8s-homelab/items/spire-db"
