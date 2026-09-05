@@ -3,9 +3,10 @@ defmodule Embervm.EndpointPublisherTest do
   Exercises Embervm.EndpointPublisher, the sole writer to the xDS sidecar. Covers
   the PURE-function projection (facts in ServingStore + the catalog, snapshot map
   out) including the empty-cluster activator swap in BOTH directions, the
-  fixed-width monotonic version format (D-R3.5.1), debounce coalescing, the
-  serving-node derivation (data-driven, no hardcoded node-4), the boot re-push,
-  and that a PUT failure never blocks and is retried.
+  fixed-width monotonic version format (D-R3.5.1), idempotent snapshot hashing,
+  debounce coalescing, the serving-node derivation (data-driven, no hardcoded
+  node-4), the boot re-push, bounded level-triggered re-push, and that a PUT
+  failure never blocks and is retried.
 
   A fake put_fun records every (node_id, desired) PUT into an Agent so a test can
   assert exactly what was pushed, and can be made to fail to prove the retry
@@ -74,6 +75,7 @@ defmodule Embervm.EndpointPublisherTest do
         # Tests drive flush/1 deterministically: no boot publish, no timers.
         active: Keyword.get(opts, :active, false),
         epoch: Keyword.get(opts, :epoch, 100),
+        clock: Keyword.get(opts, :clock, fn -> 0 end),
         debounce_ms: Keyword.get(opts, :debounce_ms, 20),
         repush_ms: Keyword.get(opts, :repush_ms, 0),
         activator_endpoint: Keyword.get(opts, :activator_endpoint, %{ip: "10.1.1.1", port: 7000}),
@@ -125,14 +127,20 @@ defmodule Embervm.EndpointPublisherTest do
     })
   end
 
-  defp serving_node(ctx, node_id) do
-    NodeCapacity.put(ctx.cap_table, node_id, %{
-      configured_id: node_id,
-      node_id: node_id,
-      serving_subnet_cidr: "10.99.0.0/24",
-      serving_vms: [],
-      serving_snapshots: []
-    })
+  defp serving_node(ctx, node_id, extra \\ %{}) do
+    facts =
+      Map.merge(
+        %{
+          configured_id: node_id,
+          node_id: node_id,
+          serving_subnet_cidr: "10.99.0.0/24",
+          serving_vms: [],
+          serving_snapshots: []
+        },
+        extra
+      )
+
+    NodeCapacity.put(ctx.cap_table, node_id, facts)
   end
 
   defp start_published(ctx, instance_id, workload, ip, port) do
@@ -313,21 +321,79 @@ defmodule Embervm.EndpointPublisherTest do
     assert EndpointPublisher.format_version(101, 1) > EndpointPublisher.format_version(100, 999_999)
   end
 
-  test "each flush advances the per-node version strictly" do
+  test "two unchanged publishes produce one PUT and one version bump" do
     ctx = start_stack(epoch: 500)
     serving_workload(ctx, "wl-a", "wl-a.example")
     serving_node(ctx, "node-4")
 
     :ok = EndpointPublisher.flush(ctx.pub)
     :ok = EndpointPublisher.flush(ctx.pub)
-    :ok = EndpointPublisher.flush(ctx.pub)
 
     versions = last_puts(ctx) |> Enum.map(fn {_n, d} -> d.version end)
-    assert length(versions) == 3
-    assert versions == Enum.sort(versions)
-    assert Enum.uniq(versions) == versions
-    # Fixed 40-char width throughout.
+    assert versions == [EndpointPublisher.format_version(500, 1)]
     assert Enum.all?(versions, &(String.length(&1) == 40))
+    assert :sys.get_state(ctx.pub).counters == %{"node-4" => 1}
+  end
+
+  test "a changed endpoint produces a new PUT with a bumped version" do
+    ctx = start_stack(epoch: 501)
+    serving_workload(ctx, "wl-a", "wl-a.example")
+    serving_node(ctx, "node-4")
+
+    :ok = EndpointPublisher.flush(ctx.pub)
+    start_published(ctx, "srv-1", "wl-a", "10.99.0.5", 8080)
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    assert [{"node-4", first}, {"node-4", second}] = last_puts(ctx)
+    assert first.version == EndpointPublisher.format_version(501, 1)
+    assert second.version == EndpointPublisher.format_version(501, 2)
+    assert second.version > first.version
+    assert hd(first.clusters).endpoints == [%{ip: "10.1.1.1", port: 7000}]
+    assert hd(second.clusters).endpoints == [%{ip: "10.99.0.5", port: 8080}]
+  end
+
+  test "node re-registration and channel invalidation re-push an unchanged snapshot" do
+    ctx = start_stack(epoch: 502)
+    serving_workload(ctx, "wl-a", "wl-a.example")
+    serving_node(ctx, "node-4", %{pod_uid: "pod-1", instance_id: "node-4/pod-1"})
+
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    serving_node(ctx, "node-4", %{pod_uid: "pod-2", instance_id: "node-4/pod-2"})
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    :ok = EndpointPublisher.invalidate_node(ctx.pub, "node-4")
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    assert [{"node-4", first}, {"node-4", second}, {"node-4", third}] = last_puts(ctx)
+    assert first.version == EndpointPublisher.format_version(502, 1)
+    assert second.version == EndpointPublisher.format_version(502, 2)
+    assert third.version == EndpointPublisher.format_version(502, 3)
+    assert Map.delete(first, :version) == Map.delete(second, :version)
+    assert Map.delete(second, :version) == Map.delete(third, :version)
+  end
+
+  test "the bounded interval forces an unchanged snapshot re-push" do
+    {:ok, now} = Agent.start_link(fn -> 10_000 end)
+    clock = fn -> Agent.get(now, & &1) end
+    repush_ms = 100
+
+    ctx = start_stack(epoch: 503, clock: clock, repush_ms: repush_ms)
+    serving_workload(ctx, "wl-a", "wl-a.example")
+    serving_node(ctx, "node-4")
+
+    :ok = EndpointPublisher.flush(ctx.pub)
+    Agent.update(now, &(&1 + repush_ms - 1))
+    :ok = EndpointPublisher.flush(ctx.pub)
+    assert length(last_puts(ctx)) == 1
+
+    Agent.update(now, &(&1 + 1))
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    assert [{"node-4", first}, {"node-4", second}] = last_puts(ctx)
+    assert first.version == EndpointPublisher.format_version(503, 1)
+    assert second.version == EndpointPublisher.format_version(503, 2)
+    assert Map.delete(first, :version) == Map.delete(second, :version)
   end
 
   # -- serving-node derivation (data-driven) ---------------------------------
@@ -407,12 +473,12 @@ defmodule Embervm.EndpointPublisherTest do
 
   # -- PUT failure never blocks, retries --------------------------------------
 
-  test "a PUT failure does not crash and STRICTLY ADVANCES the version on the next flush" do
+  test "a failed PUT is re-pushed unchanged on the next tick with a higher version" do
     {:ok, fail?} = Agent.start_link(fn -> true end)
     {:ok, seen} = Agent.start_link(fn -> [] end)
 
     put_fun = fn node_id, desired ->
-      Agent.update(seen, fn acc -> acc ++ [{node_id, desired.version}] end)
+      Agent.update(seen, fn acc -> acc ++ [{node_id, desired}] end)
 
       if Agent.get(fail?, & &1) do
         {:error, :sidecar_down}
@@ -429,16 +495,19 @@ defmodule Embervm.EndpointPublisherTest do
     :ok = EndpointPublisher.flush(ctx.pub)
     assert Process.alive?(ctx.pub)
 
-    # Recover the sidecar; the retry STRICTLY ADVANCES the version. Always-increment
+    # Recover the sidecar; the retry strictly advances the version. Always-increment
     # (never roll back a failed PUT's counter): if the "failed" PUT was actually
     # accepted but its ACK was lost, re-sending the same version would 409; a higher
     # version is accepted regardless of whether the prior PUT landed.
     Agent.update(fail?, fn _ -> false end)
+    send(ctx.pub, :repush)
     :ok = EndpointPublisher.flush(ctx.pub)
 
-    versions = Agent.get(seen, & &1) |> Enum.map(fn {_n, v} -> v end)
+    assert [{"node-4", first}, {"node-4", second}] = Agent.get(seen, & &1)
+    versions = Enum.map([first, second], & &1.version)
     assert [v1, v2] = versions
     assert v2 > v1
+    assert Map.delete(first, :version) == Map.delete(second, :version)
     # Both fixed-width so the ordering is lexical == numeric.
     assert String.length(v1) == 40 and String.length(v2) == 40
   end
