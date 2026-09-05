@@ -172,6 +172,10 @@ knowledge:
     # while docFixAutoMerge is off.
     docFixReview:
       enabled: true
+  # Read side of ADR agents/063 (#5680): recall top knowledge-graph facts into
+  # every Ember session's system prompt. Chart 0.432.1 carries the template.
+  recall:
+    enabled: true
 
 chat:
   enabled: true
