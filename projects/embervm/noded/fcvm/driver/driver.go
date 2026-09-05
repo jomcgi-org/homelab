@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/fcvm/fcclient"
 	"github.com/jomcgi/homelab/projects/embervm/noded/sparse"
@@ -38,6 +39,26 @@ import (
 // tracer spans the cold-boot phases (rootfs provision, firecracker boot) so the
 // cold-start cost is visible per phase in telemetry (ADR 026 measurement).
 var tracer = otel.Tracer("embervm-noded/driver")
+
+const (
+	minimumSnapshotTimeout = 2 * time.Minute
+	defaultSnapshotTimeout = 4 * time.Minute
+	staleStagingGrace      = 5 * time.Minute
+	// snapshotTimeoutPerGiB is equivalent to 100 ms per MiB. It gives a 4 GiB
+	// snapshot about 6 minutes and 50 seconds for contended disk I/O.
+	snapshotTimeoutPerGiB = 1024 * 100 * time.Millisecond
+)
+
+func snapshotOperationTimeout(memMib int) time.Duration {
+	if memMib <= 0 {
+		return defaultSnapshotTimeout
+	}
+	timeout := time.Duration(memMib) * snapshotTimeoutPerGiB / 1024
+	if timeout < minimumSnapshotTimeout {
+		return minimumSnapshotTimeout
+	}
+	return timeout
+}
 
 // Config holds the node-4 substrate paths and microVM sizing.
 type Config struct {
@@ -964,13 +985,16 @@ func (d *Driver) loadPatchAndResumeWithDiff(ctx context.Context, threadID, snapP
 		return d.abortWithSerialDiag(proc, err, threadID)
 	}
 	resumeVM := !patchVolume
-	if err := client.LoadSnapshot(ctx, fcclient.SnapshotLoad{
+	snapshotCtx, cancelSnapshot := context.WithTimeout(ctx, snapshotOperationTimeout(memMib))
+	err = client.LoadSnapshot(snapshotCtx, fcclient.SnapshotLoad{
 		SnapshotPath:        snapPath,
 		MemBackend:          &fcclient.MemBackend{BackendType: "File", BackendPath: memPath},
 		EnableDiffSnapshots: enableDiffSnapshots,
 		TrackDirtyPages:     enableDiffSnapshots,
 		ResumeVM:            resumeVM,
-	}); err != nil {
+	})
+	cancelSnapshot()
+	if err != nil {
 		return d.abortWithSerialDiag(proc, err, threadID)
 	}
 	if patchVolume {
@@ -1399,10 +1423,13 @@ func (d *Driver) Snapshot(ctx context.Context, h substrate.Handle) (substrate.Sn
 	if err := inst.client.Pause(ctx); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: pause: %w", err)
 	}
-	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapPath, MemFilePath: memPath}); err != nil {
+	snapshotCtx, cancelSnapshot := context.WithTimeout(ctx, snapshotOperationTimeout(inst.memMib))
+	snapshotErr := inst.client.CreateSnapshot(snapshotCtx, fcclient.SnapshotCreate{SnapshotPath: snapPath, MemFilePath: memPath})
+	cancelSnapshot()
+	if snapshotErr != nil {
 		// Best-effort resume so a snapshot failure does not strand the VM paused.
 		_ = inst.client.Resume(ctx)
-		return substrate.SnapshotRef{}, fmt.Errorf("driver: create snapshot: %w", err)
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: create snapshot: %w", snapshotErr)
 	}
 	if err := writeInstanceJailMetadata(inst, filepath.Dir(snapPath)); err != nil {
 		_ = inst.client.Resume(ctx)
@@ -1472,6 +1499,38 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 	if err := os.MkdirAll(filepath.Dir(buildingDir), 0o750); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: mkdir base root: %w", err)
 	}
+	// SnapshotRoot is shared by co-located processes, so an existing staging
+	// directory might still belong to a sibling build. Only rename it aside once
+	// it is older than a full snapshot timeout plus a grace period.
+	if _, err := os.Lstat(buildingDir); err == nil {
+		age, sizeBytes, statErr := baseStagingDirStats(buildingDir)
+		if statErr != nil {
+			return substrate.SnapshotRef{}, fmt.Errorf("driver: inspect base staging bundle: %w", statErr)
+		}
+		staleAfter := snapshotOperationTimeout(inst.memMib) + staleStagingGrace
+		if age <= staleAfter {
+			slog.Warn("driver: base staging bundle may still be live",
+				"path", buildingDir,
+				"age", age,
+				"stale_after", staleAfter,
+				"total_size_bytes", sizeBytes,
+			)
+		} else {
+			staleDir := fmt.Sprintf("%s.stale.%d", buildingDir, time.Now().UnixNano())
+			if err := os.Rename(buildingDir, staleDir); err != nil {
+				return substrate.SnapshotRef{}, fmt.Errorf("driver: rename stale base staging bundle: %w", err)
+			}
+			slog.Warn("driver: renamed orphaned base staging bundle",
+				"path", buildingDir,
+				"age", age,
+				"stale_after", staleAfter,
+				"total_size_bytes", sizeBytes,
+				"stale_path", staleDir,
+			)
+		}
+	} else if !os.IsNotExist(err) {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: stat base staging bundle: %w", err)
+	}
 	if err := os.Mkdir(buildingDir, 0o750); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: mkdir base staging bundle: %w", err)
 	}
@@ -1486,9 +1545,12 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 	if err := inst.client.Pause(ctx); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: pause: %w", err)
 	}
-	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp}); err != nil {
+	snapshotCtx, cancelSnapshot := context.WithTimeout(ctx, snapshotOperationTimeout(inst.memMib))
+	snapshotErr := inst.client.CreateSnapshot(snapshotCtx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp})
+	cancelSnapshot()
+	if snapshotErr != nil {
 		_ = inst.client.Resume(ctx)
-		return substrate.SnapshotRef{}, fmt.Errorf("driver: create base snapshot: %w", err)
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: create base snapshot: %w", snapshotErr)
 	}
 	if err := writeInstanceJailMetadata(inst, buildingDir); err != nil {
 		_ = inst.client.Resume(ctx)
@@ -1535,6 +1597,41 @@ func (d *Driver) SnapshotBase(ctx context.Context, h substrate.Handle, baseKey s
 		Base:      true,
 		SizeBytes: bundleSize(filepath.Join(finalDir, "snapfile"), filepath.Join(finalDir, "memfile")),
 	}, nil
+}
+
+func baseStagingDirStats(dir string) (age time.Duration, sizeBytes int64, err error) {
+	var newestModTime time.Time
+	err = filepath.Walk(dir, func(path string, _ os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, lstatErr := os.Lstat(path)
+		if lstatErr != nil {
+			return lstatErr
+		}
+		if path != dir && !info.IsDir() && info.ModTime().After(newestModTime) {
+			newestModTime = info.ModTime()
+		}
+		if !info.IsDir() {
+			sizeBytes += info.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, sizeBytes, err
+	}
+	if newestModTime.IsZero() {
+		info, lstatErr := os.Lstat(dir)
+		if lstatErr != nil {
+			return 0, sizeBytes, lstatErr
+		}
+		newestModTime = info.ModTime()
+	}
+	age = time.Since(newestModTime)
+	if age < 0 {
+		age = 0
+	}
+	return age, sizeBytes, nil
 }
 
 // baseBundlePublished reports whether dir holds a fully published base bundle:
@@ -1670,11 +1767,14 @@ func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapsh
 		if err := ensurePaused(publicationCtx); err != nil {
 			return fmt.Errorf("driver: pause session for full fallback: %w", err)
 		}
-		if err := inst.client.CreateSnapshot(publicationCtx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp}); err != nil {
+		snapshotCtx, cancelSnapshot := context.WithTimeout(publicationCtx, snapshotOperationTimeout(inst.memMib))
+		snapshotErr := inst.client.CreateSnapshot(snapshotCtx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp})
+		cancelSnapshot()
+		if snapshotErr != nil {
 			if diffErr != nil {
-				return fmt.Errorf("driver: create full fallback after diff error %v: %w", diffErr, err)
+				return fmt.Errorf("driver: create full fallback after diff error %v: %w", diffErr, snapshotErr)
 			}
-			return fmt.Errorf("driver: create session snapshot: %w", err)
+			return fmt.Errorf("driver: create session snapshot: %w", snapshotErr)
 		}
 		sparse.BestEffort(memTmp, "session-bank")
 		if err := os.Rename(memTmp, memPath); err != nil {
@@ -1699,26 +1799,31 @@ func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapsh
 			if err := publishFull(fmt.Errorf("base memory unavailable: %w", err)); err != nil {
 				return substrate.SnapshotRef{}, err
 			}
-		} else if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{
-			SnapshotType: "Diff",
-			SnapshotPath: snapTmp,
-			MemFilePath:  diffTmp,
-		}); err != nil {
-			if err := publishFull(fmt.Errorf("create diff snapshot: %w", err)); err != nil {
-				return substrate.SnapshotRef{}, err
-			}
 		} else {
-			if err := d.mergeMemoryDiffAtomic(publicationCtx, inst.bankBaseMemPath, diffTmp, memPath); err != nil {
-				if err := publishFull(fmt.Errorf("merge diff snapshot: %w", err)); err != nil {
-					return substrate.SnapshotRef{}, err
-				}
-			} else if err := os.Rename(snapTmp, snapPath); err != nil {
-				if err := publishFull(fmt.Errorf("publish diff snapfile: %w", err)); err != nil {
+			snapshotCtx, cancelSnapshot := context.WithTimeout(ctx, snapshotOperationTimeout(inst.memMib))
+			snapshotErr := inst.client.CreateSnapshot(snapshotCtx, fcclient.SnapshotCreate{
+				SnapshotType: "Diff",
+				SnapshotPath: snapTmp,
+				MemFilePath:  diffTmp,
+			})
+			cancelSnapshot()
+			if snapshotErr != nil {
+				if err := publishFull(fmt.Errorf("create diff snapshot: %w", snapshotErr)); err != nil {
 					return substrate.SnapshotRef{}, err
 				}
 			} else {
-				_ = os.Remove(diffTmp)
-				inst.bankBaseMemPath = memPath
+				if err := d.mergeMemoryDiffAtomic(publicationCtx, inst.bankBaseMemPath, diffTmp, memPath); err != nil {
+					if err := publishFull(fmt.Errorf("merge diff snapshot: %w", err)); err != nil {
+						return substrate.SnapshotRef{}, err
+					}
+				} else if err := os.Rename(snapTmp, snapPath); err != nil {
+					if err := publishFull(fmt.Errorf("publish diff snapfile: %w", err)); err != nil {
+						return substrate.SnapshotRef{}, err
+					}
+				} else {
+					_ = os.Remove(diffTmp)
+					inst.bankBaseMemPath = memPath
+				}
 			}
 		}
 	} else if err := publishFull(nil); err != nil {
@@ -1815,8 +1920,11 @@ func (d *Driver) SnapshotServing(ctx context.Context, h substrate.Handle, snapsh
 	if err := inst.client.Pause(ctx); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: pause serving: %w", err)
 	}
-	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp}); err != nil {
-		return substrate.SnapshotRef{}, fmt.Errorf("driver: create serving snapshot: %w", err)
+	snapshotCtx, cancelSnapshot := context.WithTimeout(ctx, snapshotOperationTimeout(inst.memMib))
+	snapshotErr := inst.client.CreateSnapshot(snapshotCtx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp})
+	cancelSnapshot()
+	if snapshotErr != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: create serving snapshot: %w", snapshotErr)
 	}
 	if err := writeInstanceJailMetadata(inst, d.servingDir(snapshotRef)); err != nil {
 		return substrate.SnapshotRef{}, err
@@ -2000,8 +2108,11 @@ func (d *Driver) SnapshotStateful(ctx context.Context, h substrate.Handle, snaps
 	if err := inst.client.Pause(ctx); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: pause stateful: %w", err)
 	}
-	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp}); err != nil {
-		return substrate.SnapshotRef{}, fmt.Errorf("driver: create stateful snapshot: %w", err)
+	snapshotCtx, cancelSnapshot := context.WithTimeout(ctx, snapshotOperationTimeout(inst.memMib))
+	snapshotErr := inst.client.CreateSnapshot(snapshotCtx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp})
+	cancelSnapshot()
+	if snapshotErr != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: create stateful snapshot: %w", snapshotErr)
 	}
 	if err := writeInstanceJailMetadata(inst, d.statefulDir(snapshotRef)); err != nil {
 		return substrate.SnapshotRef{}, err
@@ -2081,12 +2192,15 @@ func (d *Driver) CheckpointStateful(ctx context.Context, h substrate.Handle, sna
 		_ = os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("driver: pause stateful for checkpoint: %w", err)
 	}
-	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapPath, MemFilePath: memPath}); err != nil {
+	snapshotCtx, cancelSnapshot := context.WithTimeout(ctx, snapshotOperationTimeout(inst.memMib))
+	snapshotErr := inst.client.CreateSnapshot(snapshotCtx, fcclient.SnapshotCreate{SnapshotPath: snapPath, MemFilePath: memPath})
+	cancelSnapshot()
+	if snapshotErr != nil {
 		// The VM is paused; resume it so a checkpoint FAILURE leaves it live
 		// (mirrors serving's resume-on-snapshot-failure), then discard the temp.
 		_ = inst.client.Resume(ctx)
 		_ = os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("driver: create checkpoint snapshot: %w", err)
+		return "", fmt.Errorf("driver: create checkpoint snapshot: %w", snapshotErr)
 	}
 	if err := writeInstanceJailMetadata(inst, tmpDir); err != nil {
 		_ = inst.client.Resume(ctx)
@@ -2507,8 +2621,11 @@ func (d *Driver) SnapshotGroupMember(ctx context.Context, h substrate.Handle, se
 	if err := inst.client.Pause(ctx); err != nil {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: pause group member: %w", err)
 	}
-	if err := inst.client.CreateSnapshot(ctx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp}); err != nil {
-		return substrate.SnapshotRef{}, fmt.Errorf("driver: create group member snapshot: %w", err)
+	snapshotCtx, cancelSnapshot := context.WithTimeout(ctx, snapshotOperationTimeout(inst.memMib))
+	snapshotErr := inst.client.CreateSnapshot(snapshotCtx, fcclient.SnapshotCreate{SnapshotPath: snapTmp, MemFilePath: memTmp})
+	cancelSnapshot()
+	if snapshotErr != nil {
+		return substrate.SnapshotRef{}, fmt.Errorf("driver: create group member snapshot: %w", snapshotErr)
 	}
 	if err := writeInstanceJailMetadata(inst, d.groupMemberDir(setID, memberName)); err != nil {
 		return substrate.SnapshotRef{}, err

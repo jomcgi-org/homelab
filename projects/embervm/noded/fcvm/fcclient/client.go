@@ -21,22 +21,27 @@ import (
 
 // Client talks to a single Firecracker process over its API socket.
 type Client struct {
-	http       *http.Client
-	socketPath string
+	http          *http.Client
+	httpNoTimeout *http.Client
+	socketPath    string
 }
 
 // New returns a client bound to the Firecracker API socket at socketPath.
 func New(socketPath string) *Client {
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", socketPath)
+		},
+	}
 	return &Client{
 		socketPath: socketPath,
 		http: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					var d net.Dialer
-					return d.DialContext(ctx, "unix", socketPath)
-				},
-			},
+			Timeout:   30 * time.Second,
+			Transport: transport,
+		},
+		httpNoTimeout: &http.Client{
+			Transport: transport,
 		},
 	}
 }
@@ -204,16 +209,20 @@ func (c *Client) Resume(ctx context.Context) error {
 
 // CreateSnapshot writes the snapfile + memfile for the (paused) microVM.
 func (c *Client) CreateSnapshot(ctx context.Context, s SnapshotCreate) error {
-	return c.do(ctx, http.MethodPut, "/snapshot/create", s)
+	return c.doWithClient(ctx, c.httpNoTimeout, http.MethodPut, "/snapshot/create", s)
 }
 
 // LoadSnapshot restores a microVM from a snapshot bundle into this (fresh,
 // not-yet-started) Firecracker process, optionally resuming it.
 func (c *Client) LoadSnapshot(ctx context.Context, s SnapshotLoad) error {
-	return c.do(ctx, http.MethodPut, "/snapshot/load", s)
+	return c.doWithClient(ctx, c.httpNoTimeout, http.MethodPut, "/snapshot/load", s)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any) error {
+	return c.doWithClient(ctx, c.http, method, path, body)
+}
+
+func (c *Client) doWithClient(ctx context.Context, httpClient *http.Client, method, path string, body any) error {
 	var buf bytes.Buffer
 	if body != nil {
 		if err := json.NewEncoder(&buf).Encode(body); err != nil {
@@ -228,7 +237,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := c.http.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("fcclient: %s %s: %w", method, path, err)
 	}

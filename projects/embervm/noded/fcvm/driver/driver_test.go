@@ -14,9 +14,28 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
+
+func TestSnapshotOperationTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		memMib int
+		want   time.Duration
+	}{
+		{name: "unknown size", memMib: 0, want: 4 * time.Minute},
+		{name: "minimum", memMib: 1024, want: 2 * time.Minute},
+		{name: "memory scaled", memMib: 4096, want: 409600 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := snapshotOperationTimeout(tc.memMib); got != tc.want {
+				t.Fatalf("snapshotOperationTimeout(%d) = %s, want %s", tc.memMib, got, tc.want)
+			}
+		})
+	}
+}
 
 // fakeLauncher stands up a fake Firecracker API server on each requested socket,
 // so the driver's real fcclient drives a realistic API. CreateSnapshot writes
@@ -787,6 +806,87 @@ func TestDriverWarmBaseStartReusesBaseBundle(t *testing.T) {
 	}
 	if d.LiveCount() != 1 {
 		t.Fatalf("LiveCount = %d, want 1", d.LiveCount())
+	}
+}
+
+func TestDriverSnapshotBaseRejectsFreshStagingDir(t *testing.T) {
+	ctx := context.Background()
+	d := testDriver(t)
+	h, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "fresh-building"})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	const key = "wl__fresh-building"
+	buildingDir := d.baseDir(key) + ".building"
+	if err := os.MkdirAll(buildingDir, 0o750); err != nil {
+		t.Fatalf("mkdir fresh building dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(buildingDir, "memfile.tmp"), []byte("live"), 0o600); err != nil {
+		t.Fatalf("write fresh memfile: %v", err)
+	}
+
+	if _, err := d.SnapshotBase(ctx, h, key); err == nil || !strings.Contains(err.Error(), "mkdir base staging bundle:") || !strings.Contains(err.Error(), "file exists") {
+		t.Fatalf("SnapshotBase error = %v, want mkdir base staging bundle file exists", err)
+	}
+	if _, err := os.Stat(filepath.Join(buildingDir, "memfile.tmp")); err != nil {
+		t.Fatalf("fresh staging dir was changed: %v", err)
+	}
+	staleDirs, err := filepath.Glob(buildingDir + ".stale.*")
+	if err != nil {
+		t.Fatalf("glob renamed stale dirs: %v", err)
+	}
+	if len(staleDirs) != 0 {
+		t.Fatalf("fresh staging dir was renamed aside: %v", staleDirs)
+	}
+}
+
+func TestDriverSnapshotBaseRenamesAgedStagingDir(t *testing.T) {
+	ctx := context.Background()
+	d := testDriver(t)
+	h, err := d.Claim(ctx, substrate.ClaimSpec{ThreadID: "stale-building"})
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	const key = "wl__stale-building"
+	buildingDir := d.baseDir(key) + ".building"
+	if err := os.MkdirAll(buildingDir, 0o750); err != nil {
+		t.Fatalf("mkdir stale building dir: %v", err)
+	}
+	staleTime := time.Now().Add(-15 * time.Minute)
+	for _, name := range []string{"snapfile.tmp", "memfile.tmp"} {
+		path := filepath.Join(buildingDir, name)
+		if err := os.WriteFile(path, []byte("stale-"+name), 0o600); err != nil {
+			t.Fatalf("write stale %s: %v", name, err)
+		}
+		if err := os.Chtimes(path, staleTime, staleTime); err != nil {
+			t.Fatalf("age stale %s: %v", name, err)
+		}
+	}
+
+	if _, err := d.SnapshotBase(ctx, h, key); err != nil {
+		t.Fatalf("SnapshotBase with a pre-existing staging dir: %v", err)
+	}
+	if _, err := os.Stat(buildingDir); !os.IsNotExist(err) {
+		t.Fatalf("canonical base staging dir still exists, stat err=%v", err)
+	}
+	staleDirs, err := filepath.Glob(buildingDir + ".stale.*")
+	if err != nil {
+		t.Fatalf("glob renamed stale dirs: %v", err)
+	}
+	if len(staleDirs) != 1 {
+		t.Fatalf("renamed stale dirs = %v, want exactly one", staleDirs)
+	}
+	for _, name := range []string{"snapfile.tmp", "memfile.tmp"} {
+		if _, err := os.Stat(filepath.Join(staleDirs[0], name)); err != nil {
+			t.Errorf("renamed stale %s missing: %v", name, err)
+		}
+	}
+	for _, name := range []string{"snapfile", "memfile"} {
+		if _, err := os.Stat(filepath.Join(d.baseDir(key), name)); err != nil {
+			t.Errorf("fresh base %s missing: %v", name, err)
+		}
 	}
 }
 
