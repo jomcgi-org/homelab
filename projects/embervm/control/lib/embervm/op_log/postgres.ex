@@ -1330,12 +1330,13 @@ defmodule Embervm.OpLog.Postgres do
     payload = op.payload
     sql = """
     UPDATE volumes
-    SET node_id = $1, exported_generation = $2, updated_at = $3
-    WHERE workload = $4
+    SET node_id = $1, generation = $2, exported_generation = $3, updated_at = $4
+    WHERE workload = $5
     """
 
     exec(conn, sql, [
       Map.get(payload, :node_id),
+      Map.get(payload, :generation, 0),
       Map.get(payload, :exported_generation, 0),
       op.ts,
       op.workload

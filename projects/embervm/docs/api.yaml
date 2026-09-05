@@ -420,7 +420,7 @@ components:
         offset: { type: integer }
     StatefulView:
       type: object
-      required: [workload, anchor, recovery, pair_valid]
+      required: [workload, anchor, recovery, recovery_reason, pair_valid]
       properties:
         workload: { type: string }
         instance:
@@ -440,7 +440,10 @@ components:
           $ref: "#/components/schemas/StatefulAnchor"
         recovery:
           type: [string, "null"]
-          enum: [anchor_lost, restoring, cold, null]
+          enum: [anchor_lost, restoring, refused, cold, null]
+        recovery_reason:
+          type: [string, "null"]
+          description: Refusal reason atom as a string when recovery is refused.
     StatefulInstance:
       type: object
       properties:

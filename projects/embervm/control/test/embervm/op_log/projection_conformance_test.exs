@@ -562,7 +562,7 @@ defmodule Embervm.OpLog.ProjectionConformance do
         principal: "p1",
         workload: "wl-stateful",
         stateful_instance_id: "st-2",
-        payload: %{node_id: "node-6", vm_id: "vm-st3", generation: 4, reason: "explicit"}
+        payload: %{node_id: "node-6", vm_id: "vm-st3", generation: 8, reason: "explicit"}
       )
 
     {:ok, rows} = backend.load_stateful_instances(server)
@@ -571,7 +571,22 @@ defmodule Embervm.OpLog.ProjectionConformance do
 
     cold = Enum.find(rows, &(&1.instance_id == "st-2"))
     assert_eq(cold.state, "starting", "cold boot inserts a fresh starting row")
-    assert_eq(one(backend, server, :load_volumes).generation, 4, "cold boot bumps the ledger too")
+    assert_eq(one(backend, server, :load_volumes).generation, 8, "cold boot bumps the ledger too")
+
+    {:ok, _} =
+      append(server, backend, :volume_recovery_updated, 325,
+        workload: "wl-stateful",
+        payload: %{node_id: "node-6", generation: 7, exported_generation: 7}
+      )
+
+    recovered_volume = one(backend, server, :load_volumes)
+    assert_eq(recovered_volume.generation, 7, "store recovery adopts a lower generation")
+
+    assert_eq(
+      recovered_volume.exported_generation,
+      7,
+      "store recovery records its exported generation"
+    )
 
     {:ok, _} = append(server, backend, :stateful_destroying, 350, stateful_instance_id: "st-2")
     assert_eq(one_row_for(backend, server, "st-2").state, "destroying", "destroy intent")

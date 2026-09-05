@@ -180,6 +180,7 @@ defmodule Embervm.StatefulManager do
   # (longer than this window). A node silent for less than this bound must be
   # treated as a retryable failure, not as permanently gone.
   @delete_quiet_window_ms @resident_health_grace_ms
+  @refused_recovery "refused"
 
   # A 2x bound on the StopStateful checkpoint worst case: a fresh atomic bank
   # owns its row until the bank completion records the bundle facts.
@@ -396,6 +397,9 @@ defmodule Embervm.StatefulManager do
       waking: %{},
       # workload -> monotonic expiry for a definitive unusable store consult.
       negative_store_truth: %{},
+      # workload -> %{reason: atom, at_ms: manager clock}. These refusal outcomes
+      # remain visible after the in-flight wake bookkeeping is removed.
+      last_wake_outcomes: %{},
       # workload -> per-miss tracing bundle (Task 10), the stateful counterpart of
       # ServingManager's wake_traces. UNLIKE serving, a raw TCP accept carries no
       # HTTP request and so no router-issued traceparent to nest phases under: the
@@ -486,11 +490,26 @@ defmodule Embervm.StatefulManager do
   def handle_info({:volume_store_consulted, workload, wake_token, anchor_node_id, result}, state) do
     if current_wake_token(state, workload) == wake_token do
       case adopt_exported_generation(state, workload, anchor_node_id, result) do
-        {:ok, generation, row_generation} ->
-          Logger.info("embervm stateful: adopted store volume generation",
-            workload: workload,
-            generation: generation
-          )
+        {:ok, generation, row_generation, adoption} ->
+          cond do
+            adoption == :adopted and generation < row_generation ->
+              Logger.warning(
+                "embervm stateful: adopted store volume generation; writes between the previous and adopted generations are gone",
+                workload: workload,
+                previous_generation: row_generation,
+                generation: generation
+              )
+
+            adoption == :adopted ->
+              Logger.info("embervm stateful: adopted store volume generation",
+                workload: workload,
+                previous_generation: row_generation,
+                generation: generation
+              )
+
+            true ->
+              :ok
+          end
 
           state = clear_negative_store_truth(state, workload)
           {:noreply,
@@ -512,7 +531,7 @@ defmodule Embervm.StatefulManager do
           )
 
           state = maybe_memoize_negative_store_truth(state, workload, :generation_not_blessed)
-          send(self(), {:wake_done, workload, {:error, :volume_node_gone}})
+          send(self(), {:wake_done, workload, {:error, {:refused, :generation_not_blessed}}})
           {:noreply, state}
 
         {:error, reason} ->
@@ -600,7 +619,7 @@ defmodule Embervm.StatefulManager do
     # endpoint directly, do NOT wake or error.
     case StatefulStore.published_endpoint(state.store, workload) do
       %{ip: ip, port: port} when is_binary(ip) and ip != "" and is_integer(port) ->
-        {:reply, {:ok, %{ip: ip, port: port}}, state}
+        {:reply, {:ok, %{ip: ip, port: port}}, clear_last_wake_outcome(state, workload)}
 
       _ ->
         handle_cold_wake(state, workload, principal, from)
@@ -1657,16 +1676,19 @@ defmodule Embervm.StatefulManager do
        when is_integer(generation) and generation > 0 do
     case StatefulStore.get_volume(state.store, workload) do
       %{node_id: ^anchor_node_id} = volume ->
+        row_generation = Map.get(volume, :generation, 0) || 0
+
         cond do
+          exported_generation(volume) == generation and row_generation == generation ->
+            {:ok, generation, row_generation, :already_healed}
+
           not store_truth_candidate?(state, volume) ->
             {:error, :anchor_no_longer_confirmed_gone}
 
           true ->
-            row_generation = Map.get(volume, :generation, 0) || 0
-
             case StatefulStore.adopt_exported_generation(state.store, workload, anchor_node_id, generation) do
               {:ok, %{exported_generation: adopted_generation}} ->
-                {:ok, adopted_generation, row_generation}
+                {:ok, adopted_generation, row_generation, :adopted}
 
               {:error, reason} -> {:error, {:volume_projection_not_durable, reason}}
             end
@@ -1728,13 +1750,20 @@ defmodule Embervm.StatefulManager do
     missing_since = missing_anchor_since_ms(state, volume)
     status = recovery_node_status(node_id)
     waking = Map.get(state.waking, workload)
+    last_outcome = Map.get(state.last_wake_outcomes, workload)
 
     recovery =
       cond do
         is_map(waking) and Map.get(waking, :restoring, false) -> :restoring
+        is_map(last_outcome) and is_atom(Map.get(last_outcome, :reason)) -> @refused_recovery
         confirmed_anchor_gone?({state, volume}) -> :anchor_lost
         is_nil(volume) -> :cold
         true -> nil
+      end
+
+    recovery_reason =
+      if recovery == @refused_recovery do
+        last_outcome.reason |> Atom.to_string()
       end
 
     %{
@@ -1744,7 +1773,8 @@ defmodule Embervm.StatefulManager do
         draining: Map.get(status, :draining, false),
         missing_since_ms: missing_since
       },
-      recovery: recovery
+      recovery: recovery,
+      recovery_reason: recovery_reason
     }
   end
 
@@ -2186,7 +2216,11 @@ defmodule Embervm.StatefulManager do
 
       {:error, :volume_restore_failed_anchor_gone} ->
         reply_all(waiters, {:error, {:wake_failed, :volume_restore_failed_anchor_gone}})
-        state
+        record_wake_refusal(state, workload, :volume_restore_failed_anchor_gone)
+
+      {:error, {:refused, :generation_not_blessed}} ->
+        reply_all(waiters, {:error, {:wake_failed, :volume_node_gone}})
+        record_wake_refusal(state, workload, :generation_not_blessed)
 
       {:error, reason} ->
         Logger.warning("embervm stateful wake failed", workload: workload, reason: inspect(reason))
@@ -2326,7 +2360,7 @@ defmodule Embervm.StatefulManager do
           Logger.info("embervm stateful woken", workload: workload, instance_id: instance_id, reason: reason)
 
           reply_all(waiters, {:ok, %{ip: endpoint.ip, port: endpoint.port, generation: Map.get(endpoint, :generation, 0)}})
-          state
+          clear_last_wake_outcome(state, workload)
 
         {:error, publish_reason} ->
           Logger.error("embervm stateful: publish failed", instance_id: instance_id, reason: inspect(publish_reason))
@@ -2339,6 +2373,15 @@ defmodule Embervm.StatefulManager do
   defp pop_waiters(state, workload) do
     waiters = wake_waiters(state, workload)
     {waiters, %{state | waking: Map.delete(state.waking, workload), wake_started: Map.delete(state.wake_started, workload)}}
+  end
+
+  defp record_wake_refusal(state, workload, reason) when is_atom(reason) do
+    outcome = %{reason: reason, at_ms: state.clock.()}
+    %{state | last_wake_outcomes: Map.put(state.last_wake_outcomes, workload, outcome)}
+  end
+
+  defp clear_last_wake_outcome(state, workload) do
+    %{state | last_wake_outcomes: Map.delete(state.last_wake_outcomes, workload)}
   end
 
   defp reply_all(waiters, reply) do
