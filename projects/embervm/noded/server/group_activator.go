@@ -215,14 +215,23 @@ func (a *groupActivator) wake(ctx context.Context, reg workloadEntry) (*groupMem
 	if err != nil {
 		return nil, err
 	}
-	record, ok := a.groupNetworkRecord(groupInstanceID)
-	if !ok || record.SubnetCIDR == "" {
+	subnetCIDR, err := groupPlanSubnetCIDR(reg.GroupMemberPlan)
+	if err != nil {
+		return nil, err
+	}
+	if subnetCIDR == "" {
+		record, ok := a.groupNetworkRecord(groupInstanceID)
+		if ok {
+			subnetCIDR = record.SubnetCIDR
+		}
+	}
+	if subnetCIDR == "" {
 		return nil, fmt.Errorf("noded: group %q has no persisted network record", groupInstanceID)
 	}
 	if _, err := a.server.CreateGroupNetwork(ctx, &nodev1.CreateGroupNetworkRequest{
 		Trace:           &nodev1.Trace{Workload: reg.Workload},
 		GroupInstanceId: groupInstanceID,
-		Cidr:            record.SubnetCIDR,
+		Cidr:            subnetCIDR,
 	}); err != nil {
 		return nil, err
 	}
@@ -293,12 +302,30 @@ func groupActivatorRelightRequest(workload, groupInstanceID string, member group
 		SnapshotRef:        member.bundle.snapshotRef,
 		HealthPort:         member.plan.HealthPort,
 		ReadyBudgetSeconds: member.plan.ReadyBudgetSeconds,
+		SubnetCidr:         member.plan.SubnetCIDR,
 		Resources: &nodev1.ResourceSpec{
 			Vcpus:  member.plan.VCPUs,
 			MemMib: member.plan.MemMib,
 		},
 		EntryGuestPort: member.plan.EntryGuestPort,
 	}
+}
+
+func groupPlanSubnetCIDR(plan []groupMemberPlanEntry) (string, error) {
+	var subnetCIDR string
+	for _, member := range plan {
+		if member.SubnetCIDR == "" {
+			continue
+		}
+		if subnetCIDR == "" {
+			subnetCIDR = member.SubnetCIDR
+			continue
+		}
+		if member.SubnetCIDR != subnetCIDR {
+			return "", fmt.Errorf("noded: group member plan carries conflicting subnet CIDRs %q and %q", subnetCIDR, member.SubnetCIDR)
+		}
+	}
+	return subnetCIDR, nil
 }
 
 func groupEntryPlan(plan []groupMemberPlanEntry) (groupMemberPlanEntry, error) {

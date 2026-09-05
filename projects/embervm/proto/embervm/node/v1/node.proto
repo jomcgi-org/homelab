@@ -1149,6 +1149,10 @@ message StartGroupMemberRequest {
   // full join) is silently reaped at the daemon's own budget while the CP is
   // still waiting. 0 keeps the daemon default.
   uint32 ready_budget_seconds = 13;
+  // subnet_cidr is the control-plane-owned group subnet. RELIGHT requests carry
+  // the value persisted in GroupStore so every relight plan retains the network
+  // identity even when a rolled brick lost its instance-scoped network record.
+  string subnet_cidr = 14;
 }
 
 message StartGroupMemberResponse {
@@ -1243,6 +1247,11 @@ message GroupMemberPlanEntry {
   // which a resumed k3s member cannot meet (it reaps the member mid-relight). 0
   // keeps the daemon default.
   uint32 ready_budget_seconds = 7;
+  // subnet_cidr is the control-plane-owned group subnet recorded in GroupStore.
+  // It lets a node-local relight rebuild the group network after a brick pod roll,
+  // when the instance-scoped on-disk network record is no longer available.
+  // Empty preserves compatibility with plans pushed before this field existed.
+  string subnet_cidr = 8;
 }
 
 // RegistryEntry is the node-side identity of ONE workload the daemon can build a

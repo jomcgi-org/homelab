@@ -48,6 +48,7 @@ type groupMemberPlanEntry struct {
 	HealthPort         uint32 `json:"healthPort"`
 	EntryGuestPort     uint32 `json:"entryGuestPort"`
 	ReadyBudgetSeconds uint32 `json:"readyBudgetSeconds"`
+	SubnetCIDR         string `json:"subnetCidr,omitempty"`
 	VCPUs              uint32 `json:"vcpus"`
 	MemMib             uint32 `json:"memMib"`
 }
@@ -63,6 +64,7 @@ func entryFromProto(e *nodev1.RegistryEntry) workloadEntry {
 			HealthPort:         member.GetHealthPort(),
 			EntryGuestPort:     member.GetEntryGuestPort(),
 			ReadyBudgetSeconds: member.GetReadyBudgetSeconds(),
+			SubnetCIDR:         member.GetSubnetCidr(),
 			VCPUs:              member.GetSizing().GetVcpus(),
 			MemMib:             member.GetSizing().GetMemMib(),
 		})

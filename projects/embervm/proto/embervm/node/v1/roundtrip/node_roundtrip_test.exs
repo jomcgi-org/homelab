@@ -536,12 +536,14 @@ defmodule Embervm.NodeRoundtripTest do
         member_name: "worker-0",
         member_index: 0,
         ip: "10.100.0.10",
-        snapshot_ref: "group/set-abc/worker-0"
+        snapshot_ref: "group/set-abc/worker-0",
+        subnet_cidr: "10.100.0.0/24"
       })
 
     assert warm.vm_id == "vm:group/set-abc/worker-0"
     assert warm.ip == "10.100.0.10"
     assert warm.was_relight == true
+    assert warm.endpoint_ip == "10.100.0.0/24"
 
     # StartGroupMember RELIGHT, clock-resync failure: the fake scripts a
     # FAILED_PRECONDITION off the ref content, proving the resync-failure status

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"strconv"
@@ -85,6 +86,14 @@ func groupActivatorPlan(port uint32) []groupMemberPlanEntry {
 		{MemberName: "agent-0", MemberIndex: 1, StartOrder: 1, HealthPort: port, ReadyBudgetSeconds: 30, VCPUs: 1, MemMib: 128},
 		{MemberName: "agent-1", MemberIndex: 2, StartOrder: 1, HealthPort: port, ReadyBudgetSeconds: 30, VCPUs: 1, MemMib: 128},
 	}
+}
+
+func groupActivatorPlanWithCIDR(port uint32, subnetCIDR string) []groupMemberPlanEntry {
+	plan := groupActivatorPlan(port)
+	for i := range plan {
+		plan[i].SubnetCIDR = subnetCIDR
+	}
+	return plan
 }
 
 func enableGroupActivatorWorkload(s *Server, workload string, listenPort, guestPort uint32) {
@@ -189,6 +198,7 @@ func TestGroupActivatorRelightRequestCarriesReadyBudget(t *testing.T) {
 		plan: groupMemberPlanEntry{
 			MemberName:         "server",
 			ReadyBudgetSeconds: 47,
+			SubnetCIDR:         "10.101.1.0/24",
 		},
 		bundle: groupBundleEntry{
 			pinnedIP:    "127.0.0.1",
@@ -197,6 +207,77 @@ func TestGroupActivatorRelightRequestCarriesReadyBudget(t *testing.T) {
 	})
 	if got := req.GetReadyBudgetSeconds(); got != 47 {
 		t.Errorf("relight ready budget = %d, want 47", got)
+	}
+	if got := req.GetSubnetCidr(); got != "10.101.1.0/24" {
+		t.Errorf("relight subnet CIDR = %q, want 10.101.1.0/24", got)
+	}
+}
+
+func TestGroupActivatorWakeUsesPlanCIDRWithoutPersistedRecord(t *testing.T) {
+	port := groupActivatorEchoServer(t)
+	s, groupNet, driver, _ := newGroupMemberTestServer(t)
+	addCompleteGroupActivatorSet(s, driver, port)
+
+	groupNet.mu.Lock()
+	delete(groupNet.groups, "grp-A")
+	groupNet.mu.Unlock()
+	records := s.groupRecords.(*fakeGroupRecords)
+	records.mu.Lock()
+	delete(records.records, "grp-A")
+	records.mu.Unlock()
+
+	entry, err := s.groupActivator.wake(context.Background(), workloadEntry{
+		Workload:        "scratch-k8s",
+		GroupMemberPlan: groupActivatorPlanWithCIDR(port, "10.101.1.0/24"),
+	})
+	if err != nil {
+		t.Fatalf("wake with plan CIDR: %v", err)
+	}
+	if entry == nil {
+		t.Fatal("wake with plan CIDR returned no entry member")
+	}
+	record, ok := s.groupActivator.groupNetworkRecord("grp-A")
+	if !ok || record.SubnetCIDR != "10.101.1.0/24" {
+		t.Fatalf("persisted network record = %+v, %v", record, ok)
+	}
+}
+
+func TestGroupActivatorWakeFallsBackToPersistedRecord(t *testing.T) {
+	port := groupActivatorEchoServer(t)
+	s, _, driver, _ := newGroupMemberTestServer(t)
+	addCompleteGroupActivatorSet(s, driver, port)
+
+	entry, err := s.groupActivator.wake(context.Background(), workloadEntry{
+		Workload:        "scratch-k8s",
+		GroupMemberPlan: groupActivatorPlan(port),
+	})
+	if err != nil {
+		t.Fatalf("wake with persisted network record: %v", err)
+	}
+	if entry == nil {
+		t.Fatal("wake with persisted network record returned no entry member")
+	}
+}
+
+func TestGroupActivatorWakeWithoutCIDRFailsAsBefore(t *testing.T) {
+	port := groupActivatorEchoServer(t)
+	s, groupNet, driver, _ := newGroupMemberTestServer(t)
+	addCompleteGroupActivatorSet(s, driver, port)
+
+	groupNet.mu.Lock()
+	delete(groupNet.groups, "grp-A")
+	groupNet.mu.Unlock()
+	records := s.groupRecords.(*fakeGroupRecords)
+	records.mu.Lock()
+	delete(records.records, "grp-A")
+	records.mu.Unlock()
+
+	_, err := s.groupActivator.wake(context.Background(), workloadEntry{
+		Workload:        "scratch-k8s",
+		GroupMemberPlan: groupActivatorPlan(port),
+	})
+	if got, want := fmt.Sprint(err), `noded: group "grp-A" has no persisted network record`; got != want {
+		t.Fatalf("wake error = %q, want %q", got, want)
 	}
 }
 
