@@ -394,6 +394,8 @@ for line in sys.stdin:
                   "errorMessage": "provider failed: ECONNREFUSED"}]})
         elif os.environ.get("FAKE_PI_MODE") == "textless":
             emit({"type": "agent_end", "messages": []})
+        elif os.environ.get("FAKE_PI_MODE") == "no-output":
+            emit({"type": "agent_end", "messages": []})
         elif os.environ.get("FAKE_PI_MODE") == "telemetry":
             emit({"type": "message_start", "message": {"role": "assistant"}})
             emit({"type": "message_end", "message": {"role": "assistant",
@@ -644,6 +646,56 @@ def test_pi_tool_call_leak_balanced_block_fails_turn(tmp_path, monkeypatch, caps
     manager._close_process()
 
     assert "pi-tool-call-leak terminal_reason=stop" in capsys.readouterr().err
+
+
+def test_pi_leaked_tool_call_closes_and_prevents_resume(tmp_path, monkeypatch):
+    """First turn with leaked tool-call closes process; second turn spawns fresh."""
+    monkeypatch.setenv("FAKE_PI_MODE", "tool-call-leak-balanced")
+    manager = _pi_manager(tmp_path, monkeypatch)
+
+    with pytest.raises(RuntimeError, match="tool-call syntax"):
+        manager.turn("hello", model="spark")
+
+    assert manager.process is None
+    assert manager.session_id is None
+
+    monkeypatch.delenv("FAKE_PI_MODE")
+    record = manager.turn("next turn", model="spark")
+    manager._close_process()
+
+    spawns = (tmp_path / "pi-args.jsonl").read_text().splitlines()
+    requests = [
+        json.loads(line)
+        for line in (tmp_path / "pi-rpc.jsonl").read_text().splitlines()
+    ]
+    assert len(spawns) == 2
+    assert [request["type"] for request in requests].count("switch_session") == 0
+    assert record["result"]
+
+
+def test_pi_empty_output_closes_and_prevents_resume(tmp_path, monkeypatch):
+    """First empty turn closes process; second turn spawns fresh."""
+    monkeypatch.setenv("FAKE_PI_MODE", "no-output")
+    manager = _pi_manager(tmp_path, monkeypatch)
+
+    with pytest.raises(RuntimeError, match="no output"):
+        manager.turn("hello", model="spark")
+
+    assert manager.process is None
+    assert manager.session_id is None
+
+    monkeypatch.delenv("FAKE_PI_MODE")
+    record = manager.turn("next turn", model="spark")
+    manager._close_process()
+
+    spawns = (tmp_path / "pi-args.jsonl").read_text().splitlines()
+    requests = [
+        json.loads(line)
+        for line in (tmp_path / "pi-rpc.jsonl").read_text().splitlines()
+    ]
+    assert len(spawns) == 2
+    assert [request["type"] for request in requests].count("switch_session") == 0
+    assert record["result"]
 
 
 def test_pi_prose_tool_call_mention_is_untouched(tmp_path, monkeypatch):

@@ -3554,6 +3554,9 @@ class PiProcess:
                                 sys.stderr.flush()
                             except Exception:
                                 pass
+                            self._close_process(kill=True)
+                            # Clear session to prevent next turn from resuming the poisoned session file
+                            self.session_id = None
                             raise RuntimeError(
                                 "pi returned tool-call syntax as its answer instead of "
                                 "a text response. This can happen when a tool-call block "
@@ -3583,6 +3586,9 @@ class PiProcess:
                             stderr = _truncate_ring_for_error(self.stderr_lines)
                             if stderr:
                                 error_detail += "\nCLI stderr:\n%s" % stderr
+                            self._close_process(kill=True)
+                            # Clear session to prevent next turn from resuming the poisoned session file
+                            self.session_id = None
                             raise RuntimeError(
                                 "pi turn produced no output: %s" % error_detail
                             )
