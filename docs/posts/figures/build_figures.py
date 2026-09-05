@@ -339,9 +339,9 @@ def expert_paths() -> Figure:
     f.text(44, 43, "GPU", weight="bold")
     f.hline(32, 372, 52)
     f.parts.append(
-        '<rect x="44" y="65" width="4" height="22" fill="var(--replay-hot)"/>'
+        '<rect x="32" y="24" width="4" height="76" fill="var(--replay-hot)"/>'
     )
-    f.text(58, 82, "HOT experts")
+    f.text(46, 82, "HOT experts")
     f.arrow(144, 78, 273, 78)
     f.text(209, 69, "1 TB/s", anchor="middle")
     f.text(285, 82, "compute")
