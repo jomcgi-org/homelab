@@ -256,7 +256,7 @@
           <div class="prefill-plot">
             <div class="prefill-axis" aria-hidden="true">
               <span>{prefillScale}</span><span>{prefillScale / 2}</span><span
-                >0</span
+                >&nbsp;</span
               >
             </div>
             <svg
@@ -313,7 +313,7 @@
             </svg>
           </div>
           <div class="history-labels">
-            <span></span><span>{seconds(decodeAt)}</span>
+            <span class="origin">0</span><span>{seconds(decodeAt)}</span>
           </div>
         </div>
         <div class="routing-history">
@@ -613,6 +613,8 @@
     min-width: 0;
   }
   .prefill-axis {
+    width: 1.6rem;
+    flex-shrink: 0;
     display: flex;
     flex-direction: column;
     justify-content: space-between;
@@ -620,6 +622,12 @@
     font: 0.6rem var(--font-code);
     color: var(--ink-2);
     text-align: right;
+  }
+  .prefill-history .history-labels {
+    margin-left: 1.9rem;
+  }
+  .origin {
+    transform: translateX(-50%);
   }
   .routing-history rect {
     fill: var(--tier-color);
