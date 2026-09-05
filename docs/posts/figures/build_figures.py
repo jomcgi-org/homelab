@@ -341,10 +341,12 @@ def expert_paths() -> Figure:
     f.parts.append(
         '<rect x="32" y="24" width="4" height="76" fill="var(--replay-hot)"/>'
     )
-    f.text(46, 82, "HOT experts")
+    f.parts.append('<g dominant-baseline="central">')
+    f.text(46, 78, "HOT experts")
+    f.text(285, 78, "compute")
+    f.parts.append("</g>")
     f.arrow(144, 78, 273, 78)
     f.text(209, 69, "1 TB/s", anchor="middle")
-    f.text(285, 82, "compute")
 
     f.box(32, 181, 170, 51)
     f.parts.append(
