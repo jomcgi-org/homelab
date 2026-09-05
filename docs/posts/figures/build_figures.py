@@ -4,9 +4,9 @@ Run from anywhere: `python3 docs/posts/figures/build_figures.py`. Each
 function is one figure; the layout numbers are the drawing, so a change to a
 figure is a change here, and the SVG is regenerated rather than edited.
 
-Expert tones are consistent across the figures and replay: hot red, warm
-yellow, cold blue. Hardware and transfer arrows stay neutral. Colored
-expert regions retain matching callouts and key-table entries.
+Static figures use one accent for callouts and matching reference keys.
+Hardware, expert labels, and transfer arrows stay neutral. Red/yellow/blue
+remain reserved for the replay's explicit hot/warm/cold routing display.
 
 A part is one outline partitioned by lines that run edge to edge (a title
 band, then columns), never a box drawn inside a box.
@@ -339,9 +339,6 @@ def expert_paths() -> Figure:
     f.box(32, 24, 340, 76)
     f.text(44, 43, "GPU", weight="bold")
     f.hline(32, 372, 52)
-    f.parts.append(
-        '<rect x="32" y="52" width="4" height="48" fill="var(--replay-hot)"/>'
-    )
     f.parts.append('<g dominant-baseline="central">')
     # Optical offset aligns painted glyphs, rather than the font's em box.
     f.text(46, 77.35, "HOT experts")
@@ -351,9 +348,6 @@ def expert_paths() -> Figure:
     f.text(209, 69, "1 TB/s", anchor="middle")
 
     f.box(32, 181, 170, 51)
-    f.parts.append(
-        '<rect x="32" y="181" width="4" height="51" fill="var(--replay-warm)"/>'
-    )
     f.text(46, 200, "WARM experts", weight="bold")
     f.text(46, 220, "Pinned RAM")
     f.path_arrow([(117, 181), (117, 134), (316, 134), (316, 100)])
@@ -364,9 +358,6 @@ def expert_paths() -> Figure:
     f.hline(526, 668, 52)
     f.text(597, 82, "compute", anchor="middle")
     f.box(308, 181, 146, 51)
-    f.parts.append(
-        '<rect x="308" y="181" width="4" height="51" fill="var(--replay-cold)"/>'
-    )
     f.text(322, 200, "COLD experts", weight="bold")
     f.text(322, 220, "Page cache")
     f.path_arrow([(381, 181), (381, 134), (597, 134), (597, 100)])

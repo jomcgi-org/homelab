@@ -1,8 +1,8 @@
 """Primitives for the keyed workshop-manual figures under docs/posts/figures.
 
 Every figure on the blog is a line drawing: currentColor strokes, mono labels,
-numbered callouts for stages, lettered callouts for parts, and red/yellow/blue
-expert tones shared with the replay. Hardware stays neutral.
+numbered callouts for stages and lettered callouts for parts. A single accent
+links callouts to their reference keys; hardware and expert labels stay neutral.
 This module holds the vocabulary so every figure shares one geometry (callout
 radius, leader weight, hatch pitch, arrowhead) and a new figure is a layout,
 never a restyle. The output is plain SVG with presentation attributes only, so
@@ -19,21 +19,10 @@ from xml.sax.saxutils import escape
 
 MONO = "ui-monospace, SF Mono, Cascadia Mono, Menlo, monospace"
 ACCENT = "var(--accent-ink)"
-# Legacy hardware tone names remain neutral; expert tones carry residency.
-TONES = {
-    "gpu": "currentColor",
-    "ram": "currentColor",
-    "cache": "currentColor",
-    "disk": "currentColor",
-    "hot": "var(--replay-hot)",
-    "warm": "var(--replay-warm)",
-    "cold": "var(--replay-cold)",
-}
 
 
 def _paint(accent: bool, tone: str | None) -> str:
-    if tone:
-        return TONES[tone]
+    # Retain the tone argument for existing layouts, not as a color identity.
     return ACCENT if accent else "currentColor"
 
 
@@ -84,8 +73,6 @@ class Figure:
         weight: str | None = None,
     ) -> None:
         fill = _paint(accent, tone)
-        if tone in ("hot", "warm", "cold"):
-            fill = f"color-mix(in srgb, {fill} 45%, var(--ink))"
         fw = f' font-weight="{weight}"' if weight else ""
         self.parts.append(
             f'<text x="{x}" y="{y}" font-family="{MONO}" font-size="{size}" '
@@ -112,15 +99,15 @@ class Figure:
     def callout(
         self, cx: float, cy: float, label: str, *, tone: str | None = None
     ) -> None:
-        stroke = _paint(False, tone)
+        stroke = ACCENT
         # data-key/data-tone let the blog renderer paint the matching key
         # table cell in the same circle and colour as the figure callout.
-        data = f' data-key="{escape(label)}" data-tone="{tone}"' if tone else ""
+        data = f' data-key="{escape(label)}" data-tone="reference"'
         self.parts.append(
             f'<circle cx="{cx}" cy="{cy}" r="{CALLOUT_R}" fill="none" '
             f'stroke="{stroke}" stroke-width="{LEADER}"{data}/>'
         )
-        self.text(cx, cy + 4, label, anchor="middle", size=11, tone=tone)
+        self.text(cx, cy + 4, label, anchor="middle", size=11, accent=True)
 
     def dot(self, x: float, y: float) -> None:
         self.parts.append(
