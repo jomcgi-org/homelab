@@ -39,6 +39,10 @@
   --tone-cache: #0e7c86;
   --tone-disk: #d0262a;
   --tone-hot: #d100b5;
+  /* Inference activity: hot, warm, cold. Bright fills; text uses ink. */
+  --replay-hot: #ff2535;
+  --replay-warm: #ffd400;
+  --replay-cold: #006bff;
   /* A key cell's letter sits on an 18% tint of its tone, which costs
    * about a point of contrast against the sheet figure. Day mixes the
    * letter 80% tone with ink to stay above 4.5:1 on the tint; night's
