@@ -1276,6 +1276,82 @@ defmodule Embervm.DispatcherTest do
     end
   end
 
+  test "failed VM acquisition emits one dispatch_failed record per attempt" do
+    System.put_env("EMBERVM_SPEC_TRACE", "on")
+    Embervm.SpecTrace.configure()
+    trace_path =
+      Path.join(
+        System.tmp_dir!(),
+        "spec_trace_dispatch_failed_#{System.unique_integer([:positive])}.db"
+      )
+
+    writer_name = :"dispatch_failed_writer_#{System.unique_integer([:positive])}"
+
+    on_exit(fn ->
+      System.put_env("EMBERVM_SPEC_TRACE", "off")
+      Embervm.SpecTrace.configure()
+      Embervm.SpecTrace.scope_writer(nil)
+      File.rm_rf!(trace_path)
+    end)
+
+    store = start_supervised!({Embervm.SpecTrace.Store.SQLite, name: nil, path: trace_path})
+    writer =
+      start_supervised!(
+        {Embervm.SpecTrace.Writer,
+         name: writer_name,
+         store_mod: Embervm.SpecTrace.Store.SQLite,
+         store: store,
+         batch_size: 1,
+         flush_ms: 5}
+      )
+    Embervm.SpecTrace.scope_writer(writer_name)
+
+    cases = [
+      {"wl-no-channel", "no_channel",
+       [channel_fun: fn _node -> {:error, :unavailable} end],
+       fn ctx ->
+         put_facts(ctx, "wl-no-channel", free: 0)
+         Dispatcher.deposit(ctx.name, "node-4", "wl-no-channel", "vm-warm")
+       end},
+      {"wl-prime-failed", "prime_failed",
+       [prime_fun: fn _channel, _req -> {:error, :unavailable} end],
+       fn ctx -> put_facts(ctx, "wl-prime-failed", free: 1) end}
+    ]
+
+    for {workload, expected_reason, opts, prepare} <- cases do
+      ctx = start_stack(opts)
+      put_catalog(ctx, workload,
+        retry: %{
+          max_attempts: 3,
+          backoff_ms: 60_000,
+          backoff_cap_ms: 60_000,
+          retry_on: [:transport]
+        }
+      )
+      prepare.(ctx)
+      task_id = submit(ctx, workload, "p1")
+
+      assert eventually(fn -> state_of(ctx, task_id) == :failed_retryable end)
+      :ok = Embervm.SpecTrace.drain(writer)
+      {:ok, failed_records} =
+        Embervm.SpecTrace.Store.SQLite.read_window(store, action: "dispatch_failed")
+      records = Enum.filter(failed_records, &(&1["vars"]["task_id"] == task_id))
+
+      assert length(records) == 1
+      assert [record] = records
+      assert record["vars"]["workload"] == workload
+      assert record["vars"]["reason"] == expected_reason
+
+      {:ok, warm_records} =
+        Embervm.SpecTrace.Store.SQLite.read_window(store, action: "dispatch_warm")
+
+      {:ok, miss_records} =
+        Embervm.SpecTrace.Store.SQLite.read_window(store, action: "dispatch_miss")
+      refute Enum.any?(warm_records, &(&1["vars"]["task_id"] == task_id))
+      refute Enum.any?(miss_records, &(&1["vars"]["task_id"] == task_id))
+    end
+  end
+
   # THE REGRESSION TEST FOR #4768's PROVENANCE FIX.
   #
   # An adopted vm is reconciled back INTO inventory after a control-plane

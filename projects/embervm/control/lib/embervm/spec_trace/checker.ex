@@ -1,4 +1,6 @@
 defmodule Embervm.SpecTrace.Checker do
+  # dispatch_failed is an observability record for pre-dispatch failures. It is
+  # intentionally excluded from the invariant action lists below.
   @moduledoc """
   Evaluates adoption.tla invariants over spec-trace records.
 
