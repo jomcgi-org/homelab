@@ -9,9 +9,9 @@ representative target instead of a generic hello-world.
 Why it exists, what public build it mirrors, and the features it is meant to
 drive out are recorded in the ADRs:
 
-- `docs/decisions/tooling/005-toycaml-demonstrator.md` -- this demonstrator
-- `docs/decisions/tooling/006-extensible-multiarch-ocaml-toolchains.md` -- arches
-- `docs/decisions/tooling/007-ocaml-build-file-generation-gazelle.md` -- BUILD gen
+- `bazel/ARCHITECTURE.md`, ADR map entry tooling/005 -- this demonstrator
+- `bazel/ARCHITECTURE.md`, ADR map entry tooling/006 -- arches
+- `bazel/ARCHITECTURE.md`, ADR map entry tooling/007 -- BUILD gen
 
 ## What it is today (builds on the current ruleset)
 

@@ -153,8 +153,6 @@ ADRs document significant architectural decisions and their context.
 
 | ADR                                                                                            | Decision                                                                                                                                   |
 | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| [001 - Bazel Semgrep](security/001-bazel-semgrep.md)                                           | Semgrep SAST integrated via Bazel rules                                                                                                    |
-| [002 - Semgrep Rule Generation via RL](security/002-semgrep-rule-generation-rl.md)             | RL-finetuned Qwen 3.5 9B for generating Semgrep rules from CVEs                                                                            |
 | [003 - gVisor RuntimeClass](security/003-gvisor-runtime-class.md)                              | User-space kernel isolation for agent sandbox pods via runsc                                                                               |
 | [004 - Public Read-Only Service Isolation](security/004-public-read-only-service-isolation.md) | Separate read-only public service on a replica, isolated from private data and secrets                                                     |
 | [005 - Public Chat Adversarial Hardening](security/005-public-chat-adversarial-hardening.md)   | Defense-in-depth for anonymous GPU-backed chat: Turnstile sessions, reserved-headroom semaphore, server-side limits, DB-confined retrieval |
@@ -173,18 +171,3 @@ ADRs document significant architectural decisions and their context.
 | [013 - Grimoire Knowledge Audiences](services/013-grimoire-knowledge-audiences.md)                | Corpus-derived character knowledge as audience rules compiled into grants                  |
 | [014 - Grimoire Post-Extraction Quality Passes](services/014-grimoire-post-extraction-quality-passes.md) | Evidence-grounded stat verifier + report-first alias merge over the extracted graph |
 
-## Tooling
-
-| ADR                                                                                             | Decision                                                                                                                         |
-| ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| [001 - OCI Tool Distribution](tooling/001-oci-tool-distribution.md)                             | Multi-arch OCI image for developer tools, eliminating local Bazel                                                                |
-| [002 - Service Deployment Tooling](tooling/002-service-deployment-tooling.md)                   | Copier template to scaffold new services, eliminating per-service boilerplate                                                    |
-| [003 - Spec-First CLI and Skills](tooling/003-spec-first-cli-and-skills.md)                     | OpenAPI as source of truth; CLI commands and Claude skills are derived                                                           |
-| [004 - OCaml Rules for Semgrep](tooling/004-ocaml-rules-for-semgrep.md)                         | Scale the custom bazel/ocaml ruleset (not obazl); ppx first, per-arch native toolchains                                          |
-| [005 - tOyCaml Demonstrator](tooling/005-toycaml-demonstrator.md)                               | Engine-shaped demonstrator exercising the ruleset before Semgrep lands                                                           |
-| [006 - Multi-arch OCaml Toolchains](tooling/006-extensible-multiarch-ocaml-toolchains.md)       | Data-driven arch registry; per-arch toolchain registration gated on pool verification                                            |
-| [007 - OCaml BUILD Generation](tooling/007-ocaml-build-file-generation-gazelle.md)              | Gazelle-based BUILD file generation for OCaml sources                                                                            |
-| [008 - CLI Multi-platform Distribution](tooling/008-cli-multiplatform-distribution.md)          | One Bazel graph, native execution platforms (cloud arm64, self-hosted darwin); no cross-compilation, QEMU, or wasm               |
-| [009 - Bazel-native Package Classification](tooling/009-bazel-native-package-classification.md) | Tag/visibility per-package over central globs and gazelle:exclude; lint the old pattern out                                      |
-| [010 - Hermetic Visual Regression](tooling/010-hermetic-visual-regression.md)                   | Move public-page screenshot capture/diff into cached Bazel actions on an apko chromium image; non-frontend PRs become cache hits |
-| [011 - Semgrep Scan-Engine Tiers](tooling/011-semgrep-scan-engine-tiers.md)                     | Fast single-file `mcp --pro` for MCP+PR; new scheduled `semgrep scan --pro` interfile full scan on main seeds the App baseline    |
