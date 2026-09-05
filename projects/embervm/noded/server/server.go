@@ -2954,6 +2954,21 @@ func (s *Server) ReconcileBasesFromDisk() error {
 			continue
 		}
 		baseKey := ent.Name()
+		// A bundle moved aside by the identity gate below (<key>.stale.<nanos>)
+		// is never a base: it exists only so a live VM restored from it keeps
+		// its mapped memfile and snapfile. Reclaim it once no VM references the
+		// original key; otherwise leave it alone.
+		if origKey, isStale := staleBaseOriginalKey(baseKey); isStale {
+			if _, inUse := s.vms.snapshotRefInUse(origKey); inUse {
+				continue
+			}
+			if err := os.RemoveAll(filepath.Join(root, baseKey)); err != nil {
+				s.logger.Warn("noded: remove stale base bundle", "base", baseKey, "err", err)
+			} else {
+				gc++
+			}
+			continue
+		}
 		// A live BuildBase owns this key and may still be publishing its bundle.
 		// Leave both its registry state and on-disk files untouched.
 		if entry, known := s.bases.get(baseKey); known && entry.state == nodev1.BaseBuildState_BASE_BUILD_STATE_BUILDING {
@@ -3027,9 +3042,24 @@ func (s *Server) ReconcileBasesFromDisk() error {
 					args = append(args, "reason", mismatch.Reason)
 				}
 				if vmID, inUse := s.vms.snapshotRefInUse(baseKey); inUse {
+					// Report NONE so the control plane rebuilds, but move the bundle
+					// ASIDE rather than leaving it at bases/<key>: the rebuild publishes
+					// by renaming onto that path, and a destination that still holds
+					// memfile and snapfile is adopted as the winner of a publish
+					// collision, which would re-arm the stale snapshot under a fresh
+					// rootfsid. The rename keeps the inodes, so the live VM's mapped
+					// memfile and snapfile stay valid; the stale dir is reclaimed above
+					// once no VM references the key.
 					state = nodev1.BaseBuildState_BASE_BUILD_STATE_NONE
 					args = append(args, "vm", vmID)
-					s.logger.Warn("noded: base failed rootfs identity gate but is in use by live vm, reporting base absent", args...)
+					asideDir := staleBaseDir(baseDir)
+					if err := os.Rename(baseDir, asideDir); err != nil {
+						args = append(args, "err", err)
+						s.logger.Warn("noded: base failed rootfs identity gate and is in use by live vm; move-aside failed, reporting base absent", args...)
+					} else {
+						args = append(args, "moved_to", asideDir)
+						s.logger.Warn("noded: base failed rootfs identity gate but is in use by live vm; moved aside, reporting base absent", args...)
+					}
 				} else {
 					s.logger.Warn("noded: removing base with rootfs identity mismatch during reconcile", args...)
 					if err := os.RemoveAll(baseDir); err != nil {
@@ -3241,6 +3271,26 @@ func (s *Server) readBaseRootfsID(baseKey string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(b))
+}
+
+// staleBaseSuffix marks a base bundle the identity gate moved aside while a
+// live VM still referenced it. The nanosecond stamp keeps successive moves of
+// the same key from colliding.
+const staleBaseSuffix = ".stale."
+
+// staleBaseDir returns the move-aside path for a base bundle dir.
+func staleBaseDir(baseDir string) string {
+	return fmt.Sprintf("%s%s%d", baseDir, staleBaseSuffix, time.Now().UnixNano())
+}
+
+// staleBaseOriginalKey reports whether a bases/ entry is a moved-aside bundle
+// and, if so, the base key it was moved from.
+func staleBaseOriginalKey(name string) (string, bool) {
+	i := strings.Index(name, staleBaseSuffix)
+	if i <= 0 {
+		return "", false
+	}
+	return name[:i], true
 }
 
 // ReconcileSessionsFromDisk scans the sessions snapshot dir for banked session
