@@ -15,8 +15,9 @@ Input dict:
   * resources    - the noded container's resources map. The DaemonSet passes
                    .Values.noded.resources unchanged; a brick passes its class's
                    own request/limit block (memory req==limit, cpu request only).
-  * maxLiveVMs   - OPTIONAL per-class live-VM ceiling. Absent falls back to
-                   $ctx.Values.noded.maxLiveVMs.
+  * maxLiveVMs   - OPTIONAL per-class live-VM ceiling. Absent (or nil) falls
+                   back to $ctx.Values.noded.maxLiveVMs; an explicit 0 is kept,
+                   because noded reads 0 as "no node-side ceiling".
   * nodeSelector - OPTIONAL override for the pod's nodeSelector map. Absent (or
                    nil) falls back to $ctx.Values.noded.nodeSelector (the
                    fleet-wide FC-node label every bin-packed brick uses). A
@@ -221,7 +222,7 @@ containers:
       - name: EMBERVM_NODED_CONTROL_PLANE_URL
         value: {{ printf "http://%s.%s.svc:%v" (include "embervm.fullname" $ctx) $ctx.Release.Namespace $ctx.Values.service.port | quote }}
       - name: EMBERVM_NODED_MAX_LIVE_VMS
-        value: {{ .maxLiveVMs | default $ctx.Values.noded.maxLiveVMs | quote }}
+        value: {{ ternary .maxLiveVMs $ctx.Values.noded.maxLiveVMs (not (kindIs "invalid" .maxLiveVMs)) | quote }}
       - name: EMBERVM_NODED_ADMISSION_MODEL
         value: {{ $ctx.Values.noded.admissionModel | quote }}
       - name: EMBERVM_NODED_VM_OVERHEAD_MIB

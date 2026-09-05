@@ -164,9 +164,12 @@ kekRoot:
 artifactEncryption:
   enabled: true
 
-# Fleet live-VM ceiling, raised from the chart default of 8 to 16. Every noded
-# pod uses this ceiling unless its brick class overrides it; production has no
-# per-class override yet, so the wildcard and every brick receive 16.
+# Fleet live-VM ceiling, raised from the chart default of 8 to 16. It only
+# raises noded's runaway backstop, not any pool floor. Since #4180 removed the
+# per-brick rescale every brick class advertises it verbatim (the wildcard
+# DaemonSet is disabled below), so 16 is reachable on a 1536 MiB brick: sixteen
+# idle guests with tiny working sets that then run hot is the OOM shape #4184
+# tracks. No class overrides it yet; bricks.classes[].maxLiveVMs is the lever.
 noded:
   # RAISED from the chart's 60s. This bounds the readiness poll after a COLD
   # boot, which is the base build, and it has to be strictly greater than the

@@ -1516,10 +1516,11 @@ noded:
 # Sizing ladder (Joe-decided): memory request==limit at 2/4/8/16 GiB (a brick's
 # memory is a hard reservation, so the kube-scheduler bin-packs honestly and the
 # guest OOM-kills before the node), CPU request only at 1/2/2/2 cores with NO cpu
-# limit (bricks burst into idle headroom). Each noded pod uses the fleet
-# maxLiveVMs ceiling unless its brick class overrides it. The large class must
-# hold the scratch-k8s composite group (a ~10 GiB single-brick group whose
-# bridge lives in one pod's netns), which the 16Gi class covers.
+# limit (bricks burst into idle headroom; noded's advertised live-VM ceiling,
+# not a cpu cap, bounds concurrency). Each noded pod uses the fleet maxLiveVMs
+# ceiling unless its brick class overrides it. The large class must hold the
+# scratch-k8s composite group (a ~10 GiB single-brick group whose bridge lives
+# in one pod's netns), which the 16Gi class covers.
 bricks:
   enabled: false
   # First ArgoCD sync-wave handed out to a brick Deployment. Brick wave groups
@@ -1661,9 +1662,11 @@ bricks:
   daemonReserveMib: 256
   classes:
     # Optional maxLiveVMs overrides the fleet noded.maxLiveVMs for one class;
-    # without it, the class uses the fleet value. #4184: since #4180 removed the
-    # per-brick rescale, the fleet value must fit the smallest class or be
-    # overridden.
+    # without it, the class uses the fleet value. An explicit 0 is honoured and
+    # means no node-side ceiling (noded/config.go), so only set it deliberately.
+    # #4184: since #4180 removed the per-brick rescale, the fleet value must fit
+    # the smallest class or be overridden here.
+    #
     # THE SMALLEST CLASS THAT CAN HOST ANYTHING, and the arithmetic is the
     # reason rather than a preference: daemonReserveMib (256) is subtracted from
     # the class limit to get guest-schedulable capacity, so 1Gi yields 768Mi for
