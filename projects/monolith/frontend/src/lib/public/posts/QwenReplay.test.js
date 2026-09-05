@@ -118,14 +118,19 @@ test("initial placement stays stable until polling and controls precede the inst
   ).toBeTruthy();
   await seek(first.at - 1);
   expect(bar.innerHTML).toBe(starting);
-  expect(
-    view.querySelector(".routing-history rect.hot").getAttribute("width"),
-  ).not.toBe("0");
+  expect(view.querySelector(".routing-history rect.hot")).toBeNull();
+  expect(view.querySelector(".routing-history").textContent).toContain(
+    "No routing samples",
+  );
   await seek(first.at);
   expect(view.querySelector(".routing-heading").textContent).toContain(
     "activations",
   );
   expect(bar.innerHTML).not.toBe(starting);
+  const firstHot = view.querySelector(".routing-history rect.hot");
+  expect(Number(firstHot.getAttribute("x"))).toBeCloseTo(
+    (700 * first.at) / turn.durationMs,
+  );
   await seek(0);
   expect(bar.innerHTML).toBe(starting);
 });
