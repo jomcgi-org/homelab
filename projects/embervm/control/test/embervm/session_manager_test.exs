@@ -1799,6 +1799,77 @@ defmodule Embervm.SessionManagerTest do
     assert wait_for_state(ctx, created.session_id, :running).state == :running
   end
 
+  test "a parked session's rejoin denied on node headroom parks and succeeds once a slot frees" do
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-rejoined-after-headroom"),
+        channel_fun: fake_channel_fun(),
+        pressure_retry_interval_ms: 10
+      )
+
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+
+    put_session_workload(
+      ctx,
+      "wl-persist",
+      persistence_workload_opts(live: 8, max: 8)
+    )
+
+    task =
+      Task.async(fn ->
+        SessionManager.invoke(ctx.mgr, created.session_id, %{body: "rejoin-after-headroom"})
+      end)
+
+    assert eventually(fn ->
+             Map.has_key?(:sys.get_state(ctx.mgr).pressure_waits, created.session_id)
+           end)
+
+    session = wait_for_state(ctx, created.session_id, :parked)
+    assert session.terminal_reason == nil
+
+    put_session_workload(ctx, "wl-persist", persistence_workload_opts())
+
+    assert {:ok, resp} = Task.await(task)
+    assert resp.status_code == 200
+    assert resp.body == "rejoin-after-headroom"
+
+    assert wait_for_state(ctx, created.session_id, :running).state == :running
+  end
+
+  test "a parked session whose volume node has no brick fails fast as volume_node_gone" do
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-volume-node-gone"),
+        channel_fun: fake_channel_fun()
+      )
+
+    created = create_persistence_session(ctx)
+    park_session(ctx, created)
+    {:ok, node_4_fact} = NodeCapacity.fetch(ctx.cap_table, "node-4")
+
+    NodeCapacity.put(ctx.cap_table, "node-5", %{
+      node_4_fact
+      | node_id: "node-5",
+        pod_uid: "pod-node-5",
+        configured_id: "node-5"
+    })
+
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+
+    assert {:error, {:relight_failed, {:volume_node_gone, "node-4"}}} =
+             SessionManager.invoke(ctx.mgr, created.session_id, %{body: "node-gone"})
+
+    session = wait_for_state(ctx, created.session_id, :parked)
+    assert session.terminal_reason == nil
+
+    refute Map.has_key?(:sys.get_state(ctx.mgr).pressure_waits, created.session_id)
+
+    refute Embervm.Router.classify_error_as_retryable(
+             {:relight_failed, {:volume_node_gone, "node-4"}}
+           )
+  end
+
   test "a parked session's rejoin with no bricks registered expires its bound into a retryable failure" do
     {:ok, mono} = Agent.start_link(fn -> 0 end)
 
