@@ -658,6 +658,25 @@ egress:
       secretRef:
         name: embervm-embervm-egress
         key: GH_AUTH_TOKEN
+    # The monolith-agents MCP surface (#5633, #5656). The broker mints this
+    # token from the authentik client_credentials grant, so no guest ever holds
+    # it. Only the hub declares the agent-mcp grant: on the home cluster this
+    # entry is dead and its host is DENIED, which is the intended fail-closed
+    # state.
+    - header: Authorization
+      valuePrefix: "Bearer "
+      brokerGrant: "agent-mcp"
+      egressTo:
+        - monolith-agents-agents.monolith-agents.svc.cluster.local
+      # The codex rmcp client sends no Authorization header (#4298), so /mcp is
+      # the explicit opt-in path, as chatgpt.com's entry above does.
+      injectAlwaysPaths:
+        - /mcp
+      # In-cluster plaintext listener: the sidecar dials the pinned internal
+      # ip:8092 and injects there instead of re-routing to :443. Honoured only
+      # for internal destinations. A sidecar or chart older than this field
+      # drops it and DENIES the host rather than tunnelling.
+      plaintextUpstream: true
   # embervm-agent-secrets carries CLAUDE_AUTH_TOKEN and GH_AUTH_TOKEN together,
   # so every guest credential comes from one item. Field labels become the keys.
   # A key missing here DENIES its egressTo hosts rather than tunnelling them

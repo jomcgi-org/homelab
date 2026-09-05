@@ -55,6 +55,12 @@ spec:
       name: embervm-oauth-grant-codex-cluster
       jsonPointers:
         - /data
+    # agent-mcp renders only on the hub (grants are overridden in
+    # deploy/values-gke.yaml), so the home application.yaml carries no twin.
+    - kind: Secret
+      name: embervm-oauth-grant-agent-mcp
+      jsonPointers:
+        - /data
   syncPolicy:
     automated:
       prune: true
