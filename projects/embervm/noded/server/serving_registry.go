@@ -152,6 +152,13 @@ func (r *servingImageRegistry) add(e servingImageEntry) {
 	}
 }
 
+// remove forgets a serving image for a base key. Idempotent.
+func (r *servingImageRegistry) remove(baseKey string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.images, baseKey)
+}
+
 // get returns a copy of the serving image entry for a base key.
 func (r *servingImageRegistry) get(baseKey string) (servingImageEntry, bool) {
 	r.mu.Lock()
