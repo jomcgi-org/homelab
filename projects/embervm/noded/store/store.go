@@ -173,6 +173,17 @@ type Store struct {
 // Option configures an optional Store capability.
 type Option func(*Store)
 
+// WithHTTPClient replaces the default HTTP client. A nil client leaves the
+// default unchanged. Callers can use this to bound connection establishment or
+// otherwise tune transport behavior without changing noded's defaults.
+func WithHTTPClient(client *http.Client) Option {
+	return func(s *Store) {
+		if client != nil {
+			s.client = client
+		}
+	}
+}
+
 // WithCredentials enables SigV4 signing with a static S3 identity.
 func WithCredentials(accessKeyID, secretAccessKey string) Option {
 	return func(s *Store) {

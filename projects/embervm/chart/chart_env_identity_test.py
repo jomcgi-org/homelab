@@ -37,6 +37,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 # Kinds with no namespace: two Applications rendering the same name means one
 # object with two owners, not two objects.
@@ -113,6 +114,19 @@ def _render_with_set(release: str, settings: list[str]) -> str:
     return result.stdout
 
 
+def _rootfs_builder_init_containers(rendered: str) -> list[dict]:
+    containers = []
+    for document in yaml.safe_load_all(rendered):
+        if not isinstance(document, dict):
+            continue
+        pod_spec = document.get("spec", {}).get("template", {}).get("spec", {})
+        for container in pod_spec.get("initContainers", []):
+            name = container.get("name", "")
+            if name.startswith("build-") and name.endswith("-rootfs"):
+                containers.append(container)
+    return containers
+
+
 def test_store_credentials_are_default_off_and_share_one_secret() -> None:
     anonymous = _render_with_set("e", [])
     assert "STORE_ACCESS_KEY_ID" not in anonymous
@@ -134,6 +148,70 @@ def test_store_credentials_are_default_off_and_share_one_secret() -> None:
     assert signed.count("name: e-embervm-store") >= 3
     assert "kind: OnePasswordItem" in signed
     assert 'itemPath: "vaults/x/items/y"' in signed
+
+
+def test_rootfs_builders_receive_store_env_only_when_store_enabled() -> None:
+    enabled = _render_with_set(
+        "rootfs-store",
+        [
+            "noded.store.endpoint=https://objects.example.test",
+            "noded.store.bucket=rootfs-cache",
+            "noded.store.credentials.enabled=true",
+            "noded.store.credentials.secretName=rootfs-store-credentials",
+        ],
+    )
+    enabled_containers = _rootfs_builder_init_containers(enabled)
+    assert enabled_containers, (
+        "store-enabled render has no rootfs builder init containers"
+    )
+    expected_env = {
+        "EMBERVM_NODED_STORE_ENDPOINT": {
+            "name": "EMBERVM_NODED_STORE_ENDPOINT",
+            "value": "https://objects.example.test",
+        },
+        "EMBERVM_NODED_STORE_BUCKET": {
+            "name": "EMBERVM_NODED_STORE_BUCKET",
+            "value": "rootfs-cache",
+        },
+        "EMBERVM_NODED_STORE_ACCESS_KEY_ID": {
+            "name": "EMBERVM_NODED_STORE_ACCESS_KEY_ID",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "rootfs-store-credentials",
+                    "key": "access_key_id",
+                }
+            },
+        },
+        "EMBERVM_NODED_STORE_SECRET_ACCESS_KEY": {
+            "name": "EMBERVM_NODED_STORE_SECRET_ACCESS_KEY",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "rootfs-store-credentials",
+                    "key": "secret_access_key",
+                }
+            },
+        },
+    }
+    for container in enabled_containers:
+        env = {entry["name"]: entry for entry in container.get("env", [])}
+        for name, expected in expected_env.items():
+            assert env.get(name) == expected
+
+    disabled = _render_with_set(
+        "rootfs-store-disabled",
+        [
+            "noded.store.endpoint=",
+            "noded.store.credentials.enabled=true",
+        ],
+    )
+    disabled_containers = _rootfs_builder_init_containers(disabled)
+    assert disabled_containers, (
+        "store-disabled render has no rootfs builder init containers"
+    )
+    store_env_names = set(expected_env)
+    for container in disabled_containers:
+        env_names = {entry["name"] for entry in container.get("env", [])}
+        assert store_env_names.isdisjoint(env_names)
 
 
 def test_noded_egress_catalog_renders_plaintext_upstream_opt_in(

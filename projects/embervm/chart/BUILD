@@ -132,7 +132,10 @@ py_test(
         "PROD_APPLICATION": "$(rootpath //projects/embervm/deploy:application)",
         "DEV_APPLICATION": "$(rootpath //projects/embervm/dev/deploy:application)",
     },
-    deps = ["@pip//pytest"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
 
 py_test(

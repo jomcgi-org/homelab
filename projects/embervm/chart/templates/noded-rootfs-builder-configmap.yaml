@@ -21,6 +21,12 @@
 # recorded UUID differs from the local rootfs. Cross-node hydration therefore
 # requires distributing the baked rootfs file itself (#5772), not rebaking the
 # same guest digest on another node.
+#
+# The shared rootfs cache stores that baked file by full guest image digest, so
+# every node receives byte-identical bytes and the same ext4 UUID. Bases can then
+# hydrate across nodes under the identity contract. The node-local hardlink cache
+# stays in front of the store, so a pod restart on a surviving node still costs
+# no download and no bake.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -149,6 +155,8 @@ data:
       # rootfs- prefix and the .tmp. infix are required, so a completed
       # rootfs-<digest>.ext4 can never match: a banked session embeds the host
       # path of the rootfs it was born on and removing one corrupts that restore.
+      # rootfs-store stages downloads as <out>.tmp.<random>, so its interrupted
+      # downloads match this same glob and depth.
       while IFS= read -r -d '' path; do
         if [ "$path" != "$keep_path" ]; then
           candidates+=("$path")
@@ -258,8 +266,37 @@ data:
     if [ -f "$cache" ]; then
       echo "rootfs cache hit $short for $GUEST_IMAGE"
     else
-      echo "rootfs cache miss $short; building from $GUEST_IMAGE -> $cache"
       cache_tmp="$(mktemp "$cache.tmp.XXXXXX")"
+      store_hit=0
+      store_fallback=0
+      store_fallback_reason=""
+      baked=0
+      if command -v rootfs-store >/dev/null 2>&1; then
+        set +e
+        store_get_output="$(rootfs-store get --digest "$digest" --out "$cache_tmp" 2>&1)"
+        store_get_status=$?
+        set -e
+        case "$store_get_status" in
+        0)
+          store_hit=1
+          echo "rootfs store hit digest=sha256:$digest path=$cache"
+          ;;
+        3)
+          store_fallback=1
+          store_fallback_reason="disabled or miss"
+          ;;
+        *)
+          store_fallback=1
+          store_fallback_reason="get failed"
+          echo "rootfs store get failed digest=sha256:$digest status=$store_get_status error=$store_get_output; falling back to bake" >&2
+          ;;
+        esac
+      else
+        echo "rootfs store cache unavailable: rootfs-store not on PATH; baking" >&2
+      fi
+      if [ "$store_hit" -ne 1 ]; then
+        baked=1
+        echo "rootfs cache miss $short; building from $GUEST_IMAGE -> $cache"
       # A failed crane export leaves /work/root partially extracted, so the
       # retried attempt must start from a clean tree; reset it inside the unit.
       export_rootfs() {
@@ -321,28 +358,50 @@ data:
         fi
       fi
       rm -f "$mkfs_output"
-      # A sibling brick on this node bakes the same digest to the same shared
-      # scratch, so by the time we finish it may already be published. That is a
-      # WIN, not a failure: the already-published file is the node's canonical
-      # bake for this digest. Renaming over it would swap the inode under any
-      # hardlink or open handle already taken against it (see the ln -f below,
-      # and the banked-session note in the reclaim comment) for no gain.
+      fi
+      # A sibling brick on this node may publish the same digest to the shared
+      # scratch while this builder downloads or bakes it. The existing file is
+      # the node's canonical copy, so never rename over its inode.
       if [ -f "$cache" ]; then
-        echo "rootfs $short published by a sibling while this bake ran"
+        echo "rootfs $short published by a sibling while this builder ran"
         rm -f "$cache_tmp"
       else
         mv_error="$(mktemp)"
         if mv -f "$cache_tmp" "$cache" 2>"$mv_error"; then
-          echo "rootfs baked at $cache ($size)"
+          if [ "$baked" -eq 1 ]; then
+            echo "rootfs baked at $cache ($size)"
+          fi
           rm -f "$mv_error"
         else
           # Say what actually happened. This used to surface as one bare
           # "mv: cannot stat" line with the mkfs output swallowed, which is why
           # #5630 read as a mystery twice.
           cat "$mv_error" >&2
-          echo "rootfs bake produced no file at $cache_tmp and $cache does not exist" >&2
+          echo "rootfs builder produced no file at $cache_tmp and $cache does not exist" >&2
           rm -f "$mv_error" "$cache_tmp"
           exit 1
+        fi
+      fi
+      if [ "$baked" -eq 1 ]; then
+        if [ "$store_fallback" -eq 1 ]; then
+          echo "rootfs store $store_fallback_reason and baked digest=sha256:$digest path=$cache"
+        fi
+        if command -v rootfs-store >/dev/null 2>&1; then
+          set +e
+          store_put_output="$(rootfs-store put --digest "$digest" --file "$cache" --image-ref "$GUEST_IMAGE" 2>&1)"
+          store_put_status=$?
+          set -e
+          if [ "$store_put_status" -eq 0 ] && [ "$store_put_output" = "uploaded" ]; then
+            echo "rootfs store uploaded digest=sha256:$digest path=$cache"
+          elif [ "$store_put_status" -eq 0 ] && [[ "$store_put_output" == "already present"* ]]; then
+            echo "rootfs store upload skipped ($store_put_output) digest=sha256:$digest path=$cache"
+          elif [ "$store_put_status" -eq 3 ]; then
+            echo "rootfs store disabled or miss; upload skipped digest=sha256:$digest path=$cache"
+          else
+            echo "rootfs store upload failed digest=sha256:$digest status=$store_put_status error=$store_put_output" >&2
+          fi
+        else
+          echo "rootfs store cache unavailable: rootfs-store not on PATH; upload skipped" >&2
         fi
       fi
     fi

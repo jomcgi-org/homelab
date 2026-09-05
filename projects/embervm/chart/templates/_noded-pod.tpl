@@ -107,6 +107,24 @@ initContainers:
         value: {{ printf "%s/embervm-noded/snapshots" $ctx.Values.noded.firecracker.nvmeRoot | quote }}
       - name: EMBERVM_ROOTFS_RECLAIM_TARGET_FREE_BYTES
         value: {{ $ctx.Values.rootfsReclaim.targetFreeBytes | quote }}
+      {{- if $ctx.Values.noded.store.endpoint }}
+      - name: EMBERVM_NODED_STORE_ENDPOINT
+        value: {{ $ctx.Values.noded.store.endpoint | quote }}
+      - name: EMBERVM_NODED_STORE_BUCKET
+        value: {{ $ctx.Values.noded.store.bucket | quote }}
+      {{- if $ctx.Values.noded.store.credentials.enabled }}
+      - name: EMBERVM_NODED_STORE_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: {{ include "embervm.store.credentialsSecretName" $ctx }}
+            key: {{ $ctx.Values.noded.store.credentials.accessKeyIdKey }}
+      - name: EMBERVM_NODED_STORE_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: {{ include "embervm.store.credentialsSecretName" $ctx }}
+            key: {{ $ctx.Values.noded.store.credentials.secretAccessKeyKey }}
+      {{- end }}
+      {{- end }}
       {{- if $ctx.Values.imagePullSecret.enabled }}
       - name: DOCKER_CONFIG
         value: /ghcr

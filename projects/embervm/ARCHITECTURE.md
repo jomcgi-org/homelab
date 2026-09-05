@@ -750,6 +750,13 @@ namespaced by workload (and vendor, below); a principal-scoped
 implemented: `ArtifactRef` is `{kind, workload, ref}` with keys
 `<kind>/<vendor>/<workload>/<ref>/<file>`.
 
+**Baked rootfs cache (Built, #5772)**: Baked guest rootfs files use
+`rootfs/<digest>/<payload-sha256>.ext4`, with
+`rootfs/<digest>/rootfs.ext4.sha256` written last as the completeness marker.
+The marker names the payload key and checksum. A local miss reads the marker first,
+downloads that payload, and verifies its bytes, so bases hydrate across nodes under
+the identity contract, with a local hardlink cache in front.
+
 **Planned rootfs plane (ADR 028, #4182)**: OCI images convert to deterministic
 flattened EROFS manifests and immutable chunks. Private chunks deduplicate under
 `rootfs/account/<account>/...`; allow-listed published platform chunks may use
