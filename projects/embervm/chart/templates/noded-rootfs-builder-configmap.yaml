@@ -14,6 +14,16 @@
 # changed on every roll even when the image bytes were identical, re-paying the
 # 4-5 minute crane-export + mkfs.ext4 tax each time. Keying the bake on the digest
 # makes an unchanged guest image a cache hit (hardlink only, no bake).
+#
+# Reproducibility contract (#5771): noded's rootfs identity gate and store
+# hydration depend on the same guest digest baking byte-identically on a fresh
+# node. The filesystem UUID and directory hash seed therefore derive from that
+# digest, and e2fsprogs runs at the fixed 2024-01-01T00:00:00Z epoch. Changing
+# these mkfs flags or the e2fsprogs version changes the bytes. That is safe
+# because the base key includes rootfs identity. On the first roll after this
+# change, every stored base built against an older random-UUID rootfs fails the
+# identity gate once and is rebuilt. From then on, rebaking the same digest with
+# the same builder version reproduces the rootfs bytes and permits hydration.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -28,6 +38,41 @@ data:
     # disk, and hardlinks the template-time BASE_ROOTFS_PATH to it, so no human on
     # node-4 with sudo is needed to place a rootfs.
     set -euo pipefail
+    # E2fsprogs honors this test hook for filesystem creation and write times.
+    # 1704067200 is 2024-01-01T00:00:00Z and is part of the bake format.
+    readonly EMBERVM_ROOTFS_BAKE_EPOCH=1704067200
+    export E2FSPROGS_FAKE_TIME="$EMBERVM_ROOTFS_BAKE_EPOCH"
+    if [ "${1:-}" = "--self-test" ]; then
+      self_test_dir="$(mktemp -d)"
+      trap 'rm -rf "$self_test_dir"' EXIT
+      mkdir -p "$self_test_dir/bin" "$self_test_dir/fixture" \
+        "$self_test_dir/first" "$self_test_dir/second"
+      printf '%s\n' 'reproducible rootfs fixture' >"$self_test_dir/fixture/hello.txt"
+      touch -t 202401010000.00 "$self_test_dir/fixture" "$self_test_dir/fixture/hello.txt"
+      cat >"$self_test_dir/bin/crane" <<'EOF'
+    #!/bin/bash
+    case "$1" in
+      digest) printf '%s\n' 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' ;;
+      export) tar -cf - -C "$EMBERVM_ROOTFS_SELF_TEST_FIXTURE" . ;;
+      *) exit 2 ;;
+    esac
+    EOF
+      chmod +x "$self_test_dir/bin/crane"
+      export EMBERVM_ROOTFS_SELF_TEST_FIXTURE="$self_test_dir/fixture"
+      export PATH="$self_test_dir/bin:$PATH"
+      GUEST_IMAGE=self-test BASE_ROOTFS_PATH="$self_test_dir/first/rootfs.ext4" \
+        ROOTFS_SIZE=16M "$0" --self-test-bake
+      GUEST_IMAGE=self-test BASE_ROOTFS_PATH="$self_test_dir/second/rootfs.ext4" \
+        ROOTFS_SIZE=16M "$0" --self-test-bake
+      first_sha="$(sha256sum "$self_test_dir/first/rootfs.ext4" | awk '{print $1}')"
+      second_sha="$(sha256sum "$self_test_dir/second/rootfs.ext4" | awk '{print $1}')"
+      if [ "$first_sha" != "$second_sha" ]; then
+        echo "rootfs reproducibility self-test failed: $first_sha != $second_sha" >&2
+        exit 1
+      fi
+      echo "rootfs reproducibility self-test passed: sha256=$first_sha"
+      exit 0
+    fi
     : "${GUEST_IMAGE:?GUEST_IMAGE required}"
     : "${BASE_ROOTFS_PATH:?BASE_ROOTFS_PATH required}"
     # Defaulted, never required. The ConfigMap lands at sync wave 0 while bricks
@@ -236,6 +281,20 @@ data:
     # short-circuits on.
     digest="$(retry crane digest --platform "$platform" "$GUEST_IMAGE")"
     digest="${digest#sha256:}"
+    if [ "${#digest}" -ne 64 ]; then
+      echo "invalid sha256 guest digest length: $digest" >&2
+      exit 1
+    fi
+    case "$digest" in
+      *[!0-9a-fA-F]*)
+        echo "invalid sha256 guest digest: $digest" >&2
+        exit 1
+        ;;
+    esac
+    # Use the first 32 digest hex characters, replacing the UUID version and
+    # variant nibbles with v4-style constants. This is deterministic and needs
+    # no uuidgen dependency in the builder image.
+    uuid="${digest:0:8}-${digest:8:4}-4${digest:13:3}-8${digest:17:3}-${digest:20:12}"
     short="${digest:0:12}"
     cache="$base_dir/rootfs-$short.ext4"
     if [ -f "$cache" ]; then
@@ -253,7 +312,7 @@ data:
       retry export_rootfs
       mkfs_output="$(mktemp)"
       set +e
-      mkfs.ext4 -q -F -L embervmbase -d /work/root "$cache_tmp" "$size" >"$mkfs_output" 2>&1
+      mkfs.ext4 -q -F -L embervmbase -U "$uuid" -E hash_seed="$uuid" -d /work/root "$cache_tmp" "$size" >"$mkfs_output" 2>&1
       mkfs_status=$?
       set -e
       if [ "$mkfs_status" -ne 0 ]; then
@@ -295,7 +354,7 @@ data:
           fi
           rm -f "$cache_tmp"
           echo "rootfs ENOSPC orphan reclaim retry: mkfs.ext4 once" >&2
-          mkfs.ext4 -q -F -L embervmbase -d /work/root "$cache_tmp" "$size"
+          mkfs.ext4 -q -F -L embervmbase -U "$uuid" -E hash_seed="$uuid" -d /work/root "$cache_tmp" "$size"
         else
           echo "mkfs.ext4 failed and free space looks fine; reclaim not attempted" >&2
           rm -f "$mkfs_output"
@@ -334,4 +393,9 @@ data:
     # snapshot that embedded either path restores against byte-identical content.
     ln -f "$cache" "$BASE_ROOTFS_PATH"
     echo "linked $BASE_ROOTFS_PATH -> $cache"
+    actual_uuid="$(LC_ALL=C tune2fs -l "$cache" 2>/dev/null | awk -F: '/^Filesystem UUID:/ {gsub(/[[:space:]]/, "", $2); print $2; exit}')"
+    echo "rootfs identity digest=sha256:$digest uuid=$actual_uuid expected_uuid=$uuid path=$cache"
+    if [ "$actual_uuid" != "$uuid" ]; then
+      echo "rootfs identity warning: cached rootfs predates deterministic UUID bake" >&2
+    fi
 {{- end }}

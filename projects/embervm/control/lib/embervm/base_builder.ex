@@ -942,9 +942,9 @@ defmodule Embervm.BaseBuilder do
 
   # -- restore-first (hydrate-on-miss, base-durability PR-2) --------------------
 
-  # Hydrate `workload`'s recorded base onto `node_id` after a wake found none there
-  # (issue #4127). See note_base_missing/3 for why this is not gated on
-  # node_reports_base_absent?/3.
+  # Hydrate `workload`'s recorded base onto `node_id` after a wake or inventory
+  # update found none there (issues #4127 and #5771). Each caller establishes
+  # absence before entering this path.
   #
   # `node_id` here is a BARE node name (the wake's volume anchor), while this module
   # pins by INSTANCE id, so resolve the best build-eligible instance ON that node.
@@ -1008,7 +1008,7 @@ defmodule Embervm.BaseBuilder do
             # will keep failing and no hydrate can help: the anchor itself is wrong
             # (stale volume debris flapping it, #4127) or the node is not eligible.
             Logger.warning(
-              "embervm base builder: wake found no base for #{workload} on #{node_id}, " <>
+              "embervm base builder: node reports no base for #{workload} on #{node_id}, " <>
                 "and no build-eligible instance exists there to hydrate onto"
             )
 
@@ -1021,7 +1021,7 @@ defmodule Embervm.BaseBuilder do
 
                 Logger.warning(
                   "embervm base builder: hydrating #{workload}/#{ref_to_use} onto #{instance_id} " <>
-                    "after a wake found no base on its anchor node #{node_id}"
+                    "after its anchor node #{node_id} reported no local base"
                 )
 
                 state
@@ -1036,7 +1036,7 @@ defmodule Embervm.BaseBuilder do
                 # hold it: export first, hydrate later. Forcing a rebuild here
                 # would bake bytes another node already has.
                 Logger.info(
-                  "embervm base builder: wake found no base for #{workload} on #{node_id} and " <>
+                  "embervm base builder: node reports no base for #{workload} on #{node_id} and " <>
                     "#{ref_to_use} has no confirmed store copy yet; waiting for the export " <>
                     "backstop before hydrating"
                 )
@@ -1560,34 +1560,43 @@ defmodule Embervm.BaseBuilder do
 
   defp rebuild_dropped_base(state, w, name, instance_id, now) do
     cleared_ref = w.snapshot_ref
-    w = clear_rebuild_record(state, w, node_name(instance_id), keep_store_evidence: true)
+    anchor_node = node_name(instance_id)
+    state = put_in(state, [:dropped_at, {name, instance_id}], now)
 
-    Logger.warning(
-      "embervm base builder: node dropped base #{name}/#{cleared_ref}; enqueueing rebuild",
-      workload: name,
-      node_id: instance_id,
-      ref: cleared_ref
-    )
+    if store_fetchable?(state, w, pinned_vendor(state, instance_id), cleared_ref) do
+      # Capacity facts do not carry the node's ext4 UUID, so a durable dropped
+      # ref is hydrated optimistically. Noded's identity gate refuses a rootfs
+      # mismatch, and the existing hydrate fallback then drives direct BuildBase.
+      hydrate_for_anchor(state, name, anchor_node)
+    else
+      w = clear_rebuild_record(state, w, anchor_node, keep_store_evidence: true)
 
-    record_base_rebuild(
-      state.op_log_mod,
-      state.op_log,
-      state.tenant,
-      state.clock,
-      name,
-      instance_id,
-      cleared_ref
-    )
+      Logger.warning(
+        "embervm base builder: node dropped non-durable base #{name}/#{cleared_ref}; enqueueing rebuild",
+        workload: name,
+        node_id: instance_id,
+        ref: cleared_ref
+      )
 
-    state
-    |> put_in([:workloads, name], w)
-    |> put_in([:dropped_at, {name, instance_id}], now)
-    |> cancel_pending_retry(name)
-    # Direct BuildBase avoids a 1 GB download plus the poll_base_ready budget before another bake's copy is refused.
-    # Unlike reconcile_scratch_generation, skip hydrate_for_anchor because the identity gate rejected this ref.
-    |> enqueue(instance_id, name)
-    |> write_base_status(w, :building)
-    |> maybe_start_build(instance_id)
+      record_base_rebuild(
+        state.op_log_mod,
+        state.op_log,
+        state.tenant,
+        state.clock,
+        name,
+        instance_id,
+        cleared_ref
+      )
+
+      state
+      |> put_in([:workloads, name], w)
+      |> cancel_pending_retry(name)
+      # A non-durable ref cannot hydrate. Build directly instead of paying the
+      # download and poll budget for a store miss that is already known.
+      |> enqueue(instance_id, name)
+      |> write_base_status(w, :building)
+      |> maybe_start_build(instance_id)
+    end
   end
 
   # The :base_built kind existed in the proto enums but was never emitted until
