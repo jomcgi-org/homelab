@@ -29,6 +29,7 @@ outputs against each other finds them, which is what this does.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -106,6 +107,45 @@ def test_store_credentials_are_default_off_and_share_one_secret() -> None:
     assert signed.count("name: e-embervm-store") >= 3
     assert "kind: OnePasswordItem" in signed
     assert 'itemPath: "vaults/x/items/y"' in signed
+
+
+def test_noded_egress_catalog_renders_plaintext_upstream_opt_in(
+    tmp_path: Path,
+) -> None:
+    overlay = tmp_path / "plaintext-upstream.yaml"
+    overlay.write_text(
+        """egress:
+  enabled: true
+  secrets:
+    - header: Authorization
+      brokerGrant: internal-api
+      egressTo: [internal-api.default.svc]
+      plaintextUpstream: true
+    - header: X-Token
+      env: LEGACY_TOKEN
+      egressTo: [legacy.default.svc]
+      secretRef: {name: legacy-token, key: token}
+"""
+    )
+    rendered = _render(
+        "plaintext-upstream",
+        [_chart_dir() / "values.yaml", overlay],
+    )
+    noded = [
+        doc
+        for kind, _name, doc in _docs(rendered)
+        if kind == "DaemonSet" and "- name: egress-proxy" in doc
+    ]
+    assert len(noded) == 1, f"expected one rendered noded pod, got {len(noded)}"
+    match = re.search(
+        r'^\s*- name: EGRESS_SECRETS\s*\n\s+value: ("(?:\\.|[^"\\])*")\s*$',
+        noded[0],
+        re.MULTILINE,
+    )
+    assert match, "noded egress-proxy has no EGRESS_SECRETS env value"
+    catalog = json.loads(json.loads(match.group(1)))
+    assert catalog[0]["plaintextUpstream"] is True
+    assert catalog[1]["plaintextUpstream"] is False
 
 
 def _docs(rendered: str):

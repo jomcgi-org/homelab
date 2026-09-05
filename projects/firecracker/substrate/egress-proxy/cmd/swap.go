@@ -209,6 +209,11 @@ type secretEntry struct {
 	EgressTo    []string `json:"egressTo"`
 	ClaimHeader string   `json:"claimHeader"`
 	ClaimPath   string   `json:"claimPath"`
+	// PlaintextUpstream is the explicit opt-in to inject credentials over a
+	// plaintext TCP upstream connection. It is restricted to internal
+	// destinations; public addresses are denied rather than sent credentials in
+	// cleartext.
+	PlaintextUpstream bool `json:"plaintextUpstream"`
 	// InjectAlwaysPaths is the explicit substitute signal for a client that
 	// sends NO credential header at all, so presence cannot signal intent for
 	// it (issue #4298: the codex CLI's rmcp connector client POSTs with no
@@ -373,6 +378,9 @@ func loadSecretsWithBroker(logger *slog.Logger, brokerURL string) []secretEntry 
 			// Secret-backed environment variables are fixed for the lifetime of a
 			// container. A pod restart is required after the secret resolves.
 			logger.Error("secret env empty; its egressTo hosts will be DENIED; restart the pod after it resolves", "env", e.Env, "egressTo", e.EgressTo)
+		}
+		if e.PlaintextUpstream {
+			logger.Info("catalog entry has plaintextUpstream opt-in", "egressTo", e.EgressTo)
 		}
 		out = append(out, e)
 	}
