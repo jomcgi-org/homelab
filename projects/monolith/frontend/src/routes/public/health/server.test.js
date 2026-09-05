@@ -71,6 +71,27 @@ describe("/public/health GET", () => {
     expect(JSON.stringify(body)).not.toContain("secret");
   });
 
+  it("passes categorical causes through on 503", async () => {
+    const fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({
+        status: "unhealthy",
+        components: {
+          ember_postgres: { ok: false, detail: "internal detail" },
+        },
+        causes: { ember_postgres: "preemption" },
+      }),
+    });
+
+    const res = await GET({ fetch });
+    const body = await res.json();
+
+    expect(body.causes).toEqual({ ember_postgres: "preemption" });
+    expect(body.failing).toEqual(["ember_postgres"]);
+    expect(JSON.stringify(body)).not.toContain("internal detail");
+  });
+
   it("excludes advisory components from failing on 503", async () => {
     // Regression test for the bug: cd is advisory (in degraded array)
     // so it must not appear in failing.

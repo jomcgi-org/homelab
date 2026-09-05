@@ -257,7 +257,7 @@ def test_public_tier_health_has_no_components_when_no_module_registers_health(
     app = build_app(PUBLIC_PROFILE, [_routed_module("m", "m")])
     resp = TestClient(app).get("/api/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    assert resp.json() == {"status": "ok", "causes": {}}
 
 
 def test_public_tier_health_folds_in_module_components(_sqlite_engine):
@@ -275,6 +275,28 @@ def test_public_tier_health_folds_in_module_components(_sqlite_engine):
     body = resp.json()
     assert body["status"] == "ok"
     assert body["components"] == {"widget": {"ok": True, "detail": "all good"}}
+    assert body["causes"] == {}
+
+
+def test_public_tier_health_projects_preemption_causes(_sqlite_engine):
+    async def preempted_check():
+        return {
+            "ok": False,
+            "detail": "brick preempted, control plane restoring, down for 5m",
+            "cause": "preemption",
+        }
+
+    module = Module(
+        name="m",
+        register_public=lambda app: None,
+        register_health={"ember_postgres": preempted_check},
+    )
+    app = build_app(PUBLIC_PROFILE, [module])
+
+    resp = TestClient(app).get("/api/health")
+
+    assert resp.status_code == 503
+    assert resp.json()["causes"] == {"ember_postgres": "preemption"}
 
 
 def test_advisory_failure_returns_200_degraded_and_logs_info(

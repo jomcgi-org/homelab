@@ -11,9 +11,10 @@
   import { fade } from "svelte/transition";
   import "./ember-stage.css";
 
-  /** @type {{ vmState?: string|null, totalSavedMibS?: number|null, stopwatchMs?: number, running?: boolean, wakePromise?: string, present?: number|null }} */
+  /** @type {{ vmState?: string|null, preempted?: {since_ms?: number|null, phase?: string}|null, totalSavedMibS?: number|null, stopwatchMs?: number, running?: boolean, wakePromise?: string, present?: number|null }} */
   let {
     vmState = null,
+    preempted = null,
     totalSavedMibS = null,
     stopwatchMs = 0,
     running = false,
@@ -41,6 +42,11 @@
     cold_booting: "Waking",
     starting: "Waking",
     serving: "Awake",
+    failed: "Offline",
+    evicted: "Offline",
+    destroying: "Offline",
+    destroyed: "Offline",
+    preempted: "Rehoming",
   };
 
   let reduced = $state(false);
@@ -138,6 +144,7 @@
   const COLD_STATES = new Set(["banked", "checkpointed"]);
 
   function effectiveState() {
+    if (preempted) return "preempted";
     if (running && (vmState == null || COLD_STATES.has(vmState))) {
       return "relighting";
     }
@@ -263,7 +270,7 @@
   // Reactive mirror of effectiveState() for the derived display bits below
   // (the rAF loop reads effectiveState() directly each frame instead).
   let optimisticWaking = $derived(
-    running && (vmState == null || COLD_STATES.has(vmState)),
+    !preempted && running && (vmState == null || COLD_STATES.has(vmState)),
   );
 
   // ── Reduced-motion static fallback: two-state cell fill, no rAF loop ──
@@ -301,21 +308,29 @@
     return `${humanize(gbh)} GB·h`;
   }
 
+  function downFor(sinceMs) {
+    if (typeof sinceMs !== "number" || sinceMs < 0) return "";
+    return `down for ${Math.round(sinceMs / 60_000)}m`;
+  }
+
   // The badge/hero follow displayState (the damped, sweep-synchronized
   // state) when the rAF loop is running; reduced-motion has no loop, so it
   // falls back to the raw + optimistic derivation.
   let effDisplay = $derived(
-    displayState ?? (optimisticWaking ? "relighting" : vmState),
+    displayState ??
+      (preempted ? "preempted" : optimisticWaking ? "relighting" : vmState),
   );
 
-  let stateWord = $derived(STATE_WORD[effDisplay ?? ""] ?? "Asleep");
+  let stateWord = $derived(STATE_WORD[effDisplay ?? ""] ?? "Offline");
 
   let heroKind = $derived(
-    effDisplay === "serving"
-      ? "serving"
-      : effDisplay != null && WAKING.has(effDisplay)
-        ? "waking"
-        : "cold",
+    effDisplay === "preempted"
+      ? "preempted"
+      : effDisplay === "serving"
+        ? "serving"
+        : effDisplay != null && WAKING.has(effDisplay)
+          ? "waking"
+          : "cold",
   );
 
   // Live watchers pill: names the OTHER cause of warmth on this shared VM.
@@ -362,8 +377,22 @@
     </div>
     <div class="es-hero">
       {#key heroKind}
-        <div class="es-hero-inner" in:fade={{ duration: 260 }}>
-          {#if heroKind === "cold"}
+        <div
+          class="es-hero-inner"
+          class:es-hero-preempted={heroKind === "preempted"}
+          in:fade={{ duration: 260 }}
+        >
+          {#if heroKind === "preempted"}
+            <span class="es-preempted-copy"
+              >The Spot node hosting this Postgres was preempted. The control
+              plane is restoring the volume from the object store.</span
+            >
+            {#if downFor(preempted?.since_ms)}
+              <span class="es-preempted-duration"
+                >{downFor(preempted?.since_ms)}</span
+              >
+            {/if}
+          {:else if heroKind === "cold"}
             <span class="es-hero-value">{gbHours(totalSavedMibS)}</span>
             <span class="es-hero-caption"
               >saved all-time by scaling to zero</span
@@ -571,5 +600,32 @@
     background: color-mix(in srgb, var(--es-panel) 94%, transparent);
     padding: 2px 10px;
     border-radius: 6px;
+  }
+
+  .es-hero-preempted {
+    max-width: 720px;
+    gap: 7px;
+  }
+
+  .es-preempted-copy,
+  .es-preempted-duration {
+    color: var(--es-ink);
+    background: color-mix(in srgb, var(--em-amber) 38%, var(--es-panel));
+    border: 1px solid var(--em-amber);
+    box-shadow: var(--em-shadow-soft);
+    border-radius: 8px;
+  }
+
+  .es-preempted-copy {
+    padding: 7px 12px;
+    font-size: 14px;
+    line-height: 1.35;
+  }
+
+  .es-preempted-duration {
+    padding: 2px 9px;
+    font-family: var(--em-mono, ui-monospace, monospace);
+    font-size: 12px;
+    font-weight: 650;
   }
 </style>

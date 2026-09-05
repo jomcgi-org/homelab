@@ -27,7 +27,7 @@ import logging
 import os
 import random
 from datetime import datetime, timezone
-from time import monotonic, perf_counter
+from time import monotonic, perf_counter, time
 
 import httpx
 import psycopg
@@ -261,7 +261,36 @@ def shape_pg_status(status: dict) -> dict:
         "last_park_at": instance.get("last_park_at"),
         "park_seq": instance.get("park_seq"),
         "created_at": instance.get("created_at"),
+        "anchor": status.get("anchor"),
+        "recovery": status.get("recovery"),
     }
+
+
+def preemption_status(status: dict | None) -> dict | None:
+    """Describe an active Spot-brick recovery from defensive CP fields."""
+    if not status:
+        return None
+    anchor = status.get("anchor")
+    anchor = anchor if isinstance(anchor, dict) else {}
+    recovery = status.get("recovery")
+    anchor_missing = anchor.get("health") == "down" or anchor.get("draining") is True
+    if recovery not in {"anchor_lost", "restoring", "cold"} and not anchor_missing:
+        return None
+
+    if recovery == "cold":
+        phase = "cold"
+    elif recovery in {"anchor_lost", "restoring"}:
+        phase = "restoring"
+    else:
+        phase = "confirming"
+
+    missing_since_ms = anchor.get("missing_since_ms")
+    since_ms = None
+    if isinstance(missing_since_ms, (int, float)) and not isinstance(
+        missing_since_ms, bool
+    ):
+        since_ms = max(0, int(time() * 1000 - missing_since_ms))
+    return {"since_ms": since_ms, "phase": phase}
 
 
 # All-time "memory saved while asleep" counter (every visitor, not just this
@@ -405,13 +434,22 @@ def classify_wake(before: dict | None) -> str:
 
     The StartStateful response's was_relight never reaches the management API,
     so the demo classifies from what the workload looked like the instant
-    before the connect: a serving instance answers warm, a banked bundle whose
-    stamped generation still pairs with the volume relights, a broken pair or
-    no instance at all cold-boots. A mid-transition snapshot (banking,
-    relighting, ...) is reported as such rather than guessed at.
+    before the connect. Preemption recovery takes precedence. Otherwise, a
+    serving instance answers warm, a banked bundle whose stamped generation
+    still pairs with the volume relights, and a broken pair or no instance at
+    all cold-boots. A mid-transition snapshot (banking, relighting, ...) is
+    reported as such rather than guessed at.
     """
     if before is None:
         return "unknown"
+    anchor = before.get("anchor")
+    anchor = anchor if isinstance(anchor, dict) else {}
+    if (
+        before.get("recovery") in {"anchor_lost", "restoring"}
+        or anchor.get("health") == "down"
+        or anchor.get("draining") is True
+    ):
+        return "preempted"
     state = before.get("state")
     if state == "serving":
         return "warm"

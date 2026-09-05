@@ -72,6 +72,8 @@ export function shouldRetry(elapsedMs, retryWindow) {
  */
 export function phaseLabel(state) {
   switch (state) {
+    case "preempted":
+      return "rehoming";
     case "banking":
     case "checkpointed":
       return "writing snapshot";

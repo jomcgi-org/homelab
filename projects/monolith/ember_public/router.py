@@ -78,15 +78,22 @@ async def postgres_status(request: Request) -> dict:
         logger.warning("demo-postgres status poll failed: %s", exc)
         return {"configured": True, "present": present, "error": str(exc)}
     shaped = core.shape_pg_status(status)
+    preempted = core.preemption_status(shaped)
     total = await core.record_demo_pg_savings(shaped["state"], shaped["generation"])
     if total is not None:
         return {
             "configured": True,
             "present": present,
             **shaped,
+            "preempted": preempted,
             "total_saved_mib_s": total,
         }
-    return {"configured": True, "present": present, **shaped}
+    return {
+        "configured": True,
+        "present": present,
+        **shaped,
+        "preempted": preempted,
+    }
 
 
 @router.post("/query")
@@ -159,10 +166,20 @@ async def postgres_query(body: PostgresQueryRequest, request: Request) -> dict:
             )
         except Exception as exc:  # noqa: BLE001 - surface connect/query failures in-band
             logger.warning("demo-postgres query roundtrip failed: %s", exc)
+            classification = (
+                "preempted"
+                if core.preemption_status(before) is not None
+                else core.classify_wake(before)
+            )
             return {
-                "error": str(exc),
+                "error": (
+                    "the brick hosting this demo was preempted, "
+                    "the control plane is restoring it"
+                    if classification == "preempted"
+                    else str(exc)
+                ),
                 "mode": body.mode,
-                "classification": core.classify_wake(before),
+                "classification": classification,
                 "phase_before": (before or {}).get("state"),
                 "total_ms": (perf_counter() - started) * 1000,
             }

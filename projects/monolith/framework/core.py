@@ -311,7 +311,8 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
         ``Module.register_health``) run alongside SELECT 1 and are folded
         into a ``components`` map. Fatal components make the response 503;
         advisory components are reported in ``degraded`` while the response
-        remains 200.
+        remains 200. Categorical component causes are projected separately in
+        ``causes`` so public proxies do not need to expose internal details.
         """
         from sqlmodel import Session, text
 
@@ -362,7 +363,12 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
             # runbooks key on that exact warning text, so an advisory component
             # emitting it would move the pager rather than remove it.
             health_logger.info("%s: %s", advisory_message, ", ".join(sorted(advisory)))
-        body = {"status": "ok" if all_ok else "unhealthy"}
+        causes = {
+            name: "preemption"
+            for name, component in components.items()
+            if component.get("cause") == "preemption"
+        }
+        body = {"status": "ok" if all_ok else "unhealthy", "causes": causes}
         if components:
             body["components"] = components
         if advisory:
