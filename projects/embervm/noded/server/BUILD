@@ -17,6 +17,7 @@ go_library(
         "registry.go",
         "registry_workload.go",
         "rootfs_gc.go",
+        "rootfsid.go",
         "server.go",
         "serving.go",
         "serving_registry.go",

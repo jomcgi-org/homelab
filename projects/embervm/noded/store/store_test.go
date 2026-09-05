@@ -637,6 +637,31 @@ func TestExportSkipsUnchanged(t *testing.T) {
 	}
 }
 
+func TestExportOverwriteUploadsUnchanged(t *testing.T) {
+	s, fake := newTestStore(t)
+	ctx := context.Background()
+	dir, names := writeLocalArtifact(t, map[string]string{
+		"snapfile": "snap-content",
+		"memfile":  "mem-content",
+	})
+	prefix := "base/amd/echo/echo__rootfs"
+
+	if _, skipped, err := s.Export(ctx, prefix, dir, names, 0, 1, "amd", ""); err != nil || skipped {
+		t.Fatalf("first Export = (skipped=%v, %v), want (false, nil)", skipped, err)
+	}
+	putsAfterFirst := len(fake.putOrderCopy())
+	moved, skipped, err := s.Export(ctx, prefix, dir, names, 0, 2, "amd", "", ExportOptions{Overwrite: true})
+	if err != nil {
+		t.Fatalf("overwrite Export: %v", err)
+	}
+	if skipped || moved == 0 {
+		t.Fatalf("overwrite Export = (moved=%d, skipped=%v), want upload", moved, skipped)
+	}
+	if got := len(fake.putOrderCopy()); got <= putsAfterFirst {
+		t.Fatal("overwrite Export issued no new PUTs")
+	}
+}
+
 // TestRestoreRoundTrip proves Restore fetches the bytes back identically and
 // reports the marker's generation.
 func TestRestoreRoundTrip(t *testing.T) {

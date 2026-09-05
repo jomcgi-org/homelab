@@ -143,9 +143,10 @@ type EnvelopeRewrapper interface {
 // empty Kind keeps the export plaintext, which lets callers explicitly exclude
 // non-principal artifacts such as bases.
 type ExportOptions struct {
-	Kind     string
-	Workload string
-	Ref      string
+	Kind      string
+	Workload  string
+	Ref       string
+	Overwrite bool
 }
 
 // Store is the S3-API object-store client. It is safe for concurrent use (the
@@ -406,13 +407,15 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 // meta.json LAST as the completeness marker. It first computes every file's
 // SHA-256 and HEAD-compares against any existing meta.json: if the store already
 // holds this exact artifact (identical file checksums), it returns skipped=true
-// and bytesMoved=0 without re-uploading (idempotent per checksum). Otherwise it
-// PUTs each file, then PUTs meta.json, and returns the sum of the uploaded file
-// sizes. files are base names resolved against localDir; a missing local file is
-// an error (an incomplete artifact must not be exported as complete). cpuVendor
-// and cpuTemplate (PR-E) stamp the exporting node's cpu_sku into meta.json;
-// either or both empty stamps the artifact UNSTAMPED for that half of the sku
-// (the pre-PR-E / grandfathered shape), never a placeholder value.
+// and bytesMoved=0 without re-uploading (idempotent per checksum). Overwrite
+// bypasses that check for a caller repairing a known-stale store object.
+// Otherwise it PUTs each file, then PUTs meta.json, and returns the sum of the
+// uploaded file sizes. files are base names resolved against localDir; a missing
+// local file is an error (an incomplete artifact must not be exported as
+// complete). cpuVendor and cpuTemplate (PR-E) stamp the exporting node's cpu_sku
+// into meta.json; either or both empty stamps the artifact UNSTAMPED for that
+// half of the sku (the pre-PR-E / grandfathered shape), never a placeholder
+// value.
 func (s *Store) Export(ctx context.Context, prefix, localDir string, files []string, generation uint64, nowMs int64, cpuVendor, cpuTemplate string, options ...ExportOptions) (bytesMoved int64, skipped bool, err error) {
 	if s == nil {
 		return 0, false, ErrNotPresent
@@ -434,33 +437,35 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 		meta.Files[name] = fm
 		totalSize += fm.Size
 	}
+	var opts ExportOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
 
 	// Idempotency short-circuit: if the store already holds a meta.json whose
 	// per-file checksums match ours, the artifact is already durable at this
 	// content. HEAD-then-GET the marker; a Head miss (or a mismatch) falls
 	// through to a full re-upload.
-	if present, remoteMeta, merr := s.getMeta(ctx, prefix); merr == nil && present {
-		if sameFiles(remoteMeta.Files, meta.Files) {
-			return 0, true, nil
-		}
-		// Content DIFFERS. Before this fence that fell straight through to a full
-		// re-upload, so an older copy silently overwrote a newer one on the shared
-		// singleton volume key. Compare the generation the marker already carries.
-		// Strictly-greater only: equal generations still re-upload, which keeps the
-		// repair path for a partially-written or corrupted remote copy at the
-		// current generation, and generation 0 (unknown) can never win against a
-		// known one.
-		if remoteMeta.Generation > generation {
-			return 0, false, fmt.Errorf(
-				"%w: local generation %d, store generation %d",
-				ErrStaleGeneration, generation, remoteMeta.Generation)
+	if !opts.Overwrite {
+		if present, remoteMeta, merr := s.getMeta(ctx, prefix); merr == nil && present {
+			if sameFiles(remoteMeta.Files, meta.Files) {
+				return 0, true, nil
+			}
+			// Content DIFFERS. Before this fence that fell straight through to a full
+			// re-upload, so an older copy silently overwrote a newer one on the shared
+			// singleton volume key. Compare the generation the marker already carries.
+			// Strictly-greater only: equal generations still re-upload, which keeps the
+			// repair path for a partially-written or corrupted remote copy at the
+			// current generation, and generation 0 (unknown) can never win against a
+			// known one.
+			if remoteMeta.Generation > generation {
+				return 0, false, fmt.Errorf(
+					"%w: local generation %d, store generation %d",
+					ErrStaleGeneration, generation, remoteMeta.Generation)
+			}
 		}
 	}
 
-	var opts ExportOptions
-	if len(options) > 0 {
-		opts = options[0]
-	}
 	var dataKey []byte
 	if s.dataKeys != nil && opts.Kind != "" {
 		var kerr error

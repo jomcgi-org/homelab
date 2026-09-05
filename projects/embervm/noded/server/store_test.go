@@ -33,9 +33,10 @@ type fakeStore struct {
 	// arts maps a store prefix to its exported files (name -> content) and gen.
 	arts map[string]fakeArtifact
 	// exportCalls counts Export invocations per prefix (skipped or not).
-	exportCalls  map[string]int
-	dataKeyCalls map[string]int
-	rewrapCh     chan fakeRewrapCall
+	exportCalls    map[string]int
+	overwriteCalls map[string]int
+	dataKeyCalls   map[string]int
+	rewrapCh       chan fakeRewrapCall
 	// reachable is what Reachable reports.
 	reachable bool
 	// order records prefixes in export order (for asserting meta-last is N/A here;
@@ -62,11 +63,12 @@ type fakeArtifact struct {
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		arts:         make(map[string]fakeArtifact),
-		exportCalls:  make(map[string]int),
-		dataKeyCalls: make(map[string]int),
-		rewrapCh:     make(chan fakeRewrapCall, 16),
-		reachable:    true,
+		arts:           make(map[string]fakeArtifact),
+		exportCalls:    make(map[string]int),
+		overwriteCalls: make(map[string]int),
+		dataKeyCalls:   make(map[string]int),
+		rewrapCh:       make(chan fakeRewrapCall, 16),
+		reachable:      true,
 	}
 }
 
@@ -83,6 +85,10 @@ func (f *fakeStore) Export(_ context.Context, prefix, localDir string, files []s
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.exportCalls[prefix]++
+	overwrite := len(options) > 0 && options[0].Overwrite
+	if overwrite {
+		f.overwriteCalls[prefix]++
+	}
 	var envelope []byte
 	if len(options) > 0 && options[0].Kind != "" {
 		f.dataKeyCalls[prefix]++
@@ -100,7 +106,7 @@ func (f *fakeStore) Export(_ context.Context, prefix, localDir string, files []s
 		total += int64(len(b))
 	}
 	// Idempotency: if the stored content is identical, skip.
-	if existing, ok := f.arts[prefix]; ok && sameStringMap(existing.files, got) {
+	if existing, ok := f.arts[prefix]; !overwrite && ok && sameStringMap(existing.files, got) {
 		return 0, true, nil
 	}
 	f.arts[prefix] = fakeArtifact{files: got, gen: generation, cpuVendor: cpuVendor, cpuTemplate: cpuTemplate, createdAtMs: nowMs, envelope: envelope}
@@ -205,6 +211,12 @@ func (f *fakeStore) calls(prefix string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.exportCalls[prefix]
+}
+
+func (f *fakeStore) overwrites(prefix string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.overwriteCalls[prefix]
 }
 
 func (f *fakeStore) keyCalls(prefix string) int {
@@ -1198,9 +1210,10 @@ func TestRestoreArtifactBaseIsAsync(t *testing.T) {
 	// reconcile's imageref gate; seed the store artifact with the imageref file the
 	// disk scan reads back.
 	digest := "sha256:runtime-bazel"
-	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: "/rootfs/bazel"}})
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: rootfs}})
 	prefix := "base/amd/" + workload + "/" + ref
-	fs.seedArtifact(prefix, map[string]string{"imageref": digest, "memfile": "mem", "snapfile": "snap"}, 0, "amd", "")
+	fs.seedArtifact(prefix, map[string]string{"imageref": digest, "memfile": "mem", "rootfsid": testRootfsUUIDA, "rootfspath": rootfs, "snapfile": "snap"}, 0, "amd", "")
 
 	resp, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{
 		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
@@ -1262,11 +1275,13 @@ func TestRestoreArtifactBaseAlreadyLocalSkips(t *testing.T) {
 	workload := "bazel-query"
 	ref := "bazel-query__abcdef012345"
 	digest := "sha256:runtime-bazel"
-	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: "/rootfs/bazel"}})
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: rootfs}})
 	prefix := "base/amd/" + workload + "/" + ref
-	fs.seedArtifact(prefix, map[string]string{"imageref": digest, "memfile": "mem", "snapfile": "snap"}, 0, "amd", "")
+	bundle := map[string]string{"imageref": digest, "memfile": "mem", "rootfsid": testRootfsUUIDA, "rootfspath": rootfs, "snapfile": "snap"}
+	fs.seedArtifact(prefix, bundle, 0, "amd", "")
 	// The base is ALSO already on local disk.
-	writeBundleFiles(t, filepath.Join(s.cfg.SnapshotRoot, "bases", ref), map[string]string{"imageref": digest, "memfile": "mem", "snapfile": "snap"})
+	writeBundleFiles(t, filepath.Join(s.cfg.SnapshotRoot, "bases", ref), bundle)
 
 	resp, err := s.RestoreArtifact(ctx, &nodev1.RestoreArtifactRequest{
 		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
@@ -1290,15 +1305,17 @@ func TestCleanupStagingDirsNotReachedDuringRestore(t *testing.T) {
 	workload := "bazel-query"
 	ref := "bazel-query__abcdef012345"
 	digest := "sha256:runtime-bazel"
-	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: "/rootfs/bazel"}})
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: rootfs}})
 	prefix := "base/amd/" + workload + "/" + ref
-	fs.seedArtifact(prefix, map[string]string{"imageref": digest, "memfile": "mem", "snapfile": "snap"}, 0, "amd", "")
+	bundle := map[string]string{"imageref": digest, "memfile": "mem", "rootfsid": testRootfsUUIDA, "rootfspath": rootfs, "snapfile": "snap"}
+	fs.seedArtifact(prefix, bundle, 0, "amd", "")
 
 	stale := filepath.Join(s.cfg.SnapshotRoot, "bases", "scratch-k8s__stale.building")
 	if err := os.MkdirAll(stale, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeBundleFiles(t, filepath.Join(s.cfg.SnapshotRoot, "bases", ref), map[string]string{"imageref": digest, "memfile": "mem", "snapfile": "snap"})
+	writeBundleFiles(t, filepath.Join(s.cfg.SnapshotRoot, "bases", ref), bundle)
 
 	resp, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{
 		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
