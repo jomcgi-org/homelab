@@ -11,6 +11,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+from types import SimpleNamespace
 
 import core.leadership as leadership
 import framework.core as framework_core
@@ -447,6 +448,55 @@ def test_public_tier_health_crashing_component_reports_not_ok_not_500(
     )
 
 
+def test_leader_singleton_failure_is_fatal_and_follower_is_ok(_sqlite_engine):
+    async def leader_start(app: FastAPI) -> list[asyncio.Task]:
+        return []
+
+    module = Module(name="swarm", leader_start=leader_start)
+    app = FastAPI()
+    framework_core._add_health(app, _PLAIN_PRIVATE, [module])
+    app.state.elector = SimpleNamespace(
+        is_leader=True,
+        acquire_failures_exceeded=False,
+    )
+    app.state.leader_singleton_failures = {"broken_domain"}
+    app.state.leader_singletons_dbos_launched = True
+
+    response = TestClient(app).get("/api/health")
+
+    assert response.status_code == 503
+    assert response.json()["components"]["leader_singletons"] == {
+        "ok": False,
+        "detail": "failed modules: broken_domain",
+    }
+
+    app.state.leader_singleton_failures = set()
+    app.state.leader_singletons_dbos_launched = False
+    response = TestClient(app).get("/api/health")
+    assert response.status_code == 503
+    assert response.json()["components"]["leader_singletons"] == {
+        "ok": False,
+        "detail": "DBOS not launched",
+    }
+
+    app.state.leader_singletons_dbos_launched = True
+    response = TestClient(app).get("/api/health")
+    assert response.status_code == 200
+    assert response.json()["components"]["leader_singletons"] == {
+        "ok": True,
+        "detail": "leader singletons healthy",
+    }
+
+    app.state.leader_singleton_failures = {"broken_domain"}
+    app.state.elector.is_leader = False
+    response = TestClient(app).get("/api/health")
+    assert response.status_code == 200
+    assert response.json()["components"]["leader_singletons"] == {
+        "ok": True,
+        "detail": "follower",
+    }
+
+
 def test_public_tier_has_no_lifespan_side_effects_or_mcp():
     app = build_app(PUBLIC_PROFILE, [_routed_module("m", "m")])
     mounts = [r for r in app.routes if getattr(r, "path", "") == "/mcp"]
@@ -732,6 +782,46 @@ async def test_start_and_stop_leader_singletons_compose_across_modules():
         with pytest.raises(asyncio.CancelledError):
             await task
         assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_failing_leader_start_records_failure_and_continues():
+    log: list[str] = []
+
+    async def failing_start(app: FastAPI) -> list[asyncio.Task]:
+        log.append("bad:start")
+        raise RuntimeError("boom")
+
+    modules = [
+        _leader_module("before", log),
+        Module(name="bad", leader_start=failing_start),
+        _leader_module("after", log),
+    ]
+    app = FastAPI()
+
+    await start_leader_singletons(app, modules)
+
+    assert log == ["before:start", "bad:start", "after:start"]
+    assert app.state.leader_singleton_failures == {"bad"}
+    assert len(app.state.singleton_tasks) == 2
+
+    tasks = list(app.state.singleton_tasks)
+    await stop_leader_singletons(app, modules)
+    for task in tasks:
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_swarm_leader_start_runs_before_unrelated_modules():
+    log: list[str] = []
+    modules = [_leader_module("other", log), _leader_module("swarm", log)]
+    app = FastAPI()
+
+    await start_leader_singletons(app, modules)
+
+    assert log == ["swarm:start", "other:start"]
+    await stop_leader_singletons(app, modules)
 
 
 @pytest.mark.asyncio

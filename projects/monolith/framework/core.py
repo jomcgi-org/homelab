@@ -227,17 +227,28 @@ async def start_leader_singletons(app: FastAPI, modules: Sequence[Module]) -> No
     module's ``leader_start`` are tracked on ``app.state.singleton_tasks`` so
     ``stop_leader_singletons`` can cancel them on resign or shutdown. Tracking
     is incremental (the state list is extended after each hook) so an
-    exception partway through the module sequence still leaves the
-    already-started modules' tasks cancellable. Hooks attach their own
+    exception in one module still leaves already-started tasks cancellable and
+    does not bench later modules. Swarm runs first because it launches DBOS,
+    which is the drain lane's dependency; HTTP route registration keeps the
+    composition order supplied by the caller. Hooks attach their own
     ``log_task_exception`` done-callbacks at ``create_task`` time, so a task
     that crashes before its hook returns is still logged.
     """
     tasks: list[asyncio.Task] = list(getattr(app.state, "singleton_tasks", []))
     app.state.singleton_tasks = tasks
-    for m in modules:
+    failures: set[str] = set()
+    app.state.leader_singleton_failures = failures
+    ordered_modules = [m for m in modules if m.name == "swarm"] + [
+        m for m in modules if m.name != "swarm"
+    ]
+    for m in ordered_modules:
         if m.leader_start is None:
             continue
-        tasks.extend(await m.leader_start(app))
+        try:
+            tasks.extend(await m.leader_start(app))
+        except Exception:
+            failures.add(m.name)
+            logger.exception("leader_start for module %s failed", m.name)
 
 
 async def stop_leader_singletons(app: FastAPI, modules: Sequence[Module]) -> None:
@@ -292,6 +303,40 @@ def _add_health(app: FastAPI, profile: Profile, modules: Sequence[Module]) -> No
     for m in modules:
         if m.register_health_advisory:
             component_checks.update(m.register_health_advisory)
+
+    leader_modules = [m for m in modules if m.leader_start is not None]
+    if profile.leader_singletons and leader_modules:
+        dbos_required = any(m.name == "swarm" for m in leader_modules)
+
+        async def leader_singletons_health() -> dict:
+            elector = getattr(app.state, "elector", None)
+            if elector is not None and getattr(
+                elector, "acquire_failures_exceeded", False
+            ):
+                failures = getattr(elector, "consecutive_acquire_failures", 0)
+                return {
+                    "ok": False,
+                    "detail": (
+                        f"leader acquisition failed {failures} consecutive times"
+                    ),
+                }
+            if elector is None or not elector.is_leader:
+                return {"ok": True, "detail": "follower"}
+
+            failures = sorted(getattr(app.state, "leader_singleton_failures", set()))
+            if failures:
+                return {
+                    "ok": False,
+                    "detail": f"failed modules: {', '.join(failures)}",
+                }
+            if dbos_required and not getattr(
+                app.state, "leader_singletons_dbos_launched", False
+            ):
+                return {"ok": False, "detail": "DBOS not launched"}
+            return {"ok": True, "detail": "leader singletons healthy"}
+
+        component_checks["leader_singletons"] = leader_singletons_health
+        advisory_names.discard("leader_singletons")
 
     async def _run_component(name: str, check: HealthCheck) -> dict:
         try:  # nosemgrep: no-broad-except-swallow - logged via health_logger below
@@ -444,6 +489,8 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
         app.state.bot = None
         app.state.backfill_task = None
         app.state.singleton_tasks = []
+        app.state.leader_singleton_failures = set()
+        app.state.leader_singletons_dbos_launched = False
 
         # Per-module startup hooks run on every replica (best-effort priming;
         # scheduled Argo CronWorkflows own the refresh cadence thereafter).
