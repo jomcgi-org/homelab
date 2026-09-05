@@ -52,6 +52,7 @@ Reproduction runbook:
       --output /tmp/climatology.json
   kubectl port-forward -n seaweedfs svc/seaweedfs-s3 8333:8333 &
   curl -X PUT -T /tmp/climatology.json http://localhost:8333/stars/climatology.json
+  # Submit the matching Argo CronWorkflow as a one-off Workflow.
   homelab scheduler jobs run-now stars.load_climatology
 
   # 5. Invalidate the CDN. /api/stars/history* is cached at the edge for a year

@@ -28,8 +28,8 @@ Usage:
 
 Once you find params you like, copy them into
 ``projects/monolith/deploy/values.yaml`` and trigger
-``homelab scheduler jobs run-now knowledge.layout`` to apply without
-waiting for the next layout cycle.
+``homelab scheduler jobs run-now knowledge.layout`` to submit its Argo
+CronWorkflow as a one-off Workflow without waiting for the next layout cycle.
 """
 
 from __future__ import annotations

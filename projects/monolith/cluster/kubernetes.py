@@ -476,6 +476,18 @@ class KubernetesClient:
         )
         return created["metadata"]["name"]
 
+    async def list_cronworkflows(self, namespace: str) -> list[dict]:
+        """List Argo CronWorkflow custom resources in ``namespace``."""
+        api = await self._ensure_client()
+        custom = client.CustomObjectsApi(api)
+        result = await custom.list_namespaced_custom_object(
+            group="argoproj.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="cronworkflows",
+        )
+        return result.get("items", [])
+
     async def close(self) -> None:
         if self._api:
             await self._api.close()

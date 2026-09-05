@@ -12,12 +12,14 @@ engine setup, so the two fixtures stay decoupled.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import text
 from sqlmodel import Session
 
 from agent import checks
+from scheduler.service import RunNowResult
 
 
 def _now_utc() -> datetime:
@@ -228,3 +230,23 @@ class TestCheckDeadLetters:
 
     def test_empty_when_no_dead_letters(self, checks_db: Session) -> None:
         assert checks.check_dead_letters() == []
+
+
+@pytest.mark.asyncio
+async def test_trigger_job_calls_scheduler_run_now(monkeypatch) -> None:
+    session = MagicMock(spec=Session)
+    session_context = MagicMock()
+    session_context.__enter__.return_value = session
+    monkeypatch.setattr(checks, "Session", MagicMock(return_value=session_context))
+    monkeypatch.setattr(checks, "get_engine", MagicMock(return_value=MagicMock()))
+    result = RunNowResult(
+        job="knowledge.layout",
+        workflow_name="knowledge-layout-manual-abc12",
+        namespace="monolith-workflows",
+        status_code=202,
+    )
+    run_now = AsyncMock(return_value=result)
+    monkeypatch.setattr(checks.scheduler_service, "run_now", run_now)
+
+    assert await checks.trigger_job("knowledge.layout") == result
+    run_now.assert_awaited_once_with(session, "knowledge.layout")

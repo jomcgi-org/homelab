@@ -1,9 +1,8 @@
 """Wire shapes for the scheduler API.
 
-The view model intentionally omits the lock columns (``locked_by``, ``locked_at``)
-from the underlying ``ScheduledJob`` SQLModel. Those are claim-machinery internals
-of ``scheduler.api._claim_next_job``; surfacing them would invite tooling that
-races against the SKIP LOCKED claim.
+The view model intentionally omits the legacy lock columns (``locked_by``,
+``locked_at``) from the underlying ``ScheduledJob`` SQLModel. Argo owns job
+execution, so exposing the old database coordination state would be misleading.
 """
 
 from __future__ import annotations

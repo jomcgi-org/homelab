@@ -11,9 +11,8 @@ Routine can pull one signal at a time without a wrapping aggregate.
 - ``check_dead_letters``  : ``knowledge.atom_raw_provenance`` rows
                             indicating a raw input that exhausted all
                             retry attempts (mirrors ``GET /api/knowledge/dead-letter``).
-- ``trigger_job``         : kick a ``scheduler.scheduled_jobs`` row to
-                            run on the next tick by setting
-                            ``next_run_at = now()``.
+- ``trigger_job``         : submit the replacing Argo CronWorkflow as a
+                            one-off Workflow.
 """
 
 from __future__ import annotations
@@ -22,6 +21,7 @@ from sqlalchemy import text
 from sqlmodel import Session
 
 from core.db import get_engine
+from scheduler import service as scheduler_service
 
 
 def check_stuck_jobs(threshold_mins: int = 10) -> list[dict]:
@@ -136,16 +136,7 @@ def check_dead_letters(limit: int = 20) -> list[dict]:
     ]
 
 
-def trigger_job(name: str) -> bool:
-    """Kick a ``scheduler.scheduled_jobs`` row to run on the next tick.
-
-    Sets ``next_run_at = now()`` for the named row. Returns True if a
-    row was updated, False if no row by that name exists.
-    """
-    sql = text(
-        "UPDATE scheduler.scheduled_jobs SET next_run_at = now() WHERE name = :name"
-    )
+async def trigger_job(name: str) -> scheduler_service.RunNowResult:
+    """Submit the CronWorkflow replacing ``name`` as a one-off Workflow."""
     with Session(get_engine()) as session:
-        result = session.execute(sql, {"name": name})
-        session.commit()
-    return result.rowcount > 0
+        return await scheduler_service.run_now(session, name)

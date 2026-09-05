@@ -1,22 +1,21 @@
 """Unit tests for scheduler/service.py."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
+from kubernetes_asyncio.client.exceptions import ApiException
 from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
 
 from scheduler import service
 from scheduler.api import ScheduledJob, _registry
 
 
 @pytest.fixture(name="session")
-def session_fixture():
-    """In-memory SQLite session with schema stripped (SQLite has no schemas)."""
+def session_fixture(tmp_path):
+    """File-backed SQLite session with schema stripped (SQLite has no schemas)."""
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{tmp_path / 'scheduler.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     original_schemas = {}
     for table in SQLModel.metadata.tables.values():
@@ -89,39 +88,137 @@ class TestGetJob:
         assert service.get_job(session, "nope") is None
 
 
-class TestMarkForImmediateRun:
-    def test_advances_next_run_at_to_now(self, session):
-        future = datetime.now(timezone.utc) + timedelta(hours=1)
-        _seed(session, "j", next_run_at=future)
+class FakeKubernetesClient:
+    def __init__(
+        self,
+        cronworkflows: list[dict] | None = None,
+        *,
+        error: ApiException | None = None,
+    ) -> None:
+        self.cronworkflows = cronworkflows or []
+        self.error = error
+        self.created: list[tuple[str, dict]] = []
+        self.closed = False
 
-        before = datetime.now(timezone.utc)
-        view = service.mark_for_immediate_run(session, "j")
-        after = datetime.now(timezone.utc)
+    async def list_cronworkflows(self, namespace: str) -> list[dict]:
+        if self.error:
+            raise self.error
+        return self.cronworkflows
 
-        assert view is not None
-        # Compare in a tz-naive way: SQLite drops tzinfo on round-trip.
-        next_run = view.next_run_at
-        if next_run.tzinfo is None:
-            next_run = next_run.replace(tzinfo=timezone.utc)
-        assert before <= next_run <= after
+    async def create_workflow(self, namespace: str, body: dict) -> str:
+        if self.error:
+            raise self.error
+        self.created.append((namespace, body))
+        return "nightly-manual-abc12"
 
-    def test_returns_none_for_missing_job(self, session):
-        assert service.mark_for_immediate_run(session, "nope") is None
+    async def close(self) -> None:
+        self.closed = True
 
-    def test_idempotent_within_same_second(self, session):
-        _seed(session, "j", next_run_at=datetime.now(timezone.utc) + timedelta(hours=1))
-        first = service.mark_for_immediate_run(session, "j")
-        second = service.mark_for_immediate_run(session, "j")
-        assert first is not None and second is not None
-        # Both calls succeed without error; second's next_run_at >= first's.
-        first_t = (
-            first.next_run_at.replace(tzinfo=timezone.utc)
-            if first.next_run_at.tzinfo is None
-            else first.next_run_at
+
+@pytest.fixture(autouse=True)
+def _workflow_namespace(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_WORKFLOW_NAMESPACE", "workflows-test")
+
+
+class TestRunNow:
+    @pytest.mark.asyncio
+    async def test_unknown_job_returns_404(self, session):
+        result = await service.run_now(session, "nope")
+        assert result.status_code == 404
+        assert result.workflow_name is None
+        assert result.message == "unknown job: nope"
+
+    @pytest.mark.asyncio
+    async def test_missing_namespace_returns_503(self, session, monkeypatch):
+        monkeypatch.delenv("SCHEDULER_WORKFLOW_NAMESPACE", raising=False)
+        _seed(session, "knowledge.layout", next_run_at=datetime.now(timezone.utc))
+        result = await service.run_now(session, "knowledge.layout")
+        assert result.status_code == 503
+        assert result.workflow_name is None
+
+    @pytest.mark.asyncio
+    async def test_matching_cronworkflow_creates_workflow_without_db_update(
+        self, session, monkeypatch
+    ):
+        original_next_run = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
+        _seed(session, "j", next_run_at=original_next_run)
+        cronworkflow = {
+            "metadata": {
+                "name": "nightly",
+                "namespace": "workflows-test",
+                "annotations": {"monolith.jomcgi.dev/replaces": "j"},
+                "labels": {"app.kubernetes.io/name": "monolith"},
+            },
+            "spec": {
+                "workflowMetadata": {
+                    "annotations": {"example.test/source": "cron"},
+                    "labels": {"example.test/job": "nightly"},
+                },
+                "workflowSpec": {
+                    "entrypoint": "run",
+                    "templates": [{"name": "run"}],
+                },
+            },
+        }
+        fake = FakeKubernetesClient([cronworkflow])
+        monkeypatch.setattr(service, "KubernetesClient", lambda: fake)
+
+        result = await service.run_now(session, "j")
+
+        assert result == service.RunNowResult(
+            job="j",
+            workflow_name="nightly-manual-abc12",
+            namespace="workflows-test",
+            status_code=202,
         )
-        second_t = (
-            second.next_run_at.replace(tzinfo=timezone.utc)
-            if second.next_run_at.tzinfo is None
-            else second.next_run_at
+        assert fake.closed is True
+        assert len(fake.created) == 1
+        namespace, manifest = fake.created[0]
+        assert namespace == "workflows-test"
+        assert manifest["apiVersion"] == "argoproj.io/v1alpha1"
+        assert manifest["kind"] == "Workflow"
+        assert manifest["metadata"]["generateName"] == "nightly-manual-"
+        assert manifest["metadata"]["namespace"] == "workflows-test"
+        assert manifest["metadata"]["labels"] == {
+            "app.kubernetes.io/name": "monolith",
+            "example.test/job": "nightly",
+            "workflows.argoproj.io/cron-workflow": "nightly",
+        }
+        assert manifest["metadata"]["annotations"] == {"example.test/source": "cron"}
+        assert manifest["spec"] == cronworkflow["spec"]["workflowSpec"]
+        persisted = session.get(ScheduledJob, "j")
+        assert persisted is not None
+        assert persisted.next_run_at.replace(tzinfo=timezone.utc) == original_next_run
+
+    @pytest.mark.asyncio
+    async def test_no_matching_cronworkflow_returns_409(self, session, monkeypatch):
+        _seed(session, "j", next_run_at=datetime.now(timezone.utc))
+        fake = FakeKubernetesClient(
+            [
+                {
+                    "metadata": {
+                        "name": "other",
+                        "annotations": {"monolith.jomcgi.dev/replaces": "another.job"},
+                    }
+                }
+            ]
         )
-        assert second_t >= first_t
+        monkeypatch.setattr(service, "KubernetesClient", lambda: fake)
+
+        result = await service.run_now(session, "j")
+
+        assert result.status_code == 409
+        assert result.message == "no CronWorkflow replaces job j"
+        assert fake.created == []
+
+    @pytest.mark.asyncio
+    async def test_kubernetes_api_error_returns_502(self, session, monkeypatch):
+        _seed(session, "j", next_run_at=datetime.now(timezone.utc))
+        fake = FakeKubernetesClient(error=ApiException(status=500, reason="boom"))
+        monkeypatch.setattr(service, "KubernetesClient", lambda: fake)
+
+        result = await service.run_now(session, "j")
+
+        assert result.status_code == 502
+        assert result.workflow_name is None
+        assert "Kubernetes API error" in (result.message or "")

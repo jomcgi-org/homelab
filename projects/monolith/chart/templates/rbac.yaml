@@ -46,3 +46,39 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "monolith.fullname" . }}
     namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "monolith.fullname" . }}-scheduler-workflows
+  namespace: {{ .Values.jobs.workflowNamespace }}
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+rules:
+  # scheduler/service.py run_now: list_cronworkflows finds the CronWorkflow
+  # whose replaces annotation names the job and reads its workflowSpec from
+  # the listed object (list_namespaced_custom_object).
+  - apiGroups: ["argoproj.io"]
+    resources: ["cronworkflows"]
+    verbs: ["list"]
+  # scheduler/service.py run_now: create_workflow submits the one-off
+  # Workflow (create_namespaced_custom_object). Nothing reads it back.
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflows"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "monolith.fullname" . }}-scheduler-workflows
+  namespace: {{ .Values.jobs.workflowNamespace }}
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "monolith.fullname" . }}-scheduler-workflows
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "monolith.fullname" . }}
+    namespace: {{ .Release.Namespace }}

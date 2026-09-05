@@ -130,6 +130,28 @@ py_test(
     ],
 )
 
+py_test(
+    name = "scheduler_run_now_test",
+    srcs = ["scheduler_run_now_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "migrations/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
 # The backend's traces endpoint, across the three seams that each fail silently:
 # the chart-to-code env var name, the HTTP-exporter URL form (4318 plus
 # /v1/traces, NOT embervm's gRPC 4317), and the collector's deny-by-default
