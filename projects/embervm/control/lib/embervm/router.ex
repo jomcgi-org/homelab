@@ -1524,8 +1524,11 @@ defmodule Embervm.Router do
   end
 
   # Memory pressure is inherent to the claude fleet (4096 MiB VMs, single 16gi brick host); idle sessions park/evict on TTL, so RESOURCE_EXHAUSTED is transient and retryable.
+  # A placement denial (:no_bricks, :capacity) is the same class; the session manager parks the wake behind it and the expiry reason wraps the atom, so callers may back off and retry.
   def classify_error_as_retryable(:unavailable), do: true
   def classify_error_as_retryable(:brick_gone), do: true
+  def classify_error_as_retryable(:no_bricks), do: true
+  def classify_error_as_retryable(:capacity), do: true
   def classify_error_as_retryable(%GRPC.RPCError{status: 8}), do: true
   def classify_error_as_retryable(%GRPC.RPCError{}), do: false
   def classify_error_as_retryable(reason) when is_tuple(reason) do
