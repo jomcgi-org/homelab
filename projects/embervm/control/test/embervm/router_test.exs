@@ -82,6 +82,9 @@ defmodule Embervm.RouterTest do
 
     def create(_srv, "wl-cap", _principal, _restore_lineage, _opts), do: {:error, {:denied, :session_cap}}
     def create(_srv, "wl-vmcap", _principal, _restore_lineage, _opts), do: {:error, {:denied, :workload_cap}}
+    def create(_srv, "wl-create-saturated", _principal, _restore_lineage, _opts),
+      do: {:error, {:denied, :create_saturated}}
+
     def create(_srv, "wl-task", _principal, _restore_lineage, _opts), do: {:error, {:denied, :not_session_class}}
 
     # #4306 slice 3: restore_lineage-carrying creates. wl-restore-ok only
@@ -142,6 +145,9 @@ defmodule Embervm.RouterTest do
 
     def create(_srv, _wl, _principal, _restore_lineage, _opts), do: {:error, {:denied, :unknown_workload}}
 
+    def ping(_srv, _timeout), do: :pong
+    def create_admission_stats(_srv), do: {0, 16}
+
     def invoke(_srv, "s-live", _req), do: {:ok, %{status_code: 200, headers: %{"content-type" => "text/plain"}, body: "echoed"}}
     def invoke(_srv, "s-queue", _req), do: {:error, :queue_full}
     def invoke(_srv, "s-unavailable", _req),
@@ -162,6 +168,10 @@ defmodule Embervm.RouterTest do
       timeout = Application.fetch_env!(:embervm, :session_create_call_timeout_ms)
       GenServer.call(server, :create, timeout)
     end
+  end
+
+  defmodule TimeoutPingSessionManager do
+    def ping(_server, _timeout), do: exit({:timeout, {GenServer, :call, 3}})
   end
 
   defmodule NeverReplySessionManager do
@@ -917,9 +927,29 @@ defmodule Embervm.RouterTest do
   end
 
   test "/healthz needs no auth" do
+    with_session_fakes()
+    Application.put_env(:embervm, :session_manager_server, self())
     resp = req(:get, "/healthz")
     assert resp.status == 200
     assert resp.body == "ok"
+  end
+
+  test "/healthz reports an unresponsive session manager" do
+    Application.put_env(:embervm, :session_manager, TimeoutPingSessionManager)
+    Application.put_env(:embervm, :session_manager_server, self())
+
+    resp = req(:get, "/healthz")
+    assert resp.status == 503
+    assert resp.body == "session manager unresponsive"
+  end
+
+  test "/healthz reports a missing session manager" do
+    with_session_fakes()
+    Application.put_env(:embervm, :session_manager_server, :missing_session_manager)
+
+    resp = req(:get, "/healthz")
+    assert resp.status == 503
+    assert resp.body == "session manager down"
   end
 
   test "/v1/nodes needs auth and returns a node + dispatch snapshot" do
@@ -932,6 +962,8 @@ defmodule Embervm.RouterTest do
     # with no node wired in the test app (nodes empty, dispatch snapshot present).
     assert is_list(body["nodes"])
     assert is_map(body["dispatch"])
+    assert is_integer(body["create_inflight"])
+    assert body["create_concurrency"] == 16
   end
 
   # -- submit ----------------------------------------------------------------
@@ -1293,6 +1325,22 @@ defmodule Embervm.RouterTest do
 
     unknown = req(:post, "/v1/workloads/wl-nope/sessions", auth("good"))
     assert unknown.status == 404
+  end
+
+  test "session create saturation maps to retryable 503 with retry-after" do
+    with_session_fakes()
+
+    resp = req(:post, "/v1/workloads/wl-create-saturated/sessions", auth("good"))
+    body = json(resp.body)
+
+    assert resp.status == 503
+    assert header(resp, "retry-after") == "5"
+    assert body == %{
+             "error" => "session create denied",
+             "reason" => "create_saturated",
+             "retryable" => true,
+             "workload" => "wl-create-saturated"
+           }
   end
 
   # -- restore_lineage (#4306 slice 3) ---------------------------------------

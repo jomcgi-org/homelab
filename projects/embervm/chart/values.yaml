@@ -86,6 +86,9 @@ resources:
   limits:
     memory: 512Mi
 
+controlPlane:
+  createConcurrency: 16
+
 controlPlaneLivenessProbe:
   # Issue #5235: at the 10-second period, allow up to 60 seconds for an internal
   # recovery. Readiness stays unchanged and removes an unhealthy pod promptly.

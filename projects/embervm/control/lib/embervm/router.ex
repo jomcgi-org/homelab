@@ -67,8 +67,10 @@ defmodule Embervm.Router do
   plug(:authenticate)
   plug(:dispatch)
 
+  # Kubelet readiness drops a wedged manager on its 5s cadence. Liveness keeps
+  # its six failures at 10s before restarting the control plane (#5291).
   get "/healthz" do
-    conn |> put_resp_content_type("text/plain") |> send_resp(200, "ok")
+    handle_healthz(conn)
   end
 
   post "/v1/workloads/:name/tasks" do
@@ -567,7 +569,54 @@ defmodule Embervm.Router do
   # every other route; a slow/failed status call degrades to an empty snapshot
   # rather than failing the request.
   defp handle_nodes(conn) do
-    send_json(conn, 200, %{nodes: nodes_snapshot(), dispatch: dispatch_snapshot()})
+    {create_inflight, create_concurrency} = create_admission_stats()
+
+    send_json(conn, 200, %{
+      nodes: nodes_snapshot(),
+      dispatch: dispatch_snapshot(),
+      create_inflight: create_inflight,
+      create_concurrency: create_concurrency
+    })
+  end
+
+  defp handle_healthz(conn) do
+    if session_manager_alive?() do
+      try do
+        case session_manager().ping(session_manager_server(), 2_000) do
+          :pong -> text_response(conn, 200, "ok")
+          _ -> text_response(conn, 503, "session manager unresponsive")
+        end
+      catch
+        :exit, {:noproc, _} -> text_response(conn, 503, "session manager down")
+        :exit, {:timeout, _} -> text_response(conn, 503, "session manager unresponsive")
+        :exit, _ -> text_response(conn, 503, "session manager unresponsive")
+      end
+    else
+      text_response(conn, 503, "session manager down")
+    end
+  end
+
+  defp text_response(conn, status, body) do
+    conn |> put_resp_content_type("text/plain") |> send_resp(status, body)
+  end
+
+  defp session_manager_alive? do
+    case GenServer.whereis(session_manager_server()) do
+      pid when is_pid(pid) -> Process.alive?(pid)
+      nil -> false
+    end
+  rescue
+    _ -> false
+  catch
+    _, _ -> false
+  end
+
+  defp create_admission_stats do
+    session_manager().create_admission_stats(session_manager_server())
+  rescue
+    _ -> {nil, nil}
+  catch
+    _, _ -> {nil, nil}
   end
 
   defp handle_conformance(conn) do
@@ -1184,6 +1233,16 @@ defmodule Embervm.Router do
   # (non-retryable, the request is wrong). The reason string is machine-readable.
   defp create_denial(conn, workload, reason) do
     case reason do
+      :create_saturated ->
+        conn
+        |> put_resp_header("retry-after", "5")
+        |> send_json(503, %{
+          error: "session create denied",
+          reason: "create_saturated",
+          workload: workload,
+          retryable: true
+        })
+
       r when r in [:session_cap, :workload_cap, :quota, :no_capacity] ->
         send_json(conn, 429, %{
           error: "session create denied",
