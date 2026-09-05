@@ -171,3 +171,27 @@ def test_min_age_guard_is_present():
     ).read_text()
     assert "EMBERVM_ROOTFS_RECLAIM_MIN_AGE_SECONDS" in script
     assert "$min_age" in script, "the min-age guard is not applied to candidates"
+
+
+def test_bake_uses_random_ext4_uuid_and_logs_identity():
+    """Every mkfs call must retain its random UUID, and the result must be observable."""
+    script = _repo_path(
+        "projects/embervm/chart/templates/noded-rootfs-builder-configmap.yaml"
+    ).read_text()
+    mkfs_calls = [
+        line.strip()
+        for line in script.splitlines()
+        if line.strip().startswith("mkfs.ext4 ")
+    ]
+
+    assert len(mkfs_calls) == 2, "expected initial and post-reclaim mkfs.ext4 calls"
+    for call in mkfs_calls:
+        assert " -U " not in call, "mkfs.ext4 must assign a random UUID per bake"
+        assert "hash_seed" not in call, (
+            "mkfs.ext4 must assign its own directory hash seed"
+        )
+
+    assert "skip=1128" in script, "the busybox ext4 superblock UUID read is missing"
+    assert "rootfs identity digest=sha256:$digest uuid=" in script, (
+        "the post-bake identity log is missing"
+    )

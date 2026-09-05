@@ -2416,6 +2416,53 @@ defmodule Embervm.BaseBuilderTest do
     assert Agent.get(builds, & &1) == 1
   end
 
+  test "zip inventory drop builds when another node holds the ref only as superseded inventory" do
+    table = new_cap_table()
+    put_brick(table, "node-4", "uid", cpu_vendor: "amd", mem_budget: 16_384)
+    put_brick(table, "node-5", "uid", cpu_vendor: "amd")
+    test_pid = self()
+    {:ok, builds} = Agent.start_link(fn -> 0 end)
+
+    builder =
+      start_builder(
+        nodes: [
+          %{id: "node-4/uid", address: "node-4:9090"},
+          %{id: "node-5/uid", address: "node-5:9090"}
+        ],
+        capacity_table: table,
+        status_writer: fn _, _, _ -> :ok end,
+        runtime_images: @runtime_images,
+        build_fun: fn :fake_channel, _req ->
+          count = Agent.get_and_update(builds, fn n -> {n + 1, n + 1} end)
+          send(test_pid, {:build_started, count})
+          {:ok, resp("snap-#{count}")}
+        end,
+        restore_fun: fn :fake_channel, _req ->
+          send(test_pid, :restore_called)
+          {:ok, %Embervm.Node.V1.RestoreArtifactResponse{accepted: true}}
+        end
+      )
+
+    :ok = BaseBuilder.reconcile(builder, zip_desc())
+    assert_receive {:build_started, 1}, 1_000
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1" end)
+
+    # Node 5 inventories snap-1, but its current READY ref has advanced. The
+    # export reconciler will ship only snap-newer, so snap-1 cannot justify waiting.
+    put_node_local_bases_fact(table, "node-5", "uid", "w", "snap-newer", false, [
+      ready_base("snap-1", "w", 1),
+      ready_base("snap-newer", "w", 1)
+    ])
+    put_node_local_bases_fact(table, "node-4", "uid", "w", "", false, [])
+    put_base_fact(table, "node-4", "uid", "w", "", :BASE_BUILD_STATE_NONE, false)
+
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+
+    assert_receive {:build_started, 2}, 1_000
+    refute_receive :restore_called, 100
+    assert Agent.get(builds, & &1) == 2
+  end
+
   test "store-durable inventory drop builds when the anchor vendor ref cannot be resolved" do
     table = new_cap_table()
     put_brick(table, "node-4", "uid", cpu_vendor: "amd")

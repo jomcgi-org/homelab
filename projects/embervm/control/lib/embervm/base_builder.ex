@@ -1028,7 +1028,7 @@ defmodule Embervm.BaseBuilder do
 
                 {next_state, :hydrating}
 
-              ref_ready_in_inventory_elsewhere?(state, workload, ref_to_use, node_id) ->
+              ref_present_on_other_node?(state, workload, ref_to_use, node_id) ->
                 # A surviving local copy exists on ANOTHER node but the store does
                 # not (yet) hold it: export first, hydrate later. Forcing a rebuild
                 # here would bake bytes another node already has. The anchor node
@@ -1252,19 +1252,20 @@ defmodule Embervm.BaseBuilder do
     end)
   end
 
-  # Some node OTHER than `except_node` lists `ref` as a READY entry in its local
-  # base inventory. Reads the same inventory the dropped-base detector trusts, so
-  # a node that just dropped the ref cannot count as still holding it while its
-  # per-workload fact lags.
-  defp ref_ready_in_inventory_elsewhere?(state, name, ref, except_node) do
-    state.capacity_table
-    |> Embervm.NodeCapacity.all()
+  # The other node must report `ref` as current READY, not just in inventory, to
+  # ensure export_reconcile will ship it. Exclude the anchor because its summarized
+  # workload fact can lag the inventory drop that led here.
+  defp ref_present_on_other_node?(state, name, ref, anchor_instance_id) do
+    state
+    |> representative_facts_by_node(name)
+    |> Enum.filter(fn fact ->
+      node_name(to_string(Map.get(fact, :instance_id, ""))) != node_name(anchor_instance_id)
+    end)
     |> Enum.any?(fn fact ->
-      node_name(to_string(Map.get(fact, :configured_id, ""))) != except_node and
-        Enum.any?(Map.get(fact, :local_bases, []) || [], fn base ->
-          Map.get(base, :workload) == name and Map.get(base, :ref) == ref and
-            Embervm.Scheduler.base_state_ready?(Map.get(base, :base_state))
-        end)
+      match?(
+        %{snapshot_ref: ^ref, base_state: :BASE_BUILD_STATE_READY},
+        get_in(fact, [:workloads, name])
+      )
     end)
   end
 
@@ -1611,9 +1612,11 @@ defmodule Embervm.BaseBuilder do
     anchor_node = node_name(instance_id)
     state = put_in(state, [:dropped_at, {name, instance_id}], now)
 
-    # hydrate_for_anchor_outcome owns the decision: a store-durable ref hydrates,
-    # a ref another node still holds READY waits for that node's export, and
-    # anything else (including a ref only the dropping node ever had) builds.
+    # Every local bake has a random ext4 UUID, and its base is valid only against
+    # that exact rootfs file or a byte-identical copy. A store-durable ref may
+    # hydrate only when noded's UUID gate agrees. A ref another node still reports
+    # as current READY waits for that node's export. Anything else builds locally;
+    # distributing the baked rootfs file for cross-node hydration belongs to #5772.
     case hydrate_for_anchor_outcome(state, name, anchor_node) do
       {state, :hydrating} ->
         record_base_rebuild(

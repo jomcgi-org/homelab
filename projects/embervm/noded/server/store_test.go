@@ -1455,9 +1455,34 @@ func TestRestoreArtifactBaseUnknownStoredRootfsIDIsAccepted(t *testing.T) {
 	}
 }
 
+func TestRestoreArtifactBaseWithoutStoredImageRefNeedsWorkloadRootfs(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	workload := "bazel-query"
+	ref := "bazel-query__legacy"
+	s.registry.sync([]workloadEntry{{Workload: workload}})
+	prefix := "base/amd/" + workload + "/" + ref
+	fs.seedArtifact(prefix, map[string]string{
+		"memfile": "mem", "rootfsid": testRootfsUUIDA, "snapfile": "snap",
+	}, 0, "amd", "")
+
+	_, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
+		Vendor:   "amd",
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("legacy base without resolvable rootfs code = %v, want FailedPrecondition; err = %v", status.Code(err), err)
+	}
+	if !strings.Contains(err.Error(), "cannot verify rootfs identity without stored runtime ref") ||
+		!strings.Contains(err.Error(), "carries no rootfs") {
+		t.Fatalf("legacy base without resolvable rootfs error = %q, want explicit identity reason", err)
+	}
+}
+
 // TestRestoreArtifactBaseAlreadyLocalSkips proves a BASE restore is an inline
 // skipped no-op (NOT accepted/async) when the base is already present locally,
-// so a redundant hydrate trigger costs no download.
+// even when its runtime image cannot be resolved, so a redundant hydrate trigger
+// costs no download and does not fail the identity gate.
 func TestRestoreArtifactBaseAlreadyLocalSkips(t *testing.T) {
 	fs := newFakeStore()
 	s := newStoreTestServer(t, fs)
@@ -1469,7 +1494,7 @@ func TestRestoreArtifactBaseAlreadyLocalSkips(t *testing.T) {
 	ref := "bazel-query__abcdef012345"
 	digest := "sha256:runtime-bazel"
 	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
-	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: rootfs}})
+	s.registry.sync([]workloadEntry{{Workload: workload}})
 	prefix := "base/amd/" + workload + "/" + ref
 	bundle := map[string]string{"imageref": digest, "memfile": "mem", "rootfsid": testRootfsUUIDA, "rootfspath": rootfs, "snapfile": "snap"}
 	fs.seedArtifact(prefix, bundle, 0, "amd", "")
