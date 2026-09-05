@@ -1767,16 +1767,46 @@ func (s *Server) runRestoreJob(ctx context.Context, job restoreJob) {
 		s.logger.Warn("noded: async base restore failed (CP will re-trigger or rebuild)", "artifact", job.prefix, "err", err)
 		return
 	}
+	// Capture the refusal before reconciliation can remove the rejected bundle.
+	// The rootfs identity gate remains unchanged; this only preserves its terminal
+	// reason in the base fact after the downloaded bytes are declined.
+	restoreRefusal := s.restoredBaseRefusal(job.localDir)
 	s.reregisterRestored(job.ref)
 	base, ok := s.bases.get(job.ref.GetRef())
 	if !ok || base.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
-		s.logger.Warn("noded: restored base refused by rootfs identity gate, will rebuild on next reconcile", "artifact", job.prefix)
+		if ok && base.buildErr != "" {
+			restoreRefusal = base.buildErr
+		}
+		if restoreRefusal == "" {
+			restoreRefusal = "restored base refused by rootfs identity gate"
+		}
+		s.bases.unavailable(job.ref.GetRef(), job.ref.GetWorkload(), restoreRefusal)
+		s.logger.Warn("noded: restored base refused by rootfs identity gate, reporting NONE",
+			"artifact", job.prefix, "reason", restoreRefusal)
 		s.signalChange()
 		return
 	}
 	s.exported.mark(job.prefix, generation)
 	s.logger.Info("noded: restored base off store", "artifact", job.prefix, "bytesMoved", moved, "generation", generation)
 	s.signalChange()
+}
+
+func (s *Server) restoredBaseRefusal(dir string) string {
+	rootfsBytes, err := os.ReadFile(filepath.Join(dir, "rootfspath"))
+	if err != nil {
+		return fmt.Sprintf("read rootfspath: %v", err)
+	}
+	rootfsPath := strings.TrimSpace(string(rootfsBytes))
+	if _, err := os.Stat(rootfsPath); err != nil {
+		return fmt.Sprintf("rootfs missing at %q, base cannot restore: %v", rootfsPath, err)
+	}
+	if ok, mismatch := baseRootfsMatches(dir, rootfsPath); !ok {
+		return rootfsMismatchDescription(mismatch)
+	}
+	if refusal := s.snapshotFormatRefusal(filepath.Join(dir, "snapfile")); refusal != "" {
+		return refusal
+	}
+	return ""
 }
 
 // ---- store reachability probe ----------------------------------------------
