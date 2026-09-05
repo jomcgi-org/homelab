@@ -593,6 +593,9 @@ egress:
       secretRef:
         name: embervm-embervm-egress
         key: CLAUDE_AUTH_TOKEN
+      # The sidecar reads anthropic-ratelimit-unified-* off every reply and
+      # reports the subscription quota to the token broker (#5752).
+      quotaProvider: claude
     # Pi reaches Meta through the same CA-backed HTTPS proxy path as the other
     # external providers. The guest's placeholder Authorization header opts in
     # to this exact catalog entry; the sidecar replaces it before originating
@@ -628,6 +631,9 @@ egress:
       # opt-in, and claim-resolution failure still denies (issue #4298).
       injectAlwaysPaths:
         - /backend-api/ps/mcp
+      # The sidecar reads x-codex-primary-* and x-codex-secondary-* off every
+      # reply and reports the subscription quota to the token broker (#5752).
+      quotaProvider: codex
     # GitHub, in TWO shapes of the SAME token, because git and the API disagree
     # about how to carry it. Verified against github.com with a real PAT:
     # git-receive-pack 401s on Bearer and 200s on Basic, while api.github.com
