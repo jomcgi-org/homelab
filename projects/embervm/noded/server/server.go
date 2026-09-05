@@ -806,9 +806,9 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 
 	// Coordinate the node-shared staging path across co-located brick processes.
 	// A held filesystem lock is positive evidence that a sibling owns the build,
-	// while an unlocked leftover <base>.building directory is stale and safe to
-	// reclaim. The lock is held across the full build and released on every exit.
-	ownership, acquired, err := s.acquireBaseBuildOwnership(baseKey)
+	// while a pre-existing lock file identifies staging made under this protocol.
+	// The lock is held across the full build and released on every exit.
+	ownership, acquired, existed, err := s.acquireBaseBuildOwnership(baseKey)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "noded: acquire base build ownership for %q: %v", baseKey, err)
 	}
@@ -823,7 +823,7 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 	if resp, ok := s.adoptSiblingBaseBundle(baseKey, workload, imageDigest, img.RootfsPath, readyPath); ok {
 		return resp, nil
 	}
-	if reclaimed, err := s.reclaimStaleBaseStaging(baseKey); err != nil {
+	if reclaimed, err := s.reclaimStaleBaseStaging(baseKey, existed); err != nil {
 		return nil, status.Errorf(codes.Internal, "noded: reclaim stale base staging for %q: %v", baseKey, err)
 	} else if reclaimed {
 		s.logger.Warn("noded: reclaimed stale base staging directory", "base", baseKey)
@@ -2743,33 +2743,45 @@ func (o *baseBuildOwnership) release() {
 // acquireBaseBuildOwnership obtains a non-blocking advisory lock beside the
 // shared staging directory. Lock files remain as inert filesystem entries so a
 // release cannot race another process that already opened the same inode.
-func (s *Server) acquireBaseBuildOwnership(baseKey string) (*baseBuildOwnership, bool, error) {
+// There is one inert file per base key, filtered out by every scanner because
+// these files are not directories. existed reports whether the lock file was
+// present before this call, evidence that staging used the lock protocol.
+func (s *Server) acquireBaseBuildOwnership(baseKey string) (ownership *baseBuildOwnership, acquired, existed bool, err error) {
 	root := filepath.Join(s.cfg.SnapshotRoot, "bases")
 	if err := os.MkdirAll(root, 0o750); err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	lockPath := filepath.Join(root, baseKey+".building.lock")
+	if _, err := os.Stat(lockPath); err == nil {
+		existed = true
+	} else if !os.IsNotExist(err) {
+		return nil, false, false, err
+	}
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, false, err
+		return nil, false, existed, err
 	}
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		_ = f.Close()
 		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
-			return nil, false, nil
+			return nil, false, existed, nil
 		}
-		return nil, false, err
+		return nil, false, existed, err
 	}
-	return &baseBuildOwnership{file: f}, true, nil
+	return &baseBuildOwnership{file: f}, true, existed, nil
 }
 
-func (s *Server) reclaimStaleBaseStaging(baseKey string) (bool, error) {
+func (s *Server) reclaimStaleBaseStaging(baseKey string, lockExisted bool) (bool, error) {
 	stagingDir := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey+".building")
 	if _, err := os.Stat(stagingDir); err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
 		}
 		return false, err
+	}
+	if !lockExisted {
+		s.logger.Info("noded: preserving staging directory that predates the lock protocol", "base", baseKey)
+		return false, nil
 	}
 	if err := os.RemoveAll(stagingDir); err != nil {
 		return false, err
@@ -3293,7 +3305,7 @@ func (s *Server) CleanupStagingDirs() {
 			continue
 		}
 		baseKey := strings.TrimSuffix(ent.Name(), ".building")
-		ownership, acquired, lockErr := s.acquireBaseBuildOwnership(baseKey)
+		ownership, acquired, existed, lockErr := s.acquireBaseBuildOwnership(baseKey)
 		if lockErr != nil {
 			s.logger.Warn("noded: inspect staging ownership", "base", baseKey, "err", lockErr)
 			continue
@@ -3302,9 +3314,8 @@ func (s *Server) CleanupStagingDirs() {
 			s.logger.Info("noded: preserving sibling-owned staging directory", "base", baseKey)
 			continue
 		}
-		stagingPath := filepath.Join(root, ent.Name())
-		if err := os.RemoveAll(stagingPath); err != nil {
-			s.logger.Warn("noded: cleanup stale staging dir", "path", stagingPath, "err", err)
+		if _, err := s.reclaimStaleBaseStaging(baseKey, existed); err != nil {
+			s.logger.Warn("noded: cleanup stale staging dir", "base", baseKey, "err", err)
 		}
 		ownership.release()
 	}

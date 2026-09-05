@@ -1149,6 +1149,9 @@ func TestCleanupStagingDirsRemovesStaleDirectories(t *testing.T) {
 	if err := os.MkdirAll(stale, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(stale+".lock", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(regular, 0o700); err != nil {
 		t.Fatal(err)
 	}

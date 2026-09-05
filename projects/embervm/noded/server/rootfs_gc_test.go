@@ -873,20 +873,7 @@ func TestRunRestoreJobRejectsRefusedBase(t *testing.T) {
 	if s.exported.present(prefix) {
 		t.Fatal("refused restored base was marked exported")
 	}
-	got, ok := s.bases.get(baseKey)
-	if !ok {
-		t.Fatal("refused restored base did not publish a terminal fact")
-	}
-	if got.state != nodev1.BaseBuildState_BASE_BUILD_STATE_NONE {
-		t.Fatalf("refused restored base state = %v, want NONE", got.state)
-	}
-	if !strings.Contains(got.buildErr, "rootfs UUID mismatch") {
-		t.Fatalf("refused restored base build error = %q, want rootfs mismatch reason", got.buildErr)
-	}
-	if got.workload != "echo" {
-		t.Fatalf("refused restored base workload = %q, want echo", got.workload)
-	}
-	if gotErr := s.nodeStatus().GetBuildError(); !strings.Contains(gotErr, "rootfs UUID mismatch") {
-		t.Fatalf("NodeStatus build_error = %q, want rootfs mismatch reason", gotErr)
+	if _, ok := s.bases.get(baseKey); ok {
+		t.Fatal("refused restored base remained registered")
 	}
 }

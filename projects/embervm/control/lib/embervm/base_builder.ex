@@ -1442,6 +1442,9 @@ defmodule Embervm.BaseBuilder do
   defp normalize_grpc_error(%GRPC.RPCError{status: 9, message: msg}),
     do: {:grpc, :failed_precondition, msg}
 
+  defp normalize_grpc_error(%GRPC.RPCError{status: 10, message: msg}),
+    do: {:sibling_building, msg}
+
   defp normalize_grpc_error(%GRPC.RPCError{status: status, message: msg}),
     do: {:grpc, status, msg}
 
@@ -3644,6 +3647,19 @@ defmodule Embervm.BaseBuilder do
     end)
 
     :ok
+  end
+
+  # Build workers return the raw RPC error; hydration already normalizes it.
+  defp apply_result(state, w, worker_meta, {:error, %GRPC.RPCError{status: 10} = error}) do
+    apply_result(state, w, worker_meta, {:error, normalize_grpc_error(error)})
+  end
+
+  # A sibling owns the build. Retry without changing status or failure backoff.
+  defp apply_result(state, w, _worker_meta, {:error, {:sibling_building, message}}) do
+    Logger.info("embervm base builder: sibling building #{w.namespace}/#{w.name}: #{message}")
+
+    timer = Process.send_after(self(), {:retry, w.name}, state.base_backoff_ms)
+    put_in(state.workloads[w.name], %{w | retry_timer: timer})
   end
 
   # A failed build: keep any existing base (Ready stays True if one is recorded),

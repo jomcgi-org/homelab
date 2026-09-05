@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -1221,6 +1222,9 @@ func TestBuildBaseReclaimsStaleBuildingDirectory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(stagingDir, "snapfile.tmp"), []byte("stale"), 0o600); err != nil {
 		t.Fatalf("write stale staging marker: %v", err)
 	}
+	if err := os.WriteFile(stagingDir+".lock", nil, 0o600); err != nil {
+		t.Fatalf("write existing lock file: %v", err)
+	}
 
 	resp, err := s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
 		Trace:            &nodev1.Trace{Workload: "echo"},
@@ -1259,11 +1263,23 @@ func TestBuildBaseReturnsRetryLaterForSiblingOwnedBuildingDirectory(t *testing.T
 	})
 	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor)
 
-	siblingOwner, acquired, err := s.acquireBaseBuildOwnership(baseKey)
+	owner, acquired, existed, err := s.acquireBaseBuildOwnership(baseKey)
 	if err != nil || !acquired {
 		t.Fatalf("acquire sibling ownership: acquired=%v err=%v", acquired, err)
 	}
-	defer siblingOwner.release()
+	if existed {
+		t.Fatal("new lock file reported as pre-existing")
+	}
+	owner.release()
+	// A second open file description models the sibling process's flock.
+	siblingFile, err := os.OpenFile(filepath.Join(snapshotRoot, "bases", baseKey+".building.lock"), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer siblingFile.Close()
+	if err := unix.Flock(int(siblingFile.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
 	stagingDir := filepath.Join(snapshotRoot, "bases", baseKey+".building")
 	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
 		t.Fatalf("mkdir sibling staging: %v", err)
@@ -1286,6 +1302,74 @@ func TestBuildBaseReturnsRetryLaterForSiblingOwnedBuildingDirectory(t *testing.T
 	}
 	if _, err := os.Stat(stagingDir); err != nil {
 		t.Fatalf("losing sibling disturbed owned staging directory: %v", err)
+	}
+}
+
+func TestBuildBasePreservesStagingWithoutExistingLock(t *testing.T) {
+	snapshotRoot := t.TempDir()
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	driverReached := false
+	s := New(Options{
+		Config: config.Config{
+			Arch: "amd64", Node: "node-4", SnapshotRoot: snapshotRoot,
+			Images: map[string]config.Image{"img:1": {RootfsPath: rootfs}},
+		},
+		Driver:    &fakeDriver{},
+		Transport: &fakeTransport{},
+		NewBuildDriver: func(spec BuildDriverSpec) BuildDriver {
+			driverReached = true
+			return &fakeDriver{failClaim: errors.New("stop before real build")}
+		},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor)
+	stagingDir := filepath.Join(snapshotRoot, "bases", baseKey+".building")
+	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	_, err := s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
+		Trace:            &nodev1.Trace{Workload: "echo"},
+		ImageRef:         "img:1",
+		WorkloadRevision: "r1",
+		ReadyPath:        "/shim/ready",
+	})
+	if !driverReached || err == nil || !strings.Contains(err.Error(), "stop before real build") {
+		t.Fatalf("driver reached=%v error=%v, want driver claim failure", driverReached, err)
+	}
+	if _, err := os.Stat(stagingDir); err != nil {
+		t.Fatalf("legacy staging directory was removed: %v", err)
+	}
+}
+
+func TestCleanupStagingDirsRespectsLockProtocol(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	root := filepath.Join(s.cfg.SnapshotRoot, "bases")
+	for _, name := range []string{"held", "free", "legacy"} {
+		if err := os.MkdirAll(filepath.Join(root, name+".building"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"held", "free"} {
+		if err := os.WriteFile(filepath.Join(root, name+".building.lock"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	siblingFile, err := os.OpenFile(filepath.Join(root, "held.building.lock"), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer siblingFile.Close()
+	if err := unix.Flock(int(siblingFile.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	s.CleanupStagingDirs()
+	for _, name := range []string{"held", "legacy"} {
+		if _, err := os.Stat(filepath.Join(root, name+".building")); err != nil {
+			t.Fatalf("%s staging directory was removed: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "free.building")); !os.IsNotExist(err) {
+		t.Fatalf("free staging directory survived cleanup: %v", err)
 	}
 }
 

@@ -83,5 +83,6 @@ go_test(
         "@org_golang_google_grpc//credentials/insecure",
         "@org_golang_google_grpc//status",
         "@org_golang_google_grpc//test/bufconn",
+        "@org_golang_x_sys//unix",
     ],
 )

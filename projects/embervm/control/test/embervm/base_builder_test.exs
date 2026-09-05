@@ -202,6 +202,61 @@ defmodule Embervm.BaseBuilderTest do
 
   # -- failure -> BaseBuilt=False + daemon error + backoff --------------------
 
+  test "a sibling build requeues at the base delay without changing status or failure backoff" do
+    for previous_backoff <- [nil, 120_000] do
+      agent = start_recorder()
+      {:ok, clock} = Agent.start_link(fn -> 10_000 end)
+      base_backoff = 60_000
+      test_pid = self()
+
+      build_fun = fn :fake_channel, _req ->
+        send(test_pid, {:build_attempt, self()})
+        {:error, %GRPC.RPCError{status: 10, message: "sibling base build in progress"}}
+      end
+
+      builder =
+        start_builder(
+          status_writer: recording_status_writer(agent),
+          build_fun: build_fun,
+          clock: fn -> Agent.get(clock, & &1) end,
+          base_backoff_ms: base_backoff,
+          max_backoff_ms: 240_000
+        )
+
+      # Drive callbacks in this process so worker results and retry messages are
+      # observable directly, without sleeping or polling a running GenServer.
+      initial = :sys.get_state(builder)
+      GenServer.stop(builder)
+      {:noreply, building} = BaseBuilder.handle_cast({:reconcile, desc()}, initial)
+      assert_receive {:build_attempt, worker}
+      assert_receive {:build_result, ^worker, {:error, %GRPC.RPCError{status: 10}} = result}
+      building = put_in(building.workloads["w"].backoff_ms, previous_backoff)
+      status_before = recorded(agent)
+      started = System.monotonic_time(:millisecond)
+
+      {:noreply, waiting} = BaseBuilder.handle_info({:build_result, worker, result}, building)
+
+      assert recorded(agent) == status_before
+      assert waiting.workloads["w"].backoff_ms == previous_backoff
+      timer = waiting.workloads["w"].retry_timer
+      remaining = Process.read_timer(timer)
+      elapsed = System.monotonic_time(:millisecond) - started
+      assert is_integer(remaining)
+      assert remaining <= base_backoff
+      assert remaining >= base_backoff - elapsed
+      assert Process.cancel_timer(timer) != false
+
+      # Advance the fake clock and deliver the ordinary retry timer message.
+      Agent.update(clock, &(&1 + base_backoff))
+      {:noreply, retrying} = BaseBuilder.handle_info({:retry, "w"}, waiting)
+      assert retrying.workloads["w"].retry_timer == nil
+      assert retrying.workloads["w"].backoff_ms == previous_backoff
+      assert_receive {:build_attempt, retry_worker}
+      assert retry_worker != worker
+      assert_receive {:build_result, ^retry_worker, {:error, %GRPC.RPCError{status: 10}}}
+    end
+  end
+
   test "a failed build reports the daemon error and retries with backoff, never becoming Ready" do
     agent = start_recorder()
     {:ok, attempts} = Agent.start_link(fn -> 0 end)

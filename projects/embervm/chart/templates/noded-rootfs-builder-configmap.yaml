@@ -95,10 +95,11 @@ data:
     # kept instead, and equal mtimes resolved by directory order. None of that
     # arises when the only candidates are files nothing can be referencing.
     #
-    # Age is the ONLY thing separating an abandoned intermediate from one a
-    # co-located brick is writing right now: several pods share this hostPath and
-    # there is no lock. Anything younger than the min age is left alone, and this
-    # bake's own temporary is excluded by name as well.
+    # Noded takes a flock on <base>.building.lock while building. This bash
+    # reclaimer does not take that lock, so it must keep the age floor: staging
+    # directories and rootfs temporaries younger than min_age are left alone.
+    # Candidates at least min_age old may be removed; this bake's own temporary
+    # is excluded by name as well.
     reclaim_orphans_after_enospc() {
       local keep_path="$1"
       local snapshots_root="$EMBERVM_ROOTFS_RECLAIM_SNAPSHOTS_ROOT"

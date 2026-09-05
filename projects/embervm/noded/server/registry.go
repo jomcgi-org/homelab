@@ -531,20 +531,6 @@ func (b *baseRegistry) failBuild(ref, buildErr string) {
 	}
 }
 
-// unavailable records a terminal restore refusal as NONE. NONE is the control
-// plane's immediate rebuild signal, while buildErr preserves the gate reason in
-// NodeStatus so the fallback is diagnosable.
-func (b *baseRegistry) unavailable(ref, workload, buildErr string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.bases[ref] = &baseEntry{
-		snapshotRef: ref,
-		workload:    workload,
-		state:       nodev1.BaseBuildState_BASE_BUILD_STATE_NONE,
-		buildErr:    buildErr,
-	}
-}
-
 // register records a base discovered on disk at startup (state READY) so the
 // control plane reconciles rather than rebuilding.
 func (b *baseRegistry) register(e baseEntry) {
@@ -628,15 +614,13 @@ func (b *baseRegistry) snapshot() []baseEntry {
 	return out
 }
 
-// firstBuildError returns the reason from any terminal FAILED or NONE base for
-// NodeStatus.build_error. NONE can carry a restore identity-gate refusal that
-// the control plane uses to explain its immediate rebuild fallback.
+// firstBuildError returns the build error of any FAILED base (for the
+// NodeStatus.build_error field), or "".
 func (b *baseRegistry) firstBuildError() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for _, e := range b.bases {
-		if (e.state == nodev1.BaseBuildState_BASE_BUILD_STATE_FAILED ||
-			e.state == nodev1.BaseBuildState_BASE_BUILD_STATE_NONE) && e.buildErr != "" {
+		if e.state == nodev1.BaseBuildState_BASE_BUILD_STATE_FAILED && e.buildErr != "" {
 			return e.buildErr
 		}
 	}
