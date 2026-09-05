@@ -347,8 +347,15 @@ defmodule Embervm.Session do
 
     Process.exit(pid, :kill)
     state = %{state | worker: nil}
-    GenServer.reply(from, {:error, :invoke_timeout})
-    {:noreply, maybe_start_next(disarm_rejoin_failure(state))}
+    status = safe_brick_status(state)
+    %{reason: reason} = classify_invoke_error(:invoke_timeout, status)
+
+    case reason do
+      :brick_gone -> handle_invoke_error(state, :brick_gone, status, from)
+      :invoke_timeout ->
+        GenServer.reply(from, {:error, :invoke_timeout})
+        {:noreply, maybe_start_next(disarm_rejoin_failure(state))}
+    end
   end
 
   def handle_info({:invoke_timeout, _stale_ref}, state), do: {:noreply, state}

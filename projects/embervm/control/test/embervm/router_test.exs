@@ -204,6 +204,32 @@ defmodule Embervm.RouterTest do
     def list(_srv, "wl-ok", _opts),
       do: {:ok, %{items: [], total: 0, limit: 50, offset: 0}}
 
+    def list(_srv, "wl-many", _opts) do
+      items =
+        for {session_id, node_id} <- [
+          {"s-list-1", "node-a"},
+          {"s-list-2", "node-b"},
+          {"s-list-3", "node-a"}
+        ] do
+          %{
+            session_id: session_id,
+            workload: "wl-many",
+            principal: "p",
+            node_id: node_id,
+            state: :running,
+            generation: 0,
+            base_digest: "sha256:x",
+            created_at: 1,
+            last_invoke_at: nil,
+            expires_at: 9_000_000,
+            updated_at: 1,
+            terminal_reason: nil
+          }
+        end
+
+      {:ok, %{items: items, total: length(items), limit: 50, offset: 0}}
+    end
+
     def list(_srv, _wl, _opts), do: {:ok, %{items: [], total: 0, limit: 50, offset: 0}}
 
     # #4919 query-by-key: one known binding for the list-by-key request test.
@@ -239,6 +265,16 @@ defmodule Embervm.RouterTest do
 
     def get_latest_by_lineage(_srv, "lineage-wrap"), do: {:ok, hd(all(nil))}
     def get_latest_by_lineage(_srv, _lineage), do: :error
+  end
+
+  defmodule FakeNodeRegistry do
+    def brick_statuses(test_pid, node_ids) do
+      send(test_pid, {:brick_statuses, node_ids})
+
+      Map.new(node_ids, fn node_id ->
+        {node_id, %{health: :healthy, draining: node_id == "node-b"}}
+      end)
+    end
   end
 
   defmodule FakeKeyOpLog do
@@ -417,6 +453,8 @@ defmodule Embervm.RouterTest do
       Application.delete_env(:embervm, :stateful_store_mod)
       Application.delete_env(:embervm, :workload_catalog_mod)
       Application.delete_env(:embervm, :stateful_manager_mod)
+      Application.delete_env(:embervm, :node_registry_mod)
+      Application.delete_env(:embervm, :node_registry)
       Application.delete_env(:embervm, :noded_service_account)
       Application.delete_env(:embervm, :artifact_encryption)
       Application.delete_env(:embervm, :artifact_key_service)
@@ -1485,6 +1523,23 @@ defmodule Embervm.RouterTest do
     body = json(resp.body)
     assert body["workload"] == "wl-ok"
     assert body["items"] == []
+  end
+
+  test "session list resolves all node health in one registry call" do
+    with_session_fakes()
+    Application.put_env(:embervm, :node_registry_mod, FakeNodeRegistry)
+    Application.put_env(:embervm, :node_registry, self())
+
+    resp = req(:get, "/v1/workloads/wl-many/sessions", auth("good"))
+    assert resp.status == 200
+    assert_receive {:brick_statuses, node_ids}
+    assert Enum.sort(node_ids) == ["node-a", "node-b"]
+    refute_receive {:brick_statuses, _node_ids}, 50
+
+    assert [first, second, third] = json(resp.body)["items"]
+    assert first["node"] == %{"node_id" => "node-a", "health" => "healthy", "draining" => false}
+    assert second["node"] == %{"node_id" => "node-b", "health" => "healthy", "draining" => true}
+    assert third["node"] == first["node"]
   end
 
   test "GET /v1/workloads/:name/sessions?idempotency_key= resolves one session by key (#4919)" do

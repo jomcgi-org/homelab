@@ -282,6 +282,12 @@ defmodule Embervm.SessionManager do
     GenServer.call(server, {:node_down, node_id, metadata}, :infinity)
   end
 
+  @doc "Queues a node-down sweep without blocking the caller."
+  @spec node_down_async(GenServer.server(), String.t(), map()) :: :ok
+  def node_down_async(server \\ __MODULE__, node_id, metadata) do
+    GenServer.cast(server, {:node_down, node_id, metadata})
+  end
+
   @doc """
   Destroys a session (`* -> destroyed`): stops its process/VM and records
   `session_destroyed`. Returns `{:ok, session}`, `{:error, :not_found}`, or
@@ -783,6 +789,12 @@ defmodule Embervm.SessionManager do
   def handle_call({:node_down, node_id, metadata}, _from, state) do
     {count, state} = sweep_brick_gone_node(state, node_id, metadata)
     {:reply, count, state}
+  end
+
+  @impl true
+  def handle_cast({:node_down, node_id, metadata}, state) do
+    {_count, state} = sweep_brick_gone_node(state, node_id, metadata)
+    {:noreply, state}
   end
 
   def handle_call(:reconcile, _from, state) do
@@ -1714,6 +1726,11 @@ defmodule Embervm.SessionManager do
   edge. Its transport settles at the drain deadline as `brick_gone`. Sessions already
   banking are skipped. Sessions refused at the per-node bank cap or with unknown disk
   facts are left for the normal sweep. Returns the count whose bank was admitted.
+
+  The default 15,000 ms NodeRegistry `down_after_ms` sweep is the backstop for
+  sessions this edge cannot bank within the approximately 30,000 ms Spot drain
+  budget. That ordering is coincidental, so keep the two constants explicitly
+  ordered if either default changes.
   """
   @spec drain_node(GenServer.server(), String.t()) :: non_neg_integer()
   def drain_node(server \\ __MODULE__, node_id) do
@@ -1752,7 +1769,7 @@ defmodule Embervm.SessionManager do
   defp quiescent_session?(state, session_id) do
     case Registry.lookup(state.registry, session_id) do
       [{pid, _}] -> Embervm.Session.quiescent?(pid, 100)
-      [] -> false
+      [] -> true
     end
   rescue
     _ -> false
@@ -1919,18 +1936,10 @@ defmodule Embervm.SessionManager do
   end
 
   defp clear_brick_gone_tracking(state, session_id) do
-    bank = Map.get(state.banking, session_id)
-
-    state =
-      state
-      |> clear_pressure_wait(session_id)
-      |> clear_session_tracking(session_id)
-      |> Map.update!(:banking, &Map.delete(&1, session_id))
-
-    case bank do
-      %{node_id: node_id} -> decr_bank_inflight(state, node_id)
-      _ -> state
-    end
+    state
+    |> clear_pressure_wait(session_id)
+    |> clear_session_tracking(session_id)
+    |> Map.update!(:banking, &Map.delete(&1, session_id))
   end
 
   defp do_bank(state, session_id) do

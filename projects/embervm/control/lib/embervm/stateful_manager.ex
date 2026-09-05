@@ -1673,7 +1673,7 @@ defmodule Embervm.StatefulManager do
               {:ok, _fact} -> acc
 
               :error ->
-                Map.put(acc, node_id, Map.get(state.missing_anchor_since_ms, node_id, now))
+                Map.put(acc, node_id, missing_anchor_since_ms(state, volume) || now)
             end
 
           _missing_anchor ->

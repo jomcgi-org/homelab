@@ -201,6 +201,8 @@ defmodule Embervm.NodeRegistryTest do
     :ok = NodeRegistry.tick(reg)
     assert NodeRegistry.status(reg)["node-4"].health == :down
     assert NodeRegistry.brick_status(reg, "node-4").health == :down
+    assert %{"node-4" => %{health: :down}, "node-missing" => %{health: :unknown}} =
+             NodeRegistry.brick_statuses(reg, ["node-4", "node-missing"])
     assert_receive {:reassigned, "node-4"}
 
     # A further tick while still down must not re-fire reassignment.
@@ -258,7 +260,33 @@ defmodule Embervm.NodeRegistryTest do
 
     advance.(15_000)
     :ok = NodeRegistry.tick(reg)
-    assert_receive {:sessions_swept, "node-4", ""}
+    assert_receive {:sessions_swept, "node-4", ""}, 1_000
+  end
+
+  test "the registry answers status while a slow session sweep is in progress" do
+    {clock, advance} = new_clock()
+    test_pid = self()
+
+    {reg, _table} =
+      start_registry(
+        clock: clock,
+        session_sweep_fun: fn node_id, pod_uid ->
+          send(test_pid, {:session_sweep_started, self(), node_id, pod_uid})
+
+          receive do
+            :finish_session_sweep -> :ok
+          end
+        end
+      )
+
+    advance.(15_000)
+    :ok = NodeRegistry.tick(reg)
+    assert_receive {:session_sweep_started, sweep_pid, "node-4", ""}, 1_000
+
+    status_call = Task.async(fn -> NodeRegistry.brick_status(reg, "node-4") end)
+    assert %{health: :down} = Task.await(status_call, 500)
+
+    send(sweep_pid, :finish_session_sweep)
   end
 
   test "a down edge reassigns only an instance that has produced a status" do
