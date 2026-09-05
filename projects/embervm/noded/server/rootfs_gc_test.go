@@ -111,7 +111,7 @@ func TestBuildBasesFailWhenRootfsNotExt4(t *testing.T) {
 	if err := os.WriteFile(rootfs, make([]byte, ext4HeaderSize), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	baseKey := baseKeyFor("echo", "img:1", "r1", "")
+	baseKey := baseKeyFor("echo", "img:1", "r1", "", "not-an-ext4-rootfs")
 	writeBundleFiles(t, filepath.Join(snapshotRoot, "bases", baseKey), map[string]string{
 		"memfile":  "mem",
 		"snapfile": "snap",
@@ -135,12 +135,11 @@ func TestBuildBasesFailWhenRootfsNotExt4(t *testing.T) {
 		ReadyPath:        "/shim/ready",
 		Resources:        &nodev1.ResourceSpec{Vcpus: 1, MemMib: 128},
 	})
-	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "persist base rootfs identity") {
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "read rootfs UUID") {
 		t.Fatalf("BuildBase error = %v, want rootfs identity FailedPrecondition", err)
 	}
-	base, ok := s.bases.get(baseKey)
-	if !ok || base.state != nodev1.BaseBuildState_BASE_BUILD_STATE_FAILED {
-		t.Fatalf("base = %+v, ok=%v, want FAILED and never READY", base, ok)
+	if base, ok := s.bases.get(baseKey); ok {
+		t.Fatalf("base = %+v, want no registry entry when rootfs identity cannot key the build", base)
 	}
 }
 

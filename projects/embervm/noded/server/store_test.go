@@ -43,6 +43,7 @@ type fakeStore struct {
 	dataKeyCalls    map[string]int
 	rewrapCh        chan fakeRewrapCall
 	artifactFileErr error
+	restoreCalls    int
 	// dataKeyErr simulates the error returned by the store's data-key provider
 	// before any encrypted artifact bytes are uploaded.
 	dataKeyErr error
@@ -131,6 +132,7 @@ func (f *fakeStore) Export(_ context.Context, prefix, localDir string, files []s
 
 func (f *fakeStore) Restore(_ context.Context, prefix, localDir string, key []byte) (int64, uint64, error) {
 	f.mu.Lock()
+	f.restoreCalls++
 	art, ok := f.arts[prefix]
 	f.mu.Unlock()
 	if !ok {
@@ -202,18 +204,18 @@ func (f *fakeStore) ListRefs(_ context.Context, prefix string, limit int) ([]str
 	return refs, false, nil
 }
 
-func (f *fakeStore) ArtifactInfo(_ context.Context, prefix string) (bool, int64, uint64, string, string, uint64, []byte, error) {
+func (f *fakeStore) ArtifactInfo(_ context.Context, prefix string) (bool, int64, uint64, string, string, string, uint64, []byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	art, ok := f.arts[prefix]
 	if !ok {
-		return false, 0, 0, "", "", 0, nil, nil
+		return false, 0, 0, "", "", "", 0, nil, nil
 	}
 	var total uint64
 	for _, c := range art.files {
 		total += uint64(len(c))
 	}
-	return true, art.createdAtMs, total, art.cpuVendor, art.cpuTemplate, art.gen, append([]byte(nil), art.envelope...), nil
+	return true, art.createdAtMs, total, art.cpuVendor, art.cpuTemplate, strings.TrimSpace(art.files["rootfsid"]), art.gen, append([]byte(nil), art.envelope...), nil
 }
 
 func (f *fakeStore) ArtifactFileSHA256(_ context.Context, prefix, name string) (bool, bool, string, error) {
@@ -1329,6 +1331,42 @@ func TestRestoreArtifactBaseNotPresentFailsFast(t *testing.T) {
 	}
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("absent-base restore error code = %v, want FailedPrecondition", status.Code(err))
+	}
+}
+
+// TestRestoreArtifactBaseRootfsMismatchFailsFast proves the ext4 identity gate
+// runs before the BASE fast-ACK. A mismatched store copy is refused with both
+// UUIDs visible and is never queued for its multi-GB download.
+func TestRestoreArtifactBaseRootfsMismatchFailsFast(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+
+	workload := "bazel-query"
+	ref := "bazel-query__abcdef012345"
+	digest := "sha256:runtime-bazel"
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDB)
+	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: rootfs}})
+	prefix := "base/amd/" + workload + "/" + ref
+	fs.seedArtifact(prefix, map[string]string{
+		"imageref": digest, "memfile": "mem", "rootfsid": testRootfsUUIDA,
+		"rootfspath": rootfs, "snapfile": "snap",
+	}, 0, "amd", "")
+
+	_, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
+		Vendor:   "amd",
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("mismatched-base restore code = %v, want FailedPrecondition; err = %v", status.Code(err), err)
+	}
+	if !strings.Contains(err.Error(), testRootfsUUIDA) || !strings.Contains(err.Error(), testRootfsUUIDB) {
+		t.Fatalf("mismatched-base restore error = %q, want store UUID %s and local UUID %s", err, testRootfsUUIDA, testRootfsUUIDB)
+	}
+	fs.mu.Lock()
+	restoreCalls := fs.restoreCalls
+	fs.mu.Unlock()
+	if restoreCalls != 0 {
+		t.Fatalf("mismatched-base restore downloaded %d times, want 0", restoreCalls)
 	}
 }
 

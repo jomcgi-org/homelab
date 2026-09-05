@@ -697,7 +697,11 @@ func (s *Server) buildBaseImage(ctx context.Context, req *nodev1.BuildBaseReques
 	if !ok {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: image %q (workload %q) not provisioned on this node", imageRef, workload)
 	}
-	baseKey := baseKeyFor(workload, imageRef, req.GetWorkloadRevision(), s.cfg.CpuVendor)
+	rootfsID, err := ext4UUID(img.RootfsPath)
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: read rootfs UUID for image %q (workload %q): %v", imageRef, workload, err)
+	}
+	baseKey := baseKeyFor(workload, imageRef, req.GetWorkloadRevision(), s.cfg.CpuVendor, rootfsID)
 	// The control plane records the resolved image identity; without an OCI pull
 	// the ref IS the identity for R0 (deploys are digest-pinned upstream). The image
 	// lane carries no archive and never hydrates (nil archive).
@@ -733,7 +737,11 @@ func (s *Server) buildBaseZip(ctx context.Context, req *nodev1.BuildBaseRequest)
 	// the digest for R0 (deploys are digest-pinned upstream), mirroring the image
 	// lane where image_ref IS the identity.
 	imageDigest := runtimeRef
-	baseKey := baseKeyForZip(workload, imageDigest, zip.GetArchiveSha256(), s.cfg.CpuVendor)
+	rootfsID, err := ext4UUID(img.RootfsPath)
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: read rootfs UUID for runtime image %q (workload %q): %v", runtimeRef, workload, err)
+	}
+	baseKey := baseKeyForZip(workload, imageDigest, zip.GetArchiveSha256(), s.cfg.CpuVendor, rootfsID)
 
 	// Short-circuit on an already-built base BEFORE fetching the archive: an
 	// idempotent repeat must not re-download or re-attach.
@@ -3624,17 +3632,17 @@ const defaultReadyPath = "/shim/ready"
 var baseKeyUnsafe = regexp.MustCompile(`[^A-Za-z0-9_-]`)
 
 // baseKeyFor derives the deterministic, filesystem-safe base key (== the opaque
-// snapshot_ref) from the workload and the (image_ref, workload_revision, vendor)
-// idempotency inputs. vendor is hashed in (R7, standing decision 1) so the same
-// image built on an Intel node and an AMD node gets DIFFERENT base keys: a
-// Firecracker snapshot restore never crosses the vendor boundary, so a base key
-// that ignored vendor would let one vendor's warm cache be handed to noded on
-// the other, and BuildBase's idempotency check would wrongly report the
+// snapshot_ref) from the workload and the (image_ref, workload_revision, vendor,
+// rootfs UUID) idempotency inputs. Vendor is hashed in (R7, standing decision 1),
+// so the same image built on an Intel node and an AMD node gets different base
+// keys. A Firecracker snapshot restore never crosses the vendor boundary, so a
+// base key that ignored vendor would let one vendor's warm cache be handed to
+// noded on the other, and BuildBase's idempotency check would wrongly report the
 // mismatched-vendor base as AlreadyBuilt. The workload prefix is recoverable on
 // startup for the capacity report; the hash suffix keys the bundle per
-// image+revision+vendor.
-func baseKeyFor(workload, imageRef, revision, vendor string) string {
-	sum := sha256.Sum256([]byte(imageRef + "\x00" + revision + "\x00" + vendor))
+// image+revision+vendor+rootfs UUID.
+func baseKeyFor(workload, imageRef, revision, vendor, rootfsUUID string) string {
+	sum := sha256.Sum256([]byte(imageRef + "\x00" + revision + "\x00" + vendor + "\x00" + rootfsUUID))
 	sig := hex.EncodeToString(sum[:])[:12]
 	wl := baseKeyUnsafe.ReplaceAllString(workload, "_")
 	if wl == "" {
@@ -3645,13 +3653,12 @@ func baseKeyFor(workload, imageRef, revision, vendor string) string {
 
 // baseKeyForZip derives the base key (== the opaque snapshot_ref) for a ZIP-lane
 // build. Its idempotency inputs are (runtime image digest, archive sha256,
-// vendor): the same archive on the same runtime AND the same CPU vendor keys the
-// same base, so a re-registration is a no-op hit; a different vendor keys a
-// distinct base for the same reason baseKeyFor hashes vendor in (R7, standing
-// decision 1). The workload prefix is recoverable on startup for the capacity
-// report, mirroring baseKeyFor.
-func baseKeyForZip(workload, imageDigest, archiveSha256, vendor string) string {
-	sum := sha256.Sum256([]byte("zip\x00" + imageDigest + "\x00" + archiveSha256 + "\x00" + vendor))
+// vendor, rootfs UUID): the same archive on the same runtime, CPU vendor, and
+// rootfs keys the same base, so a re-registration is a no-op hit. A different
+// vendor or rootfs keys a distinct base. The workload prefix is recoverable on
+// startup for the capacity report, mirroring baseKeyFor.
+func baseKeyForZip(workload, imageDigest, archiveSha256, vendor, rootfsUUID string) string {
+	sum := sha256.Sum256([]byte("zip\x00" + imageDigest + "\x00" + archiveSha256 + "\x00" + vendor + "\x00" + rootfsUUID))
 	sig := hex.EncodeToString(sum[:])[:12]
 	wl := baseKeyUnsafe.ReplaceAllString(workload, "_")
 	if wl == "" {

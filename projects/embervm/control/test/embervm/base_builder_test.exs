@@ -2298,13 +2298,14 @@ defmodule Embervm.BaseBuilderTest do
     table = new_cap_table()
     put_brick(table, "node-4", "uid", cpu_vendor: "amd")
     test_pid = self()
+    status_agent = start_recorder()
     {:ok, builds} = Agent.start_link(fn -> 0 end)
 
     builder =
       start_builder(
         nodes: [%{id: "node-4/uid", address: "node-4:9090"}],
         capacity_table: table,
-        status_writer: fn _, _, _ -> :ok end,
+        status_writer: recording_status_writer(status_agent),
         build_fun: fn :fake_channel, _req ->
           count = Agent.get_and_update(builds, fn n -> {n + 1, n + 1} end)
           {:ok, resp("snap-#{count}")}
@@ -2313,8 +2314,10 @@ defmodule Embervm.BaseBuilderTest do
           send(test_pid, {:restore_called, ref.ref})
           {:ok, %Embervm.Node.V1.RestoreArtifactResponse{accepted: true}}
         end,
+        op_log: test_pid,
+        op_log_mod: __MODULE__.FakeOpLog,
         hydrate_poll_interval_ms: 5,
-        hydrate_poll_max: 50
+        hydrate_poll_max: 200
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())
@@ -2329,6 +2332,15 @@ defmodule Embervm.BaseBuilderTest do
     :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
 
     assert_receive {:restore_called, "snap-1"}, 1_000
+    assert_receive {:op_appended, %{kind: :base_built} = op}, 1_000
+    assert op.workload == "w"
+    assert op.payload.reason == "node dropped base, hydrating from store"
+    assert op.payload.node_id == "node-4/uid"
+    assert op.payload.ref == "snap-1"
+
+    hydrating_status = latest(status_agent, "w")
+    assert condition(hydrating_status, "BaseBuilt")["status"] == "False"
+    assert condition(hydrating_status, "BaseBuilt")["reason"] == "BaseBuilding"
     assert Agent.get(builds, & &1) == 1
     assert BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1"
 
@@ -2350,6 +2362,85 @@ defmodule Embervm.BaseBuilderTest do
     _ = :sys.get_state(builder)
     refute_receive {:restore_called, _ref}, 100
     assert Agent.get(builds, & &1) == 1
+  end
+
+  test "store-durable inventory drop builds when the anchor vendor ref cannot be resolved" do
+    table = new_cap_table()
+    put_brick(table, "node-4", "uid", cpu_vendor: "amd")
+    test_pid = self()
+    status_agent = start_recorder()
+    {:ok, builds} = Agent.start_link(fn -> 0 end)
+
+    build_fun = fn :fake_channel, _req ->
+      count = Agent.get_and_update(builds, fn n -> {n + 1, n + 1} end)
+
+      if count == 2 do
+        send(test_pid, {:direct_build_started, self()})
+
+        receive do
+          :finish_direct_build -> :ok
+        end
+      end
+
+      {:ok, resp("snap-#{count}")}
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/uid", address: "node-4:9090"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(status_agent),
+        build_fun: build_fun,
+        restore_fun: fn :fake_channel, _req ->
+          send(test_pid, :restore_called)
+          {:ok, %Embervm.Node.V1.RestoreArtifactResponse{accepted: true}}
+        end,
+        op_log: test_pid,
+        op_log_mod: __MODULE__.FakeOpLog
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc())
+    assert_eventually(fn -> BaseBuilder.status(builder).workloads["w"].snapshot_ref == "snap-1" end)
+
+    # Model a control-plane restart that lost vendor_built while another
+    # vendor's node still proves the ref is exported and store-fetchable.
+    :sys.replace_state(builder, fn state ->
+      state
+      |> put_in([:workloads, "w", :vendor_built], %{})
+      |> put_in([:workloads, "w", :store_confirmed], %{})
+    end)
+
+    put_brick(table, "node-5", "uid", cpu_vendor: "intel")
+
+    put_node_local_bases_fact(table, "node-5", "uid", "w", "snap-1", true, [
+      ready_base("snap-1", "w", 1)
+    ])
+
+    put_node_local_bases_fact(table, "node-4", "uid", "w", "", false, [])
+    put_base_fact(table, "node-4", "uid", "w", "", :BASE_BUILD_STATE_NONE, false)
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+
+    refute_receive :restore_called, 100
+    assert_receive {:op_appended, %{kind: :base_built} = op}, 1_000
+    assert op.workload == "w"
+    assert op.payload.reason == "node dropped base"
+    assert op.payload.node_id == "node-4/uid"
+    assert op.payload.ref == "snap-1"
+
+    assert_receive {:direct_build_started, worker}, 1_000
+    assert Agent.get(builds, & &1) == 2
+
+    building_status = latest(status_agent, "w")
+    assert condition(building_status, "BaseBuilt")["status"] == "False"
+    assert condition(building_status, "BaseBuilt")["reason"] == "BaseBuilding"
+    assert BaseBuilder.status(builder).workloads["w"].snapshot_ref == nil
+
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+    _ = :sys.get_state(builder)
+    assert Agent.get(builds, & &1) == 2
+    refute_receive {:op_appended, %{kind: :base_built}}, 100
+
+    send(worker, :finish_direct_build)
   end
 
   test "store-durable inventory drop falls back to BuildBase on rootfs gate refusal" do
@@ -2382,8 +2473,8 @@ defmodule Embervm.BaseBuilderTest do
           send(test_pid, :restore_refused_by_rootfs_gate)
           {:error, %GRPC.RPCError{status: 9, message: "base rootfs identity mismatch"}}
         end,
-        hydrate_poll_interval_ms: 5,
-        hydrate_poll_max: 50
+        hydrate_poll_interval_ms: 60_000,
+        hydrate_poll_max: 90
       )
 
     :ok = BaseBuilder.reconcile(builder, desc())

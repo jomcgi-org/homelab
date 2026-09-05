@@ -1090,7 +1090,7 @@ func TestBuildBaseAdoptsSiblingBundleFromDisk(t *testing.T) {
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor)
+	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, testRootfsUUIDA)
 	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey)
 	memBytes := strings.Repeat("m", 100)
 	snapBytes := strings.Repeat("s", 50)
@@ -1171,7 +1171,7 @@ func TestBuildBaseIncompleteBundleFallsThroughToBuild(t *testing.T) {
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor)
+	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, testRootfsUUIDA)
 	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", baseKey)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("mkdir stale dir: %v", err)
@@ -1215,7 +1215,7 @@ func TestBuildBaseReclaimsStaleBuildingDirectory(t *testing.T) {
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor)
+	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, testRootfsUUIDA)
 	stagingDir := filepath.Join(snapshotRoot, "bases", baseKey+".building")
 	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
 		t.Fatalf("mkdir stale staging: %v", err)
@@ -1262,7 +1262,7 @@ func TestBuildBaseReturnsRetryLaterForSiblingOwnedBuildingDirectory(t *testing.T
 		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return build },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor)
+	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, testRootfsUUIDA)
 
 	owner, acquired, existed, err := s.acquireBaseBuildOwnership(baseKey)
 	if err != nil || !acquired {
@@ -1323,7 +1323,7 @@ func TestBuildBasePreservesStagingWithoutExistingLock(t *testing.T) {
 		},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor)
+	baseKey := baseKeyFor("echo", "img:1", "r1", s.cfg.CpuVendor, testRootfsUUIDA)
 	stagingDir := filepath.Join(snapshotRoot, "bases", baseKey+".building")
 	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
 		t.Fatal(err)
@@ -3312,27 +3312,29 @@ func TestPrimeReadyTimeoutUsesBootBudgetForSessionVolume(t *testing.T) {
 	}
 }
 
-// TestBaseKeyForDiffersAcrossVendor proves the same (workload, image_ref,
-// revision) keys a DIFFERENT base on each CPU vendor (R7, standing decision 1):
-// a Firecracker base built on Intel must never collide with (or be reported
-// AlreadyBuilt against) the same image's AMD base.
-func TestBaseKeyForDiffersAcrossVendor(t *testing.T) {
-	amdKey := baseKeyFor("echo", "img:1", "r1", "amd")
-	intelKey := baseKeyFor("echo", "img:1", "r1", "intel")
+// TestBaseKeyForIncludesVendorAndRootfsUUID proves CPU compatibility and rootfs
+// byte identity both participate in the key, while identical node state remains
+// deterministic.
+func TestBaseKeyForIncludesVendorAndRootfsUUID(t *testing.T) {
+	amdKey := baseKeyFor("echo", "img:1", "r1", "amd", testRootfsUUIDA)
+	intelKey := baseKeyFor("echo", "img:1", "r1", "intel", testRootfsUUIDA)
 	if amdKey == intelKey {
 		t.Fatalf("baseKeyFor should differ across vendor, both = %q", amdKey)
 	}
 	// Same vendor, same inputs: still deterministic (idempotency depends on it).
-	if again := baseKeyFor("echo", "img:1", "r1", "amd"); again != amdKey {
+	if again := baseKeyFor("echo", "img:1", "r1", "amd", testRootfsUUIDA); again != amdKey {
 		t.Fatalf("baseKeyFor should be deterministic for the same inputs: %q != %q", again, amdKey)
+	}
+	if otherRootfs := baseKeyFor("echo", "img:1", "r1", "amd", testRootfsUUIDB); otherRootfs == amdKey {
+		t.Fatalf("baseKeyFor should differ across rootfs UUIDs, both = %q", amdKey)
 	}
 }
 
-// TestBaseKeyForZipDiffersAcrossVendor mirrors TestBaseKeyForDiffersAcrossVendor
-// for the ZIP-lane key function.
+// TestBaseKeyForZipDiffersAcrossVendor mirrors the vendor half of the image-lane
+// key test for the ZIP-lane key function.
 func TestBaseKeyForZipDiffersAcrossVendor(t *testing.T) {
-	amdKey := baseKeyForZip("echo", "digest:1", "sha:1", "amd")
-	intelKey := baseKeyForZip("echo", "digest:1", "sha:1", "intel")
+	amdKey := baseKeyForZip("echo", "digest:1", "sha:1", "amd", testRootfsUUIDA)
+	intelKey := baseKeyForZip("echo", "digest:1", "sha:1", "intel", testRootfsUUIDA)
 	if amdKey == intelKey {
 		t.Fatalf("baseKeyForZip should differ across vendor, both = %q", amdKey)
 	}

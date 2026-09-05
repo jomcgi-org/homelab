@@ -51,7 +51,7 @@ type artifactStore interface {
 	// ArtifactInfo reads an artifact's completeness marker once and returns the
 	// fields list and restore consume, including generation and opaque envelope.
 	// It stays flat so callers depend only on the fields they consume.
-	ArtifactInfo(ctx context.Context, prefix string) (present bool, createdAtUnixMs int64, sizeBytes uint64, cpuVendor, cpuTemplate string, generation uint64, envelope []byte, err error)
+	ArtifactInfo(ctx context.Context, prefix string) (present bool, createdAtUnixMs int64, sizeBytes uint64, cpuVendor, cpuTemplate, rootfsID string, generation uint64, envelope []byte, err error)
 	ArtifactFileSHA256(ctx context.Context, prefix, name string) (artifactPresent, filePresent bool, checksum string, err error)
 	RewrapEnvelope(ctx context.Context, prefix string, options store.ExportOptions) (changed bool, err error)
 }
@@ -622,11 +622,12 @@ func (s *Server) ExportArtifact(ctx context.Context, req *nodev1.ExportArtifactR
 // Cilium/eBPF datapath reap the idle flow's conntrack entry mid-transfer ("the
 // connection is closed"), the same failure that forced base EXPORT async. So a
 // BASE restore that genuinely needs a download runs the cheap presence + sku +
-// already-local checks SYNCHRONOUSLY (so a store-miss is a fast, distinguishable
-// FAILED_PRECONDITION the caller falls back to rebuild on, and an already-local
-// base is an inline skipped no-op), then ENQUEUES the download onto a bounded,
-// deduped queue and fast-ACKs accepted=true. The caller polls NodeStatus for the
-// base to appear READY. Every other (small) kind still restores inline.
+// rootfs identity + already-local checks SYNCHRONOUSLY (so a store miss or
+// incompatible rootfs is a fast, distinguishable FAILED_PRECONDITION the caller
+// falls back to rebuild on, and an already-local base is an inline skipped
+// no-op), then ENQUEUES the download onto a bounded, deduped queue and fast-ACKs
+// accepted=true. The caller polls NodeStatus for the base to appear READY. Every
+// other (small) kind still restores inline.
 func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifactRequest) (*nodev1.RestoreArtifactResponse, error) {
 	if s.store == nil {
 		return nil, status.Error(codes.FailedPrecondition, "noded: object store not configured; restore unavailable")
@@ -647,7 +648,7 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 	// loss, exactly the failure mode this rule exists to prevent. A present
 	// stamp that matches this node's own sku, or that the node cannot judge
 	// (its own vendor/template undetected), also passes.
-	present, _, _, stampedVendor, stampedTemplate, gen, envelope, perr := s.store.ArtifactInfo(ctx, prefix)
+	present, _, _, stampedVendor, stampedTemplate, storedRootfsID, gen, envelope, perr := s.store.ArtifactInfo(ctx, prefix)
 	if perr == nil && present {
 		if mismatch, got, want := cpuSkuMismatch(stampedVendor, stampedTemplate, s.cfg.CpuVendor, s.cfg.CpuTemplate); mismatch {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: cpu_sku mismatch on restore: artifact stamped %q != node %q", got, want)
@@ -668,6 +669,23 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 			return nil, status.Errorf(codes.NotFound, "noded: restore artifact %q: not present in store", prefix)
 		}
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: restore artifact %q: not present in store", prefix)
+	}
+	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_BASE {
+		img, ok := s.resolveImage(ref.GetWorkload(), "")
+		if !ok {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: restore base %q: no current rootfs for workload %q", prefix, ref.GetWorkload())
+		}
+		localRootfsID, rootfsErr := ext4UUID(img.RootfsPath)
+		if rootfsErr != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: restore base %q: read local rootfs UUID: %v", prefix, rootfsErr)
+		}
+		storedRootfsID = strings.TrimSpace(storedRootfsID)
+		if storedRootfsID == "" {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: restore base %q: store rootfs UUID missing, local rootfs UUID %s", prefix, localRootfsID)
+		}
+		if storedRootfsID != localRootfsID {
+			return nil, status.Errorf(codes.FailedPrecondition, "noded: restore base %q: store rootfs UUID %s != local rootfs UUID %s", prefix, storedRootfsID, localRootfsID)
+		}
 	}
 
 	var dataKey []byte
@@ -944,7 +962,7 @@ func (s *Server) ListArtifacts(ctx context.Context, req *nodev1.ListArtifactsReq
 
 	entries := make([]*nodev1.ListArtifactsEntry, 0, len(refs))
 	for _, r := range refs {
-		present, createdAt, size, v, tmpl, _, _, ierr := s.store.ArtifactInfo(ctx, prefix+"/"+r)
+		present, createdAt, size, v, tmpl, _, _, _, ierr := s.store.ArtifactInfo(ctx, prefix+"/"+r)
 		if ierr != nil || !present {
 			continue
 		}
@@ -1761,7 +1779,7 @@ func (s *Server) runRestoreJob(ctx context.Context, job restoreJob) {
 	}()
 
 	var dataKey []byte
-	_, _, _, _, _, storedGeneration, envelope, envelopeErr := s.store.ArtifactInfo(ctx, job.prefix)
+	_, _, _, _, _, _, storedGeneration, envelope, envelopeErr := s.store.ArtifactInfo(ctx, job.prefix)
 	if envelopeErr != nil {
 		s.logger.Warn("noded: async base restore failed reading artifact metadata", "artifact", job.prefix, "err", envelopeErr)
 		return

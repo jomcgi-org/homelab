@@ -113,17 +113,18 @@ type FileMeta struct {
 // and checksum; Generation carries the volume generation for a VOLUME artifact
 // (0 for kinds with no generation); CreatedAtUnixMs records when the export ran.
 // CpuVendor and CpuTemplate (PR-E) stamp the exporting node's cpu_sku onto the
-// artifact; both are omitempty so an artifact exported before PR-E landed
-// serializes with NEITHER field present, which is exactly the grandfather
-// rule's UNSTAMPED case (never a present-but-empty string, which JSON cannot
-// distinguish from "not stamped" anyway, but omitempty keeps old fixtures and
-// new code honest about the same thing).
+// artifact. RootfsID records the ext4 UUID from a base's rootfsid sidecar so a
+// target node can reject incompatible bytes from this marker alone. All three
+// are omitempty for backward-compatible metadata. In particular, an artifact
+// exported before PR-E serializes with NEITHER CPU field present, which is the
+// grandfather rule's UNSTAMPED case.
 type Meta struct {
 	Files           map[string]FileMeta `json:"files"`
 	Generation      uint64              `json:"generation"`
 	CreatedAtUnixMs int64               `json:"createdAtUnixMs"`
 	CpuVendor       string              `json:"cpuVendor,omitempty"`
 	CpuTemplate     string              `json:"cpuTemplate,omitempty"`
+	RootfsID        string              `json:"rootfsId,omitempty"`
 	Envelope        []byte              `json:"envelope,omitempty"`
 }
 
@@ -438,6 +439,13 @@ func (s *Store) Export(ctx context.Context, prefix, localDir string, files []str
 		}
 		meta.Files[name] = fm
 		totalSize += fm.Size
+		if name == "rootfsid" {
+			rootfsID, rerr := os.ReadFile(path)
+			if rerr != nil {
+				return 0, false, fmt.Errorf("store: read artifact rootfsid: %w", rerr)
+			}
+			meta.RootfsID = strings.TrimSpace(string(rootfsID))
+		}
 	}
 	var opts ExportOptions
 	if len(options) > 0 {
@@ -820,27 +828,28 @@ func (s *Store) ListRefs(ctx context.Context, prefix string, limit int) (refs []
 }
 
 // ArtifactInfo reports completeness-marker fields used by list and restore:
-// created-at, summed file size, vendor stamp, generation, and opaque envelope.
+// created-at, summed file size, vendor stamp, rootfs UUID, generation, and
+// opaque envelope.
 //
 // Returned flat rather than as a Meta so callers depend only on the fields they
 // consume. Same contract as getMeta: an absent marker is (false, ...) with a nil
 // error, so an incomplete artifact reads as not present.
-func (s *Store) ArtifactInfo(ctx context.Context, prefix string) (present bool, createdAtUnixMs int64, sizeBytes uint64, cpuVendor, cpuTemplate string, generation uint64, envelope []byte, err error) {
+func (s *Store) ArtifactInfo(ctx context.Context, prefix string) (present bool, createdAtUnixMs int64, sizeBytes uint64, cpuVendor, cpuTemplate, rootfsID string, generation uint64, envelope []byte, err error) {
 	if s == nil {
-		return false, 0, 0, "", "", 0, nil, nil
+		return false, 0, 0, "", "", "", 0, nil, nil
 	}
 	ok, meta, merr := s.getMeta(ctx, prefix)
 	if merr != nil {
-		return false, 0, 0, "", "", 0, nil, merr
+		return false, 0, 0, "", "", "", 0, nil, merr
 	}
 	if !ok {
-		return false, 0, 0, "", "", 0, nil, nil
+		return false, 0, 0, "", "", "", 0, nil, nil
 	}
 	var total int64
 	for _, fm := range meta.Files {
 		total += fm.Size
 	}
-	return true, meta.CreatedAtUnixMs, uint64(total), meta.CpuVendor, meta.CpuTemplate, meta.Generation, append([]byte(nil), meta.Envelope...), nil
+	return true, meta.CreatedAtUnixMs, uint64(total), meta.CpuVendor, meta.CpuTemplate, meta.RootfsID, meta.Generation, append([]byte(nil), meta.Envelope...), nil
 }
 
 // ArtifactFileSHA256 reports the checksum recorded for one file in an
