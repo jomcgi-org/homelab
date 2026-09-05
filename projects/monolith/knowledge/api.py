@@ -17,6 +17,7 @@ from knowledge.extraction import (
     KG_JOB_KIND,
 )
 from knowledge.gardener import MAX_GARDENER_RETRIES
+from knowledge.recall import attach_recall
 from knowledge.store import KnowledgeStore  # re-exported for cross-domain typing
 
 if TYPE_CHECKING:
@@ -28,6 +29,7 @@ __all__ = [
     "ExtractionOutputInvalid",
     "EXTRACTION_VERSION",
     "KG_JOB_KIND",
+    "attach_recall",
     "get_store",
     "search_notes",
     "search_public_chunks",

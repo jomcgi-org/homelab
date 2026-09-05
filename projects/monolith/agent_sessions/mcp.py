@@ -35,6 +35,7 @@ from core.mcp_app import mcp
 from faas.embervm_client import EmberVMTransportError
 from framework import log_task_exception
 from goosecracker.api import REPO_CATALOG
+from knowledge.api import attach_recall
 from agent_sessions.rationale import parse_rationale
 from auth.api import Authority, current_principal
 
@@ -231,12 +232,14 @@ def _persist_session(
     *,
     discord_thread: str | None = None,
     system_prompt: str | None = None,
+    prompt: str | None = None,
     reasoning: bool = False,
     workflow_id: str | None = None,
     triggered_by: str | None = None,
     node_key: str | None = None,
     node_attempt: int | None = None,
 ) -> AgentSession:
+    system_prompt = attach_recall(system_prompt, prompt, node_key=node_key)
     with Session(get_engine()) as db_session:
         return store.create_session(
             db_session,
@@ -1003,6 +1006,7 @@ async def monolith_agent_session_start(
         selected_repo,
         discord_thread=None,
         system_prompt=_append_rationale_trailer(voice.VOICE_INSTRUCTION, selected_repo),
+        prompt=prompt,
         # Unset means decide from repo presence, matching the /agents route.
         reasoning=bool(selected_repo) if reasoning is None else reasoning,
     )

@@ -4531,6 +4531,18 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_recall_test",
+    srcs = ["knowledge/recall_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "knowledge_gate_calibration_test",
     srcs = ["knowledge/gate_calibration_test.py"],
     data = [

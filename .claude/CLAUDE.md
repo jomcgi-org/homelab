@@ -167,6 +167,11 @@ it as a scratchpad of operational leads with a short half-life.
   that smells like it has been hit before: a deploy that will not roll, a red
   gate, a wedged control plane. The KG is write-heavy and read-cold, and
   re-deriving a fact someone already verified is the expensive failure.
+- Ember sessions get a recall block in their system prompt at creation
+  (`knowledge/recall.py`, flag `knowledge.recall.enabled`): top facts by
+  embedding similarity, repo-scoped, each marked with its `verification_state`.
+  Treat them as leads to confirm. The Mac main loop is not an Ember session and
+  still has to call `search_knowledge` itself.
 - **A local memory is a lead, not a fact.** Before acting on one that names a
   file, function, flag, or number, grep the artifact. A memory records what was
   true when it was written.

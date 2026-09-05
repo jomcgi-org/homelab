@@ -59,6 +59,7 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
         "main",
         model,
         None,
+        prompt=prompt,
     )
     assert row.id is not None
     turn_seq = await asyncio.to_thread(_persist_pending_message, row.id, prompt, model)
@@ -238,6 +239,7 @@ def start_session_for_swarm(
         branch,
         model,
         repo,
+        prompt=prompt,
         reasoning=reasoning,
         workflow_id=workflow_id,
         node_key=node_key,
@@ -343,6 +345,7 @@ async def start_session_for_thread(
         repo,
         discord_thread=thread_id,
         system_prompt=_append_rationale_trailer(None, repo),
+        prompt=prompt,
     )
     await asyncio.to_thread(_persist_pending_message, row.id, prompt, model)
     login = await codex_login_gate(model)
