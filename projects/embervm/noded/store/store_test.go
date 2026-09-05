@@ -605,7 +605,7 @@ func TestExportWritesMetaLast(t *testing.T) {
 	if !fake.has("/embervm/" + prefix + "/" + metaObject) {
 		t.Fatal("meta.json missing after Export")
 	}
-	_, _, _, _, _, rootfsID, _, _, err := s.ArtifactInfo(ctx, prefix)
+	_, _, _, _, _, rootfsID, _, _, _, err := s.ArtifactInfo(ctx, prefix)
 	if err != nil || rootfsID != "550e8400-e29b-41d4-a716-446655440000" {
 		t.Fatalf("ArtifactInfo rootfs ID = (%q, %v), want exported UUID", rootfsID, err)
 	}
@@ -639,6 +639,82 @@ func TestExportSkipsUnchanged(t *testing.T) {
 	}
 	if got := len(fake.putOrderCopy()); got != putsAfterFirst {
 		t.Fatalf("skipped Export issued %d new PUTs, want 0", got-putsAfterFirst)
+	}
+}
+
+func TestExportBackfillsIdentityMetadataOnUnchangedArtifact(t *testing.T) {
+	s, fake := newTestStore(t)
+	ctx := context.Background()
+	dir, names := writeLocalArtifact(t, map[string]string{
+		"imageref": "runtime-python:1",
+		"memfile":  "mem-content",
+		"rootfsid": "550e8400-e29b-41d4-a716-446655440000",
+		"snapfile": "snap-content",
+	})
+	prefix := "base/amd/echo/echo__rootfs"
+
+	if _, skipped, err := s.Export(ctx, prefix, dir, names, 0, 1, "amd", ""); err != nil || skipped {
+		t.Fatalf("first Export = (skipped=%v, %v), want (false, nil)", skipped, err)
+	}
+
+	metaKey := "/embervm/" + prefix + "/" + metaObject
+	var legacy Meta
+	if err := json.Unmarshal(fake.object(metaKey), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	legacy.RootfsID = ""
+	legacy.ImageRef = ""
+	legacyBytes, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.objects[metaKey] = legacyBytes
+	fake.mu.Unlock()
+	putsBefore := len(fake.putOrderCopy())
+
+	moved, skipped, err := s.Export(ctx, prefix, dir, names, 0, 2, "amd", "")
+	if err != nil || !skipped || moved != 0 {
+		t.Fatalf("backfill Export = (moved=%d, skipped=%v, err=%v), want (0, true, nil)", moved, skipped, err)
+	}
+	if got := len(fake.putOrderCopy()); got != putsBefore+1 {
+		t.Fatalf("backfill Export issued %d PUTs, want only one marker PUT", got-putsBefore)
+	}
+
+	_, _, _, _, _, rootfsID, imageRef, _, _, err := s.ArtifactInfo(ctx, prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootfsID != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("backfilled rootfs ID = %q", rootfsID)
+	}
+	if imageRef != "runtime-python:1" {
+		t.Fatalf("backfilled image ref = %q", imageRef)
+	}
+
+	var stale Meta
+	if err := json.Unmarshal(fake.object(metaKey), &stale); err != nil {
+		t.Fatal(err)
+	}
+	stale.RootfsID = "wrong-rootfs-id"
+	staleBytes, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.objects[metaKey] = staleBytes
+	fake.mu.Unlock()
+	putsBefore = len(fake.putOrderCopy())
+
+	if moved, skipped, err = s.Export(ctx, prefix, dir, names, 0, 3, "amd", ""); err != nil || !skipped || moved != 0 {
+		t.Fatalf("replacement backfill Export = (moved=%d, skipped=%v, err=%v), want (0, true, nil)", moved, skipped, err)
+	}
+	if got := len(fake.putOrderCopy()); got != putsBefore+1 {
+		t.Fatalf("replacement backfill issued %d PUTs, want only one marker PUT", got-putsBefore)
+	}
+	_, _, _, _, _, rootfsID, _, _, _, err = s.ArtifactInfo(ctx, prefix)
+	if err != nil || rootfsID != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("replacement backfilled rootfs ID = (%q, %v)", rootfsID, err)
 	}
 }
 
@@ -819,7 +895,7 @@ func TestEncryptedExportRoundTrip(t *testing.T) {
 	if fm.Sha256 != hex.EncodeToString(sum[:]) {
 		t.Fatalf("sha256 = %q, want plaintext digest %q", fm.Sha256, hex.EncodeToString(sum[:]))
 	}
-	_, _, _, _, _, _, _, gotEnvelope, err := s.ArtifactInfo(ctx, prefix)
+	_, _, _, _, _, _, _, _, gotEnvelope, err := s.ArtifactInfo(ctx, prefix)
 	if err != nil || !bytes.Equal(gotEnvelope, envelope) {
 		t.Fatalf("ArtifactInfo envelope = (%q, %v), want (%q, nil)", gotEnvelope, err, envelope)
 	}

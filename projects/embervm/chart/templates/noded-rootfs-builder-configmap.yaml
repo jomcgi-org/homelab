@@ -18,14 +18,16 @@
 # Reproducibility contract (#5771): noded's rootfs identity gate and store
 # hydration depend on the same guest digest baking byte-identically on a fresh
 # node. The filesystem UUID and directory hash seed therefore derive from that
-# digest, and e2fsprogs runs at the fixed 2024-01-01T00:00:00Z epoch. Changing
-# these mkfs flags or the e2fsprogs version changes the bytes. That is safe
-# because the base key includes rootfs identity. On the first roll after this
-# change, every node misses the new bake-format cache name, rebakes once, and
-# relinks BASE_ROOTFS_PATH while leaving the old cache inode untouched for banked
-# sessions. Bases built against an older random-UUID rootfs then fail the identity
-# gate once and rebuild. The reproducibility guarantee starts only after that
-# first roll has completed on every node.
+# digest, and e2fsprogs runs at the fixed 2024-01-01T00:00:00Z epoch. This applies
+# to every NEW bake, whether caused by a new guest digest or a fresh node. A node
+# that already holds the rootfs for a digest keeps that inode, UUID and all, until
+# the digest changes. Replacing it would corrupt banked snapshots that embed its
+# path. Bases include the rootfs UUID in their key, so bases made with an old UUID
+# and bases made with the deterministic UUID never collide. Hydration works
+# between nodes whose rootfs for the digest shares a UUID: every fresh node and
+# every node that has seen a new digest after this change. The first Spot
+# replacement after this lands still rebuilds once because the store holds bases
+# keyed by the old UUID; every later replacement hydrates those new-UUID bases.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -298,8 +300,7 @@ data:
     # no uuidgen dependency in the builder image.
     uuid="${digest:0:8}-${digest:8:4}-4${digest:13:3}-8${digest:17:3}-${digest:20:12}"
     short="${digest:0:12}"
-    readonly bake_format=b2
-    cache="$base_dir/rootfs-$short-$bake_format.ext4"
+    cache="$base_dir/rootfs-$short.ext4"
     if [ -f "$cache" ]; then
       echo "rootfs cache hit $short for $GUEST_IMAGE"
     else
@@ -417,7 +418,7 @@ data:
     else
       echo "rootfs identity warning: failed to read ext4 UUID from $cache" >&2
     fi
-    echo "rootfs identity digest=sha256:$digest bake_format=$bake_format uuid=${actual_uuid:-unavailable} expected_uuid=$uuid path=$cache"
+    echo "rootfs identity digest=sha256:$digest uuid=${actual_uuid:-unavailable} expected_uuid=$uuid path=$cache"
     if [ -n "$actual_uuid" ] && [ "$actual_uuid" != "$uuid" ]; then
       echo "rootfs identity warning: cached rootfs UUID differs from deterministic bake UUID" >&2
     fi

@@ -204,18 +204,18 @@ func (f *fakeStore) ListRefs(_ context.Context, prefix string, limit int) ([]str
 	return refs, false, nil
 }
 
-func (f *fakeStore) ArtifactInfo(_ context.Context, prefix string) (bool, int64, uint64, string, string, string, uint64, []byte, error) {
+func (f *fakeStore) ArtifactInfo(_ context.Context, prefix string) (bool, int64, uint64, string, string, string, string, uint64, []byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	art, ok := f.arts[prefix]
 	if !ok {
-		return false, 0, 0, "", "", "", 0, nil, nil
+		return false, 0, 0, "", "", "", "", 0, nil, nil
 	}
 	var total uint64
 	for _, c := range art.files {
 		total += uint64(len(c))
 	}
-	return true, art.createdAtMs, total, art.cpuVendor, art.cpuTemplate, strings.TrimSpace(art.files["rootfsid"]), art.gen, append([]byte(nil), art.envelope...), nil
+	return true, art.createdAtMs, total, art.cpuVendor, art.cpuTemplate, strings.TrimSpace(art.files["rootfsid"]), strings.TrimSpace(art.files["imageref"]), art.gen, append([]byte(nil), art.envelope...), nil
 }
 
 func (f *fakeStore) ArtifactFileSHA256(_ context.Context, prefix, name string) (bool, bool, string, error) {
@@ -1367,6 +1367,91 @@ func TestRestoreArtifactBaseRootfsMismatchFailsFast(t *testing.T) {
 	fs.mu.Unlock()
 	if restoreCalls != 0 {
 		t.Fatalf("mismatched-base restore downloaded %d times, want 0", restoreCalls)
+	}
+}
+
+func TestRestoreArtifactZipBaseResolvesRuntimeImageRef(t *testing.T) {
+	const (
+		workload = "zip-echo"
+		ref      = "zip-echo__abcdef012345"
+		digest   = "runtime-python:1"
+	)
+
+	t.Run("matching UUID accepted without workload image ref", func(t *testing.T) {
+		fs := newFakeStore()
+		s := newStoreTestServer(t, fs)
+		rootfs := writeExt4Rootfs(t, t.TempDir(), "runtime.ext4", testRootfsUUIDA)
+		s.registry.sync([]workloadEntry{
+			{Workload: workload},
+			{Workload: "image:" + digest, ImageRef: digest, RootfsRef: rootfs},
+		})
+		prefix := "base/amd/" + workload + "/" + ref
+		fs.seedArtifact(prefix, map[string]string{
+			"imageref": digest, "memfile": "mem", "rootfsid": testRootfsUUIDA,
+			"rootfspath": rootfs, "snapfile": "snap",
+		}, 0, "amd", "")
+
+		resp, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{
+			Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
+			Vendor:   "amd",
+		})
+		if err != nil {
+			t.Fatalf("RestoreArtifact(zip base): %v", err)
+		}
+		if !resp.GetAccepted() {
+			t.Fatalf("RestoreArtifact(zip base) = %#v, want accepted", resp)
+		}
+	})
+
+	t.Run("mismatched UUID refused", func(t *testing.T) {
+		fs := newFakeStore()
+		s := newStoreTestServer(t, fs)
+		rootfs := writeExt4Rootfs(t, t.TempDir(), "runtime.ext4", testRootfsUUIDB)
+		s.registry.sync([]workloadEntry{
+			{Workload: workload},
+			{Workload: "image:" + digest, ImageRef: digest, RootfsRef: rootfs},
+		})
+		prefix := "base/amd/" + workload + "/" + ref
+		fs.seedArtifact(prefix, map[string]string{
+			"imageref": digest, "memfile": "mem", "rootfsid": testRootfsUUIDA,
+			"rootfspath": rootfs, "snapfile": "snap",
+		}, 0, "amd", "")
+
+		_, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{
+			Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
+			Vendor:   "amd",
+		})
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("RestoreArtifact(zip mismatch) code = %v, want FailedPrecondition; err = %v", status.Code(err), err)
+		}
+		if strings.Contains(err.Error(), "no current rootfs") {
+			t.Fatalf("zip restore used workload-keyed rootfs resolution: %v", err)
+		}
+	})
+}
+
+func TestRestoreArtifactBaseUnknownStoredRootfsIDIsAccepted(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	workload := "bazel-query"
+	ref := "bazel-query__legacy"
+	digest := "sha256:runtime-bazel"
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: rootfs}})
+	prefix := "base/amd/" + workload + "/" + ref
+	fs.seedArtifact(prefix, map[string]string{
+		"imageref": digest, "memfile": "mem", "rootfspath": rootfs, "snapfile": "snap",
+	}, 0, "amd", "")
+
+	resp, err := s.RestoreArtifact(context.Background(), &nodev1.RestoreArtifactRequest{
+		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},
+		Vendor:   "amd",
+	})
+	if err != nil {
+		t.Fatalf("RestoreArtifact(unknown stored rootfs ID): %v", err)
+	}
+	if !resp.GetAccepted() {
+		t.Fatalf("RestoreArtifact(unknown stored rootfs ID) = %#v, want accepted", resp)
 	}
 }
 

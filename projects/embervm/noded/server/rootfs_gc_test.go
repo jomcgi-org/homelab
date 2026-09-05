@@ -106,40 +106,85 @@ func TestWriteAndReadBaseRootfsID(t *testing.T) {
 }
 
 func TestBuildBasesFailWhenRootfsNotExt4(t *testing.T) {
-	snapshotRoot := t.TempDir()
-	rootfs := filepath.Join(t.TempDir(), "rootfs.img")
-	if err := os.WriteFile(rootfs, make([]byte, ext4HeaderSize), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	baseKey := baseKeyFor("echo", "img:1", "r1", "", "not-an-ext4-rootfs")
-	writeBundleFiles(t, filepath.Join(snapshotRoot, "bases", baseKey), map[string]string{
-		"memfile":  "mem",
-		"snapfile": "snap",
-	})
-	s := New(Options{
-		Config: config.Config{
-			Arch: "amd64", Node: "node-4", SnapshotRoot: snapshotRoot,
-			BootReadyTimeout: time.Second,
-			Images:           map[string]config.Image{"img:1": {RootfsPath: rootfs}},
+	for _, tt := range []struct {
+		name       string
+		request    *nodev1.BuildBaseRequest
+		failedKey  func() string
+		imageRef   string
+		wantErrSub string
+	}{
+		{
+			name: "image lane",
+			request: &nodev1.BuildBaseRequest{
+				Trace:            &nodev1.Trace{Workload: "echo-image"},
+				ImageRef:         "img:1",
+				WorkloadRevision: "r1",
+				ReadyPath:        "/shim/ready",
+				Resources:        &nodev1.ResourceSpec{Vcpus: 1, MemMib: 128},
+			},
+			failedKey:  func() string { return baseKeyFor("echo-image", "img:1", "r1", "", "") },
+			imageRef:   "img:1",
+			wantErrSub: "read rootfs UUID for image",
 		},
-		Driver:         &fakeDriver{},
-		Transport:      &fakeTransport{},
-		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return &fakeDriver{} },
-		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+		{
+			name: "zip lane",
+			request: &nodev1.BuildBaseRequest{
+				Trace:     &nodev1.Trace{Workload: "echo-zip"},
+				ReadyPath: "/shim/ready",
+				Resources: &nodev1.ResourceSpec{Vcpus: 1, MemMib: 128},
+				Source: &nodev1.BuildBaseRequest_Zip{Zip: &nodev1.ZipSource{
+					RuntimeImageRef: "runtime-python:1",
+					ArchiveUrl:      "http://unused.invalid/archive.zip",
+					ArchiveSha256:   "archive-sha",
+				}},
+			},
+			failedKey:  func() string { return baseKeyForZip("echo-zip", "runtime-python:1", "archive-sha", "", "") },
+			imageRef:   "runtime-python:1",
+			wantErrSub: "read rootfs UUID for runtime image",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rootfs := filepath.Join(t.TempDir(), "rootfs.img")
+			if err := os.WriteFile(rootfs, make([]byte, ext4HeaderSize), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			s := New(Options{
+				Config: config.Config{
+					Arch: "amd64", Node: "node-4", SnapshotRoot: t.TempDir(),
+					BootReadyTimeout: time.Second,
+					Images:           map[string]config.Image{tt.imageRef: {RootfsPath: rootfs}},
+				},
+				Driver:         &fakeDriver{},
+				Transport:      &fakeTransport{},
+				NewBuildDriver: func(BuildDriverSpec) BuildDriver { return &fakeDriver{} },
+				Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+			})
 
-	_, err := s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
-		Trace:            &nodev1.Trace{Workload: "echo"},
-		ImageRef:         "img:1",
-		WorkloadRevision: "r1",
-		ReadyPath:        "/shim/ready",
-		Resources:        &nodev1.ResourceSpec{Vcpus: 1, MemMib: 128},
-	})
-	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "read rootfs UUID") {
-		t.Fatalf("BuildBase error = %v, want rootfs identity FailedPrecondition", err)
-	}
-	if base, ok := s.bases.get(baseKey); ok {
-		t.Fatalf("base = %+v, want no registry entry when rootfs identity cannot key the build", base)
+			_, err := s.BuildBase(context.Background(), tt.request)
+			if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), tt.wantErrSub) {
+				t.Fatalf("BuildBase error = %v, want rootfs identity FailedPrecondition", err)
+			}
+			base, ok := s.bases.get(tt.failedKey())
+			if !ok || base.state != nodev1.BaseBuildState_BASE_BUILD_STATE_FAILED {
+				t.Fatalf("failed base = %+v, ok=%v, want FAILED registry entry", base, ok)
+			}
+			if !strings.Contains(base.buildErr, tt.wantErrSub) {
+				t.Fatalf("failed base error = %q, want %q", base.buildErr, tt.wantErrSub)
+			}
+			if got := s.nodeStatus().GetBuildError(); !strings.Contains(got, tt.wantErrSub) {
+				t.Fatalf("NodeStatus build_error = %q, want %q", got, tt.wantErrSub)
+			}
+			foundFailed := false
+			for _, capacity := range s.nodeStatus().GetWorkloads() {
+				if capacity.GetWorkload() == tt.request.GetTrace().GetWorkload() &&
+					capacity.GetBaseState() == nodev1.BaseBuildState_BASE_BUILD_STATE_FAILED {
+					foundFailed = true
+				}
+			}
+			if !foundFailed {
+				t.Fatal("NodeStatus did not retain the workload's FAILED base entry")
+			}
+		})
 	}
 }
 

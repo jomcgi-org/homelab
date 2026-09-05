@@ -51,7 +51,7 @@ type artifactStore interface {
 	// ArtifactInfo reads an artifact's completeness marker once and returns the
 	// fields list and restore consume, including generation and opaque envelope.
 	// It stays flat so callers depend only on the fields they consume.
-	ArtifactInfo(ctx context.Context, prefix string) (present bool, createdAtUnixMs int64, sizeBytes uint64, cpuVendor, cpuTemplate, rootfsID string, generation uint64, envelope []byte, err error)
+	ArtifactInfo(ctx context.Context, prefix string) (present bool, createdAtUnixMs int64, sizeBytes uint64, cpuVendor, cpuTemplate, rootfsID, imageRef string, generation uint64, envelope []byte, err error)
 	ArtifactFileSHA256(ctx context.Context, prefix, name string) (artifactPresent, filePresent bool, checksum string, err error)
 	RewrapEnvelope(ctx context.Context, prefix string, options store.ExportOptions) (changed bool, err error)
 }
@@ -648,7 +648,7 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 	// loss, exactly the failure mode this rule exists to prevent. A present
 	// stamp that matches this node's own sku, or that the node cannot judge
 	// (its own vendor/template undetected), also passes.
-	present, _, _, stampedVendor, stampedTemplate, storedRootfsID, gen, envelope, perr := s.store.ArtifactInfo(ctx, prefix)
+	present, _, _, stampedVendor, stampedTemplate, storedRootfsID, storedImageRef, gen, envelope, perr := s.store.ArtifactInfo(ctx, prefix)
 	if perr == nil && present {
 		if mismatch, got, want := cpuSkuMismatch(stampedVendor, stampedTemplate, s.cfg.CpuVendor, s.cfg.CpuTemplate); mismatch {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: cpu_sku mismatch on restore: artifact stamped %q != node %q", got, want)
@@ -671,8 +671,20 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: restore artifact %q: not present in store", prefix)
 	}
 	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_BASE {
-		img, ok := s.resolveImage(ref.GetWorkload(), "")
+		storedImageRef = strings.TrimSpace(storedImageRef)
+		var img config.Image
+		var ok bool
+		if storedImageRef != "" {
+			img, ok = s.resolveImageByRef(storedImageRef)
+		} else {
+			// Legacy image-lane metadata did not name the runtime ref. Its
+			// workload-keyed registry entry still identifies the current rootfs.
+			img, ok = s.resolveImage(ref.GetWorkload(), "")
+		}
 		if !ok {
+			if storedImageRef != "" {
+				return nil, status.Errorf(codes.FailedPrecondition, "noded: restore base %q: runtime image %q not provisioned on this node", prefix, storedImageRef)
+			}
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: restore base %q: no current rootfs for workload %q", prefix, ref.GetWorkload())
 		}
 		localRootfsID, rootfsErr := ext4UUID(img.RootfsPath)
@@ -681,9 +693,9 @@ func (s *Server) RestoreArtifact(ctx context.Context, req *nodev1.RestoreArtifac
 		}
 		storedRootfsID = strings.TrimSpace(storedRootfsID)
 		if storedRootfsID == "" {
-			return nil, status.Errorf(codes.FailedPrecondition, "noded: restore base %q: store rootfs UUID missing, local rootfs UUID %s", prefix, localRootfsID)
-		}
-		if storedRootfsID != localRootfsID {
+			s.logger.Warn("noded: store rootfs UUID unknown; deferring compatibility check until after download",
+				"artifact", prefix, "localRootfsUUID", localRootfsID)
+		} else if storedRootfsID != localRootfsID {
 			return nil, status.Errorf(codes.FailedPrecondition, "noded: restore base %q: store rootfs UUID %s != local rootfs UUID %s", prefix, storedRootfsID, localRootfsID)
 		}
 	}
@@ -962,7 +974,7 @@ func (s *Server) ListArtifacts(ctx context.Context, req *nodev1.ListArtifactsReq
 
 	entries := make([]*nodev1.ListArtifactsEntry, 0, len(refs))
 	for _, r := range refs {
-		present, createdAt, size, v, tmpl, _, _, _, ierr := s.store.ArtifactInfo(ctx, prefix+"/"+r)
+		present, createdAt, size, v, tmpl, _, _, _, _, ierr := s.store.ArtifactInfo(ctx, prefix+"/"+r)
 		if ierr != nil || !present {
 			continue
 		}
@@ -1779,7 +1791,7 @@ func (s *Server) runRestoreJob(ctx context.Context, job restoreJob) {
 	}()
 
 	var dataKey []byte
-	_, _, _, _, _, _, storedGeneration, envelope, envelopeErr := s.store.ArtifactInfo(ctx, job.prefix)
+	_, _, _, _, _, _, _, storedGeneration, envelope, envelopeErr := s.store.ArtifactInfo(ctx, job.prefix)
 	if envelopeErr != nil {
 		s.logger.Warn("noded: async base restore failed reading artifact metadata", "artifact", job.prefix, "err", envelopeErr)
 		return

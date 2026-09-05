@@ -699,7 +699,11 @@ func (s *Server) buildBaseImage(ctx context.Context, req *nodev1.BuildBaseReques
 	}
 	rootfsID, err := ext4UUID(img.RootfsPath)
 	if err != nil {
-		return nil, status.Errorf(codes.FailedPrecondition, "noded: read rootfs UUID for image %q (workload %q): %v", imageRef, workload, err)
+		buildErr := fmt.Sprintf("read rootfs UUID for image %q (workload %q): %v", imageRef, workload, err)
+		failedKey := baseKeyFor(workload, imageRef, req.GetWorkloadRevision(), s.cfg.CpuVendor, "")
+		s.bases.failBuild(failedKey, workload, img.RootfsPath, req.GetReadyPath(), buildErr)
+		s.signalChange()
+		return nil, status.Error(codes.FailedPrecondition, "noded: "+buildErr)
 	}
 	baseKey := baseKeyFor(workload, imageRef, req.GetWorkloadRevision(), s.cfg.CpuVendor, rootfsID)
 	// The control plane records the resolved image identity; without an OCI pull
@@ -739,7 +743,11 @@ func (s *Server) buildBaseZip(ctx context.Context, req *nodev1.BuildBaseRequest)
 	imageDigest := runtimeRef
 	rootfsID, err := ext4UUID(img.RootfsPath)
 	if err != nil {
-		return nil, status.Errorf(codes.FailedPrecondition, "noded: read rootfs UUID for runtime image %q (workload %q): %v", runtimeRef, workload, err)
+		buildErr := fmt.Sprintf("read rootfs UUID for runtime image %q (workload %q): %v", runtimeRef, workload, err)
+		failedKey := baseKeyForZip(workload, imageDigest, zip.GetArchiveSha256(), s.cfg.CpuVendor, "")
+		s.bases.failBuild(failedKey, workload, img.RootfsPath, req.GetReadyPath(), buildErr)
+		s.signalChange()
+		return nil, status.Error(codes.FailedPrecondition, "noded: "+buildErr)
 	}
 	baseKey := baseKeyForZip(workload, imageDigest, zip.GetArchiveSha256(), s.cfg.CpuVendor, rootfsID)
 
@@ -854,7 +862,7 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 
 	sizeBytes, err := s.runBuild(buildCtx, bd, baseKey, workload, readyPath, archive)
 	if err != nil {
-		s.bases.failBuild(baseKey, err.Error())
+		s.bases.failBuild(baseKey, workload, img.RootfsPath, readyPath, err.Error())
 		s.signalChange()
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: build base %q: %v", baseKey, err)
 	}
@@ -866,7 +874,7 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 	s.writeBaseImageRef(baseKey, imageDigest)
 	s.writeBaseRootfsPath(baseKey, img.RootfsPath)
 	if err := s.writeBaseRootfsID(baseKey, img.RootfsPath); err != nil {
-		s.bases.failBuild(baseKey, err.Error())
+		s.bases.failBuild(baseKey, workload, img.RootfsPath, readyPath, err.Error())
 		s.signalChange()
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: persist base rootfs identity: %v", err)
 	}
@@ -893,7 +901,7 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 				// A handler-artifact write failure fails the build: a serving base that
 				// reports READY without a usable cold-boot artifact would place and then
 				// FAILED_PRECONDITION at StartServing, which is worse than failing here.
-				s.bases.failBuild(baseKey, werr.Error())
+				s.bases.failBuild(baseKey, workload, img.RootfsPath, readyPath, werr.Error())
 				s.signalChange()
 				return nil, status.Errorf(codes.FailedPrecondition, "noded: write serving handler artifact for %q: %v", baseKey, werr)
 			}
@@ -907,7 +915,7 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 			// find for a handler-less base. A marker write failure fails the
 			// build for the same reason as its zip-lane twin above.
 			if werr := s.servingDriver.WriteServingImageMarker(baseKey, imageDigest); werr != nil {
-				s.bases.failBuild(baseKey, werr.Error())
+				s.bases.failBuild(baseKey, workload, img.RootfsPath, readyPath, werr.Error())
 				s.signalChange()
 				return nil, status.Errorf(codes.FailedPrecondition, "noded: write serving image marker for %q: %v", baseKey, werr)
 			}
