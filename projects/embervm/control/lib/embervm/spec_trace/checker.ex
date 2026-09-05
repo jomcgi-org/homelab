@@ -57,7 +57,10 @@ defmodule Embervm.SpecTrace.Checker do
 
   8. **EventuallyDispatched** (bounded liveness): every window of K+1
      consecutive checkpoints in which a task stays queued must contain its
-     dispatch or success when inventory for that task's workload persists.
+     dispatch or success when inventory for that task's workload persists and
+     the workload stays below its concurrency cap. The checkpoint does not yet
+     expose per-principal in-flight shares, so a task blocked only by the
+     per-principal share check remains a known residual for this invariant.
 
   9. **InventoryReconciled**: at a checkpoint, a dispatchable node instance
      reporting `live_vms > 0` must not have an empty control-plane inventory.
@@ -537,46 +540,49 @@ defmodule Embervm.SpecTrace.Checker do
       |> Enum.filter(&(&1["action"] == "checkpoint"))
       |> Enum.sort_by(& &1["mono"])
 
-    cond do
-      not Enum.any?(checkpoints, &checkpoint_has_queued_tasks?/1) ->
-        eventually_dispatched_vacuous(
-          0,
-          "no checkpoint carried queued_tasks (old-format trace)"
-        )
+    verdict =
+      cond do
+        not Enum.any?(checkpoints, &checkpoint_has_queued_tasks?/1) ->
+          eventually_dispatched_vacuous(
+            0,
+            "no checkpoint carried queued_tasks (old-format trace)"
+          )
 
-      true ->
-        # NO early return on `progress == []`. Demand is read as a level at every
-        # checkpoint, so a wedged control plane with durable queued work still
-        # shows the antecedent in every sweep and still fails when its workload
-        # has persistent inventory. A task that drains between sweeps is genuinely
-        # not a wedge, so its absence from K+1 consecutive checkpoints is honest
-        # vacuousness rather than a coverage shortfall.
-        progress_by_task =
-          records
-          |> Enum.filter(&(&1["action"] in ["dispatch_warm", "dispatch_miss", "succeed"]))
-          |> Enum.group_by(&get_in(&1, ["vars", "task_id"]), & &1["mono"])
+        true ->
+          # NO early return on `progress == []`. Demand is read as a level at every
+          # checkpoint, so a wedged control plane with durable queued work still
+          # shows the antecedent in every sweep and still fails when its workload
+          # has persistent inventory. A task that drains between sweeps is genuinely
+          # not a wedge, so its absence from K+1 consecutive checkpoints is honest
+          # vacuousness rather than a coverage shortfall.
+          progress_by_task =
+            records
+            |> Enum.filter(&(&1["action"] in ["dispatch_warm", "dispatch_miss", "succeed"]))
+            |> Enum.group_by(&get_in(&1, ["vars", "task_id"]), & &1["mono"])
 
-        task_ids =
-          checkpoints
-          |> Enum.flat_map(&checkpoint_queued_tasks/1)
-          |> Enum.map(& &1["task_id"])
-          |> Enum.filter(&is_binary/1)
-          |> Enum.uniq()
-          |> Enum.sort()
+          task_ids =
+            checkpoints
+            |> Enum.flat_map(&checkpoint_queued_tasks/1)
+            |> Enum.map(& &1["task_id"])
+            |> Enum.filter(&is_binary/1)
+            |> Enum.uniq()
+            |> Enum.sort()
 
-        windows = Enum.chunk_every(checkpoints, @eventually_dispatched_k + 1, 1, :discard)
+          windows = Enum.chunk_every(checkpoints, @eventually_dispatched_k + 1, 1, :discard)
 
-        results =
-          Enum.map(task_ids, fn task_id ->
-            eventually_dispatched_task_result(
-              task_id,
-              windows,
-              Map.get(progress_by_task, task_id, [])
-            )
-          end)
+          results =
+            Enum.map(task_ids, fn task_id ->
+              eventually_dispatched_task_result(
+                task_id,
+                windows,
+                Map.get(progress_by_task, task_id, [])
+              )
+            end)
 
-        eventually_dispatched_verdict(results, checkpoints)
-    end
+          eventually_dispatched_verdict(results, checkpoints)
+      end
+
+    eventually_dispatched_add_truncation_detail(verdict, checkpoints)
   end
 
   defp eventually_dispatched_task_result(task_id, windows, progress_monos) do
@@ -631,20 +637,31 @@ defmodule Embervm.SpecTrace.Checker do
             :pass
 
           true ->
-            empty_workloads =
+            at_cap? =
               window
               |> Enum.zip(queued)
-              |> Enum.reject(fn {checkpoint, {:queued, workload}} ->
-                checkpoint_workload_inventory?(checkpoint, workload)
+              |> Enum.any?(fn {checkpoint, {:queued, workload}} ->
+                checkpoint_workload_at_cap?(checkpoint, workload)
               end)
-              |> Enum.map(fn {_checkpoint, {:queued, workload}} -> workload end)
-              |> Enum.uniq()
 
-            if empty_workloads == [] do
-              :violation
+            if at_cap? do
+              {:unjudged, :at_cap, "workload at its concurrency cap"}
             else
-              {:unjudged, :inventory,
-               "empty inventory for workload(s) #{Enum.map_join(empty_workloads, ", ", &inspect/1)}"}
+              empty_workloads =
+                window
+                |> Enum.zip(queued)
+                |> Enum.reject(fn {checkpoint, {:queued, workload}} ->
+                  checkpoint_workload_inventory?(checkpoint, workload)
+                end)
+                |> Enum.map(fn {_checkpoint, {:queued, workload}} -> workload end)
+                |> Enum.uniq()
+
+              if empty_workloads == [] do
+                :violation
+              else
+                {:unjudged, :inventory,
+                 "empty inventory for workload(s) #{Enum.map_join(empty_workloads, ", ", &inspect/1)}"}
+              end
             end
         end
     end
@@ -701,7 +718,7 @@ defmodule Embervm.SpecTrace.Checker do
       true ->
         eventually_dispatched_vacuous(
           0,
-          "no task had a persistent-inventory window; unjudged tasks: #{eventually_dispatched_unjudged_detail(unjudged)}"
+          "no task had a judgeable persistent-inventory window; unjudged tasks: #{eventually_dispatched_unjudged_detail(unjudged)}"
         )
     end
   end
@@ -747,6 +764,33 @@ defmodule Embervm.SpecTrace.Checker do
   end
 
   defp checkpoint_workload_inventory?(_checkpoint, _workload), do: false
+
+  defp checkpoint_workload_at_cap?(checkpoint, workload) when is_binary(workload) do
+    case get_in(checkpoint, ["vars", "workload_concurrency", workload]) do
+      %{"inflight" => inflight, "cap" => cap}
+      when is_integer(inflight) and is_integer(cap) ->
+        inflight >= cap
+
+      _ ->
+        false
+    end
+  end
+
+  defp checkpoint_workload_at_cap?(_checkpoint, _workload), do: false
+
+  defp eventually_dispatched_add_truncation_detail(verdict, checkpoints) do
+    truncated_count = Enum.count(checkpoints, &checkpoint_queued_tasks_truncated?/1)
+
+    if truncated_count > 0 do
+      suffix =
+        "queued_tasks truncation hid an unknown number of tasks at #{truncated_count} checkpoint(s); " <>
+          "coverage counts only visible tasks"
+
+      %{verdict | detail: "#{verdict.detail}; #{suffix}"}
+    else
+      verdict
+    end
+  end
 
   defp eventually_dispatched_unjudged_detail([]), do: "none"
 

@@ -487,6 +487,97 @@ defmodule Embervm.SpecTrace.CheckerTest do
       assert verdict.detail =~ "W"
     end
 
+    test "a queued task at the workload concurrency cap is unjudged", %{store: store} do
+      inflight_task_ids = ["task-1", "task-2"]
+      task_id = "task-3"
+
+      checkpoints =
+        for mono <- [10, 20, 30, 40] do
+          eventually_checkpoint(
+            mono,
+            [queued_task(task_id, "bazel-query")],
+            %{"node:bazel-query" => ["primed-clone"]},
+            workload_concurrency:
+              workload_concurrency("bazel-query", length(inflight_task_ids), 2)
+          )
+        end
+
+      verdict = eventually_dispatched_verdict(store, checkpoints)
+
+      assert verdict.verdict == :vacuous
+      assert verdict.coverage == 0
+      assert verdict.detail =~ task_id
+      assert verdict.detail =~ "workload at its concurrency cap"
+    end
+
+    test "a real queued wedge below the workload concurrency cap fails", %{store: store} do
+      task_id = "task-real-wedge"
+
+      checkpoints =
+        for mono <- [10, 20, 30] do
+          eventually_checkpoint(
+            mono,
+            [queued_task(task_id, "W")],
+            %{"node:W" => ["vm-w"]},
+            workload_concurrency: workload_concurrency("W", 0, 2)
+          )
+        end
+
+      verdict = eventually_dispatched_verdict(store, checkpoints)
+
+      assert verdict.verdict == :fail
+      assert verdict.coverage == 1
+      assert verdict.detail =~ task_id
+    end
+
+    test "checkpoints without workload concurrency testimony retain prior judgement", %{store: store} do
+      task_id = "task-old-concurrency-format"
+
+      checkpoints =
+        for mono <- [10, 20, 30] do
+          eventually_checkpoint(
+            mono,
+            [queued_task(task_id, "W")],
+            %{"node:W" => ["vm-w"]}
+          )
+        end
+
+      verdict = eventually_dispatched_verdict(store, checkpoints)
+
+      assert verdict.verdict == :fail
+      assert verdict.coverage == 1
+      assert verdict.detail =~ task_id
+    end
+
+    test "truncation marks a judged visible-task denominator as partial", %{store: store} do
+      alpha_tasks = for index <- 1..260, do: queued_task("alpha-#{index}", "alpha")
+      zulu_tasks = for index <- 1..5, do: queued_task("zulu-#{index}", "zulu")
+
+      # The emitter orders alpha ahead of zulu, then records only the first 256
+      # tasks. The remaining alpha tasks and every zulu task are unknowable to
+      # the checker from these checkpoints.
+      visible_tasks = Enum.take(alpha_tasks ++ zulu_tasks, 256)
+
+      checkpoints =
+        for mono <- [1_000, 2_000, 3_000] do
+          eventually_checkpoint(
+            mono,
+            visible_tasks,
+            %{"node:alpha" => ["vm-alpha"]},
+            truncated: true,
+            workload_concurrency: workload_concurrency("alpha", 0, 300)
+          )
+        end
+
+      verdict = eventually_dispatched_verdict(store, checkpoints)
+
+      assert verdict.verdict == :fail
+      assert verdict.coverage == 256
+      assert verdict.detail =~ "truncation hid an unknown number of tasks at 3 checkpoint(s)"
+      assert verdict.detail =~ "coverage counts only visible tasks"
+      refute Enum.any?(visible_tasks, &String.starts_with?(&1["task_id"], "zulu-"))
+    end
+
     test "a task omitted from a truncated checkpoint is unjudged", %{store: store} do
       task_id = "task-truncated"
 
@@ -499,8 +590,9 @@ defmodule Embervm.SpecTrace.CheckerTest do
 
       assert verdict.verdict == :vacuous
       assert verdict.coverage == 0
-      assert verdict.detail =~ "truncation"
+      assert verdict.detail =~ "queued_tasks truncation prevented judgement"
       assert verdict.detail =~ task_id
+      assert verdict.detail =~ "coverage counts only visible tasks"
     end
 
     test "checkpoints without queued testimony are old-format vacuous", %{store: store} do
@@ -921,6 +1013,15 @@ defmodule Embervm.SpecTrace.CheckerTest do
         vars
       end
 
+    vars =
+      case Keyword.fetch(opts, :workload_concurrency) do
+        {:ok, workload_concurrency} ->
+          Map.put(vars, "workload_concurrency", workload_concurrency)
+
+        :error ->
+          vars
+      end
+
     eventually_record("checkpoint", mono, vars)
   end
 
@@ -929,10 +1030,18 @@ defmodule Embervm.SpecTrace.CheckerTest do
   end
 
   defp eventually_queue_edge(mono, task_id, workload) do
-    eventually_record("queue_task", mono, %{"task_id" => task_id, "workload" => workload})
+    eventually_checkpoint(
+      mono,
+      [queued_task(task_id, workload)],
+      %{"node:#{workload}" => ["vm-#{workload}"]}
+    )
   end
 
   defp queued_task(task_id, workload), do: %{"task_id" => task_id, "workload" => workload}
+
+  defp workload_concurrency(workload, inflight, cap) do
+    %{workload => %{"inflight" => inflight, "cap" => cap}}
+  end
 
   defp eventually_record(action, mono, vars) do
     %{
