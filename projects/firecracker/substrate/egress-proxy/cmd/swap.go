@@ -619,14 +619,17 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, guestDeadline i
 		// from whichever form arrived, so the header survives either way.
 		closeAfter := req.Close
 		if sec.PlaintextUpstream {
-			// One request per connection on this lane. headerTimeout closes a
-			// kept-alive connection 30s after its last request, and the guest-side
-			// forwarder does not surface that close until the client's next write,
-			// so a pooled connection dies under an MCP client's first tool call
-			// after a pause (seen with both the claude and codex CLIs, 2026-09-05;
-			// the curl probes that always worked dialled afresh every time).
-			// Telling both ends the connection is done makes every client dial
-			// afresh, which costs one local connect per call.
+			// One request per connection on this lane. Measured 2026-09-05 from a
+			// guest: a second request on a kept-alive connection succeeded after 0s
+			// and 3s idle and died after 8s with "remote end closed connection
+			// without response". The in-cluster upstream (uvicorn, 5s keep-alive)
+			// had closed its side, this pump reused the dead socket, and the
+			// guest-side forwarder only surfaced the close on the client's next
+			// write; headerTimeout would have done the same at 30s. Both the claude
+			// and codex MCP clients pool the handshake connection and issue the
+			// first tool call after the model has thought, so that call failed
+			// (codex's rmcp client does not retry). Telling both ends the connection
+			// is done makes every client dial afresh, one local connect per call.
 			req.Close = true
 			closeAfter = true
 		}
