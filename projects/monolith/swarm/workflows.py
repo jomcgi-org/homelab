@@ -5,6 +5,7 @@ import logging
 
 from dbos import DBOS
 
+from agent_sessions.constants import INTERRUPTED_TERMINAL_REASONS
 from swarm import config
 from swarm.policy import (
     implementer_prompt,  # noqa: F401 - retained for policy seam compatibility
@@ -114,7 +115,12 @@ def _await_turn(session_id: int, after_seq: int, timeout_s: int) -> dict | None:
     waited = 0
     while waited < timeout_s:
         turn = poll_turn(session_id, after_seq)
-        if turn is not None:
+        # An interrupted attempt does not complete the workflow node or move
+        # after_seq. Its replacement arrives at the same sequence.
+        if (
+            turn is not None
+            and turn.get("terminal_reason") not in INTERRUPTED_TERMINAL_REASONS
+        ):
             return turn
         DBOS.sleep(POLL_INTERVAL_SECONDS)
         waited += POLL_INTERVAL_SECONDS

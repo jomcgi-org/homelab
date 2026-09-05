@@ -9,7 +9,12 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from agent_sessions import mcp, model_family, store, voice
 from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
-from agent_sessions.transport import EmberSession, EmberSessionGone, Turn
+from agent_sessions.transport import (
+    EmberBrickGone,
+    EmberSession,
+    EmberSessionGone,
+    Turn,
+)
 from faas.embervm_client import EmberVMTransportError
 
 
@@ -295,6 +300,7 @@ def test_same_family_override_persists_actual_model_with_fallback(
         progress_token=None,
         system_prompt=None,
         reasoning=False,
+        **_kwargs,
     ):
         delivered_models.append(model)
         turn, ember = _completed_delivery(message)
@@ -337,6 +343,7 @@ def test_session_start_returns_immediately(monkeypatch, session):
         progress_token=None,
         system_prompt=None,
         reasoning=False,
+        **_kwargs,
     ):
         started.set()
         await asyncio.Event().wait()
@@ -375,6 +382,7 @@ def test_session_start_happy_path_persists_result(monkeypatch, session):
         progress_token=None,
         system_prompt=None,
         reasoning=False,
+        **_kwargs,
     ):
         return _completed_delivery(message)
 
@@ -416,6 +424,7 @@ def test_failed_first_turn_does_not_wedge_session(monkeypatch, session):
         restore_from=None,
         on_create=None,
         progress_token=None,
+        **_kwargs,
     ):
         raise RuntimeError("first turn failed")
 
@@ -451,6 +460,7 @@ def test_concurrent_executors_on_first_turn_run_once(monkeypatch, session):
         progress_token=None,
         system_prompt=None,
         reasoning=False,
+        **_kwargs,
     ):
         executions.append(message)
         await asyncio.sleep(0.01)
@@ -815,6 +825,7 @@ def _completed_turn(message: str) -> Turn:
         ("completed", "completed"),  # claude lane
         ("end_turn", "completed"),  # claude lane, raw stream value
         ("stop", "completed"),  # pi lane passes Spark's stopReason through
+        ("interrupted", "recovering"),
         ("error", "warn"),
         (None, "warn"),  # transport died mid-turn
         ("max_tokens", "warn"),  # truncated turn deserves attention
@@ -827,6 +838,132 @@ def test_turn_status_accepts_every_lane_clean_reason(terminal_reason, expected):
 
 def _completed_delivery(message: str) -> tuple[Turn, EmberSession]:
     return _completed_turn(message), EmberSession("ember-1", "token-1", None)
+
+
+def test_brick_gone_releases_claim_and_records_interrupted_turn(monkeypatch, session):
+    row = store.create_session(session, "brick-gone", "/workspace", "main")
+    pending = store.create_pending_message(session, row.id, "finish the task")
+
+    async def deliver(*_args, **_kwargs):
+        raise EmberBrickGone("lineage-1", "failed", "spot-node-1")
+
+    monkeypatch.setattr(mcp._transport, "deliver", deliver)
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+
+    asyncio.run(mcp._execute_pending_message(row.id))
+
+    session.expire_all()
+    interrupted = store.get_turn(session, row.id, pending.seq)
+    retry = store.get_pending_message(session, row.id, pending.seq)
+    assert interrupted.terminal_reason == "interrupted"
+    assert interrupted.stop_reason == "brick_preempted"
+    assert store.get_session(session, row.id).status == "recovering"
+    assert retry.claimed_by_replica is None
+    assert retry.dispatch_count == 1
+
+
+def test_pending_sweep_redispatches_interrupted_brick_gone(monkeypatch, session):
+    row = store.create_session(session, "brick-sweep", "/workspace", "main")
+    pending = store.create_pending_message(session, row.id, "finish the task")
+
+    async def deliver(*_args, **_kwargs):
+        raise EmberBrickGone("lineage-1", "failed", "spot-node-1")
+
+    monkeypatch.setattr(mcp._transport, "deliver", deliver)
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+    asyncio.run(mcp._execute_pending_message(row.id))
+
+    scheduled = []
+    sleeps = 0
+
+    async def no_recovery():
+        return 0
+
+    async def one_sweep(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps > 1:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(mcp, "_reconcile_zombie_sessions", no_recovery)
+    monkeypatch.setattr(mcp, "_reclaim_stale_claims_sync", lambda: 0)
+    monkeypatch.setattr(mcp, "_schedule_next_message", scheduled.append)
+    monkeypatch.setattr(mcp.asyncio, "sleep", one_sweep)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(mcp._sweep_orphaned_pending_messages())
+
+    assert scheduled == [row.id]
+    session.expire_all()
+    assert store.get_pending_message(session, row.id, pending.seq) is not None
+
+
+def test_interrupted_brick_gone_is_replaced_by_success(monkeypatch, session):
+    row = store.create_session(session, "brick-retry", "/workspace", "main")
+    pending = store.create_pending_message(session, row.id, "finish the task")
+    session_id = row.id
+    turn_seq = pending.seq
+    row.recovery_workspace_loss = True
+    session.add(row)
+    session.commit()
+    attempts = 0
+
+    async def deliver(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise EmberBrickGone("lineage-1", "failed", "spot-node-1")
+        return _completed_delivery("finish the task")
+
+    async def no_notify(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(mcp._transport, "deliver", deliver)
+    monkeypatch.setattr(mcp, "_notify_terminal", no_notify)
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+
+    asyncio.run(mcp._execute_pending_message(session_id))
+
+    session.expire_all()
+    retry = store.get_pending_message(session, session_id, turn_seq)
+    assert retry is not None
+    assert retry.dispatch_count == 1
+
+    asyncio.run(mcp._execute_pending_message(session_id))
+
+    session.expire_all()
+    completed = store.get_turn(session, session_id, turn_seq)
+    assert attempts == 2
+    assert completed.terminal_reason == "completed"
+    recovered = store.get_session(session, session_id)
+    assert recovered.status == "completed"
+    assert recovered.recovery_workspace_loss is None
+    assert recovered.recovery_completed_at is not None
+    assert store.get_pending_message(session, session_id, turn_seq) is None
+
+
+def test_brick_gone_exhaustion_falls_through_to_warn(monkeypatch, session):
+    row = store.create_session(session, "brick-exhausted", "/workspace", "main")
+    pending = store.create_pending_message(session, row.id, "finish the task")
+    session_id = row.id
+    turn_seq = pending.seq
+    pending.dispatch_count = store.MAX_PENDING_DISPATCHES
+    session.add(pending)
+    session.commit()
+    store.mark_turn_interrupted_sync(session_id, turn_seq)
+
+    async def deliver(*_args, **_kwargs):
+        raise EmberBrickGone("lineage-1", "failed", "spot-node-1")
+
+    monkeypatch.setattr(mcp._transport, "deliver", deliver)
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
+    asyncio.run(mcp._execute_pending_message(session_id))
+
+    session.expire_all()
+    failed = store.get_turn(session, session_id, turn_seq)
+    assert failed.terminal_reason == "error"
+    assert store.get_session(session, session_id).status == "warn"
+    assert store.get_pending_message(session, session_id, turn_seq) is None
 
 
 @pytest.mark.parametrize("repo", ["jomcgi/homelab", None])
@@ -857,6 +994,8 @@ def test_executor_passes_session_repo_to_transport(monkeypatch, session, repo):
     asyncio.run(mcp._execute_pending_message(row.id))
 
     assert len(deliver_kwargs) == 1
+    assert deliver_kwargs[0]["agent_session_id"] == row.id
+    assert deliver_kwargs[0]["dispatch_count"] == 1
     if repo is None:
         assert "repo" not in deliver_kwargs[0]
         assert "branch" not in deliver_kwargs[0]
@@ -880,6 +1019,7 @@ def test_pending_message_executed_in_background(monkeypatch, session):
         progress_token=None,
         system_prompt=None,
         reasoning=False,
+        **_kwargs,
     ):
         return _completed_delivery(message)
 
@@ -925,6 +1065,7 @@ def test_failed_delivery_clears_reused_ember_session(monkeypatch, session):
         progress_token=None,
         system_prompt=None,
         reasoning=False,
+        **_kwargs,
     ):
         raise EmberSessionGone("terminal invoke failure")
 
@@ -965,6 +1106,7 @@ def test_clear_ember_session_not_called_when_fresh_binding_persisted(
         progress_token=None,
         system_prompt=None,
         reasoning=False,
+        **_kwargs,
     ):
         heir = EmberSession("heir-id", "heir-token", None)
         if on_create is not None:
@@ -999,6 +1141,7 @@ def test_failed_guest_delivery_does_not_clear_reused_session(monkeypatch, sessio
         restore_from=None,
         on_create=None,
         progress_token=None,
+        **_kwargs,
     ):
         raise EmberVMTransportError("422 Unprocessable Entity")
 
@@ -1103,6 +1246,7 @@ def test_recreated_ember_session_adopts_new_cli_session_id(monkeypatch, session)
         restore_from=None,
         on_create=None,
         progress_token=None,
+        **_kwargs,
     ):
         return _completed_turn("hello")._replace(session_id="cli-new"), new_ember
 
@@ -1285,6 +1429,7 @@ def test_send_after_cleared_binding_restores_from_prior_lineage(monkeypatch, ses
         repo=None,
         branch=None,
         progress_token=None,
+        **_kwargs,
     ):
         deliver_calls.append(
             {
@@ -1349,6 +1494,7 @@ def test_send_with_live_binding_ignores_prior_lineage(monkeypatch, session):
         repo=None,
         branch=None,
         progress_token=None,
+        **_kwargs,
     ):
         deliver_calls.append(
             {
@@ -1407,6 +1553,7 @@ def test_two_sends_are_serialized(monkeypatch, session):
         repo=None,
         branch=None,
         progress_token=None,
+        **_kwargs,
     ):
         execution_order.append(message)
         await asyncio.sleep(0.01)
@@ -1455,6 +1602,7 @@ def test_concurrent_replicas_execute_pending_message_once(monkeypatch, session):
         repo=None,
         branch=None,
         progress_token=None,
+        **_kwargs,
     ):
         executions.append(message)
         await asyncio.sleep(0.01)

@@ -7,6 +7,7 @@ import os
 import httpx
 from dbos import DBOS
 
+from agent_sessions.constants import INTERRUPTED_TERMINAL_REASONS
 from swarm.tracing import set_attributes, tracer
 
 
@@ -278,6 +279,18 @@ def poll_turn(session_id: int, after_seq: int) -> dict | None:
             ).first()
             if turn is None:
                 set_attributes(span, {"swarm.turn_found": False})
+                return None
+            # An interrupted row is an in-progress preemption marker. The
+            # pending message with this same sequence will replace it.
+            if turn.terminal_reason in INTERRUPTED_TERMINAL_REASONS:
+                set_attributes(
+                    span,
+                    {
+                        "swarm.turn_found": False,
+                        "swarm.turn_seq": turn.seq,
+                        "swarm.terminal_reason": turn.terminal_reason,
+                    },
+                )
                 return None
             tool_calls, input_tokens = _usage_counts(turn.usage_json)
             set_attributes(

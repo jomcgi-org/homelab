@@ -914,6 +914,22 @@ def test_pinned_review_cycle_bound_survives_config_change(monkeypatch):
     assert len(calls) == 4
 
 
+def test_await_turn_keeps_waiting_after_interrupted(monkeypatch):
+    turns = [
+        {"seq": 1, "terminal_reason": "interrupted"},
+        {"seq": 1, "terminal_reason": "completed", "result_text": "done"},
+    ]
+    sleeps = []
+
+    monkeypatch.setattr(workflows, "poll_turn", lambda *_args: turns.pop(0))
+    monkeypatch.setattr(workflows.DBOS, "sleep", sleeps.append)
+
+    turn = workflows._await_turn(101, 0, 10)
+
+    assert turn["terminal_reason"] == "completed"
+    assert sleeps == [workflows.POLL_INTERVAL_SECONDS]
+
+
 def test_unparseable_verdict_does_not_trigger_requeue(monkeypatch):
     calls = run(
         monkeypatch,

@@ -54,6 +54,8 @@
   import { sessionTitle } from "./jump.js";
   import {
     defaultSessionView,
+    incrementalAfterSeq,
+    mergeTurns,
     SESSION_VIEW_CONVERSATION,
     SESSION_VIEW_WALKTHROUGH,
     walkthroughTurns,
@@ -243,6 +245,12 @@
     composerModelOverride ?? selectedSession?.model ?? "",
   );
   const eligibleWalkthroughTurns = $derived(walkthroughTurns(detail?.turns));
+  const latestSelectedTurn = $derived(detail?.turns?.at(-1) ?? null);
+  const selectedDisplayStatus = $derived({
+    ...selectedSession,
+    terminal_reason: latestSelectedTurn?.terminal_reason,
+    stop_reason: latestSelectedTurn?.stop_reason,
+  });
   // Runs and sessions are two collections, not one list with runs bolted on.
   // A session a run spawned is a detail of that run, reachable through it,
   // never a peer of a session you started yourself. Previously a run appeared
@@ -377,9 +385,7 @@
   ) {
     if (id == null) return;
     try {
-      const maxSeq = incremental
-        ? Math.max(0, ...(detail?.turns ?? []).map((turn) => turn.seq))
-        : 0;
+      const maxSeq = incremental ? incrementalAfterSeq(detail?.turns) : 0;
       const suffix = incremental ? `?after_seq=${maxSeq}` : "";
       const response = await fetch(
         `/agents/session/${encodeURIComponent(id)}${suffix}`,
@@ -391,15 +397,7 @@
         detail = incremental
           ? {
               session: body.session,
-              turns: [
-                ...(detail?.turns ?? []),
-                ...(body.turns ?? []).filter(
-                  (turn) =>
-                    !(detail?.turns ?? []).some(
-                      (existing) => existing.seq === turn.seq,
-                    ),
-                ),
-              ],
+              turns: mergeTurns(detail?.turns, body.turns),
               pending_queue: body.pending_queue,
             }
           : body;
@@ -1617,10 +1615,7 @@
       String(voiceSessionDetail?.session?.id) === String(sessionId);
     const useIncremental = incremental && sameSession;
     const maxSeq = useIncremental
-      ? Math.max(
-          0,
-          ...(voiceSessionDetail?.turns ?? []).map((turn) => turn.seq),
-        )
+      ? incrementalAfterSeq(voiceSessionDetail?.turns)
       : 0;
     const suffix = useIncremental ? `?after_seq=${maxSeq}` : "";
     const response = await fetch(
@@ -1633,15 +1628,7 @@
     voiceSessionDetail = useIncremental
       ? {
           session: body.session,
-          turns: [
-            ...(voiceSessionDetail?.turns ?? []),
-            ...(body.turns ?? []).filter(
-              (turn) =>
-                !(voiceSessionDetail?.turns ?? []).some(
-                  (existing) => existing.seq === turn.seq,
-                ),
-            ),
-          ],
+          turns: mergeTurns(voiceSessionDetail?.turns, body.turns),
           pending_queue: body.pending_queue,
         }
       : body;
@@ -2166,7 +2153,7 @@
               >
                 <span class="session-title-text">{headerTitle}</span>
                 <span class="session-mobile-meta mono">
-                  {statusLabel(selectedSession)}
+                  {statusLabel(selectedDisplayStatus)}
                   {P.punct.dot}
                   {selectedSession.model ||
                     "luna"}{#if formatRepoContext(selectedSession)}
@@ -2197,7 +2184,7 @@
                 <span class={`pill state-pill ${statusClass(selectedSession)}`}
                   >{statusClass(selectedSession) === "awaiting_login"
                     ? P.labels.awaitingLogin
-                    : statusLabel(selectedSession)}</span
+                    : statusLabel(selectedDisplayStatus)}</span
                 >
               {/if}
               {#if statusClass(selectedSession) === "awaiting_login"}
@@ -2252,7 +2239,12 @@
           </header>
           {#if statusClass(selectedSession) === "recovering"}
             <div class="session-recovery-banner" role="status">
-              Agent recovering from an error.{#if selectedSession.recovery_workspace_loss}
+              {#if latestSelectedTurn?.stop_reason === "brick_preempted"}
+                This agent's VM was reclaimed by the cloud provider. The turn is
+                running again.
+              {:else}
+                Agent recovering from an error.
+              {/if}{#if selectedSession.recovery_workspace_loss}
                 Workspace state may have been lost.
               {/if}
             </div>

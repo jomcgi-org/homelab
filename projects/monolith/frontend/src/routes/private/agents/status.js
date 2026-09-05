@@ -11,6 +11,14 @@ export function statusClass(session) {
 }
 
 export function statusLabel(session) {
+  if (
+    session?.status === "recovering" &&
+    (session?.terminal_reason === "interrupted" ||
+      (session?.terminal_reason == null &&
+        session?.stop_reason === "brick_preempted"))
+  ) {
+    return "Resuming after preemption";
+  }
   if (session?.status === "running") {
     return Number(session?.pending_count) > 0 ? "working" : "running";
   }

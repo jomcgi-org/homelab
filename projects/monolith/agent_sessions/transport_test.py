@@ -8,10 +8,35 @@ import zlib
 
 import httpx
 import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from agent_sessions import transport
+from agent_sessions import store, transport
 from agent_sessions.transport import EmberSessionGone
 from faas.embervm_client import EmberVMTransportError
+
+
+_EXPORTER = InMemorySpanExporter()
+_PROVIDER = TracerProvider()
+_PROVIDER.add_span_processor(SimpleSpanProcessor(_EXPORTER))
+trace.set_tracer_provider(_PROVIDER)
+
+
+@pytest.fixture(autouse=True)
+def _clear_spans():
+    _EXPORTER.clear()
+    yield
+
+
+def _brick_events():
+    return [
+        event
+        for span in _EXPORTER.get_finished_spans()
+        for event in span.events
+        if event.name == "agent_sessions.brick_gone"
+    ]
 
 
 class FakeAsyncClient:
@@ -55,6 +80,27 @@ def _error_response(request: httpx.Request, status_code: int, retryable: bool):
     return httpx.Response(
         status_code,
         json={"error": "error message", "retryable": retryable},
+        request=request,
+    )
+
+
+def _brick_gone_response(
+    request: httpx.Request,
+    *,
+    status_code: int = 503,
+    session_state: str = "failed",
+    lineage_id: str | None = "lineage-1",
+):
+    return httpx.Response(
+        status_code,
+        json={
+            "error": "brick preempted",
+            "reason": "brick_gone",
+            "retryable": True,
+            "lineage_id": lineage_id,
+            "session_state": session_state,
+            "node_id": "spot-node-1",
+        },
         request=request,
     )
 
@@ -967,6 +1013,269 @@ def test_deliver_reused_session_403_with_failing_retry_raises_session_gone(monke
 
     assert len(requests) == 2
     assert isinstance(exc_info.value.__cause__, httpx.HTTPStatusError)
+
+
+@pytest.mark.parametrize("status_code", [200, 418, 503])
+def test_deliver_classifies_brick_gone_at_any_status(monkeypatch, status_code):
+    async def handler(request):
+        return _brick_gone_response(request, status_code=status_code)
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    with pytest.raises(transport.EmberBrickGone) as caught:
+        asyncio.run(
+            client.deliver(
+                transport.EmberSession("s1", "t1", None),
+                "cli-1",
+                "hello",
+                dispatch_count=store.MAX_PENDING_DISPATCHES + 1,
+            )
+        )
+
+    assert caught.value.lineage_id == "lineage-1"
+    assert caught.value.session_state == "failed"
+    assert caught.value.node_id == "spot-node-1"
+    deliver_spans = [
+        span
+        for span in _EXPORTER.get_finished_spans()
+        if span.name == "agent_sessions.deliver"
+    ]
+    assert len(deliver_spans) == 1
+    assert _brick_events()[0].attributes == {
+        "lineage_id": "lineage-1",
+        "dispatch_count": store.MAX_PENDING_DISPATCHES + 1,
+        "outcome": "exhausted",
+    }
+
+
+@pytest.mark.parametrize("session_state", ["banked", "parked"])
+def test_deliver_reissues_banked_or_parked_brick_gone(monkeypatch, session_state):
+    requests = []
+    events = []
+
+    async def handler(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return _brick_gone_response(request, session_state=session_state)
+        return _turn_response(request)
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(
+        transport, "_brick_gone_event", lambda **event: events.append(event)
+    )
+    ember = transport.EmberSession("s1", "t1", None, lineage_id="lineage-1")
+    turn, used = asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            ember, "cli-1", "hello", dispatch_count=1
+        )
+    )
+
+    assert turn.result == "ok"
+    assert used == ember
+    assert len(requests) == 2
+    assert events[0]["outcome"] == "relit"
+
+
+def test_deliver_relight_after_inline_create_keeps_creation_metadata(monkeypatch):
+    requests = []
+    created = transport.EmberSession(
+        "s1", "t1", None, lineage_id="lineage-1", restored=False
+    )
+
+    async def handler(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return _brick_gone_response(request, session_state="parked")
+        return _turn_response(request)
+
+    async def create_session(restore_from=None, model=None):
+        return created
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    monkeypatch.setattr(client, "create_session", create_session)
+
+    turn, used = asyncio.run(client.deliver(None, None, "hello"))
+
+    assert len(requests) == 2
+    assert used == created
+    assert turn.workspace_recovery == {
+        "created": True,
+        "restored": False,
+        "degraded": None,
+    }
+    assert _brick_events()[0].attributes["outcome"] == "relit"
+
+
+def test_deliver_restores_failed_brick_gone(monkeypatch, caplog):
+    requests = []
+    creates = []
+    restored = transport.EmberSession(
+        "s2", "t2", None, lineage_id="lineage-1", restored=True
+    )
+
+    async def handler(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return _brick_gone_response(request)
+        return _turn_response(request)
+
+    async def create_session(restore_from=None, model=None):
+        creates.append((restore_from, model))
+        return restored
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    monkeypatch.setattr(client, "create_session", create_session)
+    turn, used = asyncio.run(
+        client.deliver(
+            transport.EmberSession("s1", "t1", None, lineage_id="lineage-1"),
+            "cli-1",
+            "hello",
+            model="luna",
+            dispatch_count=1,
+        )
+    )
+
+    assert creates == [("lineage-1", "luna")]
+    assert json.loads(requests[1].content)["session_id"] == "cli-1"
+    assert turn.result == "ok"
+    assert used == restored
+    assert _brick_events()[0].attributes["outcome"] == "restored"
+    assert (
+        "agent_sessions.brick_gone session_id=None lineage_id=lineage-1 "
+        "dispatch_count=1 outcome=restored" in caplog.messages
+    )
+
+
+def test_deliver_second_preemption_during_inline_retry_persists_replacement(
+    monkeypatch,
+):
+    requests = []
+    persisted = []
+    replacement = transport.EmberSession(
+        "s2", "t2", None, lineage_id="lineage-1", restored=False
+    )
+
+    async def handler(request):
+        requests.append(request)
+        return _brick_gone_response(request)
+
+    async def create_session(restore_from=None, model=None):
+        return replacement
+
+    async def on_create(ember, cli_for_binding):
+        persisted.append((ember, cli_for_binding))
+
+    _client(monkeypatch, handler)
+    client = transport.EmberVmShimTransport()
+    monkeypatch.setattr(client, "create_session", create_session)
+
+    with pytest.raises(transport.EmberBrickGone):
+        asyncio.run(
+            client.deliver(
+                transport.EmberSession("s1", "t1", None, lineage_id="lineage-1"),
+                "cli-1",
+                "hello",
+                on_create=on_create,
+                dispatch_count=1,
+            )
+        )
+
+    assert len(requests) == 2
+    assert persisted == [(replacement._replace(workspace_lost=True), None)]
+
+
+def test_deliver_recreates_brick_gone_without_lineage(monkeypatch):
+    requests = []
+    persisted = []
+    fresh = transport.EmberSession("s2", "t2", None, lineage_id="lineage-2")
+    events = []
+    creates = []
+
+    async def handler(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return _brick_gone_response(request, lineage_id=None)
+        return _turn_response(request)
+
+    async def create_session(restore_from=None, model=None):
+        assert restore_from is None
+        creates.append(model)
+        return fresh
+
+    async def on_create(ember, cli_for_binding):
+        persisted.append((ember, cli_for_binding))
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(
+        transport, "_brick_gone_event", lambda **event: events.append(event)
+    )
+    client = transport.EmberVmShimTransport()
+    monkeypatch.setattr(client, "create_session", create_session)
+    turn, used = asyncio.run(
+        client.deliver(
+            transport.EmberSession("s1", "t1", None),
+            "cli-1",
+            "hello",
+            model="luna",
+            on_create=on_create,
+            repo="jomcgi/homelab",
+            branch="feature/preemption",
+            dispatch_count=1,
+        )
+    )
+
+    assert persisted[0][0].workspace_lost is True
+    assert persisted[0][1] is None
+    assert turn.workspace_recovery["degraded"] == "brick_preempted"
+    assert used.workspace_lost is True
+    assert creates == ["luna"]
+    assert json.loads(requests[1].content)["repo"] == "jomcgi/homelab"
+    assert json.loads(requests[1].content)["branch"] == "feature/preemption"
+    assert events[0]["outcome"] == "recreated"
+
+
+def test_deliver_brick_gone_dispatch_bound_does_not_recover(monkeypatch):
+    requests = []
+    creates = []
+    events = []
+
+    async def handler(request):
+        requests.append(request)
+        return _brick_gone_response(request)
+
+    async def create_session(restore_from=None, model=None):
+        creates.append(restore_from)
+        return transport.EmberSession("s2", "t2", None)
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(
+        transport, "_brick_gone_event", lambda **event: events.append(event)
+    )
+    client = transport.EmberVmShimTransport()
+    monkeypatch.setattr(client, "create_session", create_session)
+    with pytest.raises(transport.EmberBrickGone):
+        asyncio.run(
+            client.deliver(
+                transport.EmberSession("s1", "t1", None),
+                "cli-1",
+                "hello",
+                agent_session_id=42,
+                dispatch_count=store.MAX_PENDING_DISPATCHES + 1,
+            )
+        )
+
+    assert len(requests) == 1
+    assert creates == []
+    assert events == [
+        {
+            "session_id": 42,
+            "lineage_id": "lineage-1",
+            "dispatch_count": store.MAX_PENDING_DISPATCHES + 1,
+            "outcome": "exhausted",
+        }
+    ]
 
 
 def test_deliver_does_not_retry_reused_session_on_422(monkeypatch):

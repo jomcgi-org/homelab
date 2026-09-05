@@ -888,6 +888,13 @@ def test_terminal_turn_error_notifies_once_and_destroys(monkeypatch):
     assert destroys == [(101, "workflow-1:qwen-drain:terminal-error")]
 
 
+def test_interrupted_turn_is_never_treated_as_completed():
+    with pytest.raises(RuntimeError, match="interrupted turn cannot be completed"):
+        drainer._completed_output(
+            {"result_text": "preempted", "terminal_reason": "interrupted"}
+        )
+
+
 def test_timeout_completes_error_notifies_once_and_destroys(monkeypatch):
     job = {"name": "slow", "payload": {"prompt": "take your time"}}
 

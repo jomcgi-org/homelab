@@ -1,11 +1,31 @@
 import { describe, expect, test } from "vitest";
 import {
   defaultSessionView,
+  incrementalAfterSeq,
+  mergeTurns,
   SESSION_VIEW_CONVERSATION,
   SESSION_VIEW_WALKTHROUGH,
   turnHasWalkthrough,
   walkthroughTurns,
 } from "./session-view.js";
+
+test("incremental polling refetches and replaces an interrupted tail", () => {
+  const interrupted = {
+    seq: 2,
+    terminal_reason: "interrupted",
+    result_text: "Resuming after preemption",
+  };
+  const completed = {
+    seq: 2,
+    terminal_reason: "completed",
+    result_text: "done",
+  };
+
+  expect(incrementalAfterSeq([{ seq: 1 }, interrupted])).toBe(1);
+  expect(
+    mergeTurns([{ seq: 1 }, interrupted], [completed, { seq: 3 }]),
+  ).toEqual([{ seq: 1 }, completed, { seq: 3 }]);
+});
 
 const walkthroughTurn = {
   seq: 2,

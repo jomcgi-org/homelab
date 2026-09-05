@@ -7412,6 +7412,7 @@ py_test(
     deps = [
         ":pkg_agent_sessions",
         "@pip//httpx",
+        "@pip//opentelemetry_sdk",
         "@pip//pytest",
     ],
 )

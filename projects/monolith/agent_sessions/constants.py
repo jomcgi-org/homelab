@@ -18,3 +18,7 @@ SPARK_SYNTHETIC_PROMPT = "Reply with exactly: spark synthetic ok"
 # through, which is "stop" for a normal spark turn (see runtimes/claude/shim.py).
 # None and unrecognized values remain warnings.
 CLEAN_TERMINAL_REASONS = {"completed", "end_turn", "stop"}
+
+# A durable record of an attempt that did not finish. The pending message with
+# the same sequence remains live and will replace this turn after re-dispatch.
+INTERRUPTED_TERMINAL_REASONS = {"interrupted"}

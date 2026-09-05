@@ -16,6 +16,21 @@
   } = $props();
 
   const CLEAN_TERMINAL_REASONS = new Set(["completed", "end_turn", "stop"]);
+  const INTERRUPTED_TERMINAL_REASONS = new Set(["interrupted"]);
+  const interruptedSeqs = $derived(
+    new Set(
+      (detail?.turns ?? [])
+        .filter((turn) =>
+          INTERRUPTED_TERMINAL_REASONS.has(turn.terminal_reason),
+        )
+        .map((turn) => turn.seq),
+    ),
+  );
+  const visiblePendingQueue = $derived(
+    (detail?.pending_queue ?? []).filter(
+      (entry) => !interruptedSeqs.has(entry.seq),
+    ),
+  );
 
   function cost(value) {
     const amount = Number(value || 0);
@@ -26,7 +41,8 @@
   function turnFailed(turn) {
     return Boolean(
       turn?.terminal_reason &&
-      !CLEAN_TERMINAL_REASONS.has(turn.terminal_reason),
+      !CLEAN_TERMINAL_REASONS.has(turn.terminal_reason) &&
+      !INTERRUPTED_TERMINAL_REASONS.has(turn.terminal_reason),
     );
   }
 
@@ -187,7 +203,7 @@
       </div>
     {/each}
 
-    {#each detail?.pending_queue ?? [] as entry, index (entry.seq)}
+    {#each visiblePendingQueue as entry, index (entry.seq)}
       {@const partial = renderedPending[entry.seq]}
       {@const state = liveStateLabel(entry, index)}
       <article class="turn live">
