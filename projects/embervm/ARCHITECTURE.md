@@ -709,6 +709,24 @@ acts, clamped to the chart's maxReplicas. **Planned**: promoting to `full`
 adds drain-aware scale-down. The current brick mix is deployment state and
 lives in the fleet section.
 
+**Decided direction** (ADR embervm/042, Accepted 2026-09-05, not yet built): the
+`maxReplicas` ceiling itself becomes denial-driven, not only the replica count
+clamped inside it. A class stuck at a ceiling of 0 today needs a human to raise
+it by hand (the `values-gke.yaml` edits behind #5503 and #5504); instead, a new
+`ceilingBound` values field names the operator's outer bound per class (absent
+still means never, preserving today's explicit-zeros contract), and sustained
+denial pressure for a class below its bound raises the ceiling one step,
+unblocking the existing scale-up decision on the next tick. Scale-to-zero is
+symmetric, on a longer idle window than the replica-level one, and reuses the
+same drain-aware victim selection. `maxReplicas` in git becomes a bootstrap
+floor read only at first render, the same ownership shift #5498 already made
+for replica counts. Unsatisfiable-forever demand (no class fits at any bound,
+or a class pinned at its bound and still denying) rides the existing decision-6
+capacity signal (ADR embervm/039) with two new reason codes rather than a
+second alerting path. This does not reopen in-place pod resize, which ADR
+embervm/013 section 7 and ADR embervm/039's own alternatives already declined
+to reopen. Implementation is tracked on #5505.
+
 **Why.** Per-invocation pods and Kubernetes objects made pod churn and etcd the
 ceiling for short work, yet bypassing Kubernetes meant its autoscaler could no
 longer observe Firecracker demand (ADR embervm/001, ADR embervm/005). A pod per

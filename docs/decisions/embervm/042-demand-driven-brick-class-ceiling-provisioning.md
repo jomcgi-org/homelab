@@ -1,7 +1,7 @@
 # ADR 042: Brick Class Ceilings Move on Denial Pressure, Not Values Edits
 
 **Author:** Claude (Fable)
-**Status:** Draft
+**Status:** Accepted
 **Created:** 2026-09-05
 **Builds on:** [ADR embervm/039](039-capacity-fair-share-blast-radius-signal.md) (Accepted; names this exact problem as deferred future work in decision 7, and this ADR's decision 4 answers its open question 3), [ADR embervm/013](013-substrate-lanes-brick-sizing-capacity-tiers.md) (section 7: bricks everywhere, in-place resize dropped, a decision this ADR does not reopen), [ADR embervm/016](016-kubernetes-scheduling-integration-contract.md) (the mass-VM-death preemption exposure ADR 039 decision 5 reopened and this ADR inherits unchanged), [ADR platform/016](../platform/016-gke-hub-two-pool-shape.md) (the single Spot `ember-bricks` node this ADR's cost argument is measured against)
 
