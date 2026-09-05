@@ -33,11 +33,37 @@ spire:
       identities:
         clusterSPIFFEIDs:
           default:
-            enabled: false     # Phase 1 registers nothing; Phase 2 adds explicit identities
+            enabled: false     # No catch-all: identities are explicit per namespace (below)
           oidc-discovery-provider:
             enabled: false
           test-keys:
             enabled: false
+          # Phase 2 of ADR embervm/041 (#5706, #5754): platform X.509-SVIDs of
+          # the form spiffe://embervm.jomcgi.dev/ns/<namespace>/sa/<serviceaccount>
+          # (the default spiffeIDTemplate). One entry per namespace that holds a
+          # platform component; every pod in the namespace gets an identity, and
+          # authorization happens at the receiving end by exact SPIFFE ID, so a
+          # broad issuance selector is not a broad grant. Consumers: the embervm
+          # control plane, noded (DaemonSet and bricks), the token broker, the
+          # monolith app (broker login proxy), and monolith-agents (phase 4).
+          embervm-platform:
+            enabled: true
+            hint: embervm-platform
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: embervm
+          monolith-platform:
+            enabled: true
+            hint: monolith-platform
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: monolith
+          monolith-agents-platform:
+            enabled: true
+            hint: monolith-agents-platform
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: monolith-agents
       resources:
         requests: {cpu: 50m, memory: 128Mi}
         limits: {memory: 128Mi}
