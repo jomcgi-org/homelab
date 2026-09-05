@@ -136,7 +136,16 @@ async def test_upsert_creates_when_absent(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_upsert_patches_on_conflict(monkeypatch):
-    api = _FakeApi(create_conflict=True)
+    api = _FakeApi(
+        create_conflict=True,
+        get_objects=[
+            {
+                "metadata": {
+                    "labels": {workload.MANAGED_BY_LABEL: workload.MANAGED_BY_VALUE}
+                }
+            }
+        ],
+    )
     _install(monkeypatch, api)
     await workload.upsert_workload("echo-fn", {"class": "task"})
     assert len(api.created) == 1  # attempted
@@ -147,6 +156,41 @@ async def test_upsert_patches_on_conflict(monkeypatch):
             "labels": {"monolith.jomcgi.dev/managed-by": "faas"},
         },
         "spec": {"class": "task"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_upsert_refuses_unmarked_workload_on_conflict(monkeypatch):
+    api = _FakeApi(
+        create_conflict=True,
+        get_objects=[{"metadata": {"labels": {"app.kubernetes.io/name": "semgrep"}}}],
+    )
+    _install(monkeypatch, api)
+
+    with pytest.raises(workload.WorkloadReserved):
+        await workload.upsert_workload("semgrep", {"class": "task"})
+
+    assert len(api.created) == 1
+    assert api.get_count == 1
+    assert api.patched == []
+
+
+@pytest.mark.asyncio
+async def test_upsert_adopts_unmarked_workload_when_registry_owns_the_name(monkeypatch):
+    # A function registered before the ownership marker existed has an unmarked
+    # CR and a registry row; re-registration must patch it (and stamp it), not
+    # refuse it as a platform name.
+    api = _FakeApi(
+        create_conflict=True,
+        get_objects=[{"metadata": {"labels": {}}}],
+    )
+    _install(monkeypatch, api)
+
+    await workload.upsert_workload("echo-fn", {"class": "task"}, adopt_unmarked=True)
+
+    assert len(api.patched) == 1
+    assert api.patched[0]["body"]["metadata"]["labels"] == {
+        workload.MANAGED_BY_LABEL: workload.MANAGED_BY_VALUE
     }
 
 

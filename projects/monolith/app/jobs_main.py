@@ -134,6 +134,8 @@ def faas_reconcile(
     configure_logging()
     report = asyncio.run(reconcile_orphan_workloads(dry_run=dry_run))
     typer.echo(json.dumps(asdict(report), sort_keys=True))
+    if not dry_run and len(report.deleted) != len(report.orphans):
+        raise typer.Exit(code=1)
 
 
 # Hub evidence from 2026-09-05 showed rollout disconnects at 07:30 and 08:40.

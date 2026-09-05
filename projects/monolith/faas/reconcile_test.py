@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -21,10 +22,19 @@ class _FakeApi:
         return {"items": self.items}
 
 
-def _workload(name: str, *, marked: bool = True, spec: dict | None = None) -> dict:
+def _workload(
+    name: str,
+    *,
+    marked: bool = True,
+    spec: dict | None = None,
+    creation_timestamp: str | None = "2000-01-01T00:00:00Z",
+) -> dict:
     labels = {workload.MANAGED_BY_LABEL: workload.MANAGED_BY_VALUE} if marked else {}
+    metadata = {"name": name, "labels": labels}
+    if creation_timestamp is not None:
+        metadata["creationTimestamp"] = creation_timestamp
     return {
-        "metadata": {"name": name, "labels": labels},
+        "metadata": metadata,
         "spec": spec or {"class": "task"},
     }
 
@@ -38,7 +48,7 @@ def _install(monkeypatch, api: _FakeApi, *, function_names: set[str]) -> None:
 
 
 @pytest.mark.asyncio
-async def test_marked_orphan_is_deleted(monkeypatch):
+async def test_marked_orphan_older_than_age_floor_is_deleted(monkeypatch):
     api = _FakeApi([_workload("orphan")])
     _install(monkeypatch, api, function_names=set())
     deleted = []
@@ -56,6 +66,7 @@ async def test_marked_orphan_is_deleted(monkeypatch):
         deleted=["orphan"],
         kept=[],
         skipped_unmarked=0,
+        skipped_young=0,
     )
     assert deleted == ["orphan"]
     assert api.listed == [
@@ -66,6 +77,46 @@ async def test_marked_orphan_is_deleted(monkeypatch):
             "plural": workload.PLURAL,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_marked_orphan_younger_than_age_floor_is_skipped(monkeypatch):
+    created_at = datetime.now(timezone.utc) - timedelta(seconds=30)
+    api = _FakeApi([_workload("young", creation_timestamp=created_at.isoformat())])
+    _install(monkeypatch, api, function_names=set())
+    deleted = []
+
+    async def _delete(name: str) -> None:
+        deleted.append(name)
+
+    monkeypatch.setattr(workload, "delete_workload", _delete)
+
+    report = await reconcile.reconcile_orphan_workloads()
+
+    assert report.skipped_young == 1
+    assert report.orphans == []
+    assert deleted == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("creation_timestamp", [None, "not-a-timestamp"])
+async def test_unparseable_creation_timestamp_is_skipped(
+    monkeypatch, creation_timestamp
+):
+    api = _FakeApi([_workload("unknown-age", creation_timestamp=creation_timestamp)])
+    _install(monkeypatch, api, function_names=set())
+    deleted = []
+
+    async def _delete(name: str) -> None:
+        deleted.append(name)
+
+    monkeypatch.setattr(workload, "delete_workload", _delete)
+
+    report = await reconcile.reconcile_orphan_workloads()
+
+    assert report.skipped_young == 1
+    assert report.orphans == []
+    assert deleted == []
 
 
 @pytest.mark.asyncio
