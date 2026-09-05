@@ -7,6 +7,14 @@ metadata:
     app.kubernetes.io/part-of: shared-infrastructure
   annotations:
     argocd.argoproj.io/sync-wave: "2"
+    # Classic three-way diff for this app. Server-side diff (the controller
+    # default here) dry-runs the StatefulSet and the API server hands back
+    # volumeClaimTemplates[].metadata.creationTimestamp: null in the predicted
+    # state only, so ignoreDifferences, which normalizes live and target
+    # before the dry run, can never remove it and spire-server reads
+    # OutOfSync forever (argoproj/argo-cd#24791, open at v3.1.8). The
+    # jqPathExpressions below stay: they are needed either way.
+    argocd.argoproj.io/compare-options: ServerSideDiff=false
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
