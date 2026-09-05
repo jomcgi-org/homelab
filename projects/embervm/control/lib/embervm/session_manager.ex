@@ -2580,11 +2580,7 @@ defmodule Embervm.SessionManager do
     lineage_id = session.lineage_id
 
     with {:ok, entry} <- fetch_session_workload(state, workload),
-         {:ok, [brick | _]} <- Scheduler.place_with_demand(%Request{
-           table: state.capacity_table, node_id: volume_node_id, workload: workload,
-           key: workload, need_mib: Map.get(entry, :mem_mib) || 512,
-           base: {:ready, :snapshot_ref}
-         }),
+         {:ok, [brick | _]} <- place_rejoin_brick(state, volume_node_id, session, entry),
          # The scheduler's brick is the only instance guaranteed to fit the VM's
          # memory. VolumeRoot is node-shared, so any instance can reach it, but
          # both restore_session_workspace and prime must use the scheduled brick.
@@ -2607,6 +2603,43 @@ defmodule Embervm.SessionManager do
       {:error, reason} -> {:error, reason}
       other -> {:error, other}
     end
+  end
+
+  # Placement for a parked session's rejoin. The first attempt records
+  # autoscaler demand; a retry tick still carries the pressure-wait entry
+  # captured at spawn time, so it does not re-note it. The scheduler's two
+  # denials split three ways (#5765): :no_bricks means the CP is blind (park),
+  # :capacity with a brick on the volume node is headroom pressure (park), and
+  # :capacity with no brick on the volume node means the node vanished, which
+  # must fail fast rather than wait out a bound that cannot clear.
+  defp place_rejoin_brick(state, volume_node_id, session, entry) do
+    req = %Request{
+      table: state.capacity_table,
+      node_id: volume_node_id,
+      workload: session.workload,
+      key: session.workload,
+      need_mib: Map.get(entry, :mem_mib) || 512,
+      base: {:ready, :snapshot_ref},
+      record_demand: not Map.has_key?(state.pressure_waits, session.session_id)
+    }
+
+    case Scheduler.place_with_demand(req) do
+      {:error, :capacity} = error ->
+        if has_brick_on_volume_node?(state.capacity_table, volume_node_id) do
+          error
+        else
+          {:error, {:volume_node_gone, volume_node_id}}
+        end
+
+      other ->
+        other
+    end
+  end
+
+  defp has_brick_on_volume_node?(capacity_table, node_id) do
+    capacity_table
+    |> Brick.bricks()
+    |> Enum.any?(&(&1.node_id == node_id))
   end
 
   # Always ask noded about the workspace. A genuine store miss is the documented

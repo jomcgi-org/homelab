@@ -54,7 +54,10 @@ defmodule Embervm.Scheduler do
           [] ->
             case place(%{req | bricks: bricks, base: :none}) do
               [] ->
-                Embervm.BrickController.note_denial(req.need_mib || 0)
+                if req.record_demand do
+                  Embervm.BrickController.note_denial(req.need_mib || 0)
+                end
+
                 {:error, :capacity}
 
               [brick | _] ->

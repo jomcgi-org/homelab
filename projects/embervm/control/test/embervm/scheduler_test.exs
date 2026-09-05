@@ -131,6 +131,19 @@ defmodule Embervm.SchedulerTest do
              Scheduler.place_with_demand(%Request{bricks: [full], workload: "wl", need_mib: 512, base: :ready})
   end
 
+  test "a capacity miss can suppress recording autoscaler demand" do
+    full = brick(free_slots: 0)
+
+    assert {:error, :capacity} =
+             Scheduler.place_with_demand(%Request{
+               bricks: [full],
+               workload: "wl",
+               need_mib: 512,
+               base: :ready,
+               record_demand: false
+             })
+  end
+
   test "a non-empty eligible brick without a ready base is base missing" do
     not_ready = brick(configured_id: "node-base", workloads: %{})
 
