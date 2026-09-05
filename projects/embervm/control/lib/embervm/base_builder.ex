@@ -1850,8 +1850,9 @@ defmodule Embervm.BaseBuilder do
   # A capacity fact exists exactly while an instance is healthy, so a fact-less
   # instance is not placeable. A brand-new control plane can briefly have no
   # facts; a workload then holds at {:pending, :no_node} until the first
-  # capacity_fact_updated notification re-drives it. WorkloadWatcher's periodic
-  # catalog resync remains a slower backstop.
+  # capacity_fact_updated notification re-drives it. `retry_workload/2` clears
+  # the pin so a parked workload is held immediately. WorkloadWatcher's periodic
+  # catalog resync is now only a slower backstop for edge cases.
   defp placement(state, prev, need_mib) do
     case eligible_build_instances(state, need_mib) do
       [] ->
@@ -3879,6 +3880,8 @@ defmodule Embervm.BaseBuilder do
 
             cond do
               node_id == nil ->
+                w = %{w | node_id: nil}
+                state = put_in(state, [:workloads, w.name], w)
                 write_base_status(state, w, {:pending, :no_node})
 
               already_targeting?(state, node_id, name, signature(w)) ->

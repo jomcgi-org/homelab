@@ -707,6 +707,64 @@ defmodule Embervm.BaseBuilderTest do
     assert Agent.get(attempts, & &1) >= 2
   end
 
+  test "a failed build parked without capacity is unpinned and re-driven by a capacity update" do
+    table = new_cap_table()
+    put_brick(table, "node-4", "uid", mem_budget: 512)
+    test_pid = self()
+
+    build_fun = fn :fake_channel, req ->
+      send(test_pid, {:parked_retry_build_started, req.trace.workload, self()})
+
+      receive do
+        {:finish_parked_retry_build, result} -> result
+      end
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/uid", address: "node-4:9090"}],
+        capacity_table: table,
+        status_writer: fn _, _, _ -> :ok end,
+        build_fun: build_fun,
+        base_backoff_ms: 30_000,
+        max_backoff_ms: 60_000
+      )
+
+    :ok = BaseBuilder.reconcile(builder, desc(%{name: "parked", mem_mib: 256}))
+    assert_receive {:parked_retry_build_started, "parked", first_worker}, 1_000
+
+    send(
+      first_worker,
+      {:finish_parked_retry_build,
+       {:error, %GRPC.RPCError{status: 9, message: "simulated build failure"}}}
+    )
+
+    assert_eventually(fn ->
+      workload = :sys.get_state(builder).workloads["parked"]
+      match?({:failed, _message}, workload.last_status_phase) and workload.retry_timer != nil
+    end)
+
+    NodeCapacity.drop(table, {"node-4", "uid"})
+    send(builder, {:retry, "parked"})
+
+    parked = :sys.get_state(builder).workloads["parked"]
+    assert parked.last_status_phase == {:pending, :no_node}
+    assert parked.node_id == nil
+
+    put_brick(table, "node-4", "uid", mem_budget: 512)
+    :ok = BaseBuilder.capacity_fact_updated(builder, "node-4/uid")
+
+    assert_receive {:parked_retry_build_started, "parked", retry_worker}, 1_000
+    assert retry_worker != first_worker
+
+    assert_eventually(fn ->
+      workload = :sys.get_state(builder).workloads["parked"]
+      workload.node_id == "node-4/uid" and workload.last_status_phase == :building
+    end)
+
+    send(retry_worker, {:finish_parked_retry_build, {:ok, resp("snap-parked")}})
+  end
+
   # -- forget -----------------------------------------------------------------
 
   test "forgetting a workload mid-queue drops it without building" do
