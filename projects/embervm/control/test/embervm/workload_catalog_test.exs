@@ -81,4 +81,19 @@ defmodule Embervm.WorkloadCatalogTest do
     unique_name = "wl_cat_default_probe_#{System.unique_integer([:positive])}"
     assert WorkloadCatalog.retry_config(unique_name) == Retry.default_config()
   end
+
+  test "dead_letter_enabled? returns false only for an explicit false flag" do
+    table = fresh_table()
+    WorkloadCatalog.upsert(table, "disabled", %{dead_letter_enabled: false})
+    WorkloadCatalog.upsert(table, "enabled", %{dead_letter_enabled: true})
+    WorkloadCatalog.upsert(table, "legacy", %{name: "legacy"})
+
+    assert WorkloadCatalog.dead_letter_enabled?(table, "disabled") == false
+    assert WorkloadCatalog.dead_letter_enabled?(table, "enabled") == true
+    assert WorkloadCatalog.dead_letter_enabled?(table, "legacy") == true
+    assert WorkloadCatalog.dead_letter_enabled?(table, "missing") == true
+
+    missing_table = String.to_atom("wl_cat_never_created_#{System.unique_integer([:positive])}")
+    assert WorkloadCatalog.dead_letter_enabled?(missing_table, "anything") == true
+  end
 end

@@ -176,6 +176,77 @@ defmodule Embervm.TaskStoreTest do
     assert ets_task.attempt == 1
   end
 
+  test "permanent failures honor the workload dead-letter flag and default it on", %{path: path} do
+    default_table = WorkloadCatalog.table()
+
+    if :ets.whereis(default_table) == :undefined do
+      WorkloadCatalog.create(default_table)
+    end
+
+    suffix = System.unique_integer([:positive])
+    disabled_workload = "wl-dlq-disabled-#{suffix}"
+    enabled_workload = "wl-dlq-enabled-#{suffix}"
+    legacy_workload = "wl-dlq-legacy-#{suffix}"
+
+    retry = Embervm.Retry.default_config()
+
+    WorkloadCatalog.upsert(default_table, disabled_workload, %{
+      name: disabled_workload,
+      retry: retry,
+      dead_letter_enabled: false
+    })
+
+    WorkloadCatalog.upsert(default_table, enabled_workload, %{
+      name: enabled_workload,
+      retry: retry,
+      dead_letter_enabled: true
+    })
+
+    WorkloadCatalog.upsert(default_table, legacy_workload, %{
+      name: legacy_workload,
+      retry: retry
+    })
+
+    on_exit(fn ->
+      WorkloadCatalog.drop(default_table, disabled_workload)
+      WorkloadCatalog.drop(default_table, enabled_workload)
+      WorkloadCatalog.drop(default_table, legacy_workload)
+    end)
+
+    {op_log, store} = start_pair(path)
+
+    fail_permanently = fn workload ->
+      {:ok, :created, task_id} =
+        TaskStore.submit(store, %{tenant: "t1", principal: "p1", workload: workload})
+
+      {:ok, _} = TaskStore.assign(store, task_id)
+      {:ok, task} = TaskStore.fail(store, task_id, :guest4xx)
+      {task_id, task}
+    end
+
+    {disabled_task_id, disabled_task} = fail_permanently.(disabled_workload)
+    assert disabled_task.state == :failed_permanent
+    assert {:ok, %{items: [], total: 0}} = TaskStore.list_dead_letters(store, disabled_workload)
+
+    {:ok, ops} = SQLite.read_from(op_log, 0)
+
+    refute Enum.any?(ops, fn op ->
+             op.task_id == disabled_task_id and op.kind == :dead_lettered
+           end)
+
+    {enabled_task_id, enabled_task} = fail_permanently.(enabled_workload)
+    assert enabled_task.state == :dead_lettered
+
+    assert {:ok, %{items: [%{task_id: ^enabled_task_id}], total: 1}} =
+             TaskStore.list_dead_letters(store, enabled_workload)
+
+    {legacy_task_id, legacy_task} = fail_permanently.(legacy_workload)
+    assert legacy_task.state == :dead_lettered
+
+    assert {:ok, %{items: [%{task_id: ^legacy_task_id}], total: 1}} =
+             TaskStore.list_dead_letters(store, legacy_workload)
+  end
+
   test "restart recovery: a fresh TaskStore against the same op-log file rebuilds exact state and attempt", %{
     path: path
   } do

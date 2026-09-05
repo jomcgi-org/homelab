@@ -403,8 +403,10 @@ hold in that GC), after which resume takes the session-expiry 410 path; the dura
 workspace lineage is adoptable for 7 days, so a new session generation
 inherits the prior workspace rather than starting blank. **Decided
 direction**: capture decouples from bank
-(close-triggered for no-memory-snapshot workloads), retention becomes
-`latest + N`, and the workspace size cap becomes a declared soft budget.
+(close-triggered for no-memory-snapshot workloads), and the workspace size cap
+becomes a declared soft budget. `persistence.filesystem.retention` is inert
+today, and artifact GC keeps only the newest artifact. `latest + N` remains the
+planned retention direction.
 
 Memory-banking session lineages have an available but dormant sequential
 Firecracker dirty-page diff path. The first bank is a full; after each allowed

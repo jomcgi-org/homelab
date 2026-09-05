@@ -878,17 +878,27 @@ defmodule Embervm.WorkloadWatcher do
 
   defp parse_persistence(spec, "session", _workload_name) do
     case Map.get(spec, "persistence") do
-      nil -> %{memory: true, filesystem: %{enabled: false, retention: 0, size_bytes: 0, mount_path: "/session"}}
+      nil ->
+        %{memory: true, filesystem: %{enabled: false, size_bytes: 0, mount_path: "/session"}}
+
       p when is_map(p) ->
         fs = Map.get(p, "filesystem") || %{}
-        size_bytes = Map.get(fs, "sizeBytes") ||
-          (Map.get(fs, "sizeGi") && Map.get(fs, "sizeGi") * 1_073_741_824) || 0
-        %{memory: Map.get(p, "memory", true), filesystem: %{
-          enabled: Map.get(fs, "enabled", false),
-          retention: Map.get(fs, "retention", 0), size_bytes: size_bytes,
-          mount_path: Map.get(fs, "mountPath", "/session")
-        }}
-      _ -> %{memory: true, filesystem: %{enabled: false, retention: 0, size_bytes: 0, mount_path: "/session"}}
+
+        size_bytes =
+          Map.get(fs, "sizeBytes") ||
+            (Map.get(fs, "sizeGi") && Map.get(fs, "sizeGi") * 1_073_741_824) || 0
+
+        %{
+          memory: Map.get(p, "memory", true),
+          filesystem: %{
+            enabled: Map.get(fs, "enabled", false),
+            size_bytes: size_bytes,
+            mount_path: Map.get(fs, "mountPath", "/session")
+          }
+        }
+
+      _ ->
+        %{memory: true, filesystem: %{enabled: false, size_bytes: 0, mount_path: "/session"}}
     end
   end
 
@@ -1525,6 +1535,7 @@ defmodule Embervm.WorkloadWatcher do
        ) do
     resources = Map.get(spec, "resources") || %{}
     invocation = Map.get(spec, "invocation") || %{}
+    dead_letter = Map.get(invocation, "deadLetter") || %{}
     source = parse_source(spec)
     persistence = parse_persistence(spec, class, name)
 
@@ -1585,6 +1596,7 @@ defmodule Embervm.WorkloadWatcher do
       timeout_ms: (Map.get(invocation, "timeoutSeconds") || 90) * 1000,
       result_ttl_ms: (Map.get(invocation, "resultTtlSeconds") || 86_400) * 1000,
       result_max_bytes: Map.get(invocation, "resultMaxBytes") || 1_048_576,
+      dead_letter_enabled: Map.get(dead_letter, "enabled", true),
       retry: parse_retry(Map.get(invocation, "retry") || %{}),
       # spec.triggers[] parsed for the cron TriggerAdapter (Task 11). Each entry is
       # %{cron, payload}; the daemon-agnostic control plane fires each as an

@@ -122,10 +122,10 @@ defmodule Embervm.TaskStore do
   @doc """
   Classifies `reason` against the task's workload retry config and applies the
   resulting transition (`:fail_retryable` or `:fail_permanent`). A permanent
-  failure immediately chains into `:dead_letter` too (DLQ is on by default),
-  so callers never need to issue a separate dead-letter call for the common
-  path. Returns the updated task plus, for a retryable failure, the computed
-  backoff so the (future) dispatcher knows when to call `retry/2`.
+  failure chains into `:dead_letter` when the workload's DLQ is enabled, which
+  is the default. Callers never need to issue a separate dead-letter call for
+  that path. Returns the updated task plus, for a retryable failure, the
+  computed backoff so the (future) dispatcher knows when to call `retry/2`.
   """
   @spec fail(GenServer.server(), String.t(), atom()) ::
           {:ok, map()} | {:ok, map(), backoff_ms :: non_neg_integer()} | {:error, term()}
@@ -261,10 +261,11 @@ defmodule Embervm.TaskStore do
   same `Embervm.Retry` classification as any other transport failure (`:transport`
   is retryable by default), so a task with budget left becomes `failed_retryable`
   (the dispatcher's `retry/2` later moves it back to `queued`) and one whose
-  budget is exhausted becomes `failed_permanent` and is dead-lettered, no
-  special node-down code path. In v1 there is exactly one node, so "in-flight" is
-  precisely "on the downed node"; multi-node filtering by assigned node is Task
-  11's concern once tasks record where they were dispatched.
+  budget is exhausted becomes `failed_permanent`, then enters the dead-letter
+  queue when the workload enables it. There is no special node-down code path.
+  In v1 there is exactly one node, so "in-flight" is precisely "on the downed
+  node"; multi-node filtering by assigned node is Task 11's concern once tasks
+  record where they were dispatched.
   """
   @spec reassign_in_flight(GenServer.server()) :: {:ok, non_neg_integer()}
   def reassign_in_flight(store \\ __MODULE__) do
@@ -828,9 +829,9 @@ defmodule Embervm.TaskStore do
         updated = %{task | state: next_state, updated_at: ts}
         :ets.insert(state.tasks, {task.task_id, updated})
         # Wake any sync-submit caller parked on this task the moment it settles
-        # terminal (succeeded or dead_lettered). No-op when nobody is parked, so
-        # it is safe to call on every transition; guarded to terminal states so
-        # intermediate assign/start transitions do not spuriously wake waiters.
+        # in a terminal state. No-op when nobody is parked, so it is safe to call
+        # on every transition; guarded to terminal states so intermediate
+        # assign/start transitions do not spuriously wake waiters.
         if TaskState.terminal?(next_state) do
           Embervm.SyncWait.notify(task.task_id, next_state)
         end
@@ -842,20 +843,24 @@ defmodule Embervm.TaskStore do
     end
   end
 
-  # After a :failed op lands, a permanent failure immediately chains into
-  # :dead_letter (DLQ enabled by default) so the common permanent-failure path
-  # is one `fail/2` call, not two. A retryable failure instead reports the
-  # backoff so a future dispatcher (Task 11) knows when to call retry/2.
+  # After a :failed op lands, a permanent failure chains into :dead_letter when
+  # the workload's DLQ is enabled (the default). A retryable failure instead
+  # reports the backoff so a future dispatcher (Task 11) knows when to call
+  # retry/2.
   defp reply_after_fail(state, task, :fail_permanent, _prior_attempt, _cfg) do
-    case TaskState.transition(task.state, :dead_letter) do
-      {:ok, next} ->
-        case append_and_update(state, task, :dead_lettered, next, %{}) do
-          {:ok, updated} -> {:reply, {:ok, updated}, state}
-          {:error, _reason} = error -> {:reply, error, state}
-        end
+    if dead_letter_enabled?(task.workload) do
+      case TaskState.transition(task.state, :dead_letter) do
+        {:ok, next} ->
+          case append_and_update(state, task, :dead_lettered, next, %{}) do
+            {:ok, updated} -> {:reply, {:ok, updated}, state}
+            {:error, _reason} = error -> {:reply, error, state}
+          end
 
-      {:error, _reason} = error ->
-        {:reply, error, state}
+        {:error, _reason} = error ->
+          {:reply, error, state}
+      end
+    else
+      {:reply, {:ok, task}, state}
     end
   end
 
@@ -866,11 +871,11 @@ defmodule Embervm.TaskStore do
 
   # Reassigns one in-flight task as a failure of `reason` (see
   # reassign_in_flight/1). Mirrors the {:fail, ...} handler's classify ->
-  # transition -> append path, including the permanent-failure dead-letter chain,
-  # but discards the reply/backoff (the caller reassigns a whole batch and only
-  # needs the count). Best-effort per task: an op-log append error for one task is
-  # logged-by-omission and does not abort the batch, since a downed node's other
-  # tasks must still be reassigned.
+  # transition -> append path, including the configured permanent-failure
+  # dead-letter chain, but discards the reply/backoff (the caller reassigns a
+  # whole batch and only needs the count). Best-effort per task: an op-log append
+  # error for one task is logged-by-omission and does not abort the batch, since
+  # a downed node's other tasks must still be reassigned.
   defp reassign_one(state, task, reason) do
     cfg = cfg_for(task.workload)
     event = Embervm.Retry.classify(reason, task.attempt, cfg)
@@ -878,9 +883,13 @@ defmodule Embervm.TaskStore do
 
     case append_and_update(state, task, :failed, next, %{state: next, reason: reason}) do
       {:ok, updated} when event == :fail_permanent ->
-        case TaskState.transition(updated.state, :dead_letter) do
-          {:ok, dl} -> append_and_update(state, updated, :dead_lettered, dl, %{})
-          {:error, _} -> :ok
+        if dead_letter_enabled?(task.workload) do
+          case TaskState.transition(updated.state, :dead_letter) do
+            {:ok, dl} -> append_and_update(state, updated, :dead_lettered, dl, %{})
+            {:error, _} -> :ok
+          end
+        else
+          :ok
         end
 
       {:ok, _updated} ->
@@ -971,6 +980,9 @@ defmodule Embervm.TaskStore do
   # (the watcher has not booted), so this call site needs no fallback logic
   # of its own.
   defp cfg_for(workload), do: Embervm.WorkloadCatalog.retry_config(workload)
+
+  defp dead_letter_enabled?(workload),
+    do: Embervm.WorkloadCatalog.dead_letter_enabled?(workload)
 
   defp default_id do
     16

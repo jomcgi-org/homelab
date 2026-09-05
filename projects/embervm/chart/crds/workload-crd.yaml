@@ -291,12 +291,8 @@ spec:
                         retention:
                           type: integer
                           description: >-
-                            Keep the latest artifact plus N previous ones. Above
-                            1 costs N times the steady-state storage and N times
-                            the GC bookkeeping (each generation needs its own
-                            liveness check rather than one is-this-latest test),
-                            so it is a declared bounded scalar and never
-                            "keep everything".
+                            Accepted but not yet enforced. Newest-only artifact
+                            retention is currently used.
                           minimum: 0
                           default: 0
                         sizeGi:
