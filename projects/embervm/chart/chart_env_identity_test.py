@@ -331,6 +331,27 @@ def test_noded_bearer_secret_flips_control_plane_and_bricks_together():
     assert "EMBERVM_NODED_BEARER_TOKEN" not in disabled
 
 
+def test_noded_admission_model_defaults_observed_and_accepts_reserved():
+    chart = _chart_dir()
+    env_pattern = re.compile(
+        r"name:\s*EMBERVM_NODED_ADMISSION_MODEL\s+value:\s*\"([^\"]+)\""
+    )
+
+    observed = _render("noded-admission", [chart / "values.yaml"])
+    observed_values = env_pattern.findall(observed)
+    assert observed_values, "default render produced no noded admission model env"
+    assert set(observed_values) == {"observed"}
+
+    reserved = _render(
+        "noded-admission",
+        [chart / "values.yaml"],
+        ["noded.admissionModel=reserved"],
+    )
+    reserved_values = env_pattern.findall(reserved)
+    assert reserved_values, "reserved render produced no noded admission model env"
+    assert set(reserved_values) == {"reserved"}
+
+
 def test_noded_onepassword_item_uses_default_shared_secret_name():
     chart = _chart_dir()
     rendered = _render(

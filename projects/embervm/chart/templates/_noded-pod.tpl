@@ -220,6 +220,8 @@ containers:
         value: {{ printf "http://%s.%s.svc:%v" (include "embervm.fullname" $ctx) $ctx.Release.Namespace $ctx.Values.service.port | quote }}
       - name: EMBERVM_NODED_MAX_LIVE_VMS
         value: {{ $ctx.Values.noded.maxLiveVMs | quote }}
+      - name: EMBERVM_NODED_ADMISSION_MODEL
+        value: {{ $ctx.Values.noded.admissionModel | quote }}
       - name: EMBERVM_NODED_DIFF_BANKING
         value: {{ $ctx.Values.noded.diffBanking | quote }}
       - name: EMBERVM_NODED_DIFF_BANKING_WORKLOADS
