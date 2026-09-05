@@ -348,8 +348,11 @@ defmodule Embervm.EndpointPublisherTest do
     assert first.version == EndpointPublisher.format_version(501, 1)
     assert second.version == EndpointPublisher.format_version(501, 2)
     assert second.version > first.version
-    assert hd(first.clusters).endpoints == [%{ip: "10.1.1.1", port: 7000}]
-    assert hd(second.clusters).endpoints == [%{ip: "10.99.0.5", port: 8080}]
+    assert hd(first.clusters).endpoints == [%{ip: "10.1.1.1", port: 7000, disable_active_health_check: true}]
+    assert hd(second.clusters).endpoints == [
+      %{ip: "10.99.0.5", port: 8080, priority: 0},
+      %{ip: "10.1.1.1", port: 7000, priority: 1}
+    ]
   end
 
   test "node re-registration and channel invalidation re-push an unchanged snapshot" do
