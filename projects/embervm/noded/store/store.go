@@ -838,6 +838,24 @@ func (s *Store) ArtifactInfo(ctx context.Context, prefix string) (present bool, 
 	return true, meta.CreatedAtUnixMs, uint64(total), meta.CpuVendor, meta.CpuTemplate, meta.Generation, append([]byte(nil), meta.Envelope...), nil
 }
 
+// ArtifactFileSHA256 reports the checksum recorded for one file in an
+// artifact's completeness marker. An absent artifact or absent file is not an
+// error, which lets callers distinguish both from a store failure.
+func (s *Store) ArtifactFileSHA256(ctx context.Context, prefix, name string) (artifactPresent, filePresent bool, checksum string, err error) {
+	if s == nil {
+		return false, false, "", nil
+	}
+	present, meta, err := s.getMeta(ctx, prefix)
+	if err != nil || !present {
+		return present, false, "", err
+	}
+	file, ok := meta.Files[name]
+	if !ok {
+		return true, false, "", nil
+	}
+	return true, true, file.Sha256, nil
+}
+
 // RewrapEnvelope lazily replaces only meta.json's opaque envelope after an
 // artifact is accessed. It reads no payload objects and uses the exact ETag
 // returned with the marker as an If-Match precondition, so a concurrent export

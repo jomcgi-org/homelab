@@ -63,14 +63,16 @@ type buildEgressResult struct {
 
 func newBuildEgressServer(t *testing.T, enabled bool, workloads []string, tr *fakeTransport, logger *slog.Logger) (*Server, *fakeDriver) {
 	t.Helper()
-	build := &fakeDriver{vsockDir: t.TempDir()}
+	snapshotRoot := t.TempDir()
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	build := &fakeDriver{vsockDir: t.TempDir(), snapshotRoot: snapshotRoot}
 	s := New(Options{
 		Config: config.Config{
 			Arch:              "amd64",
 			Node:              "node-4",
-			SnapshotRoot:      t.TempDir(),
+			SnapshotRoot:      snapshotRoot,
 			BootReadyTimeout:  5 * time.Second,
-			Images:            map[string]config.Image{"img:1": {RootfsPath: "/rootfs.ext4"}},
+			Images:            map[string]config.Image{"img:1": {RootfsPath: rootfs}},
 			EgressEnabled:     enabled,
 			EgressWorkloads:   workloads,
 			EgressSidecarAddr: "127.0.0.1:1",

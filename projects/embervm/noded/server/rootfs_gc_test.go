@@ -105,11 +105,50 @@ func TestWriteAndReadBaseRootfsID(t *testing.T) {
 	}
 }
 
+func TestBuildBasesFailWhenRootfsNotExt4(t *testing.T) {
+	snapshotRoot := t.TempDir()
+	rootfs := filepath.Join(t.TempDir(), "rootfs.img")
+	if err := os.WriteFile(rootfs, make([]byte, ext4HeaderSize), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	baseKey := baseKeyFor("echo", "img:1", "r1", "")
+	writeBundleFiles(t, filepath.Join(snapshotRoot, "bases", baseKey), map[string]string{
+		"memfile":  "mem",
+		"snapfile": "snap",
+	})
+	s := New(Options{
+		Config: config.Config{
+			Arch: "amd64", Node: "node-4", SnapshotRoot: snapshotRoot,
+			BootReadyTimeout: time.Second,
+			Images:           map[string]config.Image{"img:1": {RootfsPath: rootfs}},
+		},
+		Driver:         &fakeDriver{},
+		Transport:      &fakeTransport{},
+		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return &fakeDriver{} },
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+
+	_, err := s.BuildBase(context.Background(), &nodev1.BuildBaseRequest{
+		Trace:            &nodev1.Trace{Workload: "echo"},
+		ImageRef:         "img:1",
+		WorkloadRevision: "r1",
+		ReadyPath:        "/shim/ready",
+		Resources:        &nodev1.ResourceSpec{Vcpus: 1, MemMib: 128},
+	})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "persist base rootfs identity") {
+		t.Fatalf("BuildBase error = %v, want rootfs identity FailedPrecondition", err)
+	}
+	base, ok := s.bases.get(baseKey)
+	if !ok || base.state != nodev1.BaseBuildState_BASE_BUILD_STATE_FAILED {
+		t.Fatalf("base = %+v, ok=%v, want FAILED and never READY", base, ok)
+	}
+}
+
 func TestBaseRootfsMatches_NoRootfsID(t *testing.T) {
 	dir := t.TempDir()
 	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
-	if ok, reason := baseRootfsMatches(dir, rootfs); ok || !strings.Contains(reason, "rootfsid") {
-		t.Fatalf("baseRootfsMatches = (%v, %q), want false with rootfsid reason", ok, reason)
+	if ok, mismatch := baseRootfsMatches(dir, rootfs); ok || mismatch == nil || mismatch.Mismatch || !strings.Contains(mismatch.Reason, "rootfsid") {
+		t.Fatalf("baseRootfsMatches = (%v, %+v), want read failure with rootfsid reason", ok, mismatch)
 	}
 }
 
@@ -119,8 +158,8 @@ func TestBaseRootfsMatches_MismatchedUUID(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "rootfsid"), []byte(testRootfsUUIDA), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if ok, reason := baseRootfsMatches(dir, rootfs); ok || reason != testRootfsUUIDB {
-		t.Fatalf("baseRootfsMatches = (%v, %q), want false with actual UUID", ok, reason)
+	if ok, mismatch := baseRootfsMatches(dir, rootfs); ok || mismatch == nil || !mismatch.Mismatch || mismatch.Actual != testRootfsUUIDB || mismatch.Reason != "" {
+		t.Fatalf("baseRootfsMatches = (%v, %+v), want UUID mismatch with actual UUID", ok, mismatch)
 	}
 }
 
@@ -130,8 +169,8 @@ func TestBaseRootfsMatches_MatchedUUID(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "rootfsid"), []byte(testRootfsUUIDA), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if ok, reason := baseRootfsMatches(dir, rootfs); !ok || reason != "" {
-		t.Fatalf("baseRootfsMatches = (%v, %q), want true with no reason", ok, reason)
+	if ok, mismatch := baseRootfsMatches(dir, rootfs); !ok || mismatch != nil {
+		t.Fatalf("baseRootfsMatches = (%v, %+v), want true with nil mismatch", ok, mismatch)
 	}
 }
 
@@ -503,9 +542,48 @@ func TestReconcileBasesRemovesMismatched(t *testing.T) {
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("mismatched base was not removed: %v", err)
 	}
-	prefix := "base/amd/echo/" + baseKey
-	if !s.baseNeedsRepublish(prefix) {
-		t.Fatalf("mismatched restored base did not mark %q for republish", prefix)
+}
+
+func TestReconcileBasesDoesNotRemoveIfVMInUse(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	baseKey := "echo__in-use-mismatch"
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDB)
+	dir := writeIdentityBaseBundle(t, s, baseKey, rootfs, testRootfsUUIDA)
+	s.vms.add(&vmEntry{id: "vm-live", workload: "echo", snapshotRef: baseKey, state: vmPrimed})
+
+	if err := s.ReconcileBasesFromDisk(); err != nil {
+		t.Fatalf("ReconcileBasesFromDisk: %v", err)
+	}
+	base, ok := s.bases.get(baseKey)
+	if !ok || base.state != nodev1.BaseBuildState_BASE_BUILD_STATE_NONE {
+		t.Fatalf("in-use mismatched base = %+v, ok=%v, want NONE", base, ok)
+	}
+	if !strings.Contains(base.buildErr, "UUID mismatch") {
+		t.Fatalf("buildErr = %q, want mismatch reason", base.buildErr)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("in-use mismatched base was removed: %v", err)
+	}
+}
+
+func TestReconcileBasesSkipsGateIfBuilding(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	baseKey := "echo__building-mismatch"
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDB)
+	dir := writeIdentityBaseBundle(t, s, baseKey, rootfs, testRootfsUUIDA)
+	if !s.bases.beginBuild(baseKey, "echo", rootfs, "/shim/ready") {
+		t.Fatal("beginBuild refused fresh key")
+	}
+
+	if err := s.ReconcileBasesFromDisk(); err != nil {
+		t.Fatalf("ReconcileBasesFromDisk: %v", err)
+	}
+	base, ok := s.bases.get(baseKey)
+	if !ok || base.state != nodev1.BaseBuildState_BASE_BUILD_STATE_BUILDING {
+		t.Fatalf("building base = %+v, ok=%v, want BUILDING unchanged", base, ok)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("building base was removed: %v", err)
 	}
 }
 
@@ -582,44 +660,161 @@ func TestBootRejectsBaseRootfsMismatch(t *testing.T) {
 	}
 }
 
-func TestBaseRepublishOverwritesRefusedStoreBundle(t *testing.T) {
+func TestBaseStoreCopyIsStale_NoRemote(t *testing.T) {
 	fs := newFakeStore()
 	s := newStoreTestServer(t, fs)
-	baseKey := "echo__republish"
-	rootfsDir := t.TempDir()
-	rootfs := writeExt4Rootfs(t, rootfsDir, "rootfs.ext4", testRootfsUUIDB)
-	writeIdentityBaseBundle(t, s, baseKey, rootfs, testRootfsUUIDA)
-	prefix := "base/amd/echo/" + baseKey
-	files := map[string]string{
+	dir := t.TempDir()
+	writeBundleFiles(t, dir, map[string]string{"rootfsid": testRootfsUUIDA})
+
+	stale, err := s.baseStoreCopyIsStale(context.Background(), "base/amd/echo/missing", dir)
+	if err != nil || stale {
+		t.Fatalf("baseStoreCopyIsStale = (%v, %v), want (false, nil)", stale, err)
+	}
+}
+
+func TestBaseStoreCopyIsStale_LocalRootfsidMissing(t *testing.T) {
+	s := newStoreTestServer(t, newFakeStore())
+	// An unverifiable local bundle must never force an overwrite of the store
+	// copy; it is reported as not stale and left for the reconcile gate.
+	stale, err := s.baseStoreCopyIsStale(context.Background(), "base/amd/echo/missing-local", t.TempDir())
+	if err != nil || stale {
+		t.Fatalf("baseStoreCopyIsStale = (%v, %v), want (false, nil)", stale, err)
+	}
+}
+
+func TestBaseStoreCopyIsStale_StoreError(t *testing.T) {
+	fs := newFakeStore()
+	fs.artifactFileErr = context.DeadlineExceeded
+	s := newStoreTestServer(t, fs)
+	dir := t.TempDir()
+	writeBundleFiles(t, dir, map[string]string{"rootfsid": testRootfsUUIDA})
+
+	stale, err := s.baseStoreCopyIsStale(context.Background(), "base/amd/echo/store-error", dir)
+	if err != context.DeadlineExceeded || stale {
+		t.Fatalf("baseStoreCopyIsStale = (%v, %v), want (false, deadline exceeded)", stale, err)
+	}
+}
+
+func TestBaseStoreCopyIsStale_RemoteLacksRootfsid(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	dir := t.TempDir()
+	writeBundleFiles(t, dir, map[string]string{"rootfsid": testRootfsUUIDA})
+	prefix := "base/amd/echo/no-rootfsid"
+	fs.seedArtifact(prefix, map[string]string{"snapfile": "snap"}, 0, "amd", "")
+
+	stale, err := s.baseStoreCopyIsStale(context.Background(), prefix, dir)
+	if err != nil || !stale {
+		t.Fatalf("baseStoreCopyIsStale = (%v, %v), want (true, nil)", stale, err)
+	}
+}
+
+func TestBaseStoreCopyIsStale_DifferentRootfsid(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	dir := t.TempDir()
+	writeBundleFiles(t, dir, map[string]string{"rootfsid": testRootfsUUIDA})
+	prefix := "base/amd/echo/different-rootfsid"
+	fs.seedArtifact(prefix, map[string]string{"rootfsid": testRootfsUUIDB}, 0, "amd", "")
+
+	stale, err := s.baseStoreCopyIsStale(context.Background(), prefix, dir)
+	if err != nil || !stale {
+		t.Fatalf("baseStoreCopyIsStale = (%v, %v), want (true, nil)", stale, err)
+	}
+}
+
+func TestBaseStoreCopyIsStale_MatchingRootfsid(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	dir := t.TempDir()
+	writeBundleFiles(t, dir, map[string]string{"rootfsid": testRootfsUUIDA})
+	prefix := "base/amd/echo/matching-rootfsid"
+	fs.seedArtifact(prefix, map[string]string{"rootfsid": testRootfsUUIDA}, 0, "amd", "")
+
+	stale, err := s.baseStoreCopyIsStale(context.Background(), prefix, dir)
+	if err != nil || stale {
+		t.Fatalf("baseStoreCopyIsStale = (%v, %v), want (false, nil)", stale, err)
+	}
+}
+
+func TestExportJobSkipsAlreadyDurableForNonBase(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_SESSION, Workload: "echo", Ref: "session-1"}
+	key := artifactPrefix(ref, s.cfg.CpuVendor)
+	writeBundleFiles(t, s.artifactLocalDir(ref), map[string]string{"snapfile": "local"})
+	fs.seedArtifact(key, map[string]string{"snapfile": "remote"}, 0, "amd", "")
+
+	s.runExportJob(context.Background(), exportJob{key: key, ref: ref})
+	if got := fs.calls(key); got != 0 {
+		t.Fatalf("store.Export calls = %d, want 0 for already-durable non-base", got)
+	}
+}
+
+func TestExportJobDoesNotSkipWhenBaseIsStale(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	baseKey := "echo__stale-remote"
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: "echo", Ref: baseKey}
+	prefix := artifactPrefix(ref, s.cfg.CpuVendor)
+	writeBundleFiles(t, s.artifactLocalDir(ref), map[string]string{"rootfsid": testRootfsUUIDA, "snapfile": "local"})
+	fs.seedArtifact(prefix, map[string]string{"rootfsid": testRootfsUUIDB, "snapfile": "remote"}, 0, "amd", "")
+
+	s.runExportJob(context.Background(), exportJob{
+		key: prefix,
+		ref: ref,
+	})
+	if got := fs.calls(prefix); got != 1 {
+		t.Fatalf("store.Export calls = %d, want 1 for stale base", got)
+	}
+	if got := fs.overwrites(prefix); got != 1 {
+		t.Fatalf("overwrite exports = %d, want 1 for stale base", got)
+	}
+}
+
+func TestExportJobDoesNotSkipWhenBaseStalenessCheckErrors(t *testing.T) {
+	fs := newFakeStore()
+	fs.artifactFileErr = context.DeadlineExceeded
+	s := newStoreTestServer(t, fs)
+	baseKey := "echo__staleness-error"
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: "echo", Ref: baseKey}
+	prefix := artifactPrefix(ref, s.cfg.CpuVendor)
+	writeBundleFiles(t, s.artifactLocalDir(ref), map[string]string{"rootfsid": testRootfsUUIDA, "snapfile": "local"})
+	fs.seedArtifact(prefix, map[string]string{"rootfsid": testRootfsUUIDA, "snapfile": "remote"}, 0, "amd", "")
+
+	s.runExportJob(context.Background(), exportJob{key: prefix, ref: ref})
+	if got := fs.calls(prefix); got != 1 {
+		t.Fatalf("store.Export calls = %d, want 1 after staleness check error", got)
+	}
+	if got := fs.overwrites(prefix); got != 1 {
+		t.Fatalf("overwrite exports = %d, want 1 after staleness check error", got)
+	}
+}
+
+func TestRunRestoreJobRejectsRefusedBase(t *testing.T) {
+	fs := newFakeStore()
+	s := newStoreTestServer(t, fs)
+	baseKey := "echo__refused-restore"
+	ref := &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: "echo", Ref: baseKey}
+	prefix := artifactPrefix(ref, s.cfg.CpuVendor)
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDB)
+	fs.seedArtifact(prefix, map[string]string{
 		"imageref":   "img",
 		"memfile":    "mem",
 		"rootfsid":   testRootfsUUIDA,
 		"rootfspath": rootfs,
 		"snapfile":   "snap",
-	}
-	fs.seedArtifact(prefix, files, 0, "amd", "")
+	}, 0, "amd", "")
 
-	if err := s.ReconcileBasesFromDisk(); err != nil {
-		t.Fatalf("ReconcileBasesFromDisk: %v", err)
-	}
-	if !s.baseNeedsRepublish(prefix) {
-		t.Fatal("refused restored bundle was not marked for republish")
-	}
-
-	writeExt4Rootfs(t, rootfsDir, "rootfs.ext4", testRootfsUUIDA)
-	writeIdentityBaseBundle(t, s, baseKey, rootfs, testRootfsUUIDA)
-	s.runExportJob(context.Background(), exportJob{
-		key: prefix,
-		ref: &nodev1.ArtifactRef{
-			Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_BASE,
-			Workload: "echo",
-			Ref:      baseKey,
-		},
+	s.runRestoreJob(context.Background(), restoreJob{
+		ref:      ref,
+		prefix:   prefix,
+		localDir: s.artifactLocalDir(ref),
 	})
-	if got := fs.overwrites(prefix); got != 1 {
-		t.Fatalf("overwrite exports = %d, want 1", got)
+	if s.exported.present(prefix) {
+		t.Fatal("refused restored base was marked exported")
 	}
-	if s.baseNeedsRepublish(prefix) {
-		t.Fatal("republish intent was not cleared after successful export")
+	if _, ok := s.bases.get(baseKey); ok {
+		t.Fatal("refused restored base remained registered")
 	}
 }
