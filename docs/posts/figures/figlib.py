@@ -1,8 +1,8 @@
 """Primitives for the keyed workshop-manual figures under docs/posts/figures.
 
 Every figure on the blog is a line drawing: currentColor strokes, mono labels,
-numbered callouts for stages and lettered callouts for parts. Muted hardware
-colors link callouts to reference keys; routing colors belong to the replay.
+numbered callouts for stages and lettered callouts for parts. Static figures
+and their reference keys are monochrome; routing colors belong to the replay.
 This module holds the vocabulary so every figure shares one geometry (callout
 radius, leader weight, hatch pitch, arrowhead) and a new figure is a layout,
 never a restyle. The output is plain SVG with presentation attributes only, so
@@ -99,18 +99,13 @@ class Figure:
     def callout(
         self, cx: float, cy: float, label: str, *, tone: str | None = None
     ) -> None:
-        hardware = {"hot": "gpu", "warm": "ram", "cold": "cache"}.get(tone, tone)
-        stroke = f"var(--ref-{hardware})" if hardware else "currentColor"
-        # data-key/data-tone let the blog renderer paint the matching key
-        # table cell in the same circle and colour as the figure callout.
-        data = f' data-key="{escape(label)}" data-tone="{hardware}"' if hardware else ""
+        stroke = "currentColor"
+        data = f' data-key="{escape(label)}"'
         self.parts.append(
             f'<circle cx="{cx}" cy="{cy}" r="{CALLOUT_R}" fill="none" '
             f'stroke="{stroke}" stroke-width="{LEADER}"{data}/>'
         )
-        self.parts.append(f'<g color="{stroke}">')
         self.text(cx, cy + 4, label, anchor="middle", size=11)
-        self.parts.append("</g>")
 
     def dot(self, x: float, y: float) -> None:
         self.parts.append(
