@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -858,6 +859,50 @@ func TestSwapPumpInjectsOnThePlaintextLane(t *testing.T) {
 	}
 	if !strings.Contains(back.String(), "200 OK") || !strings.HasSuffix(back.String(), "hi") {
 		t.Errorf("response not relayed to the guest: %q", back.String())
+	}
+}
+
+func TestSwapPumpObservesQuotaAndRelaysResponse(t *testing.T) {
+	reported := make(chan QuotaObservation, 1)
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/quota/claude" {
+			t.Errorf("quota request = %s %s", r.Method, r.URL.Path)
+		}
+		var obs QuotaObservation
+		if err := json.NewDecoder(r.Body).Decode(&obs); err != nil {
+			t.Errorf("decode quota observation: %v", err)
+		}
+		reported <- obs
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer broker.Close()
+
+	upClient, upOrigin := net.Pipe()
+	defer upClient.Close()
+	go func() {
+		defer upOrigin.Close()
+		_, _ = http.ReadRequest(bufio.NewReader(upOrigin))
+		_, _ = io.WriteString(upOrigin, "HTTP/1.1 200 OK\r\nAnthropic-Ratelimit-Unified-Status: allowed_warning\r\nAnthropic-Ratelimit-Unified-5h-Utilization: 0.42\r\nAnthropic-Ratelimit-Unified-5h-Reset: 2026-09-05T20:00:00Z\r\nContent-Length: 2\r\n\r\nhi")
+	}()
+
+	sec := &secretEntry{Header: "Authorization", value: "real", QuotaProvider: "claude"}
+	p := &proxy{
+		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		quotaReporter: newQuotaReporter(broker.URL, slog.New(slog.NewTextHandler(io.Discard, nil))),
+	}
+	guest := "POST http://api.anthropic.com/v1/messages HTTP/1.1\r\nHost: api.anthropic.com\r\nAuthorization: guest\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+	var back bytes.Buffer
+	p.swapPump(bufio.NewReader(strings.NewReader(guest)), &back, nil, upClient, "api.anthropic.com", sec)
+	if !strings.Contains(back.String(), "200 OK") || !strings.HasSuffix(back.String(), "hi") {
+		t.Fatalf("response not relayed: %q", back.String())
+	}
+	select {
+	case obs := <-reported:
+		if obs.Provider != "claude" || obs.Status != "warning" || len(obs.Windows) != 1 || obs.Windows[0].UsedPercent != 42 {
+			t.Fatalf("observation = %#v", obs)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("broker did not receive quota observation")
 	}
 }
 

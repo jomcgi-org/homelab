@@ -11,6 +11,7 @@ go_library(
         "//projects/embervm/tokenbroker/internal/provider",
         "//projects/embervm/tokenbroker/internal/provider/authentik",
         "//projects/embervm/tokenbroker/internal/provider/codexchatgpt",
+        "//projects/embervm/tokenbroker/internal/quota",
         "//projects/embervm/tokenbroker/internal/store",
         "@com_github_prometheus_client_golang//prometheus",
         "@com_github_prometheus_client_golang//prometheus/promhttp",
@@ -31,7 +32,11 @@ go_test(
     embed = [":tokenbroker_lib"],
     deps = [
         "//projects/embervm/tokenbroker/internal/broker",
+        "//projects/embervm/tokenbroker/internal/metrics",
         "//projects/embervm/tokenbroker/internal/provider",
+        "//projects/embervm/tokenbroker/internal/quota",
         "//projects/embervm/tokenbroker/internal/store",
+        "@com_github_prometheus_client_golang//prometheus",
+        "@com_github_prometheus_client_golang//prometheus/testutil",
     ],
 )

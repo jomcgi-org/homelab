@@ -116,6 +116,7 @@ func main() {
 	// https:// to us; an empty catalog leaves the proxy a plain transparent router.
 	brokerURL := os.Getenv("EGRESS_TOKEN_BROKER_URL")
 	secrets := loadSecretsWithBroker(logger, brokerURL)
+	quotaReporter := newQuotaReporter(brokerURL, logger)
 	var minter *caMinter
 	if caCert, caKey := os.Getenv("EGRESS_CA_CERT_FILE"), os.Getenv("EGRESS_CA_KEY_FILE"); caCert != "" && caKey != "" && len(secrets) > 0 {
 		m, err := newCAMinter(caCert, caKey)
@@ -137,6 +138,7 @@ func main() {
 		lookupIP:             net.LookupIP,
 		secrets:              secrets,
 		brokerURL:            brokerURL,
+		quotaReporter:        quotaReporter,
 		minter:               minter,
 		mirrorAddr:           os.Getenv("EGRESS_GIT_MIRROR_ADDR"),
 		logger:               logger,
@@ -210,6 +212,9 @@ type proxy struct {
 	// secrets is the credential catalog (ADR 023 6b); empty disables injection.
 	secrets   []secretEntry
 	brokerURL string
+	// quotaReporter asynchronously sends response-header observations to the
+	// token broker. It is nil when reporting is disabled.
+	quotaReporter *quotaReporter
 	// minter mints leaf certs from the egress CA for TLS termination; nil disables
 	// the TLS-MITM lane (the plaintext inject lane does not need it).
 	minter *caMinter

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -16,6 +18,7 @@ import (
 	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/provider"
 	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/provider/authentik"
 	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/provider/codexchatgpt"
+	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/quota"
 	"github.com/jomcgi/homelab/projects/embervm/tokenbroker/internal/store"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -38,14 +41,17 @@ type forceRefreshState struct {
 	lastForced time.Time
 }
 type server struct {
-	broker           *broker.Broker
-	store            store.Store
-	adapters         map[string]provider.Adapter
-	configs          map[string]grantConfig
-	logins           sync.Map
-	forced           sync.Map
-	logger           *slog.Logger
-	startWaitTimeout time.Duration
+	broker             *broker.Broker
+	store              store.Store
+	adapters           map[string]provider.Adapter
+	configs            map[string]grantConfig
+	logins             sync.Map
+	forced             sync.Map
+	logger             *slog.Logger
+	startWaitTimeout   time.Duration
+	quotaStore         *quota.Store
+	quotaProviders     map[string]struct{}
+	quotaProviderOrder []string
 }
 
 const (
@@ -58,6 +64,7 @@ const (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	quotaProviders := configuredQuotaProviders(logger)
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		logger.Error("in-cluster config failed", "err", err)
@@ -91,12 +98,24 @@ func main() {
 	}
 	m := metrics.New()
 	m.Register(prometheus.DefaultRegisterer)
-	s := &server{store: st, adapters: adapters, configs: configMap, logger: logger, startWaitTimeout: loginStartWaitTimeout}
+	quotaStore := quota.NewStore()
+	prometheus.MustRegister(metrics.NewQuotaCollector(quotaStore, quotaProviders))
+	quotaProviderSet := make(map[string]struct{}, len(quotaProviders))
+	for _, provider := range quotaProviders {
+		quotaProviderSet[provider] = struct{}{}
+	}
+	s := &server{
+		store: st, adapters: adapters, configs: configMap, logger: logger,
+		startWaitTimeout: loginStartWaitTimeout, quotaStore: quotaStore,
+		quotaProviders: quotaProviderSet, quotaProviderOrder: quotaProviders,
+	}
 	s.broker = broker.New(st, adapters, minters, brokerConfigs, logger, m)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.health)
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/grants/", s.grants)
+	mux.HandleFunc("/quota", s.quota)
+	mux.HandleFunc("/quota/", s.quota)
 	addr := env("BROKER_LISTEN_ADDR", ":8080")
 	logger.Info("token broker listening", "addr", addr)
 	if err = http.ListenAndServe(addr, mux); err != nil {
@@ -113,6 +132,107 @@ func configuredGrants(logger *slog.Logger) []grantConfig {
 		os.Exit(1)
 	}
 	return grants
+}
+
+func configuredQuotaProviders(logger *slog.Logger) []string {
+	providers, err := parseQuotaProviders(env("TOKENBROKER_QUOTA_PROVIDERS", "codex,claude"))
+	if err != nil {
+		logger.Error("invalid TOKENBROKER_QUOTA_PROVIDERS", "err", err)
+		os.Exit(1)
+	}
+	return providers
+}
+
+func parseQuotaProviders(raw string) ([]string, error) {
+	seen := make(map[string]struct{})
+	providers := make([]string, 0)
+	for _, part := range strings.Split(raw, ",") {
+		provider := strings.TrimSpace(part)
+		if provider == "" {
+			return nil, fmt.Errorf("provider names must not be empty")
+		}
+		for _, r := range provider {
+			if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' && r != '_' {
+				return nil, fmt.Errorf("invalid provider name %q", provider)
+			}
+		}
+		if _, duplicate := seen[provider]; duplicate {
+			return nil, fmt.Errorf("duplicate provider %q", provider)
+		}
+		seen[provider] = struct{}{}
+		providers = append(providers, provider)
+	}
+	if len(providers) == 0 {
+		return nil, fmt.Errorf("at least one provider is required")
+	}
+	return providers, nil
+}
+
+// quota serves an in-memory view of subscription quota reported by egress
+// proxies. POST /quota/{provider} replaces that provider's latest observation,
+// GET /quota/{provider} reads one view, and GET /quota reads every allowlisted
+// provider. Observations are intentionally not persisted and are lost whenever
+// tokenbroker restarts.
+func (s *server) quota(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/quota" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"reason": "method_not_allowed"})
+			return
+		}
+		providers := make(map[string]quota.View, len(s.quotaProviderOrder))
+		for _, provider := range s.quotaProviderOrder {
+			providers[provider] = s.quotaStore.Get(provider)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"providers": providers})
+		return
+	}
+
+	if !strings.HasPrefix(r.URL.Path, "/quota/") {
+		http.NotFound(w, r)
+		return
+	}
+	provider := strings.TrimPrefix(r.URL.Path, "/quota/")
+	if provider == "" || strings.Contains(provider, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	if _, ok := s.quotaProviders[provider]; !ok {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, s.quotaStore.Get(provider))
+	case http.MethodPost:
+		s.acceptQuota(provider, w, r)
+	default:
+		w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"reason": "method_not_allowed"})
+	}
+}
+
+func (s *server) acceptQuota(provider string, w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	decoder := json.NewDecoder(r.Body)
+	var obs quota.Observation
+	if err := decoder.Decode(&obs); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"reason": "invalid_json"})
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"reason": "invalid_json"})
+		return
+	}
+	obs.Provider = provider
+	if !quota.ValidObservation(obs) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"reason": "invalid_observation"})
+		return
+	}
+	receivedAt := time.Now().UTC()
+	s.quotaStore.Put(provider, obs, receivedAt)
+	s.logger.Info("tokenbroker quota observation accepted", "provider", provider, "status", obs.Status, "windows", len(obs.Windows))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *server) grants(w http.ResponseWriter, r *http.Request) {
