@@ -561,8 +561,67 @@ func TestReconcileBasesDoesNotRemoveIfVMInUse(t *testing.T) {
 	if !strings.Contains(base.buildErr, "UUID mismatch") {
 		t.Fatalf("buildErr = %q, want mismatch reason", base.buildErr)
 	}
-	if _, err := os.Stat(dir); err != nil {
-		t.Fatalf("in-use mismatched base was removed: %v", err)
+	// The bundle is moved aside, not left at bases/<key>: a rebuild publishing
+	// onto that path must find no complete bundle to adopt as a collision winner.
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("in-use mismatched base still at %s (err=%v), want moved aside", dir, err)
+	}
+	aside := staleBaseDirsFor(t, s, baseKey)
+	if len(aside) != 1 {
+		t.Fatalf("moved-aside dirs = %v, want exactly one", aside)
+	}
+	if _, err := os.Stat(filepath.Join(aside[0], "snapfile")); err != nil {
+		t.Fatalf("moved-aside bundle lost its snapfile: %v", err)
+	}
+
+	// While the VM lives, a second reconcile keeps the moved-aside bundle and
+	// does not treat it as a base.
+	if err := s.ReconcileBasesFromDisk(); err != nil {
+		t.Fatalf("second ReconcileBasesFromDisk: %v", err)
+	}
+	if got := staleBaseDirsFor(t, s, baseKey); len(got) != 1 {
+		t.Fatalf("moved-aside dirs after second reconcile = %v, want the same one", got)
+	}
+	if _, ok := s.bases.get(aside[0]); ok {
+		t.Fatalf("moved-aside dir %s was registered as a base", aside[0])
+	}
+
+	// Once nothing references the key, the moved-aside bundle is reclaimed.
+	s.vms.remove("vm-live")
+	if err := s.ReconcileBasesFromDisk(); err != nil {
+		t.Fatalf("third ReconcileBasesFromDisk: %v", err)
+	}
+	if got := staleBaseDirsFor(t, s, baseKey); len(got) != 0 {
+		t.Fatalf("moved-aside dirs after VM gone = %v, want none", got)
+	}
+}
+
+// staleBaseDirsFor lists the moved-aside bundle dirs for baseKey.
+func staleBaseDirsFor(t *testing.T, s *Server, baseKey string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(s.cfg.SnapshotRoot, "bases"))
+	if err != nil {
+		t.Fatalf("ReadDir bases: %v", err)
+	}
+	var out []string
+	for _, ent := range entries {
+		if orig, ok := staleBaseOriginalKey(ent.Name()); ok && orig == baseKey {
+			out = append(out, filepath.Join(s.cfg.SnapshotRoot, "bases", ent.Name()))
+		}
+	}
+	return out
+}
+
+func TestStaleBaseOriginalKey(t *testing.T) {
+	if _, ok := staleBaseOriginalKey("echo__abc"); ok {
+		t.Fatal("plain base key reported as stale")
+	}
+	if _, ok := staleBaseOriginalKey(".stale.123"); ok {
+		t.Fatal("suffix with no key reported as stale")
+	}
+	orig, ok := staleBaseOriginalKey(filepath.Base(staleBaseDir("/x/bases/echo__abc")))
+	if !ok || orig != "echo__abc" {
+		t.Fatalf("staleBaseOriginalKey = (%q, %v), want (echo__abc, true)", orig, ok)
 	}
 }
 
