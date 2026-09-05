@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"log/slog"
 	"os"
@@ -33,10 +35,11 @@ type fakeStore struct {
 	// arts maps a store prefix to its exported files (name -> content) and gen.
 	arts map[string]fakeArtifact
 	// exportCalls counts Export invocations per prefix (skipped or not).
-	exportCalls    map[string]int
-	overwriteCalls map[string]int
-	dataKeyCalls   map[string]int
-	rewrapCh       chan fakeRewrapCall
+	exportCalls     map[string]int
+	overwriteCalls  map[string]int
+	dataKeyCalls    map[string]int
+	rewrapCh        chan fakeRewrapCall
+	artifactFileErr error
 	// reachable is what Reachable reports.
 	reachable bool
 	// order records prefixes in export order (for asserting meta-last is N/A here;
@@ -199,6 +202,24 @@ func (f *fakeStore) ArtifactInfo(_ context.Context, prefix string) (bool, int64,
 		total += uint64(len(c))
 	}
 	return true, art.createdAtMs, total, art.cpuVendor, art.cpuTemplate, art.gen, append([]byte(nil), art.envelope...), nil
+}
+
+func (f *fakeStore) ArtifactFileSHA256(_ context.Context, prefix, name string) (bool, bool, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.artifactFileErr != nil {
+		return false, false, "", f.artifactFileErr
+	}
+	art, ok := f.arts[prefix]
+	if !ok {
+		return false, false, "", nil
+	}
+	content, ok := art.files[name]
+	if !ok {
+		return true, false, "", nil
+	}
+	sum := sha256.Sum256([]byte(content))
+	return true, true, hex.EncodeToString(sum[:]), nil
 }
 
 func (f *fakeStore) Reachable(_ context.Context) bool {
@@ -672,7 +693,7 @@ func TestExportArtifactBaseSkipsWhenSiblingVendorCopyExists(t *testing.T) {
 
 	// A sibling node of the same vendor already exported this ref, with ITS OWN
 	// snapshot bytes.
-	sibling := map[string]string{"imageref": "img", "memfile": "SIBLING-mem", "snapfile": "SIBLING-snap"}
+	sibling := map[string]string{"imageref": "img", "memfile": "SIBLING-mem", "rootfsid": testRootfsUUIDA, "snapfile": "SIBLING-snap"}
 	fs.seedArtifact(prefix, sibling, 0, "amd", "")
 
 	s.registry.sync([]workloadEntry{{Workload: workload, ImageRef: digest, RootfsRef: "/rootfs/bazel-query"}})
@@ -681,7 +702,7 @@ func TestExportArtifactBaseSkipsWhenSiblingVendorCopyExists(t *testing.T) {
 	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref)
 	// Deliberately DIFFERENT bytes from the seeded sibling copy, which is the
 	// real cross-node situation.
-	writeBundleFiles(t, dir, map[string]string{"imageref": "img", "memfile": "LOCAL-mem", "snapfile": "LOCAL-snap"})
+	writeBundleFiles(t, dir, map[string]string{"imageref": "img", "memfile": "LOCAL-mem", "rootfsid": testRootfsUUIDA, "snapfile": "LOCAL-snap"})
 
 	if _, err := s.ExportArtifact(ctx, &nodev1.ExportArtifactRequest{
 		Artifact: &nodev1.ArtifactRef{Kind: nodev1.ArtifactKind_ARTIFACT_KIND_BASE, Workload: workload, Ref: ref},

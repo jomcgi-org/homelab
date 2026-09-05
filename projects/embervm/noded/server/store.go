@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,6 +49,7 @@ type artifactStore interface {
 	// fields list and restore consume, including generation and opaque envelope.
 	// It stays flat so callers depend only on the fields they consume.
 	ArtifactInfo(ctx context.Context, prefix string) (present bool, createdAtUnixMs int64, sizeBytes uint64, cpuVendor, cpuTemplate string, generation uint64, envelope []byte, err error)
+	ArtifactFileSHA256(ctx context.Context, prefix, name string) (artifactPresent, filePresent bool, checksum string, err error)
 	RewrapEnvelope(ctx context.Context, prefix string, options store.ExportOptions) (changed bool, err error)
 }
 
@@ -734,18 +737,49 @@ func (s *Server) exportWithKeys(ctx context.Context, ref *nodev1.ArtifactRef, pr
 		opts.Workload = ref.GetWorkload()
 		opts.Ref = ref.GetRef()
 	}
-	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_BASE && s.baseNeedsRepublish(prefix) {
-		opts.Overwrite = true
+	if ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_BASE {
+		stale, err := s.baseStoreCopyIsStale(ctx, prefix, localDir)
+		if err != nil {
+			s.logger.Warn("noded: baseStoreCopyIsStale", "artifact", prefix, "err", err)
+		}
+		if err != nil || stale {
+			opts.Overwrite = true
+		}
 	}
 	var options []store.ExportOptions
 	if opts != (store.ExportOptions{}) {
 		options = append(options, opts)
 	}
 	moved, skipped, err := s.store.Export(ctx, prefix, localDir, files, generation, time.Now().UnixMilli(), s.cfg.CpuVendor, s.cfg.CpuTemplate, options...)
-	if err == nil && opts.Overwrite {
-		s.clearBaseRepublish(prefix)
-	}
 	return moved, skipped, err
+}
+
+// baseStoreCopyIsStale compares the rootfs identity captured in a local base
+// bundle with the checksum recorded in the remote artifact metadata. A local
+// bundle with no rootfsid cannot prove which rootfs it was captured against, so
+// it is never allowed to overwrite the store copy: the reconcile gate removes
+// such a bundle on its next pass and the rebuild exports a verifiable one.
+func (s *Server) baseStoreCopyIsStale(ctx context.Context, prefix, localDir string) (bool, error) {
+	rootfsID, err := os.ReadFile(filepath.Join(localDir, "rootfsid"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read local base rootfsid: %w", err)
+	}
+	localSum := sha256.Sum256(rootfsID)
+	localSHA256 := hex.EncodeToString(localSum[:])
+	artifactPresent, filePresent, remoteSHA256, err := s.store.ArtifactFileSHA256(ctx, prefix, "rootfsid")
+	if err != nil {
+		return false, err
+	}
+	if !artifactPresent {
+		return false, nil
+	}
+	if !filePresent {
+		return true, nil
+	}
+	return localSHA256 != remoteSHA256, nil
 }
 
 // resolveRestorePrefix composes the store prefix a restore reads from. It
@@ -1282,9 +1316,15 @@ func (s *Server) runExportJob(ctx context.Context, job exportJob) {
 	// freshness. A presence short-circuit here would let completeRetirement
 	// delete newer local bytes while the store still holds an older copy.
 	// Export's own checksum compare is the idempotency gate for this kind.
-	if job.ref.GetKind() != nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE &&
-		!s.baseNeedsRepublish(job.key) &&
-		s.alreadyDurable(ctx, job.ref, job.key) {
+	shouldCheckDurable := job.ref.GetKind() != nodev1.ArtifactKind_ARTIFACT_KIND_SESSION_WORKSPACE
+	if job.ref.GetKind() == nodev1.ArtifactKind_ARTIFACT_KIND_BASE {
+		stale, staleErr := s.baseStoreCopyIsStale(ctx, job.key, localDir)
+		if staleErr != nil {
+			s.logger.Warn("noded: baseStoreCopyIsStale", "artifact", job.key, "err", staleErr)
+		}
+		shouldCheckDurable = staleErr == nil && !stale
+	}
+	if shouldCheckDurable && s.alreadyDurable(ctx, job.ref, job.key) {
 		s.logger.Info("noded: export skipped, artifact already durable in store",
 			"artifact", job.key, "kind", job.ref.GetKind().String())
 		s.signalChange()
@@ -1592,8 +1632,9 @@ func (s *Server) runRestoreJob(ctx context.Context, job restoreJob) {
 		return
 	}
 	s.reregisterRestored(job.ref)
-	if s.baseNeedsRepublish(job.prefix) {
-		s.logger.Warn("noded: restored base refused by rootfs identity gate", "artifact", job.prefix)
+	base, ok := s.bases.get(job.ref.GetRef())
+	if !ok || base.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+		s.logger.Warn("noded: restored base refused by rootfs identity gate, will rebuild on next reconcile", "artifact", job.prefix)
 		s.signalChange()
 		return
 	}
@@ -1694,31 +1735,4 @@ func (c *exportedCache) generation(prefix string) (uint64, bool) {
 	defer c.mu.RUnlock()
 	g, ok := c.gens[prefix]
 	return g, ok
-}
-
-func (s *Server) markBaseRepublish(prefix string) {
-	if prefix == "" {
-		return
-	}
-	s.republishMu.Lock()
-	if s.republish == nil {
-		s.republish = make(map[string]bool)
-	}
-	s.republish[prefix] = true
-	s.republishMu.Unlock()
-	if s.exported != nil {
-		s.exported.clear(prefix)
-	}
-}
-
-func (s *Server) baseNeedsRepublish(prefix string) bool {
-	s.republishMu.Lock()
-	defer s.republishMu.Unlock()
-	return s.republish[prefix]
-}
-
-func (s *Server) clearBaseRepublish(prefix string) {
-	s.republishMu.Lock()
-	delete(s.republish, prefix)
-	s.republishMu.Unlock()
 }

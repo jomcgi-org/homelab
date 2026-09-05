@@ -324,11 +324,6 @@ type Server struct {
 	// NodeStatus projection for the per-artifact `exported` bool and
 	// Volume.exported_generation.
 	exported *exportedCache
-	// republish tracks base store prefixes whose restored bundle was rejected for
-	// a rootfs identity mismatch. The next rebuilt-base export must overwrite the
-	// stale store object even when its checksums happen to match.
-	republishMu sync.Mutex
-	republish   map[string]bool
 	// exportCh is the bounded async export queue; exportDedupe drops a re-enqueue
 	// of an already-queued prefix. Both nil/empty until startExportQueue runs.
 	exportCh       chan exportJob
@@ -458,7 +453,6 @@ func New(opts Options) *Server {
 		store:            opts.Store,
 		signStoreRequest: opts.SignStoreRequest,
 		exported:         newExportedCache(),
-		republish:        make(map[string]bool),
 		exportDedupe:     make(map[string]struct{}),
 		restoreDedupe:    make(map[string]struct{}),
 		subs:             make(map[chan struct{}]struct{}),
@@ -838,7 +832,6 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 		s.signalChange()
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: build base %q: %v", baseKey, err)
 	}
-	s.bases.readyBuild(baseKey, workload, imageDigest, img.RootfsPath, readyPath, sizeBytes)
 	// Persist the runtime image ref alongside the snapshot so a daemon restart can
 	// restore it (ReconcileBasesFromDisk). The base dir name is <workload>__<sig>
 	// and does NOT encode the runtime image, but a stateful cold boot resolves the
@@ -846,7 +839,12 @@ func (s *Server) driveBuild(ctx context.Context, req *nodev1.BuildBaseRequest, b
 	// it is unbootable. Best-effort: a missing ref file just forces a rebuild.
 	s.writeBaseImageRef(baseKey, imageDigest)
 	s.writeBaseRootfsPath(baseKey, img.RootfsPath)
-	_ = s.writeBaseRootfsID(baseKey, img.RootfsPath)
+	if err := s.writeBaseRootfsID(baseKey, img.RootfsPath); err != nil {
+		s.bases.failBuild(baseKey, err.Error())
+		s.signalChange()
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: persist base rootfs identity: %v", err)
+	}
+	s.bases.readyBuild(baseKey, workload, imageDigest, img.RootfsPath, readyPath, sizeBytes)
 
 	// Serving base (R3, D-R3.11.2): additionally persist a cold-boot-readable handler
 	// artifact from the SAME verified archive bytes noded already holds, so a serving
@@ -933,9 +931,14 @@ func (s *Server) adoptSiblingBaseBundle(baseKey, workload, imageDigest, rootfsPa
 			return nil, false
 		}
 	}
-	if ok, reason := baseRootfsMatches(dir, rootfsPath); !ok {
-		s.logger.Warn("noded: declining to adopt sibling base bundle with rootfs identity mismatch",
-			"base", baseKey, "expected", s.readBaseRootfsID(baseKey), "actual", reason)
+	if ok, mismatch := baseRootfsMatches(dir, rootfsPath); !ok {
+		args := []any{"base", baseKey, "expected", s.readBaseRootfsID(baseKey)}
+		if mismatch.Mismatch {
+			args = append(args, "actual", mismatch.Actual)
+		} else {
+			args = append(args, "reason", mismatch.Reason)
+		}
+		s.logger.Warn("noded: declining to adopt sibling base bundle with rootfs identity mismatch", args...)
 		return nil, false
 	}
 	fi, err := os.Stat(snapfile)
@@ -1122,10 +1125,17 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		rootfsPath = base.rootfsPath
 	}
 	baseDir := filepath.Join(s.cfg.SnapshotRoot, "bases", ref)
-	if ok, reason := baseRootfsMatches(baseDir, rootfsPath); !ok {
+	if ok, mismatch := baseRootfsMatches(baseDir, rootfsPath); !ok {
+		args := []any{"base", ref, "expected", s.readBaseRootfsID(ref)}
+		if mismatch.Mismatch {
+			args = append(args, "actual", mismatch.Actual)
+		} else {
+			args = append(args, "reason", mismatch.Reason)
+		}
+		s.logger.Warn("noded: refusing to boot base with rootfs identity mismatch", args...)
 		return nil, status.Errorf(codes.FailedPrecondition,
-			"noded: base rootfs identity mismatch: base %s recorded %s, rootfs %s has %s",
-			ref, s.readBaseRootfsID(ref), rootfsPath, reason)
+			"noded: base rootfs identity mismatch: base %s recorded %s, rootfs %s: %s",
+			ref, s.readBaseRootfsID(ref), rootfsPath, rootfsMismatchDescription(mismatch))
 	}
 	if req.GetLineageId() == "" && (req.GetVolumeMount() != "" || req.GetVolumeSizeBytes() != 0) {
 		return nil, status.Error(codes.InvalidArgument, "noded: lineage_id required for session volume fields")
@@ -2881,11 +2891,14 @@ func (s *Server) snapshotSessionsDir() string {
 var ErrScratchGenerationUnavailable = errors.New("scratch generation unavailable")
 
 // ReconcileBasesFromDisk scans SnapshotRoot/bases for base bundles left by a
-// prior daemon incarnation and registers them READY, so the control plane
-// reconciles against existing snapshots instead of rebuilding. A base dir name is
-// the baseKey "<workload>__<sig>"; the workload prefix is recovered for the
-// capacity report. A missing dir is a fresh node; any other scan error is
-// returned so startup logs the real failure class and retries.
+// prior daemon incarnation and registers usable bundles READY, so the control
+// plane reconciles against existing snapshots instead of rebuilding. The rootfs
+// identity gate removes a base with no recorded rootfs path and a base with no
+// rootfsid sidecar. This complements sweepRootfs in rootfs_gc.go, which removes
+// unreferenced rootfs files rather than base bundles. A base dir name is the
+// baseKey "<workload>__<sig>"; the workload prefix is recovered for the capacity
+// report. A missing dir is a fresh node; any other scan error is returned so
+// startup logs the real failure class and retries.
 func (s *Server) ReconcileBasesFromDisk() error {
 	s.scratchReconcileMu.Lock()
 	defer s.scratchReconcileMu.Unlock()
@@ -2941,6 +2954,11 @@ func (s *Server) ReconcileBasesFromDisk() error {
 			continue
 		}
 		baseKey := ent.Name()
+		// A live BuildBase owns this key and may still be publishing its bundle.
+		// Leave both its registry state and on-disk files untouched.
+		if entry, known := s.bases.get(baseKey); known && entry.state == nodev1.BaseBuildState_BASE_BUILD_STATE_BUILDING {
+			continue
+		}
 		snapfile := filepath.Join(root, baseKey, "snapfile")
 		fi, err := os.Stat(snapfile)
 		if err != nil {
@@ -2999,29 +3017,37 @@ func (s *Server) ReconcileBasesFromDisk() error {
 		// is retention's job, not adoption's.
 		if state == nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
 			baseDir := filepath.Join(root, baseKey)
-			if ok, reason := baseRootfsMatches(baseDir, rootfsPath); !ok {
+			if ok, mismatch := baseRootfsMatches(baseDir, rootfsPath); !ok {
 				expected := s.readBaseRootfsID(baseKey)
-				s.logger.Warn("noded: removing base with rootfs identity mismatch during reconcile",
-					"base", baseKey, "expected", expected, "actual", reason)
-				prefix := artifactPrefix(&nodev1.ArtifactRef{
-					Kind:     nodev1.ArtifactKind_ARTIFACT_KIND_BASE,
-					Workload: workloadFromBaseKey(baseKey),
-					Ref:      baseKey,
-				}, s.cfg.CpuVendor)
-				s.markBaseRepublish(prefix)
-				if err := os.RemoveAll(baseDir); err != nil {
-					s.logger.Warn("noded: remove base with rootfs identity mismatch", "base", baseKey, "err", err)
+				buildErr = rootfsMismatchDescription(mismatch)
+				args := []any{"base", baseKey, "expected", expected}
+				if mismatch.Mismatch {
+					args = append(args, "actual", mismatch.Actual)
 				} else {
-					gc++
+					args = append(args, "reason", mismatch.Reason)
 				}
-				s.bases.remove(baseKey)
-				continue
+				if vmID, inUse := s.vms.snapshotRefInUse(baseKey); inUse {
+					state = nodev1.BaseBuildState_BASE_BUILD_STATE_NONE
+					args = append(args, "vm", vmID)
+					s.logger.Warn("noded: base failed rootfs identity gate but is in use by live vm, reporting base absent", args...)
+				} else {
+					s.logger.Warn("noded: removing base with rootfs identity mismatch during reconcile", args...)
+					if err := os.RemoveAll(baseDir); err != nil {
+						s.logger.Warn("noded: remove base with rootfs identity mismatch", "base", baseKey, "err", err)
+					} else {
+						gc++
+					}
+					s.bases.remove(baseKey)
+					continue
+				}
 			}
-			if refusal := s.snapshotFormatRefusal(snapfile); refusal != "" {
-				state = nodev1.BaseBuildState_BASE_BUILD_STATE_NONE
-				buildErr = refusal
-				s.logger.Warn("noded: refusing to register base with unusable snapshot format, reporting base absent",
-					"base", baseKey, "reason", refusal)
+			if state == nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+				if refusal := s.snapshotFormatRefusal(snapfile); refusal != "" {
+					state = nodev1.BaseBuildState_BASE_BUILD_STATE_NONE
+					buildErr = refusal
+					s.logger.Warn("noded: refusing to register base with unusable snapshot format, reporting base absent",
+						"base", baseKey, "reason", refusal)
+				}
 			}
 		}
 		memfile := filepath.Join(root, baseKey, "memfile")

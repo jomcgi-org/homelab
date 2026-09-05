@@ -61,6 +61,9 @@ type fakeDriver struct {
 	// vsockDir relocates fake guest sockets under a test-owned temporary
 	// directory. Empty preserves the historical /tmp path.
 	vsockDir string
+	// snapshotRoot lets successful BuildBase tests mirror the real driver's
+	// publication of a bundle directory before identity sidecars are written.
+	snapshotRoot string
 
 	// Session-driver seam (R2). sessionBundles is the in-memory stand-in for the
 	// on-disk sessions/ dir: a Bank writes a ref -> marker entry (the "state" the
@@ -156,6 +159,18 @@ func (f *fakeDriver) SnapshotBase(_ context.Context, _ substrate.Handle, baseKey
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.snapshots++
+	if f.snapshotRoot != "" {
+		dir := filepath.Join(f.snapshotRoot, "bases", baseKey)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return substrate.SnapshotRef{}, err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "snapfile"), []byte("snap"), 0o600); err != nil {
+			return substrate.SnapshotRef{}, err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "memfile"), []byte("mem"), 0o600); err != nil {
+			return substrate.SnapshotRef{}, err
+		}
+	}
 	return substrate.SnapshotRef{ID: baseKey, Base: true, SizeBytes: 4096}, nil
 }
 
@@ -985,13 +1000,15 @@ func TestWatchNodeInitialStatus(t *testing.T) {
 // driver: first call builds and snapshots, the second is an already_built no-op.
 func TestBuildBaseIdempotent(t *testing.T) {
 	drv := &fakeDriver{}
-	build := &fakeDriver{} // separate recorder for the build path
+	snapshotRoot := t.TempDir()
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "rootfs.ext4", testRootfsUUIDA)
+	build := &fakeDriver{snapshotRoot: snapshotRoot} // separate recorder for the build path
 	tr := &fakeTransport{}
 	s := New(Options{
 		Config: config.Config{
-			Arch: "amd64", Node: "node-4", SnapshotRoot: t.TempDir(),
+			Arch: "amd64", Node: "node-4", SnapshotRoot: snapshotRoot,
 			BootReadyTimeout: time.Second,
-			Images:           map[string]config.Image{"img:1": {RootfsPath: "/rootfs.ext4"}},
+			Images:           map[string]config.Image{"img:1": {RootfsPath: rootfs}},
 		},
 		Driver:         drv,
 		Transport:      tr,
@@ -1206,14 +1223,16 @@ func newZipTestServer(t *testing.T, archiveBytes []byte, archiveDelay time.Durat
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 
-	build := &fakeDriver{}
+	snapshotRoot := t.TempDir()
+	rootfs := writeExt4Rootfs(t, t.TempDir(), "runtime.ext4", testRootfsUUIDA)
+	build := &fakeDriver{snapshotRoot: snapshotRoot}
 	s := New(Options{
 		Config: config.Config{
-			Arch: "amd64", Node: "node-4", SnapshotRoot: t.TempDir(),
+			Arch: "amd64", Node: "node-4", SnapshotRoot: snapshotRoot,
 			BootReadyTimeout:    time.Second,
 			ArchiveFetchTimeout: 30 * time.Second,
 			ArchiveMaxBytes:     512 << 20,
-			Images:              map[string]config.Image{"runtime-python:1": {RootfsPath: "/runtime.ext4"}},
+			Images:              map[string]config.Image{"runtime-python:1": {RootfsPath: rootfs}},
 		},
 		Driver:         &fakeDriver{},
 		Transport:      tr,
@@ -1461,15 +1480,17 @@ func TestBuildBaseServingRegistersImage(t *testing.T) {
 		mux.HandleFunc("/archive.zip", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(archive) })
 		ts := httptest.NewServer(mux)
 		t.Cleanup(ts.Close)
-		build := &fakeDriver{}
+		snapshotRoot := t.TempDir()
+		rootfs := writeExt4Rootfs(t, t.TempDir(), "runtime.ext4", testRootfsUUIDA)
+		build := &fakeDriver{snapshotRoot: snapshotRoot}
 		fsd := newFakeServingDriver(t.TempDir())
 		s := New(Options{
 			Config: config.Config{
-				Arch: "amd64", Node: "node-4", SnapshotRoot: t.TempDir(),
+				Arch: "amd64", Node: "node-4", SnapshotRoot: snapshotRoot,
 				BootReadyTimeout:    time.Second,
 				ArchiveFetchTimeout: 30 * time.Second,
 				ArchiveMaxBytes:     512 << 20,
-				Images:              map[string]config.Image{"runtime-python:1": {RootfsPath: "/runtime.ext4"}},
+				Images:              map[string]config.Image{"runtime-python:1": {RootfsPath: rootfs}},
 			},
 			Driver:         &fakeDriver{},
 			ServingDriver:  fsd,

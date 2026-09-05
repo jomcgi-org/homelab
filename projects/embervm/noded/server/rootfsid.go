@@ -55,24 +55,41 @@ func ext4UUID(path string) (string, error) {
 	return fmt.Sprintf("%s-%s-%s-%s-%s", hexUUID[:8], hexUUID[8:12], hexUUID[12:16], hexUUID[16:20], hexUUID[20:]), nil
 }
 
+// RootfsMismatch describes why a base bundle's recorded rootfs identity does
+// not match the filesystem currently present at its backing path.
+type RootfsMismatch struct {
+	Mismatch bool
+	Actual   string // The actual UUID on the rootfs, or "" if unavailable.
+	Reason   string // A description for failures other than a UUID mismatch.
+}
+
 // baseRootfsMatches verifies that a base bundle was captured against the ext4
-// filesystem currently present at rootfsPath. reason is either the actual UUID
-// on a mismatch or a description of why either identity could not be read.
-func baseRootfsMatches(dir, rootfsPath string) (ok bool, reason string) {
+// filesystem currently present at rootfsPath.
+func baseRootfsMatches(dir, rootfsPath string) (bool, *RootfsMismatch) {
 	recorded, err := os.ReadFile(filepath.Join(dir, "rootfsid"))
 	if err != nil {
-		return false, fmt.Sprintf("read rootfsid: %v", err)
+		return false, &RootfsMismatch{Reason: fmt.Sprintf("read rootfsid: %v", err)}
 	}
 	expected := strings.TrimSpace(string(recorded))
 	if expected == "" {
-		return false, "rootfsid is empty"
+		return false, &RootfsMismatch{Reason: "rootfsid is empty"}
 	}
 	actual, err := ext4UUID(rootfsPath)
 	if err != nil {
-		return false, err.Error()
+		return false, &RootfsMismatch{Reason: err.Error()}
 	}
 	if expected != actual {
-		return false, actual
+		return false, &RootfsMismatch{Mismatch: true, Actual: actual}
 	}
-	return true, ""
+	return true, nil
+}
+
+func rootfsMismatchDescription(mismatch *RootfsMismatch) string {
+	if mismatch == nil {
+		return "unknown rootfs identity failure"
+	}
+	if mismatch.Mismatch {
+		return fmt.Sprintf("rootfs UUID mismatch, actual %s", mismatch.Actual)
+	}
+	return mismatch.Reason
 }
