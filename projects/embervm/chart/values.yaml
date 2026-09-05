@@ -1262,6 +1262,12 @@ noded:
   # real concurrency; this only stops a runaway from exhausting the node.
   maxLiveVMs: 8
 
+  # Memory admission model for a brick (EMBERVM_NODED_ADMISSION_MODEL).
+  # observed reads lagging cgroup headroom; reserved keeps a declared claims
+  # ledger plus per-VM overhead (noded/server/pressure.go). #4185 tracks moving
+  # the GKE bricks to reserved in a separate values PR once this template lands.
+  admissionModel: observed
+
   # Use Firecracker dirty-page diffs for repeated memory banks. Disabled by
   # default because the merge-at-bank protocol pays a full-size copy of the
   # previous base on ext4 scratch, which has no reflink support, so the Bank RPC
