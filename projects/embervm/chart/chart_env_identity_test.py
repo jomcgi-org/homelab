@@ -333,23 +333,50 @@ def test_noded_bearer_secret_flips_control_plane_and_bricks_together():
 
 def test_noded_admission_model_defaults_observed_and_accepts_reserved():
     chart = _chart_dir()
-    env_pattern = re.compile(
-        r"name:\s*EMBERVM_NODED_ADMISSION_MODEL\s+value:\s*\"([^\"]+)\""
-    )
 
-    observed = _render("noded-admission", [chart / "values.yaml"])
-    observed_values = env_pattern.findall(observed)
-    assert observed_values, "default render produced no noded admission model env"
-    assert set(observed_values) == {"observed"}
+    cases = [
+        (
+            ["bricks.enabled=true"],
+            {
+                "EMBERVM_NODED_ADMISSION_MODEL": "observed",
+                "EMBERVM_NODED_VM_OVERHEAD_MIB": "0",
+            },
+        ),
+        (
+            [
+                "bricks.enabled=true",
+                "noded.admissionModel=reserved",
+                "noded.vmOverheadMib=512",
+            ],
+            {
+                "EMBERVM_NODED_ADMISSION_MODEL": "reserved",
+                "EMBERVM_NODED_VM_OVERHEAD_MIB": "512",
+            },
+        ),
+    ]
 
-    reserved = _render(
-        "noded-admission",
-        [chart / "values.yaml"],
-        ["noded.admissionModel=reserved"],
-    )
-    reserved_values = env_pattern.findall(reserved)
-    assert reserved_values, "reserved render produced no noded admission model env"
-    assert set(reserved_values) == {"reserved"}
+    for values, expected in cases:
+        rendered = _render("noded-admission", [chart / "values.yaml"], values)
+        brick_deployments = [
+            doc
+            for kind, _, doc in _docs(rendered)
+            if kind == "Deployment"
+            and "app.kubernetes.io/component: noded-brick" in doc
+        ]
+        assert brick_deployments, (
+            "noded admission render produced no brick Deployment; this test is inert"
+        )
+
+        for deployment in brick_deployments:
+            for name, value in expected.items():
+                rendered_env = re.search(
+                    rf'name:\s*{name}\s+value:\s*"([^\"]+)"', deployment
+                )
+                assert rendered_env, f"brick Deployment is missing {name}"
+                assert rendered_env.group(1) == value, (
+                    f"brick Deployment renders {name}={rendered_env.group(1)!r}, "
+                    f"want {value!r}"
+                )
 
 
 def test_noded_onepassword_item_uses_default_shared_secret_name():

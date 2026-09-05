@@ -1270,7 +1270,14 @@ noded:
   # observed reads lagging cgroup headroom; reserved keeps a declared claims
   # ledger plus per-VM overhead (noded/server/pressure.go). #4185 tracks moving
   # the GKE bricks to reserved in a separate values PR once this template lands.
+  # noded validates this at boot and refuses anything but observed or reserved,
+  # so a typo or null override (rendered as an empty string) crashloops every
+  # brick at once.
   admissionModel: observed
+
+  # Per-VM host overhead in MiB charged by the reserved model on top of the
+  # guest's declared memory; ignored under observed.
+  vmOverheadMib: 0
 
   # Use Firecracker dirty-page diffs for repeated memory banks. Disabled by
   # default because the merge-at-bank protocol pays a full-size copy of the
