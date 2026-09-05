@@ -767,6 +767,10 @@ func (d *Driver) ScanServingHandlerArtifacts() []substrate.ServingHandlerArtifac
 			continue
 		}
 		baseKey := e.Name()
+		// Ignore move-aside and in-progress bundles; neither is a serving base.
+		if strings.Contains(baseKey, ".stale.") || strings.HasSuffix(baseKey, ".building") {
+			continue
+		}
 		zipPath := d.baseHandlerZip(baseKey)
 		runtimeRef, rerr := os.ReadFile(d.baseHandlerRuntimeRef(baseKey))
 		if rerr != nil {
