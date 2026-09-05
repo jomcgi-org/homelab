@@ -355,8 +355,8 @@ components:
         reason: { type: string, enum: [brick_gone] }
         retryable: { type: boolean, enum: [true] }
         lineage_id: { type: string }
-        session_state: { type: string, enum: [banked, parked, failed] }
-        node_id: { type: string }
+        session_state: { type: string, enum: [running, banked, parked, failed] }
+        node_id: { type: [string, "null"] }
     SessionCreated:
       type: object
       properties:
@@ -394,6 +394,7 @@ components:
         generation: { type: integer, description: Increments on every bank (lineage). }
         base_digest: { type: string }
         created_at: { type: integer, description: epoch ms }
+        invoke_started_at: { type: [integer, "null"], description: epoch ms }
         last_invoke_at: { type: integer, description: epoch ms }
         expires_at: { type: integer, description: epoch ms }
         updated_at: { type: integer, description: epoch ms }

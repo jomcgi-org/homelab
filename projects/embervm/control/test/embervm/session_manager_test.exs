@@ -2283,14 +2283,41 @@ defmodule Embervm.SessionManagerTest do
   end
 
   test "brick_gone with an existing bank returns the session to banked" do
-    ctx = start_stack()
+    parent = self()
+    {:ok, bank_calls} = Agent.start_link(fn -> 0 end)
+
+    bank_fun = fn _channel, req ->
+      case Agent.get_and_update(bank_calls, fn calls -> {calls, calls + 1} end) do
+        0 ->
+          {:ok, %BankResponse{snapshot_ref: "snap-#{req.session_id}", size_bytes: 1_000}}
+
+        1 ->
+          send(parent, {:second_bank_started, self()})
+
+          receive do
+            :finish_second_bank ->
+              {:ok, %BankResponse{snapshot_ref: "snap-new-#{req.session_id}", size_bytes: 2_000}}
+          end
+      end
+    end
+
+    ctx = start_stack(bank_fun: bank_fun)
     put_session_workload(ctx, "wl-brick-bank")
     {:ok, created} = SessionManager.create(ctx.mgr, "wl-brick-bank", "p1")
     assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
     banked = wait_for_state(ctx, created.session_id, :banked)
 
     SessionStore.adopt_state(ctx.store, created.session_id, :running)
+    SessionStore.adopt_residency(ctx.store, created.session_id, "node-4", "vm-second-bank")
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    assert_receive {:second_bank_started, bank_worker}, 1_000
+    assert :sys.get_state(ctx.mgr).bank_inflight["node-4"] == 1
+
     assert {:ok, :banked} = SessionManager.brick_gone(ctx.mgr, created.session_id, %{node_id: "node-4", pod_uid: "pod-1"})
+    assert :sys.get_state(ctx.mgr).bank_inflight["node-4"] == 1
+
+    send(bank_worker, :finish_second_bank)
+    assert eventually(fn -> :sys.get_state(ctx.mgr).bank_inflight["node-4"] == 0 end)
 
     {:ok, recovered} = SessionStore.get(ctx.store, created.session_id)
     assert recovered.state == :banked
@@ -2346,6 +2373,18 @@ defmodule Embervm.SessionManagerTest do
     assert {:error, :brick_gone} = Task.await(invoke, 2_000)
     assert {:ok, %{state: :failed, terminal_reason: "brick_gone"}} =
              SessionStore.get(ctx.store, created.session_id)
+  end
+
+  test "drain banks a running row whose session process is missing" do
+    ctx = start_stack()
+    put_session_workload(ctx, "wl-drain-missing-process")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-drain-missing-process", "p1")
+    assert [{pid, _}] = Registry.lookup(ctx.registry, created.session_id)
+    assert :ok = DynamicSupervisor.terminate_child(ctx.sup, pid)
+    assert eventually(fn -> Registry.lookup(ctx.registry, created.session_id) == [] end)
+
+    assert SessionManager.drain_node(ctx.mgr, "node-4") == 1
+    assert wait_for_state(ctx, created.session_id, :banked).state == :banked
   end
 
   test "node-down sweep settles running, relighting, and creating sessions" do
@@ -2532,6 +2571,30 @@ defmodule Embervm.SessionManagerTest do
     # its invoke completes on the healthy assign path.
     assert {:ok, fresh} = SessionManager.create(ctx.mgr, "wl-wedge", "p1")
     assert {:ok, %{status_code: 200, body: "z"}} = SessionManager.invoke(ctx.mgr, fresh.session_id, %{body: "z"})
+  end
+
+  test "the invoke watchdog reports brick_gone when registry health shows preemption" do
+    for {suffix, status} <- [
+          {"down", %{health: :down, draining: false, tombstoned: false, pod_uid: "pod-down"}},
+          {"draining", %{health: :healthy, draining: true, tombstoned: false, pod_uid: "pod-draining"}}
+        ] do
+      ctx =
+        start_stack(
+          assign_fun: fn _channel, _req -> :timer.sleep(:infinity) end,
+          brick_status_fun: fn _node -> status end,
+          invoke_watchdog_ms: 150
+        )
+
+      workload = "wl-watchdog-#{suffix}"
+      put_session_workload(ctx, workload)
+      {:ok, created} = SessionManager.create(ctx.mgr, workload, "p1")
+
+      assert {:error, :brick_gone} =
+               SessionManager.invoke(ctx.mgr, created.session_id, %{body: "turn"})
+
+      assert {:ok, %{state: :failed, terminal_reason: "brick_gone"}} =
+               SessionStore.get(ctx.store, created.session_id)
+    end
   end
 
   test "a fast invoke completes without the watchdog firing" do

@@ -116,6 +116,7 @@ defmodule Embervm.NodeRegistry do
 
   @unknown_after_ms 5_000
   @down_after_ms 15_000
+  @session_sweep_timeout_ms 30_000
   @age_check_ms 1_000
   # How long an instance may go without re-registering (dial-home) before its
   # registration is considered LAPSED. noded re-registers every ~30s, so 90s is
@@ -207,6 +208,12 @@ defmodule Embervm.NodeRegistry do
   @spec brick_status(GenServer.server(), String.t()) :: map()
   def brick_status(server \\ __MODULE__, node_id) do
     GenServer.call(server, {:brick_status, node_id})
+  end
+
+  @doc "Health and drain state for several configured nodes from one registry snapshot."
+  @spec brick_statuses(GenServer.server(), [String.t()]) :: %{String.t() => map()}
+  def brick_statuses(server \\ __MODULE__, node_ids) when is_list(node_ids) do
+    GenServer.call(server, {:brick_statuses, node_ids})
   end
 
   @doc "Return the health state for every registered node instance."
@@ -594,40 +601,12 @@ defmodule Embervm.NodeRegistry do
   end
 
   def handle_call({:brick_status, node_id}, _from, state) do
-    runtimes =
-      state.node_runtime
-      |> Enum.filter(fn {instance_id, rt} -> instance_id == node_id or rt.configured_id == node_id end)
-      |> Enum.map(fn {_instance_id, rt} -> rt end)
+    {:reply, brick_status_view(state, node_id), state}
+  end
 
-    tombstone =
-      Enum.find(state.instance_tombstones, fn {instance_id, entry} ->
-        instance_id == node_id or Map.get(entry, :configured_id) == node_id
-      end)
-
-    reply =
-      case runtimes do
-        [] ->
-          %{
-            node_id: node_id,
-            health: if(tombstone, do: :down, else: :unknown),
-            draining: false,
-            tombstoned: not is_nil(tombstone),
-            pod_uid: tombstone && elem(tombstone, 1).pod_uid
-          }
-
-        rows ->
-          row = Enum.find(rows, &(&1.draining or &1.health == :down)) || List.first(rows)
-
-          %{
-            node_id: node_id,
-            health: row.health,
-            draining: Enum.any?(rows, & &1.draining),
-            tombstoned: false,
-            pod_uid: row.pod_uid
-          }
-      end
-
-    {:reply, reply, state}
+  def handle_call({:brick_statuses, node_ids}, _from, state) do
+    snapshot = Map.new(node_ids, &{&1, brick_status_view(state, &1)})
+    {:reply, snapshot, state}
   end
 
   def handle_call(:expected_instances, _from, state) do
@@ -1338,15 +1317,8 @@ defmodule Embervm.NodeRegistry do
       end
     end
 
-    try do
-      rt = state.node_runtime[node_id]
-      state.session_sweep_fun.(rt.configured_id, rt.pod_uid)
-    rescue
-      e -> Logger.error("embervm node registry: session sweep for #{node_id} raised: #{inspect(e)}")
-    catch
-      kind, reason ->
-        Logger.error("embervm node registry: session sweep for #{node_id} exited: #{inspect({kind, reason})}")
-    end
+    rt = state.node_runtime[node_id]
+    start_session_sweep(state.session_sweep_fun, rt.configured_id, rt.pod_uid)
 
     case state.node_runtime[node_id].streamer do
       {pid, _ref} ->
@@ -1362,6 +1334,66 @@ defmodule Embervm.NodeRegistry do
       nil ->
         state
     end
+  end
+
+  defp brick_status_view(state, node_id) do
+    runtimes =
+      state.node_runtime
+      |> Enum.filter(fn {instance_id, rt} -> instance_id == node_id or rt.configured_id == node_id end)
+      |> Enum.map(fn {_instance_id, rt} -> rt end)
+
+    tombstone =
+      Enum.find(state.instance_tombstones, fn {instance_id, entry} ->
+        instance_id == node_id or Map.get(entry, :configured_id) == node_id
+      end)
+
+    case runtimes do
+      [] ->
+        %{
+          node_id: node_id,
+          health: if(tombstone, do: :down, else: :unknown),
+          draining: false,
+          tombstoned: not is_nil(tombstone),
+          pod_uid: tombstone && elem(tombstone, 1).pod_uid
+        }
+
+      rows ->
+        row = Enum.find(rows, &(&1.draining or &1.health == :down)) || List.first(rows)
+
+        %{
+          node_id: node_id,
+          health: row.health,
+          draining: Enum.any?(rows, & &1.draining),
+          tombstoned: false,
+          pod_uid: row.pod_uid
+        }
+    end
+  end
+
+  defp start_session_sweep(session_sweep_fun, node_id, pod_uid) do
+    spawn(fn ->
+      task =
+        Task.async(fn ->
+          try do
+            session_sweep_fun.(node_id, pod_uid)
+          rescue
+            e -> Logger.error("embervm node registry: session sweep for #{node_id} raised: #{inspect(e)}")
+          catch
+            kind, reason ->
+              Logger.error("embervm node registry: session sweep for #{node_id} exited: #{inspect({kind, reason})}")
+          end
+        end)
+
+      case Task.yield(task, @session_sweep_timeout_ms) do
+        {:ok, _result} -> :ok
+        {:exit, reason} -> Logger.error("embervm node registry: session sweep for #{node_id} crashed: #{inspect(reason)}")
+        nil ->
+          _ = Task.shutdown(task, :brutal_kill)
+          Logger.error("embervm node registry: session sweep for #{node_id} timed out after #{@session_sweep_timeout_ms}ms")
+      end
+    end)
+
+    :ok
   end
 
   # -- streamer lifecycle -----------------------------------------------------
@@ -2296,7 +2328,7 @@ defmodule Embervm.NodeRegistry do
   end
 
   defp default_session_sweep(node_id, pod_uid) do
-    Embervm.SessionManager.node_down(Embervm.SessionManager, node_id, %{pod_uid: pod_uid})
+    Embervm.SessionManager.node_down_async(Embervm.SessionManager, node_id, %{pod_uid: pod_uid})
   rescue
     e ->
       Logger.error("embervm node registry: session sweep for #{node_id} raised: #{inspect(e)}")

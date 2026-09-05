@@ -1278,10 +1278,11 @@ defmodule Embervm.Router do
     case Map.get(conn.query_params, "idempotency_key") do
       nil ->
         {:ok, page} = session_store().list(session_store_server(), workload, limit: limit, offset: offset)
+        node_statuses = session_node_statuses(page.items)
 
         send_json(conn, 200, %{
           workload: workload,
-          items: Enum.map(page.items, &session_view/1),
+          items: Enum.map(page.items, &session_view(&1, node_statuses)),
           total: page.total,
           limit: page.limit,
           offset: page.offset
@@ -1291,11 +1292,14 @@ defmodule Embervm.Router do
         send_json(conn, 200, empty_session_page(workload, limit, offset))
 
       key ->
-        items =
+        sessions =
           case session_store().get_by_idempotency_key(session_store_server(), conn.assigns.principal, key) do
-            {:ok, %{workload: ^workload} = session} -> [session_view(session)]
+            {:ok, %{workload: ^workload} = session} -> [session]
             _ -> []
           end
+
+        node_statuses = session_node_statuses(sessions)
+        items = Enum.map(sessions, &session_view(&1, node_statuses))
 
         send_json(conn, 200, %{
           workload: workload,
@@ -1502,7 +1506,7 @@ defmodule Embervm.Router do
     case authorize_session_read(conn, session_id) do
       :ok ->
         case session_store().get(session_store_server(), session_id) do
-          {:ok, session} -> send_json(conn, 200, session_view(session))
+          {:ok, session} -> send_json(conn, 200, session_view(session, session_node_statuses([session])))
           :error -> send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
         end
 
@@ -1731,7 +1735,7 @@ defmodule Embervm.Router do
   defp stateful_recovery_status(workload, volume) do
     manager = stateful_manager()
 
-    if function_exported?(manager, :recovery_status, 2) do
+    if Code.ensure_loaded?(manager) and function_exported?(manager, :recovery_status, 2) do
       manager.recovery_status(stateful_manager_server(), workload)
     else
       node_id = volume && Map.get(volume, :node_id)
@@ -2107,7 +2111,7 @@ defmodule Embervm.Router do
   defp serving_manager, do: Application.get_env(:embervm, :serving_manager_mod, Embervm.ServingManager)
   defp serving_manager_server, do: Application.get_env(:embervm, :serving_manager, Embervm.ServingManager)
 
-  defp session_view(session) do
+  defp session_view(session, node_statuses) do
     %{
       session_id: session.session_id,
       workload: session.workload,
@@ -2121,13 +2125,13 @@ defmodule Embervm.Router do
       expires_at: session.expires_at,
       updated_at: session.updated_at,
       terminal_reason: session.terminal_reason,
-      node: session_node_view(session)
+      node: session_node_view(session, node_statuses)
     }
   end
 
-  defp session_node_view(session) do
+  defp session_node_view(session, node_statuses) do
     node_id = Map.get(session, :node_id) || Map.get(session, :volume_node_id)
-    status = node_status(node_id)
+    status = Map.get(node_statuses, node_id, %{})
 
     %{
       node_id: node_id,
@@ -2136,10 +2140,27 @@ defmodule Embervm.Router do
     }
   end
 
+  defp session_node_statuses(sessions) do
+    node_ids =
+      sessions
+      |> Enum.map(&(Map.get(&1, :node_id) || Map.get(&1, :volume_node_id)))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    case node_ids do
+      [] -> %{}
+      ids -> node_registry().brick_statuses(node_registry_server(), ids)
+    end
+  rescue
+    _ -> %{}
+  catch
+    _, _ -> %{}
+  end
+
   defp node_status(nil), do: %{}
 
   defp node_status(node_id) do
-    Embervm.NodeRegistry.brick_status(node_id)
+    node_registry().brick_status(node_registry_server(), node_id)
   rescue
     _ -> %{}
   catch
@@ -2152,6 +2173,8 @@ defmodule Embervm.Router do
   defp session_manager_server, do: Application.get_env(:embervm, :session_manager_server, Embervm.SessionManager)
   defp session_store, do: Application.get_env(:embervm, :session_store_mod, Embervm.SessionStore)
   defp session_store_server, do: Application.get_env(:embervm, :session_store, Embervm.SessionStore)
+  defp node_registry, do: Application.get_env(:embervm, :node_registry_mod, Embervm.NodeRegistry)
+  defp node_registry_server, do: Application.get_env(:embervm, :node_registry, Embervm.NodeRegistry)
 
   # -- request helpers -------------------------------------------------------
 
