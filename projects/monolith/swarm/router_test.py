@@ -108,13 +108,19 @@ def start_engine(monkeypatch, tmp_path):
             table.schema = schema
 
 
-def _open_decision(engine, *, options=None):
+def _open_decision(
+    engine,
+    *,
+    node_key="push_gate",
+    kind="push_gate",
+    options=None,
+):
     with Session(engine) as session:
         return swarm_store.open_decision(
             session,
             "wf-1",
-            "push_gate",
-            "push_gate",
+            node_key,
+            kind,
             options or ["approve", "send_back"],
             "Approve the unverified branch?",
         )
@@ -878,6 +884,129 @@ def test_decide_run_returns_422_with_allowed_options(decision_api, decision_engi
     assert response.status_code == 422
     assert "approve" in response.json()["detail"]
     assert "send_back" in response.json()["detail"]
+
+
+def test_raise_budget_must_exceed_current_effective(monkeypatch, decision_engine):
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+    existing_raise = {"from": 1.0, "to": 2.0, "actor_subject": "first"}
+
+    class FakeDBOS:
+        def __init__(self):
+            self.stored = {
+                "plan": {"budget_usd": 1.0},
+                "budget_raises": [existing_raise],
+            }
+
+        def retrieve_workflow(self, workflow_id):
+            return SimpleNamespace(
+                get_status=lambda: SimpleNamespace(attributes=dict(self.stored))
+            )
+
+        async def update_workflow_attributes_async(self, workflow_id, values):
+            self.stored = dict(values)
+
+    dbos = FakeDBOS()
+    monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: dbos)
+    monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(
+        swarm_router,
+        "_compose_run_view",
+        lambda _dbos, workflow_id: {
+            "workflow_id": workflow_id,
+            "plan": {"budget_usd": 1.0},
+        },
+    )
+
+    response = client().post("/api/swarm/runs/wf-1/budget", json={"budget_usd": 2.0})
+
+    assert response.status_code == 400
+    assert "must exceed current $2.00" in response.json()["detail"]
+    assert dbos.stored["budget_raises"] == [existing_raise]
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected_actor", "expected_authority"),
+    [
+        (
+            {"Cf-Access-Authenticated-User-Email": "alice@example.com"},
+            "alice@example.com",
+            "cloudflare-access",
+        ),
+        ({}, "operator", "anonymous"),
+    ],
+)
+def test_raise_budget_appends_history_and_resolves_budget_decision(
+    monkeypatch,
+    decision_engine,
+    headers,
+    expected_actor,
+    expected_authority,
+):
+    monkeypatch.setenv("SWARM_ENABLED", "true")
+    existing_raise = {
+        "from": 1.0,
+        "to": 2.0,
+        "actor_subject": "first@example.com",
+        "actor_authority": "cloudflare-access",
+        "at": "2026-08-22T12:00:00+00:00",
+    }
+
+    class FakeDBOS:
+        def __init__(self):
+            self.stored = {
+                "plan": {"budget_usd": 1.0},
+                "budget_raises": [existing_raise],
+                "unrelated": "preserved",
+            }
+
+        def retrieve_workflow(self, workflow_id):
+            return SimpleNamespace(
+                get_status=lambda: SimpleNamespace(attributes=dict(self.stored))
+            )
+
+        async def update_workflow_attributes_async(self, workflow_id, values):
+            self.stored = dict(values)
+
+    dbos = FakeDBOS()
+    monkeypatch.setattr(swarm_router.runtime, "init_dbos", lambda: dbos)
+    monkeypatch.setattr(swarm_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(
+        swarm_router,
+        "_compose_run_view",
+        lambda _dbos, workflow_id: {
+            "workflow_id": workflow_id,
+            "plan": {"budget_usd": 1.0},
+        },
+    )
+    _open_decision(
+        decision_engine,
+        node_key="review",
+        kind="budget",
+        options=["raise", "stop"],
+    )
+
+    response = client().post(
+        "/api/swarm/runs/wf-1/budget",
+        headers=headers,
+        json={"budget_usd": 3.0},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["budget_usd"] == 3.0
+    assert response.json()["actor"] == expected_actor
+    assert dbos.stored["plan"] == {"budget_usd": 1.0}
+    assert dbos.stored["unrelated"] == "preserved"
+    assert dbos.stored["budget_raises"][0] == existing_raise
+    latest = dbos.stored["budget_raises"][1]
+    assert latest["from"] == 2.0
+    assert latest["to"] == 3.0
+    assert latest["actor_subject"] == expected_actor
+    assert latest["actor_authority"] == expected_authority
+    with Session(decision_engine) as session:
+        row = session.get(SwarmDecision, 1)
+        assert row.decision == "raise"
+        assert row.actor_subject == expected_actor
+        assert row.actor_authority == expected_authority
 
 
 def test_cancel_reaps_after_dbos_cancel(monkeypatch):

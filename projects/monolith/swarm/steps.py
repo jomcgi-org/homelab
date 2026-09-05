@@ -95,6 +95,17 @@ def _decision_payload(row, observed_at=None) -> dict:
 
 
 @DBOS.step()
+def read_workflow_attributes(workflow_id: str) -> dict:
+    """Read workflow attributes durably for deterministic replay."""
+    try:
+        status = DBOS.get_workflow_status(workflow_id)
+        attributes = getattr(status, "attributes", None)
+        return attributes if isinstance(attributes, dict) else {}
+    except Exception:  # noqa: BLE001 - a missing status has no attributes
+        return {}
+
+
+@DBOS.step()
 def pin_plan(budget_usd: float | None = None, model: str | None = None) -> dict:
     """Resolve run config ONCE and checkpoint it.
 

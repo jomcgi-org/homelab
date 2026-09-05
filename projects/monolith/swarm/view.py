@@ -14,6 +14,7 @@ from typing import Any
 
 from swarm import config
 from agent_sessions.rationale import parse_rationale
+from swarm.budget import effective_budget
 from swarm.deviations import compute_deviations
 
 logger = logging.getLogger(__name__)
@@ -420,6 +421,7 @@ def compose_run(
     steps = _steps(dbos, workflow_id)
     children = _children(dbos, workflow_id)
     plan = _plan(attrs)
+    effective_budget_usd = effective_budget(plan, attrs)
     model_i = plan["implementer_model"]
     model_r = plan["reviewer_model"]
     sessions = list(session_rows or [])
@@ -597,10 +599,18 @@ def compose_run(
         "cost_usd": cost_usd,
         "note": None,
         "plan": plan,
+        "effective_budget_usd": effective_budget_usd,
         "nodes": nodes,
         "deviations": compute_deviations(
-            {"state": state, "cost_usd": cost_usd, "plan": plan, "nodes": nodes}
+            {
+                "state": state,
+                "cost_usd": cost_usd,
+                "plan": plan,
+                "nodes": nodes,
+                "attributes": attrs,
+            }
         ),
+        "budget_raises": attrs.get("budget_raises", []),
         "cancelled_by": attrs.get("cancelled_by"),
     }
 
@@ -691,7 +701,8 @@ def compose_master(
         ):
             needs = {
                 "kind": "human",
-                "reason": "waiting on your decision",
+                "reason": current["blocked_on"].get("note")
+                or "waiting on your decision",
                 "decision_kind": current["blocked_on"].get("decision_kind"),
             }
         runs.append(

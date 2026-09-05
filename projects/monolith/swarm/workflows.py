@@ -6,6 +6,7 @@ import logging
 from dbos import DBOS
 
 from swarm import config
+from swarm.budget import effective_budget
 from swarm.policy import (
     implementer_prompt,  # noqa: F401 - retained for policy seam compatibility
     implementer_prompt_parts,
@@ -24,6 +25,7 @@ from swarm.steps import (
     pin_plan,
     poll_turn,
     read_branch_head,
+    read_workflow_attributes,
     start_agent_session,
     update_turn_shas,
 )
@@ -205,6 +207,58 @@ def _decision_output(row: dict) -> dict:
     }
 
 
+def _budget_boundary(
+    workflow_id: str,
+    node_key: str,
+    plan: dict,
+    total_cost: float,
+) -> dict | None:
+    """Wait until a raise covers this node or the operator stops the run."""
+    if plan.get("budget_usd") is None:
+        return None
+    while True:
+        attributes = read_workflow_attributes(workflow_id)
+        effective = effective_budget(plan, attributes)
+        if effective is None or total_cost < effective:
+            return None
+        decision = _await_decision(
+            workflow_id,
+            node_key,
+            "budget",
+            ["raise", "stop"],
+            (
+                f"spent ${total_cost:.2f} of ${effective:.2f} budget before "
+                f"{node_key}; raise the budget or stop the run"
+            ),
+            _decision_timeout(plan),
+        )
+        if decision["decision"] in ("stop", "expired"):
+            return decision
+
+
+def _budget_exhausted(
+    attempt: int,
+    implementer_session_id: int | None,
+    commit_sha: str | None,
+    branch_name: str,
+    reviewer_session_id: int | None,
+    total_cost: float,
+    decision: dict,
+) -> dict:
+    return {
+        "status": "budget_exhausted",
+        "attempts": attempt,
+        "implementer_session_id": implementer_session_id,
+        "commit_sha": commit_sha,
+        "work_branch": branch_name,
+        "reviewer_session_id": reviewer_session_id,
+        "review_text": None,
+        "review_verdict": None,
+        "cost_usd": total_cost,
+        "decision": _decision_output(decision),
+    }
+
+
 def _record_turn_intent(session_id: int, turn: dict | None, intent: str) -> None:
     if turn is None:
         return
@@ -325,6 +379,17 @@ def implement_then_review(
     push_gate_approved = False
 
     while attempt < max_attempts:
+        budget_decision = _budget_boundary(workflow_id, "implement", plan, total_cost)
+        if budget_decision is not None:
+            return _budget_exhausted(
+                attempt,
+                implementer_session_id,
+                commit_sha,
+                branch_name,
+                None,
+                total_cost,
+                budget_decision,
+            )
         attempt += 1
         prior_sha = read_branch_head(repo, branch_name)
         impl_intent, impl_protocol = implementer_prompt_parts(
@@ -483,6 +548,17 @@ def implement_then_review(
     review_feedback = None
 
     while True:
+        budget_decision = _budget_boundary(workflow_id, "review", plan, total_cost)
+        if budget_decision is not None:
+            return _budget_exhausted(
+                attempt,
+                implementer_session_id,
+                commit_sha,
+                branch_name,
+                reviewer_session_id,
+                total_cost,
+                budget_decision,
+            )
         # Every reviewer gets a FRESH session (ADR 038 decision 3), and each
         # review node starts at node_attempt 1. The implementer's workspace is
         # never handed to the reviewer.
@@ -515,6 +591,19 @@ def implement_then_review(
             )
             retry_decision = None
             while attempt < max_attempts:
+                budget_decision = _budget_boundary(
+                    workflow_id, "implement", plan, total_cost
+                )
+                if budget_decision is not None:
+                    return _budget_exhausted(
+                        attempt,
+                        implementer_session_id,
+                        commit_sha,
+                        branch_name,
+                        reviewer_session_id,
+                        total_cost,
+                        budget_decision,
+                    )
                 prior_sha = read_branch_head(repo, branch_name)
                 attempt += 1
                 impl_intent, impl_protocol = implementer_prompt_parts(
