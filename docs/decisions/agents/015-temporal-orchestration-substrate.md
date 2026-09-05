@@ -33,7 +33,7 @@ Adopt **Temporal** as the orchestration substrate for all agent workflows, cron-
 | Cron scheduling  | Monolith `register-routine-job` → AX submit                        | **Temporal `ScheduleClient`** — first-class workflow with cron spec                                         |
 | Pod multiplexing | Substrate (`ateapi` / `atelet` / `atecontroller` / `ateom-gvisor`) | **Plain k8s Deployments + KEDA** — scale workers per task queue                                             |
 | Snapshotting     | Substrate gVisor checkpoint/restore                                | **Not implemented** (workflow durability via Temporal event history)                                        |
-| Sandbox kernel   | gVisor via Substrate                                               | gVisor still available via [security/003](../security/003-gvisor-runtime-class.md) RuntimeClass when needed |
+| Sandbox kernel   | gVisor via Substrate                                               | gVisor still available via [security/003](../../../projects/platform/ARCHITECTURE.md) RuntimeClass when needed |
 | Persistence      | AX event log in postgres + Substrate worker pool state             | **Single Postgres DB** (Temporal's state) — no separate event log                                           |
 | Harnesses        | Goose recipes, Claude CLI subprocess                               | Goose recipes, Claude CLI subprocess (unchanged)                                                            |
 | Tool gateway     | Context Forge                                                      | Context Forge (unchanged)                                                                                   |
@@ -222,7 +222,7 @@ This eliminates the entire class of "what happens if the orchestrator pod restar
 - **Authentication into Temporal** uses internal mTLS (Linkerd-managed) plus Temporal's namespace authorization. No external clients.
 - **Credentials** (Anthropic API key, NIM API key, S3 credentials) injected via 1Password Operator into worker pods at deploy time.
 - **No new ingress** introduced by this ADR. All external clients continue through monolith → Cloudflare → CF Tunnel.
-- **gVisor isolation** remains available via [security/003](../security/003-gvisor-runtime-class.md) RuntimeClass for workloads that need it (e.g., agents executing LLM-generated code). Temporal worker pods can be selectively tagged with the runsc runtime class via Deployment spec — no platform-wide change required.
+- **gVisor isolation** remains available via [security/003](../../../projects/platform/ARCHITECTURE.md) RuntimeClass for workloads that need it (e.g., agents executing LLM-generated code). Temporal worker pods can be selectively tagged with the runsc runtime class via Deployment spec — no platform-wide change required.
 - **Workflow history visibility**: per-namespace authorization in Temporal allows scoping who can query/replay/cancel workflows. For homelab single-user, namespace=`default` is sufficient.
 
 See `docs/security.md` for baseline. No deviations introduced.
@@ -271,4 +271,4 @@ These are questions to answer during execution, not gates that block the decisio
 | [003 — Context Forge](003-context-forge.md)                                                                | MCP gateway, unchanged                                                 |
 | [016 — NATS as Canonical Event Stream](016-nats-canonical-event-stream.md)                                 | Companion: events between system components                            |
 | [017 — Domain Event Schema](017-domain-event-schema.md)                                                    | Companion: shape of events flowing through NATS                        |
-| [platform/004 — Iceberg Lakehouse + Hot-Swap Quack Serving](../platform/004-iceberg-lakehouse-hot-swap.md) | Companion: storage architecture                                        |
+| [platform/004 — Iceberg Lakehouse + Hot-Swap Quack Serving](../../../projects/platform/ARCHITECTURE.md) | Companion: storage architecture                                        |

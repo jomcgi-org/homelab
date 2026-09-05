@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Accepted
 **Created:** 2026-06-27
-**Builds on:** [019 - Substrate Executor + AgentWorkflow over Argo](019-substrate-executor-agentworkflow.md) (the `Snapshotable` executor it gated on a spike), [021 - Discord-Triggered AgentWorkflow](021-discord-triggered-agentworkflow-fast-model.md) (the consumer whose "smooth many-thread" property this delivers), [010 - Memory Oversubscription](../platform/010-memory-oversubscription-burstable-priorityclass.md) (the node-4 headroom + disposable-victim tier these microVMs live in)
+**Builds on:** [019 - Substrate Executor + AgentWorkflow over Argo](019-substrate-executor-agentworkflow.md) (the `Snapshotable` executor it gated on a spike), [021 - Discord-Triggered AgentWorkflow](021-discord-triggered-agentworkflow-fast-model.md) (the consumer whose "smooth many-thread" property this delivers), [010 - Memory Oversubscription](../../../projects/platform/ARCHITECTURE.md) (the node-4 headroom + disposable-victim tier these microVMs live in)
 
 ---
 
@@ -157,7 +157,7 @@ The execution-level questions are settled and recorded in the implementation wor
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | [019 - Substrate Executor + AgentWorkflow](019-substrate-executor-agentworkflow.md)                                                                                   | The `Substrate`/`Snapshotable` seam and AgentWorkflow tier this implements                       |
 | [021 - Discord-Triggered AgentWorkflow](021-discord-triggered-agentworkflow-fast-model.md)                                                                            | The consumer whose smooth-many-threads property this delivers                                    |
-| [010 - Memory Oversubscription](../platform/010-memory-oversubscription-burstable-priorityclass.md)                                                                   | The node-4 headroom + disposable-victim tier the microVMs run in                                 |
+| [010 - Memory Oversubscription](../../../projects/platform/ARCHITECTURE.md)                                                                   | The node-4 headroom + disposable-victim tier the microVMs run in                                 |
 | [Firecracker snapshot support](https://github.com/firecracker-microvm/firecracker/blob/main/docs/snapshotting/snapshot-support.md)                                    | The delegated primitive; non-portability + network-loss constraints                              |
 | [Firecracker page faults on resume (UFFD)](https://github.com/firecracker-microvm/firecracker/blob/main/docs/snapshotting/handling-page-faults-on-snapshot-resume.md) | Lazy-paging fast resume path                                                                     |
 | [e2b-dev/infra](https://github.com/e2b-dev/infra)                                                                                                                     | Apache-2.0 reference: snapshot bundle, UFFD resume, idle auto-pause, evictor, autoresume routing |

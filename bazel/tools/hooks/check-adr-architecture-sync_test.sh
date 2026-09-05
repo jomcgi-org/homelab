@@ -109,6 +109,11 @@ expect_reminder "/repo/bazel/tools/ci/affected-targets.sh" "bazel/ARCHITECTURE.m
 expect_reminder "/repo/buildbuddy.yaml" "bazel/ARCHITECTURE.md"
 expect_reminder "/repo/bazel/semgrep/defs/semgrep-test.sh" "bazel/ARCHITECTURE.md"
 expect_reminder "/repo/bazel/ocaml/toolchain/arches.bzl" "bazel/ARCHITECTURE.md"
+# what the two clusters run: the shared charts plus the hub overlays.
+expect_reminder "/repo/projects/platform/kargo/values.yaml" "projects/platform/ARCHITECTURE.md"
+expect_reminder "/repo/projects/platform-gke/kustomization.yaml" "projects/platform/ARCHITECTURE.md"
+expect_reminder "/repo/projects/gke-apps/monolith/application.yaml" "projects/platform/ARCHITECTURE.md"
+expect_reminder "/repo/projects/gke-cluster/root-application.yaml" "projects/platform/ARCHITECTURE.md"
 
 # docs/decisions/agents/ spans several domains, so it is deliberately NOT
 # covered: a reminder naming one domain's doc would be wrong on most writes.
@@ -119,6 +124,7 @@ expect_silent "/repo/docs/decisions/agents/020-deprecate-context-forge-mcp-gatew
 expect_silent "/repo/projects/embervm/ARCHITECTURE.md"
 expect_silent "/repo/projects/mcp/ARCHITECTURE.md"
 expect_silent "/repo/bazel/ARCHITECTURE.md"
+expect_silent "/repo/projects/platform/ARCHITECTURE.md"
 
 # Unrelated paths stay silent.
 expect_silent "/repo/projects/embervm/README.md"

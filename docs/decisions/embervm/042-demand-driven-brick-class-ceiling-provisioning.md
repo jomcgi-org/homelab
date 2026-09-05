@@ -3,7 +3,7 @@
 **Author:** Claude (Fable)
 **Status:** Accepted
 **Created:** 2026-09-05
-**Builds on:** [ADR embervm/039](039-capacity-fair-share-blast-radius-signal.md) (Accepted; names this exact problem as deferred future work in decision 7, and this ADR's decision 4 answers its open question 3), [ADR embervm/013](013-substrate-lanes-brick-sizing-capacity-tiers.md) (section 7: bricks everywhere, in-place resize dropped, a decision this ADR does not reopen), [ADR embervm/016](016-kubernetes-scheduling-integration-contract.md) (the mass-VM-death preemption exposure ADR 039 decision 5 reopened and this ADR inherits unchanged), [ADR platform/016](../platform/016-gke-hub-two-pool-shape.md) (the single Spot `ember-bricks` node this ADR's cost argument is measured against)
+**Builds on:** [ADR embervm/039](039-capacity-fair-share-blast-radius-signal.md) (Accepted; names this exact problem as deferred future work in decision 7, and this ADR's decision 4 answers its open question 3), [ADR embervm/013](013-substrate-lanes-brick-sizing-capacity-tiers.md) (section 7: bricks everywhere, in-place resize dropped, a decision this ADR does not reopen), [ADR embervm/016](016-kubernetes-scheduling-integration-contract.md) (the mass-VM-death preemption exposure ADR 039 decision 5 reopened and this ADR inherits unchanged), [ADR platform/016](../../../projects/platform/ARCHITECTURE.md) (the single Spot `ember-bricks` node this ADR's cost argument is measured against)
 
 ---
 
@@ -313,7 +313,7 @@ already accepted for that exposure.
 | [ADR embervm/039](039-capacity-fair-share-blast-radius-signal.md) | Accepted; the resource shape, shed-first priority, and capacity-signal discipline this decision composes with, and whose decision 7 named this exact problem as deferred |
 | [ADR embervm/013](013-substrate-lanes-brick-sizing-capacity-tiers.md) | Section 7: bricks everywhere, in-place resize dropped deliberately on both tiers; the decision this ADR does not reopen |
 | [ADR embervm/016](016-kubernetes-scheduling-integration-contract.md) | The mass-VM-death preemption exposure ADR 039 decision 5 reopened; unchanged and inherited here |
-| [ADR platform/016](../platform/016-gke-hub-two-pool-shape.md) | The single Spot `ember-bricks` node this ADR's RAM-fraction cost argument is measured against |
+| [ADR platform/016](../../../projects/platform/ARCHITECTURE.md) | The single Spot `ember-bricks` node this ADR's RAM-fraction cost argument is measured against |
 | `projects/embervm/control/lib/embervm/brick_controller.ex` | `note_denial/2`, `class_for_need/3`, `desired/2`, `prepare_scale_down/2`: every mechanism this decision reuses rather than replaces |
 | `projects/embervm/chart/values.yaml:1596-1609` | The existing `bricks.autoscale.minReplicas`/`maxReplicas` shape `ceilingBound` is added alongside |
 | `projects/embervm/deploy/values-gke.yaml:64-89` | The hub's current class shape (`2gi:1`, `4gi:1`, `8gi:1`, `16gi:0`) this decision's cost argument cites |

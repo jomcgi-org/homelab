@@ -118,5 +118,5 @@ Baseline `docs/security.md`. This surface is arbitrary code execution by constru
 | [023 - Egress Secret Proxy](023-egress-secret-proxy.md)                                                      | Placeholder-swap credential model for the BuildBuddy API key    |
 | [041 - Hot Git Mirror Agent Workspaces](041-hot-git-mirror-agent-workspaces.md)                              | Mirror hydration, `refs/agents/**` scratch-ref write path       |
 | [030 - fc-invoke](030-fc-invoke-configurable-firecracker-surface.md)                                         | Workload registry, `sessioned` routing, guest shim capabilities |
-| [platform/010 - Memory Oversubscription](../platform/010-memory-oversubscription-burstable-priorityclass.md) | node-4 memory budget this workload must fit                     |
+| [platform/010 - Memory Oversubscription](../../../projects/platform/ARCHITECTURE.md) | node-4 memory budget this workload must fit                     |
 | [BuildBuddy RBE docs](https://www.buildbuddy.io/docs/rbe-setup)                                              | Client-side RBE/cache flags any invocation can use              |

@@ -197,7 +197,7 @@ Implicit deletion ("after processing, delete from queue") leaks producer concern
 | Audit requires separate "deletion log"                                     | Audit is inherent — events are the log                   |
 | Adding a new consumer requires updating producer's deletion protocol       | Adding consumer = new subscription, zero producer change |
 
-The cost: physical disk space (tombstones aren't free). Mitigated by Iceberg's compaction (per [platform/004](../platform/004-iceberg-lakehouse-hot-swap.md) §LSM compaction): monthly rewrite physically removes tombstoned entities from the base layer.
+The cost: physical disk space (tombstones aren't free). Mitigated by Iceberg's compaction (per [platform/004](../../../projects/platform/ARCHITECTURE.md) §LSM compaction): monthly rewrite physically removes tombstoned entities from the base layer.
 
 For urgent purges (right-to-be-forgotten with hard deadline), ad-hoc compaction can run on demand.
 
@@ -243,6 +243,6 @@ For urgent purges (right-to-be-forgotten with hard deadline), ad-hoc compaction 
 | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
 | [015 — Temporal as Orchestration Substrate](015-temporal-orchestration-substrate.md)                       | Companion: workflow execution that consumes/produces these events |
 | [016 — NATS as Canonical Event Stream](016-nats-canonical-event-stream.md)                                 | Transport for these events                                        |
-| [platform/004 — Iceberg Lakehouse + Hot-Swap Quack Serving](../platform/004-iceberg-lakehouse-hot-swap.md) | Tombstone application at the storage layer                        |
+| [platform/004 — Iceberg Lakehouse + Hot-Swap Quack Serving](../../../projects/platform/ARCHITECTURE.md) | Tombstone application at the storage layer                        |
 | [NATS JetStream Nats-Msg-Id](https://docs.nats.io/nats-concepts/jetstream/streams#message-deduplication)   | Dedup mechanism                                                   |
 | [UUIDv7 spec (RFC 9562)](https://datatracker.ietf.org/doc/rfc9562/)                                        | Recommended `event_id` format                                     |
