@@ -2571,6 +2571,7 @@ defmodule Embervm.SessionManager do
         state
 
       {:error, _} ->
+        state = clear_pressure_wait(state, session.session_id)
         drain_relight_waiters(state, session.session_id, {:error, {:not_ready, :parked}})
     end
   end
@@ -2739,6 +2740,7 @@ defmodule Embervm.SessionManager do
       {:error, _} ->
         # Illegal (session moved off banked concurrently): drain any parked callers
         # for it as not_ready so they retry.
+        state = clear_pressure_wait(state, session.session_id)
         drain_relight_waiters(state, session.session_id, {:error, {:not_ready, :banked}})
     end
   end
@@ -2832,8 +2834,10 @@ defmodule Embervm.SessionManager do
                 other -> classify_relight_error({:relight_failed, other})
               end
 
-            {:error, :snapshot_lost} ->
-              {:error, :snapshot_lost}
+            # :snapshot_lost fails the session; :no_bricks (#5777, CP blind) parks it
+            # via finish_relight's pressure arm, the same as a memory-pressure reject.
+            {:error, _} = denied ->
+              denied
           end
 
         send(owner, {:relight_done, session_id, outcome})
