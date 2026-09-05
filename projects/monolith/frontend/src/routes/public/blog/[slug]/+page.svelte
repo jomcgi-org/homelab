@@ -756,8 +756,8 @@
       z-index: 4;
       top: 0;
       max-height: none;
-      margin: 0 -1.35em 1.5rem;
-      padding: 0.5em 1.35em;
+      margin: 0 -1em 1.5rem;
+      padding: 0.5em 1em;
       overflow-x: auto;
       border-bottom: 1px solid var(--stroke);
       background: var(--sheet);
