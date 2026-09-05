@@ -242,20 +242,24 @@
           viewBox="0 0 700 100"
           preserveAspectRatio="none"
           role="img"
-          aria-label="Initial placement until the first sample, then recorded hot, warm, and cold routing"
+          aria-label="Recorded routing only; the interval before the first sample is unmeasured"
         >
           <title>Routing mix over recorded time</title>
-          {#each bands(initialPlacement) as band}
-            <rect
-              class={band.key}
-              class:dimmed={highlighted && highlighted !== band.key}
-              x="0"
-              y={band.y}
-              width={(700 * Math.min(position, initialSample.at)) /
-                turn.durationMs}
-              height={band.height}
-            />
-          {/each}
+          <rect
+            class="unmeasured"
+            x="0"
+            y="0"
+            width={(700 * initialSample.at) / turn.durationMs}
+            height="100"
+            fill="var(--band)"
+          />
+          <text
+            x={(350 * initialSample.at) / turn.durationMs}
+            y="56"
+            text-anchor="middle"
+            font-size="18"
+            fill="var(--ink-2)">No routing samples</text
+          >
           {#each history as item, index}
             {@const start = item.at}
             {@const end = Math.min(
@@ -522,6 +526,9 @@
   }
   .routing-history rect {
     fill: var(--tier-color);
+  }
+  .routing-history .unmeasured {
+    fill: var(--band);
   }
   .history-labels {
     display: flex;
