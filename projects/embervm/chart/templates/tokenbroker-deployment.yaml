@@ -1,4 +1,8 @@
 {{- if .Values.tokenBroker.enabled }}
+{{- $spiffeClientIDs := join "," .Values.tokenBroker.spiffe.clientSpiffeIds }}
+{{- if and .Values.tokenBroker.spiffe.enabled (eq (len .Values.tokenBroker.spiffe.clientSpiffeIds) 0) }}
+{{- $spiffeClientIDs = printf "spiffe://%s/ns/%s/sa/%s" .Values.tokenBroker.spiffe.trustDomain .Release.Namespace (include "embervm.noded.serviceAccountName" .) }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -32,7 +36,12 @@ spec:
         - name: tokenbroker
           image: "{{ .Values.tokenBroker.image.repository }}:{{ .Values.tokenBroker.image.tag }}@{{ .Values.tokenBroker.image.digest }}"
           imagePullPolicy: {{ .Values.tokenBroker.image.pullPolicy }}
-          ports: [{ name: http, containerPort: 8080 }, { name: metrics, containerPort: 9090 }]
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: metrics, containerPort: 9090 }
+            {{- if .Values.tokenBroker.spiffe.enabled }}
+            - { name: https, containerPort: {{ .Values.tokenBroker.spiffe.tlsPort }} }
+            {{- end }}
           securityContext:
             runAsNonRoot: true
             runAsUser: 65532
@@ -43,7 +52,14 @@ spec:
           env:
             - { name: KUBERNETES_NAMESPACE, value: {{ .Release.Namespace | quote }} }
             - { name: TOKENBROKER_GRANTS, value: {{ toJson .Values.tokenBroker.grants | quote }} }
+            # BROKER_LISTEN_ADDR is the plaintext health, metrics, and login listener.
             - { name: BROKER_LISTEN_ADDR, value: ":8080" }
+            {{- if .Values.tokenBroker.spiffe.enabled }}
+            # BROKER_TLS_LISTEN_ADDR is the SPIFFE mTLS grants listener.
+            - { name: BROKER_TLS_LISTEN_ADDR, value: {{ printf ":%v" .Values.tokenBroker.spiffe.tlsPort | quote }} }
+            - { name: BROKER_SPIFFE_CLIENT_IDS, value: {{ $spiffeClientIDs | quote }} }
+            - { name: SPIFFE_ENDPOINT_SOCKET, value: "unix:///spiffe-workload-api/spire-agent.sock" }
+            {{- end }}
             {{- if .Values.tokenBroker.authentik.enabled }}
             - { name: AUTHENTIK_TOKEN_ENDPOINT, value: {{ required "tokenBroker.authentik.tokenEndpoint is required when authentik is enabled" .Values.tokenBroker.authentik.tokenEndpoint | quote }} }
             - { name: AUTHENTIK_CLIENT_ID, value: {{ required "tokenBroker.authentik.clientID is required when authentik is enabled" .Values.tokenBroker.authentik.clientID | quote }} }
@@ -57,6 +73,19 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.tokenBroker.resources | nindent 12 }}
+          {{- if .Values.tokenBroker.spiffe.enabled }}
+          volumeMounts:
+            - name: spiffe-workload-api
+              mountPath: /spiffe-workload-api
+              readOnly: true
+          {{- end }}
           livenessProbe: { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 10, periodSeconds: 30 }
           readinessProbe: { httpGet: { path: /healthz, port: http }, initialDelaySeconds: 5, periodSeconds: 10 }
+      {{- if .Values.tokenBroker.spiffe.enabled }}
+      volumes:
+        - name: spiffe-workload-api
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true
+      {{- end }}
 {{- end }}

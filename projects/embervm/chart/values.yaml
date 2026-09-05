@@ -330,6 +330,17 @@ service:
 
 tokenBroker:
   enabled: true
+  spiffe:
+    # Phase 2 of ADR embervm/041: serve /token only over SPIFFE mTLS on a
+    # second port. Off by default; the hub overlay flips it after this
+    # template ships (never flip a value in its template's PR).
+    enabled: false
+    trustDomain: embervm.jomcgi.dev
+    tlsPort: 8443
+    # SPIFFE IDs allowed on the mTLS port. Empty means the noded
+    # ServiceAccount's ID, because the egress-proxy sidecar that fetches
+    # tokens runs in the noded pods.
+    clientSpiffeIds: []
   # Gates only the CiliumNetworkPolicy (see tokenbroker-networkpolicy.yaml):
   # false lets the broker run on clusters without Cilium CRDs at the cost of
   # its network scoping. Home keeps true.
