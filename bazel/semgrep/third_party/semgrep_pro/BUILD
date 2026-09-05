@@ -33,3 +33,9 @@ bzl_library(
     srcs = ["oci_archive.bzl"],
     visibility = ["//visibility:public"],
 )
+
+bzl_library(
+    name = "stub_engine",
+    srcs = ["stub_engine.bzl"],
+    visibility = ["//visibility:public"],
+)
