@@ -89,12 +89,15 @@ async def _run_embervm(payload: dict, language: str) -> dict:
 
     Submits synchronously (``?wait=true``). EmberVM forwards the guest response
     verbatim, so the shape matches the sandbox contract. Idempotency-Key from
-    the language and code hash dedupes retries.
+    the language, code, and input files hash dedupes retries.
     """
     if not EMBERVM_URL:
         return {"error": "EMBERVM_URL is not configured"}
 
-    key_material = f"{language}\0{payload.get('code', '')}".encode()
+    key_parts = [language, payload.get("code", "")]
+    for file in sorted(payload.get("files", []), key=lambda item: item["name"]):
+        key_parts.extend((file["name"], file["content"]))
+    key_material = "\0".join(key_parts).encode()
     key = hashlib.sha256(key_material).hexdigest()
     headers = {**auth_headers(), "Idempotency-Key": key}
     timeout = httpx.Timeout(SANDBOX_READ_TIMEOUT, connect=SANDBOX_CONNECT_TIMEOUT)
