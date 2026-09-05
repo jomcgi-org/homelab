@@ -1,14 +1,17 @@
 """Unit tests for the jobs Typer entrypoint (``app/jobs_main.py``).
 
-These verify command dispatch only: the network (worldcup poll) and the DB are
-patched, so no real session or HTTP call happens. They exist to prove the CLI
-wiring stays intact as commands are added.
+These verify command dispatch and the internal POST retry policy. External
+network calls and the DB are replaced with mocks, so no real session or HTTP
+call happens.
 """
 
 from __future__ import annotations
 
+import logging
 from unittest import mock
 
+import httpx
+import pytest
 from typer.testing import CliRunner
 
 import app.jobs_main as jobs_main
@@ -133,53 +136,92 @@ def test_shutdown_otel_flushes_and_shuts_down():
     provider.shutdown.assert_called_once_with()
 
 
-def test_post_internal_retries_follower_503(monkeypatch):
-    """A follower replica answers 503; the trigger retries on a fresh
-    connection until the leader answers (#5590)."""
-    import httpx
-
-    from app import jobs_main
-
+def test_post_internal_retries_remote_protocol_errors(monkeypatch, caplog):
     monkeypatch.setenv("MONOLITH_INTERNAL_URL", "http://monolith")
-    monkeypatch.setattr(jobs_main, "_INTERNAL_POST_RETRY_SECONDS", 0)
-    responses = iter(
-        [
-            httpx.Response(503, request=httpx.Request("POST", "http://monolith/x")),
-            httpx.Response(503, request=httpx.Request("POST", "http://monolith/x")),
-            httpx.Response(
-                200,
-                json={"ok": True},
-                request=httpx.Request("POST", "http://monolith/x"),
-            ),
-        ]
-    )
-    calls = []
+    monkeypatch.setattr(jobs_main, "configure_logging", lambda: None)
+    monkeypatch.setattr(jobs_main.time, "sleep", lambda _delay: None)
+    caplog.set_level(logging.INFO, logger="monolith.jobs")
+    calls = 0
 
-    def fake_post(url, timeout):
-        calls.append(url)
-        return next(responses)
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            raise httpx.RemoteProtocolError("rollout disconnect", request=request)
+        return httpx.Response(200, json={"ok": True})
 
-    monkeypatch.setattr(httpx, "post", fake_post)
-    jobs_main._post_internal("/internal/agent/drain", "agent-drain-trigger", timeout=1)
-    assert len(calls) == 3
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        monkeypatch.setattr(httpx, "post", client.post)
+        jobs_main._post_internal("/internal/agent/drain", "agent-drain-trigger")
+
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == "monolith.jobs" and record.levelno == logging.WARNING
+    ]
+    assert calls == 3
+    assert len(warnings) == 2
+    assert all("RemoteProtocolError" in record.getMessage() for record in warnings)
+    assert "attempt 1/6" in warnings[0].getMessage()
+    assert "in 2s" in warnings[0].getMessage()
+    assert "attempt 2/6" in warnings[1].getMessage()
+    assert "in 5s" in warnings[1].getMessage()
+    assert "succeeded after 2 retries" in caplog.text
 
 
-def test_post_internal_gives_up_after_attempts(monkeypatch):
-    import httpx
-    import pytest
-
-    from app import jobs_main
-
+def test_post_internal_retries_503(monkeypatch):
     monkeypatch.setenv("MONOLITH_INTERNAL_URL", "http://monolith")
-    monkeypatch.setattr(jobs_main, "_INTERNAL_POST_RETRY_SECONDS", 0)
-    monkeypatch.setattr(
-        httpx,
-        "post",
-        lambda url, timeout: httpx.Response(
-            503, request=httpx.Request("POST", "http://monolith/x")
-        ),
-    )
-    with pytest.raises(httpx.HTTPStatusError):
-        jobs_main._post_internal(
-            "/internal/agent/drain", "agent-drain-trigger", timeout=1
-        )
+    monkeypatch.setattr(jobs_main, "configure_logging", lambda: None)
+    monkeypatch.setattr(jobs_main.time, "sleep", lambda _delay: None)
+    statuses = iter([503, 200])
+    calls = 0
+
+    def handler(_request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(next(statuses), json={"ok": True})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        monkeypatch.setattr(httpx, "post", client.post)
+        jobs_main._post_internal("/internal/agent/drain", "agent-drain-trigger")
+
+    assert calls == 2
+
+
+def test_post_internal_persistent_connect_error_exhausts_budget(monkeypatch):
+    monkeypatch.setenv("MONOLITH_INTERNAL_URL", "http://monolith")
+    monkeypatch.setattr(jobs_main, "configure_logging", lambda: None)
+    sleeps = []
+    monkeypatch.setattr(jobs_main.time, "sleep", sleeps.append)
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        raise httpx.ConnectError("backend unavailable", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        monkeypatch.setattr(httpx, "post", client.post)
+        with pytest.raises(httpx.ConnectError, match="backend unavailable"):
+            jobs_main._post_internal("/internal/agent/drain", "agent-drain-trigger")
+
+    assert calls == len(jobs_main._INTERNAL_POST_RETRY_DELAYS_S) + 1
+    assert sleeps == list(jobs_main._INTERNAL_POST_RETRY_DELAYS_S)
+
+
+def test_post_internal_does_not_retry_400(monkeypatch):
+    monkeypatch.setenv("MONOLITH_INTERNAL_URL", "http://monolith")
+    monkeypatch.setattr(jobs_main, "configure_logging", lambda: None)
+    calls = 0
+
+    def handler(_request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(400, json={"detail": "bad request"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        monkeypatch.setattr(httpx, "post", client.post)
+        with pytest.raises(httpx.HTTPStatusError):
+            jobs_main._post_internal("/internal/agent/drain", "agent-drain-trigger")
+
+    assert calls == 1
