@@ -158,6 +158,7 @@ def _load_step_stats(workflow_ids: list[str]) -> dict[str, dict]:
           FROM dbos.operation_outputs
          WHERE workflow_uuid IN :ids
            AND function_name NOT LIKE '%poll_turn%'
+           AND function_name NOT LIKE '%observe_clock%'
            AND function_name NOT LIKE '%DBOS.sleep%'
          ORDER BY workflow_uuid, function_id DESC
         """
