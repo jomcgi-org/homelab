@@ -248,7 +248,10 @@ py_test(
     env = {
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
-    deps = ["@pip//pytest"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
 
 semgrep_test(
