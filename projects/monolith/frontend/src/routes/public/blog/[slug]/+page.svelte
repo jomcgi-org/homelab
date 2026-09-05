@@ -223,8 +223,22 @@
         </article>
 
         <!-- One panel per numbered section: a page flip between them. -->
-        {#each data.sections as section}
-          <section class="edition post-body">{@html section}</section>
+        {#each data.sections as section, index}
+          <section class="edition post-body">
+            {@html section}
+            {#if data.slug === "125b-on-a-4090" && index === data.sections.length - 1}
+              {#await import("$lib/public/posts/QwenReplay.svelte")}
+                <p>Loading the recorded conversation...</p>
+              {:then replay}
+                <replay.default />
+              {:catch}
+                <p>
+                  The recorded conversation could not load. Refresh the page to
+                  try again.
+                </p>
+              {/await}
+            {/if}
+          </section>
         {/each}
       </div>
     </div>
