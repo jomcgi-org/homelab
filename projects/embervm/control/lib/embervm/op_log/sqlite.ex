@@ -1584,13 +1584,14 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   # Durable recovery facts are intentionally narrower than volume_created. A
-  # node report can refresh export proof, and a successful restore can move the
-  # anchor, but neither path may rewrite the blessed generation ledger.
+  # node report can refresh export proof, a store-truth consult can adopt the
+  # exported pair's generation, and a successful restore can move the anchor.
+  # None of these paths rewrites the separate blessed generation ledger.
   defp project(conn, %Op{kind: :volume_recovery_updated} = op, _seq) do
     payload = op.payload
     sql = """
     UPDATE volumes
-    SET node_id = ?, exported_generation = ?, updated_at = ?
+    SET node_id = ?, generation = ?, exported_generation = ?, updated_at = ?
     WHERE workload = ?
     """
 
@@ -1598,6 +1599,7 @@ defmodule Embervm.OpLog.SQLite do
          :ok <-
            Sqlite3.bind(stmt, [
              Map.get(payload, :node_id),
+             Map.get(payload, :generation, 0),
              Map.get(payload, :exported_generation, 0),
              op.ts,
              op.workload

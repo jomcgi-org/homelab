@@ -430,9 +430,10 @@ defmodule Embervm.StatefulStore do
 
   @doc """
   Durably adopts an object-store export for a volume still anchored to
-  `anchor_node_id`. The readable ETS projection changes only after the durable
-  append succeeds, so readers can never observe recovery authority that would
-  disappear on a control-plane restart.
+  `anchor_node_id`. Both the current and exported generations become the
+  consulted store generation. The readable ETS projection changes only after
+  the durable append succeeds, so readers can never observe recovery authority
+  that would disappear on a control-plane restart.
   """
   @spec adopt_exported_generation(GenServer.server(), String.t(), String.t(), pos_integer()) ::
           {:ok, map()} | {:error, term()}
@@ -1003,8 +1004,9 @@ defmodule Embervm.StatefulStore do
     # path. Export proof is different: after the anchor disappears no node can
     # report it again, and a CP rebuild must still know whether recovery is legal.
     # A successful restore likewise has to durably move node_id. The narrow
-    # volume_recovery_updated projection changes only those two fields, so a live
-    # report can never overwrite the generation issued by the blessing path.
+    # volume_recovery_updated projection carries the current generation so a
+    # verified store-truth adoption can reconcile the pair before restore. A live
+    # report still cannot rewrite the separate blessing ledger.
     merged =
       if volume_projection_changed?(base, merged, fields) do
         op = %Op{
@@ -1081,11 +1083,19 @@ defmodule Embervm.StatefulStore do
       when is_binary(anchor_node_id) and is_integer(generation) and generation > 0 do
     case fetch_volume(state, workload) do
       %{node_id: ^anchor_node_id} = volume ->
-        if (Map.get(volume, :exported_generation, 0) || 0) > 0 do
+        current_generation = Map.get(volume, :generation, 0) || 0
+        exported_generation = Map.get(volume, :exported_generation, 0) || 0
+
+        if current_generation == generation and exported_generation == generation do
           {:reply, {:ok, volume}, state}
         else
           ts = state.clock.()
-          adopted = volume |> Map.put(:exported_generation, generation) |> Map.put(:updated_at, ts)
+
+          adopted =
+            volume
+            |> Map.put(:generation, generation)
+            |> Map.put(:exported_generation, generation)
+            |> Map.put(:updated_at, ts)
 
           op = %Op{
             kind: :volume_recovery_updated,

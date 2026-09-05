@@ -486,14 +486,34 @@ defmodule Embervm.StatefulManager do
   def handle_info({:volume_store_consulted, workload, wake_token, anchor_node_id, result}, state) do
     if current_wake_token(state, workload) == wake_token do
       case adopt_exported_generation(state, workload, anchor_node_id, result) do
-        {:ok, generation} ->
+        {:ok, generation, row_generation} ->
           Logger.info("embervm stateful: adopted store volume generation",
             workload: workload,
             generation: generation
           )
 
           state = clear_negative_store_truth(state, workload)
-          {:noreply, resume_wake_after_store_consult(state, workload)}
+          {:noreply,
+           resume_wake_after_store_consult(state, workload, %{
+             row_generation: row_generation,
+             store_generation: generation
+           })}
+
+        {:error, {:generation_not_blessed, store_generation}} ->
+          volume = StatefulStore.get_volume(state.store, workload) || %{}
+
+          Logger.warning(
+            "embervm stateful: volume restore refused, store generation unblessed",
+            workload: workload,
+            anchor: anchor_node_id,
+            row_generation: Map.get(volume, :generation, 0) || 0,
+            store_generation: store_generation,
+            reason: :generation_not_blessed
+          )
+
+          state = maybe_memoize_negative_store_truth(state, workload, :generation_not_blessed)
+          send(self(), {:wake_done, workload, {:error, :volume_node_gone}})
+          {:noreply, state}
 
         {:error, reason} ->
           Logger.warning("embervm stateful: store export discovery failed closed",
@@ -772,7 +792,12 @@ defmodule Embervm.StatefulManager do
     wake_start = :opentelemetry.timestamp()
     plan = plan_wake(state, workload)
     state = mark_restore_plan(state, workload, plan)
-    cold = match?({:cold, _, _, _, _}, plan) or match?({:cold, _, _, _, _, _}, plan) or match?({:restore_volume_then_cold, _, _, _}, plan) or match?({:consult_volume_store, _, _}, plan)
+    cold =
+      match?({:cold, _, _, _, _}, plan) or
+        match?({:cold, _, _, _, _, _}, plan) or
+        match?({:restore_volume_then_cold, _, _, _}, plan) or
+        match?({:restore_volume_then_cold, _, _, _, _}, plan) or
+        match?({:consult_volume_store, _, _}, plan)
     state = stamp_wake_trace(state, workload, %{wake_start: wake_start, cold: cold})
 
     continue_wake_plan(state, workload, entry, plan, true)
@@ -841,11 +866,17 @@ defmodule Embervm.StatefulManager do
     end
   end
 
-  defp resume_wake_after_store_consult(state, workload) do
+  defp resume_wake_after_store_consult(state, workload, consult) do
     entry = catalog_entry(state, workload)
-    plan = plan_wake(state, workload)
+    plan = plan_wake(state, workload) |> attach_store_consult(consult)
     continue_wake_plan(state, workload, entry, plan, false)
   end
+
+  defp attach_store_consult({:restore_volume_then_cold, workload, node_id, volume}, consult) do
+    {:restore_volume_then_cold, workload, node_id, volume, consult}
+  end
+
+  defp attach_store_consult(plan, _consult), do: plan
 
   # Whether `plan` will dispatch a writable attach at all (every arm except
   # {:error, _}), and if so, issue + durably record the next blessed generation
@@ -892,6 +923,7 @@ defmodule Embervm.StatefulManager do
   defp wake_plan_node_id({:cold, node_id, _boot_ref, _mode, _reason}), do: node_id
   defp wake_plan_node_id({:cold, node_id, _dial_id, _boot_ref, _mode, _reason}), do: node_id
   defp wake_plan_node_id({:restore_volume_then_cold, _workload, node_id, _volume}), do: node_id
+  defp wake_plan_node_id({:restore_volume_then_cold, _workload, node_id, _volume, _consult}), do: node_id
   defp wake_plan_node_id(_), do: "unknown"
 
   # Dispatches the wake worker for `plan`, threading `blessed_generation` (0 for
@@ -1005,35 +1037,34 @@ defmodule Embervm.StatefulManager do
       # Restore-on-miss (R6): the volume itself is gone but a (vol.img, gen) pair is
       # exported. Restore the VOLUME inside the wake worker FIRST, then cold-boot at
       # the restored generation (COLD mode: the volume already exists after the
-      # restore, no create). A restore failure degrades to a plain cold boot, which
-      # for a truly-absent volume the daemon fails closed on (data fails closed).
+      # restore, no create). A restore failure degrades to a plain cold boot only
+      # while the original anchor may still hold the local volume. Confirmed anchor
+      # loss refuses the cold fallback because the target has no volume to attach.
       {:restore_volume_then_cold, wl, node_id, volume} ->
-        case dial_instance(state, wl, entry, node_id, []) do
-          {:ok, dial_id} ->
-            # Resolve the base ref from the chosen instance (dial_id), not the node
-            # alias (see the {:cold, ...} arm note): the restored volume cold-boots
-            # from the ref THIS instance advertises.
-            boot_ref = boot_image_ref(state, dial_id, wl)
-            req = cold_request(state, entry, wl, boot_ref, :cold, blessed_generation)
-            reason = cold_reason(volume)
+        dispatch_volume_restore(
+          state,
+          owner,
+          workload,
+          entry,
+          wl,
+          node_id,
+          volume,
+          blessed_generation,
+          nil
+        )
 
-            spawn_wake(owner, workload, fn ->
-              # Restore onto the boot's instance (dial_id), not the node-name alias
-              # (see the relight-with-restore note above): the cold boot reads the
-              # volume from dial_id's local disk. A successful restore is also the
-              # point at which a confirmed-gone source may be re-anchored. There is
-              # no source eviction to attempt, and this writes only node_id: the
-              # already-issued blessing remains the sole generation authority.
-              if restore_volume(state, dial_id, node_id, wl, volume) == :ok do
-                _ = StatefulStore.upsert_volume(state.store, wl, %{node_id: node_id})
-              end
-
-              run_cold(state, wl, node_id, dial_id, boot_ref, :cold, reason, req)
-            end)
-
-          {:error, select_reason} ->
-            send(self(), {:wake_done, workload, {:error, select_reason}})
-        end
+      {:restore_volume_then_cold, wl, node_id, volume, consult} ->
+        dispatch_volume_restore(
+          state,
+          owner,
+          workload,
+          entry,
+          wl,
+          node_id,
+          volume,
+          blessed_generation,
+          consult
+        )
 
       {:error, reason} ->
         send(self(), {:wake_done, workload, {:error, reason}})
@@ -1041,6 +1072,65 @@ defmodule Embervm.StatefulManager do
 
     state
   end
+
+  defp dispatch_volume_restore(
+         state,
+         owner,
+         workload,
+         entry,
+         wl,
+         node_id,
+         volume,
+         blessed_generation,
+         consult
+       ) do
+    case dial_instance(state, wl, entry, node_id, []) do
+      {:ok, dial_id} ->
+        boot_ref = boot_image_ref(state, dial_id, wl)
+        req = cold_request(state, entry, wl, boot_ref, :cold, blessed_generation)
+        reason = cold_reason(volume)
+        restore_generation = restore_generation(volume, consult)
+        row_generation = restore_row_generation(volume, consult)
+        source_anchor_gone? = confirmed_anchor_gone?({state, volume})
+
+        spawn_wake(owner, workload, fn ->
+          case restore_volume(state, dial_id, node_id, wl, restore_generation) do
+            :ok ->
+              _ = StatefulStore.upsert_volume(state.store, wl, %{node_id: node_id})
+              run_cold(state, wl, node_id, dial_id, boot_ref, :cold, reason, req)
+
+            {:error, restore_reason} when source_anchor_gone? ->
+              Logger.warning(
+                "embervm stateful: volume restore failed on confirmed-gone anchor, cold fallback refused",
+                workload: wl,
+                anchor: Map.get(volume, :node_id),
+                row_generation: row_generation,
+                store_generation: restore_generation,
+                reason: inspect(restore_reason)
+              )
+
+              {:error, :volume_restore_failed_anchor_gone}
+
+            {:error, restore_reason} ->
+              Logger.warning("embervm stateful: volume restore-on-miss failed, degrading to cold",
+                workload: wl,
+                reason: inspect(restore_reason)
+              )
+
+              run_cold(state, wl, node_id, dial_id, boot_ref, :cold, reason, req)
+          end
+        end)
+
+      {:error, select_reason} ->
+        send(self(), {:wake_done, workload, {:error, select_reason}})
+    end
+  end
+
+  defp restore_generation(_volume, %{store_generation: generation}), do: generation
+  defp restore_generation(volume, nil), do: Map.get(volume, :generation, 0) || 0
+
+  defp restore_row_generation(_volume, %{row_generation: generation}), do: generation
+  defp restore_row_generation(volume, nil), do: Map.get(volume, :generation, 0) || 0
 
   # Spawn a wake worker that ALWAYS reports a {:wake_done} outcome, even if the
   # RPC body crashes: a worker that died without reporting would leave the
@@ -1246,6 +1336,9 @@ defmodule Embervm.StatefulManager do
   # anchor and all of its NodeStatus facts disappear.
   defp restore_volume_or_cold(state, workload, volume) do
     cond do
+      store_truth_candidate?(state, volume) ->
+        {:consult_volume_store, volume, volume.node_id}
+
       volume_restorable?(state, volume) ->
         case anchor_node(state, volume) do
           {:ok, node_id} ->
@@ -1315,9 +1408,6 @@ defmodule Embervm.StatefulManager do
             {:error, reason}
         end
 
-      store_truth_candidate?(state, volume) ->
-        {:consult_volume_store, volume, volume.node_id}
-
       true ->
         cold_plan(state, workload, volume, cold_reason(volume))
     end
@@ -1356,7 +1446,11 @@ defmodule Embervm.StatefulManager do
     exported_generation(volume) > 0 and
       case anchor_node(state, volume) do
         {:ok, _node_id} -> store_reachable?(state, node_id)
-        {:error, :volume_node_gone} -> confirmed_anchor_gone?({state, volume})
+
+        {:error, :volume_node_gone} ->
+          confirmed_anchor_gone?({state, volume}) and
+            (Map.get(volume, :generation, 0) || 0) == exported_generation(volume)
+
         {:error, _reason} -> false
       end
   end
@@ -1365,7 +1459,8 @@ defmodule Embervm.StatefulManager do
 
   defp store_truth_candidate?(state, %{node_id: node_id} = volume)
        when is_binary(node_id) and node_id != "" do
-    exported_generation(volume) == 0 and
+    (exported_generation(volume) == 0 or
+       (Map.get(volume, :generation, 0) || 0) != exported_generation(volume)) and
       not negative_store_truth_memoized?(state, volume.workload) and
       match?({:error, :volume_node_gone}, anchor_node(state, volume)) and
       confirmed_anchor_gone?({state, volume})
@@ -1426,7 +1521,8 @@ defmodule Embervm.StatefulManager do
            :ok <- require_listed_volume_objects(keys, prefix),
            {:ok, meta_body} <- state.volume_store.get.(prefix <> "/" <> @volume_meta_object),
            {:ok, meta} <- Jason.decode(meta_body),
-           {:ok, generation} <- complete_volume_generation(state, volume, prefix, keys, meta) do
+           {:ok, generation} <-
+             complete_volume_generation(state, volume, prefix, keys, meta) do
         {:ok, generation}
       else
         nil -> {:error, :invalid_volume_prefix}
@@ -1518,7 +1614,7 @@ defmodule Embervm.StatefulManager do
       true ->
         case matching_plain_blessed_marker?(state.volume_store, prefix, keys, files, generation) do
           {:ok, true} -> :ok
-          {:ok, false} -> {:error, :generation_not_blessed}
+          {:ok, false} -> {:error, {:generation_not_blessed, generation}}
           {:error, _reason} -> {:error, :blessing_read_failed}
         end
     end
@@ -1562,15 +1658,16 @@ defmodule Embervm.StatefulManager do
     case StatefulStore.get_volume(state.store, workload) do
       %{node_id: ^anchor_node_id} = volume ->
         cond do
-          exported_generation(volume) > 0 ->
-            {:ok, exported_generation(volume)}
-
           not store_truth_candidate?(state, volume) ->
             {:error, :anchor_no_longer_confirmed_gone}
 
           true ->
+            row_generation = Map.get(volume, :generation, 0) || 0
+
             case StatefulStore.adopt_exported_generation(state.store, workload, anchor_node_id, generation) do
-              {:ok, %{exported_generation: adopted_generation}} -> {:ok, adopted_generation}
+              {:ok, %{exported_generation: adopted_generation}} ->
+                {:ok, adopted_generation, row_generation}
+
               {:error, reason} -> {:error, {:volume_projection_not_durable, reason}}
             end
         end
@@ -2085,6 +2182,10 @@ defmodule Embervm.StatefulManager do
         Logger.warning("embervm stateful relight failed", workload: workload, instance_id: instance_id, reason: inspect(reason))
         _ = StatefulStore.mark(state.store, instance_id, :relight_abort)
         reply_all(waiters, {:error, {:wake_failed, reason}})
+        state
+
+      {:error, :volume_restore_failed_anchor_gone} ->
+        reply_all(waiters, {:error, {:wake_failed, :volume_restore_failed_anchor_gone}})
         state
 
       {:error, reason} ->
@@ -3469,14 +3570,15 @@ defmodule Embervm.StatefulManager do
   # volume/<workload>/ and a non-empty ref here composes the doomed
   # volume/<workload>/<ref> prefix, the 22:19Z NotFound loop) from the exported
   # (vol.img, gen) pair, then record :artifact_restored. Best-effort, same as
-  # restore_bundle: a failure degrades to a plain cold boot (which the daemon fails
-  # closed on for a truly-absent volume).
-  defp restore_volume(state, dial_id, node_id, workload, volume) do
+  # restore_bundle. The caller decides whether a failure may degrade to a cold
+  # boot. Confirmed anchor loss refuses that fallback because the local volume is
+  # known to be absent.
+  defp restore_volume(state, dial_id, node_id, workload, generation) do
     ref = %ArtifactRef{kind: :ARTIFACT_KIND_VOLUME, workload: workload}
     ctx = %{
       principal: wake_principal(workload),
       lineage: workload,
-      generation: Map.get(volume, :generation, 0) || 0
+      generation: generation
     }
 
     case safe_restore_artifact(state, dial_id, node_id, ref, ctx) do
@@ -3485,12 +3587,7 @@ defmodule Embervm.StatefulManager do
         :ok
 
       other ->
-        Logger.warning("embervm stateful: volume restore-on-miss failed, degrading to cold",
-          workload: workload,
-          reason: inspect(other)
-        )
-
-        :error
+        {:error, other}
     end
   end
 
