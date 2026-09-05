@@ -10,6 +10,7 @@ import {
 
 const base = process.env.QWEN_REPLAY_API;
 const build = process.env.QWEN_REPLAY_BUILD;
+const sampleIntervalMs = 200;
 if (!base || !/^[a-f0-9]{40}$/.test(build ?? "")) {
   throw new Error(
     "Set QWEN_REPLAY_API and the verified QWEN_REPLAY_BUILD commit.",
@@ -52,6 +53,7 @@ const recording = {
   model: "Qwen3.8-Flash-Next, 125B, NVFP4",
   hardware: "RTX 4090 24 GB, Ryzen 7800X3D, 64 GB RAM, NVMe",
   thinking: false,
+  sampleIntervalMs,
   conditions:
     "Existing warm service, default sampling, shared with normal traffic. Client timings include transport. This is a walkthrough, not an isolated benchmark.",
   turns: [],
@@ -93,9 +95,14 @@ for (const [title, prompt] of prompts) {
     }
   };
   const poll = (async () => {
+    let nextSampleAt = performance.now() + sampleIntervalMs;
     while (!stopped) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      if (!stopped) await sample();
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(0, nextSampleAt - performance.now())),
+      );
+      if (stopped) break;
+      nextSampleAt = performance.now() + sampleIntervalMs;
+      await sample();
     }
   })();
   try {
@@ -142,11 +149,11 @@ for (const [title, prompt] of prompts) {
       }
     }
     turn.durationMs = elapsed();
-    await sample();
   } finally {
     stopped = true;
     await poll;
   }
+  await sample();
   turn.durationMs = Math.max(
     turn.durationMs,
     ...turn.samples.map((sample) => sample.at),

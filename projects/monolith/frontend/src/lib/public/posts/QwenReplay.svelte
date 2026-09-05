@@ -298,12 +298,9 @@
     <div class="answer" tabindex="0" role="region" aria-label="Recorded answer">
       <p>{answer || "Waiting for the first token..."}</p>
     </div>
-    {#if selected === 2 && position >= turn.durationMs}
-      <p class="caption">
-        Correction: GLM's 99.8% hit rate covers disk-tier routes, not all
-        routes. Pinned host layers still transfer over PCIe.
-      </p>
-    {/if}
+    {#if turn.note && position >= turn.durationMs}<p class="caption">
+        {turn.note}
+      </p>{/if}
   </div>
 
   <details class="recording-notes">
@@ -316,7 +313,8 @@
     <p class="caption">
       Routing and capacity are estimates from the live demo. Gaps indicate
       missing or empty samples. Measurements use server token counts and
-      recorded timings, independent of playback speed.
+      recorded timings, independent of playback speed. Capture target: {recording.sampleIntervalMs}
+      ms; prefill can delay replies.
     </p>
     <p class="caption">
       Build <a
@@ -455,24 +453,19 @@
     overflow: hidden;
   }
   .hot {
-    --tier-color: var(--tone-hot);
+    --tier-color: var(--replay-hot);
   }
   .warm {
-    --tier-color: var(--tone-ram);
+    --tier-color: var(--replay-warm);
   }
   .cold {
-    --tier-color: var(--tone-disk);
+    --tier-color: var(--replay-cold);
   }
   .unknown {
     --tier-color: var(--ink-3);
   }
   .activity-bar > span {
     background: var(--tier-color);
-  }
-  .activity-bar > span,
-  .routing-history rect,
-  .tier-label i {
-    filter: saturate(1.5) brightness(1.35);
   }
   .tiers {
     display: grid;
@@ -516,7 +509,7 @@
   }
   .tier > strong {
     font: 1.6rem var(--font-code);
-    color: var(--tier-color);
+    color: color-mix(in srgb, var(--tier-color) 45%, var(--ink));
   }
   .routing-history svg {
     display: block;

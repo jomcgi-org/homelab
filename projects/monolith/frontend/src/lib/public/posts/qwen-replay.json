@@ -1,153 +1,143 @@
 {
   "version": 1,
-  "recordedAt": "2026-09-05T01:35:46.182Z",
+  "recordedAt": "2026-09-05T02:38:25.207Z",
   "build": "3a67403a293be20836604bc25729329997848e09",
   "model": "Qwen3.8-Flash-Next, 125B, NVFP4",
   "hardware": "RTX 4090 24 GB, Ryzen 7800X3D, 64 GB RAM, NVMe",
   "thinking": false,
+  "sampleIntervalMs": 200,
   "conditions": "Existing warm service, default sampling, shared with normal traffic. Client timings include transport. This is a walkthrough, not an isolated benchmark.",
   "turns": [
     {
       "title": "A short question",
       "prompt": "In about 100 words, explain why a model's weights might fit on disk but still be difficult to serve on a 24 GB GPU.",
       "events": [
-        { "at": 3208, "content": "A", "reasoning": "" },
-        { "at": 3208, "content": " ", "reasoning": "" },
-        { "at": 3240, "content": "2", "reasoning": "" },
-        { "at": 3341, "content": "4", "reasoning": "" },
-        { "at": 3411, "content": " GB", "reasoning": "" },
-        { "at": 3503, "content": " GPU", "reasoning": "" },
-        { "at": 3591, "content": " often", "reasoning": "" },
-        { "at": 3672, "content": " cannot", "reasoning": "" },
-        { "at": 3731, "content": " serve", "reasoning": "" },
-        { "at": 3791, "content": " a", "reasoning": "" },
-        { "at": 3894, "content": " model", "reasoning": "" },
-        { "at": 3914, "content": " that", "reasoning": "" },
-        { "at": 3991, "content": " fits", "reasoning": "" },
-        { "at": 4104, "content": " on", "reasoning": "" },
-        { "at": 4121, "content": " disk", "reasoning": "" },
-        { "at": 4201, "content": " because", "reasoning": "" },
-        { "at": 4271, "content": " inference", "reasoning": "" },
-        { "at": 4361, "content": " requires", "reasoning": "" },
-        { "at": 4412, "content": " more", "reasoning": "" },
-        { "at": 4514, "content": " memory", "reasoning": "" },
-        { "at": 4552, "content": " than", "reasoning": "" },
-        { "at": 4624, "content": " just", "reasoning": "" },
-        { "at": 4662, "content": " the", "reasoning": "" },
-        { "at": 4762, "content": " raw", "reasoning": "" },
-        { "at": 4802, "content": " weights", "reasoning": "" },
-        { "at": 4883, "content": ".", "reasoning": "" },
-        { "at": 4933, "content": " First", "reasoning": "" },
-        { "at": 4982, "content": ",", "reasoning": "" },
-        { "at": 5052, "content": " activations", "reasoning": "" },
-        { "at": 5132, "content": " from", "reasoning": "" },
-        { "at": 5218, "content": " intermediate", "reasoning": "" },
-        { "at": 5313, "content": " layers", "reasoning": "" },
-        { "at": 5373, "content": " consume", "reasoning": "" },
-        { "at": 5450, "content": " significant", "reasoning": "" },
-        { "at": 5547, "content": " RAM", "reasoning": "" },
-        { "at": 5583, "content": ",", "reasoning": "" },
-        { "at": 5683, "content": " scaling", "reasoning": "" },
-        { "at": 5843, "content": " with", "reasoning": "" },
-        { "at": 5953, "content": " batch", "reasoning": "" },
-        { "at": 6264, "content": " size", "reasoning": "" },
-        { "at": 6334, "content": " and", "reasoning": "" },
-        { "at": 6334, "content": " sequence", "reasoning": "" },
-        { "at": 6354, "content": " length", "reasoning": "" },
-        { "at": 6444, "content": ".", "reasoning": "" },
-        { "at": 6504, "content": " Second", "reasoning": "" },
-        { "at": 6564, "content": ",", "reasoning": "" },
-        { "at": 6624, "content": " serving", "reasoning": "" },
-        { "at": 6719, "content": " typically", "reasoning": "" },
-        { "at": 6744, "content": " uses", "reasoning": "" },
-        { "at": 6784, "content": " mixed", "reasoning": "" },
-        { "at": 6834, "content": "-", "reasoning": "" },
-        { "at": 6938, "content": "precision", "reasoning": "" },
-        { "at": 6995, "content": " (", "reasoning": "" },
-        { "at": 7236, "content": "FP", "reasoning": "" },
-        { "at": 7255, "content": "1", "reasoning": "" },
-        { "at": 7334, "content": "6", "reasoning": "" },
-        { "at": 7416, "content": "/B", "reasoning": "" },
-        { "at": 7538, "content": "F", "reasoning": "" },
-        { "at": 7635, "content": "1", "reasoning": "" },
-        { "at": 7705, "content": "6", "reasoning": "" },
-        { "at": 7795, "content": "),", "reasoning": "" },
-        { "at": 7977, "content": " but", "reasoning": "" },
-        { "at": 8005, "content": " some", "reasoning": "" },
-        { "at": 8105, "content": " frameworks", "reasoning": "" },
-        { "at": 8175, "content": " load", "reasoning": "" },
-        { "at": 8235, "content": " weights", "reasoning": "" },
-        { "at": 8325, "content": " in", "reasoning": "" },
-        { "at": 8405, "content": " FP", "reasoning": "" },
-        { "at": 8485, "content": "3", "reasoning": "" },
-        { "at": 8557, "content": "2", "reasoning": "" },
-        { "at": 8637, "content": ",", "reasoning": "" },
-        { "at": 8706, "content": " doubling", "reasoning": "" },
-        { "at": 8807, "content": " memory", "reasoning": "" },
-        { "at": 8886, "content": " usage", "reasoning": "" },
-        { "at": 8958, "content": ".", "reasoning": "" },
-        { "at": 9027, "content": " Third", "reasoning": "" },
-        { "at": 9138, "content": ",", "reasoning": "" },
-        { "at": 9197, "content": " the", "reasoning": "" },
-        { "at": 9266, "content": " KV", "reasoning": "" },
-        { "at": 9341, "content": " cache", "reasoning": "" },
-        { "at": 9397, "content": ",", "reasoning": "" },
-        { "at": 9457, "content": " which", "reasoning": "" },
-        { "at": 9527, "content": " stores", "reasoning": "" },
-        { "at": 9589, "content": " past", "reasoning": "" },
-        { "at": 9698, "content": " attention", "reasoning": "" },
-        { "at": 9777, "content": " states", "reasoning": "" },
-        { "at": 9867, "content": " for", "reasoning": "" },
-        { "at": 9927, "content": " autore", "reasoning": "" },
-        { "at": 10009, "content": "gressive", "reasoning": "" },
-        { "at": 10080, "content": " generation", "reasoning": "" },
-        { "at": 10138, "content": ",", "reasoning": "" },
-        { "at": 10207, "content": " grows", "reasoning": "" },
-        { "at": 10299, "content": " linear", "reasoning": "" },
-        { "at": 10428, "content": "ly", "reasoning": "" },
-        { "at": 10447, "content": " with", "reasoning": "" },
-        { "at": 10508, "content": " token", "reasoning": "" },
-        { "at": 10568, "content": " count", "reasoning": "" },
-        { "at": 10629, "content": ",", "reasoning": "" },
-        { "at": 10708, "content": " often", "reasoning": "" },
-        { "at": 10781, "content": " exceeding", "reasoning": "" },
-        { "at": 10930, "content": " the", "reasoning": "" },
-        { "at": 11008, "content": " weights", "reasoning": "" },
-        { "at": 11100, "content": "’", "reasoning": "" },
-        { "at": 11188, "content": " size", "reasoning": "" },
-        { "at": 11272, "content": ".", "reasoning": "" },
-        { "at": 11365, "content": " Finally", "reasoning": "" },
-        { "at": 11457, "content": ",", "reasoning": "" },
-        { "at": 11509, "content": " CUDA", "reasoning": "" },
-        { "at": 11592, "content": " contexts", "reasoning": "" },
-        { "at": 11659, "content": ",", "reasoning": "" },
-        { "at": 11709, "content": " driver", "reasoning": "" },
-        { "at": 11769, "content": " overhead", "reasoning": "" },
-        { "at": 11849, "content": ",", "reasoning": "" },
-        { "at": 11951, "content": " and", "reasoning": "" },
-        { "at": 11995, "content": " fragmentation", "reasoning": "" },
-        { "at": 12049, "content": " further", "reasoning": "" },
-        { "at": 12121, "content": " reduce", "reasoning": "" },
-        { "at": 12189, "content": " available", "reasoning": "" },
-        { "at": 12259, "content": " VR", "reasoning": "" },
-        { "at": 12320, "content": "AM", "reasoning": "" },
-        { "at": 12400, "content": ",", "reasoning": "" },
-        { "at": 12490, "content": " causing", "reasoning": "" },
-        { "at": 12590, "content": " out", "reasoning": "" },
-        { "at": 12719, "content": "-of", "reasoning": "" },
-        { "at": 12792, "content": "-memory", "reasoning": "" },
-        { "at": 12841, "content": " errors", "reasoning": "" },
-        { "at": 12930, "content": " despite", "reasoning": "" },
-        { "at": 12992, "content": " the", "reasoning": "" },
-        { "at": 13151, "content": " model", "reasoning": "" },
-        { "at": 13220, "content": " file", "reasoning": "" },
-        { "at": 13292, "content": " appearing", "reasoning": "" },
-        { "at": 13381, "content": " small", "reasoning": "" },
-        { "at": 13471, "content": ".", "reasoning": "" }
+        { "at": 2434, "content": "While", "reasoning": "" },
+        { "at": 2434, "content": " a", "reasoning": "" },
+        { "at": 2452, "content": " model", "reasoning": "" },
+        { "at": 2512, "content": "’s", "reasoning": "" },
+        { "at": 2591, "content": " weights", "reasoning": "" },
+        { "at": 2622, "content": " might", "reasoning": "" },
+        { "at": 2672, "content": " compress", "reasoning": "" },
+        { "at": 2754, "content": " to", "reasoning": "" },
+        { "at": 2792, "content": " under", "reasoning": "" },
+        { "at": 2843, "content": " ", "reasoning": "" },
+        { "at": 2903, "content": "2", "reasoning": "" },
+        { "at": 2987, "content": "4", "reasoning": "" },
+        { "at": 3023, "content": " GB", "reasoning": "" },
+        { "at": 3083, "content": ",", "reasoning": "" },
+        { "at": 3146, "content": " serving", "reasoning": "" },
+        { "at": 3183, "content": " requires", "reasoning": "" },
+        { "at": 3213, "content": " more", "reasoning": "" },
+        { "at": 3253, "content": " than", "reasoning": "" },
+        { "at": 3293, "content": " just", "reasoning": "" },
+        { "at": 3363, "content": " storage", "reasoning": "" },
+        { "at": 3403, "content": ".", "reasoning": "" },
+        { "at": 3423, "content": " Key", "reasoning": "" },
+        { "at": 3483, "content": " bott", "reasoning": "" },
+        { "at": 3557, "content": "lene", "reasoning": "" },
+        { "at": 3593, "content": "cks", "reasoning": "" },
+        { "at": 3643, "content": " include", "reasoning": "" },
+        { "at": 3684, "content": " the", "reasoning": "" },
+        { "at": 3749, "content": " **", "reasoning": "" },
+        { "at": 3784, "content": "KV", "reasoning": "" },
+        { "at": 3875, "content": " cache", "reasoning": "" },
+        { "at": 3906, "content": "**,", "reasoning": "" },
+        { "at": 3920, "content": " which", "reasoning": "" },
+        { "at": 4016, "content": " grows", "reasoning": "" },
+        { "at": 4054, "content": " linear", "reasoning": "" },
+        { "at": 4094, "content": "ly", "reasoning": "" },
+        { "at": 4160, "content": " with", "reasoning": "" },
+        { "at": 4305, "content": " sequence", "reasoning": "" },
+        { "at": 4370, "content": " length", "reasoning": "" },
+        { "at": 4404, "content": " and", "reasoning": "" },
+        { "at": 4447, "content": " batch", "reasoning": "" },
+        { "at": 4484, "content": " size", "reasoning": "" },
+        { "at": 4558, "content": ",", "reasoning": "" },
+        { "at": 4594, "content": " rapidly", "reasoning": "" },
+        { "at": 4625, "content": " consuming", "reasoning": "" },
+        { "at": 4654, "content": " memory", "reasoning": "" },
+        { "at": 4694, "content": " during", "reasoning": "" },
+        { "at": 4775, "content": " inference", "reasoning": "" },
+        { "at": 4815, "content": ".", "reasoning": "" },
+        { "at": 4845, "content": " Additionally", "reasoning": "" },
+        { "at": 4906, "content": ",", "reasoning": "" },
+        { "at": 4976, "content": " GPU", "reasoning": "" },
+        { "at": 5015, "content": " memory", "reasoning": "" },
+        { "at": 5035, "content": " must", "reasoning": "" },
+        { "at": 5085, "content": " hold", "reasoning": "" },
+        { "at": 5146, "content": " activations", "reasoning": "" },
+        { "at": 5186, "content": ",", "reasoning": "" },
+        { "at": 5206, "content": " optimizer", "reasoning": "" },
+        { "at": 5255, "content": " states", "reasoning": "" },
+        { "at": 5305, "content": " (", "reasoning": "" },
+        { "at": 5388, "content": "during", "reasoning": "" },
+        { "at": 5425, "content": " fine", "reasoning": "" },
+        { "at": 5455, "content": "-t", "reasoning": "" },
+        { "at": 5495, "content": "uning", "reasoning": "" },
+        { "at": 5623, "content": "),", "reasoning": "" },
+        { "at": 5655, "content": " and", "reasoning": "" },
+        { "at": 5695, "content": " intermediate", "reasoning": "" },
+        { "at": 5778, "content": " computation", "reasoning": "" },
+        { "at": 5816, "content": " buffers", "reasoning": "" },
+        { "at": 5835, "content": ".", "reasoning": "" },
+        { "at": 5917, "content": " Framework", "reasoning": "" },
+        { "at": 6005, "content": " overhead", "reasoning": "" },
+        { "at": 6020, "content": " and", "reasoning": "" },
+        { "at": 6067, "content": " memory", "reasoning": "" },
+        { "at": 6106, "content": " fragmentation", "reasoning": "" },
+        { "at": 6165, "content": " further", "reasoning": "" },
+        { "at": 6206, "content": " reduce", "reasoning": "" },
+        { "at": 6226, "content": " available", "reasoning": "" },
+        { "at": 6266, "content": " capacity", "reasoning": "" },
+        { "at": 6316, "content": ".", "reasoning": "" },
+        { "at": 6367, "content": " Consequently", "reasoning": "" },
+        { "at": 6406, "content": ",", "reasoning": "" },
+        { "at": 6439, "content": " even", "reasoning": "" },
+        { "at": 6496, "content": " if", "reasoning": "" },
+        { "at": 6548, "content": " weights", "reasoning": "" },
+        { "at": 6587, "content": " fit", "reasoning": "" },
+        { "at": 6606, "content": ",", "reasoning": "" },
+        { "at": 6647, "content": " the", "reasoning": "" },
+        { "at": 6696, "content": " total", "reasoning": "" },
+        { "at": 6759, "content": " memory", "reasoning": "" },
+        { "at": 6776, "content": " footprint", "reasoning": "" },
+        { "at": 6816, "content": " for", "reasoning": "" },
+        { "at": 6846, "content": " a", "reasoning": "" },
+        { "at": 6917, "content": " viable", "reasoning": "" },
+        { "at": 6964, "content": " serving", "reasoning": "" },
+        { "at": 6997, "content": " environment", "reasoning": "" },
+        { "at": 7027, "content": " often", "reasoning": "" },
+        { "at": 7077, "content": " exceeds", "reasoning": "" },
+        { "at": 7117, "content": " ", "reasoning": "" },
+        { "at": 7212, "content": "2", "reasoning": "" },
+        { "at": 7257, "content": "4", "reasoning": "" },
+        { "at": 7317, "content": " GB", "reasoning": "" },
+        { "at": 7379, "content": ",", "reasoning": "" },
+        { "at": 7417, "content": " necess", "reasoning": "" },
+        { "at": 7447, "content": "itating", "reasoning": "" },
+        { "at": 7518, "content": " larger", "reasoning": "" },
+        { "at": 7572, "content": " GPUs", "reasoning": "" },
+        { "at": 7607, "content": ",", "reasoning": "" },
+        { "at": 7627, "content": " quant", "reasoning": "" },
+        { "at": 7697, "content": "ization", "reasoning": "" },
+        { "at": 7797, "content": ",", "reasoning": "" },
+        { "at": 7807, "content": " or", "reasoning": "" },
+        { "at": 7837, "content": " off", "reasoning": "" },
+        { "at": 7867, "content": "loading", "reasoning": "" },
+        { "at": 7897, "content": " techniques", "reasoning": "" },
+        { "at": 7988, "content": " to", "reasoning": "" },
+        { "at": 8008, "content": " manage", "reasoning": "" },
+        { "at": 8028, "content": " the", "reasoning": "" },
+        { "at": 8068, "content": " dynamic", "reasoning": "" },
+        { "at": 8108, "content": " runtime", "reasoning": "" },
+        { "at": 8173, "content": " demands", "reasoning": "" },
+        { "at": 8208, "content": " effectively", "reasoning": "" },
+        { "at": 8321, "content": ".", "reasoning": "" }
       ],
       "samples": [
         {
-          "at": 3201,
+          "at": 2435,
           "activity": {
             "hotHits": 0,
             "warmHits": 12320,
@@ -171,13 +161,13 @@
           "activeRequests": 1
         },
         {
-          "at": 4375,
+          "at": 2603,
           "activity": {
-            "hotHits": 2316,
-            "warmHits": 4760,
-            "coldHits": 1084,
+            "hotHits": 697,
+            "warmHits": 1120,
+            "coldHits": 103,
             "unknownHits": 0,
-            "totalHits": 8160
+            "totalHits": 1920
           },
           "tiers": {
             "totalExperts": 24576,
@@ -195,13 +185,109 @@
           "activeRequests": 1
         },
         {
-          "at": 5554,
+          "at": 2773,
           "activity": {
-            "hotHits": 2389,
-            "warmHits": 4760,
-            "coldHits": 1011,
+            "hotHits": 536,
+            "warmHits": 840,
+            "coldHits": 64,
             "unknownHits": 0,
-            "totalHits": 8160
+            "totalHits": 1440
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 1,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 3008,
+          "activity": {
+            "hotHits": 679,
+            "warmHits": 1120,
+            "coldHits": 121,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 1,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 3164,
+          "activity": {
+            "hotHits": 550,
+            "warmHits": 840,
+            "coldHits": 50,
+            "unknownHits": 0,
+            "totalHits": 1440
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 1,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 3384,
+          "activity": {
+            "hotHits": 887,
+            "warmHits": 1400,
+            "coldHits": 113,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 1,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 3574,
+          "activity": {
+            "hotHits": 681,
+            "warmHits": 1120,
+            "coldHits": 119,
+            "unknownHits": 0,
+            "totalHits": 1920
           },
           "tiers": {
             "totalExperts": 24576,
@@ -219,13 +305,13 @@
           "activeRequests": 1
         },
         {
-          "at": 6728,
+          "at": 3764,
           "activity": {
-            "hotHits": 1838,
-            "warmHits": 3640,
-            "coldHits": 762,
+            "hotHits": 659,
+            "warmHits": 1120,
+            "coldHits": 141,
             "unknownHits": 0,
-            "totalHits": 6240
+            "totalHits": 1920
           },
           "tiers": {
             "totalExperts": 24576,
@@ -243,13 +329,13 @@
           "activeRequests": 1
         },
         {
-          "at": 7956,
+          "at": 4037,
           "activity": {
-            "hotHits": 2110,
-            "warmHits": 3920,
-            "coldHits": 690,
+            "hotHits": 836,
+            "warmHits": 1400,
+            "coldHits": 164,
             "unknownHits": 0,
-            "totalHits": 6720
+            "totalHits": 2400
           },
           "tiers": {
             "totalExperts": 24576,
@@ -267,13 +353,13 @@
           "activeRequests": 1
         },
         {
-          "at": 9158,
+          "at": 4176,
           "activity": {
-            "hotHits": 2339,
-            "warmHits": 4200,
-            "coldHits": 661,
+            "hotHits": 487,
+            "warmHits": 840,
+            "coldHits": 113,
             "unknownHits": 0,
-            "totalHits": 7200
+            "totalHits": 1440
           },
           "tiers": {
             "totalExperts": 24576,
@@ -291,13 +377,13 @@
           "activeRequests": 1
         },
         {
-          "at": 10318,
+          "at": 4385,
           "activity": {
-            "hotHits": 2455,
-            "warmHits": 4480,
-            "coldHits": 745,
+            "hotHits": 331,
+            "warmHits": 560,
+            "coldHits": 69,
             "unknownHits": 0,
-            "totalHits": 7680
+            "totalHits": 960
           },
           "tiers": {
             "totalExperts": 24576,
@@ -310,18 +396,18 @@
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
           },
-          "kvUsedPages": 3,
+          "kvUsedPages": 2,
           "kvTotalPages": 1024,
           "activeRequests": 1
         },
         {
-          "at": 11470,
+          "at": 4576,
           "activity": {
-            "hotHits": 2195,
-            "warmHits": 3920,
-            "coldHits": 605,
+            "hotHits": 644,
+            "warmHits": 1120,
+            "coldHits": 156,
             "unknownHits": 0,
-            "totalHits": 6720
+            "totalHits": 1920
           },
           "tiers": {
             "totalExperts": 24576,
@@ -334,18 +420,18 @@
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
           },
-          "kvUsedPages": 3,
+          "kvUsedPages": 2,
           "kvTotalPages": 1024,
           "activeRequests": 1
         },
         {
-          "at": 12731,
+          "at": 4795,
           "activity": {
-            "hotHits": 2681,
-            "warmHits": 4760,
-            "coldHits": 719,
+            "hotHits": 923,
+            "warmHits": 1400,
+            "coldHits": 77,
             "unknownHits": 0,
-            "totalHits": 8160
+            "totalHits": 2400
           },
           "tiers": {
             "totalExperts": 24576,
@@ -358,18 +444,18 @@
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
           },
-          "kvUsedPages": 3,
+          "kvUsedPages": 2,
           "kvTotalPages": 1024,
           "activeRequests": 1
         },
         {
-          "at": 13782,
+          "at": 4996,
           "activity": {
-            "hotHits": 1696,
-            "warmHits": 3080,
-            "coldHits": 504,
+            "hotHits": 701,
+            "warmHits": 1120,
+            "coldHits": 99,
             "unknownHits": 0,
-            "totalHits": 5280
+            "totalHits": 1920
           },
           "tiers": {
             "totalExperts": 24576,
@@ -382,327 +468,18 @@
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
           },
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 0
-        },
-        {
-          "at": 13811,
-          "activity": {
-            "hotHits": 0,
-            "warmHits": 0,
-            "coldHits": 0,
-            "unknownHits": 0,
-            "totalHits": 0
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 0
-        }
-      ],
-      "usage": { "prompt_tokens": 44, "completion_tokens": 134 },
-      "finishReason": "stop",
-      "durationMs": 13811,
-      "metrics": {
-        "ttftMs": 3208,
-        "generationMs": 10263,
-        "completionTokens": 134,
-        "tokensPerSecond": 12.959173730877911
-      }
-    },
-    {
-      "title": "Reading the post",
-      "prompt": "Read this draft post and summarize the three most useful changes and why they helped. Keep your answer under 180 words.\n\n---\ntitle: Serving larger-than-memory MoE models\ndate: 2026-09-01\ntags: inference, freetoken, moe, homelab\npublic: true\nsummary: How I was able to serve 100GB of weights (Qwen3.8-Flash-Next, 125B) on a consumer 24GB GPU.\n---\n\n## 1. FreeToken\n\n[FreeToken](https://github.com/FlashML-org/FreeToken) is FlashML's engine for running mixture-of-experts models. It serves models larger than VRAM by keeping the experts in pinned RAM and caching the hot ones in VRAM.\n\nThis does not work for my node with 24GB VRAM + 64GB RAM, this post (& [fork](https://github.com/jomcgi-org/freetoken-fork)) is an experiment where I spill experts to disk to accommodate a larger than memory model.\n\n## 2. Specifications\n\n| Part | Specification |\n|---|---|\n| Model | Qwen3.8-Flash-Next, 125B parameters, 6B active per token, NVFP4 |\n| Expert banks | 63.5 GB, 48 layers of 512 experts |\n| Dense layers | 9.2 GB: attention, GDN, embeddings, head |\n| Context window | 100k |\n| Per-layer embedding (PLE), n-gram lookup table | 27 GB |\n| Served in total | about 100 GB |\n| GPU | RTX 4090, 24 GB |\n| Host | Ryzen 7800X3D, 64 GB DDR5-6000, 1.9 TB NVMe |\n| Engine | [freetoken-fork](https://github.com/jomcgi-org/freetoken-fork) |\n| Upstream RAM requirement | 128 GB |\n\nThese weights don't fit in VRAM or RAM and I can't convince myself to upgrade in this RAM economy so here we are spilling to disk.\n\nThe budgets in this first diagram are from September 1. I've kept the original results below and added what changed over the next few days beside each experiment.\n\n![Where are the weights?](figures/memory-tiers.svg)\n\n| Key | Part |\n|---|---|\n| 1 | RTX 4090, 24 GB. Dense layers, the KV cache and the expert slot cache. Everything else gets streamed in as required. |\n| 2 | PCIe 4.0 x16. The route for experts to get into VRAM. |\n| 3 | Pinned host memory: split between 40 GB of warm expert layers and 6 GB of hot rows. |\n| 4 | Page cache, about 16 GB. Kernel-managed cache that reduces the thrashing when accessing disk layers |\n| 5 | NVMe, 1.9 TB. All experts banked (63.5 GB) and the 27 GB lookup table |\n| 6 | CPU MoE executor, 8 cores, decoding the cold tail out of the page cache |\n\n## 3. Performance\n\n| | PoC (tok/s) | September 1 (tok/s) |\n|---|---:|---:|\n| Prefill, 441-token prompt, warm | 54 | 116 |\n| Single stream | 3.8 | 21 |\n| Eight streams, aggregate | 9.6 | 37 |\n\nUpstream wouldn't start. This measures the improvement from the first tokens I was able to generate to the September 1 configuration. Warm single-stream probes on September 4 were around 22 to 24 tok/s. I haven't rerun all three rows together on that build.\n\n## 4. How does MoE inference work?\n\nWe generate a token by running every layer once. In a mixture-of-experts layer the router looks at your input and picks 10 of the 512 experts to run.\n\nThat means that most of the 63.5 GB of expert weights are idle during token generation. The work to optimize this in a resource-constrained environment is then less about the computation and more about getting the chosen experts to the most efficient place for that computation to happen.\n\nDecoding is one token at a time with a few experts per layer, and it is bottlenecked by the slowest tier that it has to reach into. Prefill pushes the whole prompt through at the same time, so it touches many experts per layer and looks more like compute, but on this box it still has to find the experts first.\n\n[Qwen3.8-Flash-Next](https://qwen.ai/blog?id=qwen3.8-flash-next) is an early preview of the Qwen4 architecture including an n-gram lookup table which is 27 GB of learned rows keyed by the last couple of tokens so that it can be retrieved during inference instead of computed.\n\nThe bandwidth tiers with time taken to move one 2.6 MB expert are:\n* VRAM (1 TB/s, ~3 us)\n* RAM over PCIe (25 GB/s, ~100 us)\n* Page cache (hit: RAM speed, ~40 us; miss: a 15 us fault per 4 KB page, ~10 ms)\n* NVMe (7 GB/s, ~370 us when read in bulk)\n\n## 5. Bottlenecks\n\nThe many problems I ran into trying to get this working with a reasonably responsive throughput.\n\n### 5.1 Pinning too much starved the page cache\n\nFreeToken pins expert banks into memory. My initial budget was 52/64 GB, which left nothing for the page cache to manage access to 59.5 GB of disk-resident expert banks.\n\nThis was terrible: 96k major faults per decode step and 3.8 tok/s.\n\nDropping the budget to 40 GB tripled throughput by letting the page cache manage the disk reads.\n\nI now budget pinning and paging together, including the container's memory limit. The GPU had a similar problem: reserving KV space for the full context at startup left less room for experts. Starting the KV pool small and growing it between requests left about 14% more expert slots at startup in the 100k-context configuration. A long conversation still takes those slots back as it grows.\n\n### 5.2 Random reads from disk (experts vs n-gram)\n\nRandom reads are fine for experts because on disk they are a read-only mmap of the weight file. Routing happens before the expert computes, so we know what we need to load before it gets used. With some batch deduplication I got under 10 major faults per step for managing them.\n\nThe n-gram lookup is different. It's touched on every token at random rows from inside a CUDA graph. Having the GPU read the host file mappings directly was faster than trying to manage this in the caching tiers. Switching to that almost doubled four-stream throughput from 14 to 26.5, and freed the pinned cache that the table had been using, leaving room to fit more experts onto higher-bandwidth tiers.\n\nThat didn't last. Two UVM kernel failures later I retired the direct-mapping backend on this box. The n-gram ids only depend on tokens we already have, so I can dedupe the rows and read them with `io_uring` into bounded pinned staging before copying them to the GPU. The September 3 measurement put this gather at 0.47 ms per decode step with zero PLE major faults. Expert-bank faults are separate, and I still had those to deal with.\n\nEven asking the kernel to prepare an expert had a cost when its pages were already resident. I now skip `MADV_WILLNEED` for experts used on the same layer within the previous 256 decode steps, with a fault guard to turn the conservative advice back on when needed. In that experiment it removed about 8 ms from a 41 ms step.\n\n### 5.3 Prefill was copying whole layers\n\nThe upstream implementation streams whole expert layers to the GPU. For a disk-resident layer that meant paging in the entire bank regardless of prompt length.\n\nMy patch routed prefill for disk layers through the CPU executor which only touches experts that the router selected.\n\nThis reduced the time to process 441 tokens from 17 min to 29 s.\n\nWith some layers pinned and some on disk the pinned layers could overlap their PCIe transfer with compute while the disk layers prefilled on the CPU and chained the next pinned layer's prefetch. This took warm prefill from 54 to 116 tok/s.\n\n![Prefill chunk decisions](figures/prefill-chunk.svg)\n\n| Key | Part |\n|---|---|\n| 1 | Before the forward: the chunk's n-gram ids are computed from its input tokens and deduped. Nothing about them depends on the forward |\n| 2 | One read each: the deduped table rows arrive in one coalesced read into a pinned GPU bank; after each layer's routing, its expert rows are populated into the page cache with real reads instead of advisory hints |\n| 3 | Forward: the lookup resolves against the pinned bank by compact local id while the experts compute. Major faults per chunk fell from about 3.6 million to a few thousand |\n| A | GPU, with the pinned staging bank |\n| C | Page cache |\n| D | NVMe: lookup table and expert banks |\n| E | CPU MoE executor |\n\nLater I let prefill use the GPU hot set too, with the cold routes batched on the CPU. On September 3 a new 26,812-token document reached its first token in 77.4 seconds; similar prompt sizes had taken 7 to 14 minutes on September 1. That's a separate workload from the short warm prompt in the table above.\n\nOne trap here: a prefill benchmark has to miss the prefix cache. Otherwise I can measure how quickly I skipped the work and think I've improved it.\n\n### 5.4 CPU tier shifting experts on demand \n\nResidency was decided per layer, either pinned or on disk. But our router didn't spread load evenly across experts. Depending on the task a small number of experts may serve most of the routes while the rest are used occasionally.\n\nPinning the hot rows (about 6 GB covering 72% of routes) and sending them through the GPU's expert slot cache while keeping the cold tail on CPU decode took single-stream from 19.5 to 23.1 and eight streams from 34 to 42.2 at peak, which settles to the 21 and 37 in section 3 on mixed traffic.\n\nDistinct experts hitting the CPU per step fell from 58 to 18.\n\n![One decode step through one expert layer](figures/decode-step.svg)\n\n| Key | Part |\n|---|---|\n| 1 | Route: the router picks this token's experts from 512 in the layer. The n-gram ids are already known from the last few tokens |\n| 2 | Sort by residency: each chosen expert is hot (resident on the GPU), pinned (in host memory), or cold (on the NVMe, possibly in the page cache). About 58 distinct experts a step reached the CPU before the hot set, 18 after |\n| 3 | Move: pinned experts stream over PCIe into a GPU slot; cold experts are computed by the CPU out of the page cache, with recent-use checks avoiding redundant willneed advice. The n-gram rows are gathered into pinned staging and copied to the GPU before the forward |\n| 4 | Compute and tally: the GPU and CPU partial outputs sum, and every routed expert bumps a decayed counter |\n| A | RTX 4090: expert slot cache with the hot set resident, KV cache |\n| B | Pinned host memory, 40 GB of expert banks |\n| C | Page cache |\n| D | NVMe: expert banks 63.5 GB, lookup table 27 GB |\n| E | CPU MoE executor |\n\nThe CPU returns a small activation vector instead of sending megabytes of weights across PCIe. That helped on this host. Trying to reduce CPU barrier spinning or change the worker count didn't give me a reliable gain once I accounted for the page cache warming between runs.\n\n### 5.5 Is it hot or not? Drifting expectations\n\n5.4 was a step in the right direction, but I hardcoded a captured routing profile. As soon as traffic changed the hit rate fell to 62%, wiping out the gain.\n\nI got this back by replacing the static profile with a decayed per-expert counter and bounded background swaps (retire, copy, flip). This recovered the perf lost on generic workloads and improved cold start as the hot set assembled itself.\n\n![How one hot-set slot changes hands without a stall](figures/hot-set-swap.svg)\n\n| Key | Part |\n|---|---|\n| 1 | Tick: every 1,000 steps the counters are re-ranked. We use that to swap up to 190 experts. |\n| 2 | Stage: a background thread copies the newly hot rows from the NVMe into staging, at most 0.5 GB a tick. The retiring expert keeps serving from where it was |\n| 3 | Flip: at a step boundary the mapping points at the staged row and the retired slot is free. No route ever sees a half-installed row |\n| A | GPU slot cache, one hot slot of the 6 GB |\n| D | NVMe expert banks |\n\nThen a long document did the same thing inside one conversation. Prefill flooded the counters with its routes and pushed out experts the following turns needed. I split the prefill and decode histories and let the hot set aim at the phase that's running. The hot plan now survives restarts too.\n\nOn the position-matched 76k-document experiment, the following turns went from 12.5 to 14.6 tok/s, with prefill taking 664 and 652 seconds respectively. An earlier version got 19.2 tok/s but took 885 seconds to prefill because I'd under-weighted the prefill history. I kept the version that didn't make reading the document slower.\n\nI also spent several experiments measuring an adapter that never ticked during either arm. That makes it quite difficult to tell whether changing it helps.\n\n## 6. Ideas that didn't pan out\n\nI thought these should have worked but measured them as losses. Each mechanism is still in the fork, off by default, with the reason next to the flag.\n\n| Tried | Why it lost | Verdict |\n|---|---|---|\n| Let the GPU pull cold experts over PCIe instead of computing them on the CPU | About 990 expert fetches a step, 2.6 MB each, churn the slot cache faster than it can hold anything; single stream fell to 10 tok/s | Off below 48 GB of VRAM. Expected to be the cold-tail path for a 96 GB card |\n| Split the cold tail between PCIe fetch and the CPU | On this host the CPU computes an expert faster than PCIe delivers it; 13.8 vs 19.5 tok/s | Off, same reason |\n| Page in cold rows with a userspace pager instead of kernel hints | Faults dropped to 13 a step, but the pager is still page-granular and slightly slower than the hints; under-budgeted it evicted 1.6 million times | Kept for banks bigger than RAM, with a budget that covers the working set |\n| Prefetch next step's experts ahead of the router | The next step is only 48% predictable, so the prefetch doubled the pages pulled in for half a hit | Off |\n| Speculative decode (draft several tokens, verify in one pass) | New tokens still need experts, and rejected drafts can need replay. On September 4, capturing the verify CUDA graphs recovered 16.1 to 19.5 tok/s, still below 21.5 with speculation off at 72% acceptance | Still off on this box |\n\n\n## 7. Trying a larger machine\n\nI also tried GLM 5.3 Flash NVFP4 on a GCE `g4-standard-48`: a 96 GB RTX PRO 6000 Blackwell, about 176 GB of reported host RAM, and four local NVMe SSDs in RAID 0. The converted checkpoint is 177 GiB.\n\n| Experiment | Result |\n|---|---:|\n| Single stream, September 4, pin budget 112 and hot budget 48 | 12.12 tok/s, mean of three runs |\n| Same setup with split histories and phase aim | 12.37 tok/s |\n| Cold tail on CPU, pin budget 8 and hot budget 60 | 9.80 tok/s |\n| Prefill, September 3, settled run with 2k cold prompts | 257 tok/s |\n| Four streams, September 3 | 19.3 tok/s aggregate |\n\nThe 4090 tuning didn't all carry over. On this machine 29 of the 42 MoE layers were pinned, and the hot set covered 99.8% of the observed routes in the disk layers. There wasn't much left for better hot-set selection to fix. The pinned layers still moved weights over PCIe, estimated at about 3.1 GB per token. Computing the cold tail on the CPU lost here.\n\nI also got the storage wrong on the first attempt. A boot disk provisioned at 5,700 IOPS took the same configuration down to 0.08 to 0.92 tok/s. Moving the checkpoint to local NVMe brought it back to 12.1. The 64 GB host-memory cap I tested was unusable with this configuration too, so the RAM and disks belong beside the GPU when quoting the result.\n\n## 8. What does this actually mean?\n\nShould you go out and buy a 4090 or an RTX 6000 to run models this way?\nProbably not. Inference over API is so cheap that unless you've already got the hardware it's likely cheaper to just pay for API pricing.\n\nMy takeaway is that frontier intelligence at home is closer than ever and that the serving methods and model releases will only become more efficient.\nI'm in the process of moving from Canada to the UK at the moment so this will shape the type of node that I buy when I get over there!\n\nIf you want to run it yourself, the quickstart for my fork is here: [QUICKSTART.md](https://github.com/jomcgi-org/freetoken-fork/blob/feat/moe-disk-tier/QUICKSTART.md). \n\nThe [benchmark notes](https://github.com/jomcgi-org/freetoken-fork/blob/0b7ad70f925c1a998e09d357243f8ea2e6f899af/bench/RESULTS.md) have the individual experiments and their conditions.\n\n## 9. Have a look\n\nI recorded a few turns on the 4090 below. Click through the answers and measurements, or replay a turn to see how it arrived. This is the warm serving setup with thinking off, so it won't reproduce every workload above.\n",
-      "events": [
-        { "at": 52221, "content": "Here", "reasoning": "" },
-        { "at": 52241, "content": " are", "reasoning": "" },
-        { "at": 52351, "content": " the", "reasoning": "" },
-        { "at": 52531, "content": " three", "reasoning": "" },
-        { "at": 52724, "content": " most", "reasoning": "" },
-        { "at": 52804, "content": " useful", "reasoning": "" },
-        { "at": 52952, "content": " changes", "reasoning": "" },
-        { "at": 53252, "content": " and", "reasoning": "" },
-        { "at": 53448, "content": " why", "reasoning": "" },
-        { "at": 53983, "content": " they", "reasoning": "" },
-        { "at": 54104, "content": " helped", "reasoning": "" },
-        { "at": 54263, "content": ":", "reasoning": "" },
-        { "at": 54614, "content": "\n\n", "reasoning": "" },
-        { "at": 54875, "content": "1", "reasoning": "" },
-        { "at": 55124, "content": ".", "reasoning": "" },
-        { "at": 55254, "content": " ", "reasoning": "" },
-        { "at": 55355, "content": " **", "reasoning": "" },
-        { "at": 55445, "content": "Reduc", "reasoning": "" },
-        { "at": 55556, "content": "ing", "reasoning": "" },
-        { "at": 55634, "content": " P", "reasoning": "" },
-        { "at": 55765, "content": "inned", "reasoning": "" },
-        { "at": 55894, "content": " Memory", "reasoning": "" },
-        { "at": 56046, "content": " Budget", "reasoning": "" },
-        { "at": 56124, "content": ":**", "reasoning": "" },
-        { "at": 56225, "content": " Dro", "reasoning": "" },
-        { "at": 56295, "content": "pping", "reasoning": "" },
-        { "at": 56355, "content": " the", "reasoning": "" },
-        { "at": 56428, "content": " pinned", "reasoning": "" },
-        { "at": 56475, "content": " expert", "reasoning": "" },
-        { "at": 56565, "content": " memory", "reasoning": "" },
-        { "at": 56636, "content": " from", "reasoning": "" },
-        { "at": 56766, "content": " ", "reasoning": "" },
-        { "at": 56987, "content": "5", "reasoning": "" },
-        { "at": 57236, "content": "2", "reasoning": "" },
-        { "at": 57471, "content": " GB", "reasoning": "" },
-        { "at": 57588, "content": " to", "reasoning": "" },
-        { "at": 57717, "content": " ", "reasoning": "" },
-        { "at": 57828, "content": "4", "reasoning": "" },
-        { "at": 57958, "content": "0", "reasoning": "" },
-        { "at": 58177, "content": " GB", "reasoning": "" },
-        { "at": 58307, "content": " freed", "reasoning": "" },
-        { "at": 58307, "content": " up", "reasoning": "" },
-        { "at": 58316, "content": " space", "reasoning": "" },
-        { "at": 58407, "content": " for", "reasoning": "" },
-        { "at": 58487, "content": " the", "reasoning": "" },
-        { "at": 58587, "content": " kernel", "reasoning": "" },
-        { "at": 58707, "content": "’s", "reasoning": "" },
-        { "at": 58862, "content": " page", "reasoning": "" },
-        { "at": 58958, "content": " cache", "reasoning": "" },
-        { "at": 59078, "content": ".", "reasoning": "" },
-        { "at": 59174, "content": " This", "reasoning": "" },
-        { "at": 59268, "content": " allowed", "reasoning": "" },
-        { "at": 59348, "content": " the", "reasoning": "" },
-        { "at": 59420, "content": " OS", "reasoning": "" },
-        { "at": 59498, "content": " to", "reasoning": "" },
-        { "at": 59569, "content": " efficiently", "reasoning": "" },
-        { "at": 59628, "content": " manage", "reasoning": "" },
-        { "at": 59688, "content": " disk", "reasoning": "" },
-        { "at": 59758, "content": " reads", "reasoning": "" },
-        { "at": 59829, "content": ",", "reasoning": "" },
-        { "at": 59940, "content": " drastically", "reasoning": "" },
-        { "at": 59980, "content": " reducing", "reasoning": "" },
-        { "at": 60090, "content": " major", "reasoning": "" },
-        { "at": 60159, "content": " faults", "reasoning": "" },
-        { "at": 60219, "content": " and", "reasoning": "" },
-        { "at": 60299, "content": " tri", "reasoning": "" },
-        { "at": 60390, "content": "pling", "reasoning": "" },
-        { "at": 60459, "content": " throughput", "reasoning": "" },
-        { "at": 60539, "content": " from", "reasoning": "" },
-        { "at": 60650, "content": " ", "reasoning": "" },
-        { "at": 60761, "content": "3", "reasoning": "" },
-        { "at": 60862, "content": ".", "reasoning": "" },
-        { "at": 60980, "content": "8", "reasoning": "" },
-        { "at": 61133, "content": " to", "reasoning": "" },
-        { "at": 61230, "content": " ~", "reasoning": "" },
-        { "at": 61386, "content": "1", "reasoning": "" },
-        { "at": 61502, "content": "1", "reasoning": "" },
-        { "at": 61580, "content": " tokens", "reasoning": "" },
-        { "at": 61682, "content": " per", "reasoning": "" },
-        { "at": 61881, "content": " second", "reasoning": "" },
-        { "at": 61902, "content": ".", "reasoning": "" },
-        { "at": 61991, "content": "\n", "reasoning": "" },
-        { "at": 62120, "content": "2", "reasoning": "" },
-        { "at": 62211, "content": ".", "reasoning": "" },
-        { "at": 62321, "content": " ", "reasoning": "" },
-        { "at": 62421, "content": " **", "reasoning": "" },
-        { "at": 62531, "content": "Routing", "reasoning": "" },
-        { "at": 62717, "content": " Pref", "reasoning": "" },
-        { "at": 62772, "content": "ill", "reasoning": "" },
-        { "at": 62853, "content": " to", "reasoning": "" },
-        { "at": 62946, "content": " CPU", "reasoning": "" },
-        { "at": 63005, "content": ":**", "reasoning": "" },
-        { "at": 63074, "content": " Instead", "reasoning": "" },
-        { "at": 63174, "content": " of", "reasoning": "" },
-        { "at": 63242, "content": " streaming", "reasoning": "" },
-        { "at": 63302, "content": " entire", "reasoning": "" },
-        { "at": 63417, "content": " disk", "reasoning": "" },
-        { "at": 63483, "content": "-res", "reasoning": "" },
-        { "at": 63572, "content": "ident", "reasoning": "" },
-        { "at": 63642, "content": " layers", "reasoning": "" },
-        { "at": 63722, "content": " to", "reasoning": "" },
-        { "at": 63803, "content": " the", "reasoning": "" },
-        { "at": 63911, "content": " GPU", "reasoning": "" },
-        { "at": 63995, "content": " (", "reasoning": "" },
-        { "at": 64052, "content": "which", "reasoning": "" },
-        { "at": 64122, "content": " forced", "reasoning": "" },
-        { "at": 64183, "content": " paging", "reasoning": "" },
-        { "at": 64243, "content": " in", "reasoning": "" },
-        { "at": 64303, "content": " unused", "reasoning": "" },
-        { "at": 64363, "content": " weights", "reasoning": "" },
-        { "at": 64454, "content": "),", "reasoning": "" },
-        { "at": 64543, "content": " the", "reasoning": "" },
-        { "at": 64633, "content": " author", "reasoning": "" },
-        { "at": 64787, "content": " routed", "reasoning": "" },
-        { "at": 64864, "content": " pre", "reasoning": "" },
-        { "at": 64944, "content": "fill", "reasoning": "" },
-        { "at": 65028, "content": " operations", "reasoning": "" },
-        { "at": 65127, "content": " through", "reasoning": "" },
-        { "at": 65186, "content": " the", "reasoning": "" },
-        { "at": 65315, "content": " CPU", "reasoning": "" },
-        { "at": 65335, "content": " executor", "reasoning": "" },
-        { "at": 65384, "content": ".", "reasoning": "" },
-        { "at": 65444, "content": " This", "reasoning": "" },
-        { "at": 65524, "content": " ensured", "reasoning": "" },
-        { "at": 65596, "content": " only", "reasoning": "" },
-        { "at": 65684, "content": " router", "reasoning": "" },
-        { "at": 65764, "content": "-selected", "reasoning": "" },
-        { "at": 65855, "content": " experts", "reasoning": "" },
-        { "at": 65935, "content": " were", "reasoning": "" },
-        { "at": 66040, "content": " loaded", "reasoning": "" },
-        { "at": 66095, "content": ",", "reasoning": "" },
-        { "at": 66155, "content": " cutting", "reasoning": "" },
-        { "at": 66225, "content": " pre", "reasoning": "" },
-        { "at": 66328, "content": "fill", "reasoning": "" },
-        { "at": 66385, "content": " time", "reasoning": "" },
-        { "at": 66455, "content": " for", "reasoning": "" },
-        { "at": 66545, "content": " a", "reasoning": "" },
-        { "at": 66635, "content": " ", "reasoning": "" },
-        { "at": 66746, "content": "4", "reasoning": "" },
-        { "at": 66837, "content": "4", "reasoning": "" },
-        { "at": 66988, "content": "1", "reasoning": "" },
-        { "at": 67136, "content": "-token", "reasoning": "" },
-        { "at": 67223, "content": " prompt", "reasoning": "" },
-        { "at": 67327, "content": " from", "reasoning": "" },
-        { "at": 67438, "content": " ", "reasoning": "" },
-        { "at": 67549, "content": "1", "reasoning": "" },
-        { "at": 67626, "content": "7", "reasoning": "" },
-        { "at": 67746, "content": " minutes", "reasoning": "" },
-        { "at": 67832, "content": " to", "reasoning": "" },
-        { "at": 67938, "content": " ", "reasoning": "" },
-        { "at": 68028, "content": "2", "reasoning": "" },
-        { "at": 68127, "content": "9", "reasoning": "" },
-        { "at": 68219, "content": " seconds", "reasoning": "" },
-        { "at": 68296, "content": ".", "reasoning": "" },
-        { "at": 68387, "content": "\n", "reasoning": "" },
-        { "at": 68467, "content": "3", "reasoning": "" },
-        { "at": 68528, "content": ".", "reasoning": "" },
-        { "at": 68627, "content": " ", "reasoning": "" },
-        { "at": 68733, "content": " **", "reasoning": "" },
-        { "at": 68857, "content": "Dynamic", "reasoning": "" },
-        { "at": 68878, "content": " Hot", "reasoning": "" },
-        { "at": 68941, "content": "-", "reasoning": "" },
-        { "at": 69007, "content": "Set", "reasoning": "" },
-        { "at": 69077, "content": " Sw", "reasoning": "" },
-        { "at": 69148, "content": "apping", "reasoning": "" },
-        { "at": 69216, "content": ":**", "reasoning": "" },
-        { "at": 69278, "content": " Re", "reasoning": "" },
-        { "at": 69364, "content": "placing", "reasoning": "" },
-        { "at": 69399, "content": " static", "reasoning": "" },
-        { "at": 69458, "content": " routing", "reasoning": "" },
-        { "at": 69549, "content": " profiles", "reasoning": "" },
-        { "at": 69619, "content": " with", "reasoning": "" },
-        { "at": 69698, "content": " a", "reasoning": "" },
-        { "at": 69798, "content": " decay", "reasoning": "" },
-        { "at": 69888, "content": "ed", "reasoning": "" },
-        { "at": 69959, "content": " counter", "reasoning": "" },
-        { "at": 70009, "content": " system", "reasoning": "" },
-        { "at": 70079, "content": " allowed", "reasoning": "" },
-        { "at": 70119, "content": " the", "reasoning": "" },
-        { "at": 70191, "content": " system", "reasoning": "" },
-        { "at": 70250, "content": " to", "reasoning": "" },
-        { "at": 70299, "content": " identify", "reasoning": "" },
-        { "at": 70329, "content": " and", "reasoning": "" },
-        { "at": 70379, "content": " cache", "reasoning": "" },
-        { "at": 70410, "content": " actually", "reasoning": "" },
-        { "at": 70449, "content": " \"", "reasoning": "" },
-        { "at": 70549, "content": "hot", "reasoning": "" },
-        { "at": 70621, "content": "\"", "reasoning": "" },
-        { "at": 70679, "content": " experts", "reasoning": "" },
-        { "at": 70750, "content": " in", "reasoning": "" },
-        { "at": 70799, "content": " GPU", "reasoning": "" },
-        { "at": 70859, "content": " slots", "reasoning": "" },
-        { "at": 70900, "content": ".", "reasoning": "" },
-        { "at": 70969, "content": " This", "reasoning": "" },
-        { "at": 71076, "content": " prevented", "reasoning": "" },
-        { "at": 71110, "content": " cache", "reasoning": "" },
-        { "at": 71141, "content": " misses", "reasoning": "" },
-        { "at": 71179, "content": " during", "reasoning": "" },
-        { "at": 71219, "content": " varied", "reasoning": "" },
-        { "at": 71302, "content": " work", "reasoning": "" },
-        { "at": 71320, "content": "loads", "reasoning": "" },
-        { "at": 71340, "content": ",", "reasoning": "" },
-        { "at": 71402, "content": " improving", "reasoning": "" },
-        { "at": 71440, "content": " single", "reasoning": "" },
-        { "at": 71503, "content": "-stream", "reasoning": "" },
-        { "at": 71562, "content": " throughput", "reasoning": "" },
-        { "at": 71610, "content": " by", "reasoning": "" },
-        { "at": 71673, "content": " balancing", "reasoning": "" },
-        { "at": 71710, "content": " the", "reasoning": "" },
-        { "at": 71801, "content": " cost", "reasoning": "" },
-        { "at": 71882, "content": " of", "reasoning": "" },
-        { "at": 71911, "content": " PCIe", "reasoning": "" },
-        { "at": 71972, "content": " transfers", "reasoning": "" },
-        { "at": 72011, "content": " against", "reasoning": "" },
-        { "at": 72051, "content": " CPU", "reasoning": "" },
-        { "at": 72105, "content": " computation", "reasoning": "" },
-        { "at": 72143, "content": ".", "reasoning": "" }
-      ],
-      "samples": [
-        { "at": 11017, "unavailable": true },
-        { "at": 22019, "unavailable": true },
-        {
-          "at": 23404,
-          "activity": {
-            "hotHits": 0,
-            "warmHits": 573440,
-            "coldHits": 0,
-            "unknownHits": 0,
-            "totalHits": 573440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        { "at": 34422, "unavailable": true },
-        {
-          "at": 44396,
-          "activity": {
-            "hotHits": 0,
-            "warmHits": 573440,
-            "coldHits": 0,
-            "unknownHits": 0,
-            "totalHits": 573440
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 0,
+          "kvUsedPages": 2,
           "kvTotalPages": 1024,
           "activeRequests": 1
         },
         {
-          "at": 51953,
+          "at": 5171,
           "activity": {
-            "hotHits": 0,
-            "warmHits": 112840,
-            "coldHits": 0,
+            "hotHits": 726,
+            "warmHits": 1120,
+            "coldHits": 74,
             "unknownHits": 0,
-            "totalHits": 112840
+            "totalHits": 1920
           },
           "tiers": {
             "totalExperts": 24576,
@@ -715,36 +492,12 @@
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
           },
-          "kvUsedPages": 0,
+          "kvUsedPages": 2,
           "kvTotalPages": 1024,
-          "activeRequests": 2
+          "activeRequests": 1
         },
         {
-          "at": 53467,
-          "activity": {
-            "hotHits": 1213,
-            "warmHits": 2240,
-            "coldHits": 387,
-            "unknownHits": 0,
-            "totalHits": 3840
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 71,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 54948,
+          "at": 5406,
           "activity": {
             "hotHits": 785,
             "warmHits": 1400,
@@ -763,16 +516,1859 @@
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
           },
-          "kvUsedPages": 71,
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 5637,
+          "activity": {
+            "hotHits": 592,
+            "warmHits": 1120,
+            "coldHits": 208,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 5796,
+          "activity": {
+            "hotHits": 453,
+            "warmHits": 840,
+            "coldHits": 147,
+            "unknownHits": 0,
+            "totalHits": 1440
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 5988,
+          "activity": {
+            "hotHits": 713,
+            "warmHits": 1120,
+            "coldHits": 87,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 6186,
+          "activity": {
+            "hotHits": 682,
+            "warmHits": 1120,
+            "coldHits": 118,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 6388,
+          "activity": {
+            "hotHits": 901,
+            "warmHits": 1400,
+            "coldHits": 99,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 6567,
+          "activity": {
+            "hotHits": 681,
+            "warmHits": 1120,
+            "coldHits": 119,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 2,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 6777,
+          "activity": {
+            "hotHits": 872,
+            "warmHits": 1400,
+            "coldHits": 128,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 3,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 6977,
+          "activity": {
+            "hotHits": 896,
+            "warmHits": 1400,
+            "coldHits": 104,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 3,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 7227,
+          "activity": {
+            "hotHits": 856,
+            "warmHits": 1400,
+            "coldHits": 144,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 3,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 7398,
+          "activity": {
+            "hotHits": 526,
+            "warmHits": 840,
+            "coldHits": 74,
+            "unknownHits": 0,
+            "totalHits": 1440
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 3,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 7587,
+          "activity": {
+            "hotHits": 710,
+            "warmHits": 1120,
+            "coldHits": 90,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 3,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 7777,
+          "activity": {
+            "hotHits": 678,
+            "warmHits": 1120,
+            "coldHits": 122,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 3,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 8009,
+          "activity": {
+            "hotHits": 807,
+            "warmHits": 1400,
+            "coldHits": 193,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 3,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 8189,
+          "activity": {
+            "hotHits": 889,
+            "warmHits": 1400,
+            "coldHits": 111,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 3,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 8409,
+          "activity": {
+            "hotHits": 432,
+            "warmHits": 840,
+            "coldHits": 168,
+            "unknownHits": 0,
+            "totalHits": 1440
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 3,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 8521,
+          "activity": {
+            "hotHits": 126,
+            "warmHits": 280,
+            "coldHits": 74,
+            "unknownHits": 0,
+            "totalHits": 480
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 0,
+          "kvTotalPages": 1024,
+          "activeRequests": 0
+        }
+      ],
+      "usage": { "prompt_tokens": 44, "completion_tokens": 123 },
+      "finishReason": "stop",
+      "durationMs": 8521,
+      "metrics": {
+        "ttftMs": 2434,
+        "generationMs": 5887,
+        "completionTokens": 123,
+        "tokensPerSecond": 20.723628333616443
+      }
+    },
+    {
+      "title": "Reading the post",
+      "prompt": "Read this draft post and summarize the three most useful changes and why they helped. Keep your answer under 180 words.\n\n---\ntitle: Serving larger-than-memory MoE models\ndate: 2026-09-01\ntags: inference, freetoken, moe, homelab\npublic: true\nsummary: How I was able to serve 100GB of weights (Qwen3.8-Flash-Next, 125B) on a consumer 24GB GPU.\n---\n\n## 1. FreeToken\n\n[FreeToken](https://github.com/FlashML-org/FreeToken) is FlashML's engine for running mixture-of-experts models. It serves models larger than VRAM by keeping the experts in pinned RAM and caching the hot ones in VRAM.\n\nThis does not work for my node with 24GB VRAM + 64GB RAM, this post (& [fork](https://github.com/jomcgi-org/freetoken-fork)) is an experiment where I spill experts to disk to accommodate a larger than memory model.\n\n## 2. Specifications\n\n| Part | Specification |\n|---|---|\n| Model | Qwen3.8-Flash-Next, 125B parameters, 6B active per token, NVFP4 |\n| Expert banks | 63.5 GB, 48 layers of 512 experts |\n| Dense layers | 9.2 GB: attention, GDN, embeddings, head |\n| Context window | 100k |\n| Per-layer embedding (PLE), n-gram lookup table | 27 GB |\n| Served in total | about 100 GB |\n| GPU | RTX 4090, 24 GB |\n| Host | Ryzen 7800X3D, 64 GB DDR5-6000, 1.9 TB NVMe |\n| Engine | [freetoken-fork](https://github.com/jomcgi-org/freetoken-fork) |\n| Upstream RAM requirement | 128 GB |\n\nThese weights don't fit in VRAM or RAM and I can't convince myself to upgrade in this RAM economy so here we are spilling to disk.\n\nThe first diagram uses September 1 budgets. Later updates sit beside each experiment.\n\n![Where are the weights?](figures/memory-tiers.svg)\n\n| Key | Part |\n|---|---|\n| 1 | RTX 4090, 24 GB. Dense layers, the KV cache and the expert slot cache. Everything else gets streamed in as required. |\n| 2 | PCIe 4.0 x16. The route for experts to get into VRAM. |\n| 3 | Pinned host memory: split between 40 GB of warm expert layers and 6 GB of hot rows. |\n| 4 | Page cache, about 16 GB. Kernel-managed cache that reduces the thrashing when accessing disk layers |\n| 5 | NVMe, 1.9 TB. All experts banked (63.5 GB) and the 27 GB lookup table |\n| 6 | CPU MoE executor, 8 cores, decoding the cold tail out of the page cache |\n\n## 3. Performance\n\n| | PoC (tok/s) | September 1 (tok/s) |\n|---|---:|---:|\n| Prefill, 441-token prompt, warm | 54 | 116 |\n| Single stream | 3.8 | 21 |\n| Eight streams, aggregate | 9.6 | 37 |\n\nUpstream wouldn't start. These are my first working results against September 1. September 4 warm single-stream probes reached 22 to 24 tok/s; I haven't rerun the full table.\n\n## 4. How does MoE inference work?\n\nWe generate a token by running every layer once. In a mixture-of-experts layer the router looks at your input and picks 10 of the 512 experts to run.\n\nThat means that most of the 63.5 GB of expert weights are idle during token generation. The work to optimize this in a resource-constrained environment is then less about the computation and more about getting the chosen experts to the most efficient place for that computation to happen.\n\nDecoding is one token at a time with a few experts per layer, and it is bottlenecked by the slowest tier that it has to reach into. Prefill pushes the whole prompt through at the same time, so it touches many experts per layer and looks more like compute, but on this box it still has to find the experts first.\n\n[Qwen3.8-Flash-Next](https://qwen.ai/blog?id=qwen3.8-flash-next) is an early preview of the Qwen4 architecture including an n-gram lookup table which is 27 GB of learned rows keyed by the last couple of tokens so that it can be retrieved during inference instead of computed.\n\nThe bandwidth tiers with time taken to move one 2.6 MB expert are:\n* VRAM (1 TB/s, ~3 us)\n* RAM over PCIe (25 GB/s, ~100 us)\n* Page cache (hit: RAM speed, ~40 us; miss: a 15 us fault per 4 KB page, ~10 ms)\n* NVMe (7 GB/s, ~370 us when read in bulk)\n\n## 5. Bottlenecks\n\nThe many problems I ran into trying to get this working with a reasonably responsive throughput.\n\n### 5.1 Pinning too much starved the page cache\n\nFreeToken pins expert banks into memory. My initial budget was 52/64 GB, which left nothing for the page cache to manage access to 59.5 GB of disk-resident expert banks.\n\nThis was terrible: 96k major faults per decode step and 3.8 tok/s.\n\nDropping the budget to 40 GB tripled throughput by letting the page cache manage the disk reads.\n\nI now budget pinning and paging together. Growing KV between requests instead of reserving the full 100k context also freed 14% more GPU expert slots at startup. Long conversations take those slots back.\n\n### 5.2 Random reads from disk (experts vs n-gram)\n\nRandom reads are fine for experts because on disk they are a read-only mmap of the weight file. Routing happens before the expert computes, so we know what we need to load before it gets used. With some batch deduplication I got under 10 major faults per step for managing them.\n\nThe n-gram lookup is different. It's touched on every token at random rows from inside a CUDA graph. Having the GPU read the host file mappings directly was faster than trying to manage this in the caching tiers. Switching to that almost doubled four-stream throughput from 14 to 26.5, and freed the pinned cache that the table had been using, leaving room to fit more experts onto higher-bandwidth tiers.\n\nThat didn't last. Two UVM kernel failures later I switched to `io_uring`: dedupe the known n-gram rows, stage them in pinned memory, then copy to GPU. September 3: 0.47 ms per decode step, zero PLE major faults. Expert-bank faults remained.\n\nAdvising already-resident pages cost time too. Skipping `MADV_WILLNEED` for experts used within 256 steps on the same layer cut about 8 ms from a 41 ms step. A fault guard restores conservative advice when needed.\n\n### 5.3 Prefill was copying whole layers\n\nThe upstream implementation streams whole expert layers to the GPU. For a disk-resident layer that meant paging in the entire bank regardless of prompt length.\n\nMy patch routed prefill for disk layers through the CPU executor which only touches experts that the router selected.\n\nThis reduced the time to process 441 tokens from 17 min to 29 s.\n\nWith some layers pinned and some on disk the pinned layers could overlap their PCIe transfer with compute while the disk layers prefilled on the CPU and chained the next pinned layer's prefetch. This took warm prefill from 54 to 116 tok/s.\n\n![Prefill chunk decisions](figures/prefill-chunk.svg)\n\n| Key | Part |\n|---|---|\n| 1 | Before the forward: the chunk's n-gram ids are computed from its input tokens and deduped. Nothing about them depends on the forward |\n| 2 | One read each: the deduped table rows arrive in one coalesced read into a pinned GPU bank; after each layer's routing, its expert rows are populated into the page cache with real reads instead of advisory hints |\n| 3 | Forward: the lookup resolves against the pinned bank by compact local id while the experts compute. Major faults per chunk fell from about 3.6 million to a few thousand |\n| A | GPU, with the pinned staging bank |\n| C | Page cache |\n| D | NVMe: lookup table and expert banks |\n| E | CPU MoE executor |\n\nAdding the GPU hot set and batching cold routes on CPU brought a new 26,812-token document to its first token in 77.4 seconds on September 3. Similar sizes took 7 to 14 minutes on September 1. This is separate from the short warm benchmark.\n\nOne trap here: a prefill benchmark has to miss the prefix cache. Otherwise I can measure how quickly I skipped the work and think I've improved it.\n\n### 5.4 CPU tier shifting experts on demand\n\nResidency was decided per layer, either pinned or on disk. But our router didn't spread load evenly across experts. Depending on the task a small number of experts may serve most of the routes while the rest are used occasionally.\n\nPinning the hot rows (about 6 GB covering 72% of routes) and sending them through the GPU's expert slot cache while keeping the cold tail on CPU decode took single-stream from 19.5 to 23.1 and eight streams from 34 to 42.2 at peak, which settles to the 21 and 37 in section 3 on mixed traffic.\n\nDistinct experts hitting the CPU per step fell from 58 to 18.\n\n![One decode step through one expert layer](figures/decode-step.svg)\n\n| Key | Part |\n|---|---|\n| 1 | Route: the router picks this token's experts from 512 in the layer. The n-gram ids are already known from the last few tokens |\n| 2 | Sort by residency: each chosen expert is hot (resident on the GPU), pinned (in host memory), or cold (on the NVMe, possibly in the page cache). About 58 distinct experts a step reached the CPU before the hot set, 18 after |\n| 3 | Move: pinned experts stream over PCIe into a GPU slot; cold experts are computed by the CPU out of the page cache, with recent-use checks avoiding redundant willneed advice. The n-gram rows are gathered into pinned staging and copied to the GPU before the forward |\n| 4 | Compute and tally: the GPU and CPU partial outputs sum, and every routed expert bumps a decayed counter |\n| A | RTX 4090: expert slot cache with the hot set resident, KV cache |\n| B | Pinned host memory, 40 GB of expert banks |\n| C | Page cache |\n| D | NVMe: expert banks 63.5 GB, lookup table 27 GB |\n| E | CPU MoE executor |\n\nThe CPU returns a small activation vector instead of megabytes of weights. Changing worker counts or barrier spinning didn't reliably help once I accounted for page-cache warming.\n\n### 5.5 Is it hot or not? Drifting expectations\n\n5.4 was a step in the right direction, but I hardcoded a captured routing profile. As soon as traffic changed the hit rate fell to 62%, wiping out the gain.\n\nI got this back by replacing the static profile with a decayed per-expert counter and bounded background swaps (retire, copy, flip). This recovered the perf lost on generic workloads and improved cold start as the hot set assembled itself.\n\n![How one hot-set slot changes hands without a stall](figures/hot-set-swap.svg)\n\n| Key | Part |\n|---|---|\n| 1 | Tick: every 1,000 steps the counters are re-ranked. We use that to swap up to 190 experts. |\n| 2 | Stage: a background thread copies the newly hot rows from the NVMe into staging, at most 0.5 GB a tick. The retiring expert keeps serving from where it was |\n| 3 | Flip: at a step boundary the mapping points at the staged row and the retired slot is free. No route ever sees a half-installed row |\n| A | GPU slot cache, one hot slot of the 6 GB |\n| D | NVMe expert banks |\n\nThen a long document flooded the counters and displaced experts needed by follow-up turns. I split prefill and decode histories and aimed the hot set at the current phase. The hot plan now survives restarts too.\n\nAfter a 76k-document prefill, position-matched follow-ups improved from 12.5 to 14.6 tok/s; prefill took 664 vs 652 seconds. An earlier version reached 19.2 tok/s but needed 885 seconds to prefill. I kept the version that didn't slow down reading.\n\nSeveral experiments never let the adapter tick. Quite difficult to measure an improvement that way.\n\n## 6. Ideas that didn't pan out\n\nI thought these should have worked. They measured as losses on this box.\n\n| Idea | Result | Conclusion |\n|---|---|---|\n| Fetch cold experts over PCIe | 10 vs 19.5 tok/s; slot-cache churn | CPU wins on the 4090 |\n| Split cold work between PCIe and CPU | 13.8 vs 19.5 tok/s | Extra transfers lose |\n| Userspace pager | 13 faults/step, still slower than kernel hints | Keep for larger banks with enough cache |\n| Prefetch before routing | 48% predictable; twice the pages read | Off |\n| Speculative decode | 12.6 vs 18.0 tok/s at 72% acceptance | Drafted tokens still pay the CPU cost |\n\n\n## 7. Trying a larger machine\n\nI also tried GLM 5.3 Flash NVFP4 on a GCE `g4-standard-48`: a 96 GB RTX PRO 6000 Blackwell, about 176 GB of reported host RAM, and four local NVMe SSDs in RAID 0. The converted checkpoint is 177 GiB.\n\n| Experiment | Result |\n|---|---:|\n| Single stream, September 4, pin budget 112 and hot budget 48 | 12.12 tok/s, mean of three runs |\n| Same setup with split histories and phase aim | 12.37 tok/s |\n| Cold tail on CPU, pin budget 8 and hot budget 60 | 9.80 tok/s |\n| Prefill, September 3, settled run with 2k cold prompts | 257 tok/s |\n| Four streams, September 3 | 19.3 tok/s aggregate |\n\nThe 4090 tuning didn't all carry over. With 29 of 42 layers pinned and 99.8% hot coverage in the disk layers, better hot-set selection barely helped. Pinned layers still transferred an estimated 3.1 GB per token over PCIe. The CPU path lost here.\n\nI got the storage wrong first: a 5,700-IOPS boot disk delivered 0.08 to 0.92 tok/s. Local NVMe recovered 12.1. A 64 GB host-memory cap was unusable too. The RAM and disks matter as much as the card here.\n\n## 8. What does this actually mean?\n\nShould you go out and buy a 4090 or an RTX 6000 to run models this way?\nProbably not. Inference over API is so cheap that unless you've already got the hardware it's likely cheaper to just pay for API pricing.\n\nMy takeaway is that frontier intelligence at home is closer than ever and that the serving methods and model releases will only become more efficient.\nI'm in the process of moving from Canada to the UK at the moment so this will shape the type of node that I buy when I get over there!\n\nIf you want to run it yourself, the quickstart for my fork is here: [QUICKSTART.md](https://github.com/jomcgi-org/freetoken-fork/blob/feat/moe-disk-tier/QUICKSTART.md).\n\nThe [benchmark notes](https://github.com/jomcgi-org/freetoken-fork/blob/0b7ad70f925c1a998e09d357243f8ea2e6f899af/bench/RESULTS.md) have the individual experiments and their conditions.\n\n## 9. Have a look\n\nWatch the 4090 work. Pick a turn, replay it, or select a tier to follow its activity.\n",
+      "events": [
+        { "at": 32992, "content": "Here", "reasoning": "" },
+        { "at": 32992, "content": " are", "reasoning": "" },
+        { "at": 33153, "content": " the", "reasoning": "" },
+        { "at": 33197, "content": " three", "reasoning": "" },
+        { "at": 33234, "content": " most", "reasoning": "" },
+        { "at": 33294, "content": " useful", "reasoning": "" },
+        { "at": 33371, "content": " changes", "reasoning": "" },
+        { "at": 33405, "content": " from", "reasoning": "" },
+        { "at": 33465, "content": " the", "reasoning": "" },
+        { "at": 33549, "content": " draft", "reasoning": "" },
+        { "at": 33583, "content": ":", "reasoning": "" },
+        { "at": 33624, "content": "\n\n", "reasoning": "" },
+        { "at": 33674, "content": "1", "reasoning": "" },
+        { "at": 33746, "content": ".", "reasoning": "" },
+        { "at": 33783, "content": " ", "reasoning": "" },
+        { "at": 33807, "content": " **", "reasoning": "" },
+        { "at": 33865, "content": "Reduc", "reasoning": "" },
+        { "at": 33934, "content": "ing", "reasoning": "" },
+        { "at": 33974, "content": " pinned", "reasoning": "" },
+        { "at": 34014, "content": " memory", "reasoning": "" },
+        { "at": 34063, "content": " budget", "reasoning": "" },
+        { "at": 34139, "content": ":**", "reasoning": "" },
+        { "at": 34175, "content": " Lower", "reasoning": "" },
+        { "at": 34204, "content": "ing", "reasoning": "" },
+        { "at": 34244, "content": " the", "reasoning": "" },
+        { "at": 34274, "content": " pinned", "reasoning": "" },
+        { "at": 34404, "content": " RAM", "reasoning": "" },
+        { "at": 34445, "content": " limit", "reasoning": "" },
+        { "at": 34477, "content": " from", "reasoning": "" },
+        { "at": 34556, "content": " ", "reasoning": "" },
+        { "at": 34594, "content": "5", "reasoning": "" },
+        { "at": 34666, "content": "2", "reasoning": "" },
+        { "at": 34697, "content": " GB", "reasoning": "" },
+        { "at": 34770, "content": " to", "reasoning": "" },
+        { "at": 34804, "content": " ", "reasoning": "" },
+        { "at": 34844, "content": "4", "reasoning": "" },
+        { "at": 34886, "content": "0", "reasoning": "" },
+        { "at": 34959, "content": " GB", "reasoning": "" },
+        { "at": 34994, "content": " allowed", "reasoning": "" },
+        { "at": 35021, "content": " the", "reasoning": "" },
+        { "at": 35085, "content": " OS", "reasoning": "" },
+        { "at": 35134, "content": " page", "reasoning": "" },
+        { "at": 35165, "content": " cache", "reasoning": "" },
+        { "at": 35185, "content": " to", "reasoning": "" },
+        { "at": 35216, "content": " manage", "reasoning": "" },
+        { "at": 35265, "content": " disk", "reasoning": "" },
+        { "at": 35285, "content": " access", "reasoning": "" },
+        { "at": 35344, "content": ".", "reasoning": "" },
+        { "at": 35367, "content": " This", "reasoning": "" },
+        { "at": 35420, "content": " triple", "reasoning": "" },
+        { "at": 35457, "content": "d", "reasoning": "" },
+        { "at": 35530, "content": " throughput", "reasoning": "" },
+        { "at": 35565, "content": " by", "reasoning": "" },
+        { "at": 35585, "content": " drastically", "reasoning": "" },
+        { "at": 35625, "content": " reducing", "reasoning": "" },
+        { "at": 35667, "content": " major", "reasoning": "" },
+        { "at": 35738, "content": " page", "reasoning": "" },
+        { "at": 35765, "content": " faults", "reasoning": "" },
+        { "at": 35786, "content": " during", "reasoning": "" },
+        { "at": 35816, "content": " decoding", "reasoning": "" },
+        { "at": 35865, "content": ".", "reasoning": "" },
+        { "at": 35928, "content": "\n", "reasoning": "" },
+        { "at": 35965, "content": "2", "reasoning": "" },
+        { "at": 36015, "content": ".", "reasoning": "" },
+        { "at": 36066, "content": " ", "reasoning": "" },
+        { "at": 36139, "content": " **", "reasoning": "" },
+        { "at": 36206, "content": "CPU", "reasoning": "" },
+        { "at": 36226, "content": " execution", "reasoning": "" },
+        { "at": 36246, "content": " for", "reasoning": "" },
+        { "at": 36296, "content": " disk", "reasoning": "" },
+        { "at": 36381, "content": "-res", "reasoning": "" },
+        { "at": 36416, "content": "ident", "reasoning": "" },
+        { "at": 36456, "content": " pre", "reasoning": "" },
+        { "at": 36496, "content": "fill", "reasoning": "" },
+        { "at": 36564, "content": ":**", "reasoning": "" },
+        { "at": 36596, "content": " Instead", "reasoning": "" },
+        { "at": 36628, "content": " of", "reasoning": "" },
+        { "at": 36677, "content": " streaming", "reasoning": "" },
+        { "at": 36741, "content": " entire", "reasoning": "" },
+        { "at": 36776, "content": " expert", "reasoning": "" },
+        { "at": 36807, "content": " layers", "reasoning": "" },
+        { "at": 36846, "content": " to", "reasoning": "" },
+        { "at": 36887, "content": " the", "reasoning": "" },
+        { "at": 36963, "content": " GPU", "reasoning": "" },
+        { "at": 36997, "content": " for", "reasoning": "" },
+        { "at": 37017, "content": " pre", "reasoning": "" },
+        { "at": 37046, "content": "fill", "reasoning": "" },
+        { "at": 37107, "content": ",", "reasoning": "" },
+        { "at": 37169, "content": " the", "reasoning": "" },
+        { "at": 37207, "content": " author", "reasoning": "" },
+        { "at": 37237, "content": " routed", "reasoning": "" },
+        { "at": 37278, "content": " disk", "reasoning": "" },
+        { "at": 37345, "content": "-res", "reasoning": "" },
+        { "at": 37399, "content": "ident", "reasoning": "" },
+        { "at": 37427, "content": " layers", "reasoning": "" },
+        { "at": 37477, "content": " through", "reasoning": "" },
+        { "at": 37535, "content": " the", "reasoning": "" },
+        { "at": 37557, "content": " CPU", "reasoning": "" },
+        { "at": 37597, "content": " executor", "reasoning": "" },
+        { "at": 37628, "content": ".", "reasoning": "" },
+        { "at": 37678, "content": " This", "reasoning": "" },
+        { "at": 37751, "content": " targeted", "reasoning": "" },
+        { "at": 37788, "content": " only", "reasoning": "" },
+        { "at": 37811, "content": " router", "reasoning": "" },
+        { "at": 37847, "content": "-selected", "reasoning": "" },
+        { "at": 37888, "content": " experts", "reasoning": "" },
+        { "at": 38005, "content": ",", "reasoning": "" },
+        { "at": 38017, "content": " cutting", "reasoning": "" },
+        { "at": 38037, "content": " pre", "reasoning": "" },
+        { "at": 38087, "content": "fill", "reasoning": "" },
+        { "at": 38169, "content": " time", "reasoning": "" },
+        { "at": 38198, "content": " for", "reasoning": "" },
+        { "at": 38238, "content": " ", "reasoning": "" },
+        { "at": 38291, "content": "4", "reasoning": "" },
+        { "at": 38399, "content": "4", "reasoning": "" },
+        { "at": 38410, "content": "1", "reasoning": "" },
+        { "at": 38448, "content": " tokens", "reasoning": "" },
+        { "at": 38509, "content": " from", "reasoning": "" },
+        { "at": 38567, "content": " ", "reasoning": "" },
+        { "at": 38598, "content": "1", "reasoning": "" },
+        { "at": 38648, "content": "7", "reasoning": "" },
+        { "at": 38708, "content": " minutes", "reasoning": "" },
+        { "at": 38775, "content": " to", "reasoning": "" },
+        { "at": 38808, "content": " ", "reasoning": "" },
+        { "at": 38859, "content": "2", "reasoning": "" },
+        { "at": 38909, "content": "9", "reasoning": "" },
+        { "at": 38977, "content": " seconds", "reasoning": "" },
+        { "at": 39008, "content": ".", "reasoning": "" },
+        { "at": 39058, "content": "\n", "reasoning": "" },
+        { "at": 39102, "content": "3", "reasoning": "" },
+        { "at": 39185, "content": ".", "reasoning": "" },
+        { "at": 39219, "content": " ", "reasoning": "" },
+        { "at": 39269, "content": " **", "reasoning": "" },
+        { "at": 39371, "content": "Dynamic", "reasoning": "" },
+        { "at": 39400, "content": " hot", "reasoning": "" },
+        { "at": 39509, "content": "-set", "reasoning": "" },
+        { "at": 39537, "content": " management", "reasoning": "" },
+        { "at": 39569, "content": ":**", "reasoning": "" },
+        { "at": 39589, "content": " Re", "reasoning": "" },
+        { "at": 39639, "content": "placing", "reasoning": "" },
+        { "at": 39711, "content": " static", "reasoning": "" },
+        { "at": 39792, "content": " routing", "reasoning": "" },
+        { "at": 39819, "content": " profiles", "reasoning": "" },
+        { "at": 39839, "content": " with", "reasoning": "" },
+        { "at": 39895, "content": " decay", "reasoning": "" },
+        { "at": 39970, "content": "ed", "reasoning": "" },
+        { "at": 40040, "content": " per", "reasoning": "" },
+        { "at": 40059, "content": "-exp", "reasoning": "" },
+        { "at": 40109, "content": "ert", "reasoning": "" },
+        { "at": 40213, "content": " counters", "reasoning": "" },
+        { "at": 40239, "content": " enabled", "reasoning": "" },
+        { "at": 40293, "content": " bounded", "reasoning": "" },
+        { "at": 40359, "content": " background", "reasoning": "" },
+        { "at": 40390, "content": " swaps", "reasoning": "" },
+        { "at": 40420, "content": ".", "reasoning": "" },
+        { "at": 40491, "content": " This", "reasoning": "" },
+        { "at": 40564, "content": " allowed", "reasoning": "" },
+        { "at": 40580, "content": " the", "reasoning": "" },
+        { "at": 40620, "content": " system", "reasoning": "" },
+        { "at": 40650, "content": " to", "reasoning": "" },
+        { "at": 40691, "content": " adapt", "reasoning": "" },
+        { "at": 40749, "content": "ively", "reasoning": "" },
+        { "at": 40760, "content": " keep", "reasoning": "" },
+        { "at": 40780, "content": " frequently", "reasoning": "" },
+        { "at": 40821, "content": " used", "reasoning": "" },
+        { "at": 40860, "content": " experts", "reasoning": "" },
+        { "at": 40902, "content": " in", "reasoning": "" },
+        { "at": 40978, "content": " faster", "reasoning": "" },
+        { "at": 41010, "content": " tiers", "reasoning": "" },
+        { "at": 41031, "content": ",", "reasoning": "" },
+        { "at": 41090, "content": " significantly", "reasoning": "" },
+        { "at": 41149, "content": " improving", "reasoning": "" },
+        { "at": 41191, "content": " throughput", "reasoning": "" },
+        { "at": 41216, "content": " and", "reasoning": "" },
+        { "at": 41261, "content": " cold", "reasoning": "" },
+        { "at": 41302, "content": "-start", "reasoning": "" },
+        { "at": 41385, "content": " performance", "reasoning": "" },
+        { "at": 41421, "content": " compared", "reasoning": "" },
+        { "at": 41454, "content": " to", "reasoning": "" },
+        { "at": 41502, "content": " fixed", "reasoning": "" },
+        { "at": 41560, "content": " residency", "reasoning": "" },
+        { "at": 41592, "content": " decisions", "reasoning": "" },
+        { "at": 41662, "content": ".", "reasoning": "" }
+      ],
+      "samples": [
+        { "at": 10204, "unavailable": true },
+        {
+          "at": 16847,
+          "activity": {
+            "hotHits": 0,
+            "warmHits": 573440,
+            "coldHits": 0,
+            "unknownHits": 0,
+            "totalHits": 573440
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 0,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        { "at": 26861, "unavailable": true },
+        {
+          "at": 32948,
+          "activity": {
+            "hotHits": 0,
+            "warmHits": 549360,
+            "coldHits": 0,
+            "unknownHits": 0,
+            "totalHits": 549360
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 0,
           "kvTotalPages": 1024,
           "activeRequests": 2
         },
         {
-          "at": 56135,
+          "at": 33216,
           "activity": {
-            "hotHits": 1495,
+            "hotHits": 488,
+            "warmHits": 840,
+            "coldHits": 112,
+            "unknownHits": 0,
+            "totalHits": 1440
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 63,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 33383,
+          "activity": {
+            "hotHits": 480,
+            "warmHits": 840,
+            "coldHits": 120,
+            "unknownHits": 0,
+            "totalHits": 1440
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 63,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 33571,
+          "activity": {
+            "hotHits": 467,
+            "warmHits": 840,
+            "coldHits": 133,
+            "unknownHits": 0,
+            "totalHits": 1440
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 63,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 33768,
+          "activity": {
+            "hotHits": 667,
+            "warmHits": 1120,
+            "coldHits": 133,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 63,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 33945,
+          "activity": {
+            "hotHits": 658,
+            "warmHits": 1120,
+            "coldHits": 142,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 63,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 34155,
+          "activity": {
+            "hotHits": 757,
+            "warmHits": 1120,
+            "coldHits": 43,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 63,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 34387,
+          "activity": {
+            "hotHits": 915,
+            "warmHits": 1400,
+            "coldHits": 85,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 64,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 34574,
+          "activity": {
+            "hotHits": 538,
+            "warmHits": 840,
+            "coldHits": 62,
+            "unknownHits": 0,
+            "totalHits": 1440
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 64,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 34785,
+          "activity": {
+            "hotHits": 650,
+            "warmHits": 1120,
+            "coldHits": 150,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 64,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 34976,
+          "activity": {
+            "hotHits": 636,
+            "warmHits": 1120,
+            "coldHits": 164,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 64,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 35145,
+          "activity": {
+            "hotHits": 728,
+            "warmHits": 1120,
+            "coldHits": 72,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 64,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 35356,
+          "activity": {
+            "hotHits": 1095,
+            "warmHits": 1680,
+            "coldHits": 105,
+            "unknownHits": 0,
+            "totalHits": 2880
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 64,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 35546,
+          "activity": {
+            "hotHits": 723,
+            "warmHits": 1120,
+            "coldHits": 77,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 64,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 35749,
+          "activity": {
+            "hotHits": 909,
+            "warmHits": 1400,
+            "coldHits": 91,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 64,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 35946,
+          "activity": {
+            "hotHits": 861,
+            "warmHits": 1400,
+            "coldHits": 139,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 64,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 36156,
+          "activity": {
+            "hotHits": 615,
+            "warmHits": 1120,
+            "coldHits": 185,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 64,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 36388,
+          "activity": {
+            "hotHits": 874,
+            "warmHits": 1400,
+            "coldHits": 126,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 64,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 36577,
+          "activity": {
+            "hotHits": 691,
+            "warmHits": 1120,
+            "coldHits": 109,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 64,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 36760,
+          "activity": {
+            "hotHits": 719,
+            "warmHits": 1120,
+            "coldHits": 81,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 64,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 36978,
+          "activity": {
+            "hotHits": 867,
+            "warmHits": 1400,
+            "coldHits": 133,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 64,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 37187,
+          "activity": {
+            "hotHits": 884,
+            "warmHits": 1400,
+            "coldHits": 116,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 65,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 37353,
+          "activity": {
+            "hotHits": 689,
+            "warmHits": 1120,
+            "coldHits": 111,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 65,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 37548,
+          "activity": {
+            "hotHits": 666,
+            "warmHits": 1120,
+            "coldHits": 134,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 65,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 37769,
+          "activity": {
+            "hotHits": 872,
+            "warmHits": 1400,
+            "coldHits": 128,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 65,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 37991,
+          "activity": {
+            "hotHits": 870,
+            "warmHits": 1400,
+            "coldHits": 130,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 65,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 38180,
+          "activity": {
+            "hotHits": 710,
+            "warmHits": 1120,
+            "coldHits": 90,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 65,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 38391,
+          "activity": {
+            "hotHits": 649,
+            "warmHits": 1120,
+            "coldHits": 151,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 65,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 38579,
+          "activity": {
+            "hotHits": 622,
+            "warmHits": 1120,
+            "coldHits": 178,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 65,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 38790,
+          "activity": {
+            "hotHits": 593,
+            "warmHits": 1120,
+            "coldHits": 207,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 65,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 38989,
+          "activity": {
+            "hotHits": 543,
+            "warmHits": 1120,
+            "coldHits": 257,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 65,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 39199,
+          "activity": {
+            "hotHits": 595,
+            "warmHits": 1120,
+            "coldHits": 205,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 65,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 39372,
+          "activity": {
+            "hotHits": 456,
+            "warmHits": 840,
+            "coldHits": 144,
+            "unknownHits": 0,
+            "totalHits": 1440
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 65,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 39549,
+          "activity": {
+            "hotHits": 544,
+            "warmHits": 840,
+            "coldHits": 56,
+            "unknownHits": 0,
+            "totalHits": 1440
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 65,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 39800,
+          "activity": {
+            "hotHits": 913,
+            "warmHits": 1400,
+            "coldHits": 87,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 65,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 39982,
+          "activity": {
+            "hotHits": 698,
+            "warmHits": 1120,
+            "coldHits": 102,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 65,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 40231,
+          "activity": {
+            "hotHits": 609,
+            "warmHits": 1120,
+            "coldHits": 191,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 65,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 40371,
+          "activity": {
+            "hotHits": 558,
+            "warmHits": 840,
+            "coldHits": 42,
+            "unknownHits": 0,
+            "totalHits": 1440
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 66,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 40572,
+          "activity": {
+            "hotHits": 713,
+            "warmHits": 1120,
+            "coldHits": 87,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 66,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 40752,
+          "activity": {
+            "hotHits": 925,
+            "warmHits": 1400,
+            "coldHits": 75,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 66,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 40992,
+          "activity": {
+            "hotHits": 1067,
+            "warmHits": 1680,
+            "coldHits": 133,
+            "unknownHits": 0,
+            "totalHits": 2880
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 66,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 41172,
+          "activity": {
+            "hotHits": 714,
+            "warmHits": 1120,
+            "coldHits": 86,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 66,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 41403,
+          "activity": {
+            "hotHits": 861,
+            "warmHits": 1400,
+            "coldHits": 139,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 66,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 41576,
+          "activity": {
+            "hotHits": 691,
+            "warmHits": 1120,
+            "coldHits": 109,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 66,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 41804,
+          "activity": {
+            "hotHits": 625,
+            "warmHits": 1120,
+            "coldHits": 175,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 66,
+          "kvTotalPages": 1024,
+          "activeRequests": 2
+        },
+        {
+          "at": 43996,
+          "activity": {
+            "hotHits": 0,
+            "warmHits": 17640,
+            "coldHits": 0,
+            "unknownHits": 0,
+            "totalHits": 17640
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 0,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        }
+      ],
+      "usage": { "prompt_tokens": 4010, "completion_tokens": 184 },
+      "finishReason": "stop",
+      "durationMs": 43996,
+      "metrics": {
+        "ttftMs": 32992,
+        "generationMs": 8670,
+        "completionTokens": 184,
+        "tokensPerSecond": 21.10726643598616
+      }
+    },
+    {
+      "title": "A follow-up",
+      "note": "GLM was still PCIe-bound; the CPU path was slower.",
+      "prompt": "Based on the post, why did computing cold experts on the CPU help the 4090 but lose on the larger GLM machine? Answer in about 100 words.",
+      "events": [
+        { "at": 4651, "content": "On", "reasoning": "" },
+        { "at": 4651, "content": " the", "reasoning": "" },
+        { "at": 4720, "content": " ", "reasoning": "" },
+        { "at": 4807, "content": "4", "reasoning": "" },
+        { "at": 4843, "content": "0", "reasoning": "" },
+        { "at": 4911, "content": "9", "reasoning": "" },
+        { "at": 4982, "content": "0", "reasoning": "" },
+        { "at": 5010, "content": ",", "reasoning": "" },
+        { "at": 5061, "content": " CPU", "reasoning": "" },
+        { "at": 5101, "content": " execution", "reasoning": "" },
+        { "at": 5167, "content": " for", "reasoning": "" },
+        { "at": 5202, "content": " cold", "reasoning": "" },
+        { "at": 5231, "content": " experts", "reasoning": "" },
+        { "at": 5292, "content": " helped", "reasoning": "" },
+        { "at": 5357, "content": " because", "reasoning": "" },
+        { "at": 5391, "content": " PCIe", "reasoning": "" },
+        { "at": 5412, "content": " bandwidth", "reasoning": "" },
+        { "at": 5451, "content": " was", "reasoning": "" },
+        { "at": 5512, "content": " a", "reasoning": "" },
+        { "at": 5611, "content": " severe", "reasoning": "" },
+        { "at": 5612, "content": " bottleneck", "reasoning": "" },
+        { "at": 5642, "content": ";", "reasoning": "" },
+        { "at": 5702, "content": " fetching", "reasoning": "" },
+        { "at": 5762, "content": " weights", "reasoning": "" },
+        { "at": 5782, "content": " over", "reasoning": "" },
+        { "at": 5801, "content": " PCIe", "reasoning": "" },
+        { "at": 5833, "content": " caused", "reasoning": "" },
+        { "at": 5861, "content": " excessive", "reasoning": "" },
+        { "at": 5912, "content": " slot", "reasoning": "" },
+        { "at": 5969, "content": "-cache", "reasoning": "" },
+        { "at": 5991, "content": " churn", "reasoning": "" },
+        { "at": 6031, "content": ",", "reasoning": "" },
+        { "at": 6061, "content": " whereas", "reasoning": "" },
+        { "at": 6102, "content": " the", "reasoning": "" },
+        { "at": 6182, "content": " CPU", "reasoning": "" },
+        { "at": 6192, "content": " could", "reasoning": "" },
+        { "at": 6222, "content": " compute", "reasoning": "" },
+        { "at": 6252, "content": " directly", "reasoning": "" },
+        { "at": 6302, "content": " from", "reasoning": "" },
+        { "at": 6365, "content": " the", "reasoning": "" },
+        { "at": 6382, "content": " page", "reasoning": "" },
+        { "at": 6402, "content": " cache", "reasoning": "" },
+        { "at": 6432, "content": " without", "reasoning": "" },
+        { "at": 6462, "content": " moving", "reasoning": "" },
+        { "at": 6503, "content": " large", "reasoning": "" },
+        { "at": 6568, "content": " weight", "reasoning": "" },
+        { "at": 6603, "content": " tensors", "reasoning": "" },
+        { "at": 6622, "content": ".", "reasoning": "" },
+        { "at": 6674, "content": " Conversely", "reasoning": "" },
+        { "at": 6756, "content": ",", "reasoning": "" },
+        { "at": 6783, "content": " on", "reasoning": "" },
+        { "at": 6822, "content": " the", "reasoning": "" },
+        { "at": 6853, "content": " larger", "reasoning": "" },
+        { "at": 6893, "content": " GL", "reasoning": "" },
+        { "at": 6973, "content": "M", "reasoning": "" },
+        { "at": 7013, "content": " machine", "reasoning": "" },
+        { "at": 7033, "content": ",", "reasoning": "" },
+        { "at": 7065, "content": " the", "reasoning": "" },
+        { "at": 7103, "content": " faster", "reasoning": "" },
+        { "at": 7204, "content": " GPU", "reasoning": "" },
+        { "at": 7204, "content": " and", "reasoning": "" },
+        { "at": 7223, "content": " ample", "reasoning": "" },
+        { "at": 7263, "content": " host", "reasoning": "" },
+        { "at": 7303, "content": " memory", "reasoning": "" },
+        { "at": 7371, "content": " minimized", "reasoning": "" },
+        { "at": 7403, "content": " PCIe", "reasoning": "" },
+        { "at": 7423, "content": " pressure", "reasoning": "" },
+        { "at": 7464, "content": ".", "reasoning": "" },
+        { "at": 7513, "content": " Here", "reasoning": "" },
+        { "at": 7576, "content": ",", "reasoning": "" },
+        { "at": 7593, "content": " the", "reasoning": "" },
+        { "at": 7623, "content": " overhead", "reasoning": "" },
+        { "at": 7653, "content": " of", "reasoning": "" },
+        { "at": 7704, "content": " transferring", "reasoning": "" },
+        { "at": 7789, "content": " data", "reasoning": "" },
+        { "at": 7804, "content": " between", "reasoning": "" },
+        { "at": 7824, "content": " CPU", "reasoning": "" },
+        { "at": 7844, "content": " and", "reasoning": "" },
+        { "at": 7884, "content": " GPU", "reasoning": "" },
+        { "at": 7944, "content": " for", "reasoning": "" },
+        { "at": 7963, "content": " cold", "reasoning": "" },
+        { "at": 8018, "content": " experts", "reasoning": "" },
+        { "at": 8053, "content": " outweigh", "reasoning": "" },
+        { "at": 8063, "content": "ed", "reasoning": "" },
+        { "at": 8126, "content": " the", "reasoning": "" },
+        { "at": 8183, "content": " benefits", "reasoning": "" },
+        { "at": 8255, "content": " of", "reasoning": "" },
+        { "at": 8275, "content": " keeping", "reasoning": "" },
+        { "at": 8287, "content": " weights", "reasoning": "" },
+        { "at": 8356, "content": " off", "reasoning": "" },
+        { "at": 8394, "content": " VR", "reasoning": "" },
+        { "at": 8414, "content": "AM", "reasoning": "" },
+        { "at": 8444, "content": ",", "reasoning": "" },
+        { "at": 8504, "content": " causing", "reasoning": "" },
+        { "at": 8560, "content": " the", "reasoning": "" },
+        { "at": 8594, "content": " CPU", "reasoning": "" },
+        { "at": 8614, "content": " path", "reasoning": "" },
+        { "at": 8634, "content": " to", "reasoning": "" },
+        { "at": 8674, "content": " lose", "reasoning": "" },
+        { "at": 8786, "content": " performance", "reasoning": "" },
+        { "at": 8786, "content": " compared", "reasoning": "" },
+        { "at": 8800, "content": " to", "reasoning": "" },
+        { "at": 8834, "content": " simply", "reasoning": "" },
+        { "at": 8864, "content": " streaming", "reasoning": "" },
+        { "at": 8907, "content": " weights", "reasoning": "" },
+        { "at": 8981, "content": " over", "reasoning": "" },
+        { "at": 9015, "content": " the", "reasoning": "" },
+        { "at": 9047, "content": " robust", "reasoning": "" },
+        { "at": 9077, "content": " PCIe", "reasoning": "" },
+        { "at": 9116, "content": " connection", "reasoning": "" },
+        { "at": 9194, "content": ".", "reasoning": "" }
+      ],
+      "samples": [
+        {
+          "at": 319,
+          "activity": {
+            "hotHits": 1997,
             "warmHits": 2800,
-            "coldHits": 505,
+            "coldHits": 3,
             "unknownHits": 0,
             "totalHits": 4800
           },
@@ -787,18 +2383,18 @@
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
           },
-          "kvUsedPages": 71,
+          "kvUsedPages": 2,
           "kvTotalPages": 1024,
           "activeRequests": 2
         },
         {
-          "at": 57590,
+          "at": 529,
           "activity": {
-            "hotHits": 1606,
-            "warmHits": 3080,
-            "coldHits": 594,
+            "hotHits": 1200,
+            "warmHits": 1680,
+            "coldHits": 0,
             "unknownHits": 0,
-            "totalHits": 5280
+            "totalHits": 2880
           },
           "tiers": {
             "totalExperts": 24576,
@@ -811,306 +2407,18 @@
             "warmBytes": 39746273280,
             "coldBytes": 17985077760
           },
-          "kvUsedPages": 71,
+          "kvUsedPages": 2,
           "kvTotalPages": 1024,
           "activeRequests": 2
         },
         {
-          "at": 58878,
+          "at": 4632,
           "activity": {
-            "hotHits": 1980,
-            "warmHits": 3640,
-            "coldHits": 620,
+            "hotHits": 200,
+            "warmHits": 77840,
+            "coldHits": 0,
             "unknownHits": 0,
-            "totalHits": 6240
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 72,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 60110,
-          "activity": {
-            "hotHits": 2551,
-            "warmHits": 4200,
-            "coldHits": 449,
-            "unknownHits": 0,
-            "totalHits": 7200
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 72,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 61404,
-          "activity": {
-            "hotHits": 1933,
-            "warmHits": 3640,
-            "coldHits": 667,
-            "unknownHits": 0,
-            "totalHits": 6240
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 72,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 62735,
-          "activity": {
-            "hotHits": 1710,
-            "warmHits": 3360,
-            "coldHits": 690,
-            "unknownHits": 0,
-            "totalHits": 5760
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 72,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 63923,
-          "activity": {
-            "hotHits": 2351,
-            "warmHits": 4200,
-            "coldHits": 649,
-            "unknownHits": 0,
-            "totalHits": 7200
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 72,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 65145,
-          "activity": {
-            "hotHits": 2426,
-            "warmHits": 4200,
-            "coldHits": 574,
-            "unknownHits": 0,
-            "totalHits": 7200
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 73,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 66345,
-          "activity": {
-            "hotHits": 2602,
-            "warmHits": 4480,
-            "coldHits": 598,
-            "unknownHits": 0,
-            "totalHits": 7680
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 73,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 67568,
-          "activity": {
-            "hotHits": 1753,
-            "warmHits": 3360,
-            "coldHits": 647,
-            "unknownHits": 0,
-            "totalHits": 5760
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 73,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 68749,
-          "activity": {
-            "hotHits": 1895,
-            "warmHits": 3640,
-            "coldHits": 705,
-            "unknownHits": 0,
-            "totalHits": 6240
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 73,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 69899,
-          "activity": {
-            "hotHits": 2647,
-            "warmHits": 4480,
-            "coldHits": 553,
-            "unknownHits": 0,
-            "totalHits": 7680
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 73,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 71091,
-          "activity": {
-            "hotHits": 3233,
-            "warmHits": 5600,
-            "coldHits": 767,
-            "unknownHits": 0,
-            "totalHits": 9600
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 74,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 72291,
-          "activity": {
-            "hotHits": 3860,
-            "warmHits": 6440,
-            "coldHits": 740,
-            "unknownHits": 0,
-            "totalHits": 11040
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 74,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 75310,
-          "activity": {
-            "hotHits": 134,
-            "warmHits": 17920,
-            "coldHits": 66,
-            "unknownHits": 0,
-            "totalHits": 18120
+            "totalHits": 78040
           },
           "tiers": {
             "totalExperts": 24576,
@@ -1128,7 +2436,583 @@
           "activeRequests": 1
         },
         {
-          "at": 75326,
+          "at": 4824,
+          "activity": {
+            "hotHits": 474,
+            "warmHits": 840,
+            "coldHits": 126,
+            "unknownHits": 0,
+            "totalHits": 1440
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 67,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 4984,
+          "activity": {
+            "hotHits": 453,
+            "warmHits": 840,
+            "coldHits": 147,
+            "unknownHits": 0,
+            "totalHits": 1440
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 67,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 5182,
+          "activity": {
+            "hotHits": 717,
+            "warmHits": 1120,
+            "coldHits": 83,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 67,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 5379,
+          "activity": {
+            "hotHits": 743,
+            "warmHits": 1120,
+            "coldHits": 57,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 67,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 5593,
+          "activity": {
+            "hotHits": 859,
+            "warmHits": 1400,
+            "coldHits": 141,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 67,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 5772,
+          "activity": {
+            "hotHits": 717,
+            "warmHits": 1120,
+            "coldHits": 83,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 67,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 5982,
+          "activity": {
+            "hotHits": 1083,
+            "warmHits": 1680,
+            "coldHits": 117,
+            "unknownHits": 0,
+            "totalHits": 2880
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 67,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 6193,
+          "activity": {
+            "hotHits": 906,
+            "warmHits": 1400,
+            "coldHits": 94,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 67,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 6383,
+          "activity": {
+            "hotHits": 923,
+            "warmHits": 1400,
+            "coldHits": 77,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 67,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 6583,
+          "activity": {
+            "hotHits": 1073,
+            "warmHits": 1680,
+            "coldHits": 127,
+            "unknownHits": 0,
+            "totalHits": 2880
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 68,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 6767,
+          "activity": {
+            "hotHits": 715,
+            "warmHits": 1120,
+            "coldHits": 85,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 68,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 6994,
+          "activity": {
+            "hotHits": 790,
+            "warmHits": 1400,
+            "coldHits": 210,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 68,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 7186,
+          "activity": {
+            "hotHits": 888,
+            "warmHits": 1400,
+            "coldHits": 112,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 68,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 7383,
+          "activity": {
+            "hotHits": 878,
+            "warmHits": 1400,
+            "coldHits": 122,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 68,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 7593,
+          "activity": {
+            "hotHits": 897,
+            "warmHits": 1400,
+            "coldHits": 103,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 68,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 7806,
+          "activity": {
+            "hotHits": 924,
+            "warmHits": 1400,
+            "coldHits": 76,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 68,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 8034,
+          "activity": {
+            "hotHits": 1203,
+            "warmHits": 1960,
+            "coldHits": 197,
+            "unknownHits": 0,
+            "totalHits": 3360
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 68,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 8196,
+          "activity": {
+            "hotHits": 745,
+            "warmHits": 1120,
+            "coldHits": 55,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 68,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 8379,
+          "activity": {
+            "hotHits": 752,
+            "warmHits": 1120,
+            "coldHits": 48,
+            "unknownHits": 0,
+            "totalHits": 1920
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 68,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 8574,
+          "activity": {
+            "hotHits": 910,
+            "warmHits": 1400,
+            "coldHits": 90,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 68,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 8794,
+          "activity": {
+            "hotHits": 1100,
+            "warmHits": 1680,
+            "coldHits": 100,
+            "unknownHits": 0,
+            "totalHits": 2880
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 68,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 8998,
+          "activity": {
+            "hotHits": 921,
+            "warmHits": 1400,
+            "coldHits": 79,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 68,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 9205,
+          "activity": {
+            "hotHits": 859,
+            "warmHits": 1400,
+            "coldHits": 141,
+            "unknownHits": 0,
+            "totalHits": 2400
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 69,
+          "kvTotalPages": 1024,
+          "activeRequests": 1
+        },
+        {
+          "at": 9326,
+          "activity": {
+            "hotHits": 317,
+            "warmHits": 560,
+            "coldHits": 83,
+            "unknownHits": 0,
+            "totalHits": 960
+          },
+          "tiers": {
+            "totalExperts": 24576,
+            "residentLayers": 28,
+            "diskLayers": 20,
+            "hotExperts": 3753,
+            "warmExperts": 14336,
+            "coldExperts": 6487,
+            "hotBytes": 10405117440,
+            "warmBytes": 39746273280,
+            "coldBytes": 17985077760
+          },
+          "kvUsedPages": 0,
+          "kvTotalPages": 1024,
+          "activeRequests": 0
+        },
+        {
+          "at": 9395,
           "activity": {
             "hotHits": 0,
             "warmHits": 0,
@@ -1149,365 +3033,17 @@
           },
           "kvUsedPages": 0,
           "kvTotalPages": 1024,
-          "activeRequests": 1
-        }
-      ],
-      "usage": { "prompt_tokens": 4499, "completion_tokens": 218 },
-      "finishReason": "stop",
-      "durationMs": 75326,
-      "metrics": {
-        "ttftMs": 52221,
-        "generationMs": 19922,
-        "completionTokens": 218,
-        "tokensPerSecond": 10.892480674631061
-      }
-    },
-    {
-      "title": "A follow-up",
-      "prompt": "Based on the post, why did computing cold experts on the CPU help the 4090 but lose on the larger GLM machine? Answer in about 100 words.",
-      "events": [
-        { "at": 5945, "content": "On", "reasoning": "" },
-        { "at": 5965, "content": " the", "reasoning": "" },
-        { "at": 6055, "content": " RTX", "reasoning": "" },
-        { "at": 6196, "content": " ", "reasoning": "" },
-        { "at": 6296, "content": "4", "reasoning": "" },
-        { "at": 6486, "content": "0", "reasoning": "" },
-        { "at": 6496, "content": "9", "reasoning": "" },
-        { "at": 6557, "content": "0", "reasoning": "" },
-        { "at": 6796, "content": ",", "reasoning": "" },
-        { "at": 6998, "content": " the", "reasoning": "" },
-        { "at": 7117, "content": " ", "reasoning": "" },
-        { "at": 7438, "content": "2", "reasoning": "" },
-        { "at": 7637, "content": "5", "reasoning": "" },
-        { "at": 7717, "content": " GB", "reasoning": "" },
-        { "at": 7771, "content": "/s", "reasoning": "" },
-        { "at": 7848, "content": " PCIe", "reasoning": "" },
-        { "at": 7908, "content": " bandwidth", "reasoning": "" },
-        { "at": 7997, "content": " was", "reasoning": "" },
-        { "at": 8067, "content": " slower", "reasoning": "" },
-        { "at": 8185, "content": " than", "reasoning": "" },
-        { "at": 8238, "content": " the", "reasoning": "" },
-        { "at": 8298, "content": " CPU", "reasoning": "" },
-        { "at": 8371, "content": "’s", "reasoning": "" },
-        { "at": 8418, "content": " ability", "reasoning": "" },
-        { "at": 8468, "content": " to", "reasoning": "" },
-        { "at": 8558, "content": " compute", "reasoning": "" },
-        { "at": 8628, "content": " expert", "reasoning": "" },
-        { "at": 8760, "content": " activations", "reasoning": "" },
-        { "at": 8809, "content": ".", "reasoning": "" },
-        { "at": 8878, "content": " Since", "reasoning": "" },
-        { "at": 8949, "content": " CPU", "reasoning": "" },
-        { "at": 9001, "content": " computation", "reasoning": "" },
-        { "at": 9053, "content": " avoided", "reasoning": "" },
-        { "at": 9109, "content": " sending", "reasoning": "" },
-        { "at": 9204, "content": " ", "reasoning": "" },
-        { "at": 9254, "content": "2", "reasoning": "" },
-        { "at": 9320, "content": ".", "reasoning": "" },
-        { "at": 9392, "content": "6", "reasoning": "" },
-        { "at": 9528, "content": " MB", "reasoning": "" },
-        { "at": 9545, "content": " of", "reasoning": "" },
-        { "at": 9585, "content": " weights", "reasoning": "" },
-        { "at": 9659, "content": " over", "reasoning": "" },
-        { "at": 9719, "content": " the", "reasoning": "" },
-        { "at": 9789, "content": " slow", "reasoning": "" },
-        { "at": 9859, "content": " PCIe", "reasoning": "" },
-        { "at": 9950, "content": " link", "reasoning": "" },
-        { "at": 9999, "content": ",", "reasoning": "" },
-        { "at": 10059, "content": " it", "reasoning": "" },
-        { "at": 10119, "content": " was", "reasoning": "" },
-        { "at": 10189, "content": " faster", "reasoning": "" },
-        { "at": 10250, "content": " to", "reasoning": "" },
-        { "at": 10320, "content": " compute", "reasoning": "" },
-        { "at": 10359, "content": " cold", "reasoning": "" },
-        { "at": 10430, "content": " experts", "reasoning": "" },
-        { "at": 10490, "content": " locally", "reasoning": "" },
-        { "at": 10539, "content": ".", "reasoning": "" },
-        { "at": 10610, "content": " On", "reasoning": "" },
-        { "at": 10680, "content": " the", "reasoning": "" },
-        { "at": 10741, "content": " larger", "reasoning": "" },
-        { "at": 10800, "content": " GL", "reasoning": "" },
-        { "at": 10870, "content": "M", "reasoning": "" },
-        { "at": 10940, "content": " machine", "reasoning": "" },
-        { "at": 10990, "content": ",", "reasoning": "" },
-        { "at": 11052, "content": " however", "reasoning": "" },
-        { "at": 11146, "content": ",", "reasoning": "" },
-        { "at": 11180, "content": " ", "reasoning": "" },
-        { "at": 11272, "content": "9", "reasoning": "" },
-        { "at": 11341, "content": "9", "reasoning": "" },
-        { "at": 11428, "content": ".", "reasoning": "" },
-        { "at": 11516, "content": "8", "reasoning": "" },
-        { "at": 11593, "content": "%", "reasoning": "" },
-        { "at": 11651, "content": " of", "reasoning": "" },
-        { "at": 11711, "content": " routes", "reasoning": "" },
-        { "at": 11775, "content": " hit", "reasoning": "" },
-        { "at": 11821, "content": " pinned", "reasoning": "" },
-        { "at": 11891, "content": " GPU", "reasoning": "" },
-        { "at": 11952, "content": " memory", "reasoning": "" },
-        { "at": 12001, "content": ",", "reasoning": "" },
-        { "at": 12132, "content": " leaving", "reasoning": "" },
-        { "at": 12151, "content": " few", "reasoning": "" },
-        { "at": 12191, "content": " cold", "reasoning": "" },
-        { "at": 12242, "content": " experts", "reasoning": "" },
-        { "at": 12333, "content": ".", "reasoning": "" },
-        { "at": 12382, "content": " Consequently", "reasoning": "" },
-        { "at": 12442, "content": ",", "reasoning": "" },
-        { "at": 12502, "content": " the", "reasoning": "" },
-        { "at": 12562, "content": " PCIe", "reasoning": "" },
-        { "at": 12612, "content": " transfer", "reasoning": "" },
-        { "at": 12672, "content": " of", "reasoning": "" },
-        { "at": 12722, "content": " these", "reasoning": "" },
-        { "at": 12786, "content": " rare", "reasoning": "" },
-        { "at": 12822, "content": " weights", "reasoning": "" },
-        { "at": 12882, "content": " was", "reasoning": "" },
-        { "at": 12932, "content": " faster", "reasoning": "" },
-        { "at": 12982, "content": " than", "reasoning": "" },
-        { "at": 13033, "content": " invoking", "reasoning": "" },
-        { "at": 13103, "content": " the", "reasoning": "" },
-        { "at": 13193, "content": " CPU", "reasoning": "" },
-        { "at": 13213, "content": " executor", "reasoning": "" },
-        { "at": 13264, "content": ",", "reasoning": "" },
-        { "at": 13323, "content": " making", "reasoning": "" },
-        { "at": 13363, "content": " CPU", "reasoning": "" },
-        { "at": 13426, "content": " computation", "reasoning": "" },
-        { "at": 13528, "content": " an", "reasoning": "" },
-        { "at": 13564, "content": " inefficient", "reasoning": "" },
-        { "at": 13613, "content": " bottleneck", "reasoning": "" },
-        { "at": 13663, "content": " that", "reasoning": "" },
-        { "at": 13723, "content": " added", "reasoning": "" },
-        { "at": 13773, "content": " unnecessary", "reasoning": "" },
-        { "at": 13823, "content": " overhead", "reasoning": "" },
-        { "at": 13883, "content": " rather", "reasoning": "" },
-        { "at": 13933, "content": " than", "reasoning": "" },
-        { "at": 13973, "content": " saving", "reasoning": "" },
-        { "at": 14015, "content": " time", "reasoning": "" },
-        { "at": 14083, "content": ".", "reasoning": "" }
-      ],
-      "samples": [
-        {
-          "at": 1235,
-          "activity": {
-            "hotHits": 2599,
-            "warmHits": 3640,
-            "coldHits": 1,
-            "unknownHits": 0,
-            "totalHits": 6240
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 2,
-          "kvTotalPages": 1024,
-          "activeRequests": 2
-        },
-        {
-          "at": 5931,
-          "activity": {
-            "hotHits": 600,
-            "warmHits": 81480,
-            "coldHits": 0,
-            "unknownHits": 0,
-            "totalHits": 82080
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 7559,
-          "activity": {
-            "hotHits": 1529,
-            "warmHits": 3080,
-            "coldHits": 671,
-            "unknownHits": 0,
-            "totalHits": 5280
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 75,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 8789,
-          "activity": {
-            "hotHits": 2699,
-            "warmHits": 4480,
-            "coldHits": 501,
-            "unknownHits": 0,
-            "totalHits": 7680
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 75,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 9970,
-          "activity": {
-            "hotHits": 3047,
-            "warmHits": 5040,
-            "coldHits": 553,
-            "unknownHits": 0,
-            "totalHits": 8640
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 76,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 11163,
-          "activity": {
-            "hotHits": 3058,
-            "warmHits": 5320,
-            "coldHits": 742,
-            "unknownHits": 0,
-            "totalHits": 9120
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 76,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 12352,
-          "activity": {
-            "hotHits": 3071,
-            "warmHits": 5040,
-            "coldHits": 529,
-            "unknownHits": 0,
-            "totalHits": 8640
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 76,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 13543,
-          "activity": {
-            "hotHits": 3657,
-            "warmHits": 5880,
-            "coldHits": 543,
-            "unknownHits": 0,
-            "totalHits": 10080
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 77,
-          "kvTotalPages": 1024,
-          "activeRequests": 1
-        },
-        {
-          "at": 14294,
-          "activity": {
-            "hotHits": 2162,
-            "warmHits": 3640,
-            "coldHits": 438,
-            "unknownHits": 0,
-            "totalHits": 6240
-          },
-          "tiers": {
-            "totalExperts": 24576,
-            "residentLayers": 28,
-            "diskLayers": 20,
-            "hotExperts": 3753,
-            "warmExperts": 14336,
-            "coldExperts": 6487,
-            "hotBytes": 10405117440,
-            "warmBytes": 39746273280,
-            "coldBytes": 17985077760
-          },
-          "kvUsedPages": 0,
-          "kvTotalPages": 1024,
           "activeRequests": 0
         }
       ],
-      "usage": { "prompt_tokens": 4768, "completion_tokens": 116 },
+      "usage": { "prompt_tokens": 4245, "completion_tokens": 112 },
       "finishReason": "stop",
-      "durationMs": 14294,
+      "durationMs": 9395,
       "metrics": {
-        "ttftMs": 5945,
-        "generationMs": 8138,
-        "completionTokens": 116,
-        "tokensPerSecond": 14.131236175964611
+        "ttftMs": 4651,
+        "generationMs": 4543,
+        "completionTokens": 112,
+        "tokensPerSecond": 24.433193924719347
       }
     }
   ]
