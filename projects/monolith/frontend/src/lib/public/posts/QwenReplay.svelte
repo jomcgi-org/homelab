@@ -373,8 +373,8 @@
     outline-offset: 3px;
   }
   .instrument {
-    border: 1px solid var(--stroke);
-    background: var(--card-bg);
+    margin-inline: -1rem;
+    border-block: 1px solid var(--stroke);
   }
   .instrument-heading,
   .routing-heading {
@@ -469,6 +469,11 @@
   .activity-bar > span {
     background: var(--tier-color);
   }
+  .activity-bar > span,
+  .routing-history rect,
+  .tier-label i {
+    filter: saturate(1.5) brightness(1.35);
+  }
   .tiers {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -557,6 +562,8 @@
     font-family: var(--font-code);
   }
   .conversation {
+    margin-inline: -1rem;
+    padding-inline: 1rem;
     border-block: 1px solid var(--stroke);
   }
   summary {
