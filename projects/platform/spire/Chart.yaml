@@ -1,0 +1,17 @@
+apiVersion: v2
+name: spire
+description: "SPIFFE workload identity: SPIRE server, agent, CSI driver and controller manager (ADR embervm/041, #5706)"
+type: application
+version: 1.0.0
+appVersion: "1.15.3"
+dependencies:
+  - name: spire-crds
+    repository: https://spiffe.github.io/helm-charts-hardened/
+    version: "0.6.1"
+  - name: spire
+    repository: https://spiffe.github.io/helm-charts-hardened/
+    version: "0.30.1"
+annotations:
+  org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.url: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.licenses: "Apache-2.0"
