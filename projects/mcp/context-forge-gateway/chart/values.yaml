@@ -22,12 +22,14 @@ mcp-stack:
       MCPGATEWAY_BULK_IMPORT_ENABLED: "false"
     secret:
       AUTH_REQUIRED: "true"
-      # JWT auth required for in-cluster registration jobs (charts/mcp-servers registration-job.yaml)
+      # JWT auth for MCP client operations (the upstream default, restated).
+      # The in-cluster caller is the team-mapping CronJob
+      # (templates/team-mapping-cronjob.yaml), which mints its own admin JWT.
+      # While this is true, proxy-header identity is unreachable upstream
+      # (is_proxy_auth_trust_active returns false before any header is read),
+      # so no TRUST_PROXY_AUTH / PROXY_USER_HEADER pair belongs here.
       MCP_CLIENT_AUTH_ENABLED: "true"
       MCP_REQUIRE_AUTH: "false"
-      # Cloudflare Access Managed OAuth handles auth at the edge — see ADR 011
-      TRUST_PROXY_AUTH: "true"
-      PROXY_USER_HEADER: "Cf-Access-Authenticated-User-Email"
     extraEnvFrom:
       - secretRef:
           name: context-forge
@@ -157,8 +159,9 @@ cnpg:
     scheduledBackup:
       cron: "0 0 2 * * *"
 
-# HTTPRoute for external access via Cloudflare Tunnel.
-# Auth handled at edge by Cloudflare Access Managed OAuth (ADR 011).
+# HTTPRoute for external access via Cloudflare Tunnel. The MCP data path
+# authenticates against authentik (rootMcp below); Cloudflare Access fronts
+# only the control plane paths on the same hostname.
 httpRoute:
   enabled: false
   hostname: ""
@@ -200,16 +203,15 @@ httpRoute:
       - email
 
 # Per-tier hostnames, each scoped to exactly one virtual server. See
-# templates/httproute-scoped.yaml for why these must never route "/".
-# serverId is a Context Forge runtime object id, so a recreated virtual
-# server needs this value updated. That coupling is one of the reasons this
-# pattern does not scale past the experiment it was added for.
+# templates/httproute-scoped.yaml for why these must never route "/". The
+# route is path-transparent, so it names no virtual server id: which server
+# a hostname reaches is decided by the client's /servers/<id>/ path plus
+# Context Forge's own authorization, not by this list.
 scopedRoutes: []
 #  - name: friends
 #    enabled: true
 #    hostname: friends.jomcgi.dev
 #    tier: public
-#    serverId: "<virtual server uuid>"
 
 # Browser-authenticated preview lane on friends.jomcgi.dev. See
 # templates/httproute-preview.yaml for why this is a route of its own rather

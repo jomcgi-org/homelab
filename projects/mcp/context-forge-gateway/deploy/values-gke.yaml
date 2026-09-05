@@ -1,11 +1,12 @@
-# GKE cutover destination. The gateway stays dormant; CNPG stays up for data
-# staging and bootstraps by recovery from the off-cluster GCS Barman object
-# store. Consumed by the gke-apps Applications.
+# GKE hub overrides, live since the home cluster was pruned (2026-08-31). CNPG
+# bootstrapped by recovery from the home cluster's off-cluster GCS Barman
+# object store and keeps archiving under its own server name. Consumed by
+# projects/gke-apps/context-forge-gateway/application.yaml.
 mcp-stack:
   mcpContextForge:
     # Upstream's schema requires at least one replica even though Kubernetes
-    # accepts zero. The GKE Application skips that schema check for this dormant
-    # deployment and still renders the Deployment with replicas: 0.
+    # accepts zero; the gke-apps Application skips that check so the count can
+    # be dropped to 0 for a cutover rehearsal without editing the chart.
     replicaCount: 1
 
 cnpg:
