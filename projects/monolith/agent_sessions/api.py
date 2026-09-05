@@ -167,7 +167,7 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
                 turn.result.strip()[:200],
                 status,
                 turn.session_id,
-                model,
+                turn.model or model,
             )
         except IntegrityError:
             logger.warning(

@@ -25,6 +25,7 @@ def _completed_synthetic_turn() -> Turn:
         total_cost_usd=0.01,
         duration_ms=100,
         activities=[],
+        model=None,
     )
 
 
@@ -70,6 +71,39 @@ def test_run_synthetic_session_claims_pending_before_deliver(monkeypatch):
     assert len(delivered) == 1
     assert deleted == [(41, 1)]
     assert released == [(41, 1)]
+
+
+def test_run_synthetic_session_persists_actual_guest_model(monkeypatch):
+    row = AgentSession(
+        id=46,
+        local_session_id="codex-synthetic-test",
+        workspace="<guest>",
+        branch="main",
+    )
+    turn = _completed_synthetic_turn()._replace(model="terra")
+    persisted = []
+
+    async def deliver(*args, **kwargs):
+        return turn, None
+
+    monkeypatch.setattr(api, "_persist_session", lambda *args, **kwargs: row)
+    monkeypatch.setattr(api, "_persist_pending_message", lambda *args: 1)
+    monkeypatch.setattr(
+        api, "_claim_pending_message_sync", lambda session_id, claim_owner: 1
+    )
+    monkeypatch.setattr(api._transport, "deliver", deliver)
+    monkeypatch.setattr(
+        api,
+        "_persist_turn_from_pending_sync",
+        lambda *args: persisted.append(args),
+    )
+    monkeypatch.setattr(api, "_delete_pending_message_sync", lambda *args: None)
+    monkeypatch.setattr(api, "_release_pending_message_claim_sync", lambda *args: None)
+
+    result = asyncio.run(api.run_synthetic_session("probe", model="luna"))
+
+    assert result is turn
+    assert persisted[0][-1] == "terra"
 
 
 def test_run_synthetic_session_does_not_deliver_when_claim_lost(monkeypatch):

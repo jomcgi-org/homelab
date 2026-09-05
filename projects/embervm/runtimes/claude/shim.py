@@ -2297,6 +2297,7 @@ class ClaudeProcess:
                             self._close_process(kill=False)
                             raise RuntimeError(str(event.get("result")))
                         record = dict(event)
+                        record["model"] = self.model or model
                         record["voice"] = voice_summary(event.get("result", ""))
                         record["activities"] = activity_from_events(events)
                         _emit_elapsed(
@@ -2858,6 +2859,7 @@ wire_api = "responses"
                             "result": result_text,
                             "terminal_reason": terminal_reason,
                             "session_id": self.session_id,
+                            "model": model,
                             "usage": usage,
                             "voice": voice_summary(result_text),
                             "activities": activity_from_events(events),
@@ -3598,6 +3600,7 @@ class PiProcess:
                             "result": result_text,
                             "terminal_reason": terminal_reason,
                             "session_id": self.session_id,
+                            "model": self._model,
                             "num_turns": num_turns,
                             "usage": usage,
                             "voice": voice_summary(result_text),

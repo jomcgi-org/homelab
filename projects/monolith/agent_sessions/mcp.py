@@ -725,7 +725,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 summary,
                 status,
                 turn.session_id,  # Store for resumption
-                effective_model,
+                turn.model or effective_model,
             )
         except IntegrityError:
             # Turn already exists (duplicate seq), likely from a retry of a completed turn.
