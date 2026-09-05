@@ -1105,6 +1105,7 @@ defmodule Embervm.StatefulStore do
             ts: ts,
             payload: %{
               node_id: anchor_node_id,
+              previous_generation: current_generation,
               exported_generation: generation,
               generation: Map.get(adopted, :generation, 0),
               size_bytes: Map.get(adopted, :size_bytes),

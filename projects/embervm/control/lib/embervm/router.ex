@@ -1683,11 +1683,12 @@ defmodule Embervm.Router do
           published_endpoint: stateful_store().published_endpoint(stateful_store_server(), workload)
         }
         |> json_nullify()
-        # JSON keys "anchor" and "recovery" are stable public fields. Merge them
+        # JSON recovery keys are stable public fields. Merge them
         # after legacy nil omission so nullable values remain explicit.
         |> Map.merge(%{
           anchor: stateful_anchor_view(recovery.anchor),
-          recovery: recovery.recovery
+          recovery: recovery.recovery,
+          recovery_reason: Map.get(recovery, :recovery_reason)
         })
 
       send_json(conn, 200, body)
@@ -1748,13 +1749,34 @@ defmodule Embervm.Router do
           draining: Map.get(status, :draining, false),
           missing_since_ms: nil
         },
-        recovery: if(is_nil(volume), do: :cold, else: nil)
+        recovery: if(is_nil(volume), do: :cold, else: nil),
+        recovery_reason: nil
       }
     end
   rescue
-    _ -> %{anchor: %{node_id: volume && Map.get(volume, :node_id), health: nil, draining: false, missing_since_ms: nil}, recovery: nil}
+    _ ->
+      %{
+        anchor: %{
+          node_id: volume && Map.get(volume, :node_id),
+          health: nil,
+          draining: false,
+          missing_since_ms: nil
+        },
+        recovery: nil,
+        recovery_reason: nil
+      }
   catch
-    _, _ -> %{anchor: %{node_id: volume && Map.get(volume, :node_id), health: nil, draining: false, missing_since_ms: nil}, recovery: nil}
+    _, _ ->
+      %{
+        anchor: %{
+          node_id: volume && Map.get(volume, :node_id),
+          health: nil,
+          draining: false,
+          missing_since_ms: nil
+        },
+        recovery: nil,
+        recovery_reason: nil
+      }
   end
 
   defp stateful_anchor_view(anchor) do

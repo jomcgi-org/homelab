@@ -338,7 +338,8 @@ defmodule Embervm.RouterTest do
   # :stateful_store_mod and the catalog from :workload_catalog_mod/:workload_catalog_table,
   # so a request test can drive GET /v1/stateful/:name without the live StatefulStore
   # or WorkloadWatcher. wl-live has a live serving instance; wl-banked has only a banked
-  # instance (pair populated); wl-unknown is not a stateful workload (404).
+  # instance (pair populated) and a recorded restore refusal; wl-unknown is not a
+  # stateful workload (404).
   defmodule FakeStatefulStore do
     def list(_srv, "wl-live") do
       [
@@ -409,11 +410,29 @@ defmodule Embervm.RouterTest do
   # wl-boom's delete_volume raises a generic store error (500).
   defmodule FakeStatefulManager do
     def recovery_status(_srv, "wl-live") do
-      %{anchor: %{node_id: "node-4", health: :healthy, draining: false, missing_since_ms: nil}, recovery: nil}
+      %{
+        anchor: %{
+          node_id: "node-4",
+          health: :healthy,
+          draining: false,
+          missing_since_ms: nil
+        },
+        recovery: nil,
+        recovery_reason: nil
+      }
     end
 
     def recovery_status(_srv, "wl-banked") do
-      %{anchor: %{node_id: "node-4", health: :down, draining: false, missing_since_ms: 12_345}, recovery: :anchor_lost}
+      %{
+        anchor: %{
+          node_id: "node-4",
+          health: :down,
+          draining: false,
+          missing_since_ms: 12_345
+        },
+        recovery: "refused",
+        recovery_reason: "volume_restore_failed_anchor_gone"
+      }
     end
 
     def destroy_instance(_srv, "wl-live"), do: %{destroyed: 1, evicted: 0}
@@ -1631,6 +1650,7 @@ defmodule Embervm.RouterTest do
            }
     assert Map.has_key?(body, "recovery")
     assert body["recovery"] == nil
+    assert body["recovery_reason"] == nil
 
     inst = body["instance"]
     assert inst["instance_id"] == "sf-live"
@@ -1640,7 +1660,7 @@ defmodule Embervm.RouterTest do
     assert inst["port"] == 6000
   end
 
-  test "GET /v1/stateful/:name returns 200 for a banked-only workload with the pair populated" do
+  test "GET /v1/stateful/:name returns a banked workload's restore refusal" do
     with_stateful_fakes()
 
     resp = req(:get, "/v1/stateful/wl-banked", auth("good"))
@@ -1659,7 +1679,8 @@ defmodule Embervm.RouterTest do
     assert body["anchor"]["node_id"] == "node-4"
     assert body["anchor"]["health"] == "down"
     assert body["anchor"]["missing_since_ms"] == 12_345
-    assert body["recovery"] == "anchor_lost"
+    assert body["recovery"] == "refused"
+    assert body["recovery_reason"] == "volume_restore_failed_anchor_gone"
   end
 
   test "GET /v1/stateful/:name is 404 for an unknown or non-stateful workload" do

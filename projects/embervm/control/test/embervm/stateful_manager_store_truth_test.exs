@@ -72,7 +72,19 @@ defmodule Embervm.StatefulManagerStoreTruthTest do
 
     prepare_confirmed_missing_anchor(ctx, 8, 8, 7)
 
-    assert {:ok, %{generation: 9}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    log =
+      capture_log(
+        [format: "$message $metadata\n", metadata: [:workload, :previous_generation, :generation]],
+        fn ->
+          assert {:ok, %{generation: 9}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+        end
+      )
+
+    assert log =~
+             "embervm stateful: adopted store volume generation; writes between the previous and adopted generations are gone"
+
+    assert log =~ "previous_generation=8"
+    assert log =~ "generation=7"
     assert_receive {:restore_request, request}
     assert capability_generation(request.capability) == 7
 
@@ -85,6 +97,7 @@ defmodule Embervm.StatefulManagerStoreTruthTest do
 
     assert Enum.any?(ops, fn op ->
              op.kind == :volume_recovery_updated and
+               op.payload["previous_generation"] == 8 and
                op.payload["generation"] == 7 and
                op.payload["exported_generation"] == 7
            end)
@@ -116,6 +129,29 @@ defmodule Embervm.StatefulManagerStoreTruthTest do
            ) == 0
   end
 
+  test "a matching projection healed while the store consult is in flight resumes the wake" do
+    {volume_store, store_calls} = complete_volume_store(7, list_blocker: self())
+    ctx = start_stack(volume_store: volume_store)
+    prepare_confirmed_missing_anchor(ctx, 8, 8, 7)
+
+    wake = Task.async(fn -> StatefulManager.wake(ctx.mgr, "wl-a", "p") end)
+    assert_receive {:store_list_waiting, worker}
+
+    assert {:ok, %{generation: 7, exported_generation: 7}} =
+             StatefulStore.adopt_exported_generation(ctx.store, "wl-a", "node-dead", 7)
+
+    send(worker, :release_store_list)
+
+    assert {:ok, %{generation: 8}} = Task.await(wake)
+    assert length(Agent.get(ctx.restore_calls, & &1)) == 1
+    assert length(Agent.get(ctx.start_calls, & &1)) == 1
+
+    assert Agent.get(
+             store_calls,
+             &Enum.count(&1, fn {verb, _key} -> verb == :list end)
+           ) == 1
+  end
+
   test "newer unblessed store generation is refused without adoption or restore" do
     {volume_store, store_calls} = complete_volume_store(8, blessed_generation: 7)
     ctx = start_stack(volume_store: volume_store)
@@ -140,6 +176,17 @@ defmodule Embervm.StatefulManagerStoreTruthTest do
 
     assert %{node_id: "node-dead", generation: 7, exported_generation: 8} =
              StatefulStore.get_volume(ctx.store, "wl-a")
+
+    assert %{
+             recovery: "refused",
+             recovery_reason: "generation_not_blessed"
+           } = StatefulManager.recovery_status(ctx.mgr, "wl-a")
+
+    assert %{
+             last_wake_outcomes: %{
+               "wl-a" => %{reason: :generation_not_blessed, at_ms: 90_000}
+             }
+           } = :sys.get_state(ctx.mgr)
 
     assert Agent.get(ctx.restore_calls, & &1) == []
     assert Agent.get(ctx.start_calls, & &1) == []
@@ -196,11 +243,57 @@ defmodule Embervm.StatefulManagerStoreTruthTest do
     assert %{node_id: "node-dead", generation: 7, exported_generation: 7} =
              StatefulStore.get_volume(ctx.store, "wl-a")
 
+    assert %{
+             recovery: "refused",
+             recovery_reason: "volume_restore_failed_anchor_gone"
+           } = StatefulManager.recovery_status(ctx.mgr, "wl-a")
+
+    assert %{
+             last_wake_outcomes: %{
+               "wl-a" => %{reason: :volume_restore_failed_anchor_gone, at_ms: 90_000}
+             }
+           } = :sys.get_state(ctx.mgr)
+
     {:ok, rebuilt} =
       StatefulStore.start_link(name: nil, op_log: ctx.op_log, clock: fn -> 200_000 end)
 
     assert %{node_id: "node-dead", generation: 7, exported_generation: 7} =
              StatefulStore.get_volume(rebuilt, "wl-a")
+  end
+
+  test "a successful retry clears the previous restore refusal" do
+    {:ok, restore_attempts} = Agent.start_link(fn -> 0 end)
+    {volume_store, store_calls} = complete_volume_store(7)
+
+    restore_fun = fn _channel, _request ->
+      attempt = Agent.get_and_update(restore_attempts, &{&1, &1 + 1})
+
+      if attempt == 0 do
+        {:error, :restore_failed}
+      else
+        {:ok, %RestoreArtifactResponse{bytes_moved: 4_096, skipped: false, generation: 7}}
+      end
+    end
+
+    ctx = start_stack(volume_store: volume_store, restore_artifact_fun: restore_fun)
+    prepare_confirmed_missing_anchor(ctx, 7)
+
+    assert {:error, {:wake_failed, :volume_restore_failed_anchor_gone}} =
+             StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    assert %{recovery: "refused"} = StatefulManager.recovery_status(ctx.mgr, "wl-a")
+
+    assert {:ok, %{generation: 8}} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    assert %{recovery: nil, recovery_reason: nil} =
+             StatefulManager.recovery_status(ctx.mgr, "wl-a")
+
+    assert %{last_wake_outcomes: %{}} = :sys.get_state(ctx.mgr)
+
+    assert Agent.get(
+             store_calls,
+             &Enum.count(&1, fn {verb, _key} -> verb == :list end)
+           ) == 1
   end
 
   test "node gone and complete blessed store export heals projection and restores" do
