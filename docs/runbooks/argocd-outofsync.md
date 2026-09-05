@@ -104,6 +104,8 @@ kubectl -n argocd patch application <app> --type merge -p '{"status":{"operation
 
 The Application CRD has no status subresource, so a plain merge patch on `status` is correct here, this is not a workaround. It takes 20-40 seconds to take effect: do not conclude the patch failed if nothing has changed after 5 seconds.
 
+**Without kubectl (off-LAN):** the MCP tool `monolith-k8s-sync-argocd-app` patches `.operation` on the Application directly. The controller then finalizes the stale operation as Succeeded and any queued Kargo `argocd-update` proceeds. This is the path that cleared the 2026-08-24 embervm-dev wedge (#5250), where `operationState` sat at `phase: Running` with `finishedAt` already set because the resource it was waiting on had been pruned by the same sync. Capture the `operationState` JSON before clearing if it recurs.
+
 ## Fleet-wide freeze via the root app
 
 `canada` is the root app-of-apps: it syncs `projects/home-cluster` at HEAD. If `canada` itself is wedged, nothing downstream deploys, including merged chart bumps that look fine in git.
