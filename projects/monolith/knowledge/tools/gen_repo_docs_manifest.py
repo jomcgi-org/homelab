@@ -27,7 +27,10 @@ from pathlib import Path
 MANIFEST_REL = "projects/monolith/knowledge/repo_docs_manifest.ndjson"
 
 # We index *.md under these top-level prefixes, plus any CLAUDE.md anywhere.
-_INCLUDE_DIRS = ("docs/", "projects/")
+# bazel/ carries the build and CI architecture document plus the per-ruleset
+# READMEs (helm, semgrep, ocaml, oci, image), which are the only place that
+# knowledge lives; without it the KG could not answer a CI question.
+_INCLUDE_DIRS = ("bazel/", "docs/", "projects/")
 _INCLUDE_NAMES = ("CLAUDE.md",)  # indexed anywhere (root + nested)
 
 # Path segments that mark generated / vendored / irrelevant trees. All entries
@@ -42,6 +45,12 @@ _EXCLUDE_SEGMENTS = (
     "/dist/",
     "/.svelte-kit/",
     "/vendor/",
+    # Vendored upstream trees (their LICENSE.md is not our documentation) and
+    # test fixtures (a semgrep fixture deliberately contains the stale paths
+    # its rule flags). Both appear under bazel/; neither exists under docs/
+    # or projects/ today, so this drops nothing already indexed.
+    "/third_party/",
+    "/fixtures/",
 )
 
 

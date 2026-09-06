@@ -5,7 +5,9 @@
 #   - Reads JSON from stdin with .tool_input.file_path
 #   - Always exits 0 (advisory only)
 #   - Emits a REMINDER on stderr when the path is under a covered ADR
-#     category (docs/decisions/embervm/), naming the architecture doc
+#     category (docs/decisions/embervm/), a covered chart or deploy tree,
+#     or a covered build/CI tree (bazel/tools/ci/, buildbuddy.yaml,
+#     bazel/semgrep/, bazel/ocaml/), naming the architecture doc
 #   - Stays silent for every other path
 #
 # jq is mocked via a minimal Python3 stub placed earlier on PATH so the
@@ -99,6 +101,15 @@ expect_reminder "/repo/projects/embervm/deploy/values.yaml"
 expect_reminder "/repo/projects/mcp/context-forge-gateway/deploy/values.yaml" "projects/mcp/ARCHITECTURE.md"
 expect_reminder "/repo/projects/mcp/context-forge-gateway/chart/templates/httproute-scoped.yaml" "projects/mcp/ARCHITECTURE.md"
 
+# Covered build and CI trees: the tooling rollup put the ci wrapper, the
+# BuildBuddy workflow, and the semgrep and ocaml rulesets behind
+# bazel/ARCHITECTURE.md. buildbuddy.yaml is a file, matched by substring.
+expect_reminder "/repo/bazel/tools/ci/ci" "bazel/ARCHITECTURE.md"
+expect_reminder "/repo/bazel/tools/ci/affected-targets.sh" "bazel/ARCHITECTURE.md"
+expect_reminder "/repo/buildbuddy.yaml" "bazel/ARCHITECTURE.md"
+expect_reminder "/repo/bazel/semgrep/defs/semgrep-test.sh" "bazel/ARCHITECTURE.md"
+expect_reminder "/repo/bazel/ocaml/toolchain/arches.bzl" "bazel/ARCHITECTURE.md"
+
 # docs/decisions/agents/ spans several domains, so it is deliberately NOT
 # covered: a reminder naming one domain's doc would be wrong on most writes.
 expect_silent "/repo/docs/decisions/agents/046-mmds-dynamic-workload-env.md"
@@ -107,11 +118,15 @@ expect_silent "/repo/docs/decisions/agents/020-deprecate-context-forge-mcp-gatew
 # Editing an architecture doc itself is not drift.
 expect_silent "/repo/projects/embervm/ARCHITECTURE.md"
 expect_silent "/repo/projects/mcp/ARCHITECTURE.md"
+expect_silent "/repo/bazel/ARCHITECTURE.md"
 
 # Unrelated paths stay silent.
 expect_silent "/repo/projects/embervm/README.md"
 expect_silent "/repo/projects/mcp/README.md"
 expect_silent "/repo/main.go"
+# bazel/ trees outside the four covered ones stay silent.
+expect_silent "/repo/bazel/helm/chart.bzl"
+expect_silent "/repo/bazel/tools/format/run-generators.sh"
 
 # Missing file_path (e.g. a differently-shaped tool input) stays silent.
 set +e

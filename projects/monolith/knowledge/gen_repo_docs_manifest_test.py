@@ -24,12 +24,16 @@ def test_should_index_includes_and_excludes():
     assert _should_index("CLAUDE.md")
     assert _should_index(".claude/CLAUDE.md")
     assert _should_index("projects/monolith/CLAUDE.md")
+    assert _should_index("bazel/ARCHITECTURE.md")
+    assert _should_index("bazel/ocaml/README.md")
     # Excluded: wrong extension, outside the indexed dirs, or a noise segment.
     assert not _should_index("projects/svc/notes.txt")
     assert not _should_index("README.md")  # repo-root, not under docs/ or projects/
     assert not _should_index("src/x.md")
     assert not _should_index("projects/svc/node_modules/z.md")
     assert not _should_index("projects/svc/frontend/build/g.md")
+    assert not _should_index("bazel/ocaml/third_party/fmt/LICENSE.md")
+    assert not _should_index("bazel/semgrep/tests/fixtures/no-stale-repo-paths.md")
     # The generated manifest never indexes itself.
     assert not _should_index("projects/monolith/knowledge/repo_docs_manifest.ndjson")
 
