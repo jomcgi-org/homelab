@@ -318,7 +318,7 @@ async def probe_codex() -> dict:
 
 
 async def probe_spark() -> dict:
-    """Exercise a real Pi-family session through Muse Spark."""
+    """Exercise a real Muse-family session on claude-runtime."""
     started = perf_counter()
     try:
         from agent_sessions.api import run_synthetic_session

@@ -1137,7 +1137,7 @@ def _ensure_cli_dir(path):
 
 
 def _write_read_only_file(path, content):
-    """Rewrite shim-owned configuration and block in-place edits and casual drift.
+    """Rewrite a shim-owned file and block in-place edits and casual drift.
 
     A CLI-owned parent directory still permits replace-by-rename despite mode
     0444. The microVM plus the egress sidecar allowlist, not this file mode, are
@@ -1488,25 +1488,25 @@ def activity_from_events(events):
             name = event.get("toolName")
             value = event.get("args")
             if name == "edit":
-                activity.append(
-                    {"type": "edit", "file_path": _input_value(value, "path")}
-                )
+                item = {"type": "edit"}
+                if value is not None:
+                    item["file_path"] = _input_value(value, "path")
+                activity.append(item)
             elif name == "write":
-                activity.append(
-                    {"type": "write", "file_path": _input_value(value, "path")}
-                )
+                item = {"type": "write"}
+                if value is not None:
+                    item["file_path"] = _input_value(value, "path")
+                activity.append(item)
             elif name == "bash":
-                activity.append(
-                    {"type": "bash", "command": _input_value(value, "command")}
-                )
+                item = {"type": "bash"}
+                if value is not None:
+                    item["command"] = _input_value(value, "command")
+                activity.append(item)
             else:
-                activity.append(
-                    {
-                        "type": "tool_use",
-                        "name": name,
-                        "input": _bounded_tool_input(value),
-                    }
-                )
+                item = {"type": "tool_use", "name": name}
+                if value is not None:
+                    item["input"] = _bounded_tool_input(value)
+                activity.append(item)
             continue
         if event.get("type") != "assistant":
             continue
@@ -3151,10 +3151,11 @@ class MuseProcess:
     # See ClaudeProcess.requires_git_checkout.
     requires_git_checkout = False
 
-    def __init__(self, workspace=None, executable="muse"):
+    def __init__(self, workspace=None, executable="muse", state_workspace=None):
         self.workspace = workspace or os.environ.get(
             "EMBER_CLAUDE_WORKSPACE", DEFAULT_WORKSPACE
         )
+        self.state_workspace = state_workspace or self.workspace
         self.executable = executable
         self.session_id = None
         self.process = None
@@ -3218,16 +3219,17 @@ class MuseProcess:
         uses and writes no mcp_servers key at all when it fails.
         """
         agent_mcp_url = os.environ.get(AGENT_MCP_URL_ENV)
-        if self._mcp_probe_cached is None:
+        if not self._mcp_probe_cached:
             self._mcp_probe_cached = bool(agent_mcp_url) and _agent_mcp_endpoint_alive(
                 agent_mcp_url
             )
 
         settings = {"schema_version": 1}
-        # Probe runs once per adapter (spawn is once per turn), so up to 3s
-        # lands outside cli_ready. Stale cached result is acceptable: mode
-        # required means the run aborts loudly if the tier went away instead of
-        # proceeding toolless.
+        # A successful probe is cached for the adapter lifetime. A failed probe
+        # is retried next turn so a brief tier outage cannot disable knowledge
+        # tools for the session's full six-hour lifetime. This work is inside
+        # _spawn, so its latency is included in cli_ready. If a cached-positive
+        # tier later goes away, required mode makes Muse abort loudly.
         if self._mcp_probe_cached:
             settings["mcp_servers"] = {
                 "agents": {
@@ -3263,24 +3265,33 @@ class MuseProcess:
         muse_settings_dir = os.path.join(self.workspace, ".muse", "config", "muse")
         _ensure_cli_dir(muse_settings_dir)
         self._write_settings_json(muse_settings_dir)
+        # ProcessManager keeps state_workspace at /workspace while cwd moves to
+        # /workspace/src after hydration. A prompt therefore cannot survive a
+        # mid-turn death as an untracked file in the checkout's next diff.
+        prompt_dir = os.path.join(self.state_workspace, ".muse", "prompts")
+        _ensure_cli_dir(prompt_dir)
         prompt_file = tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
             prefix=".muse-prompt-",
-            dir=self.workspace,
+            dir=prompt_dir,
             delete=False,
         )
+        prompt_file_path = prompt_file.name
         try:
-            prompt_file.write(prompt)
             prompt_file.close()
+            # NamedTemporaryFile starts at 0600. Reuse the configuration-file
+            # writer so a root shim leaves a 0444 file the dropped CLI uid can
+            # read, matching the Codex configuration path.
+            _write_read_only_file(prompt_file_path, prompt)
         except Exception:
             prompt_file.close()
             try:
-                os.unlink(prompt_file.name)
+                os.unlink(prompt_file_path)
             except OSError:
                 pass
             raise
-        self._prompt_file_path = prompt_file.name
+        self._prompt_file_path = prompt_file_path
         command = [
             self.executable,
             "exec",
@@ -3413,6 +3424,7 @@ class MuseProcess:
             usage = {}
             terminal_reason = "completed"
             tasks_by_id = {}
+            cached_activities = []
             try:
                 pusher = _ProgressPusher(progress_token) if progress_token else None
             except Exception:
@@ -3440,7 +3452,7 @@ class MuseProcess:
                             accumulated_text += text
                             if pusher:
                                 try:
-                                    pusher.push(accumulated_text, [])
+                                    pusher.push(accumulated_text, cached_activities)
                                 except Exception:
                                     pass
                     elif event_type == "run.terminal.completed":
@@ -3452,7 +3464,10 @@ class MuseProcess:
                         terminal_reason = reason or terminal or "completed"
                         if pusher:
                             try:
-                                pusher.push(result_text or accumulated_text, [])
+                                pusher.push(
+                                    result_text or accumulated_text,
+                                    cached_activities,
+                                )
                             except Exception:
                                 pass
                         _emit_elapsed(
@@ -3465,19 +3480,7 @@ class MuseProcess:
                             "model": self._model,
                             "usage": usage,
                             "voice": voice_summary(result_text),
-                            "activities": activity_from_events(
-                                [
-                                    {
-                                        "type": "tool_execution_start",
-                                        "toolCallId": task_id,
-                                        "toolName": task["task_kind"][len("tool.") :],
-                                        "args": task.get("operation"),
-                                    }
-                                    for task_id, task in tasks_by_id.items()
-                                    if isinstance(task.get("task_kind"), str)
-                                    and task["task_kind"].startswith("tool.")
-                                ]
-                            ),
+                            "activities": cached_activities,
                         }
                     elif isinstance(event_type, str) and event_type.startswith(
                         "task.lifecycle."
@@ -3487,6 +3490,24 @@ class MuseProcess:
                             task_id = payload.get("task_id") or lifecycle.get("task_id")
                             if task_id:
                                 tasks_by_id.setdefault(task_id, {}).update(lifecycle)
+                                # Captures carry only a label such as
+                                # operation="tool:add_memory" here. Arguments
+                                # are not part of task.lifecycle, so do not
+                                # present that label as a command or tool input.
+                                cached_activities = activity_from_events(
+                                    [
+                                        {
+                                            "type": "tool_execution_start",
+                                            "toolCallId": known_task_id,
+                                            "toolName": task["task_kind"][
+                                                len("tool.") :
+                                            ],
+                                        }
+                                        for known_task_id, task in tasks_by_id.items()
+                                        if isinstance(task.get("task_kind"), str)
+                                        and task["task_kind"].startswith("tool.")
+                                    ]
+                                )[-300:]
             finally:
                 if pusher:
                     try:
@@ -4388,6 +4409,7 @@ class ProcessManager:
         self.codex = CodexProcess(cli_workspace, codex_executable)
         self.pi = PiProcess(cli_workspace, pi_executable)
         self.muse = MuseProcess(cli_workspace, muse_executable)
+        self.muse.state_workspace = self.workspace
         if self._prewarm_clis and self.fatal_error is None:
             self._prewarm_thread = threading.Thread(
                 target=self.prewarm, name="cli-prewarm", daemon=True

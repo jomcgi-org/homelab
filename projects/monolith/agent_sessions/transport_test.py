@@ -199,8 +199,8 @@ def test_create_session_retry_keeps_pi_spark_on_the_pi_workload(monkeypatch):
     re-enters create_session positionally, so dropping the model there is
     invisible except that the retried create lands on the 4 GiB lane. It is
     live rather than theoretical, because a retryable create denial is exactly
-    what pi-runtime's cap of 2 produces when the */5 probe overlaps an
-    interactive pi-spark turn.
+    what pi-runtime's cap of 2 produces when two interactive pi-spark turns
+    overlap.
     """
     attempts = []
 

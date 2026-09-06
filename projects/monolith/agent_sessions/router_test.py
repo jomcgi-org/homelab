@@ -309,7 +309,7 @@ def test_models_endpoint_offers_everything_when_env_unset(client, monkeypatch):
 
     assert [entry["name"] for entry in body["models"]] == list(SUPPORTED_MODELS)
     for entry in body["models"]:
-        assert entry["family"] in {"codex", "claude", "pi"}
+        assert entry["family"] in {"codex", "claude", "muse", "pi"}
 
 
 def test_models_endpoint_narrows_to_configured_list(client, monkeypatch):
@@ -329,7 +329,7 @@ def test_models_endpoint_offers_spark_and_pi_spark_in_resolved_families(
 
     assert body == {
         "models": [
-            {"name": "spark", "family": "claude"},
+            {"name": "spark", "family": "muse"},
             {"name": "pi-spark", "family": "pi"},
         ]
     }
@@ -728,17 +728,17 @@ def test_fresh_binding_absence_rejects_capped_paginated_listing(monkeypatch):
 def test_refresh_cp_state_polls_every_lane(client, monkeypatch):
     """The VM map must cover the pi lane as well as the claude one.
 
-    list_sessions is workload scoped, so a single-lane poll leaves qwen
+    list_sessions is workload scoped, so a single-lane poll leaves pi-spark
     sessions out of the published map. The console reads an absent session_id
-    as "off" (frontend status.js vmState), so a live legacy qwen guest would
-    render "vm off" for its whole turn.
+    as "off" (frontend status.js vmState), so a live Pi guest would render
+    "vm off" for its whole turn.
     """
     lanes = []
 
     async def fake_list_sessions(limit=50, offset=0, workload=None):
         lanes.append(workload)
         if workload == transport.PI_WORKLOAD:
-            return {"items": [{"session_id": "s-qwen", "state": "running"}]}
+            return {"items": [{"session_id": "s-pi", "state": "running"}]}
         return {"items": [{"session_id": "s-claude", "state": "running"}]}
 
     monkeypatch.setattr(mcp._transport, "list_sessions", fake_list_sessions)
@@ -747,7 +747,7 @@ def test_refresh_cp_state_polls_every_lane(client, monkeypatch):
 
     assert sorted(lanes) == sorted([mcp._transport.workload, transport.PI_WORKLOAD])
     # Merged, not replaced: the last lane polled must not clobber the first.
-    assert body["vms"]["s-qwen"]["state"] == "awake"
+    assert body["vms"]["s-pi"]["state"] == "awake"
     assert body["vms"]["s-claude"]["state"] == "awake"
 
 
@@ -1334,6 +1334,25 @@ def test_send_message_model_family_mismatch(client, session, monkeypatch):
         f"/api/agents/sessions/{row.id}/messages",
         json={"prompt": "follow up", "model": "luna"},
     ).json()
+    assert body["accepted"] is False
+    assert "Model family mismatch" in body["error"]
+
+
+@pytest.mark.parametrize(
+    ("session_model", "requested_model"),
+    [("spark", "opus"), ("opus", "spark")],
+)
+def test_send_message_rejects_muse_claude_adapter_switch(
+    client, session, monkeypatch, session_model, requested_model
+):
+    row = _session(session, "adapter-pinned", model=session_model)
+    monkeypatch.setattr("agent_sessions.router._load_session_row", lambda _: row)
+
+    body = client.post(
+        f"/api/agents/sessions/{row.id}/messages",
+        json={"prompt": "do not switch adapters", "model": requested_model},
+    ).json()
+
     assert body["accepted"] is False
     assert "Model family mismatch" in body["error"]
 

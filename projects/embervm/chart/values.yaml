@@ -933,7 +933,7 @@ runtimeClaude:
 
 # The runtime-pi base image: the same session-class guest as runtimeClaude (same
 # shim, same guest-init, same vsock contract) carrying ONLY the pi coding agent,
-# so a spark turn stops paying for the claude and codex CLIs it can never invoke.
+# so a pi-spark turn stops paying for the claude and codex CLIs it cannot invoke.
 # Bazel-pinned (helm_chart images="runtimePi.guestImage") from its .info
 # provider. Distinct FLAT top-level key (never nested), per D14a.6, and the key
 # matches the `workloads.runtimePi` entry above because the deployment ranges
@@ -1892,12 +1892,14 @@ egress:
 # parked) caps the snapshot dir at up to 8 x 4 GiB = 32 GiB worst case, less
 # whenever some of that count is parked, since a parked session holds a
 # workspace volume, not a memory snapshot.
-# cap 3 bounds NEW session VMs at create time only (3 x 4 GiB = 12 GiB from
+# cap 4 bounds NEW session VMs at create time only (4 x 4 GiB = 16 GiB from
 # creates); it is not a worst-case live RAM figure, because rejoin admits a
 # parked session on placement memory headroom, not on cap, so a wake burst can
 # transiently exceed it. Placement admission is the per-node RAM gate for that
 # burst, worst case bounded by maxSessions (8 x 4 GiB = 32 GiB) on the 16gi
 # brick, with room left for the task pools it shares node-4 scratch with.
+# The fourth create slot covers the */5 Muse Spark probe overlapping three
+# interactive sessions. The probe destroys its session before returning.
 # Raised from cap 1 / maxSessions 2 once the lane earned its keep (a turn reached
 # the API end to end, #4071): one concurrent sandbox and two total sessions meant
 # a single abandoned session locked the workload out, which is how the 429s during
@@ -1930,7 +1932,7 @@ claudeRuntimeWorkload:
   # anticipated session traffic). Tune after observing real sessions.
   workspaceSizeBytes: 10737418240
   floor: 0
-  cap: 3
+  cap: 4
   session:
     # 20s, not 5 minutes: that figure was priced for memory banking (a
     # multi-GiB snapshot write per bank), but this quadrant parks instead (VM
@@ -1972,10 +1974,10 @@ claudeRuntimeWorkload:
 # claude-runtime (vsock 1027, /shim/ready, invoke at /shim/turn) served by the
 # SAME shim, from an image carrying only the pi CLI (runtimes/pi).
 #
-# The monolith maps Spark sessions to family `pi` (agent_sessions/__init__.py),
-# and accepts persisted qwen values as a deprecated alias. Served on
-# claude-runtime, a Spark session would cold-boot a 4096 MiB guest holding CLIs
-# it cannot invoke. Here it is 256 MiB.
+# The monolith maps only pi-spark sessions to family `pi`
+# (agent_sessions/__init__.py). Spark uses the distinct Muse family on
+# claude-runtime, and persisted qwen values remain a deprecated alias for
+# Spark. This lane keeps pi-spark available as the explicit rollback model.
 #
 # WHY 256 MiB HOLDS, and where it stops holding. What lives in guest RAM is the
 # Bun-compiled pi binary, the stdlib-python shim, and the tmpfs the guest-init
@@ -1988,9 +1990,10 @@ claudeRuntimeWorkload:
 #
 # It stops holding the moment a session hydrates a repository. With persistence
 # off (below) /workspace IS the tmpfs, so a checkout is spent out of these same
-# 256 MiB with no disk to fall back on. THIS IS THE SMALL-TASK LANE: probes and
-# short conversational turns, not repo-attached work. A repo-attached Spark
-# session belongs on claude-runtime until this workload is given a volume.
+# 256 MiB with no disk to fall back on. THIS IS THE SMALL-TASK LANE: short
+# pi-spark conversational turns, not repo-attached work. A repo-attached
+# pi-spark session belongs on claude-runtime until this workload is given a
+# volume.
 # Raising it is a values-only change; the honest ladder is 256 -> 512 -> a
 # persistenceEnabled flip with a workspaceSizeBytes, in that order. Deploy has
 # taken the last rung (#5051): the template wires both keys.
@@ -2029,14 +2032,13 @@ piRuntimeWorkload:
   # against a model API leg measured in seconds. Warmth would buy a few percent
   # of a turn for a permanently resident guest on every brick.
   floor: 0
-  # cap bounds NEW session VMs at create time. 2 covers the */5 probe overlapping
-  # with one interactive session; the probe destroys its session before
-  # returning, so steady state is 0.
+  # cap bounds NEW session VMs at create time. 2 permits two concurrent
+  # interactive pi-spark rollback sessions. The */5 Muse Spark probe runs on
+  # claude-runtime and consumes no slot here.
   cap: 2
   session:
-    # 20s: a probe session is created, served and destroyed inside one call, and
-    # an interactive Spark turn is a fast round trip. A longer idle window would
-    # hold cap slots for conversations that have already ended.
+    # 20s: an interactive pi-spark turn is a fast round trip. A longer idle
+    # window would hold cap slots for conversations that have already ended.
     idleBankSeconds: 20
     maxLifetimeSeconds: 21600
     # 1h, matching claude-runtime: a failed or abandoned turn leaves a banked
