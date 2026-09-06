@@ -1,296 +1,421 @@
-# ADR 064: A Factory Conductor: One Long-Lived Session That Coordinates Conductors Under a Charter
+# ADR 064: A Factory Conductor for Product Progress, Shared Capacity, and One Conversation
 
 **Author:** jomcgi
 **Status:** Proposed
 **Created:** 2026-09-05
+**Updated:** 2026-09-06
 **Amends:** [062 - A Mutable DAG Owned by an Opus Conductor, Executed Per-Node
-in VMs](062-mutable-dag-conductor-opus-per-node-vms.md) (Accepted, adds a
-level above the per-run conductor that ADR 062 does not have and cannot see
-past its own DAG); [060 - Escalation as a Pause, Not a Return, With a
-Decision Row](060-escalation-as-a-pause-with-a-decision-row.md) (Accepted,
-narrows which escalations reach Joe rather than changing how one is answered
-once it arrives)
-
----
+in VMs](062-mutable-dag-conductor-opus-per-node-vms.md) (Accepted, adds
+coordination above individual runs); [060 - Escalation as a Pause, Not a
+Return, With a Decision Row](060-escalation-as-a-pause-with-a-decision-row.md)
+(Accepted, resolves delegated decisions within a charter before escalating
+to Joe)
+**Related:** [049 - Turn-Granular Agent UI](049-turn-granular-poll-shaped-agent-ui.md),
+[058 - Voice-Driven Companion Screen](058-voice-driven-companion-screen.md),
+[063 - Factory Knowledge Graph](063-factory-knowledge-graph-evidence-lanes.md)
 
 ## Problem
 
-Joe is the integration point between every concurrent lane this repo runs:
-local Claude sessions, cloud Claude sessions, Codex dispatch workers, the
-qwen drainer (ADR 061), and swarm runs under an ADR 062 conductor. Nothing
-between those lanes coordinates them. Two sessions can be bound to the same
-issue or editing the same files with neither one aware of the other, and
-finding out means Joe reading `ListAgents`, the swarm console, GitHub, and
-Discord by hand. "What is in progress", "how is task X going", and "what
-should run next" are all questions Joe currently answers by checking several
-surfaces himself, because no surface answers them.
+Joe coordinates local and cloud Claude sessions, Codex workers, drainer
+lanes, and swarm runs by checking several surfaces. A per-run conductor owns
+one DAG and cannot select priorities or reconcile overlap across that fleet.
+Increasing the number of runs increases the coordination work Joe carries.
 
-An ADR 062 conductor does not fix this: it owns one DAG for one run and has
-no visibility into any other run, any Codex dispatch, or any drainer lane.
-Scaling per-run conductors scales the number of things nobody is watching
-across, not the coordination.
+Quota observation (#5752) and routing away from an exhausted lane (#5753)
+provide useful inputs, but do not decide which product work should occupy
+available capacity across lanes. Independent dispatchers can each see the
+same apparent headroom. Starting more implementation work can also overload
+review, CI, or the platform and leave unfinished work consuming capacity.
 
-Every escalation reaches Joe today regardless of whether it needs him. ADR
-060 gave one kind of escalation (a swarm push gate) a decision row instead of
-silent termination, but it did not change who receives it: everything that
-pauses still pauses toward Joe. There is no tier between "the system decided
-on its own" and "Joe was asked", so triage work that a coordinating agent
-could resolve (a lane overlapping another, a queued job that should wait
-behind a running one) still lands on him.
-
-The subscription quotas that bound Codex dispatch and Claude sessions
-(CLAUDE.md's model routing section) are a shared, finite resource that
-nothing currently manages as one. Issue #5752 makes each provider's quota
-readable in-cluster off real egress traffic; issue #5753 is the first
-consumer, routing one lane (kg-drain) around a wall. Both are per-lane
-reactions to a wall already hit. Nothing decides, across every lane at once,
-how to spend the quota that is available, so it goes unused when no single
-lane happens to need it at that moment, even while another lane is idle for
-lack of it.
-
----
+A factory needs a connection between agreed product goals and verified
+delivery, a shared admission boundary, operational recovery rules, and one
+conversation through which Joe can start, inspect, and steer work. Keeping
+sessions busy alone does not establish product progress.
 
 ## Decision
 
-| Aspect | Today | Decided |
-| ------ | ----- | ------- |
-| Coordination across lanes | Joe, by hand, across several surfaces | one long-lived conductor session, reachable from three surfaces |
-| Bounds on what it may do | none exist | a versioned charter, changed only by PR |
-| How it knows fleet state | nothing aggregates it | a materialised read model (the factory index), not its own context |
-| Memory across restarts | would be a hand-maintained file | a journal table plus the knowledge graph |
-| What reaches Joe | every escalation | only what the charter's escalation set names |
-| Authority to act | undefined | four gated tiers, each audited, act shipped last |
+The objective is to **keep all safely available subscription quota doing
+useful work toward agreed product goals, while preserving platform health,
+interactive responsiveness, and capacity to finish and verify work**.
 
-### 1. One long-lived conductor session per operator, an EmberVM guest, three surfaces sharing it
+| Aspect | Decision |
+| ------ | -------- |
+| User entry point | One factory conversation across web, Discord, and voice |
+| Executor | One logical conductor per operator, with a replaceable fenced EmberVM session |
+| Starting model | Opus; evaluate Fable before any later switch |
+| Priorities | Platform stability, useful product progress, efficient quota use |
+| Work selection | Agreed goals, dependencies, acceptance evidence, and bounded maintenance |
+| Capacity | Shared server-enforced admission and reservations across participating lanes |
+| State | Durable goal/task/decision records, a materialised index, and journal plus KG |
+| Control | Versioned charter, mutation checks, operational health gates, and independent pause/stop |
+| Rollout | Read first, coordinate with its controls, act after admission and recovery gates |
 
-The factory conductor is a session, not a service. It is an EmberVM guest
-like every other agent under ADR 062 decision 4, reachable from a chat box on
-the private agents page, from Discord, and from voice through the ADR 058
-`voice_ui_*` tools, all three bound to the same session rather than each
-spawning its own.
+### 1. One conversation is the default task entry point
 
-Being a session rather than a service means it can be destroyed and
-re-created from what decision 4 below persists. There is no state that only
-lives in a running process; killing the session and starting a fresh one
-recovers the same conductor, modulo whatever the journal and the knowledge
-graph have not yet distilled.
+The private agents page integrates issue #4781's existing launcher into the
+factory conversation. Starting work, asking for progress, changing priorities,
+steering a task, and answering a decision use that entry point. Choosing a
+model, session, run, or conductor is not required. Implementation diagnostics
+remain available on demand.
 
-### 2. It acts within a charter, and the charter is a versioned document changed only by PR
+Web, Discord, and ADR 058 voice share one logical conductor per operator.
+They retain stable message, task/topic, and decision IDs, principal,
+context version, source surface, and reply destination. Switching surfaces
+or replacing the executor preserves task focus and pending decisions.
+Concurrent topics must not silently change the target of "pause that";
+ambiguous mutation targets require clarification.
 
-The charter is a file in this repo. It states goals in priority order
-(platform stability first, then maximising use of the Codex and Claude
-subscription quotas, then roadmap progress), constraints (cost ceilings,
-every accepted ADR is binding, the GitOps invariants in CLAUDE.md), and the
-escalation set (decision 5).
+The default view answers what advanced, what is running, what needs Joe,
+and why capacity is idle, with evidence available on demand. Replies follow
+each surface's access rules. Voice supports the conversation with no
+companion screen open, preserving ADR 058's optional-screen contract.
 
-Bounds on an agent with this much reach have to be readable and diffable by
-a human who is not in the loop of any given session, and they have to sit
-outside the conductor's own reasoning. A charter the conductor could revise
-by talking to itself is not a bound; a charter that only changes through
-review is.
+Issue #5788 owns the interface and adapters. Issue #5787 owns durable
+context and executor lifecycle.
 
-### 3. A factory index is the read model the conductor queries, not the context it holds
+### 2. Durable receipt, bounded turns, and independent controls keep it responsive
 
-A materialised view joins agent sessions, swarm runs, drainer and routine
-jobs, GitHub issues and PRs, ADR 060 decision rows, distress reports, and the
-provider quota reading from issue #5752, keyed by the issue or task each
-belongs to. It is served as MCP tools, not loaded into the conductor's
-context wholesale.
+Persist and acknowledge input before model execution. A receipt means the
+request is durable, not that its action completed. The interface renders
+queued, running, blocked-on-decision, paused, completed, failed, and stopped
+states from records, following ADR 049's polling approach.
 
-"What is in progress", "how is task X", and "what is next" become queries
-against the index rather than questions the conductor answers from memory.
-Overlap detection is a query too: two live sessions bound to the same issue,
-or touching the same paths, are found by joining the index against itself,
-not by the conductor noticing.
+One durable ordered queue feeds one active executor. Explicit priority rules
+place operator input ahead of coalesced background events while preserving
+causal dependencies and FIFO within equal-priority streams. A newer scoped
+stop or correction invalidates conflicting pending actions. Keep conductor
+turns bounded and delegate lengthy work; worker completion produces a durable
+event rather than keeping the conductor turn waiting.
 
-Context is the budget this repo already routes model tiers against
-(CLAUDE.md's model-routing section). A conductor that tried to hold the
-entire fleet in its own context would be bounded by the same context window
-every other session is, and would go stale between refreshes exactly the way
-a cached read does. Querying an index that is itself kept current is cheaper
-and does not decay with session age.
+Authenticated deterministic pause/stop controls bypass model execution.
+Their durable generation/order is rechecked before subsequent mutations,
+including commands already queued at a target. Basic status reads directly
+from durable records when the model is busy or unavailable, with honest
+freshness and coverage. Control-path failure must be visible rather than
+reported as a successful stop.
 
-### 4. Memory is a journal plus the knowledge graph, never a hand-maintained memory file
+The charter sets measurable receipt/control latency targets and conductor
+turn bounds. These values must be chosen and validated before enabling the
+associated autonomous controls. Token streaming is not a prerequisite.
 
-A per-conductor journal table keeps the last N exchanges verbatim and their
-rollups, reusing the session-title and `voice_summary` machinery that
-already exists for other sessions. Durable facts go to the knowledge graph
-through `report_knowledge`, the same path every other agent uses. A new
-conductor session is assembled from the journal plus the knowledge graph
-recall block (issue #5680), the same recall mechanism every other Ember
-session gets once `knowledge.recall.enabled` is flipped.
+### 3. A versioned charter bounds goals, decisions, and operational policy
 
-Searching past interactions is `search_knowledge` over session rollups plus
-text search on the journal, not a grep over a file only this machine can
-read. This repo already drew this line once: CLAUDE.md's knowledge section
-treats a hand-maintained local memory as a scratchpad with a short half-life,
-never a shared fact store. A conductor whose entire job is cross-session
-coordination cannot run on the one memory store every other agent is told
-not to trust for anything durable.
+The charter is a versioned document under projects/monolith, owned by #5785
+and changed through reviewed PRs. Its exact file path is an implementation
+choice. It defines goals in priority order: platform stability, useful
+product progress, then efficient quota use.
 
-### 5. Escalations require Joe by construction: the charter enumerates the set
+It also defines allowed actions, escalation/ask-first rules, reserves and
+ceilings, work-in-progress limits, maintenance allocation, health inputs,
+freshness/recovery rules, and responsiveness targets. Accepted ADRs and
+GitOps/security invariants remain binding.
 
-The charter names an escalation set, and only a decision in that set produces
-an ADR 060 decision row addressed to Joe. Everything else the conductor
-resolves on its own and records in the journal.
+Every clause has a stable identifier. The loader, read-only charter tool,
+session prompt, admission layer, and action ledger expose the same exact
+version/hash. Mutations use applicable current policy; replacing a session
+or retaining an old prompt cannot preserve revoked authority. Charter
+changes specify how active work and pending reservations/actions transition.
 
-The initial set: any irreversible or production-impacting action outside
-GitOps (kubectl writes are already forbidden by CLAUDE.md, so this closes the
-same door for the conductor rather than opening a new one), any decision that
-would need a new or amended ADR, budget or quota policy changes, any
-security-relevant change (`docs/security.md` scope), and anything the charter
-itself marks ask-first.
+The conductor resolves decisions within explicitly granted authority.
+Missing or ambiguous authority escalates. The initial ask-first set includes
+charter or quota-policy changes, security-relevant changes, decisions
+requiring a new/amended ADR, and irreversible or production-impacting
+actions outside allowed GitOps operations. This does not authorise otherwise
+prohibited cluster writes.
 
-The set lives in the charter, not in the conductor's judgment, so that
-"Joe is needed" keeps meaning what it says. A conductor that decided case by
-case which of its own decisions were big enough to escalate would be the
-same unbounded triage problem this ADR exists to remove, moved one level
-down.
+Persist scoped operator decisions so reconnect or executor replacement does
+not ask again for an unchanged, already resolved decision. An answer is
+bound to its decision ID, target, and version; changed scope or authority
+requires revalidation.
 
-### 6. Four action tiers, each gated separately, every action ledgered
+### 4. Product goals and acceptance evidence drive work selection
 
-Read (the factory index, the knowledge graph), coordinate (post to the
-issue #5704 board, take and release monolith agent locks, defer or
-re-prioritise a queued job, tell a lane it overlaps another), act (start and
-steer sessions, dispatch Codex workers, open PRs, arm auto-merge within the
-`pr-workflow` skill's rules), and escalate.
+Issue #5786 owns durable records connecting product outcome -> milestone ->
+task -> acceptance evidence, with stable identity, ownership, priority,
+dependencies, and versioned operator decisions. Reuse existing issue/task
+and evidence records where possible.
 
-No action happens without a ledger row: every tool call the conductor makes
-is written down with the charter clause it acted under, the same invariant
-ADR 058 decision 1 already established for the voice companion ("no surface
-may appear without a ledger row"), applied here to actions instead of UI
-surfaces.
+Distinguish started work, produced artifacts, accepted delivery, and
+deployment/health evidence when the goal requires it. A model's completion
+claim or session count alone cannot satisfy acceptance. Connect evidence to
+the relevant artifact/commit and goal criteria.
 
-Read and coordinate ship first. Act is enabled per tier by a values flag
-once decision 7's budget line exists, so the highest-reach tier does not
-go live ahead of the safety envelope meant to bound it.
+Every selected task advances an agreed goal or has a bounded operational
+maintenance justification. Routine maintenance has an explicit allocation;
+incident exceptions require recorded evidence and recovery conditions.
+"Stability first" cannot silently become an unlimited stream of polishing
+that starves product work.
 
-### 7. Safety envelope: its own budget line, a kill switch, and STPA before act
+The conductor may propose priorities within its charter. Goal/priority
+changes are attributable mutations; retrieved issue prose cannot silently
+become an authorised priority. Scheduling recommendations explain the goal,
+dependency, and evidence they advance.
 
-The conductor gets its own budget line under `budget_usd` enforcement
-(issue #4784), so its quota-maximising goal cannot spend against a ceiling
-that does not yet exist for anyone. A kill switch is a values flag that
-destroys the session and refuses re-creation, not merely pauses it. The STPA
-governance lens (the `stpa` skill) runs on the conductor before the act tier
-is enabled, not after.
+### 5. A materialised factory index supplies current evidence and coverage
 
-Model choice between Fable and Opus is left open (Open Questions). The
-charter is written to be model-independent, the same swappability ADR 062
-decision 9 already established for the per-run conductor: nothing in the
-charter or the index depends on which model is reading it.
+The index joins goal/task records, agent sessions, swarm runs,
+drainer/routine jobs, GitHub issues/PRs through tool-mediated access,
+decision rows, distress reports, authoritative platform-health observations,
+provider quota, and shared reservations. Serve it as MCP tools, including
+factory_status, task_status, queue_next, and overlaps. queue_next recommends;
+it does not reserve or dispatch.
 
----
+Stamp observations with source time, provenance, and freshness. Distinguish
+covered, stale, unavailable, and unenforced sources. Cloud-session visibility
+remains a coverage gap until a durable source exists; missing coverage is not
+an empty fleet or a guaranteed interactive reserve.
+
+Keep display headline quota separate from admission inputs. Expose every
+applicable active window/reset, observation age, in-flight reservations,
+and unknown state. Surface superseding decisions and corrections rather
+than treating historical issue text as a current blocker.
+
+Retrieved content remains untrusted data. The index supplies evidence, but
+mutations revalidate authoritative target state, ownership, health, and
+reservations at execution time. Fresh index rows do not establish that a
+resource is still available.
+
+Report provider/window utilisation, accepted product progress, rework,
+operator interruptions, platform health, and reasons for idle capacity
+separately. Document definitions so retries and session churn cannot inflate
+accepted progress.
+
+### 6. Proactive scheduling uses shared reservations and downstream backpressure
+
+Issue #5804 owns goal-based scheduling and shared admission, coordinating
+with #3840's existing durable queue, deduplication, and lifecycle work.
+Reuse that dispatch boundary rather than creating a competing queue.
+Issue #5753 remains the per-lane routing consumer, and #5803 owns quota
+observation persistence/recovery.
+
+Reconsider eligible work on completion, new tasks, priority changes, quota
+observations/resets, health changes, and bounded scheduled checks. The
+conductor proposes work using product priorities and dependencies. The
+server enforces admission and accounting.
+
+Admission considers every applicable active provider window/reset,
+observation freshness, in-flight work, and model/input eligibility. Unknown
+capacity is not confirmed headroom; use bounded probes or defer under the
+routing policy. A reset permits a probe, not an assumption of recovery.
+
+Reserve capacity for Joe's interactive work, the conductor, and
+review/correction needed to finish admitted work. Use conservative
+estimates of remaining work and observed consumption. Provider percentages
+do not establish exact token capacity or a hard mid-turn spend bound.
+
+Include VM/host capacity, CI and review throughput, and work-in-progress
+limits. When downstream capacity is constrained, favour finishing and
+unblocking admitted work. Define deterministic tie-breaking and bounded
+priority aging so easy jobs cannot indefinitely displace product goals.
+
+Reservations are atomic and shared across participating lanes and pending
+starts. Record task/action, principal, policy version, lane, resource
+reservation, and admission reason. Concurrent lanes cannot independently
+allocate the same headroom. Expose unobserved or unenforced consumers and
+retain conservative headroom rather than claiming a fleet-wide guarantee
+where admission coverage is incomplete.
+
+Reconcile consumption and reservations at observable boundaries. Releases
+and refunds are idempotent; retry/probe accounting remains bounded.
+Replacing a session or re-dispatching work cannot reset its accumulated
+accounting. Lease expiry does not prove an old worker stopped, so capacity
+cannot be reused solely because a lease expired.
+
+### 7. Journal, action records, and fencing survive executor replacement
+
+The logical conductor uses an EmberVM guest like per-run conductors.
+Start with Opus. Evaluate Fable against recorded coordination correctness,
+unnecessary escalations, latency, and total cost before changing the default;
+this is a starting choice, not a comparative benchmark claim.
+
+Issue #5787 owns creation/replacement, durable wakeups, event deduplication,
+coalescing, and one active executor per operator with ownership fencing.
+The journal retains recent exchanges and rollups using existing title and
+voice_summary machinery. Durable facts use report_knowledge; session
+assembly combines journal and KG recall (#5680).
+
+Pending actions, acknowledgements, task focus, operator decisions, and
+outcomes are persisted before relying on summarisation or KG extraction.
+Recovery must work even when no summary has run.
+
+On replacement, reconcile stable action IDs with #5789's ledger and target
+outcomes before retrying. Target-side idempotency/reconciliation prevents
+repeating a side effect after a crash before acknowledgement. Reconcile
+delegated workers and #5804 reservations before reuse. All wakeups honour
+current pause/stop state; a killed conductor stays stopped.
+
+### 8. Mutation authority, health gates, and stop semantics are server-enforced
+
+Issue #5789 owns read, coordinate, act, and escalate as separately gated
+tiers. Coordinate changes locks, board state (#5704), and priorities, so
+its first release includes authorization, auditing, freshness checks, and
+pause/stop enforcement.
+
+Every mutation validates principal, exact target/action, enabled tier,
+applicable current charter clause/version, executor ownership, control
+generation, and current preconditions. Include delegated calls and
+protected charter/security targets. Prompt text, editing hooks, and broad
+tool visibility do not grant authority.
+
+Every conductor tool call has an attributable ledger row. Persist mutation
+intent before the side effect, then outcome. Include descendant tasks and
+sessions in the authority/accounting chain and preserve consumed work across
+cancellation, replacement, and re-dispatch.
+
+Operational policy uses authoritative timestamped health/resource inputs
+to enforce normal, reduced-concurrency, admission-paused, and recovering
+behaviour. Define stale/unknown handling, bounded retry/probe budgets,
+recovery evidence, and cooldowns before enabling autonomous operation.
+Restrict affected lanes/resources where possible while preserving status,
+controls, and eligible unaffected work.
+
+Controls have distinct semantics:
+
+- **Pause admissions:** prevent new work while admitted work finishes under
+  its existing bounds.
+- **Pause task:** prevent new steps for that task and report active work as
+  checkpointing, cancelling, or still running according to its capabilities.
+- **Stop factory:** persist the stop state, fence the conductor and its
+  factory-owned descendants, cancel queued starts, request bounded
+  cancellation of active delegated work, and prevent recreation through
+  any surface, wakeup, or restart. Unrelated operator-owned work is outside
+  this target scope.
+
+An in-flight effect is not undone by recording stop. Reconcile its outcome;
+retain evidence and conservative reservations until cessation is confirmed.
+Unreachable workers remain explicitly unconfirmed, and the UI cannot claim
+the factory is fully stopped while their activity is unknown. Resume
+requires an authorised explicit transition under current policy.
+
+Issue #4784 closed through PR #5713, which enforces per-run budgets at node
+boundaries. This is a building block, not factory-wide quota reservation
+or a hard cap on an already running turn. Act additionally requires the
+conductor's own budget and delegated accounting, #5804 shared reservations
+across covered dispatch paths, operational health controls, and an STPA
+governance pass.
 
 ## Architecture
 
 ```mermaid
 graph TB
-    subgraph surfaces["three surfaces, one session"]
-        UI[agents page chat]
-        DC[Discord]
-        VO[voice, voice_ui_*]
-    end
-    FC[factory conductor<br/>EmberVM guest]
-    CH[(charter<br/>repo file, PR-only)]
-    IDX[(factory index<br/>MCP read tools)]
-    J[(journal table)]
-    KG[(knowledge graph)]
-
-    UI --> FC
-    DC --> FC
-    VO --> FC
-    CH -.bounds.-> FC
-    FC -->|read| IDX
-    FC -->|coordinate, act, ledgered| targets[sessions, board, locks,<br/>queue, PRs, auto-merge]
-    FC -->|journal each exchange| J
-    FC -->|report_knowledge / search_knowledge| KG
-    FC -->|escalation-set match| DR[ADR 060 decision row -> Joe]
-
-    IDX -.joins.-> S1[agent sessions]
-    IDX -.joins.-> S2[swarm runs]
-    IDX -.joins.-> S3[drainer / routine jobs]
-    IDX -.joins.-> S4[GitHub issues / PRs]
-    IDX -.joins.-> S5[ADR 060 decision rows]
-    IDX -.joins.-> S6[distress reports]
-    IDX -.joins.-> S7[provider quota, #5752]
+    UI[web, Discord, voice] --> INPUT[durable receipt and priority-aware input]
+    INPUT --> FC[one fenced conductor executor<br/>Opus in EmberVM]
+    UI --> CONTROL[authenticated status and pause/stop]
+    CH[(versioned charter)] --> FC
+    CH --> GATE[server authority, health, and control checks]
+    FC --> IDX[factory index and read tools]
+    GOALS[(goals, tasks, decisions, evidence)] --> IDX
+    STATE[(fleet, quota windows, health, coverage)] --> IDX
+    FC -->|propose coordination or dispatch| GATE
+    CONTROL --> GATE
+    CONTROL --> IDX
+    GATE -->|authorised admission| ADMIT[shared admission and reservations]
+    GATE -->|authorised coordination| TARGETS[locks, board, task priorities]
+    ADMIT -->|authorised dispatch| WORK[per-run conductors and drain lanes]
+    WORK -->|outcomes and usage| STATE
+    WORK -->|acceptance evidence| GOALS
+    STATE -->|coalesced durable wakeups| INPUT
+    FC --> JOURNAL[(journal and KG)]
+    GATE --> LEDGER[(intent, outcome, delegation ledger)]
+    ADMIT --> LEDGER
 ```
 
----
+The monolith owns durable state and deterministic enforcement. Agent
+planning and task execution remain in EmberVM guests. The diagram's
+separate boxes are responsibilities, not a requirement for new services.
 
-## Alternatives Considered
+## Delivery and acceptance
 
-- **A Discord thread bound to an ordinary agent session.** Rejected: no
-  index behind it, so it answers nothing it was not just told; no memory
-  that survives a context expiry; no bounds beyond whatever the session
-  happened to be told that day.
-- **The swarm console's task box as the front door (ADR 062 as written).**
-  Rejected as the whole answer: it is a real conductor, but it owns one DAG
-  for one run and cannot see any other run, dispatch, or lane.
-- **A scheduled routine that summarises state.** Rejected: read-only by
-  construction, so it can report that two lanes overlap but cannot act on
-  it, defer a job, or answer a follow-up question.
-- **A hand-maintained memory file.** Rejected: unversioned, unreviewed, and
-  scoped to one machine, the exact failure mode CLAUDE.md's knowledge
-  section already warns against for durable facts.
+| Issue | Ownership |
+| ----- | --------- |
+| #5785 | Charter, policy values, clause/version contract |
+| #5786 | Goal/evidence records, index, coverage, progress reporting |
+| #5787 | Journal, task/decision continuity, wakeups, responsiveness, recovery |
+| #5788 | Unified entry point and cross-surface experience |
+| #5789 | Authority, ledger, budget integration, health and pause/stop |
+| #5804 | Proactive scheduling, shared reservations, backpressure |
 
----
+Rollout priorities are quota routing/recovery (#5753, #5803), then the
+narrow message board (#5704), goal/index records and the read-only
+conductor, coordinate with its controls, then act after its admission,
+accounting, health, and STPA gates. Independent read-only implementation
+and scheduling recommendations need not wait for mutation gates.
 
-## Security
+Acceptance scenarios:
 
-Baseline `docs/security.md`. The factory conductor is the most privileged
-agent principal in this repo, by design: it is the only one meant to
-coordinate across every other lane. It runs under the agents-tier identity
-model (SPIFFE phase 1, issue #5706) with a distinct principal, not borrowed
-from any lane it coordinates.
+- Given prioritised goals and eligible capacity, useful work advances
+  unattended and unused capacity has a recorded reason.
+- Joe starts a task on web, continues by voice, and answers its pending
+  decision in Discord without selecting a session or repeating context.
+- A busy or unavailable model does not block durable receipt, timestamped
+  status, or deterministic pause/stop within configured latency targets.
+- A quota wall or platform degradation reduces affected work, preserves
+  control access, and recovers without retry storms.
+- Concurrent dispatch and restart after a side effect neither duplicate
+  work nor prematurely reuse active reservations.
+- Pause/stop has an observable outcome for queued and delegated work,
+  including an unreachable worker.
+- Reporting separates utilisation, accepted product progress, rework,
+  operator interruptions, health, and idle-capacity reasons.
 
-Its board and index reads are untrusted input, the same rule issue #5704
-states for the agent message board: session outputs, issue text, and PR
-comments it reads back through the index can carry attacker-influenceable
-text. The main threat is prompt injection through what it reads back. The
-charter is system-prompt-side, not something the model negotiates with
-itself over, and the escalation set is enforced by tool gating on which
-calls are even reachable at each tier, not by the model's own judgment about
-whether a given case is big enough to escalate.
+## Alternatives considered
 
----
+- **The per-run task box as the entire factory.** It owns one DAG and
+  lacks fleet-wide priorities and capacity allocation. Keep its execution
+  machinery beneath the shared conversation.
+- **A separate chat box beside the existing launcher.** It makes the
+  operator choose an execution abstraction before describing work.
+- **Independent per-lane quota checks alone.** They cannot atomically
+  reserve shared headroom or apply downstream backpressure.
+- **A single unbounded FIFO model conversation for all work and controls.**
+  Lengthy turns and background events can delay operator corrections.
+  Keep one executor with bounded turns and independent control enforcement.
+- **Journal rollups as the only recovery state.** Pending actions and
+  decisions must survive before summarisation finishes.
+- **Destroying only the conductor session as a factory stop.** It leaves
+  delegated work and uncertain side effects unaccounted for.
 
-## Risks
+## Security and risks
 
-| Risk | Likelihood | Impact | Mitigation |
-| ---- | ---------- | ------ | ---------- |
-| The factory index goes stale or wrong, and the conductor acts on it | Medium | High | Read and coordinate ship before act; act is gated on a values flag and comes only after the budget line and STPA governance lens both land |
-| Quota-maximising conflicts with platform stability | Medium | Medium | The charter's priority order puts stability first by construction, not as a tiebreaker the conductor infers |
-| The conductor coordinates around a human mid-task | Medium | Medium | It must read locks and the issue #5704 board before steering any session, the same precedence a human coordinator would owe |
-| The escalation set is drawn too narrow and Joe stops seeing things he needed to | Low | High | The set is a charter change, reviewed by PR like any other, not a runtime toggle the conductor can widen or narrow itself |
+Baseline docs/security.md applies. The factory uses a distinct agent
+principal; it does not borrow a lane's authority. Board, index, issue, and
+session content is untrusted. Current server-side target/action checks
+enforce the charter across direct and delegated paths. Shared memory does
+not widen any surface's access rules, and a human confirmation does not
+replace authorization.
 
----
+| Risk | Required response |
+| ---- | ----------------- |
+| Utilisation rises while product progress stalls | Goal/evidence links, separate outcome metrics, bounded maintenance and priority aging |
+| Concurrent lanes oversubscribe apparent headroom | Atomic reservations, conservative estimates, explicit admission coverage |
+| The conductor becomes slow or unavailable | Bounded turns, priority-aware inputs, durable status and independent controls |
+| A stale index or policy authorises obsolete work | Current authority, target, health, and reservation checks at execution |
+| Restart or stop leaves active descendants | Ownership fencing, target reconciliation, explicit unconfirmed state, conservative release |
+| Fault recovery produces a retry storm | Bounded probes/retries, health gates, recovery evidence and cooldowns |
 
-## Open Questions
+## Implementation decisions still required
 
-1. **Model.** Fable versus Opus for the conductor session. The charter is
-   written to be model-independent either way.
-2. **Surface-to-session ratio.** Whether all three surfaces genuinely share
-   one session, or whether per-surface sessions fed from the same journal
-   and index would serve better once real usage exists.
-3. **Cloud session visibility.** Whether cloud Claude sessions can be
-   indexed at all; today they are only visible via `ListAgents` on this Mac,
-   which is not a durable read the index can join against.
+The implementing issues must choose and validate reserve values, estimation
+margins, freshness/probe intervals, health/recovery thresholds,
+work-in-progress limits, and receipt/control latency targets before enabling
+their autonomous controls. These are explicit rollout gates, not permission
+for the model to invent its own limits.
 
----
+Reliable cloud-session visibility remains unresolved; expose the coverage
+gap until a durable source and admission policy exist. Opus and one shared
+logical conductor are the starting decisions. Fable evaluation is required
+only before a later model switch.
 
 ## References
 
-| Resource | Relevance |
-| -------- | --------- |
-| [ADR 053](053-swarm-orchestration-bounded-conductor.md) | The anti-correlation-of-privilege-and-exposure argument this ADR's tiered gating (decision 6) applies to a conductor with far wider reach |
-| [ADR 058](058-voice-driven-companion-screen.md) | Source of the ledger-row invariant this ADR applies to actions instead of UI surfaces (decision 6), and the `voice_ui_*` surface the conductor shares with the voice companion |
-| [ADR 060](060-escalation-as-a-pause-with-a-decision-row.md) | The decision-row mechanism this ADR narrows the trigger for (decision 5), without changing how a decision is answered once raised |
-| [ADR 062](062-mutable-dag-conductor-opus-per-node-vms.md) | The per-run conductor this ADR adds a level above; decision 9's model-swappability precedent this ADR reuses for its own open model question |
-| [ADR 063](063-factory-knowledge-graph-evidence-lanes.md) | The knowledge graph lane (`report_knowledge`, `search_knowledge`, `verification_state`) decision 4's memory model writes to and reads from |
-| Issue [#4784](https://github.com/jomcgi/homelab/issues/4784) | `budget_usd` enforcement, a prerequisite for the conductor's own budget line in decision 7 |
-| Issue [#5419](https://github.com/jomcgi/homelab/issues/5419) | The design review behind ADR 062, whose per-run scope this ADR is the level above |
-| Issue [#5680](https://github.com/jomcgi/homelab/issues/5680) | The knowledge graph recall block decision 4 assembles a fresh conductor session from |
-| Issue [#5704](https://github.com/jomcgi/homelab/issues/5704) | The agent message board the coordinate tier posts to, and the source of the untrusted-reads rule in Security |
-| Issue [#5706](https://github.com/jomcgi/homelab/issues/5706) | SPIFFE phase 1, the identity model the conductor's distinct principal runs under |
-| Issue [#5752](https://github.com/jomcgi/homelab/issues/5752) | Makes provider subscription quota readable in-cluster; the factory index's quota join in decision 3 |
-| Issue [#5753](https://github.com/jomcgi/homelab/issues/5753) | The first single-lane quota-routing consumer of #5752; this ADR's quota goal is the cross-lane version of the same reading |
+- [#5784](https://github.com/jomcgi-org/homelab/issues/5784): factory objective and implementation tracker.
+- [#4781](https://github.com/jomcgi-org/homelab/issues/4781): one task entry point.
+- [#5419](https://github.com/jomcgi-org/homelab/issues/5419): per-run conductor.
+- [#3840](https://github.com/jomcgi-org/homelab/issues/3840): autonomous queue and scheduler.
+- [#5804](https://github.com/jomcgi-org/homelab/issues/5804): shared admission and product-goal scheduling.
+- [#5752](https://github.com/jomcgi-org/homelab/issues/5752): quota observation.
+- [#5753](https://github.com/jomcgi-org/homelab/issues/5753): eligible routing and bounded probing.
+- [#5803](https://github.com/jomcgi-org/homelab/issues/5803): observation persistence and recovery.
+- [#4784](https://github.com/jomcgi-org/homelab/issues/4784), [#5713](https://github.com/jomcgi-org/homelab/pull/5713): shipped node-boundary budget enforcement and its limits.
+- [#5680](https://github.com/jomcgi-org/homelab/issues/5680): KG recall for session assembly.
+- [#5704](https://github.com/jomcgi-org/homelab/issues/5704): shared message board.
