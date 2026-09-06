@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from shared.invocation_outcomes import UNKNOWN_INVOCATION as UNKNOWN_INVOCATION
+
 # Keep this legacy node key aligned with the registered routine-job kind so
 # in-flight and historical drain sessions remain correlated after the Luna
 # runtime switch.
@@ -23,7 +25,6 @@ CLEAN_TERMINAL_REASONS = {"completed", "end_turn", "stop"}
 # the same sequence remains live and will replace this turn after re-dispatch.
 INTERRUPTED_TERMINAL_REASONS = {"interrupted"}
 
-UNKNOWN_INVOCATION = "invocation_outcome_unknown"
 UNKNOWN_INVOCATION_MESSAGE = (
     "This session has an unknown invocation outcome. Reconcile the guest and any "
     "remote side effects, then start a new session. Sending again cannot resume it."

@@ -296,7 +296,7 @@ def enqueue_extraction(session: Session, raw_id: str, *, commit: bool = True) ->
 
 def ensure_repo_diff_job(session: Session) -> bool:
     """Reconcile the recurring repository scout job with its feature flag."""
-    from agent_sessions.constants import UNKNOWN_INVOCATION
+    from shared.invocation_outcomes import UNKNOWN_INVOCATION
 
     enabled = os.environ.get("KG_REPO_DIFF_ENABLED", "false").lower() == "true"
     dialect = session.get_bind().dialect.name

@@ -12,7 +12,7 @@ import httpx
 from sqlalchemy import text
 from sqlmodel import Session
 
-from agent_sessions.constants import UNKNOWN_INVOCATION
+from shared.invocation_outcomes import UNKNOWN_INVOCATION
 from core.github import GITHUB_API, GITHUB_REPO
 
 DOCFIX_REVIEW_TEMPLATE_VERSION = "docfix-review/luna@v1"
