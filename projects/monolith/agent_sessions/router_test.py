@@ -2111,3 +2111,79 @@ def test_send_message_marks_message_ui_originated(client, session, monkeypatch):
     ).json()
     assert mcp._consume_ui_originated(row.id, body["turn"]) is True
     mcp._ui_originated.clear()
+
+
+def test_unknown_outcome_detail_retains_evidence_and_rejects_all_send_boundaries(
+    client, session, monkeypatch
+):
+    engine = session.get_bind()
+    monkeypatch.setattr(store, "get_engine", lambda: engine)
+    monkeypatch.setattr(mcp, "get_engine", lambda: engine)
+    monkeypatch.setattr(api, "get_engine", lambda: engine)
+    row = _session(
+        session,
+        "unknown-detail",
+        discord_thread="thread-unknown",
+        ember_session_id="guest-for-reconciliation",
+        ember_lineage_id="lineage-retain",
+        progress_token="revoked-progress",
+    )
+    session_id = row.id
+    store.create_pending_message(session, session_id, "original review prompt")
+    store.create_pending_message(session, session_id, "held successor")
+    assert (
+        store.claim_pending_message_for_session_sync(session_id, "dead-pod:attempt")
+        == 1
+    )
+    assert (
+        store.write_progress_sync(
+            "revoked-progress",
+            "partial review finding",
+            [{"tool": "read", "path": "store.py"}],
+        )
+        == "ok"
+    )
+    assert (
+        store.release_pending_message_claim_sync(
+            session_id, 1, "dead-pod:attempt", "executor_cancelled"
+        )
+        is True
+    )
+    session.expire_all()
+
+    body = client.get(f"/api/agents/sessions/{session_id}").json()
+    assert body["session"]["status"] == "failed"
+    assert body["session"]["ember_session_id"] == "guest-for-reconciliation"
+    assert body["session"]["pending_count"] == 1
+    turn = body["turns"][0]
+    assert turn["prompt"] == "original review prompt"
+    assert turn["result_text"] == "partial review finding"
+    assert turn["terminal_reason"] == "error"
+    assert turn["stop_reason"] == store.UNKNOWN_INVOCATION
+    assert turn["cost_usd"] is None
+    assert turn["usage"]["activities"] == [{"tool": "read", "path": "store.py"}]
+    recovery = turn["usage"]["recovery"]
+    assert recovery["cause"] == "executor_cancelled"
+    assert recovery["dispatch_count"] == 1
+    assert recovery["claim_owner"] == "dead-pod:attempt"
+    assert recovery["last_dispatch_at"] is not None
+    assert body["pending_queue"][0]["prompt"] == "held successor"
+    # The existing aggregate is a subtotal of known costs, not a billing claim
+    # about an invocation whose outcome is unknown.
+    assert body["session"]["total_cost_usd"] == 0
+
+    response = client.post(
+        f"/api/agents/sessions/{session_id}/messages", json={"prompt": "ordinary retry"}
+    ).json()
+    assert response["accepted"] is False
+    assert "start a new session" in response["error"]
+    discord_response = asyncio.run(
+        api.send_to_thread_session("thread-unknown", "retry")
+    )
+    assert discord_response["accepted"] is False
+    assert "start a new session" in discord_response["error"]
+    with pytest.raises(store.SessionOutcomeUnknown, match="start a new session"):
+        api.send_to_swarm_session(session_id, "retry")
+    session.expire_all()
+    assert len(session.exec(select(PendingMessage)).all()) == 1
+    assert session.get(AgentSession, session_id).status == "failed"

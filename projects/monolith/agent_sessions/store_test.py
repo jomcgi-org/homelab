@@ -695,8 +695,8 @@ def test_write_progress_sync_without_pending_row_returns_no_row(monkeypatch, tmp
         _restore_schemas(schemas)
 
 
-def test_write_progress_sync_falls_back_to_unclaimed_row(monkeypatch, tmp_path):
-    """Fallback updates lowest seq unclaimed row when no claimed row exists."""
+def test_write_progress_sync_does_not_contaminate_unclaimed_rows(monkeypatch, tmp_path):
+    """Late progress cannot mark an untouched lane head as attempted."""
     engine, schemas = _database(monkeypatch, tmp_path)
     try:
         with Session(engine) as session:
@@ -728,12 +728,12 @@ def test_write_progress_sync_falls_back_to_unclaimed_row(monkeypatch, tmp_path):
             session.commit()
 
         result = store.write_progress_sync("token", "working")
-        assert result == "ok"
+        assert result == "no_row"
         with Session(engine) as session:
             rows = session.exec(
                 select(PendingMessage).order_by(PendingMessage.seq)
             ).all()
-            assert rows[0].partial_text == "working"
+            assert rows[0].partial_text is None
             assert rows[1].partial_text is None
     finally:
         _restore_schemas(schemas)
@@ -1124,3 +1124,36 @@ def test_completion_requires_the_exact_dispatch_attempt(uncertain_lane):
     with Session(engine) as session:
         assert store.get_turn(session, session_id, 1) is None
         assert store.get_pending_message(session, session_id, 1) is not None
+
+
+def test_late_progress_after_completion_does_not_hold_untouched_successor(
+    uncertain_lane,
+):
+    engine, session_id = uncertain_lane
+    store.persist_turn_from_pending_sync(
+        session_id,
+        1,
+        "original prompt",
+        _successful_uncertain_turn(),
+        "done",
+        "completed",
+        "cli-done",
+        "terra",
+        "owner-1",
+        1,
+    )
+    assert (
+        store.write_progress_sync(
+            "old-progress", "late previous output", [{"tool": "read", "path": "old.py"}]
+        )
+        == "no_row"
+    )
+    with Session(engine) as session:
+        successor = store.get_pending_message(session, session_id, 2)
+        assert successor.dispatch_count == 0
+        assert successor.partial_text is None
+        assert successor.partial_activities is None
+    assert store.claim_pending_message_for_session_sync(session_id, "owner-2") == 2
+    with Session(engine) as session:
+        assert store.get_turn(session, session_id, 2) is None
+        assert store.get_pending_message(session, session_id, 2).dispatch_count == 1

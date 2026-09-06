@@ -845,6 +845,7 @@ def update_session_status(
 
 def activate_session_after_enqueue(session: Session, session_id: int) -> bool:
     """Set running unless recovery currently owns the session lane."""
+    _lock_session(session, session_id)
     result = session.execute(
         update(AgentSession)
         .where(
@@ -1035,7 +1036,7 @@ def write_progress_sync(
     partial_text: str,
     activities: list | None = None,
 ) -> str:
-    """Write progress only while this token still owns an unfrozen session."""
+    """Write progress only to a claimed turn in an unfrozen session."""
     with Session(get_engine()) as session:
         session_id = session.exec(
             select(AgentSession.id).where(AgentSession.progress_token == progress_token)
@@ -1051,8 +1052,11 @@ def write_progress_sync(
             return "unknown_token"
         pending = session.exec(
             select(PendingMessage)
-            .where(PendingMessage.session_id == session_id)
-            .order_by(PendingMessage.claimed_by_replica.is_(None), PendingMessage.seq)
+            .where(
+                PendingMessage.session_id == session_id,
+                PendingMessage.claimed_by_replica.isnot(None),
+            )
+            .order_by(PendingMessage.seq)
         ).first()
         if pending is None:
             return "no_row"
