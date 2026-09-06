@@ -75,17 +75,68 @@ def _kernel_boot_args(values_path: Path) -> str:
     return matches[0]
 
 
-def test_gke_agent_mcp_kernel_env_decodes_and_extends_chart_default() -> None:
-    env_prefix = " ember.env.EMBER_AGENT_MCP_URL="
-    default_args = _kernel_boot_args(_chart_dir() / "values.yaml")
-    gke_args = _kernel_boot_args(Path(os.environ["GKE_VALUES"]))
-    prefix, encoded_url = gke_args.split(env_prefix, 1)
-    padded_url = encoded_url + "=" * (-len(encoded_url) % 4)
+def _decode_kernel_env(args: str) -> tuple[str, dict[str, str]]:
+    boot_args = []
+    env = {}
+    for token in args.split():
+        if not token.startswith("ember.env."):
+            boot_args.append(token)
+            continue
+        key, encoded = token.removeprefix("ember.env.").split("=", 1)
+        assert key not in env, f"duplicate guest environment token: {key}"
+        env[key] = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode(
+            "utf-8"
+        )
+    return " ".join(boot_args), env
 
-    assert prefix == default_args
-    assert base64.urlsafe_b64decode(padded_url).decode("utf-8") == (
-        "http://monolith-agents-agents.monolith-agents.svc.cluster.local:8092/mcp"
-    )
+
+_PROGRESS_URL = "http://monolith.monolith.svc.cluster.local:8091/ingest/progress"
+_AGENT_MCP_URL = (
+    "http://monolith-agents-agents.monolith-agents.svc.cluster.local:8092/mcp"
+)
+_KERNEL_ENV_CASES = [
+    pytest.param([], {}, id="defaults"),
+    pytest.param(["PROD_VALUES"], {"EMBER_PROGRESS_URL": _PROGRESS_URL}, id="home"),
+    pytest.param(
+        ["PROD_VALUES", "GKE_VALUES"],
+        {"EMBER_AGENT_MCP_URL": _AGENT_MCP_URL, "EMBER_PROGRESS_URL": _PROGRESS_URL},
+        id="gke",
+    ),
+    pytest.param(["DEV_VALUES"], {}, id="dev"),
+]
+
+
+@pytest.mark.parametrize("values_names, expected_env", _KERNEL_ENV_CASES)
+def test_guest_kernel_env_source(values_names, expected_env) -> None:
+    default_args = _kernel_boot_args(_chart_dir() / "values.yaml")
+    args = default_args
+    for name in values_names:
+        values = yaml.safe_load(Path(os.environ[name]).read_text())
+        args = (
+            values.get("noded", {}).get("firecracker", {}).get("kernelBootArgs", args)
+        )
+    boot_args, env = _decode_kernel_env(args)
+    assert boot_args == default_args
+    assert env == expected_env
+
+
+@pytest.mark.parametrize("values_names, expected_env", _KERNEL_ENV_CASES)
+def test_guest_kernel_env_rendered_on_every_noded(values_names, expected_env) -> None:
+    rendered = _render("guest-env", [Path(os.environ[name]) for name in values_names])
+    noded_args = []
+    for document in yaml.safe_load_all(rendered):
+        if not isinstance(document, dict):
+            continue
+        pod_spec = document.get("spec", {}).get("template", {}).get("spec", {})
+        for container in pod_spec.get("containers", []):
+            if container.get("name") == "noded":
+                env = {entry["name"]: entry for entry in container.get("env", [])}
+                noded_args.append(env["EMBERVM_NODED_KERNEL_BOOT_ARGS"]["value"])
+    assert noded_args, "expected at least one rendered noded container"
+    for args in noded_args:
+        boot_args, env = _decode_kernel_env(args)
+        assert boot_args == _kernel_boot_args(_chart_dir() / "values.yaml")
+        assert env == expected_env
 
 
 def _render(

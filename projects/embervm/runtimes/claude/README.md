@@ -60,6 +60,33 @@ the turn-timing log; a turn served by the already-bound process reports
 `reuse`. During a base build `/shim/ready` stays 503 until every configured
 parked CLI is alive, so the snapshot cannot capture warmth that is not there.
 
+## Progress destination
+
+The shared Claude/Codex/Pi shim reads `EMBER_PROGRESS_URL` from its guest
+environment. An unset, blank or invalid HTTP(S) URL disables progress pushes;
+there is no production fallback. Both schemes use the existing guest egress
+proxy. The turn's progress token remains the Bearer credential, with the same
+payload, throttle and best-effort timeout contract.
+
+Production deployment values explicitly encode the current endpoint in
+`noded.firecracker.kernelBootArgs` as
+`ember.env.EMBER_PROGRESS_URL=<base64url-without-padding>`. Chart defaults and dev
+do not configure a destination. Workload `initEnv` does not deliver guest
+environment variables (#4429), but it does participate in base identity.
+
+Snapshots capture process memory and environment. Kernel boot arguments are
+excluded from the base signature, so changing them or rolling noded does not
+update cached bases or existing guests. A new shim image changes the base
+signature, but Workload reconciliation can precede the brick rollout. During an
+approved rollout, verify effective boot arguments on build-capable nodes and the
+endpoint in a fresh guest before accepting the lane. If a base was built before
+configuration was effective, rekey it after correcting configuration and create
+new sessions. Later
+endpoint-only changes also require an explicit base rekey. An isolated lane that
+shares a base store needs a distinct workload `initEnv` epoch/base identity even
+on its first deployment; an image shared with production does not provide that
+separation. This setting does not establish lane isolation or activate dev.
+
 ## Completion and metering
 
 The `result` event carries the completion signal and the usage record together:
