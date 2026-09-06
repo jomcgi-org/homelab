@@ -39,8 +39,14 @@ mcp-stack:
       # [secret, configMap, secret] shadowed it back to the ConfigMap default
       # of "[]". As extraEnv it outranks every envFrom source, so the ordering
       # no longer matters.
+      #
+      # The ranges are the GKE hub's pod and service CIDRs (gcloud container
+      # clusters describe homelab-hub, europe-west2-a). Upstream checks this
+      # list only in GatewayCreate/GatewayUpdate.validate_url, so a stale value
+      # leaves existing rows working and makes every new in-cluster
+      # registration fail with a masked 422 (#4667 decision C14).
       - name: SSRF_ALLOWED_NETWORKS
-        value: '["10.42.0.0/16", "10.43.0.0/16"]'
+        value: '["10.10.8.0/21", "10.10.16.0/22"]'
       # Mounts the /auth/sso router, which is the only way to manage the
       # sso_providers row that makes authentik a trusted issuer for the root
       # /mcp endpoint. Defaults to false, and while false the admin API 404s.
@@ -74,8 +80,9 @@ mcp-stack:
       # which runs before this flag is consulted and before the header
       # allowlist. With this false the token would still be forwarded; what
       # the flag gates is the allowlisted extra headers (GlobalConfig
-      # passthrough_headers), which nothing here relies on. Kept on pending a
-      # decision on #5002. The intent recorded below still stands.
+      # passthrough_headers), which nothing here relies on. Off since
+      # 2026-09-06 (#4667 decision D18) so the knob no longer suggests it does
+      # something it does not; the token forwarding below is unaffected.
       #
       # Forward the caller's authentik token to upstream gateways, so the
       # monolith can learn WHO is calling and scope its own results.
@@ -119,7 +126,7 @@ mcp-stack:
       #    later also receives the caller's token, and a token you hand a
       #    backend is a token that backend can replay.
       - name: ENABLE_HEADER_PASSTHROUGH
-        value: "true"
+        value: "false"
       # Enforce OAuth on the MCP endpoint itself. Until now the JSON-RPC
       # endpoint authenticated nobody: an unauthenticated tools/list returned
       # all 57 tools, including monolith-agent-session-destroy, and tools/call
