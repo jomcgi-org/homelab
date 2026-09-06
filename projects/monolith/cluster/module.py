@@ -5,11 +5,15 @@ not pull the framework or FastAPI: standalone binaries that reuse domain code
 (e.g. trips_backfill, the knowledge tools) glob only their own sources.
 """
 
+import os
+
 from framework import Module as _Module
 
 
 async def _leader_start(app):
     """Start the cd probe writer (lazy import keeps __init__ light)."""
+    if os.environ.get("CD_PROBE_ENABLED", "").strip().lower() in {"false", "0", "no"}:
+        return []
     from cluster.cd_leader import leader_start  # noqa: PLC0415
 
     return await leader_start(app)

@@ -77,6 +77,8 @@ spec:
             # default instead.
             - name: MONOLITH_LEADER_SINGLETONS
               value: {{ .Values.backend.leaderSingletons | quote }}
+            - name: HOME_OBSERVABILITY_PRIME_ENABLED
+              value: {{ .Values.backend.primeObservabilitySnapshots | quote }}
             {{- if .Values.onepassword.enabled }}
             - name: ICAL_FEED_URL
               valueFrom:
@@ -379,6 +381,8 @@ spec:
               value: {{ .Values.cdHealth.apps | toJson | quote }}
             - name: CD_PROBE_INTERVAL_S
               value: {{ .Values.cdHealth.probeIntervalSeconds | quote }}
+            - name: CD_PROBE_ENABLED
+              value: {{ .Values.cdHealth.probeEnabled | quote }}
             {{- if .Values.whatsapp.enabled }}
             # WhatsApp inbound bearer token (ADR 039 spec section 2). The monolith
             # validates the gateway's forwarded requests against it; the same

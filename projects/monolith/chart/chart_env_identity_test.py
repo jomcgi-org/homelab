@@ -1473,3 +1473,51 @@ def test_production_notification_projection_is_preserved(environment, renders):
     producers = _chat_secret_producers(rendered)
     assert len(producers) == 1
     assert producers[0]["metadata"]["name"] == "monolith-chat-secrets"
+
+
+def _startup_control_env(rendered):
+    entries = _deployment_backend_env(rendered)
+    for name in (
+        "CD_PROBE_ENABLED",
+        "HOME_OBSERVABILITY_PRIME_ENABLED",
+        "MONOLITH_LEADER_SINGLETONS",
+    ):
+        assert sum(item["name"] == name for item in entries) == 1
+    return _env_by_name(entries)
+
+
+@pytest.mark.parametrize("probe_enabled", [False, True])
+@pytest.mark.parametrize("prime_enabled", [False, True])
+def test_recovery_startup_controls_preserve_leader_election(
+    tmp_path, probe_enabled, prime_enabled
+):
+    override = _write_values(
+        tmp_path,
+        "startup-controls.yaml",
+        {
+            "cdHealth": {"probeEnabled": probe_enabled},
+            "backend": {"primeObservabilitySnapshots": prime_enabled},
+        },
+    )
+    env = _startup_control_env(_render("recovery", [override]))
+    assert env["CD_PROBE_ENABLED"]["value"] == str(probe_enabled).lower()
+    assert (
+        env["HOME_OBSERVABILITY_PRIME_ENABLED"]["value"] == str(prime_enabled).lower()
+    )
+    assert env["MONOLITH_LEADER_SINGLETONS"]["value"] == "true"
+    assert env["CD_PROBE_INTERVAL_S"]["value"] == "300"
+
+
+def test_default_startup_controls_remain_enabled():
+    env = _startup_control_env(_render("recovery", []))
+    assert env["CD_PROBE_ENABLED"]["value"] == "true"
+    assert env["HOME_OBSERVABILITY_PRIME_ENABLED"]["value"] == "true"
+    assert env["MONOLITH_LEADER_SINGLETONS"]["value"] == "true"
+
+
+@pytest.mark.parametrize("tier", ["prod", "gke"])
+def test_deployed_startup_controls_remain_enabled(renders, tier):
+    env = _startup_control_env(renders[tier])
+    assert env["CD_PROBE_ENABLED"]["value"] == "true"
+    assert env["HOME_OBSERVABILITY_PRIME_ENABLED"]["value"] == "true"
+    assert env["MONOLITH_LEADER_SINGLETONS"]["value"] == "true"

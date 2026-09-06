@@ -16,6 +16,9 @@ backend:
   # where a second set of consumers would repost prod's queued messages and
   # resume prod's in-flight agent runs. See framework/core.py.
   leaderSingletons: true
+  # Startup-only snapshot priming. Disable in an isolated recovery fixture;
+  # scheduled rollup jobs have their own configuration.
+  primeObservabilitySnapshots: true
   replicas: 1
   # DCGM exporter scraped for the public stats ticker's GPU block. Empty here so
   # the chart stays inert; set per environment in deploy/values.yaml. The
@@ -1128,6 +1131,9 @@ knowledge:
 # response, which UptimeRobot polls offsite. Tunables live here so changing what
 # pages does not need a rebuild.
 cdHealth:
+  # Disable only this leader's CD writer for isolated recovery. Other leader
+  # hooks and the advisory reader remain registered.
+  probeEnabled: true
   # How far behind the newest published chart production may fall before cd
   # reports degraded. This does not page.
   chartLagSeconds: 7200

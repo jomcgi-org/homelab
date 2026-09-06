@@ -7114,6 +7114,19 @@ py_test(
 )
 
 py_test(
+    name = "cluster_recovery_startup_test",
+    srcs = ["cluster/recovery_startup_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_cluster",
+        ":pkg_cyclegroup",
+        ":pkg_framework",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "scheduler_views_test",
     srcs = ["scheduler/views_test.py"],
     imports = ["."],

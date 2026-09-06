@@ -5,6 +5,8 @@ not pull the framework or FastAPI: standalone binaries that reuse domain code
 (e.g. trips_backfill, the knowledge tools) glob only their own sources.
 """
 
+import os
+
 import home as _domain
 
 from core.platform_probe import probe_health
@@ -21,6 +23,12 @@ async def _startup(app):
     """Prime the observability snapshots (topology + stats) once at startup so
     the first request has data; the scheduled rollup jobs refresh thereafter.
     Runs on every replica (best-effort)."""
+    if os.environ.get("HOME_OBSERVABILITY_PRIME_ENABLED", "").strip().lower() in {
+        "false",
+        "0",
+        "no",
+    }:
+        return
     from home.observability.rollup import prime_snapshots
 
     await prime_snapshots()
