@@ -3,6 +3,14 @@
 # The hub starts with node-local state only. An empty endpoint is the chart's
 # safe store-disabled mode, and no object-store credentials are rendered.
 noded:
+  drain:
+    # GCE preemption notice watcher (ADR embervm/040 decision 5). Armed on the
+    # hub only: the watcher hangs GETs on the instance/preempted metadata value,
+    # which exists nowhere but GCE. Until it is armed every Spot preemption
+    # force-banks against the 110s rollout budget, about four times what GCE
+    # actually gives, so noded keeps working past the point the VM is gone.
+    # preemptionTimeoutSeconds stays at the chart default (20s).
+    preemptionNoticeEnabled: true
   firecracker:
     # Chart default plus one ember.env token. guest-init decodes
     # ember.env.<KEY>=<base64url> into the guest environment, which is the only
