@@ -5,6 +5,15 @@
 # Application are wired in that PR (a chart with no published image must not be
 # handed to ArgoCD). This file is the decision-independent chart CONTENT.
 
+# Keep existing cluster permissions by default. Namespace mode confines runtime
+# Workload, Secret and brick scale access to this release's namespace; only
+# TokenReview remains cluster-scoped. It does not provision an isolated lane.
+rbac:
+  scope: cluster # cluster | namespace
+  # Namespace mode only: exact stateful secretRef names the CP may GET.
+  # Empty means no Secret rule, not unrestricted access. Tokenbroker is separate.
+  secretNames: []
+
 image:
   # Pinned at build time by helm_chart(images={"image": ".../image:image.info"}).
   repository: ghcr.io/jomcgi/homelab/projects/embervm/image

@@ -10,8 +10,7 @@ import pytest
 import yaml
 
 
-@pytest.fixture(scope="module")
-def rendered_documents() -> list[dict]:
+def _render(settings=()) -> list[dict]:
     chart_dir = Path(__file__).resolve().parent
     result = subprocess.run(
         [
@@ -25,6 +24,7 @@ def rendered_documents() -> list[dict]:
             "jobs.image.repository=registry.invalid/jobs",
             "--set-string",
             "jobs.image.digest=sha256:test",
+            *[argument for setting in settings for argument in ("--set", setting)],
         ],
         capture_output=True,
         text=True,
@@ -32,6 +32,11 @@ def rendered_documents() -> list[dict]:
     if result.returncode != 0:
         raise RuntimeError(f"helm template failed: {result.stderr}")
     return [doc for doc in yaml.safe_load_all(result.stdout) if isinstance(doc, dict)]
+
+
+@pytest.fixture(scope="module")
+def rendered_documents() -> list[dict]:
+    return _render()
 
 
 def _resource(documents: list[dict], kind: str, name: str) -> dict:
@@ -98,3 +103,33 @@ def test_scheduler_workflow_namespace_is_rendered_into_backend_env(
     )
     env = {item["name"]: item.get("value") for item in backend["env"]}
     assert env["SCHEDULER_WORKFLOW_NAMESPACE"] == "monolith-workflows"
+
+
+def test_scheduler_grant_can_be_disabled_without_changing_workflow_resources():
+    documents = _render(["rbac.schedulerWorkflows.enabled=false"])
+    assert not any(
+        doc["kind"] in {"Role", "RoleBinding"}
+        and doc["metadata"]["name"] == "monolith-scheduler-workflows"
+        for doc in documents
+    )
+    assert _resource(documents, "CronWorkflow", "worldcup-sim")
+    test_scheduler_workflow_namespace_is_rendered_into_backend_env(documents)
+
+
+def test_scheduler_grant_and_client_follow_configured_namespace():
+    documents = _render(["jobs.workflowNamespace=recovery-workflows"])
+    for kind in ("Role", "RoleBinding"):
+        resource = _resource(documents, kind, "monolith-scheduler-workflows")
+        assert resource["metadata"]["namespace"] == "recovery-workflows"
+    binding = _resource(documents, "RoleBinding", "monolith-scheduler-workflows")
+    assert binding["subjects"] == [
+        {"kind": "ServiceAccount", "name": "monolith", "namespace": "monolith"}
+    ]
+    deployment = _resource(documents, "Deployment", "monolith")
+    backend = next(
+        container
+        for container in deployment["spec"]["template"]["spec"]["containers"]
+        if container["name"] == "backend"
+    )
+    env = {item["name"]: item.get("value") for item in backend["env"]}
+    assert env["SCHEDULER_WORKFLOW_NAMESPACE"] == "recovery-workflows"

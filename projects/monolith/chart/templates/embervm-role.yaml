@@ -1,3 +1,4 @@
+{{- if .Values.rbac.faas.enabled }}
 # FaaS ingestion (ADR 045 / embervm R1, Task 10): the monolith owns each
 # function's Workload CR in the embervm namespace (a function IS a Workload). It
 # creates/patches/deletes those CRs dynamically and reads their status while
@@ -46,3 +47,4 @@ subjects:
   - kind: ServiceAccount
     name: monolith-stats
     namespace: {{ .Values.jobs.workflowNamespace }}
+{{- end }}
