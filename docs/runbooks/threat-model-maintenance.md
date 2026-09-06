@@ -1,11 +1,11 @@
 # Threat model maintenance
 
-The aggregate index is [docs/THREAT-MODEL.md](../THREAT-MODEL.md); ADR
-[security/007](../decisions/security/007-aggregate-threat-model-index.md)
-is the rationale. This runbook is the procedure.
+The aggregate index is [docs/THREAT-MODEL.md](../THREAT-MODEL.md);
+[docs/security.md](../security.md#findings-and-threat-model) carries the
+rationale. This runbook is the procedure.
 Issue [#5294](https://github.com/jomcgi-org/homelab/issues/5294) moved
-per-domain models into STPA security lenses. ADR security/007 decision 3 is
-superseded, as recorded in the issue, so no new ADR is needed.
+per-domain models into STPA security lenses, superseding the per-domain
+prose models the original decision called for; no new ADR is needed.
 
 ## Add a finding
 
