@@ -33,12 +33,20 @@ fi
 #     found that most load-bearing architecture in this repo is recorded as
 #     values-file comments, so a values edit is exactly when the architecture
 #     doc needs re-reading.
+#   - The build and CI trees behind bazel/ARCHITECTURE.md: the ci wrapper,
+#     the BuildBuddy workflow file, and the semgrep and ocaml rulesets.
+#     Matching is by substring, so a bare file name (buildbuddy.yaml) works
+#     as a watched path too.
 COVERAGE=(
 	"docs/decisions/embervm/ projects/embervm/ARCHITECTURE.md"
 	"projects/embervm/chart/ projects/embervm/ARCHITECTURE.md"
 	"projects/embervm/deploy/ projects/embervm/ARCHITECTURE.md"
 	"projects/mcp/context-forge-gateway/chart/ projects/mcp/ARCHITECTURE.md"
 	"projects/mcp/context-forge-gateway/deploy/ projects/mcp/ARCHITECTURE.md"
+	"bazel/tools/ci/ bazel/ARCHITECTURE.md"
+	"buildbuddy.yaml bazel/ARCHITECTURE.md"
+	"bazel/semgrep/ bazel/ARCHITECTURE.md"
+	"bazel/ocaml/ bazel/ARCHITECTURE.md"
 )
 
 for pair in "${COVERAGE[@]}"; do
