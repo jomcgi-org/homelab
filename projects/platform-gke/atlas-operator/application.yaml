@@ -7,10 +7,21 @@ metadata:
     - resources-finalizer.argocd.argoproj.io
 spec:
   project: default
-  source:
-    repoURL: https://github.com/jomcgi-org/homelab.git
-    targetRevision: HEAD
-    path: projects/platform/atlas-operator/deploy
+  # Multi-source: the upstream OCI chart plus this repo's values. This is the
+  # shape the live object has carried since the cutover; the earlier git-path
+  # form (a nested app-of-apps into atlas-operator-system) was never what the
+  # hub ran, and server-side apply left both on the object (#5817).
+  sources:
+    - repoURL: ghcr.io/ariga/charts
+      chart: atlas-operator
+      targetRevision: 0.7.28
+      helm:
+        releaseName: atlas-operator
+        valueFiles:
+          - $values/projects/platform/atlas-operator/deploy/values.yaml
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      ref: values
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
