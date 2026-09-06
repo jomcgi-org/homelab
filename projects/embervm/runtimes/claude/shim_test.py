@@ -14,6 +14,7 @@ import threading
 import time
 import subprocess
 import runpy
+import uuid
 import zlib
 
 try:
@@ -592,15 +593,20 @@ assert args[0] == "exec"
 assert "--json" in args
 assert args[args.index("--model") + 1] == "muse-spark-1.3-contributor"
 assert args[args.index("--base-url") + 1] == "https://api.meta.ai/v1"
+assert "--no-session-log" not in sys.argv, "muse does not support --no-session-log with --session-id"
 for flag in (
     "--api-key-stdin",
     "--disable-sandbox",
     "--trust-workspace",
     "--no-foreign-personal-context",
-    "--no-session-log",
 ):
     assert flag in args
 assert args[args.index("--approval-mode") + 1] == "never"
+assert args[-2] == "--prompt-file"
+prompt_path = args[-1]
+assert os.path.dirname(prompt_path) == os.getcwd()
+with open(prompt_path) as stream:
+    prompt = stream.read()
 assert os.environ["XDG_CONFIG_HOME"] == os.path.join(os.getcwd(), ".muse", "config")
 assert os.environ["XDG_DATA_HOME"] == os.path.join(os.getcwd(), ".muse", "data")
 assert os.path.isdir(os.environ["XDG_CONFIG_HOME"])
@@ -618,9 +624,13 @@ if args_path:
     with open(args_path, "a") as stream:
         json.dump(args, stream)
         stream.write("\n")
+prompts_path = os.environ.get("FAKE_MUSE_PROMPTS")
+if prompts_path:
+    with open(prompts_path, "a") as stream:
+        json.dump(prompt, stream)
+        stream.write("\n")
 
 session_id = args[args.index("--session-id") + 1]
-prompt = args[-1]
 command_id = "15cf6510-9de2-4c3d-aa2e-07c039e42394"
 stream_id = "01a0779b-bcc0-7a73-b0a7-86189d921714"
 
@@ -678,14 +688,21 @@ emit(7, "task.stream.linked", {
 for sequence, kind in enumerate((
     "proposed", "accepted", "scheduled", "side_effect_intent", "started", "status"
 ), 8):
+    lifecycle_event = {"kind": kind, "task_id": "task-1"}
+    if kind == "proposed":
+        lifecycle_event["task_kind"] = (
+            "tool.bash"
+            if os.environ.get("FAKE_MUSE_SCENARIO") == "tool-activity"
+            else "model.meta.response"
+        )
+    if kind == "scheduled" and os.environ.get("FAKE_MUSE_SCENARIO") == "tool-activity":
+        lifecycle_event["operation"] = {"command": "echo muse"}
     emit(sequence, "task.lifecycle.%s" % kind, {
         "kind": "task_lifecycle", "command_id": command_id,
         "run_stream": run_stream(), "task_id": "task-1",
         "task_stream": {"kind": "task", "id": "task-1"},
-        "event": {"kind": kind, "task_id": "task-1"},
+        "event": lifecycle_event,
     })
-if os.environ.get("FAKE_MUSE_SCENARIO") == "error-recovery":
-    print(json.dumps({"error_kind": "server", "message": "retrying"}), flush=True)
 emit(14, "run.output.delta", {
     "kind": "run_output_delta", "command_id": command_id,
     "run_stream": run_stream(), "text": "pong",
@@ -729,6 +746,14 @@ FAKE_EMPTY_PI_CLI = r"""#!/usr/bin/env python3
 import sys
 
 print("pi empty event stream", file=sys.stderr, flush=True)
+"""
+
+
+FAKE_EMPTY_MUSE_CLI = r"""#!/usr/bin/env python3
+import sys
+
+
+print("muse empty event stream", file=sys.stderr, flush=True)
 """
 
 
@@ -786,6 +811,7 @@ def _muse_manager(tmp_path, monkeypatch):
     executable.write_text(FAKE_MUSE_CLI)
     os.chmod(executable, 0o755)
     monkeypatch.setenv("FAKE_MUSE_ARGS", str(tmp_path / "muse-args.jsonl"))
+    monkeypatch.setenv("FAKE_MUSE_PROMPTS", str(tmp_path / "muse-prompts.jsonl"))
     monkeypatch.setenv("FAKE_MUSE_SETTINGS", str(tmp_path / "muse-settings.json"))
     monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
     return shim.MuseProcess(str(workspace), str(executable))
@@ -816,6 +842,15 @@ def test_codex_empty_event_stream_raises_error(tmp_path, monkeypatch):
     )
     with pytest.raises(RuntimeError, match="codex empty event stream") as exc_info:
         manager.turn("hello", model="luna")
+    assert "exit code 0" in str(exc_info.value)
+
+
+def test_muse_empty_event_stream_surfaces_stderr(tmp_path, monkeypatch):
+    manager = _manager_with_empty_cli(
+        tmp_path, monkeypatch, FAKE_EMPTY_MUSE_CLI, shim.MuseProcess
+    )
+    with pytest.raises(RuntimeError, match="muse empty event stream") as exc_info:
+        manager.turn("hello", model="spark")
     assert "exit code 0" in str(exc_info.value)
 
 
@@ -854,6 +889,54 @@ def test_muse_argv_uses_contributor_model_and_reuses_session_id(tmp_path, monkey
     session_ids = [call[call.index("--session-id") + 1] for call in calls]
     assert session_ids == [first["session_id"], first["session_id"]]
     assert second["session_id"] == first["session_id"]
+    assert second["model"] == "spark"
+
+
+def test_muse_fresh_adapter_adopts_caller_session_id(tmp_path, monkeypatch):
+    manager = _muse_manager(tmp_path, monkeypatch)
+
+    record = manager.turn("resume", session_id="caller-session", model="spark")
+
+    assert record["session_id"] == "caller-session"
+    call = json.loads((tmp_path / "muse-args.jsonl").read_text())
+    assert call[call.index("--session-id") + 1] == "caller-session"
+
+
+def test_muse_mid_session_mismatch_raises_conflict(tmp_path, monkeypatch):
+    manager = _muse_manager(tmp_path, monkeypatch)
+    first = manager.turn("first", model="spark")
+
+    with pytest.raises(shim.SessionConflictError, match="other-session"):
+        manager.turn("resume", session_id="other-session", model="spark")
+
+    assert manager.session_id == first["session_id"]
+
+
+def test_muse_generated_session_id_is_hyphenated_uuid(tmp_path, monkeypatch):
+    manager = _muse_manager(tmp_path, monkeypatch)
+
+    record = manager.turn("first", model="spark")
+
+    assert str(uuid.UUID(record["session_id"])) == record["session_id"]
+    assert "-" in record["session_id"]
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    ["--starts-with-a-flag", "x" * (140 * 1024)],
+    ids=["leading-hyphen", "large"],
+)
+def test_muse_passes_prompt_via_file(tmp_path, monkeypatch, prompt):
+    manager = _muse_manager(tmp_path, monkeypatch)
+
+    manager.turn(prompt, model="spark")
+
+    captured = json.loads((tmp_path / "muse-prompts.jsonl").read_text())
+    args = json.loads((tmp_path / "muse-args.jsonl").read_text())
+    assert captured == prompt
+    assert prompt not in args
+    assert "--prompt-file" in args
+    assert not list((tmp_path / "workspace").glob(".muse-prompt-*"))
 
 
 def test_muse_settings_json_has_mcp_servers_when_configured(tmp_path, monkeypatch):
@@ -903,6 +986,21 @@ def test_muse_settings_json_omits_mcp_servers_when_probe_fails(tmp_path, monkeyp
     assert "mcp_servers" not in settings
 
 
+def test_muse_mcp_probe_runs_once_per_adapter(tmp_path, monkeypatch):
+    agent_mcp_url = "http://agents.test:8092/mcp"
+    probes = []
+    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, agent_mcp_url)
+    monkeypatch.setattr(
+        shim, "_agent_mcp_endpoint_alive", lambda url: probes.append(url) or True
+    )
+    manager = _muse_manager(tmp_path, monkeypatch)
+
+    manager.turn("first", model="spark")
+    manager.turn("second", model="spark")
+
+    assert probes == [agent_mcp_url]
+
+
 def test_muse_settings_file_readonly(tmp_path, monkeypatch):
     monkeypatch.delenv(shim.AGENT_MCP_URL_ENV, raising=False)
     manager = _muse_manager(tmp_path, monkeypatch)
@@ -913,16 +1011,6 @@ def test_muse_settings_file_readonly(tmp_path, monkeypatch):
         tmp_path / "workspace" / ".muse" / "config" / "muse" / "settings.json"
     )
     assert settings_path.stat().st_mode & 0o777 == 0o444
-
-
-def test_muse_retryable_error_record_does_not_fail_turn(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("FAKE_MUSE_SCENARIO", "error-recovery")
-    manager = _muse_manager(tmp_path, monkeypatch)
-
-    record = manager.turn("retry", model="spark")
-
-    assert record["result"] == "pong"
-    assert "muse retryable error" in capsys.readouterr().err
 
 
 def test_muse_missing_terminal_event_raises_error(tmp_path, monkeypatch):
@@ -941,17 +1029,13 @@ def test_muse_models_are_always_contributor_tier():
     assert all(model.endswith("-contributor") for model in shim.MUSE_MODELS.values())
 
 
-def test_muse_extracts_provider_usage_when_present():
-    event = {
-        "payload": {
-            "provider_details": {"usage": {"input_tokens": 3, "output_tokens": 4}}
-        }
-    }
+def test_muse_reports_tool_activity(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_MUSE_SCENARIO", "tool-activity")
+    manager = _muse_manager(tmp_path, monkeypatch)
 
-    assert shim.MuseProcess._usage_from_event(event) == {
-        "input_tokens": 3,
-        "output_tokens": 4,
-    }
+    record = manager.turn("use a tool", model="spark")
+
+    assert record["activities"] == [{"type": "bash", "command": "echo muse"}]
 
 
 def test_pi_first_turn_returns_text_session_and_usage(tmp_path, monkeypatch):

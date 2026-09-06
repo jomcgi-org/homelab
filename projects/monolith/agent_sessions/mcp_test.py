@@ -35,8 +35,9 @@ def clear_negative_oracle_memo():
         ("luna", "codex"),
         ("terra", "codex"),
         ("sol", "codex"),
-        ("spark", "pi"),
-        ("qwen", "pi"),
+        ("spark", "claude"),
+        ("qwen", "claude"),
+        ("pi-spark", "pi"),
     ],
 )
 def test_model_family(model, family):
@@ -274,7 +275,7 @@ def test_cross_family_send_is_rejected_without_pending_row(session):
     row = store.create_session(session, "sid-123", "/workspace", "main", model="luna")
     result = asyncio.run(mcp.monolith_agent_session_send(row.id, "hello", model="qwen"))
     assert result["accepted"] is False
-    assert "codex" in result["error"] and "pi" in result["error"]
+    assert "codex" in result["error"] and "claude" in result["error"]
     assert store.get_pending_message(session, row.id, 1) is None
 
 

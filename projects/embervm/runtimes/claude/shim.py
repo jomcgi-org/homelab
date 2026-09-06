@@ -15,6 +15,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -3155,13 +3156,18 @@ class MuseProcess:
             "EMBER_CLAUDE_WORKSPACE", DEFAULT_WORKSPACE
         )
         self.executable = executable
-        self.session_id = uuid.uuid4().hex
+        self.session_id = None
         self.process = None
         self.turn_lock = threading.Lock()
         self.process_lock = threading.Lock()
         self.stderr_lines = collections.deque(maxlen=5)
         self._stderr_thread = None
         self._stdout_queue = None
+        self._prompt_file_path = None
+        self._mcp_probe_cached = None
+        # Set on every spawn; None until the first turn resolves a model.
+        self._model = None
+        self._process_workspace_identity = _workspace_identity(self.workspace)
 
     def ready(self):
         with self.process_lock:
@@ -3169,8 +3175,9 @@ class MuseProcess:
 
     def _child_env(self):
         # Muse follows XDG paths, while the guest's $HOME is a read-only rootfs.
-        # Keep both trees on the durable workspace so --session-id continuity
-        # survives bank and relight even though each turn gets a fresh process.
+        # Keep both trees on the durable workspace so the late-bound session's
+        # --session-id continuity survives bank and relight even though each
+        # turn gets a fresh process.
         muse_home = os.path.join(self.workspace, ".muse")
         config_home = os.path.join(muse_home, "config")
         data_home = os.path.join(muse_home, "data")
@@ -3211,12 +3218,17 @@ class MuseProcess:
         uses and writes no mcp_servers key at all when it fails.
         """
         agent_mcp_url = os.environ.get(AGENT_MCP_URL_ENV)
-        agent_mcp_configured = bool(agent_mcp_url) and _agent_mcp_endpoint_alive(
-            agent_mcp_url
-        )
+        if self._mcp_probe_cached is None:
+            self._mcp_probe_cached = bool(agent_mcp_url) and _agent_mcp_endpoint_alive(
+                agent_mcp_url
+            )
 
         settings = {"schema_version": 1}
-        if agent_mcp_configured:
+        # Probe runs once per adapter (spawn is once per turn), so up to 3s
+        # lands outside cli_ready. Stale cached result is acceptable: mode
+        # required means the run aborts loudly if the tier went away instead of
+        # proceeding toolless.
+        if self._mcp_probe_cached:
             settings["mcp_servers"] = {
                 "agents": {
                     "transport": "streamable_http",
@@ -3235,10 +3247,40 @@ class MuseProcess:
             raise StartupError("workspace does not exist: %s" % self.workspace)
         model = MUSE_MODEL_ALIASES.get(model, model)
         model_name = MUSE_MODELS.get(model, MUSE_MODELS[DEFAULT_MUSE_MODEL])
+        # The console renders whatever turn() reports, so it must be the
+        # provider id actually sent (muse-spark-1.3-contributor), not the short
+        # family name the caller asked for. Pi keeps the same value in
+        # self._model for the same reason.
+        self._model = model_name
+        # The model-map test is the enforcement point. Keep this runtime check
+        # as defense in depth against a future untested configuration path.
         if not model_name.endswith("-contributor"):
             raise ValueError(
                 "muse model must use the contributor tier: %s" % model_name
             )
+        # $XDG_CONFIG_HOME is <workspace>/.muse/config (see _child_env), and
+        # muse reads its settings from the `muse` subdirectory beneath it.
+        muse_settings_dir = os.path.join(self.workspace, ".muse", "config", "muse")
+        _ensure_cli_dir(muse_settings_dir)
+        self._write_settings_json(muse_settings_dir)
+        prompt_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix=".muse-prompt-",
+            dir=self.workspace,
+            delete=False,
+        )
+        try:
+            prompt_file.write(prompt)
+            prompt_file.close()
+        except Exception:
+            prompt_file.close()
+            try:
+                os.unlink(prompt_file.name)
+            except OSError:
+                pass
+            raise
+        self._prompt_file_path = prompt_file.name
         command = [
             self.executable,
             "exec",
@@ -3255,23 +3297,26 @@ class MuseProcess:
             "--disable-sandbox",
             "--trust-workspace",
             "--no-foreign-personal-context",
-            "--no-session-log",
-            prompt,
+            "--prompt-file",
+            self._prompt_file_path,
         ]
-        # $XDG_CONFIG_HOME is <workspace>/.muse/config (see _child_env), and
-        # muse reads its settings from the `muse` subdirectory beneath it.
-        muse_settings_dir = os.path.join(self.workspace, ".muse", "config", "muse")
-        _ensure_cli_dir(muse_settings_dir)
-        self._write_settings_json(muse_settings_dir)
-        process = subprocess.Popen(
-            command,
-            cwd=self.workspace,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=self._child_env(),
-            **_cli_privilege_kwargs(),
-        )
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=self.workspace,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=self._child_env(),
+                **_cli_privilege_kwargs(),
+            )
+        except Exception:
+            try:
+                os.unlink(self._prompt_file_path)
+            except OSError:
+                pass
+            self._prompt_file_path = None
+            raise
         output_queue = queue.Queue()
         with self.process_lock:
             self.process = process
@@ -3324,50 +3369,17 @@ class MuseProcess:
                 # stream. It is diagnostic noise, not a failed turn.
                 continue
 
-    @staticmethod
-    def _empty_stream_error(process):
-        code = None if process is None else process.poll()
-        if code is None and process is not None:
+    def _empty_stream_error(self, process):
+        code = process.poll() if process else None
+        if code is None and process:
             code = process.wait()
-        return RuntimeError(
-            "muse exited before run.terminal.completed, exit code %s" % code
-        )
-
-    @staticmethod
-    def _usage_from_event(event):
-        """Extract provider token details when a Muse release exposes them."""
-        candidates = []
-
-        def visit(value):
-            if isinstance(value, dict):
-                if "usage" in value and isinstance(value["usage"], dict):
-                    candidates.append(value["usage"])
-                if "provider_details" in value and isinstance(
-                    value["provider_details"], dict
-                ):
-                    candidates.append(value["provider_details"])
-                for child in value.values():
-                    visit(child)
-            elif isinstance(value, list):
-                for child in value:
-                    visit(child)
-
-        visit(event)
-        for candidate in reversed(candidates):
-            input_tokens = candidate.get(
-                "input_tokens",
-                candidate.get("inputTokens", candidate.get("input")),
-            )
-            output_tokens = candidate.get(
-                "output_tokens",
-                candidate.get("outputTokens", candidate.get("output")),
-            )
-            if input_tokens is not None or output_tokens is not None:
-                return {
-                    "input_tokens": input_tokens or 0,
-                    "output_tokens": output_tokens or 0,
-                }
-        return {}
+        if self._stderr_thread:
+            self._stderr_thread.join(timeout=1)
+        error_msg = "muse exited before run.terminal.completed, exit code %s" % code
+        stderr = _truncate_ring_for_error(self.stderr_lines)
+        if stderr:
+            error_msg += "\nCLI stderr:\n%s" % stderr
+        return RuntimeError(error_msg)
 
     def turn(
         self,
@@ -3378,11 +3390,16 @@ class MuseProcess:
         system_prompt=None,
     ):
         with self.turn_lock:
-            if session_id and session_id != self.session_id:
+            if self.session_id and session_id and session_id != self.session_id:
                 raise SessionConflictError(
                     "session_id %r does not match active session %r"
                     % (session_id, self.session_id)
                 )
+            # An unbound process adopts a caller identity before its first spawn.
+            if session_id and not self.session_id:
+                self.session_id = session_id
+            elif not self.session_id:
+                self.session_id = str(uuid.uuid4())
             prompt = message
             if system_prompt:
                 prompt = "%s\n\n%s" % (system_prompt, message)
@@ -3391,14 +3408,19 @@ class MuseProcess:
             _emit_elapsed("cli_ready", cli_ready_start, path="spawn")
             accumulated_text = ""
             result_text = ""
+            # Muse usage shape is not yet observed in captures; report empty
+            # until verified.
             usage = {}
             terminal_reason = "completed"
+            tasks_by_id = {}
             try:
                 pusher = _ProgressPusher(progress_token) if progress_token else None
             except Exception:
                 pusher = None
             try:
                 self._turn_timing_model_start = _turn_timing_now()
+                # Muse retries internally; a turn is judged solely by whether
+                # run.terminal.completed arrives.
                 while True:
                     try:
                         event = self._read_event(TURN_READ_TIMEOUT)
@@ -3410,16 +3432,6 @@ class MuseProcess:
                         ) from exc
                     if event is None:
                         raise self._empty_stream_error(process)
-                    event_usage = self._usage_from_event(event)
-                    if event_usage:
-                        usage = event_usage
-                    if event.get("error_kind"):
-                        sys.stderr.write(
-                            "ember-claude-shim: muse retryable error: %s\n"
-                            % json.dumps(event)[:1500]
-                        )
-                        sys.stderr.flush()
-                        continue
                     event_type = event.get("payload_type")
                     payload = event.get("payload", {})
                     if event_type == "run.output.delta":
@@ -3450,15 +3462,31 @@ class MuseProcess:
                             "result": result_text,
                             "terminal_reason": terminal_reason,
                             "session_id": self.session_id,
-                            "model": MUSE_MODEL_ALIASES.get(model, model),
+                            "model": self._model,
                             "usage": usage,
                             "voice": voice_summary(result_text),
-                            "activities": [],
+                            "activities": activity_from_events(
+                                [
+                                    {
+                                        "type": "tool_execution_start",
+                                        "toolCallId": task_id,
+                                        "toolName": task["task_kind"][len("tool.") :],
+                                        "args": task.get("operation"),
+                                    }
+                                    for task_id, task in tasks_by_id.items()
+                                    if isinstance(task.get("task_kind"), str)
+                                    and task["task_kind"].startswith("tool.")
+                                ]
+                            ),
                         }
                     elif isinstance(event_type, str) and event_type.startswith(
                         "task.lifecycle."
                     ):
-                        continue
+                        lifecycle = payload.get("event", {})
+                        if isinstance(lifecycle, dict):
+                            task_id = payload.get("task_id") or lifecycle.get("task_id")
+                            if task_id:
+                                tasks_by_id.setdefault(task_id, {}).update(lifecycle)
             finally:
                 if pusher:
                     try:
@@ -3496,7 +3524,14 @@ class MuseProcess:
             process = self.process
             self.process = None
             self._stdout_queue = None
+            prompt_file_path = self._prompt_file_path
+            self._prompt_file_path = None
         if process is None:
+            if prompt_file_path:
+                try:
+                    os.unlink(prompt_file_path)
+                except OSError:
+                    pass
             return
         if kill and process.poll() is None:
             process.kill()
@@ -3505,6 +3540,11 @@ class MuseProcess:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
+        if prompt_file_path:
+            try:
+                os.unlink(prompt_file_path)
+            except OSError:
+                pass
         _managed_child_pids.discard(process.pid)
         _reap_orphans()
 

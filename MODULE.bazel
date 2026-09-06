@@ -827,9 +827,11 @@ multiarch_http_file(
 # Statically linked ELF with no glibc dependency; comparable to codex_cli in
 # that respect. Pinned rather than floating because the adapter depends on
 # observed behaviour (run.terminal.completed payload shape, --session-id
-# continuity). Version and sha256 come from
-# https://api.meta.ai/muse-code/channels/muse-stable -> manifest_url
-# (fetchable unauthenticated).
+# continuity). Version and sha256 come from the muse-stable channel document
+# at https://api.meta.ai/muse-code/channels/muse-stable and its manifest_url.
+# If Meta rotates this URL, the pinned fetch fails instead of silently using a
+# different binary. The Muse binary adds 264 MB to the claude-runtime base
+# image.
 multiarch_http_file(
     name = "muse_cli",
     amd64_sha256 = "75a68f98c437dfd17d264730c5bc72d57e5f1e18d10472a9f53261ffcc091352",

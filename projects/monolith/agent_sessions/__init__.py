@@ -16,7 +16,16 @@ logger = logging.getLogger(__name__)
 # dep onto every target that imports chat.bot without one (see the drift test
 # in chat/bot_on_message_test.py). The stdlib os import below is safe: it ships
 # with every interpreter.
-SUPPORTED_MODELS = ("luna", "terra", "sol", "opus", "sonnet", "fable", "spark")
+SUPPORTED_MODELS = (
+    "luna",
+    "terra",
+    "sol",
+    "opus",
+    "sonnet",
+    "fable",
+    "spark",
+    "pi-spark",
+)
 LEGACY_MODEL_ALIASES = {"qwen": "spark"}
 
 # Per-env allowlist narrowing what the console picker and the Discord /agent
@@ -53,14 +62,14 @@ def normalize_model(model: str | None) -> str | None:
 def model_family(model: str | None) -> str:
     """Return the adapter family for a supported model name."""
     model = normalize_model(model)
-    if model == "spark":
+    if model == "pi-spark":
         return "pi"
     if model in {"luna", "terra", "sol"}:
         return "codex"
-    if model in {None, "opus", "sonnet", "fable"}:
+    if model in {None, "opus", "sonnet", "fable", "spark"}:
         return "claude"
     raise ValueError(
-        f"Unknown model {model!r}; valid models: opus, sonnet, fable, luna, terra, sol, spark"
+        f"Unknown model {model!r}; valid models: opus, sonnet, fable, luna, terra, sol, spark, pi-spark"
     )
 
 
@@ -74,8 +83,9 @@ def model_family(model: str | None) -> str:
 # armed.
 #
 # The other half of the same contract: the pi workload must stay enabled while
-# persisted qwen sessions remain supported through the spark alias. Background
-# work still uses Luna and retains its database-backed legacy queue kind.
+# the explicit pi-spark rollback model remains supported. Persisted qwen
+# sessions normalize to spark on the claude-runtime lane. Background work still
+# uses Luna and retains its database-backed legacy queue kind.
 #
 # There is deliberately no workload_for_family() helper here. The live decision
 # is transport._workload_for, which consults the env-resolved
