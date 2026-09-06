@@ -1,9 +1,5 @@
-# Historical documentation directories contain intentional references to the
-# old directory layout and should not be flagged by structural linting rules.
-docs/decisions/
-
 # Generated public docs manifest: it bakes the full markdown bodies of every
-# published doc (incl. ADR YAML/image-tag snippets) inline as JSON strings, so
+# published doc inline as JSON strings, so
 # semgrep would flag those embedded examples as if they were real config. The
 # source docs are linted in place; the manifest is a build artifact. (The sibling
 # repo_docs_manifest.ndjson is skipped automatically as an unknown language.)

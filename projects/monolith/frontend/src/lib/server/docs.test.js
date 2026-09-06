@@ -130,7 +130,7 @@ describe("resolveDocHref", () => {
     ).toBeNull();
     expect(
       resolveDocHref(
-        "../../docs/decisions/index.md",
+        "../../docs/internal/index.md",
         "projects/embervm/README.md",
         pathIndex,
       ),

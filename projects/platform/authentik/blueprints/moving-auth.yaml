@@ -7,7 +7,7 @@ metadata:
       https://friends.jomcgi.dev/moving. Envoy Gateway runs the OIDC redirect
       flow against this provider, authorizes on the `family` group claim, and
       projects the caller's email into a request header so the app can tell
-      whose view to render. See docs/decisions/security/006.
+      whose view to render. See docs/security.md, Decision history security/006.
 entries:
   # ── 1. The group, declared here to own it ──────────────────────────────────
   # The NAME is load-bearing, not the id: authentik emits group names (not ids)

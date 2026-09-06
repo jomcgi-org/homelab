@@ -1,6 +1,6 @@
 ---
 name: ship
-description: Drive a feature end to end through the plan, ADR, failing BDD, implement and STPA lifecycle. Use when the user says `/ship "<feature>"`, asks to "ship a feature", or wants a feature taken from idea to merged with a safety assessment.
+description: Drive a feature end to end through planning, architecture rationale, failing BDD, implementation, and the STPA lifecycle. Use when the user says `/ship "<feature>"`, asks to "ship a feature", or wants a feature taken from idea to merged with a safety assessment.
 ---
 
 # /ship
@@ -19,7 +19,6 @@ have to.
 |------|-------|---------|
 | Implementation of a specified task | `implementer` | Codex Sol, via dispatch |
 | Review of the finished diff | `reviewer` | Opus |
-| Writing the ADR | `adr-author` | Sonnet |
 | Safety model refresh | `stpa-analyst` | Sonnet |
 | A genuine wall Opus could not clear | `escalation` | Fable |
 
@@ -51,10 +50,10 @@ correctly is most of the value here: running all five on a small feature spends 
 review cycle per unnecessary phase, while skipping a needed one loses the record
 or the safety case.
 
-**Phase 2, ADR.** Run when the change adds a service, dependency or external
+**Phase 2, architecture record.** Run when the change adds a service, dependency or external
 integration; alters a data model or adds a non-additive migration; moves a
 security, auth or public/private tier boundary; changes a cross-service contract;
-or reverses an earlier ADR. Skip for bug fixes, copy, config values, dependency
+or reverses an earlier decision. Skip for bug fixes, copy, config values, dependency
 bumps, docs, and refactors with no behaviour change.
 
 **Phase 3, failing BDD.** Run when user-visible behaviour changes, or the change
@@ -94,7 +93,7 @@ Closing the issue is how "shipped" is recorded.
 ## Lifecycle
 
 - [ ] 1-plan done= notes=
-- [ ] 2-adr pr= path=docs/decisions/... <!-- or n/a: reason -->
+- [ ] 2-architecture pr= path= <!-- or n/a: reason -->
 - [ ] 3-bdd pr= specs= <!-- or n/a: reason -->
 - [ ] 4-implement pr= <!-- must include Closes #<this issue> -->
 - [ ] 5-stpa pr= systems= <!-- or n/a: reason -->
@@ -120,10 +119,11 @@ Clarify, then write the plan into the tracking issue. Split it into tasks small
 enough that each is a single one-shot brief for an `implementer`, naming the
 files, the acceptance criteria, and the pattern to imitate.
 
-## Phase 2: ADR
+## Phase 2: architecture record
 
-Dispatch `adr-author` with the decision, the rationale, and the options that were
-rejected. Rebase-merge on green.
+Record the decision in the domain's `ARCHITECTURE.md`: a `**Why.**` paragraph
+under the section it changes, and a row in the Direction section for anything
+accepted but not yet built, with its issue. Rebase-merge on green.
 
 ## Phase 3: failing BDD
 

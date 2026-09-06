@@ -4,11 +4,11 @@ load("//bazel/ocaml:defs.bzl", "ocaml_binary", "ocaml_library", "ocaml_test")
 # tOyCaml -- a deliberately tiny "grep for code" that mirrors the *shape* of how
 # a large OCaml analysis engine uses the ecosystem, so the ruleset can be grown
 # against a representative target rather than a generic hello-world. See README.md
-# and bazel/ARCHITECTURE.md (OCaml section, ADR map: tooling/005).
+# and bazel/ARCHITECTURE.md (OCaml section, Decision history: tooling/005).
 #
 # The BUILD files here are hand-written today; they are the first acceptance
 # corpus for the OCaml BUILD generator decided in
-# bazel/ARCHITECTURE.md (ADR map: tooling/007) -- the
+# bazel/ARCHITECTURE.md (Decision history: tooling/007) -- the
 # generator must reproduce them from the sources alone.
 #
 # Module files are tc_-prefixed deliberately. The ruleset has no library

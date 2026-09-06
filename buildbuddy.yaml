@@ -331,10 +331,9 @@ actions:
             # RBE); the pure logic is pinned by a bazel test.
             python3 ./bazel/tools/format/readme_structure/check_readme_structure.py
 
-            # Every reference to an ADR must resolve. Rollups delete ADRs once
-            # a domain's ARCHITECTURE.md carries the state, and this is what
-            # makes that safe. Working-tree check, not git history: CI clones
-            # --depth=1, so a history lookup reads the graft boundary.
+            # References to the retired ADR tree are forbidden. Decision
+            # rationale now lives in each domain's ARCHITECTURE.md. Check the
+            # working tree because CI clones with --depth=1.
             python3 ./bazel/tools/format/doc_links/check_doc_links.py
 
             # Two Helm invariants that fail silently and deploy the wrong

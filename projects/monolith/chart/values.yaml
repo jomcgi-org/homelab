@@ -140,8 +140,8 @@ agents:
     # Permit repo-diff extraction to queue human-reviewed documentation PRs.
     docFixEnabled: false
     # This is the only agent-merged path. It applies only after docfix-review
-    # rejects .claude/**, AGENTS.md, **/skills/**, docs/runbooks/**, and
-    # docs/decisions/**, which always remain human-merged.
+    # rejects .claude/**, AGENTS.md, **/skills/**, and docs/runbooks/**,
+    # which always remain human-merged.
     docFixAutoMerge: false
     repo: "jomcgi-org/homelab"
     branch: "main"

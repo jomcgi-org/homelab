@@ -35,7 +35,7 @@ if [[ "$FILE_PATH" == *"/docs/plans/"* ]]; then
 		    with sub-issues); GitHub Issues are the source of truth for outstanding work.
 		  - Or keep it as an uncommitted working file (e.g. under /tmp), not in docs/plans/.
 
-		Record the decision + rationale in an ADR (docs/decisions/) if one is warranted.
+		Record the decision and rationale in the domain's ARCHITECTURE.md if warranted.
 	EOF
 	exit 2
 fi

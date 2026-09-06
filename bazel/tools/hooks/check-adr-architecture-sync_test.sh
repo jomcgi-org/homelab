@@ -4,9 +4,8 @@
 # The hook:
 #   - Reads JSON from stdin with .tool_input.file_path
 #   - Always exits 0 (advisory only)
-#   - Emits a REMINDER on stderr when the path is under a covered ADR
-#     category (docs/decisions/embervm/), a covered chart or deploy tree,
-#     or a covered build/CI tree (bazel/tools/ci/, buildbuddy.yaml,
+#   - Emits a REMINDER on stderr when the path is under a covered chart or
+#     deploy tree, or a covered build/CI tree (bazel/tools/ci/, buildbuddy.yaml,
 #     bazel/semgrep/, bazel/ocaml/), naming the architecture doc
 #   - Stays silent for every other path
 #
@@ -90,10 +89,6 @@ expect_silent() {
 	fi
 }
 
-# Covered category: any write under docs/decisions/embervm/ reminds.
-expect_reminder "/repo/docs/decisions/embervm/027-snapshot-modes-workload-property.md"
-expect_reminder "/repo/docs/decisions/embervm/README.md"
-
 # Covered config trees: most load-bearing architecture in this repo lives as
 # chart and values comments, so a mechanism edit reminds too.
 expect_reminder "/repo/projects/embervm/chart/values.yaml"
@@ -114,11 +109,6 @@ expect_reminder "/repo/projects/platform/kargo/values.yaml" "projects/platform/A
 expect_reminder "/repo/projects/platform-gke/kustomization.yaml" "projects/platform/ARCHITECTURE.md"
 expect_reminder "/repo/projects/gke-apps/monolith/application.yaml" "projects/platform/ARCHITECTURE.md"
 expect_reminder "/repo/projects/gke-cluster/root-application.yaml" "projects/platform/ARCHITECTURE.md"
-
-# docs/decisions/agents/ spans several domains, so it is deliberately NOT
-# covered: a reminder naming one domain's doc would be wrong on most writes.
-expect_silent "/repo/docs/decisions/agents/046-mmds-dynamic-workload-env.md"
-expect_silent "/repo/docs/decisions/agents/020-deprecate-context-forge-mcp-gateway.md"
 
 # Editing an architecture doc itself is not drift.
 expect_silent "/repo/projects/embervm/ARCHITECTURE.md"

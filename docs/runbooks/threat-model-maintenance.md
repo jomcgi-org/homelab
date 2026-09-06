@@ -5,7 +5,7 @@ The aggregate index is [docs/THREAT-MODEL.md](../THREAT-MODEL.md);
 rationale. This runbook is the procedure.
 Issue [#5294](https://github.com/jomcgi-org/homelab/issues/5294) moved
 per-domain models into STPA security lenses, superseding the per-domain
-prose models the original decision called for; no new ADR is needed.
+prose models the original decision called for; no architecture update is needed.
 
 ## Add a finding
 

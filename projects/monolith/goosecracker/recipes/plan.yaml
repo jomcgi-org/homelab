@@ -17,9 +17,9 @@ instructions: |
     first, for example `find . -maxdepth 2 -name CLAUDE.md`.
   - Read the CLAUDE.md of any project directory the plan touches
     (e.g. projects/<service>/CLAUDE.md).
-  - Check docs/decisions/ for ADRs that constrain the design, and open
-    GitHub issues for prior or overlapping work (`gh issue list`); issues
-    are the source of truth for outstanding work.
+  - Check the owning domain's ARCHITECTURE.md for decisions that constrain the
+    design, and open GitHub issues for prior or overlapping work (`gh issue
+    list`); issues are the source of truth for outstanding work.
   - Read the actual code and deploy configs the plan would change; a plan
     grounded in real file paths beats one written from memory.
   - Keep tool output small: you run in a limited context window, so bound

@@ -7,11 +7,11 @@ analysis engine uses the ecosystem, so `bazel/ocaml` can be grown against a
 representative target instead of a generic hello-world.
 
 Why it exists, what public build it mirrors, and the features it is meant to
-drive out are recorded in the ADRs:
+drive out are recorded in the architecture document:
 
-- `bazel/ARCHITECTURE.md`, ADR map entry tooling/005 -- this demonstrator
-- `bazel/ARCHITECTURE.md`, ADR map entry tooling/006 -- arches
-- `bazel/ARCHITECTURE.md`, ADR map entry tooling/007 -- BUILD gen
+- `bazel/ARCHITECTURE.md`, Decision history entry tooling/005 -- this demonstrator
+- `bazel/ARCHITECTURE.md`, Decision history entry tooling/006 -- arches
+- `bazel/ARCHITECTURE.md`, Decision history entry tooling/007 -- BUILD gen
 
 ## What it is today (builds on the current ruleset)
 

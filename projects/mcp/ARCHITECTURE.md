@@ -426,20 +426,21 @@ accepts a stateful catalogue and a gateway-wide failure domain, risks ADR
 agents/020 and ADR agents/059 retain as reasons for the planned direct-monolith
 cutover.
 
-## ADR map
+## Decision history
 
-Rationale only. None of these describes current state. Every ADR here is
-shared with the monolith rollup, which deletes them; none is deleted by the
-mcp rollup.
+The ADR files were removed on 2026-09-06 (#4667); `git log -- docs/decisions/`
+has the full text.
+
+Rationale only. None of these describes current state.
 
 | ADR | Decision | Status | Disposition |
 |---|---|---|---|
-| `agents/003` | Adopt Context Forge as the MCP gateway | Superseded by 020; the deployment is live | shared with monolith, left in place |
-| `agents/005` | Role-based MCP access | Deprecated | shared with monolith, left in place |
-| `agents/006` | OIDC auth for the gateway | Superseded by 011 | shared with monolith, left in place |
-| `agents/011` | Cloudflare Managed OAuth | Deprecated; Access now fronts only the control plane | shared with monolith, left in place |
-| `agents/020` | Deprecate Context Forge, serve MCP from the monolith | Superseded by 059; its execution issues #3832 and #3833 stay open, #3831 closed 2026-09-05 | shared with monolith, left in place |
-| `agents/034` | Per-tier guest MCP ACL at `/private/mcp/{tier}/` | Draft; #3838 open. The agents tier (#5656) is the shape that shipped instead | shared with monolith and embervm, left in place |
-| `agents/042` | Agent MCP v1 follow-ons | Accepted, partially shipped; #3844 | shared with monolith, left in place |
-| `agents/055` | Tool-mediated GitHub access on Context Forge | Superseded by 059; mediation moves to the monolith's broker (#4946). The GitHub registration here is disabled with no tools | shared with monolith, left in place |
-| `agents/059` | Authentik federates identity, the monolith serves MCP directly | Draft, not executed: Context Forge is still the front door, `mcp-friends` still advertises no DCR endpoint (2026-09-05), the monolith serves no RFC 9728 document. #3832, #3833 | shared with monolith, left in place |
+| `agents/003` | Adopt Context Forge as the MCP gateway | Superseded by 020; the deployment is live | deleted |
+| `agents/005` | Role-based MCP access | Deprecated | deleted |
+| `agents/006` | OIDC auth for the gateway | Superseded by 011 | deleted |
+| `agents/011` | Cloudflare Managed OAuth | Deprecated; Access now fronts only the control plane | deleted |
+| `agents/020` | Deprecate Context Forge, serve MCP from the monolith | Superseded by 059; its execution issues #3832 and #3833 stay open, #3831 closed 2026-09-05 | deleted |
+| `agents/034` | Per-tier guest MCP ACL at `/private/mcp/{tier}/` | Draft; #3838 open. The agents tier (#5656) is the shape that shipped instead | deleted |
+| `agents/042` | Agent MCP v1 follow-ons | Accepted, partially shipped; #3844 | deleted |
+| `agents/055` | Tool-mediated GitHub access on Context Forge | Superseded by 059; mediation moves to the monolith's broker (#4946). The GitHub registration here is disabled with no tools | deleted |
+| `agents/059` | Authentik federates identity, the monolith serves MCP directly | Draft, not executed: Context Forge is still the front door, `mcp-friends` still advertises no DCR endpoint (2026-09-05), the monolith serves no RFC 9728 document. #3832, #3833 | deleted |

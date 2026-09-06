@@ -423,10 +423,11 @@ becomes a declared soft budget. `persistence.filesystem.retention` is inert
 today, and artifact GC keeps only the newest artifact. `latest + N` remains the
 planned retention direction.
 
-Repo-backed sessions hydrate their workspace with one direct HTTPS clone
-through the egress lane: single branch, `--filter=blob:none`, and the
-credential opt-in header the sidecar replaces on the way out, so the guest
-never holds the token.
+Repo-backed sessions hydrate their workspace with a direct HTTPS clone through
+the egress lane. The node-local git mirror sidecar (`gitMirror`) is **Built**
+but off in every deployment and has never served a hydration: the shim's
+mirror attempt is denied at the egress proxy and falls through to the direct
+clone.
 
 A sequential Firecracker dirty-page diff bank path exists and is dormant:
 `noded.diffBanking` defaults false because the merge-at-bank step copies the
@@ -1205,89 +1206,86 @@ GC sweep behaviour are in [deploy/README.md](deploy/README.md).
 
 ---
 
-## 13. ADR map
+## 13. Decision history
 
-The decisions behind this document, harvested into it and deleted under the
-rollup programme (#4667); git history keeps each ADR's full text. A new ADR
-that changes a decision updates this document in the same PR and is deleted
-once harvested. `bazel/tools/hooks/check-adr-architecture-sync.sh` reminds on
-writes under `docs/decisions/embervm/`, `chart/`, and `deploy/`.
+The ADR files were removed on 2026-09-06 (#4667); `git log -- docs/decisions/`
+has the full text.
 
 | ADR | Decision | Status | Disposition |
 | --- | -------- | ------ | ----------- |
-| embervm/001 | EmberVM itself: BEAM control plane over a Go node daemon, hit/miss invariant, five classes, isolation model | Accepted; copy-never-rebuild for stateful withdrawn by 025 | deleted in this PR |
-| embervm/002 | Op-log retention: read-time TTLs, 7 day terminal prune, 30 day journal horizon behind a durable marker | Accepted, Built; shape restructured by 019 | deleted in this PR |
-| embervm/003 | Control-plane-managed snapshot distribution, Build / Restore / Export / Evict verbs | Accepted, Built; verbs generalized by 009 | deleted in this PR |
-| embervm/004 | Back kubernetes-sigs/agent-sandbox through a deferred edge adapter, no native session API | Accepted; adapter not built, gated on upstream traction | deleted in this PR |
-| embervm/005 | EKS scale-out: metal pool, multi-daemon bricks, EmberPool CRD, dial-home | Accepted; EmberPool never built, brick counts are a values knob behind `BrickController`; decision 3 superseded by 028 (#3849, #3851) | deleted in this PR |
-| embervm/006 | TLA+ pilot with three conformance layers | Accepted; six specs run under TLC in the build, trace validation deferred to 034 | deleted in this PR |
-| embervm/007 | Batched Postgres op-log tier, cells, hot-loop corrections | Accepted; Postgres Built, no cell seams exist (#4753, #3853, #3855) | deleted in this PR |
-| embervm/008 | Opt-in two-phase interruptible bank | Accepted, Built | deleted in this PR |
-| embervm/009 | Continuity before tenancy: R6 to R9, spot availability contract, S3 seam | Accepted; quickstart open (#3856, #3858) | deleted in this PR |
-| embervm/010 | Bazel warm-Skyframe public demo as a stateless query consumer | Accepted, Built | retained: the public `/ember/bazel` page deep-links it, disposition pending |
-| embervm/011 | Vendor-bound warmth, single-writer fencing, CP-sequenced rollouts | Accepted; stateful Longhorn withdrawn by 025; sole-issuer rule amended by 017, 018, 040 | deleted in this PR |
-| embervm/012 | Co-located fleet, etcd blast radius accepted, grandfather rule, registry survives restart | Accepted; dynamic sizing retired by 013; HA open (#3862) | deleted in this PR |
-| embervm/013 | Classes are reuse semantics, substrates are lanes; brick sizing; bricks everywhere | Accepted, Built | deleted in this PR |
-| embervm/014 | Worker-authoritative state, async writes, node-confirmed destruction | Draft, Built (`adoption.tla`); metering clause amended by 020 | deleted in this PR |
-| embervm/015 | Isolated high-throughput lane with data-plane placement | Draft, not built (#3864, #3865, #3866); fail-closed lease withdrawn by 020 | deleted in this PR |
-| embervm/016 | Kubernetes scheduling contract: the pod is the ABI, priority projection, session ladder | Accepted; kwok drills never built; placement loop superseded by 020, ladder amended by 025, 027, 029 | deleted in this PR |
-| embervm/017 | Bounded auto-heal of the checkpoint-abort quarantine | Accepted, Built (`generation_issuance.tla`) | deleted in this PR |
-| embervm/018 | Node-local activator (Fork A), brick-authoritative lifecycle (Fork B) | Accepted; Fork A partly landed, Fork B lease Built (#3993, #4013) | deleted in this PR |
-| embervm/019 | Op-log payload separation, time partitioning, principal-scoped erasure | Draft, Decided direction | deleted in this PR |
-| embervm/020 | Admission-only control plane, token routing, peer redistribution, fail-open metering | Draft, Decided direction; decision 3 withdrawn to 023 | deleted in this PR |
-| embervm/021 | `memMib` as the only dial, derived CPU, GB-seconds | Draft, Decided direction | deleted in this PR |
-| embervm/022 | Composition over bindings, domain seam, three-leg access fabric | Draft, Decided direction; superseded in part by 024 and 026; SPIFFE deferral resolved by 041 (#5072) | deleted in this PR |
-| embervm/023 | Class-scoped ownership arbitration, silence timeout as the divergence bound | Draft, Decided direction; the timeout is Built (037) | deleted in this PR |
-| embervm/024 | Identity hierarchy, platform principal, guest identity assertion | Draft, Decided direction; decision 3 mechanism superseded by 041 (#5072) | deleted in this PR |
-| embervm/025 | Local disk authoritative, S3 an archive, `archiveInterval` | Draft, Decided direction; export at bank commit Built | deleted in this PR |
-| embervm/026 | Templates not stamps, GitOps without per-workload CRs, desired-set registration | Draft, Decided direction | deleted in this PR |
-| embervm/027 | Snapshot modes as a declared workload property | Draft, Decided direction; retention and the size budget open (#5074, #5075) | deleted in this PR |
-| embervm/028 | Eager-local rootfs: OCI ref, Account chunk store, ublk | Accepted, Planned (#4182); Phase 0 measured in `rootfs/PHASE0-RESULTS.md` | deleted in this PR |
-| embervm/029 | Parked sessions count as disk, not against `concurrency.cap` | Accepted, Built | deleted in this PR |
-| embervm/030 | Lineage decoupled from session generation; the 6 h cap is a convergence bound | Accepted, Built | deleted in this PR |
-| embervm/031 | Health signals classified by time-to-impact, both tiers latch `/health` | Accepted, Built (#4338) | deleted in this PR |
-| embervm/032 | Actor / principal / permission split, authentik SSO for the management surface | Draft, Decided direction; SPIFFE seam resolved by 041 | deleted in this PR |
-| embervm/033 | Substrate threat model as the conformance frame, per-principal encryption at rest, tuple-authorized restore | Accepted, Built and armed; customer KMS mode and digest-verified manifests open (#4691) | deleted in this PR |
-| embervm/034 | Conformance harness: two lanes, two tiers, anti-vacuity, Freight override | Accepted; SpecTrace runs in dev, harness Planned (#4761, #4763) | deleted in this PR |
-| embervm/035 | Website snapshotter task guest | Draft, Built (#4994) | deleted in this PR |
-| embervm/036 | Platform KEK custody derived in the control plane's key service | Accepted, Built | deleted in this PR |
-| embervm/037 | Brick silence timeout | Draft, Built and armed at 21600 s (#5073) | deleted in this PR |
-| embervm/038 | Image-lane serving fresh boot | Draft, Built | deleted in this PR |
-| embervm/039 | Fair-share brick resources, blast-radius ladder, capacity as a signal | Accepted; requests Built, shedding Built and disarmed, jailer suspended, signal Decided direction | deleted in this PR |
-| embervm/040 | Anchor-loss recovery, preemption budget split | Accepted; restore-onto-peer Built, preemption watcher Built and disarmed | deleted in this PR |
-| embervm/041 | SPIFFE workload identity on self-hosted SPIRE | Accepted; phases 0 and 1 done, phase 2 in flight (#5706) | deleted in this PR |
-| embervm/042 | Brick class ceilings move on denial pressure | Accepted, not built (#5505) | deleted in this PR |
-| embervm/README | Reading order for 019 to 027 and the sparse-facts through-line | folded into section 6 | deleted in this PR |
-| embervm/brick-program-decisions | 2026-07-19 run log: bricks everywhere, pod UID identity, scratch contract, staged cutover | carried by sections 7 and 11 | deleted in this PR |
+| embervm/001 | EmberVM itself: BEAM control plane over a Go node daemon, hit/miss invariant, five classes, isolation model | Accepted; copy-never-rebuild for stateful withdrawn by 025 | deleted |
+| embervm/002 | Op-log retention: read-time TTLs, 7 day terminal prune, 30 day journal horizon behind a durable marker | Accepted, Built; shape restructured by 019 | deleted |
+| embervm/003 | Control-plane-managed snapshot distribution, Build / Restore / Export / Evict verbs | Accepted, Built; verbs generalized by 009 | deleted |
+| embervm/004 | Back kubernetes-sigs/agent-sandbox through a deferred edge adapter, no native session API | Accepted; adapter not built, gated on upstream traction | deleted |
+| embervm/005 | EKS scale-out: metal pool, multi-daemon bricks, EmberPool CRD, dial-home | Accepted; EmberPool never built, brick counts are a values knob behind `BrickController`; decision 3 superseded by 028 (#3849, #3851) | deleted |
+| embervm/006 | TLA+ pilot with three conformance layers | Accepted; six specs run under TLC in the build, trace validation deferred to 034 | deleted |
+| embervm/007 | Batched Postgres op-log tier, cells, hot-loop corrections | Accepted; Postgres Built, no cell seams exist (#4753, #3853, #3855) | deleted |
+| embervm/008 | Opt-in two-phase interruptible bank | Accepted, Built | deleted |
+| embervm/009 | Continuity before tenancy: R6 to R9, spot availability contract, S3 seam | Accepted; quickstart open (#3856, #3858) | deleted |
+| embervm/010 | Bazel warm-Skyframe public demo as a stateless query consumer | Accepted, Built | deleted |
+| embervm/011 | Vendor-bound warmth, single-writer fencing, CP-sequenced rollouts | Accepted; stateful Longhorn withdrawn by 025; sole-issuer rule amended by 017, 018, 040 | deleted |
+| embervm/012 | Co-located fleet, etcd blast radius accepted, grandfather rule, registry survives restart | Accepted; dynamic sizing retired by 013; HA open (#3862) | deleted |
+| embervm/013 | Classes are reuse semantics, substrates are lanes; brick sizing; bricks everywhere | Accepted, Built | deleted |
+| embervm/014 | Worker-authoritative state, async writes, node-confirmed destruction | Draft, Built (`adoption.tla`); metering clause amended by 020 | deleted |
+| embervm/015 | Isolated high-throughput lane with data-plane placement | Draft, not built (#3864, #3865, #3866); fail-closed lease withdrawn by 020 | deleted |
+| embervm/016 | Kubernetes scheduling contract: the pod is the ABI, priority projection, session ladder | Accepted; kwok drills never built; placement loop superseded by 020, ladder amended by 025, 027, 029 | deleted |
+| embervm/017 | Bounded auto-heal of the checkpoint-abort quarantine | Accepted, Built (`generation_issuance.tla`) | deleted |
+| embervm/018 | Node-local activator (Fork A), brick-authoritative lifecycle (Fork B) | Accepted; Fork A partly landed, Fork B lease Built (#3993, #4013) | deleted |
+| embervm/019 | Op-log payload separation, time partitioning, principal-scoped erasure | Draft, Decided direction | deleted |
+| embervm/020 | Admission-only control plane, token routing, peer redistribution, fail-open metering | Draft, Decided direction; decision 3 withdrawn to 023 | deleted |
+| embervm/021 | `memMib` as the only dial, derived CPU, GB-seconds | Draft, Decided direction | deleted |
+| embervm/022 | Composition over bindings, domain seam, three-leg access fabric | Draft, Decided direction; superseded in part by 024 and 026; SPIFFE deferral resolved by 041 (#5072) | deleted |
+| embervm/023 | Class-scoped ownership arbitration, silence timeout as the divergence bound | Draft, Decided direction; the timeout is Built (037) | deleted |
+| embervm/024 | Identity hierarchy, platform principal, guest identity assertion | Draft, Decided direction; decision 3 mechanism superseded by 041 (#5072) | deleted |
+| embervm/025 | Local disk authoritative, S3 an archive, `archiveInterval` | Draft, Decided direction; export at bank commit Built | deleted |
+| embervm/026 | Templates not stamps, GitOps without per-workload CRs, desired-set registration | Draft, Decided direction | deleted |
+| embervm/027 | Snapshot modes as a declared workload property | Draft, Decided direction; retention and the size budget open (#5074, #5075) | deleted |
+| embervm/028 | Eager-local rootfs: OCI ref, Account chunk store, ublk | Accepted, Planned (#4182); Phase 0 measured in `rootfs/PHASE0-RESULTS.md` | deleted |
+| embervm/029 | Parked sessions count as disk, not against `concurrency.cap` | Accepted, Built | deleted |
+| embervm/030 | Lineage decoupled from session generation; the 6 h cap is a convergence bound | Accepted, Built | deleted |
+| embervm/031 | Health signals classified by time-to-impact, both tiers latch `/health` | Accepted, Built (#4338) | deleted |
+| embervm/032 | Actor / principal / permission split, authentik SSO for the management surface | Draft, Decided direction; SPIFFE seam resolved by 041 | deleted |
+| embervm/033 | Substrate threat model as the conformance frame, per-principal encryption at rest, tuple-authorized restore | Accepted, Built and armed; customer KMS mode and digest-verified manifests open (#4691) | deleted |
+| embervm/034 | Conformance harness: two lanes, two tiers, anti-vacuity, Freight override | Accepted; SpecTrace runs in dev, harness Planned (#4761, #4763) | deleted |
+| embervm/035 | Website snapshotter task guest | Draft, Built (#4994) | deleted |
+| embervm/036 | Platform KEK custody derived in the control plane's key service | Accepted, Built | deleted |
+| embervm/037 | Brick silence timeout | Draft, Built and armed at 21600 s (#5073) | deleted |
+| embervm/038 | Image-lane serving fresh boot | Draft, Built | deleted |
+| embervm/039 | Fair-share brick resources, blast-radius ladder, capacity as a signal | Accepted; requests Built, shedding Built and disarmed, jailer suspended, signal Decided direction | deleted |
+| embervm/040 | Anchor-loss recovery, preemption budget split | Accepted; restore-onto-peer Built, preemption watcher Built and disarmed | deleted |
+| embervm/041 | SPIFFE workload identity on self-hosted SPIRE | Accepted; phases 0 and 1 done, phase 2 in flight (#5706) | deleted |
+| embervm/042 | Brick class ceilings move on denial pressure | Accepted, not built (#5505) | deleted |
+| embervm/README | Reading order for 019 to 027 and the sparse-facts through-line | folded into section 6 | deleted |
+| embervm/brick-program-decisions | 2026-07-19 run log: bricks everywhere, pod UID identity, scratch contract, staged cutover | carried by sections 7 and 11 | deleted |
 
 Agent-platform ADRs whose decisions shipped through EmberVM. Their status
 column carries the wording the monolith map uses for the same rows.
 
 | ADR | Decision | Status | Disposition |
 | --- | -------- | ------ | ----------- |
-| agents/002 | OpenHands sandboxes via agent-sandbox | Superseded by agents/004 | shared with monolith, left in place |
-| agents/014 | AX + Substrate as the agent runtime | Deprecated | shared with monolith, left in place |
-| agents/019 | Substrate executor interface, AgentWorkflow over Argo | Accepted, not shipped as designed | shared with monolith, left in place |
-| agents/021 | Discord-triggered AgentWorkflow with snapshot and resume | Draft, evolved into agent sessions | shared with monolith, left in place |
-| agents/022 | Firecracker snapshot/restore controller (FC-direct) | Accepted, shipped through EmberVM | deleted in this PR |
-| agents/023 | Egress secret proxy | Draft; header injection shipped (section 9), placeholder substitution rejected | deleted in this PR |
-| agents/025 | Three-layer agent stack | Draft, evolved into EmberVM | deleted in this PR |
-| agents/026 | Fast microVM cold starts, stateful artifact iteration | Accepted, shipped through EmberVM | deleted in this PR |
-| agents/028 | Elastic agent-microVM capacity and state-preserving reclaim | Draft, shipped through bricks and the scheduler | deleted in this PR |
-| agents/030 | fc-invoke as one configurable surface | Draft, evolved into EmberVM | deleted in this PR |
-| agents/031 | Control-plane / data-plane split | Accepted, shipped through EmberVM | deleted in this PR |
-| agents/032 | Warm-snapshot Bazel worker as an MCP tool | Draft, partially shipped as the public Bazel demo | shared with monolith, left in place |
-| agents/033 | Golden-template distribution via daemon-pulled OCI | Accepted, superseded by control-plane-managed base builds (003, 028) | deleted in this PR |
-| agents/034 | Per-tier guest MCP ACLs | Draft, not shipped (#3838) | contested with mcp, left in place |
-| agents/037 | Label-driven Firecracker node enrollment | Accepted, shipped (section 2) | deleted in this PR |
-| agents/040 | Caller-provided context injection | Draft, not shipped | deleted in this PR |
+| agents/002 | OpenHands sandboxes via agent-sandbox | Superseded by agents/004 | deleted |
+| agents/014 | AX + Substrate as the agent runtime | Deprecated | deleted |
+| agents/019 | Substrate executor interface, AgentWorkflow over Argo | Accepted, not shipped as designed | deleted |
+| agents/021 | Discord-triggered AgentWorkflow with snapshot and resume | Draft, evolved into agent sessions | deleted |
+| agents/022 | Firecracker snapshot/restore controller (FC-direct) | Accepted, shipped through EmberVM | deleted |
+| agents/023 | Egress secret proxy | Draft; header injection shipped (section 9), placeholder substitution rejected | deleted |
+| agents/025 | Three-layer agent stack | Draft, evolved into EmberVM | deleted |
+| agents/026 | Fast microVM cold starts, stateful artifact iteration | Accepted, shipped through EmberVM | deleted |
+| agents/028 | Elastic agent-microVM capacity and state-preserving reclaim | Draft, shipped through bricks and the scheduler | deleted |
+| agents/030 | fc-invoke as one configurable surface | Draft, evolved into EmberVM | deleted |
+| agents/031 | Control-plane / data-plane split | Accepted, shipped through EmberVM | deleted |
+| agents/032 | Warm-snapshot Bazel worker as an MCP tool | Draft, partially shipped as the public Bazel demo | deleted |
+| agents/033 | Golden-template distribution via daemon-pulled OCI | Accepted, superseded by control-plane-managed base builds (003, 028) | deleted |
+| agents/034 | Per-tier guest MCP ACLs | Draft, not shipped (#3838) | deleted |
+| agents/037 | Label-driven Firecracker node enrollment | Accepted, shipped (section 2) | deleted |
+| agents/040 | Caller-provided context injection | Draft, not shipped | deleted |
 | agents/041 | Hot git mirror for agent workspaces | Draft; the sidecar was removed on 2026-09-06 (#5825), hydration is a direct clone (section 4) | deleted |
-| agents/044 | Code executor sandbox, self-describing guest runtimes | Accepted, shipped (task-class guests, monolith sandbox tools) | deleted in this PR |
-| agents/045 | FaaS on the fc-invoke sandbox runtime | Accepted, execution migrated to the EmberVM zip lane | deleted in this PR |
-| agents/046 | MMDS for dynamic per-workload guest env | Accepted, shipped as the metadata seam for stateful and group guests | deleted in this PR |
-| agents/047 | Per-principal egress credentials, broker identity envelope | Draft; broker grants shipped (section 9), per-principal scoping moves to 041 phase 4 | deleted in this PR |
-| agents/048 | Codex OAuth single-owner token broker | Accepted, shipped (section 9) | shared with monolith, left in place |
+| agents/044 | Code executor sandbox, self-describing guest runtimes | Accepted, shipped (task-class guests, monolith sandbox tools) | deleted |
+| agents/045 | FaaS on the fc-invoke sandbox runtime | Accepted, execution migrated to the EmberVM zip lane | deleted |
+| agents/046 | MMDS for dynamic per-workload guest env | Accepted, shipped as the metadata seam for stateful and group guests | deleted |
+| agents/047 | Per-principal egress credentials, broker identity envelope | Draft; broker grants shipped (section 9), per-principal scoping moves to 041 phase 4 | deleted |
+| agents/048 | Codex OAuth single-owner token broker | Accepted, shipped (section 9) | deleted |
 | agents/050 | Workspace hydration from the git mirror | Accepted; hydration shipped as a direct clone, the mirror never served one (section 4) | deleted |
-| agents/051 | Guest-pushed mid-turn progress | Accepted, shipped | shared with monolith, left in place |
-| agents/055 | Tool-mediated GitHub access | Superseded by agents/059 | shared with monolith and mcp, left in place |
-| agents/057 | Per-language sandbox guests | Draft, shipped (`runtimes/`) | deleted in this PR |
+| agents/051 | Guest-pushed mid-turn progress | Accepted, shipped | deleted |
+| agents/055 | Tool-mediated GitHub access | Superseded by agents/059 | deleted |
+| agents/057 | Per-language sandbox guests | Draft, shipped (`runtimes/`) | deleted |

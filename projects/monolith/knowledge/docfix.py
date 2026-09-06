@@ -22,7 +22,6 @@ DOCFIX_PROTECTED_PATH_GLOBS = (
     "AGENTS.md",
     "**/skills/**",
     "docs/runbooks/**",
-    "docs/decisions/**",
 )
 DOCFIX_REVIEW_JOB_PREFIX = "docfix-review:"
 DOCFIX_REVIEW_DEBOUNCE_SECONDS = 1800

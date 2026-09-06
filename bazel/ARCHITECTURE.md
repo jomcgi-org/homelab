@@ -101,7 +101,7 @@ The docs manifests enumerate `git ls-files`, so `git add` a new file by name bef
 
 ## 7. Hooks
 
-Claude PreToolUse hooks (`bazel/tools/hooks/`, wired in `.claude/settings.json`, each with an `sh_test`). Blocking: `prefer-bb-remote.sh`, `check-ci-pipe-mask.sh`, `pretooluse-write-edit.sh` (writes under `docs/plans/` are refused; plans live in GitHub Issues), and `check-public-reader-grant.sh` (a `CREATE TABLE` in a public-served schema must carry a `public_reader` grant or an explicit override comment). Advisory: `check-em-dash.sh`, `check-large-migration-sql.sh` (the migrations ConfigMap's 256 KiB annotation cap), `check-constant-change-test-grep.sh` (grep the tests before changing a numeric constant), `check-chart-version-targetrevision-sync.sh`, and `check-adr-architecture-sync.sh` (editing a covered ADR category or chart tree reminds you that the domain's `ARCHITECTURE.md` is the source of truth).
+Claude PreToolUse hooks (`bazel/tools/hooks/`, wired in `.claude/settings.json`, each with an `sh_test`). Blocking: `prefer-bb-remote.sh`, `check-ci-pipe-mask.sh`, `pretooluse-write-edit.sh` (writes under `docs/plans/` are refused; plans live in GitHub Issues), and `check-public-reader-grant.sh` (a `CREATE TABLE` in a public-served schema must carry a `public_reader` grant or an explicit override comment). Advisory: `check-em-dash.sh`, `check-large-migration-sql.sh` (the migrations ConfigMap's 256 KiB annotation cap), `check-constant-change-test-grep.sh` (grep the tests before changing a numeric constant), `check-chart-version-targetrevision-sync.sh`, and `check-adr-architecture-sync.sh` (editing a covered config or build tree reminds you that the domain's `ARCHITECTURE.md` is the source of truth).
 
 Git hooks (`bazel/tools/git/`, installed by pre-commit): `protect-main.sh` refuses commits on main, `check-commit-msg-ascii.sh` is the commit-msg check, `check-stale-pr.sh` blocks pushes to a branch whose PR is closed or merged, `post-rewrite-format.sh` runs selective lint after a rebase, and `pre-push-ci-test.sh` as above.
 
@@ -131,7 +131,7 @@ The rule library (`bazel/semgrep/rules/`, about 93 rules in ten language directo
 
 `bazel/ocaml` is a native OCaml ruleset (`ocaml_library`, `ocaml_binary`, `ocaml_test`, `ocaml_ppx`) whose one purpose is building the Semgrep engine with Bazel on this repo's RBE. The compiler is the pinned Semgrep OCaml 5.3 fork, built from source as a Bazel action on the executor it will run on and staged into every OCaml action as a sysroot tar: this BuildBuddy deployment does not honour per-action `container-image`, and a compiler built on the workflow runner links a newer glibc than the executor has. The opam universe is a committed `lock.json` (url plus sha256 per package, maintained from a workstation by `update_lock.py`); each package is fetched and either translated from its own dune files by `dune2bazel.py`, which rejects loudly on anything it does not model, or built from a hand-written override. The pinned Semgrep CE tree (`semgrep_src`) is translated the same way, bottom-up, with a README table of the frontier reached so far. tOyCaml (`examples/toycaml`) is the engine-shaped acceptance target the ruleset grows against.
 
-Per-arch toolchains come from the `OCAML_ARCHES` registry: linux x86_64 and aarch64 are both enabled and registered, aarch64 is a registered execution platform, and there is deliberately no unconstrained fallback toolchain (it would outrank the per-arch ones from the default amd64 executor and hand aarch64 targets x86_64 binaries). The arm64 pool is asserted on every full CI run by `executor_arch_probe_arm64_test`, but nothing else selects the aarch64 platform: the arm64 example shard was dropped when the workflow collapsed into `pr-checks` on 2026-08-09, so the aarch64 sysroot and toolchain are registered and unexercised, and the `no-arm64` tags on the C-stub examples currently exclude nothing. The examples run on amd64 as part of `//...`. There is no OCaml Gazelle extension and no CLI release lane; both are decided and unbuilt (ADR map).
+Per-arch toolchains come from the `OCAML_ARCHES` registry: linux x86_64 and aarch64 are both enabled and registered, aarch64 is a registered execution platform, and there is deliberately no unconstrained fallback toolchain (it would outrank the per-arch ones from the default amd64 executor and hand aarch64 targets x86_64 binaries). The arm64 pool is asserted on every full CI run by `executor_arch_probe_arm64_test`, but nothing else selects the aarch64 platform: the arm64 example shard was dropped when the workflow collapsed into `pr-checks` on 2026-08-09, so the aarch64 sysroot and toolchain are registered and unexercised, and the `no-arm64` tags on the C-stub examples currently exclude nothing. The examples run on amd64 as part of `//...`. There is no OCaml Gazelle extension and no CLI release lane; both are decided and unbuilt (Decision history).
 
 (see: `bazel/ocaml/README.md`, `bazel/ocaml/toolchain/arches.bzl`, `bazel/ocaml/platforms/BUILD`, `bazel/ocaml/opam/`, `bazel/ocaml/semgrep_src/README.md`, `MODULE.bazel` `register_toolchains`)
 
@@ -151,20 +151,23 @@ Their suites are genrules, not test rules, tagged `verification` so `affected-ta
 
 ---
 
-## ADR map
+## Decision history
+
+The ADR files were removed on 2026-09-06 (#4667); `git log -- docs/decisions/`
+has the full text.
 
 | ADR | Decision | Status | Disposition |
 |---|---|---|---|
-| tooling/001 | Distribute developer tools as a multi-arch OCI image pulled by `crane export`; no local Bazel; all execution remote | Implemented. Standalone render and lint scripts, the live ArgoCD diff (its `diff` target references a script that does not exist) and Claude-in-cluster convergence are unbuilt (#3914, #3915, #3916, #3917) | deleted in this PR |
-| tooling/002 | Copier template that scaffolds a new service | Draft, never executed; the current recipe is to copy `projects/monolith/deploy/` (#3918) | deleted in this PR |
-| tooling/003 | Generate the `homelab` CLI and Claude skills from the FastAPI OpenAPI spec | Deprecated; `tools/cli` stays hand-written | deleted in this PR |
-| tooling/004 | Scale the custom `bazel/ocaml` ruleset rather than adopt obazl: ppx first, a locked opam universe, dune translation, per-arch native toolchains | Accepted, partly executed; CE translation and arm64 C stubs open (#3921, #3922, #3923) | deleted in this PR |
-| tooling/005 | tOyCaml as the engine-shaped acceptance target | Accepted, built; remaining feature coverage open (#3924) | deleted in this PR |
-| tooling/006 | Data-driven arch registry; per-arch toolchain registration gated on a verified executor pool | Accepted, executed; the arm64 pool was verified 2026-06-12 | deleted in this PR |
-| tooling/007 | A Gazelle extension generates first-party OCaml BUILD files | Accepted, unbuilt (#3925) | deleted in this PR |
-| tooling/008 | One graph, native execution platforms (cloud arm64, self-hosted darwin) for CLI releases; no cross-compilation, QEMU or wasm | Accepted, unbuilt; the arm64 CI shard was removed 2026-08-09 (#3926, #3927, #3928, #3929) | deleted in this PR |
-| tooling/009 | Per-package visibility and tags classify monolith packages; lint out central `gazelle:exclude` | Accepted, unbuilt; `projects/monolith/BUILD` still carries the central excludes (#3930, #3931, #3932) | deleted in this PR |
-| tooling/010 | Hermetic Bazel-native visual regression on an apko chromium image | Deprecated; the suite was removed 2026-08-09 | deleted in this PR |
-| tooling/011 | Two Semgrep scan tiers: a warm single-file `mcp --pro` server for MCP and PR, and a scheduled interfile full scan on main | Accepted; the warm tier lives on EmberVM, the full-scan tier was built on fc-invoke on 2026-07-11 and removed with it on 2026-07-28 | deleted in this PR |
-| security/001 | Hermetic Semgrep via Bazel: vendored engines, direct `semgrep-core`, cached tests, Gazelle-generated targets | Accepted, executed; the required-credentials decision is reversed (offline placeholder token, upload disabled, #3893) | deleted in this PR |
-| security/002 | RL-finetune a 9B model to write Semgrep rules from CVE descriptions | Deprecated, nothing built | deleted in this PR |
+| tooling/001 | Distribute developer tools as a multi-arch OCI image pulled by `crane export`; no local Bazel; all execution remote | Implemented. Standalone render and lint scripts, the live ArgoCD diff (its `diff` target references a script that does not exist) and Claude-in-cluster convergence are unbuilt (#3914, #3915, #3916, #3917) | deleted |
+| tooling/002 | Copier template that scaffolds a new service | Draft, never executed; the current recipe is to copy `projects/monolith/deploy/` (#3918) | deleted |
+| tooling/003 | Generate the `homelab` CLI and Claude skills from the FastAPI OpenAPI spec | Deprecated; `tools/cli` stays hand-written | deleted |
+| tooling/004 | Scale the custom `bazel/ocaml` ruleset rather than adopt obazl: ppx first, a locked opam universe, dune translation, per-arch native toolchains | Accepted, partly executed; CE translation and arm64 C stubs open (#3921, #3922, #3923) | deleted |
+| tooling/005 | tOyCaml as the engine-shaped acceptance target | Accepted, built; remaining feature coverage open (#3924) | deleted |
+| tooling/006 | Data-driven arch registry; per-arch toolchain registration gated on a verified executor pool | Accepted, executed; the arm64 pool was verified 2026-06-12 | deleted |
+| tooling/007 | A Gazelle extension generates first-party OCaml BUILD files | Accepted, unbuilt (#3925) | deleted |
+| tooling/008 | One graph, native execution platforms (cloud arm64, self-hosted darwin) for CLI releases; no cross-compilation, QEMU or wasm | Accepted, unbuilt; the arm64 CI shard was removed 2026-08-09 (#3926, #3927, #3928, #3929) | deleted |
+| tooling/009 | Per-package visibility and tags classify monolith packages; lint out central `gazelle:exclude` | Accepted, unbuilt; `projects/monolith/BUILD` still carries the central excludes (#3930, #3931, #3932) | deleted |
+| tooling/010 | Hermetic Bazel-native visual regression on an apko chromium image | Deprecated; the suite was removed 2026-08-09 | deleted |
+| tooling/011 | Two Semgrep scan tiers: a warm single-file `mcp --pro` server for MCP and PR, and a scheduled interfile full scan on main | Accepted; the warm tier lives on EmberVM, the full-scan tier was built on fc-invoke on 2026-07-11 and removed with it on 2026-07-28 | deleted |
+| security/001 | Hermetic Semgrep via Bazel: vendored engines, direct `semgrep-core`, cached tests, Gazelle-generated targets | Accepted, executed; the required-credentials decision is reversed (offline placeholder token, upload disabled, #3893) | deleted |
+| security/002 | RL-finetune a 9B model to write Semgrep rules from CVE descriptions | Deprecated, nothing built | deleted |

@@ -145,8 +145,8 @@ def test_nested_readme_is_not_indexed(tmp_path: Path):
     assert _tracked_manifest(tmp_path) == []
 
 
-def test_decisions_are_not_indexed(tmp_path: Path):
-    rel_path = "docs/decisions/embervm/001-example.md"
+def test_non_project_docs_are_not_indexed(tmp_path: Path):
+    rel_path = "docs/architecture-notes/embervm-example.md"
     _write(tmp_path, rel_path)
     _track(tmp_path, rel_path)
     assert _tracked_manifest(tmp_path) == []

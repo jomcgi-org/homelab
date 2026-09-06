@@ -124,9 +124,3 @@ Top-level projects/ directories:
 - platform-gke
 - sextant
 - shared
-
-docs/decisions/ categories:
-- agents
-- embervm
-- platform
-- security

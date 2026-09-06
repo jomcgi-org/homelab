@@ -4,7 +4,7 @@
 Integrate broker token fetching into the egress sidecar. The sidecar learns to resolve injected credentials from the token broker instead of only from static Secrets. This enables subscription-based OAuth tokens (codex ChatGPT) where the broker holds the single mutable token grant and dispenses short-lived access tokens to callers.
 
 ## Key References
-- ADR 048: docs/decisions/agents/048-codex-oauth-token-broker.md
+- ADR 048: projects/embervm/ARCHITECTURE.md, section 9
 - Broker API: projects/embervm/tokenbroker/cmd/tokenbroker/main.go (GET /grants/<name>/token)
 - Broker response: {access_token, expires_at}
 - Catalog template: projects/embervm/chart/templates/_noded-pod.tpl
