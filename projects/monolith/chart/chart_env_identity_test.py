@@ -656,3 +656,323 @@ def test_rbac_gate_rejects_non_boolean_values(tmp_path, gate, invalid):
     override.write_text(yaml.safe_dump({"rbac": {gate: {"enabled": invalid}}}))
     with pytest.raises(RuntimeError, match=rf"rbac\.{gate}\.enabled must be a boolean"):
         _render("recovery", [override])
+
+
+# Existing SQL role identities and defaults, independent of the values under
+# test. Atlas grants require these roles even when no client may log in.
+_CLIENT_ROLE_SPECS = [
+    (
+        "publicReader",
+        "public_reader",
+        "monolith-pg-public-reader",
+        "Read-only public surface (ADR 004); GRANTs in Atlas migration",
+    ),
+    (
+        "agentsWriter",
+        "agents_writer",
+        "monolith-pg-agents-writer",
+        "monolith-agents tier (#5656); GRANTs in Atlas migration",
+    ),
+    (
+        "publicWriter",
+        "public_writer",
+        "monolith-pg-public-writer",
+        "Public-tier write role (ADR 005); GRANTs in Atlas migration",
+    ),
+]
+_CLIENT_ROLE_KEYS = [entry[0] for entry in _CLIENT_ROLE_SPECS]
+
+
+def _expected_cnpg_roles(environment):
+    clients = [
+        {
+            "name": name,
+            "ensure": "present",
+            "login": True,
+            "passwordSecret": {"name": secret},
+            "comment": comment,
+        }
+        for _key, name, secret, comment in _CLIENT_ROLE_SPECS
+    ]
+    optional = []
+    if environment in {"prod", "gke"}:
+        optional.append(
+            {
+                "name": "embervm",
+                "ensure": "present",
+                "login": True,
+                "passwordSecret": {"name": "monolith-pg-embervm-oplog"},
+                "comment": "EmberVM op-log owner (ADR embervm/007); owns only its own database",
+            }
+        )
+    if environment == "gke":
+        optional.append(
+            {
+                "name": "spire",
+                "ensure": "present",
+                "login": True,
+                "passwordSecret": {"name": "monolith-pg-spire"},
+                "comment": "SPIRE server datastore owner (ADR embervm/041); owns only its own database",
+            }
+        )
+    if environment == "prod":
+        optional.append(
+            {
+                "name": "dump_reader",
+                "ensure": "present",
+                "login": True,
+                "passwordSecret": {"name": "monolith-pg-dump-reader"},
+                "inRoles": ["pg_read_all_data"],
+                "comment": "Dev refresh dump reader",
+            }
+        )
+    return [*clients[:2], *optional, clients[2]]
+
+
+def _cnpg_cluster(documents):
+    clusters = [
+        doc
+        for doc in documents
+        if isinstance(doc, dict)
+        and doc.get("kind") == "Cluster"
+        and doc.get("apiVersion") == "postgresql.cnpg.io/v1"
+    ]
+    assert len(clusters) == 1, "expected exactly one CNPG Cluster"
+    return clusters[0]
+
+
+def _render_cnpg_override(tmp_path, override, *, production=False):
+    values = tmp_path / "cnpg-values.yaml"
+    values.write_text(yaml.safe_dump(override))
+    base = [Path(os.environ["DEPLOY_VALUES"])] if production else []
+    return [
+        doc
+        for doc in yaml.safe_load_all(_render("monolith-dev", [*base, values]))
+        if isinstance(doc, dict)
+    ]
+
+
+@pytest.mark.parametrize("environment", ["defaults", "prod", "gke"])
+def test_cnpg_default_managed_roles_preserve_complete_contract(environment, renders):
+    rendered = (
+        _render("monolith", []) if environment == "defaults" else renders[environment]
+    )
+    cluster = _cnpg_cluster(yaml.safe_load_all(rendered))
+    assert cluster["metadata"]["name"] == "monolith-pg"
+    assert cluster["spec"]["managed"]["roles"] == _expected_cnpg_roles(environment)
+
+
+@pytest.mark.parametrize("public_reader", [False, True])
+@pytest.mark.parametrize("agents_writer", [False, True])
+@pytest.mark.parametrize("public_writer", [False, True])
+def test_cnpg_client_login_controls_preserve_roles_and_optional_owners(
+    tmp_path, public_reader, agents_writer, public_writer
+):
+    settings = dict(
+        zip(_CLIENT_ROLE_KEYS, (public_reader, agents_writer, public_writer))
+    )
+    documents = _render_cnpg_override(
+        tmp_path,
+        {
+            "postgres": {
+                "clientRoles": {
+                    key: {"login": login} for key, login in settings.items()
+                }
+            }
+        },
+        production=True,
+    )
+    expected = _expected_cnpg_roles("prod")
+    by_name = {role["name"]: role for role in expected}
+    for key, name, _secret, _comment in _CLIENT_ROLE_SPECS:
+        role = by_name[name]
+        role["login"] = settings[key]
+        if not settings[key]:
+            del role["passwordSecret"]
+    assert _cnpg_cluster(documents)["spec"]["managed"]["roles"] == expected
+
+
+def test_cnpg_enabled_roles_use_their_configured_secret_names(tmp_path):
+    settings = {
+        key: {"passwordSecret": f"recovery-{key.lower()}.credential"}
+        for key in _CLIENT_ROLE_KEYS
+    }
+    documents = _render_cnpg_override(tmp_path, {"postgres": {"clientRoles": settings}})
+    expected = _expected_cnpg_roles("defaults")
+    for role, key in zip(expected, _CLIENT_ROLE_KEYS):
+        role["passwordSecret"] = {"name": settings[key]["passwordSecret"]}
+    assert _cnpg_cluster(documents)["spec"]["managed"]["roles"] == expected
+
+
+@pytest.mark.parametrize("secret", ["", None])
+def test_cnpg_nologin_roles_allow_cleared_secret_references(tmp_path, secret):
+    documents = _render_cnpg_override(
+        tmp_path,
+        {
+            "postgres": {
+                "clientRoles": {
+                    key: {"login": False, "passwordSecret": secret}
+                    for key in _CLIENT_ROLE_KEYS
+                }
+            }
+        },
+    )
+    expected = _expected_cnpg_roles("defaults")
+    for role in expected:
+        role["login"] = False
+        del role["passwordSecret"]
+    assert _cnpg_cluster(documents)["spec"]["managed"]["roles"] == expected
+
+
+def test_cnpg_fresh_dev_database_and_consumers_have_isolated_references(tmp_path):
+    documents = _render_cnpg_override(
+        tmp_path,
+        {
+            "jobs": {"image": ""},
+            "postgres": {
+                "instances": 1,
+                "storage": {"size": "10Gi", "storageClass": "standard-rwo"},
+                "clientRoles": {key: {"login": False} for key in _CLIENT_ROLE_KEYS},
+                "bootstrap": {"recovery": None},
+                "externalClusters": [],
+                "backup": {"enabled": False},
+                "devRefresh": {"enabled": False},
+                "spire": {"enabled": False},
+                "embervmOpLog": {
+                    "enabled": True,
+                    "database": "embervm_oplog_recovery",
+                    "role": "embervm_recovery",
+                    "passwordSecret": "monolith-dev-pg-embervm-oplog",
+                },
+            },
+        },
+    )
+    cluster = _cnpg_cluster(documents)
+    assert cluster["metadata"]["name"] == "monolith-dev-pg"
+    spec = cluster["spec"]
+    assert spec["instances"] == 1
+    assert spec["storage"] == {"size": "10Gi", "storageClass": "standard-rwo"}
+    assert spec["bootstrap"] == {
+        "initdb": {
+            "database": "monolith",
+            "owner": "app",
+            "postInitSQL": ["CREATE EXTENSION IF NOT EXISTS vector"],
+        }
+    }
+    assert "externalClusters" not in spec
+    assert "backup" not in spec
+    expected = _expected_cnpg_roles("defaults")
+    for role in expected:
+        role["login"] = False
+        del role["passwordSecret"]
+    expected.insert(
+        2,
+        {
+            "name": "embervm_recovery",
+            "ensure": "present",
+            "login": True,
+            "passwordSecret": {"name": "monolith-dev-pg-embervm-oplog"},
+            "comment": "EmberVM op-log owner (ADR embervm/007); owns only its own database",
+        },
+    )
+    assert spec["managed"]["roles"] == expected
+    assert not any(
+        doc.get("kind") in {"ScheduledBackup", "CronWorkflow"} for doc in documents
+    )
+    databases = [doc for doc in documents if doc.get("kind") == "Database"]
+    assert len(databases) == 1
+    assert databases[0]["metadata"]["name"] == "monolith-dev-pg-embervm-oplog"
+    assert databases[0]["spec"] == {
+        "cluster": {"name": "monolith-dev-pg"},
+        "name": "embervm_oplog_recovery",
+        "owner": "embervm_recovery",
+        "ensure": "present",
+        "databaseReclaimPolicy": "retain",
+    }
+    deployment = next(
+        doc
+        for doc in documents
+        if doc.get("kind") == "Deployment" and doc["metadata"]["name"] == "monolith-dev"
+    )
+    containers = {
+        container["name"]: container
+        for container in deployment["spec"]["template"]["spec"]["containers"]
+    }
+    expected_ref = {"name": "monolith-dev-pg-app", "key": "uri"}
+    for name in ("backend", "progress-ingest"):
+        env = {entry["name"]: entry for entry in containers[name]["env"]}
+        assert env["DATABASE_URL"] == {
+            "name": "DATABASE_URL",
+            "valueFrom": {"secretKeyRef": expected_ref},
+        }
+    migrations = [doc for doc in documents if doc.get("kind") == "AtlasMigration"]
+    assert len(migrations) == 1
+    assert migrations[0]["metadata"]["name"] == "monolith-dev"
+    assert migrations[0]["spec"]["urlFrom"] == {"secretKeyRef": expected_ref}
+
+
+@pytest.mark.parametrize("key", _CLIENT_ROLE_KEYS)
+@pytest.mark.parametrize("invalid", ["false", 0, None])
+def test_cnpg_rejects_non_boolean_client_login(tmp_path, key, invalid):
+    with pytest.raises(
+        RuntimeError,
+        match=re.escape(f"postgres.clientRoles.{key}.login must be a boolean"),
+    ):
+        _render_cnpg_override(
+            tmp_path, {"postgres": {"clientRoles": {key: {"login": invalid}}}}
+        )
+
+
+@pytest.mark.parametrize("key", _CLIENT_ROLE_KEYS)
+@pytest.mark.parametrize(
+    "invalid",
+    [None, "", " ", 1, [], "*", "UPPER", "fixture/other", "fixture..other", "a" * 254],
+)
+def test_cnpg_rejects_invalid_secret_for_client_login(tmp_path, key, invalid):
+    with pytest.raises(
+        RuntimeError,
+        match=re.escape(
+            f"postgres.clientRoles.{key}.passwordSecret must be a valid Secret name when login is true"
+        ),
+    ):
+        _render_cnpg_override(
+            tmp_path, {"postgres": {"clientRoles": {key: {"passwordSecret": invalid}}}}
+        )
+
+
+@pytest.mark.parametrize("invalid", [None, "roles"])
+def test_cnpg_rejects_invalid_client_roles_map(tmp_path, invalid):
+    with pytest.raises(RuntimeError, match="postgres.clientRoles must be a map"):
+        _render_cnpg_override(tmp_path, {"postgres": {"clientRoles": invalid}})
+
+
+@pytest.mark.parametrize("key", _CLIENT_ROLE_KEYS)
+def test_cnpg_rejects_missing_client_role_map(tmp_path, key):
+    with pytest.raises(
+        RuntimeError, match=re.escape(f"postgres.clientRoles.{key} must be a map")
+    ):
+        _render_cnpg_override(tmp_path, {"postgres": {"clientRoles": {key: None}}})
+
+
+@pytest.mark.parametrize("key", _CLIENT_ROLE_KEYS)
+@pytest.mark.parametrize("secret", ["123", "true", "null", "on"])
+def test_cnpg_yaml_looking_secret_names_remain_exact_strings(tmp_path, key, secret):
+    documents = _render_cnpg_override(
+        tmp_path, {"postgres": {"clientRoles": {key: {"passwordSecret": secret}}}}
+    )
+    expected = _expected_cnpg_roles("defaults")
+    role_name = next(
+        name
+        for role_key, name, _secret, _comment in _CLIENT_ROLE_SPECS
+        if role_key == key
+    )
+    for role in expected:
+        if role["name"] == role_name:
+            role["passwordSecret"] = {"name": secret}
+    roles = _cnpg_cluster(documents)["spec"]["managed"]["roles"]
+    assert roles == expected
+    actual_name = next(role for role in roles if role["name"] == role_name)[
+        "passwordSecret"
+    ]["name"]
+    assert isinstance(actual_name, str)
+    assert actual_name == secret
