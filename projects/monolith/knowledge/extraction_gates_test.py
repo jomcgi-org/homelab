@@ -229,6 +229,64 @@ def test_duplicate_gate_attaches_raw_to_existing_note(session, monkeypatch):
     assert provenance.atom_fk == existing.id
 
 
+def test_reobservation_raises_existing_note_confidence(session, monkeypatch):
+    existing = Note(
+        note_id="qwen-is-a-deprecated-alias-for-the-spark-pi-model",
+        path="_processed/qwen-alias.md",
+        title="qwen-is-a-deprecated-alias-for-the-spark-pi-model",
+        content_hash="existing-hash",
+        content="Qwen resolves to Spark so persisted sessions retain Pi compatibility.",
+        type="fact",
+        scope="repo:jomcgi-org/homelab",
+        confidence=0.90,
+    )
+    existing.observed_at = existing.created_at.replace(
+        year=2026,
+        month=9,
+        day=5,
+        hour=12,
+        minute=0,
+        second=0,
+        microsecond=0,
+        tzinfo=None,
+    )
+    expected_observed_at = existing.observed_at.replace(hour=13)
+    session.add(existing)
+    session.commit()
+    session.refresh(existing)
+    monkeypatch.setattr(
+        "knowledge.store.KnowledgeStore.search_notes_with_context",
+        lambda _store, _vector, **kwargs: [
+            {
+                "note_id": str(existing.note_id),
+                "score": 0.97,
+                "scope": "repo:jomcgi-org/homelab",
+            }
+        ],
+    )
+    raw = _raw(session)
+
+    result = apply_extraction(
+        session,
+        raw.raw_id,
+        _result(
+            _assertion(
+                "qwen-is-a-deprecated-alias-for-the-spark-pi-model",
+                "Qwen resolves to Spark because persisted sessions require Pi compatibility.",
+                observed_at=expected_observed_at.isoformat(),
+            )
+        ),
+    )
+
+    assert result["atoms"] == []
+    assert "duplicate" in [item["reason_code"] for item in result["rejected"]]
+    reobserved = session.exec(
+        select(Note).where(Note.note_id == existing.note_id)
+    ).one()
+    assert reobserved.confidence == 0.92
+    assert reobserved.observed_at == expected_observed_at
+
+
 def test_supersession_wins_over_duplicate_gate(session, monkeypatch):
     existing = Note(
         note_id="old-alias-rule",
