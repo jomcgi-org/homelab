@@ -863,7 +863,9 @@ def test_muse_first_turn_returns_terminal_text(tmp_path, monkeypatch):
         "result": "pong",
         "terminal_reason": "completed",
         "session_id": manager.session_id,
-        "model": "spark",
+        # The provider id actually sent, not the short family name the caller
+        # asked for: the console renders this value. Pi reports the same way.
+        "model": "muse-spark-1.3-contributor",
         "usage": {},
         "voice": "pong",
         "activities": [],
@@ -889,7 +891,8 @@ def test_muse_argv_uses_contributor_model_and_reuses_session_id(tmp_path, monkey
     session_ids = [call[call.index("--session-id") + 1] for call in calls]
     assert session_ids == [first["session_id"], first["session_id"]]
     assert second["session_id"] == first["session_id"]
-    assert second["model"] == "spark"
+    # "qwen" canonicalises to spark, which resolves to the contributor id.
+    assert second["model"] == "muse-spark-1.3-contributor"
 
 
 def test_muse_fresh_adapter_adopts_caller_session_id(tmp_path, monkeypatch):
