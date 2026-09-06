@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -3632,20 +3633,22 @@ func TestSiblingDiscoveryLoopDoesNotBlockHeartbeatOrOverlap(t *testing.T) {
 	writeReconcileBase(t, filepath.Join(root, "bases"), "echo__000000000001", "img:1")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	entered, release := make(chan struct{}, 1), make(chan struct{})
+	entered, release := make(chan struct{}), make(chan struct{})
+	var probes, active atomic.Int32
 	var once sync.Once
 	unblock := func() { once.Do(func() { close(release) }) }
-	defer unblock()
+	defer func() { cancel(); unblock() }()
 	s.fcDescribeVersionFn = func(string, string) (snapVersion, error) {
-		select {
-		case entered <- struct{}{}:
-		default:
+		if probes.Add(1) != 1 {
 			return snapVersion{}, errors.New("overlapping discovery")
 		}
+		active.Add(1)
+		defer active.Add(-1)
+		close(entered)
 		select {
 		case <-release:
 			return snapVersion{10, 2, 0}, nil
-		case <-time.After(2 * time.Second):
+		case <-time.After(15 * time.Second):
 			return snapVersion{}, errors.New("test barrier timed out")
 		}
 	}
@@ -3654,11 +3657,21 @@ func TestSiblingDiscoveryLoopDoesNotBlockHeartbeatOrOverlap(t *testing.T) {
 	ticks <- time.Now()
 	select {
 	case <-entered:
-	case <-time.After(time.Second):
+	case <-time.After(2 * time.Second):
 		t.Fatal("maintenance tick did not start discovery")
 	}
-	if n := s.discoverSiblingBases(ctx); n != 0 {
-		t.Fatal("concurrent pass was not excluded")
+	competing := make(chan int, 1)
+	go func() { competing <- s.discoverSiblingBases(ctx) }()
+	select {
+	case n := <-competing:
+		if n != 0 {
+			t.Fatal("concurrent pass was not excluded")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("competing discovery waited for the held probe")
+	}
+	if probes.Load() != 1 || active.Load() != 1 {
+		t.Fatalf("competing pass changed the held probe: entries=%d active=%d", probes.Load(), active.Load())
 	}
 	heartbeat := make(chan *nodev1.NodeStatus, 1)
 	go func() { status, _ := s.GetNodeStatus(ctx, &nodev1.GetNodeStatusRequest{}); heartbeat <- status }()
@@ -3667,7 +3680,12 @@ func TestSiblingDiscoveryLoopDoesNotBlockHeartbeatOrOverlap(t *testing.T) {
 		if status.PodUid != "follower" {
 			t.Fatal("heartbeat did not return this instance")
 		}
-	case <-time.After(time.Second):
+		// The heartbeat must finish while the original probe is still blocked,
+		// not after its timeout silently removes the contention under test.
+		if probes.Load() != 1 || active.Load() != 1 {
+			t.Fatalf("heartbeat outlived the held probe: entries=%d active=%d", probes.Load(), active.Load())
+		}
+	case <-time.After(2 * time.Second):
 		t.Fatal("format probe blocked the heartbeat")
 	}
 	cancel()
