@@ -3182,19 +3182,33 @@ class MuseProcess:
         child_env["XDG_DATA_HOME"] = data_home
         return child_env
 
-    def _write_settings_json(self, muse_config_home):
-        """Write muse settings.json with MCP server configuration when available.
+    def _write_settings_json(self, muse_settings_dir):
+        """Write muse's settings.json, arming the agents MCP server when live.
 
-        Muse follows XDG paths. The settings file lives at
-        $XDG_CONFIG_HOME/muse/settings.json. The mcp_servers key is a map (not
-        array) keyed by server name. Each server entry holds transport, url,
-        headers, enabled, mode.
+        muse_settings_dir is the `muse` subdirectory INSIDE $XDG_CONFIG_HOME,
+        because muse reads $XDG_CONFIG_HOME/muse/settings.json. Writing one
+        level up produces no error and no warning: muse simply never finds the
+        file and runs with no MCP server, so the segment is load bearing and
+        the caller passes the full path rather than appending it here.
 
-        MCP tools are unsandboxed child processes (stdio transport), so the
-        guest runs only the in-cluster agents tier over streamable_http through
-        the egress sidecar. Mode "required" enforces availability; a required
-        server that fails aborts the run. The probe matters because every muse
-        turn couples to the tier staying up.
+        mcp_servers is a MAP keyed by server name, never an array, and a
+        wrongly shaped entry is dropped just as silently. `framing` is
+        stdio-only and a non-default value on streamable_http fails
+        validation, so it is never emitted.
+
+        Only the in-cluster agents tier is ever declared, over
+        streamable_http. MCP tools are NOT sandboxed: a stdio server would run
+        as an ordinary child process outside muse's filesystem and network
+        sandbox, while an HTTP connection through the egress sidecar stays
+        inside the guest's egress policy. The Authorization value is a
+        placeholder because the tier lists /mcp in injectAlwaysPaths and the
+        sidecar substitutes the real token, so the guest holds no credential.
+
+        mode "required" aborts the whole run when the server cannot start,
+        which is the point: a muse guest must not silently proceed without the
+        knowledge graph. That couples every turn to the tier being reachable,
+        so the caller gates this on the same liveness probe the pi bridge
+        uses and writes no mcp_servers key at all when it fails.
         """
         agent_mcp_url = os.environ.get(AGENT_MCP_URL_ENV)
         agent_mcp_configured = bool(agent_mcp_url) and _agent_mcp_endpoint_alive(
@@ -3213,8 +3227,6 @@ class MuseProcess:
                 }
             }
 
-        muse_settings_dir = os.path.join(muse_config_home, "muse")
-        _ensure_cli_dir(muse_settings_dir)
         settings_path = os.path.join(muse_settings_dir, "settings.json")
         _write_read_only_file(settings_path, json.dumps(settings))
 
@@ -3227,9 +3239,6 @@ class MuseProcess:
             raise ValueError(
                 "muse model must use the contributor tier: %s" % model_name
             )
-        muse_config_home = os.path.join(self.workspace, ".muse", "config")
-        _ensure_cli_dir(muse_config_home)
-        self._write_settings_json(muse_config_home)
         command = [
             self.executable,
             "exec",
@@ -3249,6 +3258,11 @@ class MuseProcess:
             "--no-session-log",
             prompt,
         ]
+        # $XDG_CONFIG_HOME is <workspace>/.muse/config (see _child_env), and
+        # muse reads its settings from the `muse` subdirectory beneath it.
+        muse_settings_dir = os.path.join(self.workspace, ".muse", "config", "muse")
+        _ensure_cli_dir(muse_settings_dir)
+        self._write_settings_json(muse_settings_dir)
         process = subprocess.Popen(
             command,
             cwd=self.workspace,
