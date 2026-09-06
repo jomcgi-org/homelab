@@ -7,69 +7,22 @@
 # passed as an argument, because Bazel's $(rootpath) can't resolve platform-
 # specific select() targets in sh_test args.
 #
-# Exit code 0 = no findings, non-zero = semgrep found violations.
+# Exit code 0 = clean, 1 = findings, 2 = infrastructure failure.
 #
 # Env: SEMGREP_EXCLUDE_RULES — comma-separated items to skip. Each item is used in two ways:
 #      1. Matched against YAML filename (basename without .yaml) to exclude entire config files
 #      2. Matched as a suffix against semgrep check_ids to exclude individual rule findings
-# Env: SEMGREP_TEST_MODE — if "1", emits warning and exits 0 (test mode requires pysemgrep)
+# Env: SEMGREP_TEST_MODE: unsupported annotation mode fails visibly (status 2).
 
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
 	echo "Usage: $0 <rule-files...> -- <source-files...>"
-	exit 1
+	exit 2
 fi
 
-# Discover Pro engine from runfiles.
-# Search RUNFILES_DIR (not cwd) because external repo files live in sibling
-# directories (e.g. +semgrep+semgrep_engine_arm64/) outside _main/.
-# Use -type f -o -type l to match both regular files and symlinks.
-SEARCH_ROOT="${RUNFILES_DIR:-.}"
-SEMGREP_PRO_ENGINE=$(find "$SEARCH_ROOT" -name "semgrep-core-proprietary" \( -type f -o -type l \) 2>/dev/null | head -1)
-if [[ -z "$SEMGREP_PRO_ENGINE" ]]; then
-	echo "ERROR: semgrep-core-proprietary not found in runfiles"
-	exit 1
-fi
-
-# OSS engine is a runtime dependency — must be co-located for Pro to work
-SEMGREP_CORE=$(find "$SEARCH_ROOT" -name "semgrep-core" -not -name "*proprietary*" \( -type f -o -type l \) 2>/dev/null | head -1)
-if [[ -z "$SEMGREP_CORE" ]]; then
-	echo "ERROR: semgrep-core (OSS) not found — required as Pro runtime dependency"
-	exit 1
-fi
-
-# Verify the binary can execute on this platform (OCI-vendored engine is
-# Linux ELF — won't run on macOS). Use OSS binary for lighter check.
-if ! "$SEMGREP_CORE" -version >/dev/null 2>&1; then
-	echo "SKIPPED: semgrep-core found but cannot execute on this platform ($(uname -s)/$(uname -m))"
-	exit 0
-fi
-
-# Export the engine version for downstream tools (e.g., upload.py).
-SEMGREP_ENGINE_VERSION=$("$SEMGREP_CORE" -version 2>/dev/null | head -1 || echo "")
-export SEMGREP_ENGINE_VERSION
-
-# Stage both binaries in the same directory (Pro requires co-located OSS binary)
-PRO_DIR="${TEST_TMPDIR}/pro_bin"
-mkdir -p "$PRO_DIR"
-cp "$SEMGREP_CORE" "$PRO_DIR/semgrep-core"
-chmod 755 "$PRO_DIR/semgrep-core"
-cp "$SEMGREP_PRO_ENGINE" "$PRO_DIR/semgrep-core-proprietary"
-chmod 755 "$PRO_DIR/semgrep-core-proprietary"
-ENGINE="$PRO_DIR/semgrep-core-proprietary"
-
-# Copy libs beside the Pro binary so RPATH=$ORIGIN/libs works
-if [[ -d "$(dirname "$SEMGREP_CORE")/libs" ]]; then
-	cp -r "$(dirname "$SEMGREP_CORE")/libs" "$PRO_DIR/"
-fi
-
-# Pro engine requires a non-empty SEMGREP_APP_TOKEN for interfile analysis.
-# Redirect the API endpoint to a dead socket so the engine never phones home
-# (interfile analysis works offline; token is only checked for presence).
-# Real token + URL are preserved when available (for uploads).
-export SEMGREP_APP_TOKEN="${SEMGREP_APP_TOKEN:-offline}"
-export SEMGREP_URL="${SEMGREP_URL:-http://127.0.0.1:0}"
+source "$(dirname "${BASH_SOURCE[0]}")/semgrep-common.sh"
+semgrep_setup
 
 # Parse exclude items: filename-based exclusion (EXCLUDE_LIST) and
 # rule-ID-based exclusion (EXCLUDE_IDS).
@@ -88,7 +41,9 @@ fi
 
 # Collect rule files until we hit the -- separator, skipping excluded rules
 RULE_FILES=()
+RULE_COUNT=0
 while [[ $# -gt 0 && "$1" != "--" ]]; do
+	RULE_COUNT=$((RULE_COUNT + 1))
 	rule_name="$(basename "$1" .yaml)"
 	if [[ "$EXCLUDE_LIST" != *",$rule_name,"* ]]; then
 		RULE_FILES+=("$(pwd)/$1")
@@ -98,20 +53,13 @@ done
 
 if [[ $# -eq 0 ]]; then
 	echo "ERROR: missing -- separator between rules and source files"
-	exit 1
+	exit 2
 fi
 shift # skip --
 
 if [[ ${#RULE_FILES[@]} -eq 0 ]]; then
-	echo "PASSED: All rules excluded, nothing to scan"
-	exit 0
-fi
-
-# Test mode requires pysemgrep's --test command (# ruleid: / # ok: annotations).
-# semgrep-core doesn't support this — skip with a warning.
-if [[ "${SEMGREP_TEST_MODE:-}" == "1" ]]; then
-	echo "WARNING: SEMGREP_TEST_MODE=1 requires pysemgrep which is no longer bundled."
-	echo "SKIPPED: Rule annotation testing deferred to pysemgrep-based test target."
+	[[ "$RULE_COUNT" -gt 0 ]] || semgrep_error "no rules supplied"
+	echo "POLICY: All $RULE_COUNT rule files explicitly excluded; no scan required"
 	exit 0
 fi
 
@@ -133,7 +81,7 @@ fi
 SCAN_DIR="${TEST_TMPDIR}/scan"
 mkdir -p "$SCAN_DIR"
 SOURCE_FILES=()
-for f in "${SOURCE_ARGS[@]}"; do
+for f in ${SOURCE_ARGS[@]+"${SOURCE_ARGS[@]}"}; do
 	mkdir -p "$SCAN_DIR/$(dirname "$f")"
 	cp "$f" "$SCAN_DIR/$f"
 	SOURCE_FILES+=("$SCAN_DIR/$f")
@@ -192,7 +140,7 @@ detect_lockfile_kind() {
 
 # Build list of unique languages present in source files
 _ALL_LANGS=()
-for f in "${SOURCE_FILES[@]}"; do
+for f in ${SOURCE_FILES[@]+"${SOURCE_FILES[@]}"}; do
 	lang=$(detect_lang "$f")
 	if [[ -n "$lang" ]]; then
 		_ALL_LANGS+=("$lang")
@@ -216,14 +164,8 @@ for lang in ${SCAN_LANGS[@]+"${SCAN_LANGS[@]}"}; do
 	for rule_file in "${RULE_FILES[@]}"; do
 		RESULT_FILE="$RESULTS_DIR/result_${RESULT_INDEX}.json"
 		STDERR_FILE="${TEST_TMPDIR}/stderr_${RESULT_INDEX}.txt"
-		SCAN_EXIT_CUR=0
-		"$ENGINE" -rules "$rule_file" -pro_inter_file -lang "$lang" "$SCAN_DIR" -json -json_nodots \
-			>"$RESULT_FILE" 2>"$STDERR_FILE" || SCAN_EXIT_CUR=$?
-
-		if [[ "$SCAN_EXIT_CUR" -ne 0 ]]; then
-			echo "WARNING: semgrep-core exited $SCAN_EXIT_CUR on $(basename "$rule_file") (lang=$lang)" >&2
-			cat "$STDERR_FILE" >&2
-		fi
+		semgrep_run_pass "SAST rule=$rule_file lang=$lang" \
+			-rules "$rule_file" -pro_inter_file -lang "$lang" "$SCAN_DIR" -json -json_nodots
 
 		RESULT_INDEX=$((RESULT_INDEX + 1))
 	done
@@ -251,7 +193,7 @@ if [[ ${#LOCKFILE_FILES[@]} -gt 0 ]]; then
 		first=true
 
 		# CodeTargets with SCA product for source files
-		for f in "${SOURCE_FILES[@]}"; do
+		for f in ${SOURCE_FILES[@]+"${SOURCE_FILES[@]}"}; do
 			lang=$(detect_lang "$f")
 			if [[ -z "$lang" ]]; then
 				continue
@@ -289,43 +231,16 @@ if [[ ${#LOCKFILE_FILES[@]} -gt 0 ]]; then
 	for rule_file in "${RULE_FILES[@]}"; do
 		RESULT_FILE="$RESULTS_DIR/result_${RESULT_INDEX}.json"
 		STDERR_FILE="${TEST_TMPDIR}/stderr_${RESULT_INDEX}.txt"
-		SCAN_EXIT_CUR=0
-		"$ENGINE" -rules "$rule_file" -targets "$TARGETS_FILE" -json -json_nodots \
-			>"$RESULT_FILE" 2>"$STDERR_FILE" || SCAN_EXIT_CUR=$?
-
-		if [[ "$SCAN_EXIT_CUR" -ne 0 ]]; then
-			echo "WARNING: semgrep-core (SCA) exited $SCAN_EXIT_CUR on $(basename "$rule_file")" >&2
-			cat "$STDERR_FILE" >&2
-		fi
+		semgrep_run_pass "SCA rule=$rule_file" \
+			-rules "$rule_file" -targets "$TARGETS_FILE" -json -json_nodots
 
 		RESULT_INDEX=$((RESULT_INDEX + 1))
 	done
 fi
 
-# Merge results into a single JSON and determine findings
+# Validate every pass before finding-only filters can change the result.
 MERGED_FILE="${TEST_TMPDIR}/results.json"
-SCAN_EXIT=0
-python3 - "$RESULTS_DIR" "$MERGED_FILE" <<'PYEOF' || SCAN_EXIT=$?
-import json, glob, sys, os
-
-results_dir = sys.argv[1]
-output_file = sys.argv[2]
-merged = {"results": [], "errors": []}
-
-for f in sorted(glob.glob(os.path.join(results_dir, "result_*.json"))):
-    try:
-        data = json.load(open(f))
-        merged["results"].extend(data.get("results", []))
-        merged["errors"].extend(data.get("errors", []))
-    except (json.JSONDecodeError, KeyError):
-        pass
-
-json.dump(merged, open(output_file, "w"))
-
-# Exit 1 if there are findings (so the caller can detect)
-if merged["results"]:
-    sys.exit(1)
-PYEOF
+semgrep_merge
 
 # SCA version filter: semgrep-core does reachability analysis but does not
 # compare lockfile versions against the rule's version constraint (that is
@@ -534,65 +449,4 @@ fi
 # The upload required network access and git CLI, which broke sandbox hermeticity.
 # Re-enable when Semgrep App integration is set up.
 
-# When rule-ID exclusions are set, post-filter the JSON results.
-# semgrep-core check_ids may or may not be prefixed — suffix matching handles both.
-if [[ "$SCAN_EXIT" -ne 0 && ${#EXCLUDE_IDS[@]} -gt 0 ]]; then
-	if python3 - "$MERGED_FILE" "${EXCLUDE_IDS[@]}" <<'PYEOF'; then
-import json, sys
-
-with open(sys.argv[1]) as f:
-    data = json.load(f)
-exclude_ids = sys.argv[2:]
-results = data.get("results", [])
-filtered, excluded = [], 0
-for r in results:
-    cid = r.get("check_id", "")
-    if any(cid.endswith("." + e) or cid == e for e in exclude_ids):
-        excluded += 1
-    else:
-        filtered.append(r)
-if filtered:
-    for r in filtered:
-        cid = r.get("check_id", "")
-        parts = cid.rsplit(".", 2)
-        short = ".".join(parts[-2:]) if len(parts) >= 2 else cid
-        path = r.get("path", "?")
-        line = r.get("start", {}).get("line", "?")
-        msg = r.get("extra", {}).get("message", "")
-        print(f"  {short} at {path}:{line}")
-        if msg:
-            print(f"    {msg[:200]}")
-        print()
-    print(f"Found {len(filtered)} finding(s) ({excluded} excluded)")
-    sys.exit(1)
-if excluded:
-    print(f"  ({excluded} finding(s) excluded by rule ID filter)")
-sys.exit(0)
-PYEOF
-		SCAN_EXIT=0
-	fi
-fi
-
-if [[ "$SCAN_EXIT" -eq 0 ]]; then
-	echo "PASSED: No semgrep findings"
-else
-	# Print findings summary from JSON so test logs are actionable
-	python3 - "$MERGED_FILE" <<'PYEOF' 2>/dev/null || true
-import json, sys
-with open(sys.argv[1]) as f:
-    data = json.load(f)
-for r in data.get("results", []):
-    cid = r.get("check_id", "")
-    parts = cid.rsplit(".", 2)
-    short = ".".join(parts[-2:]) if len(parts) >= 2 else cid
-    path = r.get("path", "?")
-    line = r.get("start", {}).get("line", "?")
-    msg = r.get("extra", {}).get("message", "")
-    print(f"  {short} at {path}:{line}")
-    if msg:
-        print(f"    {msg[:200]}")
-    print()
-PYEOF
-	echo "FAILED: Semgrep found violations"
-fi
-exit "$SCAN_EXIT"
+semgrep_finish

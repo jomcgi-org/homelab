@@ -43,12 +43,10 @@ def _semgrep_target_test_impl(ctx):
     lines = ["#!/usr/bin/env bash", "set -euo pipefail"]
     lines.extend(env_lines)
 
-    if not sources:
-        lines.append("echo 'No sources found in target dependency tree'")
-        lines.append("exit 0")
-    else:
-        quoted_args = " ".join(["\"{}\"".format(a) for a in args])
-        lines.append("exec \"{}\" {}".format(test_runner.short_path, quoted_args))
+    # Let the wrapper distinguish lockfile-only work, explicit exclusions and
+    # unexpected empty input. An empty source closure alone is not a clean scan.
+    quoted_args = " ".join(["\"{}\"".format(a) for a in args])
+    lines.append("exec \"{}\" {}".format(test_runner.short_path, quoted_args))
 
     ctx.actions.write(
         output = launcher,
@@ -61,7 +59,8 @@ def _semgrep_target_test_impl(ctx):
     # DefaultInfo.files, not default_runfiles, so we must add both.
     engine_files = ctx.attr._engine[DefaultInfo].files.to_list()
     pro_files = ctx.attr.pro_engine[DefaultInfo].files.to_list() if ctx.attr.pro_engine else []
-    all_files = [test_runner] + rule_files + sca_rule_files + sources + lockfile_files + engine_files + pro_files
+    support_files = ctx.attr._wrapper_support[DefaultInfo].files.to_list()
+    all_files = [test_runner] + support_files + rule_files + sca_rule_files + sources + lockfile_files + engine_files + pro_files
     runfiles = ctx.runfiles(files = all_files)
 
     runfiles = runfiles.merge(ctx.attr._engine[DefaultInfo].default_runfiles)
@@ -102,6 +101,7 @@ _semgrep_target_test = rule(
             default = "//bazel/semgrep/defs:semgrep-test.sh",
             allow_single_file = True,
         ),
+        "_wrapper_support": attr.label(default = "//bazel/semgrep/defs:wrapper_support"),
         "_engine": attr.label(default = "//bazel/semgrep/third_party/semgrep:engine"),
     },
 )

@@ -45,6 +45,7 @@ def semgrep_test(
 
     data = [
         "//bazel/semgrep/third_party/semgrep:engine",
+        "//bazel/semgrep/defs:wrapper_support",
     ] + rules + sca_rules + srcs + lockfiles
 
     if pro_engine:
@@ -100,6 +101,7 @@ def semgrep_manifest_test(
 
     data = [
         "//bazel/semgrep/third_party/semgrep:engine",
+        "//bazel/semgrep/defs:wrapper_support",
         "@multitool//tools/helm",
         chart_files,
     ] + rules + values_files
