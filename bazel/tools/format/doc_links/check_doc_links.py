@@ -97,6 +97,10 @@ _TEST_FILE_SUFFIXES: tuple[str, ...] = (
 _EXAMPLE_ALLOWLIST: frozenset[str] = frozenset(
     {
         "projects/model-bench/tasks/research-adr-writeback-01/task.yaml",
+        # Frozen knowledge-gate calibration fixture: an atom's evidence text
+        # quotes the ADR path it was extracted from. Rewriting the evidence
+        # would change what the calibration test grades, and the ADR it names
+        # was harvested into projects/embervm/ARCHITECTURE.md.
         "projects/monolith/knowledge/testdata/atoms-all.tsv",
     }
 )
@@ -120,6 +124,7 @@ _GENERATED: frozenset[str] = frozenset(
 _APPLIED_MIGRATIONS: frozenset[str] = frozenset(
     {
         "projects/monolith/chart/migrations/20260703070000_grimoire_schema.sql",
+        "projects/monolith/chart/migrations/20260714000000_faas_function.sql",
     }
 )
 

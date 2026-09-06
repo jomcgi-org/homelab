@@ -1,7 +1,7 @@
 # EmberVM TLA+ specs
 
 Formal specifications of EmberVM's concurrency-critical protocols, checked by
-TLC in CI. This directory is the pilot of [ADR embervm/006](../../../docs/decisions/embervm/006-tla-formal-specification-pilot.md):
+TLC in CI. This directory is the pilot of ADR embervm/006 ([ARCHITECTURE.md, section 6](../ARCHITECTURE.md#6-control-plane-internals)):
 six specs now, checked exhaustively over small bounds, plus the layer-1
 vocabulary sync guard that keeps them honest against the code. Protocol 1 (VM
 lifecycle + adoption) is `adoption.tla`; protocol 2 (session bank/relight

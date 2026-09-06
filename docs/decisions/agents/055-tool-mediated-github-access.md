@@ -6,9 +6,9 @@
 **Relates to:** [020 - Deprecate Context Forge, Serve MCP Directly from the
 Monolith](020-deprecate-context-forge-mcp-gateway.md) (Accepted, deferred
 execution; a genuine tension this ADR states rather than resolves),
-[047 - Per-Principal Egress Credentials and the Broker Identity
-Envelope](047-per-principal-egress-credential-broker.md) and
-[023 - Egress Secret Proxy for Agent Sandboxes](023-egress-secret-proxy.md)
+047 - Per-Principal Egress Credentials and the Broker Identity
+Envelope and
+023 - Egress Secret Proxy for Agent Sandboxes
 (both Draft, the egress lane this ADR removes GitHub from for agent
 principals), [027 - Agent GitHub App Roles](027-agent-github-app-roles.md)
 (Draft, a different axis, out of scope here), [005 - Role-Based MCP
@@ -157,8 +157,8 @@ specifies Context Forge because that is where the tools live today and what
 and this ADR both invest in Context Forge; that revisit is not this ADR's
 decision to make.
 
-[ADR 047](047-per-principal-egress-credential-broker.md) and
-[ADR 023](023-egress-secret-proxy.md) (both Draft) specify the per-principal
+ADR 047 and
+ADR 023 (both Draft) specify the per-principal
 credential lane for egress generally. This ADR does not replace them; it
 removes GitHub from that lane's scope for agent principals (decision 1),
 leaving the egress broker to the credentials that genuinely need host-keyed
@@ -406,8 +406,8 @@ unclassified tools.
 | Resource | Relevance |
 | --- | --- |
 | [ADR 020 - Deprecate Context Forge, Serve MCP Directly from the Monolith](020-deprecate-context-forge-mcp-gateway.md) | Accepted, deferred execution; the genuine tension this ADR states rather than papers over |
-| [ADR 047 - Per-Principal Egress Credentials and the Broker Identity Envelope](047-per-principal-egress-credential-broker.md) | The egress-lane credential model this ADR removes GitHub from for agent principals |
-| [ADR 023 - Egress Secret Proxy for Agent Sandboxes](023-egress-secret-proxy.md) | The placeholder-swap-then-header-injection mechanism ADR 047 amends and this ADR routes GitHub out of |
+| ADR 047 - Per-Principal Egress Credentials and the Broker Identity Envelope | The egress-lane credential model this ADR removes GitHub from for agent principals |
+| ADR 023 - Egress Secret Proxy for Agent Sandboxes | The placeholder-swap-then-header-injection mechanism ADR 047 amends and this ADR routes GitHub out of |
 | [ADR 027 - Agent GitHub App Roles](027-agent-github-app-roles.md) | Out of scope: a different axis (who may merge), not amended or superseded here |
 | [ADR 005 - Role-Based MCP Access](005-role-based-mcp-access.md) | Deprecated; prior art for the team-claim-plus-RBAC shape Context Forge still provides |
 | [Issue #4569](https://github.com/jomcgi/homelab/issues/4569) | The group and tool-tier machinery decision 3 depends on, and the reconcile-pass requirement behind the `visibility=public` risk |

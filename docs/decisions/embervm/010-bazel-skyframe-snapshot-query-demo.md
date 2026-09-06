@@ -137,8 +137,8 @@ Baseline per `docs/security.md`. This is a public, anonymous surface, so the thr
 
 | Resource | Relevance |
 | -------- | --------- |
-| [ADR 001 - EmberVM orchestrator](001-embervm-beam-firecracker-workload-orchestrator.md) | Zero-egress / no-cross-principal isolation and the capacity contract the demo clones inherit |
-| [ADR 003 - Snapshot distribution](003-control-plane-managed-snapshot-distribution.md) | The snapshot-as-artifact store and Restore/Evict verbs this reuses |
-| [ADR 009 - Continuity before tenancy](009-roadmap-extension-continuity-before-tenancy.md) | The generalized `ArtifactRef`/Export/Restore family; this workload is one `kind` |
+| ADR 001 - EmberVM orchestrator | Zero-egress / no-cross-principal isolation and the capacity contract the demo clones inherit |
+| ADR 003 - Snapshot distribution | The snapshot-as-artifact store and Restore/Evict verbs this reuses |
+| ADR 009 - Continuity before tenancy | The generalized `ArtifactRef`/Export/Restore family; this workload is one `kind` |
 | R7 distribution design seed | The copy-not-rebuild CoW relight the per-request clones use |
 | [BazelCon 2025 recap (JetBrains)](https://blog.jetbrains.com/clion/2025/11/bazelcon-2025/) | Confirms Skycache/remote analysis caching is Blaze-internal and only under discussion for OSS |

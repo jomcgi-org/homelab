@@ -25,7 +25,7 @@ Five workload classes ride one substrate:
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The design, standalone: current state and decided future, the capability matrix, invariants, threat model, and platform contract |
 | [STPA.md](STPA.md) | The safety model: unsafe control actions and feedback that drive the system into a loss, with severity |
 | [deploy/README.md](deploy/README.md) | The reference deployment: fleet shape, node enrollment, warmth GC operations |
-| [docs/decisions/embervm/README.md](../../docs/decisions/embervm/README.md) | Why: the ADR map and the rationale behind the architecture |
+| [ARCHITECTURE.md, section 13](ARCHITECTURE.md#13-adr-map) | Why: the ADR map, each decision's status, and where its rationale now lives (the `**Why.**` paragraph per section) |
 | [specs/](specs/) | TLA+ models (`adoption`, `bank_relight`, `quota`, `session_create`), run under TLC in the build |
 
 ## Layout

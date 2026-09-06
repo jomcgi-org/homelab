@@ -67,7 +67,8 @@ compare against.
 | Node-local activator | **Planned** | Partly landed |
 | Brick autoscale | **Built** at rung `up`; **Planned** scale-down | Full ladder remains |
 | S3 archive-at-bank | **Decided direction** | Archive at bank commit |
-| Transport auth CP-to-noded | **Built** (bearer + policy) | mTLS/SPIFFE remains the upgrade path |
+| Transport auth CP-to-noded | **Built** (bearer + ingress policy) | SPIFFE mTLS is **Planned**: SPIRE is live with no EmberVM consumer yet, phase 2 of #5706 in flight |
+| Guest identity (JWT-SVID) | **Decided direction** | Per-principal SVID delivered over vsock, phase 3 of #5706 |
 | Encryption at rest | **Built** | Per-principal mutable artifacts (#4691), enabled per environment by values; Account-scoped immutable rootfs chunks remain planned (ADR 028, #4182) |
 | Cells / multi-cell | **Planned** | No cell seams exist in code yet (#4753); one control plane today |
 | Standalone packaging | **Decided direction** | Open-sourceable artifact |
@@ -277,6 +278,11 @@ are fetched and unpacked inside the disposable guest).
 | **stateful** | Scale-to-zero singleton datastore; L4 wake-on-connect; volume owns data, snapshot owns warmth | L4 via node Envoy | `vol.img` on node NVMe (authoritative) | demo-postgres |
 | **composite** | Multi-VM group, private per-group /24, all-or-none bundle-set bank/relight; warmth only, no member volumes | per-group bridge | group snapshot set | no current consumer |
 
+A serving base built from an image registers its rootfs as the serving-images
+entry with no handler path, and a fresh boot runs the image's own entrypoint as
+the HTTP server; only zip-lane boots attach a handler drive (**Built**, ADR
+embervm/038, `noded/server/activator.go`).
+
 **Planned**:
 
 - **Isolated high-throughput lane**: Envoy routes straight to
@@ -427,6 +433,12 @@ becomes a declared soft budget. `persistence.filesystem.retention` is inert
 today, and artifact GC keeps only the newest artifact. `latest + N` remains the
 planned retention direction.
 
+Repo-backed sessions hydrate their workspace with a direct HTTPS clone through
+the egress lane. The node-local git mirror sidecar (`gitMirror`) is **Built**
+but off in every deployment and has never served a hydration: the shim's
+mirror attempt is denied at the egress proxy and falls through to the direct
+clone.
+
 Memory-banking session lineages have an available but dormant sequential
 Firecracker dirty-page diff path. The first bank is a full; after each allowed
 workload relights, snapshot load re-arms dirty tracking and the next bank writes
@@ -569,6 +581,9 @@ discardable (ADR embervm/006, ADR embervm/014).
 
 ## 6. Control plane internals
 
+The control plane holds sparse facts and derives dense things on demand; it
+never stores or witnesses anything that scales with the fleet.
+
 - **State model**: hot working set in ETS (rebuilt on start, healed by
   adoption from node reports); durable book-of-record in the op-log behind
   the `Embervm.OpLog` behaviour. Postgres is the default backend (CNPG in
@@ -600,8 +615,10 @@ discardable (ADR embervm/006, ADR embervm/014).
   deployed config (#4758), and it passed on both.
   **Planned**: trace validation, op-log events checked against TLA+
   actions. The debug-gated SpecTrace implementation (#4770) ships and runs
-  in dev with `specTrace.enabled`; production keeps it off. ADR embervm/034
-  records the full delivery path and is still a draft.
+  in dev with `specTrace.enabled`; production keeps it off. The full harness
+  (hermetic and deployed lanes, direct-checker and TLC tiers, anti-vacuity
+  manifests, DRILL and VACUOUS as distinct verdicts) is **Decided direction**
+  (ADR embervm/034), tracked in #4761 and #4763.
 - **Cells**: the unit of horizontal scale is a cell, a complete
   single-writer control plane owning a bounded set of bricks and workloads,
   with one op-log appender (ordering is within-cell only). **Planned**
@@ -617,6 +634,12 @@ discardable (ADR embervm/006, ADR embervm/014).
 - **Bounded node dials**: every node dial carries a 3 s TCP connect timeout,
   and channel dials run in callers so they never block the `NodeChannel`
   process (#5124).
+- **Health surface tiers** (ADR embervm/031): `/health` latches unhealthy
+  immediately on a sustained artifact-export failure streak (tier 1, a user's
+  data at risk now) and only after more than 24 h without a completed warmth
+  GC sweep, measured as the age of the newest `gc-manifests/` object (tier 2,
+  maintenance debt with days of runway). Both end in the health surface;
+  Discord alerts are a companion signal, not the record.
 
 **Decided direction:**
 
@@ -665,30 +688,34 @@ priority class (`homelab-disposable`, or `homelab-preemptible` on GKE, see
 below), so guests are the first to yield under node memory pressure;
 per-workload arbitration happens only in CP dispatch. QoS is Burstable:
 CPU carries no limit (request-only, sized as a CFS fair-share weight rather
-than a reservation), and memory requests are moving to ~75% of limit on
-GKE (PR #5519, not yet merged) since Firecracker guest RAM is
-demand-faulted and a brick's resident set runs far under its configured
-ceiling; the limit itself is untouched and still sets `usable_mib`, so no
-guest's admitted capacity changes (ADR embervm/039).
+than a reservation), and memory requests sit at roughly 75% of limit (PR
+#5519, merged 2026-09-01) since Firecracker guest RAM is demand-faulted and a
+brick's resident set runs far under its configured ceiling; the limit itself
+is untouched and still sets `usable_mib`, so no guest's admitted capacity
+changes (ADR embervm/039).
 
 **Decided direction** (ADR embervm/039, from the 2026-09-01 capacity
 incidents): overcommit blast radius is a ladder, guest (Firecracker jailer
 per-VM cgroup, `memory.oom.group`) before brick (kubelet eviction of the
-lowest-priority pod) before node; a brick sheds its least-recently-active
-idle guests via existing bank paths once its observed memory crosses a
-high-water fraction of its limit, with hysteresis back to a low-water mark
-before shedding stops; and unsatisfiable demand (no class fits, or class
-and pool headroom are both exhausted) becomes one signaled capacity
+lowest-priority pod) before node; and unsatisfiable demand (no class fits, or
+class and pool headroom are both exhausted) becomes one signaled capacity
 condition on `/health` and Workload status, held with hysteresis, rather
-than a retry at request frequency. `homelab-preemptible` (-9, platform
-chart) replaces `homelab-disposable` (-1000) on GKE bricks specifically so
-a Pending brick stays visible to the cluster autoscaler's scale-up (above
-its -10 expendable-pods cutoff) while remaining first-evicted; this
-reopens, and only partially answers, the mass-VM-death preemption concern
-ADR embervm/016 raised against below-default brick priority (scheduler
-preemption deletes rather than drains). The Firecracker jailer that backs
-the guest rung of the ladder is **Planned** (#5520; section 10 has the
-containment detail).
+than a retry at request frequency (today only the `:fleet_full` 503 exists).
+Pressure shedding is **Built, disarmed** (#5521): a brick sheds its
+least-recently-active idle guests via the existing bank paths once its
+observed memory crosses `statefulSweeper.pressureBanking.highWaterFraction`
+(0.85), with hysteresis back to the low-water mark (0.70) before shedding
+stops; the lane is off in every deployment pending live verification.
+`homelab-preemptible` (-9, platform chart) replaces `homelab-disposable`
+(-1000) on GKE bricks specifically so a Pending brick stays visible to the
+cluster autoscaler's scale-up (above its -10 expendable-pods cutoff) while
+remaining first-evicted; this reopens, and only partially answers, the
+mass-VM-death preemption concern ADR embervm/016 raised against
+below-default brick priority (scheduler preemption deletes rather than
+drains). The Firecracker jailer that backs the guest rung of the ladder is
+**Shipped-but-suspended** (#5520; section 10 has the containment detail). It
+lands dark pending live verification on one brick, after which a values-only
+change can arm it.
 
 **Decided direction**: PriorityClass ranking of brick
 pools by lane with sacrificial balloon bricks for burst headroom, and
@@ -782,6 +809,15 @@ by `(vendor, template)` and never cross the boundary; the daemon refuses a
 vendor-mismatched restore loudly. Volume data is fully portable. Legacy
 artifacts cut before stamping existed are grandfathered: restorable on their
 home node forever, never distributed.
+
+A base snapshot is also bound to the exact rootfs it was captured on: noded
+records the rootfs ext4 UUID at capture and refuses a restore, sibling
+adoption, or prime against a mismatched or missing identity, moving an
+in-use mismatched bundle aside rather than resuming a guest onto a
+filesystem it never saw (#5674). A rebaked rootfs after a node replacement
+therefore forces a fresh base build on that node. **Planned** (#5772): cache
+the baked rootfs in the store so a fresh node downloads the same bytes
+instead of rebaking.
 
 **Principal artifact envelope encryption** is **Built, inert until enabled per
 environment** (#4691). Each principal artifact file is zstd-encoded,
@@ -928,6 +964,28 @@ guest-controlled placeholder can be spliced into a URL and reflect the
 credential into a request line. RAM scrubbing before snapshot is rejected
 as a mechanism to rely on; revocation at the validator is the control.
 
+**Token broker** (`projects/embervm/tokenbroker/`, **Built**): the single
+owner of every mutable OAuth grant. A catalog credential marked with a broker
+grant is resolved by the egress sidecar as a short-lived access token fetched
+from the broker rather than from a static Secret, so a subscription refresh
+token (Codex ChatGPT) or an authentik service-account grant rotates in one
+place and never enters a guest. The grant Secret's data is broker-owned and
+`ignoreDifferences`d in the Application.
+
+**Agent MCP lane** (**Built** on the hub): the guest half of the agents tier
+described in [projects/mcp/ARCHITECTURE.md](../mcp/ARCHITECTURE.md#topology).
+The shim writes a strict MCP client config from a URL delivered by
+`kernelBootArgs` as an `ember.env.*` token (the only values-driven way a
+guest-read setting reaches the shim; `initEnv` is a base-signature input
+only). The sidecar's catalog entry for that destination resolves the
+broker's `agent-mcp` grant, opts into `plaintextUpstream` because the tier
+is an in-cluster plaintext listener, injects on `injectAlwaysPaths` `/mcp`
+and `/mcp/` because the codex client sends no Authorization header, and
+serves one request per connection because the tier's 5 second keep-alive
+otherwise killed the first call after idle. The upstream therefore sees the
+broker's identity rather than the guest's, the gap phase 4 of the SPIFFE
+program below closes.
+
 **Public surface hardening** (**Built**): the public routes are scoped at their
 HTTPRoutes, with serving routes additionally constrained by node Envoy authority
 matches. Node Envoy returns 404 for `/shim/*` before routing to a serving
@@ -940,8 +998,23 @@ argv, zero egress, reaped per request.
 **Guest identity**: a guest never holds a cluster credential (**Built**, by
 construction: no NIC, no mounted ServiceAccount); the
 platform holds real credentials and acts on the guest's behalf through
-the brokered egress path. **Decided direction**: an audience-scoped
-projected guest token (audience `embervm`), **Planned**.
+the brokered egress path.
+
+**Decided direction** (ADR embervm/041, #5706): one self-hosted SPIRE trust
+domain, `embervm.jomcgi.dev`, issues every EmberVM identity. Platform
+components (control plane, noded, egress proxy, token broker) get X.509-SVIDs
+registered as `ClusterSPIFFEID`s, and the CP-to-noded hop moves to symmetric
+mTLS with credentials delivered as files by a spiffe-helper sidecar and read
+at dial time, on second listeners beside the plaintext bearer ones so each
+side flips independently before the bearer retires. Guests get per-principal
+JWT-SVIDs (`spiffe://embervm.jomcgi.dev/ember/principal/<p>`, 5 minute TTL)
+fetched by noded as the node agent's delegate and delivered over vsock at
+boot and every relight, never written to scratch or into a snapshot; the
+egress proxy then authorizes by (principal, host) and the MCP lane validates
+the guest's own SVID. GCP credential federation follows. State: SPIRE is
+live with the platform registration entries and no EmberVM consumer (phases
+0 and 1); platform mTLS (phase 2) is in flight; guest identity,
+request-scoped injection, and federation (phases 3 to 5) are **Planned**.
 
 **Decided direction:** GitHub leaves the agent egress
 catalog. Host-keyed injection bounds which host a credential reaches, never
@@ -973,11 +1046,14 @@ embervm/032).
 - **Accepted risk**: privileged noded with /dev/kvm; external-allow guest
   egress via the broker; taint optional; CPU side-channel between
   co-resident tenant guests on the same brick, unmapped (#5255).
-- **Decided direction** (ADR embervm/039, #5520): adopt the Firecracker
-  jailer for per-VM chroot, uid/gid drop, cgroup, and PID namespace
-  containment, closing the gap where noded execs firecracker directly as
-  root today with none of it.
-- **Planned**: mTLS/SPIFFE as the noded transport-auth upgrade.
+- **Shipped-but-suspended** (ADR embervm/039, #5520): the Firecracker jailer
+  provides per-VM chroot, uid/gid drop, and cgroup containment, closing the
+  direct-root-exec gap when enabled. The chart lands it dark
+  (`noded.jailer.enabled: false` in every deployment) pending live
+  verification on one brick. `--new-pid-ns` is deliberately omitted because
+  a PID namespace breaks `execProcess` `Wait` and `Pid` supervision semantics.
+- **Planned** (ADR embervm/041 phase 2, in flight): X.509-SVID mTLS on the
+  CP-to-noded hop and the token broker, retiring the static bearer.
 
 EmberVM evaluates itself against the threat model published by
 [agent-substrate/substrate](https://github.com/agent-substrate/substrate/blob/main/docs/threat-model.md),
@@ -1054,7 +1130,7 @@ Trust diagram legend: every edge is a current path.
 | Requirement (external mapping #) | Ember state |
 | ---------------------------- | ----------- |
 | No direct internet exposure of guests, nodes, or the CP (1, 2, 3) | **Built.** Nothing faces the internet directly; ingress rides the deployment's zero-trust edge tunnel, public routes are scoped at their HTTPRoutes, and node Envoy returns 404 for `/shim/*` before routing, so the workload handler never sees the reserved prefix. The build-only hydrate endpoint also refuses another hydrate once the shim is ready (section 9). |
-| Mutual authentication and encrypted transport between components (4, 10) | **Built** for CP-to-noded authentication and ingress confinement: one bearer Secret is rendered into the control plane and every noded pod from the same values keys and enabled flag, and the control plane attaches it to every unary and streaming gRPC request. An ingress-only CiliumNetworkPolicy allow-lists each noded listener by its caller. Both controls are enforced in production and dev (#4693, 2026-08-22). mTLS/SPIFFE remains the additive upgrade path (`proto/embervm/node/v1/node.proto`). Encrypted session-routing tokens are **Decided direction**. Management callers authenticate via Kubernetes TokenReview against an allow-list; the actor / principal / permission split with per-verb authorization is **Decided direction**. |
+| Mutual authentication and encrypted transport between components (4, 10) | **Built** for CP-to-noded authentication and ingress confinement: one bearer Secret is rendered into the control plane and every noded pod from the same values keys and enabled flag, and the control plane attaches it to every unary and streaming gRPC request. An ingress-only CiliumNetworkPolicy allow-lists each noded listener by its caller. Both controls are enforced in production and dev (#4693, 2026-08-22). SPIFFE X.509-SVID mTLS is the additive upgrade the proto reserves (`proto/embervm/node/v1/node.proto`), in flight as phase 2 of #5706 (section 9). Encrypted session-routing tokens are **Decided direction**. Management callers authenticate via Kubernetes TokenReview against an allow-list; the actor / principal / permission split with per-verb authorization is **Decided direction**. |
 | Control plane isolated from the data plane (6) | **Built** as a seam: the CP runs on Kubernetes, noded runs on bricks, and payloads never traverse the CP (invariant 2). **Accepted risk** in the reference deployment: guests co-locate with the etcd masters (section 11); do not import that clause into a cluster whose etcd is precious. |
 | Runtime configurable only by administrators (7) | **Built.** A workload chooses class and source (zip or image); the sandbox technology, kernel, and platform bases are CI-built platform artifacts it cannot substitute. |
 | A sanctioned, secure path for secrets (11) | **Built.** The cluster's secret operator is the only secret source, and guests receive none (the section 9 credential classes). |
@@ -1100,10 +1176,15 @@ KVM-capable nodes, a local scratch disk per Kubernetes node, and an
 S3-compatible object store.
 
 - **Scratch is a node-provisioning contract**: every FC-labelled Kubernetes
-  node
-  bind-mounts its real device at `/var/lib/embervm/scratch` (hostPath type
-  Directory fails closed if unsatisfied). Karpenter `instanceStorePolicy`
-  RAID0 satisfies it on EKS; local NVMe elsewhere.
+  node bind-mounts its real device at `/var/lib/embervm/scratch` (hostPath
+  type Directory fails closed if unsatisfied). Karpenter `instanceStorePolicy`
+  RAID0 satisfies it on EKS; local NVMe elsewhere. Where no out-of-band
+  bootstrap exists, the chart's `scratchPrep` DaemonSet provisions a
+  size-capped ext4 loop file at that path (the GKE hub). Bases under it are
+  node-shared across co-located bricks. Scratch does not survive a Spot node
+  replacement: every guest rootfs rebakes in the brick init containers and
+  the control plane re-drives the dropped bases without a restart, about ten
+  minutes end to end.
 - **Warmth never crosses a CPU vendor** (until CPU templates land):
   artifacts are keyed per vendor, the gate fails closed at the daemon, and
   each vendor pool holds its own warmth.
@@ -1176,6 +1257,8 @@ is the current work and the decided directions behind it.
   (needs a second warm-capable node to matter)
 - standalone packaging
 - the management-surface actor / principal / permission split
+- the kubernetes-sigs/agent-sandbox interface backed by an edge adapter
+  (ADR embervm/004), deferred until that interface has traction
 
 Hard multi-tenancy (virtual control planes) is deferred pending real
 demand. Internal rung IDs R0-R9 map onto the capabilities.
@@ -1188,8 +1271,100 @@ routine roll, upgrade or scale-down is a clock the platform sets and gives
 a workload up to 110 seconds of drain notice. A GCE Spot preemption is a
 clock the provider sets and gives approximately 30 seconds; the two-minute
 figure this doc previously quoted is the AWS contract and was never true
-here (ADR 040). State durability within the stated archive interval is the
+here (ADR 040). noded's GCE preemption-notice watcher
+(`drain.preemptionNoticeEnabled`, a 20 second preemption budget) is **Built**
+and off in every deployment, so until it is armed the control plane is still
+told the 110 second figure when a preemption arrives. State durability within the stated archive interval is the
 guarantee, connection continuity is not (narrowed for stateful by the
 planned-drain contract). Artifact retention
 TTLs and the GC sweep behaviour are in
 [deploy/README.md](deploy/README.md).
+
+---
+
+## 13. ADR map
+
+The decisions behind this document, harvested into it and deleted under the
+rollup programme (#4667); git history keeps each ADR's full text. A new ADR
+that changes a decision updates this document in the same PR and is deleted
+once harvested. `bazel/tools/hooks/check-adr-architecture-sync.sh` reminds on
+writes under `docs/decisions/embervm/`, `chart/`, and `deploy/`.
+
+| ADR | Decision | Status | Disposition |
+| --- | -------- | ------ | ----------- |
+| embervm/001 | EmberVM itself: BEAM control plane over a Go node daemon, hit/miss invariant, five classes, isolation model | Accepted; copy-never-rebuild for stateful withdrawn by 025 | deleted in this PR |
+| embervm/002 | Op-log retention: read-time TTLs, 7 day terminal prune, 30 day journal horizon behind a durable marker | Accepted, Built; shape restructured by 019 | deleted in this PR |
+| embervm/003 | Control-plane-managed snapshot distribution, Build / Restore / Export / Evict verbs | Accepted, Built; verbs generalized by 009 | deleted in this PR |
+| embervm/004 | Back kubernetes-sigs/agent-sandbox through a deferred edge adapter, no native session API | Accepted; adapter not built, gated on upstream traction | deleted in this PR |
+| embervm/005 | EKS scale-out: metal pool, multi-daemon bricks, EmberPool CRD, dial-home | Accepted; EmberPool never built, brick counts are a values knob behind `BrickController`; decision 3 superseded by 028 (#3849, #3851) | deleted in this PR |
+| embervm/006 | TLA+ pilot with three conformance layers | Accepted; six specs run under TLC in the build, trace validation deferred to 034 | deleted in this PR |
+| embervm/007 | Batched Postgres op-log tier, cells, hot-loop corrections | Accepted; Postgres Built, no cell seams exist (#4753, #3853, #3855) | deleted in this PR |
+| embervm/008 | Opt-in two-phase interruptible bank | Accepted, Built | deleted in this PR |
+| embervm/009 | Continuity before tenancy: R6 to R9, spot availability contract, S3 seam | Accepted; quickstart open (#3856, #3858) | deleted in this PR |
+| embervm/010 | Bazel warm-Skyframe public demo as a stateless query consumer | Accepted, Built | retained: the public `/ember/bazel` page deep-links it, disposition pending |
+| embervm/011 | Vendor-bound warmth, single-writer fencing, CP-sequenced rollouts | Accepted; stateful Longhorn withdrawn by 025; sole-issuer rule amended by 017, 018, 040 | deleted in this PR |
+| embervm/012 | Co-located fleet, etcd blast radius accepted, grandfather rule, registry survives restart | Accepted; dynamic sizing retired by 013; HA open (#3862) | deleted in this PR |
+| embervm/013 | Classes are reuse semantics, substrates are lanes; brick sizing; bricks everywhere | Accepted, Built | deleted in this PR |
+| embervm/014 | Worker-authoritative state, async writes, node-confirmed destruction | Draft, Built (`adoption.tla`); metering clause amended by 020 | deleted in this PR |
+| embervm/015 | Isolated high-throughput lane with data-plane placement | Draft, not built (#3864, #3865, #3866); fail-closed lease withdrawn by 020 | deleted in this PR |
+| embervm/016 | Kubernetes scheduling contract: the pod is the ABI, priority projection, session ladder | Accepted; kwok drills never built; placement loop superseded by 020, ladder amended by 025, 027, 029 | deleted in this PR |
+| embervm/017 | Bounded auto-heal of the checkpoint-abort quarantine | Accepted, Built (`generation_issuance.tla`) | deleted in this PR |
+| embervm/018 | Node-local activator (Fork A), brick-authoritative lifecycle (Fork B) | Accepted; Fork A partly landed, Fork B lease Built (#3993, #4013) | deleted in this PR |
+| embervm/019 | Op-log payload separation, time partitioning, principal-scoped erasure | Draft, Decided direction | deleted in this PR |
+| embervm/020 | Admission-only control plane, token routing, peer redistribution, fail-open metering | Draft, Decided direction; decision 3 withdrawn to 023 | deleted in this PR |
+| embervm/021 | `memMib` as the only dial, derived CPU, GB-seconds | Draft, Decided direction | deleted in this PR |
+| embervm/022 | Composition over bindings, domain seam, three-leg access fabric | Draft, Decided direction; superseded in part by 024 and 026; SPIFFE deferral resolved by 041 (#5072) | deleted in this PR |
+| embervm/023 | Class-scoped ownership arbitration, silence timeout as the divergence bound | Draft, Decided direction; the timeout is Built (037) | deleted in this PR |
+| embervm/024 | Identity hierarchy, platform principal, guest identity assertion | Draft, Decided direction; decision 3 mechanism superseded by 041 (#5072) | deleted in this PR |
+| embervm/025 | Local disk authoritative, S3 an archive, `archiveInterval` | Draft, Decided direction; export at bank commit Built | deleted in this PR |
+| embervm/026 | Templates not stamps, GitOps without per-workload CRs, desired-set registration | Draft, Decided direction | deleted in this PR |
+| embervm/027 | Snapshot modes as a declared workload property | Draft, Decided direction; retention and the size budget open (#5074, #5075) | deleted in this PR |
+| embervm/028 | Eager-local rootfs: OCI ref, Account chunk store, ublk | Accepted, Planned (#4182); Phase 0 measured in `rootfs/PHASE0-RESULTS.md` | deleted in this PR |
+| embervm/029 | Parked sessions count as disk, not against `concurrency.cap` | Accepted, Built | deleted in this PR |
+| embervm/030 | Lineage decoupled from session generation; the 6 h cap is a convergence bound | Accepted, Built | deleted in this PR |
+| embervm/031 | Health signals classified by time-to-impact, both tiers latch `/health` | Accepted, Built (#4338) | deleted in this PR |
+| embervm/032 | Actor / principal / permission split, authentik SSO for the management surface | Draft, Decided direction; SPIFFE seam resolved by 041 | deleted in this PR |
+| embervm/033 | Substrate threat model as the conformance frame, per-principal encryption at rest, tuple-authorized restore | Accepted, Built and armed; customer KMS mode and digest-verified manifests open (#4691) | deleted in this PR |
+| embervm/034 | Conformance harness: two lanes, two tiers, anti-vacuity, Freight override | Accepted; SpecTrace runs in dev, harness Planned (#4761, #4763) | deleted in this PR |
+| embervm/035 | Website snapshotter task guest | Draft, Built (#4994) | deleted in this PR |
+| embervm/036 | Platform KEK custody derived in the control plane's key service | Accepted, Built | deleted in this PR |
+| embervm/037 | Brick silence timeout | Draft, Built and armed at 21600 s (#5073) | deleted in this PR |
+| embervm/038 | Image-lane serving fresh boot | Draft, Built | deleted in this PR |
+| embervm/039 | Fair-share brick resources, blast-radius ladder, capacity as a signal | Accepted; requests Built, shedding Built and disarmed, jailer suspended, signal Decided direction | deleted in this PR |
+| embervm/040 | Anchor-loss recovery, preemption budget split | Accepted; restore-onto-peer Built, preemption watcher Built and disarmed | deleted in this PR |
+| embervm/041 | SPIFFE workload identity on self-hosted SPIRE | Accepted; phases 0 and 1 done, phase 2 in flight (#5706) | deleted in this PR |
+| embervm/042 | Brick class ceilings move on denial pressure | Accepted, not built (#5505) | deleted in this PR |
+| embervm/README | Reading order for 019 to 027 and the sparse-facts through-line | folded into section 6 | deleted in this PR |
+| embervm/brick-program-decisions | 2026-07-19 run log: bricks everywhere, pod UID identity, scratch contract, staged cutover | carried by sections 7 and 11 | deleted in this PR |
+
+Agent-platform ADRs whose decisions shipped through EmberVM. Their status
+column carries the wording the monolith map uses for the same rows.
+
+| ADR | Decision | Status | Disposition |
+| --- | -------- | ------ | ----------- |
+| agents/002 | OpenHands sandboxes via agent-sandbox | Superseded by agents/004 | shared with monolith, left in place |
+| agents/014 | AX + Substrate as the agent runtime | Deprecated | shared with monolith, left in place |
+| agents/019 | Substrate executor interface, AgentWorkflow over Argo | Accepted, not shipped as designed | shared with monolith, left in place |
+| agents/021 | Discord-triggered AgentWorkflow with snapshot and resume | Draft, evolved into agent sessions | shared with monolith, left in place |
+| agents/022 | Firecracker snapshot/restore controller (FC-direct) | Accepted, shipped through EmberVM | deleted in this PR |
+| agents/023 | Egress secret proxy | Draft; header injection shipped (section 9), placeholder substitution rejected | deleted in this PR |
+| agents/025 | Three-layer agent stack | Draft, evolved into EmberVM | deleted in this PR |
+| agents/026 | Fast microVM cold starts, stateful artifact iteration | Accepted, shipped through EmberVM | deleted in this PR |
+| agents/028 | Elastic agent-microVM capacity and state-preserving reclaim | Draft, shipped through bricks and the scheduler | deleted in this PR |
+| agents/030 | fc-invoke as one configurable surface | Draft, evolved into EmberVM | deleted in this PR |
+| agents/031 | Control-plane / data-plane split | Accepted, shipped through EmberVM | deleted in this PR |
+| agents/032 | Warm-snapshot Bazel worker as an MCP tool | Draft, partially shipped as the public Bazel demo | shared with monolith, left in place |
+| agents/033 | Golden-template distribution via daemon-pulled OCI | Accepted, superseded by control-plane-managed base builds (003, 028) | deleted in this PR |
+| agents/034 | Per-tier guest MCP ACLs | Draft, not shipped (#3838) | contested with mcp, left in place |
+| agents/037 | Label-driven Firecracker node enrollment | Accepted, shipped (section 2) | deleted in this PR |
+| agents/040 | Caller-provided context injection | Draft, not shipped | deleted in this PR |
+| agents/041 | Hot git mirror for agent workspaces | Draft; sidecar Built, off everywhere (section 4) | deleted in this PR |
+| agents/044 | Code executor sandbox, self-describing guest runtimes | Accepted, shipped (task-class guests, monolith sandbox tools) | deleted in this PR |
+| agents/045 | FaaS on the fc-invoke sandbox runtime | Accepted, execution migrated to the EmberVM zip lane | deleted in this PR |
+| agents/046 | MMDS for dynamic per-workload guest env | Accepted, shipped as the metadata seam for stateful and group guests | deleted in this PR |
+| agents/047 | Per-principal egress credentials, broker identity envelope | Draft; broker grants shipped (section 9), per-principal scoping moves to 041 phase 4 | deleted in this PR |
+| agents/048 | Codex OAuth single-owner token broker | Accepted, shipped (section 9) | shared with monolith, left in place |
+| agents/050 | Workspace hydration from the git mirror | Accepted; hydration shipped by direct clone, mirror off | deleted in this PR |
+| agents/051 | Guest-pushed mid-turn progress | Accepted, shipped | shared with monolith, left in place |
+| agents/055 | Tool-mediated GitHub access | Superseded by agents/059 | shared with monolith and mcp, left in place |
+| agents/057 | Per-language sandbox guests | Draft, shipped (`runtimes/`) | deleted in this PR |

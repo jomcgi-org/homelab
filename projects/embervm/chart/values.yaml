@@ -1811,7 +1811,8 @@ egress:
   #
   # Turning this on means owning the CA's route into the guest trust store, and
   # the guest rootfs is built from an image long before the cluster exists. See
-  # the amendment in docs/decisions/agents/023-egress-secret-proxy.md.
+  # the credential-handling paragraph in projects/embervm/ARCHITECTURE.md
+  # section 9 (ADR agents/023, harvested there).
   ca:
     enabled: false
     # Secret holding tls.crt/tls.key; defaults to <fullname>-egress-ca. Nothing in
