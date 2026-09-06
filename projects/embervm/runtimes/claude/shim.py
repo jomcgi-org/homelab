@@ -3182,6 +3182,42 @@ class MuseProcess:
         child_env["XDG_DATA_HOME"] = data_home
         return child_env
 
+    def _write_settings_json(self, muse_config_home):
+        """Write muse settings.json with MCP server configuration when available.
+
+        Muse follows XDG paths. The settings file lives at
+        $XDG_CONFIG_HOME/muse/settings.json. The mcp_servers key is a map (not
+        array) keyed by server name. Each server entry holds transport, url,
+        headers, enabled, mode.
+
+        MCP tools are unsandboxed child processes (stdio transport), so the
+        guest runs only the in-cluster agents tier over streamable_http through
+        the egress sidecar. Mode "required" enforces availability; a required
+        server that fails aborts the run. The probe matters because every muse
+        turn couples to the tier staying up.
+        """
+        agent_mcp_url = os.environ.get(AGENT_MCP_URL_ENV)
+        agent_mcp_configured = bool(agent_mcp_url) and _agent_mcp_endpoint_alive(
+            agent_mcp_url
+        )
+
+        settings = {"schema_version": 1}
+        if agent_mcp_configured:
+            settings["mcp_servers"] = {
+                "agents": {
+                    "transport": "streamable_http",
+                    "url": agent_mcp_url,
+                    "headers": {"Authorization": "Bearer placeholder"},
+                    "enabled": True,
+                    "mode": "required",
+                }
+            }
+
+        muse_settings_dir = os.path.join(muse_config_home, "muse")
+        _ensure_cli_dir(muse_settings_dir)
+        settings_path = os.path.join(muse_settings_dir, "settings.json")
+        _write_read_only_file(settings_path, json.dumps(settings))
+
     def _spawn(self, prompt, model):
         if not _workspace_ready_for_spawn(self.workspace, self.requires_git_checkout):
             raise StartupError("workspace does not exist: %s" % self.workspace)
@@ -3191,6 +3227,9 @@ class MuseProcess:
             raise ValueError(
                 "muse model must use the contributor tier: %s" % model_name
             )
+        muse_config_home = os.path.join(self.workspace, ".muse", "config")
+        _ensure_cli_dir(muse_config_home)
+        self._write_settings_json(muse_config_home)
         command = [
             self.executable,
             "exec",
