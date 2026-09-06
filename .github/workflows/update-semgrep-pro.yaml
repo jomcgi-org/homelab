@@ -164,9 +164,11 @@ jobs:
 
           # --- Pro engines ---
           download_pro_engines() {
+            # Match the glibc OSS wheels using upstream 1.168.0's installer map.
+            # The legacy manylinux and linux-arm64 endpoints select musl builds.
             declare -A PLATFORMS=(
-              ["amd64"]="manylinux"
-              ["arm64"]="linux-arm64"
+              ["amd64"]="manylinux-x86"
+              ["arm64"]="manylinux-arm64"
               ["osx-arm64"]="osx-arm64"
               ["osx-x86_64"]="osx-x86_64"
             )
