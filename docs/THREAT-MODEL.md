@@ -1,6 +1,6 @@
 # Homelab Threat Model
 
-_Reviewed against commit 1a61e7d5d._
+_Reviewed against commit 3d874faa3._
 
 Open security findings across everything the cluster hosts, ranked.
 The live list is the
@@ -67,8 +67,9 @@ Ranked by what an attacker gets. Each issue holds the detail.
    [monolith STPA security lens](../projects/monolith/STPA.md).
 4. **A compromised public-tier pod can reach every in-cluster endpoint**
    ([#5276](https://github.com/jomcgi-org/homelab/issues/5276)).
-   Its egress policy allows the whole cluster, while its own comment
-   documents four intended destinations.
+   The destination-scoped egress policy exists in the chart but is gated
+   off on the GKE hub, which exposes no Cilium policy CRD, so no egress
+   policy renders for the public tier there.
 5. **The private monolith pod has no egress policy at all**
    ([#5277](https://github.com/jomcgi-org/homelab/issues/5277)).
    The pod holding every backend secret can send anywhere the node
@@ -92,15 +93,7 @@ Ranked by what an attacker gets. Each issue holds the detail.
    Promotion waits for rollout health and a short soak, and only
    EmberVM runs a conformance test first. A change that deploys
    cleanly but misbehaves promotes.
-10. **`run_code` can silently return a stale result for different inputs**
-   ([#5304](https://github.com/jomcgi-org/homelab/issues/5304)).
-   The dedupe key hashes language and code but not input files, so a
-   resubmission within the result-cache TTL returns output computed
-   against someone else's files.
-11. **Swarm run budgets are never enforced**
-   ([#4784](https://github.com/jomcgi-org/homelab/issues/4784)).
-   Recorded and reported only.
-12. **The auth domain has no delegated workload identity**
+10. **The auth domain has no delegated workload identity**
    ([#4940](https://github.com/jomcgi-org/homelab/issues/4940)).
    The design umbrella behind finding 3: authentik issues standing
    identity, and the monolith-side attenuation that would scope it per
