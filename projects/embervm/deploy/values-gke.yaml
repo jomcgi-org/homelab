@@ -3,6 +3,14 @@
 # The hub starts with node-local state only. An empty endpoint is the chart's
 # safe store-disabled mode, and no object-store credentials are rendered.
 noded:
+  jailer:
+    # Armed on the hub (#4667 decision C13, #5255): the jailer shipped dark in
+    # #5533 so it could be verified on one brick with a values-only change.
+    # Every brick class here is Spot and recreated on preemption, so a bad
+    # arming shows up as failed session boots within one roll and reverts the
+    # same way. Without it an escape lands in a root process holding
+    # /dev/kvm, the store credential and the noded bearer token.
+    enabled: true
   drain:
     # GCE preemption notice watcher (ADR embervm/040 decision 5). Armed on the
     # hub only: the watcher hangs GETs on the instance/preempted metadata value,
