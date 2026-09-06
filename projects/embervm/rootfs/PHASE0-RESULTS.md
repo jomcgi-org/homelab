@@ -1,7 +1,7 @@
 # ADR embervm/028 Phase 0 results
 
 Measured 2026-08-15. This document discharges the Phase 0 measurement gate in
-[ADR embervm/028](../../../docs/decisions/embervm/028-demand-loaded-rootfs-oci-chunk-store.md)
+ADR embervm/028 ([ARCHITECTURE.md, section 8](../ARCHITECTURE.md#8-storage-artifacts-durability))
 and records the evidence behind each gate decision. It does not freeze the
 production manifest or encryption format.
 

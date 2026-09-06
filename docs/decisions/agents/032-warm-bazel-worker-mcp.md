@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Draft
 **Created:** 2026-07-01
-**Builds on:** [022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md) (warm-base snapshot mechanics, atomic base swap), [023 - Egress Secret Proxy](023-egress-secret-proxy.md) (server-side credential model for the BuildBuddy API key), [041 - Hot Git Mirror Agent Workspaces](041-hot-git-mirror-agent-workspaces.md) (mirror hydration and `refs/agents/**` scratch refs), [030 - fc-invoke](030-fc-invoke-configurable-firecracker-surface.md) (the workload registry and `sessioned` invoke surface this adds a workload to)
+**Builds on:** 022 - Firecracker Snapshot/Restore Controller (warm-base snapshot mechanics, atomic base swap), 023 - Egress Secret Proxy (server-side credential model for the BuildBuddy API key), 041 - Hot Git Mirror Agent Workspaces (mirror hydration and `refs/agents/**` scratch refs), 030 - fc-invoke (the workload registry and `sessioned` invoke surface this adds a workload to)
 
 ---
 
@@ -114,9 +114,9 @@ Baseline `docs/security.md`. This surface is arbitrary code execution by constru
 
 | Resource                                                                                                     | Relevance                                                       |
 | ------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------- |
-| [022 - FC Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md)                       | Warm-base build/restore, atomic base swap under live readers    |
-| [023 - Egress Secret Proxy](023-egress-secret-proxy.md)                                                      | Placeholder-swap credential model for the BuildBuddy API key    |
-| [041 - Hot Git Mirror Agent Workspaces](041-hot-git-mirror-agent-workspaces.md)                              | Mirror hydration, `refs/agents/**` scratch-ref write path       |
-| [030 - fc-invoke](030-fc-invoke-configurable-firecracker-surface.md)                                         | Workload registry, `sessioned` routing, guest shim capabilities |
+| 022 - FC Snapshot/Restore Controller                       | Warm-base build/restore, atomic base swap under live readers    |
+| 023 - Egress Secret Proxy                                                      | Placeholder-swap credential model for the BuildBuddy API key    |
+| 041 - Hot Git Mirror Agent Workspaces                              | Mirror hydration, `refs/agents/**` scratch-ref write path       |
+| 030 - fc-invoke                                         | Workload registry, `sessioned` routing, guest shim capabilities |
 | [platform/010 - Memory Oversubscription](../../../projects/platform/ARCHITECTURE.md) | node-4 memory budget this workload must fit                     |
 | [BuildBuddy RBE docs](https://www.buildbuddy.io/docs/rbe-setup)                                              | Client-side RBE/cache flags any invocation can use              |

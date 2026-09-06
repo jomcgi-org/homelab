@@ -3,7 +3,7 @@
 The development environment for EmberVM, isolated from production by design.
 See the architecture and decision rationale in
 [../../ARCHITECTURE.md](../../ARCHITECTURE.md) and
-[ADR embervm/034](../../../../docs/decisions/embervm/034-conformance-harness-synthetic-actions-fault-injection.md).
+the conformance harness decision (ADR embervm/034, [ARCHITECTURE.md, section 6](../../ARCHITECTURE.md#6-control-plane-internals)).
 
 ## Isolation by construction
 

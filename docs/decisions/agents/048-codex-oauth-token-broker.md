@@ -3,8 +3,8 @@
 **Author:** jomcgi
 **Status:** Accepted
 **Created:** 2026-08-02
-**Extends:** [047 - Per-Principal Egress Credentials and the Broker Identity Envelope](047-per-principal-egress-credential-broker.md) (the broker direction this applies to a second provider)
-**Preserves:** [023 - Egress Secret Proxy for Agent Sandboxes](023-egress-secret-proxy.md) (the concealment boundary: no live credential ever enters a guest)
+**Extends:** 047 - Per-Principal Egress Credentials and the Broker Identity Envelope (the broker direction this applies to a second provider)
+**Preserves:** 023 - Egress Secret Proxy for Agent Sandboxes (the concealment boundary: no live credential ever enters a guest)
 **Supersedes (for codex):** the deferred `OPENAI_API_KEY` catalog entry from PR #4246 (issue #4244)
 
 ---
@@ -131,9 +131,9 @@ Baseline: `docs/security.md`. Deviations and security-relevant properties beyond
 | [openai/codex#22577](https://github.com/openai/codex/issues/22577) | `codex logout` revokes the grant server-side; sibling clients on the same grant discover this only on their next call |
 | [OpenClaw OAuth concepts (docs.openclaw.ai/concepts/oauth)](https://docs.openclaw.ai/concepts/oauth) | The same architecture converged on independently: one authoritative store, read-through inheritance, lock-serialized refresh |
 | OpenClaw issue #26322 | 18 agents sharing a grant, refresh burst every ~12h misread as a provider outage; motivates single-flight refresh and the re-read-and-retry-once guardrail |
-| [ADR 023 - Egress Secret Proxy for Agent Sandboxes](023-egress-secret-proxy.md) | The concealment boundary and the cleartext-vsock-lane reasoning this decision reuses for a second provider |
-| [ADR 047 - Per-Principal Egress Credentials and the Broker Identity Envelope](047-per-principal-egress-credential-broker.md) | The `credentialResolver` interface and per-principal identity envelope this decision plugs a subscription-OAuth backing into |
-| [embervm/024 - Identity Hierarchy, Templates and Registration](../embervm/024-identity-hierarchy-templates-and-registration.md) | The `principal` identity this decision's resolver lookups key on |
+| ADR 023 - Egress Secret Proxy for Agent Sandboxes | The concealment boundary and the cleartext-vsock-lane reasoning this decision reuses for a second provider |
+| ADR 047 - Per-Principal Egress Credentials and the Broker Identity Envelope | The `credentialResolver` interface and per-principal identity envelope this decision plugs a subscription-OAuth backing into |
+| embervm/024 - Identity Hierarchy, Templates and Registration | The `principal` identity this decision's resolver lookups key on |
 | Issue #4244, PR #4246 | The deferred `OPENAI_API_KEY` catalog entry this ADR supersedes for codex; `projects/embervm/deploy/values.yaml`, `projects/embervm/runtimes/claude/shim.py` (the guest shim's codex adapter, despite the directory name) |
 | `bazel/tools/codex/dispatch.sh` | Joe's laptop-side codex dispatch, whose `auth.json` lineage stays independent of the cluster grant this ADR creates |
 | `docs/security.md` | Security baseline |

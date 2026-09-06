@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Draft
 **Created:** 2026-06-26
-**Superseded in part:** [022 - Firecracker Snapshot/Restore Controller](022-firecracker-snapshot-restore-controller.md) decision 6 drops the `AgentWorkflow` (Argo Workflows) hot-path framing for the snapshot-managed agent-thread tier, in favour of the Postgres-reconcile controller (the `job-mcp` branch). Argo Workflows is retained only for batch CronWorkflows and optional future multi-agent DAG fan-out above the controller.
+**Superseded in part:** 022 - Firecracker Snapshot/Restore Controller decision 6 drops the `AgentWorkflow` (Argo Workflows) hot-path framing for the snapshot-managed agent-thread tier, in favour of the Postgres-reconcile controller (the `job-mcp` branch). Argo Workflows is retained only for batch CronWorkflows and optional future multi-agent DAG fan-out above the controller.
 **Builds on:** [019 - Substrate Executor + AgentWorkflow over Argo](019-substrate-executor-agentworkflow.md) (consumes its `AgentWorkflow` tier and `Snapshotable` executor), [003 - Context Forge](003-context-forge.md) / [020 - Deprecate Context Forge](020-deprecate-context-forge-mcp-gateway.md) (MCP surface), [security/003 - gVisor RuntimeClass](../../../projects/platform/ARCHITECTURE.md) (isolation prerequisite)
 **Relates to:** services/002 - Discord Chat Automation (the bot this rides on)
 

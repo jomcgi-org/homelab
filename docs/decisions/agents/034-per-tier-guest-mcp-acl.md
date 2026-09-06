@@ -97,8 +97,8 @@ Baseline per `docs/security.md`. This ADR strengthens Layer 5 practice for the a
 
 | Resource                                                              | Relevance                                                              |
 | --------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| [ADR 023](023-egress-secret-proxy.md)                                 | Placeholder-swap mechanism and split-horizon egress this design reuses |
+| ADR 023                                 | Placeholder-swap mechanism and split-horizon egress this design reuses |
 | ADR 029                             | Per-server grants that bind Discord servers to tiers                   |
 | ADR 024      | Tier as the credential trust boundary                                  |
-| [ADR 030](030-fc-invoke-configurable-firecracker-surface.md)          | Workloads as Helm values (basis of the workload-per-tier alternative)  |
-| [ADR 026](026-fast-microvm-starts-and-stateful-artifact-iteration.md) | Guest funnel and hydration paths the sidecar mediates                  |
+| ADR 030          | Workloads as Helm values (basis of the workload-per-tier alternative)  |
+| ADR 026 | Guest funnel and hydration paths the sidecar mediates                  |

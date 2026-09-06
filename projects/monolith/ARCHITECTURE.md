@@ -725,42 +725,42 @@ issue still tracks.
 | [019](../../docs/decisions/agents/019-substrate-executor-agentworkflow.md) | Substrate Executor Interface and AgentWorkflow over Argo | Accepted, not shipped as designed (see: /projects/monolith/swarm/workflows.py) | shared with embervm, left in place |
 | [020](../../docs/decisions/agents/020-deprecate-context-forge-mcp-gateway.md) | Deprecate Context Forge, Serve MCP Directly from the Monolith | Superseded by 059 | shared with mcp, left in place |
 | [021](../../docs/decisions/agents/021-discord-triggered-agentworkflow-fast-model.md) | Discord-Triggered AgentWorkflow with a Fast Hosted Model and Snapshot/Resume | Draft, evolved into agent sessions (see: /projects/monolith/agent_sessions) | shared with embervm, left in place |
-| [022](../../docs/decisions/agents/022-firecracker-snapshot-restore-controller.md) | Firecracker Snapshot/Restore Controller for AgentWorkflow (FC-Direct) | Accepted, shipped through EmberVM (see: /projects/embervm/ARCHITECTURE.md) | embervm's, left in place |
-| [023](../../docs/decisions/agents/023-egress-secret-proxy.md) | Egress Secret Proxy for Agent Sandboxes (Placeholder Substitution) | Draft, generic egress shipped | embervm's, left in place |
+| 022 | Firecracker Snapshot/Restore Controller for AgentWorkflow (FC-Direct) | Accepted, shipped through EmberVM (see: /projects/embervm/ARCHITECTURE.md) | embervm's, left in place |
+| 023 | Egress Secret Proxy for Agent Sandboxes (Placeholder Substitution) | Draft, generic egress shipped | embervm's, left in place |
 | `agents/024` | Productive Discord Agent, Hosted-Model Tiers, and Isolated Live Artifacts | Draft, shipped in evolved form: hosted tiers became the model families, the artifact store serves `/artifact/{id}` (see: /projects/monolith/artifact/router.py); the goosecracker agent it rode on is retired | deleted in this PR |
-| [025](../../docs/decisions/agents/025-three-layer-agent-stack-goosecracker.md) | Three-Layer Agent Stack (firecracker-substrate, goosecracker, discord-agent) | Draft, evolved into EmberVM | embervm's, left in place |
-| [026](../../docs/decisions/agents/026-fast-microvm-starts-and-stateful-artifact-iteration.md) | Fast MicroVM Cold Starts and Stateful Artifact Iteration | Accepted, shipped through EmberVM | embervm's, left in place |
+| 025 | Three-Layer Agent Stack (firecracker-substrate, goosecracker, discord-agent) | Draft, evolved into EmberVM | embervm's, left in place |
+| 026 | Fast MicroVM Cold Starts and Stateful Artifact Iteration | Accepted, shipped through EmberVM | embervm's, left in place |
 | [027](../../docs/decisions/agents/027-agent-github-app-roles.md) | Agent GitHub App Roles: Implementer and Reviewer | Draft, not shipped: no `agent-review/gate` exists, which is why swarm stops short of merging | retained draft, #3835 |
-| [028](../../docs/decisions/agents/028-elastic-agent-microvm-capacity-and-reclaim.md) | Elastic Agent-MicroVM Capacity and State-Preserving Reclaim | Draft header, shipped through EmberVM | embervm's, left in place |
+| 028 | Elastic Agent-MicroVM Capacity and State-Preserving Reclaim | Draft header, shipped through EmberVM | embervm's, left in place |
 | `agents/029` | Discord Bot Feature ACL (per-server command and repo grants) | Accepted, shipped (see: /projects/monolith/chat/acl.py) | deleted in this PR |
-| [030](../../docs/decisions/agents/030-fc-invoke-configurable-firecracker-surface.md) | fc-invoke, a Single Configurable Surface for Running Workloads in Firecracker | Draft, evolved into EmberVM | embervm's, left in place |
-| [031](../../docs/decisions/agents/031-cluster-node-control-data-plane-split.md) | Control-Plane / Data-Plane Split for the Agent Substrate (cluster + node) | Accepted, shipped through EmberVM | embervm's, left in place |
+| 030 | fc-invoke, a Single Configurable Surface for Running Workloads in Firecracker | Draft, evolved into EmberVM | embervm's, left in place |
+| 031 | Control-Plane / Data-Plane Split for the Agent Substrate (cluster + node) | Accepted, shipped through EmberVM | embervm's, left in place |
 | [032](../../docs/decisions/agents/032-warm-bazel-worker-mcp.md) | Warm-Snapshot Bazel Worker as an MCP Tool Surface | Draft, partially shipped as an EmberVM demo (see: /projects/monolith/ember_public/bazel_router.py) | shared with embervm, left in place |
-| [033](../../docs/decisions/agents/033-golden-template-distribution-daemon-pulled-oci.md) | Golden-Template Distribution via Daemon-Pulled OCI Artifacts | Accepted, shipped through EmberVM | embervm's, left in place |
+| 033 | Golden-Template Distribution via Daemon-Pulled OCI Artifacts | Accepted, shipped through EmberVM | embervm's, left in place |
 | [034](../../docs/decisions/agents/034-per-tier-guest-mcp-acl.md) | Per-Tier MCP Tool ACLs for Goosecracker Guests | Draft, not shipped (#3838) | shared with mcp, left in place |
 | `agents/035` | Discord Multiplayer Agent UX (Ambient Classifier, Thread Sessions, Live Task Checklist) | Accepted, shipped (see: /projects/monolith/chat/bot.py) | deleted in this PR |
 | `agents/036` | Orchestrator Brief-Compiler Tier via OpenRouter | Accepted, shipped (see: /projects/monolith/chat/orchestrator_client.py) | deleted in this PR |
-| [037](../../docs/decisions/agents/037-label-driven-firecracker-node-enrollment.md) | Label-Driven Firecracker Node Enrollment | Accepted, shipped through EmberVM | embervm's, left in place |
+| 037 | Label-Driven Firecracker Node Enrollment | Accepted, shipped through EmberVM | embervm's, left in place |
 | `agents/038` | Autonomous Work Queue with Capability-Tier Routing and Reviewer-Verdict Feedback | Accepted, shipped in bounded form (see: /projects/monolith/swarm); its `work_queue` table was never built, `routine_jobs` took the role (#3839) | deleted in this PR |
 | `agents/039` | WhatsApp Channel Gateway (whatsmeow) for the Household Agent | Accepted, shipped, parked during the cutover window (see: /projects/monolith/whatsapp) | deleted in this PR |
-| [040](../../docs/decisions/agents/040-caller-provided-context-injection.md) | Caller-Provided Context Injection for Agent Guests (`/injected-context/`) | Draft, not shipped | embervm's, left in place |
-| [041](../../docs/decisions/agents/041-hot-git-mirror-agent-workspaces.md) | Hot Git Mirror for goosecracker Agent Workspaces | Draft, not shipped | embervm's, left in place |
+| 040 | Caller-Provided Context Injection for Agent Guests (`/injected-context/`) | Draft, not shipped | embervm's, left in place |
+| 041 | Hot Git Mirror for goosecracker Agent Workspaces | Draft, not shipped | embervm's, left in place |
 | [042](../../docs/decisions/agents/042-agent-mcp-v1-followons.md) | Agent MCP v1 Follow-ons and Deferred Self-Improvement Loop | Accepted, partially shipped (see: /projects/monolith/agent/mcp.py) (#3844) | shared with mcp, left in place |
 | `agents/043` | Ambient Assistant Parity (Channel-Data Tools, Reminders, Directive Evolution) | Accepted, shipped (see: /projects/monolith/chat/reminders.py) | deleted in this PR |
-| [044](../../docs/decisions/agents/044-code-executor-sandbox.md) | Code Executor Sandbox Workload and Self-Describing Guest Runtimes | Accepted, shipped (see: /projects/monolith/sandbox/mcp.py) | embervm's, left in place |
-| [045](../../docs/decisions/agents/045-faas-on-fc-invoke-sandbox-runtime.md) | FaaS on the fc-invoke Sandbox Runtime | Accepted, shipped through EmberVM (see: /projects/monolith/faas) | embervm's, left in place |
-| [046](../../docs/decisions/agents/046-mmds-dynamic-workload-env.md) | MMDS for Dynamic Per-Workload Guest Env | Accepted, shipped as the EmberVM metadata seam | embervm's, left in place |
-| [047](../../docs/decisions/agents/047-per-principal-egress-credential-broker.md) | Per-Principal Egress Credentials and the Broker Identity Envelope | Draft, not shipped | embervm's, left in place |
+| 044 | Code Executor Sandbox Workload and Self-Describing Guest Runtimes | Accepted, shipped (see: /projects/monolith/sandbox/mcp.py) | embervm's, left in place |
+| 045 | FaaS on the fc-invoke Sandbox Runtime | Accepted, shipped through EmberVM (see: /projects/monolith/faas) | embervm's, left in place |
+| 046 | MMDS for Dynamic Per-Workload Guest Env | Accepted, shipped as the EmberVM metadata seam | embervm's, left in place |
+| 047 | Per-Principal Egress Credentials and the Broker Identity Envelope | Draft, not shipped | embervm's, left in place |
 | [048](../../docs/decisions/agents/048-codex-oauth-token-broker.md) | Codex Subscription OAuth, a Single-Owner Token Broker for Guest Turns | Accepted, shipped (see: /projects/embervm/tokenbroker) | shared with embervm, left in place |
 | `agents/049` | Turn-Granular, Poll-Shaped Agent Session UI on Durable Postgres, Not a Live Event Stream | Accepted, shipped (see: /projects/monolith/agent_sessions/router.py) | deleted in this PR |
-| [050](../../docs/decisions/agents/050-workspace-hydration-from-git-mirror.md) | Workspace Hydration for Agent Sessions from the Hot Git Mirror | Accepted, hydration shipped with direct HTTPS instead of the mirror | embervm's, left in place |
+| 050 | Workspace Hydration for Agent Sessions from the Hot Git Mirror | Accepted, hydration shipped with direct HTTPS instead of the mirror | embervm's, left in place |
 | [051](../../docs/decisions/agents/051-guest-pushed-mid-turn-progress.md) | Mid-Turn Session Progress Pushed by the Guest, Not Polled Through the Control Plane | Accepted, shipped (see: /projects/monolith/agent_sessions/progress_ingest.py) | shared with embervm, left in place |
 | [052](../../docs/decisions/agents/052-cross-family-handoff-brief.md) | Cross-Family Agent Session Handoff via a Luna-Compiled Brief | Accepted, not shipped: no handoff code exists | retained draft, #4350 |
 | `agents/053` | Swarm Development, Bounded Conductor Orchestration for Feature-Scale Agent DAGs | Draft, partially shipped (plan pin, recording schema, `implement_then_review`) and amended by 062, whose engine rewrite is pending (#4584, #5419) | deleted in this PR |
 | `agents/054` | The Run View: Pinned Plans, Epistemic Registers, and Recorded-Not-Inferred Data | Draft header, shipped in the console redesign (see: /projects/monolith/swarm/view.py); #4625 closed | deleted in this PR |
 | [055](../../docs/decisions/agents/055-tool-mediated-github-access.md) | Tool-Mediated GitHub Access for Agent Principals | Superseded by 059 | shared with mcp and embervm, left in place |
 | `agents/056` | Agent-Authored Walkthroughs: the Diff is Fact, the Points are Testimony | Draft header, shipped (see: /projects/monolith/swarm/walkthrough_composer.py); #4600 and #4614 closed | deleted in this PR |
-| [057](../../docs/decisions/agents/057-per-language-sandbox-guests.md) | Per-Language Sandbox Guests and the Retirement of Sessioned Execution | Draft header, shipped | embervm's, left in place |
+| 057 | Per-Language Sandbox Guests and the Retirement of Sessioned Execution | Draft header, shipped | embervm's, left in place |
 | `agents/058` | The Voice Companion: a Ledger-First Screen the Conversation Drives, Never Load-Bearing | Accepted, shipped (see: /projects/monolith/agent_sessions/voice.py) | deleted in this PR |
 | [059](../../docs/decisions/agents/059-authentik-federates-monolith-serves-mcp.md) | Authentik Federates MCP Identity; the Monolith Serves MCP Directly | Draft, not shipped (#3832, #3833) | shared with mcp, left in place |
 | `agents/060` | Escalation as a Pause, Not a Return, With a Decision Row | Accepted, shipped: decision row, endpoint, `agent_run_decide`, console buttons (see: /projects/monolith/swarm/router.py) | deleted in this PR |
