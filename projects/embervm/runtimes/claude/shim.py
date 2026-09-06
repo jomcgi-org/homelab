@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import zlib
 
@@ -1809,6 +1810,20 @@ class _ProgressPusher:
 
     def __init__(self, progress_token):
         self.progress_token = progress_token
+        self.url = None
+        url = os.environ.get("EMBER_PROGRESS_URL", "").strip()
+        try:
+            parsed = urllib.parse.urlsplit(url)
+            if (
+                parsed.scheme in ("http", "https")
+                and parsed.hostname
+                and (parsed.port is None or parsed.port > 0)
+                and not any(character.isspace() for character in url)
+            ):
+                self.url = url
+        except ValueError:
+            # Invalid boot configuration disables this optional callback.
+            pass
         self.latest_text = ""
         self.latest_activities = []
         self.last_push_time = -1.0
@@ -1818,6 +1833,8 @@ class _ProgressPusher:
 
     def push(self, text, activities=None):
         """Update the latest slot and trigger a push if throttle allows."""
+        if self.url is None:
+            return
         try:
             self.latest_text = text
             self.latest_activities = activities if activities is not None else []
@@ -1837,13 +1854,15 @@ class _ProgressPusher:
 
     def _do_push(self):
         """Push in a background thread and drain changes made during the push."""
+        if self.url is None:
+            return
         try:
             egress_port = int(os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT)))
+            proxy_url = "http://%s:%s" % (EGRESS_LOCALHOST, egress_port)
             proxy_handler = urllib.request.ProxyHandler(
-                {"http": "http://%s:%s" % (EGRESS_LOCALHOST, egress_port)}
+                {"http": proxy_url, "https": proxy_url}
             )
             opener = urllib.request.build_opener(proxy_handler)
-            url = "http://monolith.monolith.svc.cluster.local:8091/ingest/progress"
             sent_text = self.latest_text
             sent_activities = list(self.latest_activities)
             payload = {
@@ -1861,7 +1880,7 @@ class _ProgressPusher:
                 payload["activities"] = sent_activities
                 data = json.dumps(payload).encode("utf-8")
             request = urllib.request.Request(
-                url,
+                self.url,
                 data=data,
                 headers={
                     "Authorization": "Bearer %s" % self.progress_token,

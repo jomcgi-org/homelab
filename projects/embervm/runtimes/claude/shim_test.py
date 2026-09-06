@@ -28,6 +28,13 @@ import pytest
 import shim
 
 
+@pytest.fixture
+def progress_endpoint(monkeypatch):
+    url = "http://progress.example.test:8091/ingest/progress"
+    monkeypatch.setenv("EMBER_PROGRESS_URL", url)
+    return url
+
+
 EGRESS_CA_TRUST_ENV_KEYS = (
     "SSL_CERT_FILE",
     "REQUESTS_CA_BUNDLE",
@@ -3506,7 +3513,9 @@ def test_turn_extracts_voice_activity_and_tolerates_malformed_json(
     manager._close_process(kill=True)
 
 
-def test_assistant_message_triggers_progress_push(tmp_path, monkeypatch):
+def test_assistant_message_triggers_progress_push(
+    tmp_path, monkeypatch, progress_endpoint
+):
     requests = []
 
     class _Response:
@@ -3525,9 +3534,7 @@ def test_assistant_message_triggers_progress_push(tmp_path, monkeypatch):
 
     assert len(requests) == 1
     request, timeout = requests[0]
-    assert request.full_url == (
-        "http://monolith.monolith.svc.cluster.local:8091/ingest/progress"
-    )
+    assert request.full_url == progress_endpoint
     assert request.method == "POST"
     assert request.get_header("Authorization") == "Bearer abc123"
     payload = json.loads(request.data)
@@ -3900,7 +3907,7 @@ def test_malformed_assistant_events_are_skipped(tmp_path, monkeypatch):
     manager._close_process(kill=True)
 
 
-def test_no_progress_push_without_token(tmp_path, monkeypatch):
+def test_no_progress_push_without_token(tmp_path, monkeypatch, progress_endpoint):
     monkeypatch.setattr(
         shim.urllib.request,
         "build_opener",
@@ -3911,16 +3918,21 @@ def test_no_progress_push_without_token(tmp_path, monkeypatch):
     manager._close_process(kill=True)
 
 
-def test_progress_pusher_uses_egress_proxy_and_swallows_errors(monkeypatch):
+@pytest.mark.parametrize("scheme", ["http", "https"])
+def test_progress_pusher_uses_egress_proxy_and_swallows_errors(monkeypatch, scheme):
     handlers = []
+    requests = []
+    url = scheme + "://isolated.example.test:8091/ingest/progress"
+    monkeypatch.setenv("EMBER_PROGRESS_URL", "  " + url + "  ")
+    monkeypatch.setenv(shim.EGRESS_PORT_ENV, "4321")
 
     def proxy_handler(proxies):
         handlers.append(proxies)
         return object()
 
     class _Opener:
-        def open(self, _request, timeout):
-            assert timeout == 2
+        def open(self, request, timeout):
+            requests.append((request, timeout))
             raise ConnectionRefusedError("egress unavailable")
 
     monkeypatch.setattr(shim.urllib.request, "ProxyHandler", proxy_handler)
@@ -3928,12 +3940,49 @@ def test_progress_pusher_uses_egress_proxy_and_swallows_errors(monkeypatch):
     pusher = shim._ProgressPusher("abc123")
     pusher.push("text")
     pusher.stop()
-    assert handlers == [
-        {"http": "http://%s:%s" % (shim.EGRESS_LOCALHOST, shim.DEFAULT_EGRESS_PORT)}
-    ]
+    proxy_url = "http://%s:4321" % shim.EGRESS_LOCALHOST
+    assert handlers == [{"http": proxy_url, "https": proxy_url}]
+    assert len(requests) == 1
+    request, timeout = requests[0]
+    assert request.full_url == url
+    assert request.get_header("Authorization") == "Bearer abc123"
+    assert timeout == 2
 
 
-def test_progress_pusher_collapses_rapid_events_to_latest():
+@pytest.mark.parametrize(
+    "url",
+    [
+        None,
+        "",
+        " \t ",
+        "file:///tmp/progress",
+        "/ingest/progress",
+        "http:///ingest/progress",
+        "https://example.test:invalid/progress",
+        "https://example.test:65536/progress",
+        "https://[invalid/progress",
+        "https://example.test/invalid\npath",
+    ],
+)
+def test_progress_pusher_disabled_without_valid_endpoint(monkeypatch, url):
+    if url is None:
+        monkeypatch.delenv("EMBER_PROGRESS_URL", raising=False)
+    else:
+        monkeypatch.setenv("EMBER_PROGRESS_URL", url)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("disabled progress must not create a thread or request")
+
+    monkeypatch.setattr(shim.threading, "Thread", unexpected)
+    monkeypatch.setattr(shim.urllib.request, "build_opener", unexpected)
+    pusher = shim._ProgressPusher("abc123")
+    pusher.push("text", [{"type": "edit", "file_path": "a.txt"}])
+    pusher._do_push()
+    pusher.stop()
+    assert pusher.thread is None
+
+
+def test_progress_pusher_collapses_rapid_events_to_latest(progress_endpoint):
     started = threading.Event()
     release = threading.Event()
     pushed = []
@@ -4110,7 +4159,7 @@ def test_process_manager_forwards_adapter_specific_turn_options(monkeypatch):
     assert "thinking" not in calls[0][1]
 
 
-def test_throttle_allows_push_after_0_2_seconds(monkeypatch):
+def test_throttle_allows_push_after_0_2_seconds(monkeypatch, progress_endpoint):
     """After 0.2 seconds, the next push fires."""
     current_time = [0.0]
     monkeypatch.setattr(shim.time, "monotonic", lambda: current_time[0])
@@ -4142,7 +4191,7 @@ def test_throttle_allows_push_after_0_2_seconds(monkeypatch):
     assert len(requests) == 2
 
 
-def test_throttle_blocks_push_within_0_2_seconds(monkeypatch):
+def test_throttle_blocks_push_within_0_2_seconds(monkeypatch, progress_endpoint):
     """Within 0.2 seconds of the last push, the next push does not fire."""
     current_time = [0.0]
     monkeypatch.setattr(shim.time, "monotonic", lambda: current_time[0])
@@ -4174,7 +4223,7 @@ def test_throttle_blocks_push_within_0_2_seconds(monkeypatch):
     assert len(requests) == 1
 
 
-def test_pusher_throttle_0_2_seconds_with_drain(monkeypatch):
+def test_pusher_throttle_0_2_seconds_with_drain(monkeypatch, progress_endpoint):
     """Drain re-fires after 0.2 seconds and sends the final slot state."""
     requests = []
     current_time = [0.0]
@@ -4218,7 +4267,7 @@ def test_pusher_throttle_0_2_seconds_with_drain(monkeypatch):
     assert requests[1][0] >= requests[0][0] + 0.2
 
 
-def test_payload_trimmed_to_byte_budget(monkeypatch):
+def test_payload_trimmed_to_byte_budget(monkeypatch, progress_endpoint):
     """Oversized progress payloads are trimmed below the ingest limit."""
     captured_payloads = []
 
@@ -4293,7 +4342,7 @@ def test_activities_sent_in_payload_capped_to_300(tmp_path, monkeypatch):
     assert captured[-1][0] == {"index": 100}
 
 
-def test_push_thread_creation_failure_swallowed(monkeypatch):
+def test_push_thread_creation_failure_swallowed(monkeypatch, progress_endpoint):
     """Thread startup failure is swallowed; the turn can continue."""
 
     def fake_thread_init(*args, **kwargs):
@@ -4303,7 +4352,7 @@ def test_push_thread_creation_failure_swallowed(monkeypatch):
     shim._ProgressPusher("token").push("text")
 
 
-def test_large_accumulation_capped_to_tail(monkeypatch):
+def test_large_accumulation_capped_to_tail(monkeypatch, progress_endpoint):
     """Text larger than 65536 bytes is capped to its tail in the payload."""
     captured_payloads = []
 
@@ -4333,7 +4382,7 @@ def test_large_accumulation_capped_to_tail(monkeypatch):
     assert len(payload["partial_text"]) == 65536
 
 
-def test_accumulation_order_preserves_assistant_text(monkeypatch):
+def test_accumulation_order_preserves_assistant_text(monkeypatch, progress_endpoint):
     """Sequential pushes preserve the accumulated assistant text order."""
     current_time = [0.0]
     monkeypatch.setattr(shim.time, "monotonic", lambda: current_time[0])

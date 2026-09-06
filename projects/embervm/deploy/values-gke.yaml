@@ -12,16 +12,17 @@ noded:
     # preemptionTimeoutSeconds stays at the chart default (20s).
     preemptionNoticeEnabled: true
   firecracker:
-    # Chart default plus one ember.env token. guest-init decodes
+    # Whole-string override: repeat the production progress token from the
+    # home values alongside the GKE agent MCP token. guest-init decodes
     # ember.env.<KEY>=<base64url> into the guest environment, which is the only
     # values-driven way a guest-read setting reaches the shim (initEnv is a
-    # base-signature input only, #4429). The value is
+    # base-signature input only, #4429). The MCP value is
     # http://monolith-agents-agents.monolith-agents.svc.cluster.local:8092/mcp
     # base64url-encoded without padding; the shim reads it as
     # EMBER_AGENT_MCP_URL and writes the CLIs' MCP config from it (#5569).
-    # Bricks roll on this change, and the claude-runtime base is re-keyed by
-    # the shim image digest that lands with the same chart publish.
-    kernelBootArgs: "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro ember.env.EMBER_AGENT_MCP_URL=aHR0cDovL21vbm9saXRoLWFnZW50cy1hZ2VudHMubW9ub2xpdGgtYWdlbnRzLnN2Yy5jbHVzdGVyLmxvY2FsOjgwOTIvbWNw"
+    # Bricks roll on this change. Verify build-node boot arguments before a
+    # new base captures the environment; an early-built base needs a rekey.
+    kernelBootArgs: "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro ember.env.EMBER_AGENT_MCP_URL=aHR0cDovL21vbm9saXRoLWFnZW50cy1hZ2VudHMubW9ub2xpdGgtYWdlbnRzLnN2Yy5jbHVzdGVyLmxvY2FsOjgwOTIvbWNw ember.env.EMBER_PROGRESS_URL=aHR0cDovL21vbm9saXRoLm1vbm9saXRoLnN2Yy5jbHVzdGVyLmxvY2FsOjgwOTEvaW5nZXN0L3Byb2dyZXNz"
   # Base store on same-region GCS via the S3 interop endpoint (free bandwidth
   # both directions inside europe-west2; R2 would pay GCP egress on every
   # export). HMAC credentials for ember-base-store@h0melab minted through the

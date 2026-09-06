@@ -193,6 +193,11 @@ noded:
   # moves, this one moves first.
   firecracker:
     bootReadyTimeout: 180s
+    # guest-init decodes this base64url token into the shared shim's environment.
+    # Explicit production callback; defaults and dev leave progress disabled.
+    # initEnv only keys bases (#4429). Boot arguments must be effective on the
+    # build node before a new base captures this environment (#4322, #4745).
+    kernelBootArgs: "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro ember.env.EMBER_PROGRESS_URL=aHR0cDovL21vbm9saXRoLm1vbm9saXRoLnN2Yy5jbHVzdGVyLmxvY2FsOjgwOTEvaW5nZXN0L3Byb2dyZXNz"
   # Ingress allow-list on every noded pod shape (#4693): gRPC from the control
   # plane, health from kubelet, activator from
   # serving-envoy and the CP, the serving DNAT range from serving-envoy. Dev has
