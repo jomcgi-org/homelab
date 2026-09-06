@@ -969,6 +969,20 @@ frontend:
       memory: 256Mi
 
 postgres:
+  # Migrations grant privileges to these fixed roles even when no external
+  # client uses them. Keep them present; login:false makes them NOLOGIN and
+  # omits passwordSecret, allowing fresh dev databases without client secrets.
+  # This does not erase any previously stored password or revoke SQL grants.
+  clientRoles:
+    publicReader:
+      login: true
+      passwordSecret: monolith-pg-public-reader
+    agentsWriter:
+      login: true
+      passwordSecret: monolith-pg-agents-writer
+    publicWriter:
+      login: true
+      passwordSecret: monolith-pg-public-writer
   instances: 1
   storage:
     size: 10Gi

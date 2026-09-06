@@ -1,3 +1,23 @@
+{{- if not (kindIs "map" .Values.postgres.clientRoles) }}
+{{- fail "postgres.clientRoles must be a map" }}
+{{- end }}
+{{- range $name := list "publicReader" "agentsWriter" "publicWriter" }}
+{{- $role := index $.Values.postgres.clientRoles $name }}
+{{- if not (kindIs "map" $role) }}
+{{- fail (printf "postgres.clientRoles.%s must be a map" $name) }}
+{{- end }}
+{{- if not (kindIs "bool" $role.login) }}
+{{- fail (printf "postgres.clientRoles.%s.login must be a boolean" $name) }}
+{{- end }}
+{{- if $role.login }}
+{{- if not (kindIs "string" $role.passwordSecret) }}
+{{- fail (printf "postgres.clientRoles.%s.passwordSecret must be a valid Secret name when login is true" $name) }}
+{{- end }}
+{{- if or (gt (len $role.passwordSecret) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $role.passwordSecret)) }}
+{{- fail (printf "postgres.clientRoles.%s.passwordSecret must be a valid Secret name when login is true" $name) }}
+{{- end }}
+{{- end }}
+{{- end }}
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
@@ -39,9 +59,11 @@ spec:
     roles:
       - name: public_reader
         ensure: present
-        login: true
+        login: {{ .Values.postgres.clientRoles.publicReader.login }}
+        {{- if .Values.postgres.clientRoles.publicReader.login }}
         passwordSecret:
-          name: monolith-pg-public-reader
+          name: {{ .Values.postgres.clientRoles.publicReader.passwordSecret | quote }}
+        {{- end }}
         comment: "Read-only public surface (ADR 004); GRANTs in Atlas migration"
       # The monolith-agents tier's identity (#5656). Same mechanism and the same
       # reason as public_reader above: CNPG is the only superuser, so it creates
@@ -54,9 +76,11 @@ spec:
       # knowledge, insert on three tables, and nothing outside those schemas.
       - name: agents_writer
         ensure: present
-        login: true
+        login: {{ .Values.postgres.clientRoles.agentsWriter.login }}
+        {{- if .Values.postgres.clientRoles.agentsWriter.login }}
         passwordSecret:
-          name: monolith-pg-agents-writer
+          name: {{ .Values.postgres.clientRoles.agentsWriter.passwordSecret | quote }}
+        {{- end }}
         comment: "monolith-agents tier (#5656); GRANTs in Atlas migration"
       {{- if .Values.postgres.embervmOpLog.enabled }}
       # The EmberVM control-plane op-log owner (ADR embervm/007). Owns its own
@@ -107,9 +131,11 @@ spec:
       # schema of anonymous chat data, no access to any other schema.
       - name: public_writer
         ensure: present
-        login: true
+        login: {{ .Values.postgres.clientRoles.publicWriter.login }}
+        {{- if .Values.postgres.clientRoles.publicWriter.login }}
         passwordSecret:
-          name: monolith-pg-public-writer
+          name: {{ .Values.postgres.clientRoles.publicWriter.passwordSecret | quote }}
+        {{- end }}
         comment: "Public-tier write role (ADR 005); GRANTs in Atlas migration"
   # Hosts the monolith database (plus the default postgres maintenance db);
   # the temporal/temporal_visibility/lakehouse databases were decommissioned
