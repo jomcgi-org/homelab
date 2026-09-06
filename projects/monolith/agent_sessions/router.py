@@ -1064,6 +1064,8 @@ async def send_message(session_id: int, request: MessageRequest) -> dict:
         turn = await asyncio.to_thread(
             _persist_pending_message, session_id, request.prompt, effective_model
         )
+    except store.SessionOutcomeUnknown as exc:
+        return {"accepted": False, "error": str(exc), "session_id": session_id}
     except Exception:  # noqa: BLE001 - send gates return structured failures
         logger.exception("Could not persist message for session %s", session_id)
         return {

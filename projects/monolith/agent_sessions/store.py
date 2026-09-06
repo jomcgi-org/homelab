@@ -33,6 +33,161 @@ logger = logging.getLogger(__name__)
 _UNSET = object()
 RECLAIM_LEASE = timedelta(seconds=30)
 MAX_PENDING_DISPATCHES = 3
+UNKNOWN_INVOCATION = "invocation_outcome_unknown"
+UNKNOWN_INVOCATION_MESSAGE = (
+    "This session has an unknown invocation outcome. Reconcile the guest and any "
+    "remote side effects, then start a new session. Sending again cannot resume it."
+)
+
+
+class SessionOutcomeUnknown(ValueError):
+    """The session is held for operator reconciliation."""
+
+
+class PendingClaimLost(RuntimeError):
+    """An executor no longer owns the attempt it is trying to finish."""
+
+
+def _unknown_outcome_exists(session_id_column):
+    return exists().where(
+        AgentTurn.session_id == session_id_column,
+        AgentTurn.stop_reason == UNKNOWN_INVOCATION,
+    )
+
+
+def _lock_session(session: Session, session_id: int) -> AgentSession | None:
+    """Serialize lane writes, including on SQLite where FOR UPDATE is ignored.
+
+    Always lock the session before its pending row. The no-op UPDATE acquires a
+    database write lock without changing user-visible timestamps.
+    """
+    session.execute(
+        update(AgentSession)
+        .where(AgentSession.id == session_id)
+        .values(last_turn_at=AgentSession.last_turn_at)
+    )
+    return session.get(AgentSession, session_id, populate_existing=True)
+
+
+def _assert_sendable(session: Session, session_id: int) -> None:
+    if session.exec(select(_unknown_outcome_exists(session_id))).one():
+        raise SessionOutcomeUnknown(UNKNOWN_INVOCATION_MESSAGE)
+
+
+def _attempted(pending: PendingMessage) -> bool:
+    # A claim is conservative dispatch evidence, not a count of provider calls.
+    # Progress also protects rows created before dispatch tracing was added.
+    return bool(
+        pending.dispatch_count
+        or pending.last_dispatch_at
+        or pending.claimed_by_replica
+        or pending.partial_text
+        or pending.partial_activities
+    )
+
+
+def _progress_usage(pending: PendingMessage, cause: str) -> dict:
+    try:
+        activities = json.loads(pending.partial_activities or "[]")
+    except (TypeError, ValueError):
+        activities = []
+    return {
+        "activities": activities,
+        "recovery": {
+            "cause": cause,
+            "dispatch_count": pending.dispatch_count,
+            "last_dispatch_at": (
+                pending.last_dispatch_at.isoformat()
+                if pending.last_dispatch_at
+                else None
+            ),
+            "claim_owner": pending.claimed_by_replica,
+            "partial_text": pending.partial_text,
+            "partial_activities": pending.partial_activities,
+        },
+    }
+
+
+def _retry_permission(turn: AgentTurn | None, pending: PendingMessage) -> bool:
+    if turn is None or turn.terminal_reason not in INTERRUPTED_TERMINAL_REASONS:
+        return False
+    try:
+        usage = json.loads(turn.usage_json or "{}")
+    except (TypeError, ValueError):
+        return False
+    return (
+        isinstance(usage, dict)
+        and turn.stop_reason == "brick_preempted"
+        and pending.dispatch_count > 0
+        and usage.get("retry_dispatch_count") == pending.dispatch_count
+    )
+
+
+def _finish_unknown_locked(
+    session: Session, row: AgentSession, pending: PendingMessage, cause: str
+) -> None:
+    """Record evidence and consume the attempted head in the caller's transaction."""
+    existing = get_turn(session, row.id, pending.seq)
+    if (
+        existing is not None
+        and existing.terminal_reason not in INTERRUPTED_TERMINAL_REASONS
+    ):
+        # A completed result may have committed before an old executor's cleanup.
+        session.delete(pending)
+        return
+    usage = _progress_usage(pending, cause)
+    if existing is not None:
+        usage["prior_interruption"] = {
+            "result_text": existing.result_text,
+            "usage_json": existing.usage_json,
+        }
+        session.delete(existing)
+        session.flush()
+    session.add(
+        AgentTurn(
+            session_id=row.id,
+            seq=pending.seq,
+            prompt=pending.message_text,
+            model=pending.model,
+            voice_summary=UNKNOWN_INVOCATION_MESSAGE,
+            result_text=pending.partial_text or UNKNOWN_INVOCATION_MESSAGE,
+            terminal_reason="error",
+            stop_reason=UNKNOWN_INVOCATION,
+            permission_denials="[]",
+            usage_json=json.dumps(usage),
+            cost_usd=None,
+        )
+    )
+    row.status = "failed"
+    row.last_turn_at = datetime.now(timezone.utc)
+    row.voice_summary = UNKNOWN_INVOCATION_MESSAGE
+    # Leave the guest and lineage handles available for operator inspection.
+    row.progress_token = None
+    row.recovery_workspace_loss = None
+    session.add(row)
+    session.delete(pending)
+
+
+def finish_unknown_pending_sync(
+    session_id: int,
+    turn_seq: int,
+    claim_owner: str,
+    dispatch_count: int,
+    cause: str,
+) -> bool:
+    with Session(get_engine()) as session:
+        row = _lock_session(session, session_id)
+        pending = get_pending_message(session, session_id, turn_seq)
+        if (
+            row is None
+            or pending is None
+            or pending.claimed_by_replica != claim_owner
+            or pending.dispatch_count != dispatch_count
+        ):
+            return False
+        _finish_unknown_locked(session, row, pending, cause)
+        session.commit()
+        return True
 
 
 def create_voice_ui_companion(
@@ -234,7 +389,8 @@ def set_ember_session(
     cli_session_id: str | None | object = _UNSET,
     is_restored: bool = False,
 ) -> AgentSession:
-    row = session.get(AgentSession, session_id)
+    row = _lock_session(session, session_id)
+    _assert_sendable(session, session_id)
     if row is None:
         raise ValueError(f"Unknown agent session {session_id}")
     row.ember_session_id = ember_id
@@ -267,7 +423,8 @@ def replace_ember_session_after_preemption(
     ember_lineage_id: str | None,
 ) -> AgentSession:
     """Persist a blank replacement while retaining the preempted generation."""
-    row = session.get(AgentSession, session_id)
+    row = _lock_session(session, session_id)
+    _assert_sendable(session, session_id)
     if row is None:
         raise ValueError(f"Unknown agent session {session_id}")
     if row.ember_lineage_id:
@@ -382,6 +539,8 @@ def create_turn(
     artifact_path: str | None = None,
     artifact_blob: bytes | None = None,
     artifact_outcome: str | None = None,
+    *,
+    commit: bool = True,
 ) -> AgentTurn:
     row = AgentTurn(
         session_id=session_id,
@@ -405,8 +564,11 @@ def create_turn(
         cost_usd=cost_usd,
     )
     session.add(row)
-    session.commit()
-    session.refresh(row)
+    if commit:
+        session.commit()
+        session.refresh(row)
+    else:
+        session.flush()
     return row
 
 
@@ -537,6 +699,9 @@ def _claim_zombie_session_recovery(
     steal_claim: bool,
 ) -> dict | None:
     """CAS one zombie shape into the shared recovery state."""
+    # Acquire the same lock as heartbeats before evaluating pending predicates.
+    # PostgreSQL may evaluate a subquery before an UPDATE waits for a row lock.
+    _lock_session(session, session_id)
     result = session.execute(
         update(AgentSession)
         .where(AgentSession.id == session_id, predicate)
@@ -574,36 +739,16 @@ def _claim_zombie_session_recovery(
         "ember_session_id": row.ember_session_id,
         "recovery_workspace_loss": _recovery_workspace_loss(row, pending),
     }
+    if _attempted(pending) or row.ember_session_id is not None:
+        _finish_unknown_locked(session, row, pending, "zombie_observer_lost")
+        session.commit()
+        return {**claim, "outcome_unknown": True}
     if steal_claim:
         # This is the sole recovery path allowed to revoke a live executor's
         # lease. refresh_claim_sync checks claimed_by_replica and will make the
         # hung executor abort before it can persist a result.
         pending.claimed_by_replica = None
         pending.claimed_at = None
-
-    if pending.dispatch_count > MAX_PENDING_DISPATCHES:
-        row.status = "failed"
-        row.last_turn_at = now
-        row.voice_summary = (
-            f"Failed after {pending.dispatch_count} dispatch attempts; "
-            "automatic recovery stopped."
-        )
-        row.recovery_workspace_loss = None
-        if row.ember_lineage_id:
-            row.prior_ember_lineage_id = row.ember_lineage_id
-        if row.cli_session_id:
-            row.prior_cli_session_id = row.cli_session_id
-        row.ember_session_id = None
-        row.ember_session_token = None
-        row.ember_session_expires_at = None
-        row.ember_lineage_id = None
-        row.cli_session_id = None
-        # The declined lane head is terminal. Removing it lets a later send
-        # allocate and dispatch a fresh head instead of replaying this dead one.
-        session.delete(pending)
-        session.add(row)
-        session.commit()
-        return {**claim, "recovery_declined": True}
 
     row.recovery_workspace_loss = claim["recovery_workspace_loss"]
     session.add_all([row, pending])
@@ -655,11 +800,17 @@ def finalize_zombie_session_recovery(
     """Release the original lane head in place after clearing its binding."""
     session_id = claim["session_id"]
     turn_seq = claim["turn_seq"]
-    row = session.get(AgentSession, session_id)
+    row = _lock_session(session, session_id)
     pending = get_pending_message(session, session_id, turn_seq)
     if row is None or row.status != "recovering" or pending is None:
+        session.rollback()
         return None
-    if get_turn(session, session_id, turn_seq) is not None:
+    if (
+        _attempted(pending)
+        or row.ember_session_id is not None
+        or get_turn(session, session_id, turn_seq) is not None
+    ):
+        session.rollback()
         return None
 
     pending.claimed_by_replica = None
@@ -676,9 +827,12 @@ def finalize_zombie_session_recovery(
 def update_session_status(
     session: Session, session_id: int, status: str, voice_summary: str | None = None
 ) -> AgentSession:
-    row = session.get(AgentSession, session_id)
+    row = _lock_session(session, session_id)
     if row is None:
         raise ValueError(f"Unknown agent session {session_id}")
+    if session.exec(select(_unknown_outcome_exists(session_id))).one():
+        status = "failed"
+        voice_summary = UNKNOWN_INVOCATION_MESSAGE
     row.status = status
     row.last_turn_at = datetime.now(timezone.utc)
     if voice_summary is not None:
@@ -696,6 +850,7 @@ def activate_session_after_enqueue(session: Session, session_id: int) -> bool:
         .where(
             AgentSession.id == session_id,
             AgentSession.status != "recovering",
+            ~_unknown_outcome_exists(AgentSession.id),
         )
         .values(status="running", last_turn_at=datetime.now(timezone.utc))
     )
@@ -820,8 +975,9 @@ def create_pending_message(
     scratch, and retry (up to 5 attempts). After all attempts are exhausted,
     raise RuntimeError.
     """
-    if session.get(AgentSession, session_id) is None:
+    if _lock_session(session, session_id) is None:
         raise ValueError(f"Unknown agent session {session_id}")
+    _assert_sendable(session, session_id)
 
     max_attempts = 5
     for attempt in range(max_attempts):
@@ -853,7 +1009,8 @@ def create_pending_message(
                 raise RuntimeError(
                     f"Failed to allocate seq for session {session_id} after {max_attempts} attempts"
                 )
-            # Continue to next attempt
+            _lock_session(session, session_id)
+            _assert_sendable(session, session_id)
 
 
 def get_pending_message(
@@ -878,60 +1035,40 @@ def write_progress_sync(
     partial_text: str,
     activities: list | None = None,
 ) -> str:
-    """Write guest progress to the active pending message.
-
-    Returns ``ok`` when a row was updated, ``unknown_token`` when the token
-    is not in ``agent_sessions``, and ``no_row`` when no pending row exists.
-    """
+    """Write progress only while this token still owns an unfrozen session."""
     with Session(get_engine()) as session:
-        session_row = session.exec(
+        session_id = session.exec(
             select(AgentSession.id).where(AgentSession.progress_token == progress_token)
         ).first()
-        if session_row is None:
+        if session_id is None:
             return "unknown_token"
-        session_id = session_row
-
-    with Session(get_engine()) as session:
-        update_kwargs = {"partial_text": partial_text}
-        if activities is not None:
-            update_kwargs["partial_activities"] = json.dumps(activities)
-        stmt = (
-            update(PendingMessage)
-            .where(
-                PendingMessage.session_id == session_id,
-                PendingMessage.claimed_by_replica.isnot(None),
-            )
-            .values(**update_kwargs)
-        )
-        result = session.execute(stmt)
-        session.commit()
-        if result.rowcount > 0:
-            return "ok"
-
-        lowest_seq = session.exec(
-            select(PendingMessage.seq)
+        row = _lock_session(session, session_id)
+        if row is None or row.progress_token != progress_token:
+            return "unknown_token"
+        try:
+            _assert_sendable(session, session_id)
+        except SessionOutcomeUnknown:
+            return "unknown_token"
+        pending = session.exec(
+            select(PendingMessage)
             .where(PendingMessage.session_id == session_id)
-            .order_by(PendingMessage.seq)
+            .order_by(PendingMessage.claimed_by_replica.is_(None), PendingMessage.seq)
         ).first()
-        if lowest_seq is None:
+        if pending is None:
             return "no_row"
-        stmt = (
-            update(PendingMessage)
-            .where(
-                PendingMessage.session_id == session_id,
-                PendingMessage.seq == lowest_seq,
-            )
-            .values(**update_kwargs)
-        )
-        result = session.execute(stmt)
+        pending.partial_text = partial_text
+        if activities is not None:
+            pending.partial_activities = json.dumps(activities)
+        session.add(pending)
         session.commit()
-        return "ok" if result.rowcount > 0 else "no_row"
+        return "ok"
 
 
 def _persist_progress_token_sync(session_id: int, progress_token: str) -> None:
     """Mint and persist a progress token for a pre-migration session."""
     with Session(get_engine()) as session:
-        row = session.get(AgentSession, session_id)
+        row = _lock_session(session, session_id)
+        _assert_sendable(session, session_id)
         if row is not None and row.progress_token is None:
             row.progress_token = progress_token
             session.add(row)
@@ -941,78 +1078,70 @@ def _persist_progress_token_sync(session_id: int, progress_token: str) -> None:
 def claim_pending_message_for_session_sync(
     session_id: int, replica_id: str
 ) -> int | None:
-    """Atomically claim the lowest unclaimed seq for a session.
-
-    Enforces FIFO ordering across replicas by always claiming the lowest
-    unclaimed seq. This is a single atomic operation, so ordering is
-    guaranteed at the database level and holds across all replicas.
-
-    Returns the seq of the claimed message, or None if no unclaimed messages.
-    """
+    """Claim the lane head once, or consume one exact preemption retry grant."""
     with Session(get_engine()) as session:
-        # The lowest OUTSTANDING seq, claimed or not. Pending rows are deleted
-        # once their turn completes, so anything still here is unfinished.
-        #
-        # Taking the minimum over unclaimed rows only would order assignment but
-        # not execution: with seq 1 claimed and running, seq 2 would be the
-        # lowest unclaimed and a second executor would claim it and run
-        # concurrently. Serialising within a session means refusing to start a
-        # later message while an earlier one is still outstanding.
-        lowest_seq_result = session.execute(
-            select(func.min(PendingMessage.seq)).where(
-                PendingMessage.session_id == session_id,
-            )
-        ).scalar()
-
-        if lowest_seq_result is None:
+        row = _lock_session(session, session_id)
+        if row is None or row.status in {"awaiting_login", "failed"}:
             return None
-
-        # Claim it atomically
-        result = session.execute(
-            update(PendingMessage)
-            .where(
-                PendingMessage.session_id == session_id,
-                PendingMessage.seq == lowest_seq_result,
-                PendingMessage.claimed_by_replica.is_(None),
-            )
-            .values(
-                claimed_by_replica=replica_id,
-                claimed_at=func.now(),
-                dispatch_count=PendingMessage.dispatch_count + 1,
-                last_dispatch_at=func.now(),
-            )
-        )
-        if result.rowcount == 1:
-            # A completed recovery suppresses duplicate reconciliation until
-            # the retry is actually dispatched. From this point onward the
-            # dispatch counter, rather than a permanent one-shot marker,
-            # bounds any further recovery attempts.
-            session.execute(
-                update(AgentSession)
-                .where(AgentSession.id == session_id)
-                .values(recovery_completed_at=None)
-            )
+        try:
+            _assert_sendable(session, session_id)
+        except SessionOutcomeUnknown:
+            return None
+        pending = session.exec(
+            select(PendingMessage)
+            .where(PendingMessage.session_id == session_id)
+            .order_by(PendingMessage.seq)
+        ).first()
+        if pending is None or pending.claimed_by_replica is not None:
+            return None
+        previous = get_turn(session, session_id, pending.seq)
+        if _attempted(pending):
+            if not _retry_permission(previous, pending):
+                _finish_unknown_locked(session, row, pending, "unclaimed_attempt")
+                session.commit()
+                return None
+            # Consume permission before the next attempt starts. If this attempt
+            # loses its observer, the previous interrupted row cannot authorize it.
+            usage = json.loads(previous.usage_json)
+            usage.pop("retry_dispatch_count")
+            previous.usage_json = json.dumps(usage)
+            session.add(previous)
+        elif row.status == "recovering":
+            return None
+        seq = pending.seq
+        pending.claimed_by_replica = replica_id
+        pending.claimed_at = func.now()
+        pending.dispatch_count += 1
+        pending.last_dispatch_at = func.now()
+        row.recovery_completed_at = None
+        session.add_all([row, pending])
         session.commit()
-
-        # Return the seq if we successfully claimed it, None otherwise
-        return lowest_seq_result if result.rowcount == 1 else None
+        return seq
 
 
 def release_pending_message_claim_sync(
-    session_id: int, turn_seq: int, replica_id: str
-) -> None:
-    """Release this replica's claim after execution completes."""
+    session_id: int,
+    turn_seq: int,
+    replica_id: str,
+    cause: str = "observer_released",
+) -> bool:
+    """Release only a known preemption; observer loss is an unknown outcome."""
     with Session(get_engine()) as session:
-        session.execute(
-            update(PendingMessage)
-            .where(
-                PendingMessage.session_id == session_id,
-                PendingMessage.seq == turn_seq,
-                PendingMessage.claimed_by_replica == replica_id,
-            )
-            .values(claimed_by_replica=None, claimed_at=None)
-        )
+        row = _lock_session(session, session_id)
+        pending = get_pending_message(session, session_id, turn_seq)
+        if row is None:
+            return False
+        if pending is None or pending.claimed_by_replica != replica_id:
+            return session.exec(select(_unknown_outcome_exists(session_id))).one()
+        previous = get_turn(session, session_id, turn_seq)
+        if _retry_permission(previous, pending):
+            pending.claimed_by_replica = None
+            pending.claimed_at = None
+            session.add(pending)
+        else:
+            _finish_unknown_locked(session, row, pending, cause)
         session.commit()
+        return session.exec(select(_unknown_outcome_exists(session_id))).one()
 
 
 def persist_turn_from_pending_sync(
@@ -1024,12 +1153,22 @@ def persist_turn_from_pending_sync(
     status: str,
     cli_session_id: str | None = None,
     model: str | None = None,
+    claim_owner: str | None = None,
+    dispatch_count: int | None = None,
 ) -> AgentTurn:
     """Persist the result of a queued message using a fresh database session."""
     with Session(get_engine()) as session:
-        sess_row = get_session(session, session_id)
+        sess_row = _lock_session(session, session_id)
         if not sess_row:
             raise ValueError(f"Session {session_id} not found")
+        _assert_sendable(session, session_id)
+        pending = get_pending_message(session, session_id, turn_seq)
+        if claim_owner is not None and (
+            pending is None
+            or pending.claimed_by_replica != claim_owner
+            or (dispatch_count is not None and pending.dispatch_count != dispatch_count)
+        ):
+            raise PendingClaimLost("Turn completion no longer owns its dispatch")
         usage = {**turn.usage, "activities": turn.activities}
         if turn.workspace_recovery is not None:
             usage["workspace_recovery"] = turn.workspace_recovery
@@ -1089,6 +1228,7 @@ def persist_turn_from_pending_sync(
             artifact_path=artifact_path,
             artifact_blob=artifact_blob,
             artifact_outcome=artifact_outcome,
+            commit=False,
         )
         if (
             turn.terminal_reason in CLEAN_TERMINAL_REASONS
@@ -1101,8 +1241,14 @@ def persist_turn_from_pending_sync(
         if cli_session_id:
             sess_row.cli_session_id = cli_session_id
             session.add(sess_row)
-            session.commit()
-        update_session_status(session, session_id, status, voice_summary)
+        sess_row.status = status
+        sess_row.voice_summary = voice_summary
+        sess_row.last_turn_at = datetime.now(timezone.utc)
+        session.add(sess_row)
+        if pending is not None:
+            session.delete(pending)
+        session.commit()
+        session.refresh(row)
         return row
 
 
@@ -1115,24 +1261,27 @@ def delete_pending_message_sync(session_id: int, turn_seq: int) -> None:
             session.commit()
 
 
-def mark_turn_error_sync(session_id: int, turn_seq: int, error_msg: str) -> None:
-    """Persist an error turn and delete the pending row to stop infinite retries.
-
-    Semantics: A failed turn is terminal - the error is recorded durably in
-    agent_turns as a failed attempt, and the pending row is deleted to prevent
-    the sweep from re-dispatching it every 5 seconds. The caller can query
-    session status to see the failure.
-    """
+def mark_turn_error_sync(
+    session_id: int, turn_seq: int, error_msg: str, claim_owner: str | None = None
+) -> None:
+    """Retain progress on a terminal delivery error without allowing replay."""
     with Session(get_engine()) as session:
+        sess = _lock_session(session, session_id)
         row = get_pending_message(session, session_id, turn_seq)
-        existing_turn = get_turn(session, session_id, turn_seq)
-        if row is None or (
-            existing_turn is not None
-            and existing_turn.terminal_reason not in INTERRUPTED_TERMINAL_REASONS
-        ):
+        if sess is None or row is None:
             return
-        if existing_turn is not None:
-            session.delete(existing_turn)
+        if claim_owner is not None and row.claimed_by_replica != claim_owner:
+            return
+        existing = get_turn(session, session_id, turn_seq)
+        if (
+            existing is not None
+            and existing.terminal_reason not in INTERRUPTED_TERMINAL_REASONS
+        ):
+            session.delete(row)
+            session.commit()
+            return
+        if existing is not None:
+            session.delete(existing)
             session.flush()
         error_summary = "Error: " + error_msg[:100]
         create_turn(
@@ -1141,97 +1290,117 @@ def mark_turn_error_sync(session_id: int, turn_seq: int, error_msg: str) -> None
             turn_seq,
             row.message_text,
             error_summary,
-            f"Error executing turn: {error_msg}",
+            row.partial_text or f"Error executing turn: {error_msg}",
             terminal_reason="error",
             stop_reason=None,
             permission_denials=[],
             commit_sha=None,
-            usage={},
-            cost_usd=0.0,
+            usage=_progress_usage(row, error_msg),
+            cost_usd=None,
             model=row.model,
+            commit=False,
         )
-        update_session_status(session, session_id, "warn", error_summary)
-        # Delete the pending row to stop infinite retries
+        sess.status = "warn"
+        sess.voice_summary = error_summary
+        sess.last_turn_at = datetime.now(timezone.utc)
+        session.add(sess)
         session.delete(row)
         session.commit()
 
 
-def mark_turn_interrupted_sync(session_id: int, turn_seq: int) -> None:
-    """Record a preempted attempt without consuming its pending message."""
+def mark_turn_interrupted_sync(
+    session_id: int, turn_seq: int, claim_owner: str | None = None
+) -> None:
+    """Grant one retry for this exact, explicitly preempted dispatch attempt."""
     with Session(get_engine()) as session:
+        sess = _lock_session(session, session_id)
         pending = get_pending_message(session, session_id, turn_seq)
-        if pending is None:
+        if sess is None or pending is None:
             return
-        existing_turn = get_turn(session, session_id, turn_seq)
-        if existing_turn is None:
-            create_turn(
-                session,
-                session_id,
-                turn_seq,
-                pending.message_text,
-                "Resuming after preemption",
-                "The VM running this turn was preempted; the turn will be re-run.",
-                terminal_reason="interrupted",
-                stop_reason="brick_preempted",
-                permission_denials=[],
-                commit_sha=None,
-                usage={},
-                cost_usd=0.0,
-                model=pending.model,
-            )
-        elif existing_turn.terminal_reason not in INTERRUPTED_TERMINAL_REASONS:
+        if claim_owner is not None and pending.claimed_by_replica != claim_owner:
             return
-        update_session_status(
-            session, session_id, "recovering", "Resuming after preemption"
+        existing = get_turn(session, session_id, turn_seq)
+        if (
+            existing is not None
+            and existing.terminal_reason not in INTERRUPTED_TERMINAL_REASONS
+        ):
+            return
+        usage = _progress_usage(pending, "brick_preempted")
+        usage["retry_dispatch_count"] = pending.dispatch_count
+        if existing is not None:
+            usage["prior_interruption"] = {
+                "result_text": existing.result_text,
+                "usage_json": existing.usage_json,
+            }
+            session.delete(existing)
+            session.flush()
+        create_turn(
+            session,
+            session_id,
+            turn_seq,
+            pending.message_text,
+            "Resuming after preemption",
+            pending.partial_text
+            or "The VM running this turn was preempted; the turn will be re-run.",
+            terminal_reason="interrupted",
+            stop_reason="brick_preempted",
+            permission_denials=[],
+            commit_sha=None,
+            usage=usage,
+            cost_usd=None,
+            model=pending.model,
+            commit=False,
         )
+        sess.status = "recovering"
+        sess.voice_summary = "Resuming after preemption"
+        sess.last_turn_at = datetime.now(timezone.utc)
+        session.add(sess)
+        session.commit()
 
 
 def reclaim_stale_claims_sync() -> int:
-    """Reclaim pending messages whose claims have expired due to replica crash.
-
-    A claim is considered stale if claimed_by_replica is not null and the
-    claimed_at timestamp is older than lease_interval_seconds. A healthy
-    replica refreshes claimed_at every 10 seconds during turn execution, so
-    a claim that is not refreshed will be reclaimed within one lease interval.
-
-    The lease interval is set as a multiple of the refresh interval
-    (default 30s = 3x10s refresh), trading slow recovery for correctness:
-    a crashed replica's claims are reclaimed within one lease interval, but
-    an actively executing turn that refreshes its claim will never be
-    double-executed (even if the turn takes many minutes).
-
-    ASSUMPTION, and the one thing to check if turns are ever double-executed:
-    claimed_at is written by the DATABASE (func.now()) but the cutoff below is
-    computed from THIS POD's clock, because SQLAlchemy will not render timedelta
-    arithmetic portably across SQLite and Postgres. So the lease is only sound
-    while pod and database clocks agree to well within the interval.
-
-    The two directions of skew are not equally bad. A pod running behind the
-    database sees claims as fresher than they are, which only delays recovery.
-    A pod running ahead sees them as staler and can reclaim a turn that is still
-    executing, which is the double-execution the lease exists to prevent. NTP
-    keeps this far inside 30s in practice, but the dangerous direction fails
-    silently, so widen the lease rather than narrow it if this is ever in doubt.
-
-    Returns the count of reclaimed messages.
-    """
+    """Dispose stale attempts without inferring that their invocations stopped."""
+    now = datetime.now(timezone.utc)
+    cutoff = now - RECLAIM_LEASE
     with Session(get_engine()) as session:
-        # Compute cutoff in Python, not as a SQL expression. SQLAlchemy cannot
-        # reliably render timedelta subtraction across SQLite and Postgres dialects.
-        now = datetime.now(timezone.utc)
-        cutoff = now - RECLAIM_LEASE
-        result = session.execute(
-            update(PendingMessage)
-            .where(
+        candidates = session.exec(
+            select(
+                PendingMessage.session_id,
+                PendingMessage.seq,
+                PendingMessage.claimed_by_replica,
+                PendingMessage.dispatch_count,
+            ).where(
                 PendingMessage.claimed_by_replica.isnot(None),
                 PendingMessage.claimed_at.isnot(None),
                 PendingMessage.claimed_at < cutoff,
-                _no_live_pending_claim(PendingMessage.session_id, now),
             )
-            .values(claimed_by_replica=None, claimed_at=None)
-        )
-        session.commit()
-    return result.rowcount
+        ).all()
+    reclaimed = 0
+    for session_id, seq, owner, attempt in candidates:
+        with Session(get_engine()) as session:
+            row = _lock_session(session, session_id)
+            pending = session.exec(
+                select(PendingMessage).where(
+                    PendingMessage.session_id == session_id,
+                    PendingMessage.seq == seq,
+                    PendingMessage.claimed_by_replica == owner,
+                    PendingMessage.dispatch_count == attempt,
+                    PendingMessage.claimed_at < cutoff,
+                    _no_live_pending_claim(PendingMessage.session_id, now),
+                )
+            ).first()
+            if row is None or pending is None:
+                continue
+            previous = get_turn(session, session_id, seq)
+            if _retry_permission(previous, pending):
+                pending.claimed_by_replica = None
+                pending.claimed_at = None
+                session.add(pending)
+            else:
+                _finish_unknown_locked(session, row, pending, "lease_expired")
+            session.commit()
+            reclaimed += 1
+    return reclaimed
 
 
 def refresh_claim_sync(session_id: int, turn_seq: int, replica_id: str) -> bool:
@@ -1244,6 +1413,7 @@ def refresh_claim_sync(session_id: int, turn_seq: int, replica_id: str) -> bool:
     Returns True if claim is still held, False if claim was stolen.
     """
     with Session(get_engine()) as session:
+        _lock_session(session, session_id)
         # Match the owner in the UPDATE itself. A recovery transaction that
         # clears claimed_by_replica while this call is waiting for the row lock
         # therefore makes this return False instead of reviving the lease.
@@ -1269,6 +1439,7 @@ def get_all_pending_messages_sync() -> list[PendingMessage]:
                 .join(AgentSession, AgentSession.id == PendingMessage.session_id)
                 .where(
                     AgentSession.status.notin_({"awaiting_login", "failed"}),
+                    ~_unknown_outcome_exists(AgentSession.id),
                     or_(
                         AgentSession.status != "recovering",
                         exists().where(
