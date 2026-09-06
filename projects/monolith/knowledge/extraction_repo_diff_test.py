@@ -37,6 +37,7 @@ def session_fixture(tmp_path):
                         interval_secs INTEGER,
                         next_run_at TIMESTAMP,
                         last_run_at TIMESTAMP,
+                        last_status TEXT,
                         payload TEXT,
                         created_by TEXT
                     )
@@ -194,3 +195,24 @@ def test_repo_diff_job_registration_follows_flag(session, monkeypatch):
     assert ensure_repo_diff_job(session) is True
     session.commit()
     assert session.execute(text("SELECT name FROM routine_jobs")).all() == []
+
+
+def test_unknown_scout_hold_survives_feature_flag_toggle(session, monkeypatch):
+    monkeypatch.setenv("KG_REPO_DIFF_ENABLED", "true")
+    assert ensure_repo_diff_job(session) is True
+    session.execute(
+        text("""
+        UPDATE routine_jobs SET next_run_at = NULL,
+            last_status = 'invocation_outcome_unknown',
+            payload = '{"mode": "repo-diff", "last_sha": "retain"}'
+    """)
+    )
+    session.commit()
+    for enabled in ("false", "true"):
+        monkeypatch.setenv("KG_REPO_DIFF_ENABLED", enabled)
+        assert ensure_repo_diff_job(session) is False
+        session.commit()
+    row = session.execute(text("SELECT * FROM routine_jobs")).one()
+    assert row.next_run_at is None
+    assert row.last_status == "invocation_outcome_unknown"
+    assert json.loads(row.payload)["last_sha"] == "retain"

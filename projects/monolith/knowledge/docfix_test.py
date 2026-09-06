@@ -372,3 +372,22 @@ def test_helm_deploy_values_keep_docfix_auto_merge_off():
     assert (
         'name: KG_DOCFIX_REVIEW_ENABLED\n              value: "true"' in result.stdout
     )
+
+
+def test_unknown_review_hold_survives_pruning_and_blocks_replacement(
+    session, monkeypatch
+):
+    monkeypatch.setenv("KG_DOCFIX_REVIEW_ENABLED", "true")
+    session.execute(
+        text("""
+        INSERT INTO routine_jobs (name, routine_kind, last_run_at, last_status, payload)
+        VALUES ('docfix-review:held', 'qwen-drain', '2000-01-01',
+                'invocation_outcome_unknown', '{"pr_numbers": [5826]}')
+    """)
+    )
+    session.commit()
+    assert docfix.prune_completed_docfix_reviews(session) == 0
+    assert docfix.schedule_docfix_review(session, [5826], 0) is False
+    row = session.execute(text("SELECT * FROM routine_jobs")).one()
+    assert row.name == "docfix-review:held"
+    assert json.loads(row.payload) == {"pr_numbers": [5826]}

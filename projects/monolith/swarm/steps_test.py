@@ -153,7 +153,8 @@ def test_start_agent_session_forwards_workflow_fields(monkeypatch):
     ]
 
 
-def test_poll_turn_includes_rationale(monkeypatch):
+@pytest.mark.parametrize("stop_reason", ["end_turn", "invocation_outcome_unknown"])
+def test_poll_turn_includes_rationale_and_stop_reason(monkeypatch, stop_reason):
     import sqlmodel
 
     class Query:
@@ -172,7 +173,10 @@ def test_poll_turn_includes_rationale(monkeypatch):
                     "seq": 2,
                     "prompt_intent": "Implement the fix",
                     "result_text": "Done\n\nRATIONALE\n- path: app.py · why: fix it",
-                    "terminal_reason": "completed",
+                    "terminal_reason": "error"
+                    if stop_reason == "invocation_outcome_unknown"
+                    else "completed",
+                    "stop_reason": stop_reason,
                     "cost_usd": 0.25,
                     "usage_json": None,
                 },
@@ -194,6 +198,7 @@ def test_poll_turn_includes_rationale(monkeypatch):
 
     payload = steps.poll_turn.__wrapped__(101, 1)
 
+    assert payload["stop_reason"] == stop_reason
     assert payload["rationale"] == {
         "raw": "RATIONALE\n- path: app.py · why: fix it",
         "parse_status": "parsed",

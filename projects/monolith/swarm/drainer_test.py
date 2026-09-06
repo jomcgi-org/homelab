@@ -1230,3 +1230,131 @@ def test_finish_step_span_marks_error_status(monkeypatch):
     assert len(spans) == 1
     assert spans[0].attributes["drain.status"] == "error"
     assert spans[0].status.status_code is StatusCode.ERROR
+
+
+@pytest.mark.parametrize("stage", ["ordinary", "kg", "kg_correction", "recurring"])
+def test_unknown_turn_holds_job_without_retry_apply_or_cleanup(monkeypatch, stage):
+    held, applied, deferred = [], [], []
+    monkeypatch.setattr(
+        drainer, "hold_drainer_job", lambda *args: held.append(args) or True
+    )
+    monkeypatch.setattr(
+        drainer, "defer_drainer_job", lambda *args: deferred.append(args)
+    )
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _: "extract")
+    monkeypatch.setattr(drainer, "build_kg_correction_prompt", lambda _: "correct")
+
+    def apply(*args, **kwargs):
+        applied.append(args)
+        return {
+            "atoms": [],
+            "rejected": [{"reason": "correct"}],
+            "dispute": None,
+            "doc_drift": 0,
+            "docfix_jobs": 0,
+        }
+
+    monkeypatch.setattr(drainer, "apply_kg_extraction", apply)
+    unknown = {
+        "terminal_reason": "error",
+        "stop_reason": "invocation_outcome_unknown",
+        "result_text": "partial extraction",
+        "seq": 2,
+    }
+    turns = iter(
+        (
+            [{"terminal_reason": "stop", "result_text": "valid first result", "seq": 1}]
+            if stage == "kg_correction"
+            else []
+        )
+        + [unknown]
+    )
+    job = {
+        "name": "job-retain",
+        "routine_kind": "qwen-drain" if stage == "ordinary" else "kg-drain",
+        "payload": {"prompt": "work"}
+        if stage == "ordinary"
+        else {"raw_id": "raw-retain"},
+    }
+    if stage == "recurring":
+        job["interval_secs"] = 3600
+    _, _, starts, completed, _, destroys = _run(
+        monkeypatch, [job], await_turn=lambda *_: next(turns)
+    )
+    assert len(starts) == 1
+    assert held == [("job-retain", 101)]
+    assert deferred == []
+    assert completed == []
+    assert destroys == []
+    assert len(applied) == (1 if stage == "kg_correction" else 0)
+
+
+def test_cleanup_preserves_unknown_session_pending_and_guest(monkeypatch, tmp_path):
+    from sqlmodel import SQLModel
+    from agent_sessions import store
+    from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'held-cleanup.db'}")
+    schemas = {table.name: table.schema for table in SQLModel.metadata.tables.values()}
+    for table in SQLModel.metadata.tables.values():
+        table.schema = None
+    try:
+        SQLModel.metadata.create_all(engine)
+        monkeypatch.setattr("core.db.get_engine", lambda: engine)
+        monkeypatch.setattr("agent_sessions.mcp.get_engine", lambda: engine)
+        destroyed = []
+
+        async def destroy(guest_id):
+            destroyed.append(guest_id)
+
+        monkeypatch.setattr("agent_sessions.mcp._transport.destroy_session", destroy)
+        with Session(engine) as session:
+            row = store.create_session(session, "held-drainer", "<guest>", "main")
+            row.ember_session_id = "guest-retain"
+            row.ember_lineage_id = "lineage-retain"
+            session.add(row)
+            session.add(
+                AgentTurn(
+                    session_id=row.id,
+                    seq=1,
+                    prompt="original",
+                    result_text="partial",
+                    terminal_reason="error",
+                    stop_reason="invocation_outcome_unknown",
+                )
+            )
+            session.add(
+                PendingMessage(session_id=row.id, seq=2, message_text="held next")
+            )
+            session.commit()
+            session_id = row.id
+        assert (
+            drainer.destroy_drainer_session.__wrapped__(session_id, "held-drainer")
+            is False
+        )
+        assert destroyed == []
+        with Session(engine) as session:
+            row = session.get(AgentSession, session_id)
+            assert row.ember_session_id == "guest-retain"
+            assert row.ember_lineage_id == "lineage-retain"
+            assert (
+                store.get_pending_message(session, session_id, 2).message_text
+                == "held next"
+            )
+    finally:
+        for table in SQLModel.metadata.tables.values():
+            if table.name in schemas:
+                table.schema = schemas[table.name]
+
+
+def test_late_drainer_completion_cannot_deregister_held_job(monkeypatch):
+    from agent import routine_jobs
+
+    deleted = []
+    monkeypatch.setattr(routine_jobs, "complete_job", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        routine_jobs, "deregister_job", lambda name: deleted.append(name)
+    )
+    assert drainer.finish_drainer_job.__wrapped__("held", "ok", "late", True) is False
+    assert deleted == []

@@ -296,13 +296,18 @@ def enqueue_extraction(session: Session, raw_id: str, *, commit: bool = True) ->
 
 def ensure_repo_diff_job(session: Session) -> bool:
     """Reconcile the recurring repository scout job with its feature flag."""
+    from agent_sessions.constants import UNKNOWN_INVOCATION
+
     enabled = os.environ.get("KG_REPO_DIFF_ENABLED", "false").lower() == "true"
     dialect = session.get_bind().dialect.name
     table = "routine_jobs" if dialect == "sqlite" else "claude_agent.routine_jobs"
     if not enabled:
         result = session.execute(
-            text(f"DELETE FROM {table} WHERE name = :name"),
-            {"name": REPO_DIFF_JOB_NAME},
+            text(
+                f"DELETE FROM {table} WHERE name = :name "
+                "AND (last_status IS NULL OR last_status != :unknown_outcome)"
+            ),
+            {"name": REPO_DIFF_JOB_NAME, "unknown_outcome": UNKNOWN_INVOCATION},
         )
         return result.rowcount > 0
 

@@ -16,6 +16,8 @@ from agent_sessions.constants import (
     DRAINER_NODE_KEY,
     INTERRUPTED_TERMINAL_REASONS,
     KG_NODE_KEY,
+    UNKNOWN_INVOCATION,
+    UNKNOWN_INVOCATION_MESSAGE,
 )
 from knowledge.api import (
     ExtractionOutputInvalid,
@@ -75,6 +77,21 @@ def _quota_span_attributes() -> dict:
 
 class MalformedPayload(ValueError):
     """A routine job payload failed validation before session creation."""
+
+
+class InvocationOutcomeUnknown(RuntimeError):
+    """Partial output cannot authorize applying results or another attempt."""
+
+
+@DBOS.step()
+def hold_drainer_job(name: str, session_id: int) -> bool:
+    from agent.routine_jobs import hold_job_for_unknown_outcome
+
+    if not hold_job_for_unknown_outcome(name, session_id, UNKNOWN_INVOCATION_MESSAGE):
+        raise RuntimeError(
+            f"Could not hold routine job {name} for session {session_id}"
+        )
+    return True
 
 
 @DBOS.step()
@@ -292,7 +309,7 @@ def finish_drainer_job(
     # finish_job, not on the replayable job span.
     with tracer.start_as_current_span("drain.finish_job") as span:
         completed = complete_job(name, status=status, summary=summary)
-        if deregister:
+        if deregister and completed:
             deregister_job(name)
         summary_lines = summary.splitlines()
         first_line = summary_lines[0] if summary_lines else ""
@@ -380,18 +397,24 @@ def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bo
             # A session that timed out before the orphan sweep claimed its first
             # message must not create a VM after cleanup has already run.
             with Session(get_engine()) as session:
+                store._lock_session(session, resolved_session_id)
+                if store.has_unknown_outcome(session, resolved_session_id):
+                    span.set_attribute("drain.destroyed", False)
+                    return False
                 session.execute(
                     delete(PendingMessage).where(
                         PendingMessage.session_id == resolved_session_id
                     )
                 )
                 session.commit()
-        except Exception:  # noqa: BLE001 - still attempt the VM cleanup below
+        except Exception:  # noqa: BLE001 - failed hold checks must retain the guest
             logger.warning(
                 "Luna drainer failed to clear pending turn for session %s",
                 resolved_session_id,
                 exc_info=True,
             )
+            span.set_attribute("drain.destroyed", False)
+            return False
         if row.ember_session_id is None:
             span.set_attribute("drain.destroyed", False)
             return False
@@ -548,6 +571,8 @@ def _retry_or_dead_letter_kg(
 
 
 def _completed_output(turn: dict) -> str:
+    if turn.get("stop_reason") == UNKNOWN_INVOCATION:
+        raise InvocationOutcomeUnknown(UNKNOWN_INVOCATION_MESSAGE)
     output = _summary(turn.get("result_text"))
     terminal_reason = turn.get("terminal_reason")
     if terminal_reason in INTERRUPTED_TERMINAL_REASONS:
@@ -641,6 +666,7 @@ def drain_cycle() -> dict:
                 # Outcome deliberately belongs on drain.finish_job, the
                 # non-replaying step, to avoid double-counting on recovery.
                 start_attempted = False
+                outcome_unknown = False
                 raw_id = None
                 recurring = job.get("interval_secs") is not None
                 try:
@@ -771,6 +797,10 @@ def drain_cycle() -> dict:
                         finish_drainer_job(name, "error", error, not recurring)
                     else:
                         finish_drainer_job(name, "error", error)
+                except InvocationOutcomeUnknown as exc:
+                    outcome_unknown = True
+                    hold_drainer_job(name, session_id)
+                    _report_drainer_failure(settings, name, _summary(exc))
                 except ExtractionOutputInvalid as exc:
                     error = _summary(exc)
                     _retry_or_dead_letter_kg(
@@ -793,7 +823,7 @@ def drain_cycle() -> dict:
                         finish_drainer_job(name, "error", error)
                     _report_drainer_failure(settings, name, error)
                 finally:
-                    if start_attempted:
+                    if start_attempted and not outcome_unknown:
                         destroy_drainer_session(session_id, local_session_id)
 
         # Chain straight into the next cycle when this one stopped because it hit

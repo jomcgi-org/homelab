@@ -22,3 +22,9 @@ CLEAN_TERMINAL_REASONS = {"completed", "end_turn", "stop"}
 # A durable record of an attempt that did not finish. The pending message with
 # the same sequence remains live and will replace this turn after re-dispatch.
 INTERRUPTED_TERMINAL_REASONS = {"interrupted"}
+
+UNKNOWN_INVOCATION = "invocation_outcome_unknown"
+UNKNOWN_INVOCATION_MESSAGE = (
+    "This session has an unknown invocation outcome. Reconcile the guest and any "
+    "remote side effects, then start a new session. Sending again cannot resume it."
+)
