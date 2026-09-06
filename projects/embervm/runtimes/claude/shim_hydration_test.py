@@ -28,6 +28,7 @@ def manager(tmp_path):
     instance.claude = _Adapter(instance.workspace)
     instance.codex = _Adapter(instance.workspace)
     instance.pi = _Adapter(instance.workspace)
+    instance.muse = _Adapter(instance.workspace)
     instance._hydration_attempts = 0
     instance._hydration_error = None
     instance._checkout_dir = None
