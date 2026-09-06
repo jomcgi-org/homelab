@@ -130,7 +130,7 @@ while [[ "$attempt" -le "$TRIES" ]]; do
 			# A loose `grep targetRevision: | head -1` would eventually rewrite
 			# that git ref into a chart version and break the values source, so
 			# the pattern is anchored to a semver and the count is asserted.
-			# This mirrors bump-chart.sh, which got it right first.
+			# Keep the earlier guard's precise semver matching here.
 			TR_COUNT=$(grep -cE "$SEMVER_TR_RE" "$APP_YAML" || true)
 			if [[ "$TR_COUNT" -ne 1 ]]; then
 				echo "WARNING: ${APP_YAML} has ${TR_COUNT} semver targetRevision line(s), expected 1; leaving it alone." >&2
