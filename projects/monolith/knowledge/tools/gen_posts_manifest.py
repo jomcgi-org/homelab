@@ -10,7 +10,6 @@ metadata and post bodies used by the SvelteKit server routes.
 
 from __future__ import annotations
 
-import json
 import os
 import posixpath
 import re
@@ -21,11 +20,13 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 try:  # imported as knowledge.tools.* by tests, run as a bare script by CI
+    from knowledge.tools.prettier_json import dumps_prettier_json
     from knowledge.tools.public_content import check_public_content
 except ImportError:  # pragma: no cover - script invocation
     # py_venv_binary executes the main without adding its source directory to
-    # sys.path, even though public_content.py is present beside it in runfiles.
+    # sys.path, even though the helper modules are present beside it in runfiles.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from prettier_json import dumps_prettier_json
     from public_content import check_public_content
 
 POSTS_PREFIX = "docs/posts/"
@@ -352,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     entries = build_manifest(root, iter_post_paths(root), iter_figure_paths(root))
     out.write_text(
-        json.dumps(entries, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        dumps_prettier_json(entries, sort_keys=True) + "\n", encoding="utf-8"
     )
     print(f"wrote {len(entries)} posts to {MANIFEST_REL}")
     return 0

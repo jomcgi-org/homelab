@@ -20,7 +20,6 @@ this script with any python3 (or
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import subprocess
@@ -28,11 +27,13 @@ import sys
 from pathlib import Path
 
 try:  # imported as knowledge.tools.* by tests, run as a bare script by CI
+    from knowledge.tools.prettier_json import dumps_prettier_json
     from knowledge.tools.public_content import check_public_content
 except ImportError:  # pragma: no cover - script invocation
     # py_venv_binary executes the main without adding its source directory to
-    # sys.path, even though public_content.py is present beside it in runfiles.
+    # sys.path, even though the helper modules are present beside it in runfiles.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from prettier_json import dumps_prettier_json
     from public_content import check_public_content
 
 PUBLIC_PROJECTS = (
@@ -168,7 +169,7 @@ def main() -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     entries = build_manifest(root, iter_doc_paths(root))
     out.write_text(
-        json.dumps(entries, ensure_ascii=False, indent=2) + "\n",
+        dumps_prettier_json(entries, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     print(f"wrote {len(entries)} docs to {MANIFEST_REL}")

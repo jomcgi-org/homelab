@@ -5145,6 +5145,16 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_tools_prettier_json_test",
+    srcs = ["knowledge/tools/prettier_json_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "knowledge_gardener_test",
     srcs = ["knowledge/gardener_test.py"],
     imports = ["."],
