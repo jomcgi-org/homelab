@@ -179,8 +179,8 @@ v3 (auto-merge) is the first relaxation and intentionally gated behind extensive
 
 | Resource                                                                         | Relevance                                                                                  |
 | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| [Design doc](../../plans/2026-05-07-monolith-agent-mcp-surface-design.md)        | v1 design + v2/v2+ direction (the source material this ADR distills)                       |
-| [Implementation plan](../../plans/2026-05-07-monolith-agent-mcp-surface-plan.md) | v1 14-task plan (executed)                                                                 |
+| Design doc        | v1 design + v2/v2+ direction (the source material this ADR distills)                       |
+| Implementation plan | v1 14-task plan (executed)                                                                 |
 | [PR #2295](https://github.com/jomcgi/homelab/pull/2295)                          | v1 ship (24 commits, design + plan + impl + 4 fix-up commits)                              |
 | [PR #2300](https://github.com/jomcgi/homelab/pull/2300)                          | Docstring fix to clear Context Forge sanitizer                                             |
 | [PR #2301](https://github.com/jomcgi/homelab/pull/2301)                          | Regression test for Context Forge description compliance                                   |

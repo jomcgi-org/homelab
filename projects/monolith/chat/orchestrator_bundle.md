@@ -127,8 +127,6 @@ Top-level projects/ directories:
 
 docs/decisions/ categories:
 - agents
-- chat
 - embervm
 - platform
 - security
-- services

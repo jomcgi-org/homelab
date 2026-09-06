@@ -22,7 +22,7 @@ This is an unusually good showcase for EmberVM specifically. A warm Skyframe gra
 
 **Snapshot a warm Bazel server as an EmberVM base; serve each demo request from a disposable copy-on-write clone that runs a read-only query and is then reaped.** The workload is queries-only, so nothing a clone does needs to be persisted, and the lifecycle collapses to **request, response, reap**: relight a clone, serve one `bazel query`/`cquery`, discard the clone. No bank, no writeback, no session continuity. The full `build` hand-off to RBE, the "instant analysis then remote execution" story, is shown as a **recorded** cold-vs-warm comparison, not a live per-visitor action (see Security for why the interactive surface stays sealed).
 
-This is a **read-only consumer of machinery that already exists**, not new substrate. The base is captured after a warming build; per-request clones are the same CoW relight R7 Distribution ([R7 design seed](../../plans/2026-07-18-embervm-r7-distribution-design-seed.md), memory `embervm-r7-design-seed`) uses to place workloads as copies rather than rebuilds; the artifact is one `kind` of the `ExportArtifact`/`RestoreArtifact` family ADR 009 generalized. Because the workload never mutates durable state, it needs none of the bank/relight continuity of R2 sessions or R4 stateful: it is the simplest possible tier.
+This is a **read-only consumer of machinery that already exists**, not new substrate. The base is captured after a warming build; per-request clones are the same CoW relight R7 Distribution (R7 design seed, memory `embervm-r7-design-seed`) uses to place workloads as copies rather than rebuilds; the artifact is one `kind` of the `ExportArtifact`/`RestoreArtifact` family ADR 009 generalized. Because the workload never mutates durable state, it needs none of the bank/relight continuity of R2 sessions or R4 stateful: it is the simplest possible tier.
 
 | Aspect | Cold Bazel (status quo) | Decided (Skyframe snapshot) |
 | ------ | ----------------------- | --------------------------- |
@@ -140,5 +140,5 @@ Baseline per `docs/security.md`. This is a public, anonymous surface, so the thr
 | [ADR 001 - EmberVM orchestrator](001-embervm-beam-firecracker-workload-orchestrator.md) | Zero-egress / no-cross-principal isolation and the capacity contract the demo clones inherit |
 | [ADR 003 - Snapshot distribution](003-control-plane-managed-snapshot-distribution.md) | The snapshot-as-artifact store and Restore/Evict verbs this reuses |
 | [ADR 009 - Continuity before tenancy](009-roadmap-extension-continuity-before-tenancy.md) | The generalized `ArtifactRef`/Export/Restore family; this workload is one `kind` |
-| [R7 distribution design seed](../../plans/2026-07-18-embervm-r7-distribution-design-seed.md) | The copy-not-rebuild CoW relight the per-request clones use |
+| R7 distribution design seed | The copy-not-rebuild CoW relight the per-request clones use |
 | [BazelCon 2025 recap (JetBrains)](https://blog.jetbrains.com/clion/2025/11/bazelcon-2025/) | Confirms Skycache/remote analysis caching is Blaze-internal and only under discussion for OSS |
