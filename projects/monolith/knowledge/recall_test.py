@@ -184,7 +184,7 @@ async def test_search_related_inside_running_event_loop(monkeypatch):
         def search_notes_with_context(self, vector, **kwargs):
             calls["vector"] = vector
             calls["kwargs"] = kwargs
-            return [{"note_id": "n1"}]
+            return [{"note_id": "n1", "score": 0.9}]
 
     monkeypatch.setattr(recall, "EmbeddingClient", Embedder)
     monkeypatch.setattr("knowledge.store.KnowledgeStore", Store)
@@ -192,7 +192,7 @@ async def test_search_related_inside_running_event_loop(monkeypatch):
 
     result = recall.search_related(session, "x" * 2100, limit=7)
 
-    assert result == [{"note_id": "n1"}]
+    assert result == [{"note_id": "n1", "score": 0.9}]
     assert calls == {
         "text": "x" * recall.RECALL_QUERY_CAP,
         "session": session,
@@ -238,3 +238,27 @@ def test_render_related_notes_flattens_and_caps_titles():
         len(lines[0].split(" (scope unknown")[0])
         <= len("- [n1] ") + recall.RECALL_TITLE_CAP
     )
+
+
+def test_search_related_applies_score_floor(monkeypatch):
+    class Embedder:
+        async def embed(self, _text):
+            return [0.1, 0.2]
+
+    class Store:
+        def __init__(self, _session):
+            pass
+
+        def search_notes_with_context(self, _vector, **_kwargs):
+            return [
+                {"note_id": "keep", "score": 0.75},
+                {"note_id": "drop", "score": 0.55},
+            ]
+
+    monkeypatch.setattr(recall, "EmbeddingClient", Embedder)
+    monkeypatch.setattr("knowledge.store.KnowledgeStore", Store)
+    monkeypatch.setattr(recall, "RECALL_MIN_SCORE", 0.62)
+
+    result = recall.search_related(object(), "a sufficiently long query text", limit=5)
+
+    assert [item["note_id"] for item in result] == ["keep"]
