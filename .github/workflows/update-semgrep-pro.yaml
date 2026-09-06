@@ -15,7 +15,6 @@ concurrency:
 
 permissions:
   contents: write
-  packages: write
   pull-requests: write
 
 jobs:
@@ -34,8 +33,8 @@ jobs:
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: jomcgi
+          password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Install semgrep
         env:
@@ -466,7 +465,7 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create PR with automerge
+      - name: Create digest PR
         if: steps.check.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -492,7 +491,12 @@ jobs:
 
           git push -u origin "${BRANCH}"
 
-          gh pr create \
+          PR_FLAGS=()
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            PR_FLAGS+=(--draft)
+          fi
+
+          gh pr create "${PR_FLAGS[@]}" \
             --title "build(semgrep): update artifact digests" \
             --body "$(cat <<EOF
           ## Summary
@@ -508,4 +512,6 @@ jobs:
           EOF
           )"
 
-          gh pr merge --auto --rebase
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
+            gh pr merge --auto --rebase
+          fi
