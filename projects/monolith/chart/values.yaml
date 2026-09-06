@@ -1466,6 +1466,12 @@ marine:
     itemPath: "vaults/k8s-homelab/items/marine"
   boundingBox: "[[[46.876152, -129.552155], [51.413769, -121.213531]]]"
 
+# Shared S3 configuration gate. False omits the chart-owned R2 producer and
+# the shared S3 configuration and credentials below; disable unrelated jobs
+# separately in the recovery overlay.
+sharedS3:
+  enabled: true
+
 # Stars / dark-sky planner: the stars.load_grid job ingests grid.json (the
 # light-pollution site grid, uploaded out-of-band) from Cloudflare R2.
 # Credentials sourced from the monolith-r2-s3 Secret (created by OnePasswordItem

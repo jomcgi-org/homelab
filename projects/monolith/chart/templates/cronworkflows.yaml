@@ -11,6 +11,16 @@ Guarded on jobs.image being set: it is only populated by the build-time image
 pin, so a plain `helm template` (no pin) renders nothing - matching the JOBS
 image guard elsewhere.
 */ -}}
+{{- /* sharedS3 gate validation: sharedS3 must be a map holding a boolean
+       enabled flag. Omitted overrides inherit the chart default (true);
+       explicit null or non-boolean values fail here so a typo cannot
+       silently flip storage configuration. */ -}}
+{{- if not (kindIs "map" .Values.sharedS3) }}
+{{- fail "sharedS3 must be a map with boolean field enabled" }}
+{{- end }}
+{{- if not (kindIs "bool" .Values.sharedS3.enabled) }}
+{{- fail "sharedS3.enabled must be a boolean" }}
+{{- end }}
 {{- if .Values.jobs.image }}
 {{- range .Values.jobs.cronWorkflows }}
 {{- if and .grimoire (not $.Values.grimoire.enabled) }}
@@ -123,7 +133,8 @@ spec:
                   optional: true
                   {{- end }}
             {{- end }}
-            {{- if .s3 }}
+            {{- /* sharedS3.enabled false omits this whole S3 block. */ -}}
+            {{- if and $.Values.sharedS3.enabled .s3 }}
             # R2 S3 env for stars jobs. Endpoint/creds AND the bucket/key names
             # must all be set: the handlers' in-code defaults (e.g. STARS_GRID_S3_KEY
             # defaulting to "stars/grid.json") do NOT match the configured keys, so
@@ -188,6 +199,9 @@ spec:
             # DEEPSEEK_API_KEY), Kyverno-cloned into monolith-workflows (see the
             # clone-openrouter policy); the extract handler skips cleanly if absent.
             # R2 credentials (monolith-r2-s3 Secret) are also Kyverno-cloned.
+            {{- /* Only the shared endpoint and credentials below follow the
+                   sharedS3 gate; grimoire-owned env stays unconditional. */ -}}
+            {{- if $.Values.sharedS3.enabled }}
             - name: SEAWEEDFS_S3_ENDPOINT
               value: {{ $.Values.stars.s3Endpoint | quote }}
             - name: AWS_REGION
@@ -202,6 +216,7 @@ spec:
                 secretKeyRef:
                 secretKeyRef:  # Coupled to platform Kyverno clone-monolith-workflows-secrets rule
                   key: secret-access-key
+            {{- end }}
             - name: EMBEDDING_URL
               value: {{ $.Values.chat.embeddingUrl | quote }}
             # Bulk sourcebook loads embed thousands of chunks; the embedding

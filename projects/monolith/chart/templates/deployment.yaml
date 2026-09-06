@@ -1,3 +1,13 @@
+{{- /* sharedS3 gate validation: sharedS3 must be a map holding a boolean
+       enabled flag. Omitted overrides inherit the chart default (true);
+       explicit null or non-boolean values fail here so a typo cannot
+       silently flip storage configuration. */ -}}
+{{- if not (kindIs "map" .Values.sharedS3) }}
+{{- fail "sharedS3 must be a map with boolean field enabled" }}
+{{- end }}
+{{- if not (kindIs "bool" .Values.sharedS3.enabled) }}
+{{- fail "sharedS3.enabled must be a boolean" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -460,7 +470,8 @@ spec:
                   name: {{ include "monolith.fullname" . }}-chat-secrets
                   key: OWNER_DISCORD_USER_ID
             {{- end }}
-            {{- if .Values.stars }}
+            {{- /* sharedS3.enabled false omits this whole shared-S3 block. */ -}}
+            {{- if and .Values.sharedS3.enabled .Values.stars }}
             - name: SEAWEEDFS_S3_ENDPOINT
               value: {{ .Values.stars.s3Endpoint | quote }}
             - name: AWS_REGION
