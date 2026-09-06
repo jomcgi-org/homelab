@@ -1922,7 +1922,8 @@ defmodule Embervm.Router do
   # DELETE /v1/stateful/:name/volume handler (management auth): the ONLY
   # destructive data verb. 409 while any non-terminal instance exists (the
   # manager's refusal reason); otherwise 200 with deleted: true and an
-  # `unreachable` list naming capacity-absent nodes deliberately skipped.
+  # `unreachable` list naming nodes beyond the quiet window that did not answer
+  # a best-effort DeleteVolume.
   defp handle_delete_stateful_volume(conn, workload) do
     case stateful_manager().delete_volume(stateful_manager_server(), workload) do
       {:ok, %{deleted: true} = result} ->
