@@ -47,13 +47,6 @@ operator-provided.
 advanced classes); pretending capacity is infinite (queue depth, saturation
 signals, and admission control are the product surface instead).
 
-EmberVM keeps workload *definitions* in Kubernetes (low churn) and
-execution state in its own op-log and memory (high churn). Per-job
-orchestration (an etcd object per job, a pod per step) prices out thousands
-of short tasks, and nothing pod-shaped offers millisecond warm restore or
-wake-on-connect at all, so the low-latency classes have no incumbent to
-compare against.
-
 ### Capability matrix
 
 | Capability | Status | Limitation / tracking |
@@ -324,10 +317,8 @@ Facts that make this safe:
 
 - **Bank only starts at zero active connections**; a long-lived connection
   is never severed by an idle bank (rolls are the exception, bounded by the
-  drain contract). Note that contract has two different numbers and they
-  must not be conflated: a graceful roll is bounded by the platform's own
-  110s budget, while a GCE Spot preemption gives approximately 30 seconds,
-  not the two minutes an earlier AWS-derived figure assumed (ADR 040).
+  drain contract: a graceful roll gets the platform's own 110 s budget, a
+  GCE Spot preemption about 30 s, two numbers never to be conflated).
 - **Resume requires an exact (memory snapshot, volume generation) pair**;
   mismatch discards warmth and cold-boots from the durable volume.
   Model-checked (`bank_relight.tla`), including the monotonic floor: a
@@ -405,9 +396,8 @@ failover as a transient and splices to the published endpoint.
 
 For serving, Envoy's default overprovisioning factor makes the priority shift
 fractional, so one unhealthy host out of two can still send some traffic to the
-activator, whose node-local serving straggler lookup currently has no health
-filter. Issue #5537 tracks that serving-path caveat; this round changes only the
-stateful witnessed-connect behavior.
+activator, whose node-local serving straggler lookup has no health filter
+(#5818); the witnessed-connect withdrawal above is stateful-only.
 
 ### Sessions: the durability ladder
 
@@ -439,37 +429,21 @@ but off in every deployment and has never served a hydration: the shim's
 mirror attempt is denied at the egress proxy and falls through to the direct
 clone.
 
-Memory-banking session lineages have an available but dormant sequential
-Firecracker dirty-page diff path. The first bank is a full; after each allowed
-workload relights, snapshot load re-arms dirty tracking and the next bank writes
-a diff relative to that full. `snapshot-editor` synchronously rebases the diff
-onto a temporary copy of the prior full, and an atomic rename publishes the
-merged full before the Bank RPC returns. Only full bundles enter the existing
-zstd content-addressed archive, never diff chains. Any diff create, base lookup,
-editor, merge, or publication error logs a warning and falls back to a full bank.
-`noded.diffBanking` defaults false because this merge-at-bank protocol pays a
-full-size copy of the previous base on ext4 scratch, which has no reflink support,
-so the Bank RPC gets longer, not shorter. Enable it only after the in-place merge
-design or reflink-capable scratch lands, tracked in #4970. Park-only sessions do
-not enter this path.
+A sequential Firecracker dirty-page diff bank path exists and is dormant:
+`noded.diffBanking` defaults false because the merge-at-bank step copies the
+previous full base on reflink-less ext4 scratch, so the Bank RPC gets longer,
+not shorter. Enable it only after an in-place merge or reflink-capable scratch
+lands (#4970, #5699). Only full bundles ever enter the archive.
 
-**The `maxLifetimeSeconds` cap is a version-convergence bound, not a data lifetime.**
-It exists so a session cannot ride a stale base image forever, since a
-session pinned to an old base keeps that base's registry entry active and
-blocks the retention sweep from reclaiming it. It is deliberately not raised
-to buy continuity. Continuity comes from **adoption** instead: lineage is
-decoupled from session generation, so `session_id == lineage_id` holds only
-for the first generation, and a later generation inherits the prior
-lineage's workspace rather than starting blank. That is why a lineage spans
-weeks of shorter runs even though no single session may.
+**`maxLifetimeSeconds` is a version-convergence bound, not a data lifetime**:
+it stops a session riding a stale base forever and is never raised to buy
+continuity. Continuity comes from adoption: lineage is decoupled from session
+generation, so a later generation inherits the prior lineage's workspace.
 
-**Parked sessions count as disk, not against `concurrency.cap`.**
-A session with `memory: false, filesystem: true` persistence parks to
-its workspace volume holding zero RAM, so counting it as active would let
-idle sessions starve the cap while nothing runs. `concurrency.cap` bounds
-concurrently running VMs only, and wake does not re-check it: placement's
-memory admission and the per-principal wake-rate limit are what protect the
-receiving node.
+**Parked sessions count as disk, not against `concurrency.cap`**: a parked
+session holds zero RAM, `concurrency.cap` bounds running VMs only, and wake
+does not re-check it; placement's memory admission and the per-principal
+wake-rate limit protect the receiving node.
 
 The S3 artifact GC uses an 8-hour TTL for stateful warmth and 7-day TTLs for
 session memory, serving snapshots, session workspaces, and group sets.
@@ -595,24 +569,17 @@ never stores or witnesses anything that scales with the fleet.
   migrate. The dispatch path never reads the durable store.
 - **Retention**: result TTLs enforced at read time; terminal tasks
   pruned past 7 days; the ops journal prefix-compacted past a 30-day horizon
-  behind a durable `compacted_through_seq` marker; a PVC usage alert at
-  80% never shipped and would be moot in the reference deployment, whose
-  Postgres op-log renders no embervm PVC.
-  Long-horizon audit lives in the observability stack.
+  behind a durable `compacted_through_seq` marker. Long-horizon audit lives
+  in the observability stack.
 - **Adoption**: noded reports `primed_vm_ids`, session VMs,
   checkpoint-pending VMs, and banked artifacts on every `NodeStatus`; the
   dispatcher and managers reconcile on boot and every sweep. Adoption is
-  ETS-only except the stateful bundle heal, which synthesizes bundle facts
-  no earlier op recorded and so appends a `stateful_banked` op marked
-  `adopted: true` write-through (#4201). This is the
-  standing fix for the restart-wedge bug class, and the protocols are
-  model-checked: four PlusCal specs in `projects/embervm/specs/`
-  (`adoption`, `bank_relight`, `quota`, `session_create`) run under TLC in the build, so a
-  spec violation is a red build rather than a report, and the vocabulary
-  guard (`vocabulary.exs`) keeps the specs honest against the code, though
-  only against the spec text: it cannot see whether a modeled op kind is
-  ever appended (#4756) or whether the gate it needs is armed in the
-  deployed config (#4758), and it passed on both.
+  ETS-only except the stateful bundle heal, which appends a `stateful_banked`
+  op marked `adopted: true`. The protocols are model-checked: the specs in
+  `projects/embervm/specs/` run under TLC in the build, so a spec violation is
+  a red build, and `vocabulary.exs` keeps them honest against the code's
+  enums, though not against whether a modeled op kind is ever appended
+  (#4756) or the gate it needs is armed (#4758).
   **Planned**: trace validation, op-log events checked against TLA+
   actions. The debug-gated SpecTrace implementation (#4770) ships and runs
   in dev with `specTrace.enabled`; production keeps it off. The full harness
@@ -815,38 +782,25 @@ records the rootfs ext4 UUID at capture and refuses a restore, sibling
 adoption, or prime against a mismatched or missing identity, moving an
 in-use mismatched bundle aside rather than resuming a guest onto a
 filesystem it never saw (#5674). A rebaked rootfs after a node replacement
-therefore forces a fresh base build on that node. **Planned** (#5772): cache
-the baked rootfs in the store so a fresh node downloads the same bytes
-instead of rebaking.
+therefore forces a fresh base build on that node unless the baked rootfs
+cache above serves the same bytes (#5772).
 
-**Principal artifact envelope encryption** is **Built, inert until enabled per
-environment** (#4691). Each principal artifact file is zstd-encoded,
-then streamed through chunk-framed AES-256-GCM with a per-file nonce; `meta.json`
-holds the opaque control-plane envelope while SHA-256 remains over plaintext.
-Restore accepts legacy plaintext unconditionally. Enveloped restores require a
-request-field capability carrying the data key and an HMAC-authenticated tuple
-scoped to the principal, lineage, brick, workload, ref, kind, and generation.
-The control plane exposes a node-authenticated wrap endpoint and unwraps the
-stored envelope only while minting a five-minute capability for the exact target
-brick. The first principal use establishes epoch 1, and any malformed or
-below-floor envelope suppresses the restore so the existing cold-boot fallback
-runs. The rollout order is deliberate: configure `kekRoot`, enable
-`EMBERVM_ARTIFACT_ENCRYPTION`, enable `store.encrypt`, then enable
-`requireRestoreCapability`. Each step is controlled by environment values and
-all flags remain false by default. Root, epoch, customer-key, and custody
-transitions use a bounded control-plane sweep that lists only mutable artifact
-markers and rewrites the envelope without reading payload objects. Every
-`meta.json` replacement carries the exact S3 ETag from its preceding GET as an
-`If-Match` guard, so a concurrent newer export wins instead of having its
-generation and file manifest overwritten. Only an uncapped sweep with no
-conflicts, refusals, invalid markers, or store errors reports complete; raising
-an epoch floor or retiring a previous root or source-custody grant remains a
-separate operator action. Successful access provides a second convergence path:
-an enveloped inline restore, an already-local authenticated restore, or a
-checksum-skipped export schedules the same envelope-only operation in noded.
-That lazy request is detached from access latency, bounded to 15 seconds, and
-uses noded's signed S3 client with the same exact-ETag compare-and-swap. It
-preserves unknown marker fields and never reads an artifact payload object.
+**Principal artifact envelope encryption** (**Built**, armed in dev and
+production, chart defaults off, #4691): each mutable principal artifact is
+zstd-encoded then AES-256-GCM chunk-framed with a per-file nonce; `meta.json`
+carries the opaque control-plane envelope and SHA-256 stays over plaintext.
+An enveloped restore needs a five-minute capability minted by the control
+plane for the exact target brick, HMAC-bound to the (principal, lineage,
+brick, workload, ref, kind, generation) tuple; legacy plaintext restores
+unconditionally, and a malformed or below-floor envelope suppresses the
+restore so the cold-boot fallback runs. Root, epoch, and custody transitions
+rewrite envelopes without reading payloads, by a bounded control-plane sweep
+and a lazy noded pass after access, both guarded by an exact-ETag
+compare-and-swap so a newer export always wins; raising an epoch floor or
+retiring a root stays a separate operator action. Arming order and flags:
+`kekRoot`, `EMBERVM_ARTIFACT_ENCRYPTION`, `store.encrypt`,
+`requireRestoreCapability`; mechanics in `noded/server/store.go` and
+`control/lib/embervm/envelope_rewrap_sweeper.ex`.
 
 **Decided direction:**
 
@@ -905,26 +859,17 @@ sandbox-session and scan-fleet templates) owned by a reserved `platform`
 principal with an explicit broad instantiation grant, the widest and
 most-reviewed grant in the system. Neither exists in code today.
 
-`Embervm.KeyService` is the platform key custodian from ADR embervm/036. It
-derives per-principal, per-epoch KEKs on demand from one current root and stores
-only the current epoch and minimum accepted epoch, whose floor is the revocation
-fact. Root generation 1 remains the implicit version 1 envelope; later roots use
-an explicit version 3 generation, and exactly one previous root can coexist
-during rewrap. Mutable principal artifacts are encrypted in dev and production,
-and an enveloped restore requires a five-minute tuple-scoped brick capability.
-Customer-managed principals instead use a Secret-configured HTTPS KMS oracle:
-the customer service retains the KEK and returns only a plaintext data key plus
-an opaque wrapped key. Disabling the customer key or grant refuses unwrap and
-the normal restore-on-miss path degrades to cold boot. A custody switch declares
-the target `mode` plus the opposite `transition_from`; only that bounded window
-accepts old-custody envelopes, and rewrap changes the envelope without touching
-artifact ciphertext. The background reconciler persists that replacement with
-an ETag compare-and-swap, isolates customer KMS calls with bounded concurrency,
-and refuses to claim transition completion after any capped, conflicted, or
-failed pass. Noded also attempts the same CAS asynchronously after successful
-artifact access, so hot artifacts converge promptly while the background pass
-continues to cover cold artifacts. No customer oracle is configured in the
-reference deployment, so the mode is available but inert.
+`Embervm.KeyService` is the platform key custodian (ADR embervm/036): it
+derives per-principal, per-epoch KEKs on demand from one current root and
+stores only the current and minimum accepted epochs, whose floor is the
+revocation fact; one previous root may coexist during rewrap. Customer-managed
+principals instead use a Secret-configured HTTPS KMS oracle that keeps the KEK
+and returns a data key plus an opaque wrapped key, so disabling the customer
+key or grant makes warmth unrestorable and restore-on-miss degrades to cold
+boot; a custody switch declares `mode` plus `transition_from` and accepts the
+old custody only in that window. No customer oracle is configured in the
+reference deployment, so that mode is available but inert. Mechanics in
+`control/lib/embervm/key_service.ex` and `customer_kms.ex`.
 
 **Decided direction:**
 
@@ -1057,29 +1002,17 @@ embervm/032).
 
 EmberVM evaluates itself against the threat model published by
 [agent-substrate/substrate](https://github.com/agent-substrate/substrate/blob/main/docs/threat-model.md),
-adopted as the external conformance frame (ADR embervm/033). Substrate
-attacks the same problem from the density side (many actors multiplexed
-onto shared warm worker pods); its threat enumeration is the most complete
-public statement of what a multi-tenant agent execution plane must defend.
-
-The enumeration is condensed in the tables below. Shared-worker threats
-with no Ember analogue are answered by the "no reuse across principals"
-row. Five threats remain unmapped and do bind on Ember, tracked as open
-mapping work, not implied conformance: 8 (template-author reach into
-storage), 21 (worker privilege: noded runs privileged with /dev/kvm), 26
-(policy propagated out of band with scheduling), 31 (image-extraction
-resource limits), and 42 (detection integrations).
-
-<details>
-<summary><b>Substrate mapping</b>: vocabulary and threat numbering</summary>
-
-Their *actor* is Ember's guest workload, their *worker pod* is a
-Firecracker slot on a brick, their *atelet* is noded, their *snapshot* is
-Ember's warmth artifact (memory snapshot, session bundle, volume archive).
-The threat numbering is ours: upstream rows are unnumbered, so threats are
-numbered 1 to 43 in upstream document order as of its 2026-06-25 revision.
-
-</details>
+adopted as the external conformance frame (ADR embervm/033): the most
+complete public enumeration of what a multi-tenant agent execution plane must
+defend. The tables below condense it (their actor is Ember's guest, their
+worker pod a Firecracker slot on a brick, their atelet noded, their snapshot
+Ember's warmth artifact; threats are numbered 1 to 43 in upstream order as of
+its 2026-06-25 revision). Shared-worker threats with no Ember analogue are
+answered by the "no reuse across principals" row. Five threats remain
+unmapped and bind on Ember: 8 (template-author reach into storage), 21 (noded
+runs privileged with /dev/kvm), 26 (policy propagated out of band with
+scheduling), 31 (image-extraction resource limits), and 42 (detection
+integrations).
 
 The boundary in one picture: what untrusted code can reach, and what
 never crosses toward it.
@@ -1116,34 +1049,34 @@ Trust diagram legend: every edge is a current path.
 
 | Requirement (external mapping #) | Ember state |
 | ---------------------------- | ----------- |
-| Hardened sandbox, never bare containers (15) | **Built.** Every guest is a Firecracker microVM; there is no container lane. New execution technologies enter as lanes under existing classes (invariant 9), so the sandbox floor is a platform decision, never a workload one. |
-| Default-deny actor networking (17) | **Built** for the cross-actor half: task and session guests have no NIC at all, vsock only, so no actor-to-actor network path exists. Serving guests get a tap device reachable solely via node Envoy authority matches and kernel DNAT (section 2). Egress is the deliberate exception: the brokered proxy lane defaults internal-deny but external-allow (`EGRESS_EXTERNAL: allow`), so guests read the public internet by design, and the credential boundary rather than reachability is the control there (section 9). |
-| No guest access to node services, metadata, or cluster DNS (16, 19, 34) | **Built**, with named exceptions: a vsock guest reaches the shim contract plus the deployment-declared internal egress allowlist (entries recorded in `deploy/values.yaml`, where adding one is a security decision). No host network namespace, no metadata service, no cluster DNS inside the guest. |
-| No Kubernetes or management-API escalation from guests (20, 22) | **Built**: a guest holds no cluster credential by construction (no NIC, no mounted ServiceAccount). The audience-scoped projected guest token is **Planned**. Definitions are CP-owned and there is no self-modification verb. |
-| Worker state fully reset between actors (18, 27, 30) | **Built**: Ember never reuses an execution environment across principals: a task gets a fresh VM, a session restores only its own lineage, and no mutable VM or snapshot lineage ever crosses a principal (invariant 3). There is no scrubbed-shared-worker path to get wrong, placement is CP-owned, never guest-chosen, and each VM sees an immutable rootfs plus private scratch. ADR 028's Planned physical chunk sharing cannot expose another manifest or writable filesystem. |
-| Credentials never inside the sandbox by default (28, 29) | **Built**: class 1 derivable short-lived credentials may enter PLATFORM-TRUSTED guest classes only and are revoked at bank; the brick-local egress proxy holds other real credentials and injects them only at the sidecar hop, only for hosts in that secret's `egressTo`. UNTRUSTED workload guests never receive any credential class. Revocation at the validator is the control, and RAM scrubbing is rejected as a mechanism (section 9). **Planned**: per-principal grants at the credential broker and request-scoped GitHub tool mediation replacing host-keyed injection. |
-| Quotas and rate limits on creation and spend (9, 33) | **Built** as enforcement machinery, model-checked (`quota.tla`): admission fails closed, a configured quota of 0 is a hard stop at submit, and metering rides the operation (invariant 4). The per-principal daily budget is deliberately unset in the reference deployment (`deploy/values.yaml`), so spend is bounded by admission caps and concurrency, not by a per-principal quota, until a budget is set. |
-| Snapshot theft, substitution, or self-written snapshots (23, 24, 25, 32) | **Built**: the object store gateway enforces SigV4 and the `embervm` identity alone may write the ember buckets (#4708). Per-principal envelope encryption and restore authorization bind mutable warmth to the tuple (principal, lineage, brick, workload, generation, lease) (#4691), gated off by default for environment rollout. Digest-verified manifests remain planned. |
+| Hardened sandbox, never bare containers (15) | **Built.** Every guest is a Firecracker microVM; new execution technologies enter as lanes under existing classes (invariant 9). |
+| Default-deny actor networking (17) | **Built** for the cross-actor half: task and session guests have no NIC (vsock only); serving guests get a tap reachable only via node Envoy authority matches and DNAT (section 2). Egress is the deliberate exception: the brokered lane is internal-deny, external-allow, and the credential boundary is the control (section 9). |
+| No guest access to node services, metadata, or cluster DNS (16, 19, 34) | **Built**, with named exceptions: a vsock guest reaches the shim contract plus the deployment's internal egress allowlist (`deploy/values.yaml`, where adding an entry is a security decision). No host network namespace, metadata service, or cluster DNS in the guest. |
+| No Kubernetes or management-API escalation from guests (20, 22) | **Built**: no cluster credential by construction; the SPIFFE guest identity is **Decided direction** (section 9). Definitions are CP-owned and there is no self-modification verb. |
+| Worker state fully reset between actors (18, 27, 30) | **Built**: no execution environment is reused across principals (invariant 3); placement is CP-owned, each VM sees an immutable rootfs plus private scratch, and ADR 028's planned chunk sharing exposes no other manifest or writable filesystem. |
+| Credentials never inside the sandbox by default (28, 29) | **Built**: class 1 credentials enter PLATFORM-TRUSTED guests only and are revoked at bank; every other credential is injected at the sidecar hop for hosts in its `egressTo` (section 9). **Planned**: (principal, host) injection under SPIFFE (section 9). |
+| Quotas and rate limits on creation and spend (9, 33) | **Built**, model-checked (`quota.tla`): admission fails closed, a budget of 0 is a hard stop, metering rides the operation (invariant 4). The per-principal daily budget is unset in the reference deployment, so spend is bounded by admission caps and concurrency. |
+| Snapshot theft, substitution, or self-written snapshots (23, 24, 25, 32) | **Built**: the store gateway enforces SigV4 and only the `embervm` identity writes the ember buckets (#4708); envelope encryption and the restore capability bind mutable warmth to its tuple (#4691). Digest-verified manifests remain Planned. |
 
 ### Attacks from clients and the internal network
 
 | Requirement (external mapping #) | Ember state |
 | ---------------------------- | ----------- |
-| No direct internet exposure of guests, nodes, or the CP (1, 2, 3) | **Built.** Nothing faces the internet directly; ingress rides the deployment's zero-trust edge tunnel, public routes are scoped at their HTTPRoutes, and node Envoy returns 404 for `/shim/*` before routing, so the workload handler never sees the reserved prefix. The build-only hydrate endpoint also refuses another hydrate once the shim is ready (section 9). |
-| Mutual authentication and encrypted transport between components (4, 10) | **Built** for CP-to-noded authentication and ingress confinement: one bearer Secret is rendered into the control plane and every noded pod from the same values keys and enabled flag, and the control plane attaches it to every unary and streaming gRPC request. An ingress-only CiliumNetworkPolicy allow-lists each noded listener by its caller. Both controls are enforced in production and dev (#4693, 2026-08-22). SPIFFE X.509-SVID mTLS is the additive upgrade the proto reserves (`proto/embervm/node/v1/node.proto`), in flight as phase 2 of #5706 (section 9). Encrypted session-routing tokens are **Decided direction**. Management callers authenticate via Kubernetes TokenReview against an allow-list; the actor / principal / permission split with per-verb authorization is **Decided direction**. |
-| Control plane isolated from the data plane (6) | **Built** as a seam: the CP runs on Kubernetes, noded runs on bricks, and payloads never traverse the CP (invariant 2). **Accepted risk** in the reference deployment: guests co-locate with the etcd masters (section 11); do not import that clause into a cluster whose etcd is precious. |
-| Runtime configurable only by administrators (7) | **Built.** A workload chooses class and source (zip or image); the sandbox technology, kernel, and platform bases are CI-built platform artifacts it cannot substitute. |
-| A sanctioned, secure path for secrets (11) | **Built.** The cluster's secret operator is the only secret source, and guests receive none (the section 9 credential classes). |
+| No direct internet exposure of guests, nodes, or the CP (1, 2, 3) | **Built.** Nothing faces the internet directly; ingress rides the zero-trust edge tunnel, public routes are scoped at their HTTPRoutes, node Envoy returns 404 for `/shim/*` before routing, and hydrate is build-only (section 9). |
+| Mutual authentication and encrypted transport between components (4, 10) | **Built** for CP-to-noded authentication: one bearer Secret rendered into the control plane and every noded pod, attached to every gRPC request, enforced in production and dev (#4693). The ingress-only CiliumNetworkPolicy on each noded listener holds on the home cluster only: the hub gates it off (`values-gke.yaml` `noded.networkPolicy.enabled: false`, no Cilium CRDs), so there the bearer is the sole control. SPIFFE X.509-SVID mTLS is the additive upgrade the proto reserves, in flight as phase 2 of #5706 (section 9). Encrypted session-routing tokens and the actor / principal / permission split are **Decided direction**; management callers authenticate via Kubernetes TokenReview against an allow-list. |
+| Control plane isolated from the data plane (6) | **Built** as a seam: the CP runs on Kubernetes, noded on bricks, payloads never traverse the CP (invariant 2). **Accepted risk** on a small fleet: guests co-locate with the etcd masters (section 11). |
+| Runtime configurable only by administrators (7) | **Built.** A workload chooses class and source; the sandbox technology, kernel, and bases are CI-built platform artifacts it cannot substitute. |
+| A sanctioned, secure path for secrets (11) | **Built.** The cluster's secret operator is the only secret source, and guests receive none (section 9). |
 
 ### Attacks from nodes and insiders
 
 | Requirement (external mapping #) | Ember state |
 | ---------------------------- | ----------- |
-| Node storage access scoped to actors scheduled on it (36, 37) | **Built**: the gateway enforces SigV4 and only the `embervm` identity reaches the ember buckets (#4708). For encrypted mutable warmth, a brick receives a five-minute decryption capability for exactly the tuple it is waking (#4691); enforcement is armed in dev and production. |
-| Node API access scoped to its own actors (38) | **Built**: node reports are authoritative only for instances anchored to that node, wake grants are gated on the volume's anchor (section 4), and the bound token's TokenReview pod-uid and node-name claims must match the claimed (node, pod uid). A brick can register only itself. |
-| Granular admin access and envelope encryption at rest (39, 40) | **Built** for mutable principal warmth (#4691): platform-managed KEKs derive per epoch from a generation-numbered root, with one previous generation accepted during rotation, while customer-managed envelopes call the principal's HTTPS KMS oracle for issue and unwrap so unilateral key or grant revocation makes warmth unrestorable. No customer oracle is configured in the reference deployment. Immutable private rootfs chunk encryption remains planned (ADR 028, #4182). The op-log deliberately shares a Postgres cluster (section 11); payload separation and principal-scoped erasure are **Decided direction**. |
-| Audit logging of all control actions (41) | **Built.** Every lifecycle and enforcement action is an ordered op-log append, and the op-log doubles as the audit record (invariant 7). The journal is prefix-compacted past 30 days; older audit lives only in the observability stack. |
-| Containment of a detected-bad actor (43) | **Built** for one lever: principal cutoff as an admission action, stop minting tokens, 402 at the edge. The volume quarantine is a data-integrity guard against generation divergence, not an adversary control; no brick- or principal-level quarantine primitive exists, and an automatic containment policy is not decided. |
+| Node storage access scoped to actors scheduled on it (36, 37) | **Built**: SigV4 at the gateway, `embervm` identity only (#4708); a brick receives a five-minute decryption capability for exactly the tuple it is waking (#4691), armed in dev and production. |
+| Node API access scoped to its own actors (38) | **Built**: node reports are authoritative only for instances anchored to that node, wake grants are gated on the anchor (section 4), and the bound token's pod-uid and node-name claims must match the registration. A brick registers only itself. |
+| Granular admin access and envelope encryption at rest (39, 40) | **Built** for mutable principal warmth: derived per-epoch KEKs or a customer KMS oracle (section 9). Immutable rootfs chunk encryption remains Planned (ADR 028, #4182); the op-log shares a Postgres cluster (section 11); payload separation and principal-scoped erasure are **Decided direction**. |
+| Audit logging of all control actions (41) | **Built.** Every lifecycle and enforcement action is an ordered op-log append (invariant 7), prefix-compacted past 30 days; older audit lives in the observability stack. |
+| Containment of a detected-bad actor (43) | **Built** for one lever: principal cutoff as an admission action (stop minting tokens, 402 at the edge). The volume quarantine is a data-integrity guard, not an adversary control; no brick- or principal-level quarantine exists and automatic containment is undecided. |
 
 **Why.** Runtime isolation did not protect banked memory from a compromised brick,
 storage reader, or insider with object-store access (ADR embervm/033). A
@@ -1209,18 +1142,14 @@ shared Postgres) is in [deploy/README.md](deploy/README.md).
 
 ### Promotion gate
 
-EmberVM promotes the dev chart to production through Kargo. The existing
-`argocd-wait` step proves the Application is Synced and Healthy, while the
-soak interval exposes failures that appear only after reconciliation has settled.
-The in-cluster conformance runner adds synthetic API coverage against the deployed
-dev control plane. Its S1 through S4 scenarios exercise task execution, session
-sleep and relight, second-session restart latency, and control-plane invariants.
-The `/verdict` contract passes only when every scenario passes, so a failed or
-all-vacuous run blocks promotion and never becomes a hold state. Each verdict is
-stamped with the chart version so Kargo cannot accept evidence from an older
-deployment. Freight approval remains the explicit operator override when a
-promotion must proceed despite the gate or soak. The Phase 1 implementation is
-tracked in [GitHub issue #5224](https://github.com/jomcgi/homelab/issues/5224).
+EmberVM promotes the dev chart to production through Kargo: `argocd-wait`
+proves the Application Synced and Healthy, a soak interval catches failures
+that appear after reconciliation settles, and the in-cluster conformance
+runner's S1 to S4 scenarios (task execution, session sleep and relight,
+second-session restart latency, control-plane invariants) must all pass at
+`/verdict`, stamped with the chart version so an older deployment's evidence
+is refused. A failed or all-vacuous run blocks promotion; Freight approval is
+the explicit operator override. Phase 1 is tracked in #5224.
 
 **Known walls and provisional numbers** (each states what would move it):
 
@@ -1248,8 +1177,7 @@ scratch, and an external durable store as the minimum deployment contract.
 
 ## 12. Roadmap state
 
-The section 1 capability matrix carries per-capability status; this section
-is the current work and the decided directions behind it.
+The section 1 capability matrix carries per-capability status.
 
 **Decided direction**:
 
@@ -1266,19 +1194,15 @@ demand. Internal rung IDs R0-R9 map onto the capabilities.
 **Current work**: promoting brick autoscale from `up` to `full`,
 node-local activator soak, and the conciseness program (#4009).
 
-The availability contract is spot semantics, with two distinct budgets. A
-routine roll, upgrade or scale-down is a clock the platform sets and gives
-a workload up to 110 seconds of drain notice. A GCE Spot preemption is a
-clock the provider sets and gives approximately 30 seconds; the two-minute
-figure this doc previously quoted is the AWS contract and was never true
-here (ADR 040). noded's GCE preemption-notice watcher
-(`drain.preemptionNoticeEnabled`, a 20 second preemption budget) is **Built**
-and off in every deployment, so until it is armed the control plane is still
-told the 110 second figure when a preemption arrives. State durability within the stated archive interval is the
-guarantee, connection continuity is not (narrowed for stateful by the
-planned-drain contract). Artifact retention
-TTLs and the GC sweep behaviour are in
-[deploy/README.md](deploy/README.md).
+The availability contract is spot semantics with two budgets: a routine
+roll, upgrade, or scale-down gives a workload up to 110 seconds of drain
+notice, and a GCE Spot preemption about 30 seconds (ADR 040). noded's GCE
+preemption-notice watcher (`drain.preemptionNoticeEnabled`, a 20 second
+preemption budget) is **Built** and off in every deployment, so until it is
+armed the control plane is still told the 110 second figure when a
+preemption arrives. State durability within the stated archive interval is
+the guarantee, connection continuity is not. Artifact retention TTLs and the
+GC sweep behaviour are in [deploy/README.md](deploy/README.md).
 
 ---
 

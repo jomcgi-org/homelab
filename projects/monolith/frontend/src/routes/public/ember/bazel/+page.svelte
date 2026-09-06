@@ -638,8 +638,8 @@
 
     <p class="design-doc">
       Design doc: <a
-        href="https://github.com/jomcgi/homelab/blob/main/docs/decisions/embervm/010-bazel-skyframe-snapshot-query-demo.md"
-        >ADR embervm/010</a
+        href="https://github.com/jomcgi/homelab/blob/main/projects/embervm/ARCHITECTURE.md#9-identity-tenancy-security"
+        >EmberVM architecture, section 9</a
       >.
     </p>
   </main>
