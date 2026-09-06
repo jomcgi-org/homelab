@@ -849,6 +849,70 @@ def test_muse_argv_uses_contributor_model_and_reuses_session_id(tmp_path, monkey
     assert second["session_id"] == first["session_id"]
 
 
+def test_muse_mcp_servers_configured_when_url_set_and_probe_passes(
+    tmp_path, monkeypatch
+):
+    agent_mcp_url = "http://agents.test:8092/mcp"
+    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, agent_mcp_url)
+    monkeypatch.setattr(shim, "_agent_mcp_endpoint_alive", lambda _url: True)
+    manager = _muse_manager(tmp_path, monkeypatch)
+    muse_config_home = tmp_path / "muse-config"
+    muse_config_home.mkdir()
+
+    manager._write_settings_json(str(muse_config_home))
+
+    settings = json.loads((muse_config_home / "muse" / "settings.json").read_text())
+    agents = settings["mcp_servers"]["agents"]
+    assert agents == {
+        "transport": "streamable_http",
+        "url": agent_mcp_url,
+        "headers": {"Authorization": "Bearer placeholder"},
+        "enabled": True,
+        "mode": "required",
+    }
+    assert "framing" not in agents
+
+
+def test_muse_mcp_servers_omitted_when_url_unset(tmp_path, monkeypatch):
+    monkeypatch.delenv(shim.AGENT_MCP_URL_ENV, raising=False)
+    manager = _muse_manager(tmp_path, monkeypatch)
+    muse_config_home = tmp_path / "muse-config"
+    muse_config_home.mkdir()
+
+    manager._write_settings_json(str(muse_config_home))
+
+    settings = json.loads((muse_config_home / "muse" / "settings.json").read_text())
+    assert "mcp_servers" not in settings
+
+
+def test_muse_mcp_servers_omitted_when_probe_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        shim.AGENT_MCP_URL_ENV,
+        "http://agents.test:8092/mcp",
+    )
+    monkeypatch.setattr(shim, "_agent_mcp_endpoint_alive", lambda _url: False)
+    manager = _muse_manager(tmp_path, monkeypatch)
+    muse_config_home = tmp_path / "muse-config"
+    muse_config_home.mkdir()
+
+    manager._write_settings_json(str(muse_config_home))
+
+    settings = json.loads((muse_config_home / "muse" / "settings.json").read_text())
+    assert "mcp_servers" not in settings
+
+
+def test_muse_settings_file_written_readonly(tmp_path, monkeypatch):
+    monkeypatch.delenv(shim.AGENT_MCP_URL_ENV, raising=False)
+    manager = _muse_manager(tmp_path, monkeypatch)
+    muse_config_home = tmp_path / "muse-config"
+    muse_config_home.mkdir()
+
+    manager._write_settings_json(str(muse_config_home))
+
+    settings_path = muse_config_home / "muse" / "settings.json"
+    assert settings_path.stat().st_mode & 0o777 == 0o444
+
+
 def test_muse_retryable_error_record_does_not_fail_turn(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("FAKE_MUSE_SCENARIO", "error-recovery")
     manager = _muse_manager(tmp_path, monkeypatch)
