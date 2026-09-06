@@ -32,7 +32,6 @@ multirun(
         "//projects/embervm/chart:chart.push",
         "//projects/embervm/conformance:image.push",
         "//projects/embervm/image:image.push",
-        "//projects/embervm/mirror/image:image.push",
         "//projects/embervm/noded/image:image.push",
         "//projects/embervm/runtimes/bazel:image.push",
         "//projects/embervm/runtimes/claude:image.push",
