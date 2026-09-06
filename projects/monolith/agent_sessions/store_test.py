@@ -335,6 +335,13 @@ def test_finalize_zombie_recovery_reuses_lane_head_before_follow_up(
             )
             assert claim is not None
             assert claim["recovery_workspace_loss"] is expected_workspace_loss
+            if claimed_by or ember_id:
+                assert claim["outcome_unknown"] is True
+                assert store.get_session(session, row.id).status == "failed"
+                assert store.get_session(session, row.id).ember_session_id == ember_id
+                assert store.get_turn(session, row.id, 1).prompt == "original prompt"
+                assert store.get_pending_message(session, row.id, 2) is not None
+                return
             assert (
                 store.get_session(session, row.id).recovery_workspace_loss
                 is expected_workspace_loss
@@ -490,15 +497,19 @@ def test_hung_recovery_stolen_claim_makes_refresh_return_false(monkeypatch, tmp_
             )
 
             assert claim is not None
-            assert store.finalize_zombie_session_recovery(session, claim, now) == 1
+            assert claim["outcome_unknown"] is True
+            assert store.finalize_zombie_session_recovery(session, claim, now) is None
             assert (
                 store.claim_pending_message_for_session_sync(row.id, "hung-pod:new")
-                == 1
+                is None
             )
             assert store.refresh_claim_sync(row.id, 1, "hung-pod:old") is False
             session.expire_all()
-            pending = store.get_pending_message(session, row.id, 1)
-            assert pending.claimed_by_replica == "hung-pod:new"
+            assert store.get_pending_message(session, row.id, 1) is None
+            assert (
+                store.get_turn(session, row.id, 1).stop_reason
+                == store.UNKNOWN_INVOCATION
+            )
     finally:
         _restore_schemas(schemas)
 
@@ -518,11 +529,8 @@ def test_claim_records_dispatch_count_and_time(monkeypatch, tmp_path):
             first = store.get_pending_message(session, session_id, turn_seq)
             assert first.dispatch_count == 1
             assert isinstance(first.last_dispatch_at, datetime)
-            first.claimed_by_replica = None
-            first.claimed_at = None
-            session.add(first)
-            session.commit()
-
+        store.mark_turn_interrupted_sync(session_id, turn_seq, "pod-a")
+        store.release_pending_message_claim_sync(session_id, turn_seq, "pod-a")
         assert store.claim_pending_message_for_session_sync(session_id, "pod-b") == 1
 
         with Session(engine) as session:
@@ -762,3 +770,357 @@ def test_discord_thread_binds_at_most_one_session(monkeypatch, tmp_path):
             assert len(rows) == 2
     finally:
         _restore_schemas(schemas)
+
+
+@pytest.fixture
+def uncertain_lane(monkeypatch, tmp_path):
+    engine, schemas = _database(monkeypatch, tmp_path)
+    try:
+        with Session(engine) as session:
+            row = store.create_session(session, "uncertain", "<guest>", "main")
+            row.ember_session_id = "guest-investigate"
+            row.ember_lineage_id = "lineage-retain"
+            row.progress_token = "old-progress"
+            session.add(row)
+            session.commit()
+            session_id = row.id
+            store.create_pending_message(
+                session, session_id, "original prompt", "terra"
+            )
+            store.create_pending_message(
+                session, session_id, "queued successor", "terra"
+            )
+        assert store.claim_pending_message_for_session_sync(session_id, "owner-1") == 1
+        assert (
+            store.write_progress_sync(
+                "old-progress", "partial review", [{"tool": "read", "path": "a.py"}]
+            )
+            == "ok"
+        )
+        yield engine, session_id
+    finally:
+        _restore_schemas(schemas)
+
+
+def test_unknown_release_preserves_evidence_and_holds_session(uncertain_lane):
+    engine, session_id = uncertain_lane
+    store.release_pending_message_claim_sync(session_id, 1, "owner-1")
+    with Session(engine) as session:
+        turn = store.get_turn(session, session_id, 1)
+        usage = json.loads(turn.usage_json)
+        assert turn.prompt == "original prompt"
+        assert turn.result_text == "partial review"
+        assert turn.stop_reason == store.UNKNOWN_INVOCATION
+        assert turn.terminal_reason == "error"
+        assert turn.cost_usd is None
+        assert usage["activities"] == [{"tool": "read", "path": "a.py"}]
+        assert usage["recovery"]["dispatch_count"] == 1
+        assert usage["recovery"]["claim_owner"] == "owner-1"
+        assert usage["recovery"]["last_dispatch_at"] is not None
+        row = store.get_session(session, session_id)
+        assert row.ember_session_id == "guest-investigate"
+        assert row.ember_lineage_id == "lineage-retain"
+        assert row.progress_token is None
+        assert store.get_pending_message(session, session_id, 1) is None
+        assert store.get_pending_message(session, session_id, 2) is not None
+        with pytest.raises(store.SessionOutcomeUnknown, match="start a new session"):
+            store.create_pending_message(session, session_id, "ordinary send")
+        session.rollback()
+        store.update_session_status(session, session_id, "running")
+        assert store.get_session(session, session_id).status == "failed"
+        assert store.activate_session_after_enqueue(session, session_id) is False
+    assert store.claim_pending_message_for_session_sync(session_id, "late-task") is None
+    assert store.get_all_pending_messages_sync() == []
+    assert (
+        store.write_progress_sync("old-progress", "late guest output")
+        == "unknown_token"
+    )
+    with Session(engine) as session:
+        assert store.get_pending_message(session, session_id, 2).partial_text is None
+
+
+def test_unknown_hold_blocks_claim_even_if_status_was_reopened(uncertain_lane):
+    engine, session_id = uncertain_lane
+    store.release_pending_message_claim_sync(session_id, 1, "owner-1")
+    with Session(engine) as session:
+        row = store.get_session(session, session_id)
+        row.status = "running"
+        session.add(row)
+        session.commit()
+    assert store.claim_pending_message_for_session_sync(session_id, "another") is None
+    assert store.get_all_pending_messages_sync() == []
+
+
+def test_direct_claim_stops_a_previously_released_attempt(uncertain_lane):
+    engine, session_id = uncertain_lane
+    with Session(engine) as session:
+        pending = store.get_pending_message(session, session_id, 1)
+        pending.claimed_by_replica = None
+        pending.claimed_at = None
+        session.add(pending)
+        session.commit()
+    assert (
+        store.claim_pending_message_for_session_sync(session_id, "replacement") is None
+    )
+    with Session(engine) as session:
+        assert (
+            store.get_turn(session, session_id, 1).stop_reason
+            == store.UNKNOWN_INVOCATION
+        )
+
+
+def test_unknown_reconciliation_is_idempotent_and_owner_fenced(uncertain_lane):
+    engine, session_id = uncertain_lane
+    assert store.finish_unknown_pending_sync(session_id, 1, "other", 1, "lost") is False
+    assert (
+        store.finish_unknown_pending_sync(session_id, 1, "owner-1", 2, "lost") is False
+    )
+    from threading import Barrier
+
+    barrier = Barrier(2)
+
+    def reconcile():
+        barrier.wait(timeout=5)
+        return store.finish_unknown_pending_sync(session_id, 1, "owner-1", 1, "lost")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: reconcile(), range(2)))
+    assert sorted(results) == [False, True]
+    assert store.reclaim_stale_claims_sync() == 0
+    store.release_pending_message_claim_sync(session_id, 1, "owner-1")
+    with Session(engine) as session:
+        assert len(store.get_turns(session, session_id)) == 1
+
+
+def test_stale_reclaim_rechecks_heartbeat_after_candidate_read(
+    uncertain_lane, monkeypatch
+):
+    from threading import Event, current_thread, main_thread
+
+    engine, session_id = uncertain_lane
+    with Session(engine) as session:
+        pending = store.get_pending_message(session, session_id, 1)
+        pending.claimed_at = datetime.now(timezone.utc) - timedelta(seconds=60)
+        session.add(pending)
+        session.commit()
+    candidates_read, continue_reclaim = Event(), Event()
+    original = store._lock_session
+
+    def pause_reclaimer(session, session_id):
+        if current_thread() is not main_thread():
+            candidates_read.set()
+            assert continue_reclaim.wait(5)
+        return original(session, session_id)
+
+    monkeypatch.setattr(store, "_lock_session", pause_reclaimer)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        reclaim = pool.submit(store.reclaim_stale_claims_sync)
+        assert candidates_read.wait(5)
+        assert store.refresh_claim_sync(session_id, 1, "owner-1") is True
+        continue_reclaim.set()
+        assert reclaim.result(timeout=5) == 0
+    with Session(engine) as session:
+        assert store.get_turn(session, session_id, 1) is None
+        assert (
+            store.get_pending_message(session, session_id, 1).claimed_by_replica
+            == "owner-1"
+        )
+
+
+def test_expired_attempt_is_recorded_once(uncertain_lane):
+    engine, session_id = uncertain_lane
+    with Session(engine) as session:
+        pending = store.get_pending_message(session, session_id, 1)
+        pending.claimed_at = datetime.now(timezone.utc) - timedelta(seconds=60)
+        session.add(pending)
+        session.commit()
+    assert store.reclaim_stale_claims_sync() == 1
+    assert store.reclaim_stale_claims_sync() == 0
+    with Session(engine) as session:
+        turn = store.get_turn(session, session_id, 1)
+        assert json.loads(turn.usage_json)["recovery"]["cause"] == "lease_expired"
+        assert turn.result_text == "partial review"
+
+
+def test_preemption_permission_cannot_authorize_a_later_unknown_attempt(uncertain_lane):
+    engine, session_id = uncertain_lane
+    store.mark_turn_interrupted_sync(session_id, 1, "owner-1")
+    store.release_pending_message_claim_sync(session_id, 1, "owner-1")
+    assert store.claim_pending_message_for_session_sync(session_id, "owner-2") == 1
+    # The old owner cannot consume this retry or turn it into a failure.
+    store.release_pending_message_claim_sync(session_id, 1, "owner-1")
+    with Session(engine) as session:
+        pending = store.get_pending_message(session, session_id, 1)
+        assert pending.dispatch_count == 2
+        assert pending.claimed_by_replica == "owner-2"
+    store.release_pending_message_claim_sync(session_id, 1, "owner-2")
+    assert store.claim_pending_message_for_session_sync(session_id, "owner-3") is None
+    with Session(engine) as session:
+        turn = store.get_turn(session, session_id, 1)
+        assert turn.stop_reason == store.UNKNOWN_INVOCATION
+        assert json.loads(turn.usage_json)["recovery"]["dispatch_count"] == 2
+
+
+def test_legacy_bound_zombie_is_held_without_dispatch_trace(monkeypatch, tmp_path):
+    engine, schemas = _database(monkeypatch, tmp_path)
+    now = datetime.now(timezone.utc)
+    try:
+        with Session(engine) as session:
+            row = store.create_session(session, "legacy-bound", "<guest>", "main")
+            row.ember_session_id = "guest-unknown"
+            session.add(row)
+            session.add(
+                PendingMessage(
+                    session_id=row.id,
+                    seq=1,
+                    message_text="legacy",
+                    created_at=now - timedelta(seconds=181),
+                )
+            )
+            session.commit()
+            claim = store.claim_zombie_session_recovery(
+                session, row.id, now - timedelta(seconds=180), now
+            )
+            assert claim["outcome_unknown"] is True
+            assert (
+                store.get_session(session, row.id).ember_session_id == "guest-unknown"
+            )
+            assert (
+                store.get_turn(session, row.id, 1).stop_reason
+                == store.UNKNOWN_INVOCATION
+            )
+    finally:
+        _restore_schemas(schemas)
+
+
+def _successful_uncertain_turn():
+    from agent_sessions.transport import Turn
+
+    return Turn(
+        result="committed result",
+        terminal_reason="completed",
+        stop_reason="end_turn",
+        is_error=False,
+        permission_denials=[],
+        num_turns=1,
+        session_id="cli-done",
+        usage={},
+        total_cost_usd=0.01,
+        duration_ms=1,
+        activities=[],
+    )
+
+
+def test_unknown_record_and_queue_disposition_roll_back_together(
+    uncertain_lane, monkeypatch
+):
+    from sqlalchemy import event
+
+    engine, session_id = uncertain_lane
+
+    def reject_pending_delete(connection, cursor, statement, parameters, context, many):
+        if statement.startswith("DELETE FROM") and "pending_messages" in statement:
+            raise RuntimeError("injected queue disposition failure")
+
+    event.listen(engine, "before_cursor_execute", reject_pending_delete)
+    try:
+        with pytest.raises(RuntimeError, match="queue disposition"):
+            store.release_pending_message_claim_sync(session_id, 1, "owner-1")
+    finally:
+        event.remove(engine, "before_cursor_execute", reject_pending_delete)
+    with Session(engine) as session:
+        assert store.get_turn(session, session_id, 1) is None
+        assert store.get_session(session, session_id).status == "running"
+        assert store.get_session(session, session_id).progress_token == "old-progress"
+        assert (
+            store.get_pending_message(session, session_id, 1).partial_text
+            == "partial review"
+        )
+    assert store.release_pending_message_claim_sync(session_id, 1, "owner-1") is True
+
+
+def test_late_completion_cannot_overwrite_unknown_evidence(uncertain_lane):
+    engine, session_id = uncertain_lane
+    store.release_pending_message_claim_sync(session_id, 1, "owner-1")
+    with pytest.raises(store.SessionOutcomeUnknown):
+        store.persist_turn_from_pending_sync(
+            session_id,
+            1,
+            "original prompt",
+            _successful_uncertain_turn(),
+            "done",
+            "completed",
+            "cli-done",
+            "terra",
+            "owner-1",
+            1,
+        )
+    with Session(engine) as session:
+        assert store.get_turn(session, session_id, 1).result_text == "partial review"
+        assert store.get_session(session, session_id).cli_session_id is None
+
+
+def test_completion_and_unknown_reconciliation_have_one_durable_winner(uncertain_lane):
+    from threading import Barrier
+
+    engine, session_id = uncertain_lane
+    barrier = Barrier(2)
+
+    def complete():
+        barrier.wait(timeout=5)
+        try:
+            store.persist_turn_from_pending_sync(
+                session_id,
+                1,
+                "original prompt",
+                _successful_uncertain_turn(),
+                "done",
+                "completed",
+                "cli-done",
+                "terra",
+                "owner-1",
+                1,
+            )
+            return "completed"
+        except store.SessionOutcomeUnknown:
+            return "held"
+
+    def hold():
+        barrier.wait(timeout=5)
+        return store.finish_unknown_pending_sync(session_id, 1, "owner-1", 1, "lost")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        completion = pool.submit(complete)
+        unknown = pool.submit(hold)
+        winner, held = completion.result(timeout=5), unknown.result(timeout=5)
+    assert (winner, held) in {("completed", False), ("held", True)}
+    with Session(engine) as session:
+        turns = store.get_turns(session, session_id)
+        assert len(turns) == 1
+        assert turns[0].result_text == (
+            "partial review" if held else "committed result"
+        )
+        assert store.get_pending_message(session, session_id, 1) is None
+        assert store.get_session(session, session_id).status == (
+            "failed" if held else "completed"
+        )
+
+
+def test_completion_requires_the_exact_dispatch_attempt(uncertain_lane):
+    engine, session_id = uncertain_lane
+    with pytest.raises(store.PendingClaimLost):
+        store.persist_turn_from_pending_sync(
+            session_id,
+            1,
+            "original prompt",
+            _successful_uncertain_turn(),
+            "done",
+            "completed",
+            "cli-done",
+            "terra",
+            "owner-1",
+            2,
+        )
+    with Session(engine) as session:
+        assert store.get_turn(session, session_id, 1) is None
+        assert store.get_pending_message(session, session_id, 1) is not None
