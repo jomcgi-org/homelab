@@ -821,6 +821,23 @@ multiarch_http_file(
     package_dir = "/usr/local/bin",
 )
 
+# Meta's Muse Code CLI for the EmberVM claude runtime guest. Amd64 only, matching
+# claude_code_cli and the guest image (runtimes/claude apko.yaml declares
+# archs: [x86_64]), since every cluster node and the RBE executor are amd64.
+# Statically linked ELF with no glibc dependency; comparable to codex_cli in
+# that respect. Pinned rather than floating because the adapter depends on
+# observed behaviour (run.terminal.completed payload shape, --session-id
+# continuity). Version and sha256 come from
+# https://api.meta.ai/muse-code/channels/muse-stable -> manifest_url
+# (fetchable unauthenticated).
+multiarch_http_file(
+    name = "muse_cli",
+    amd64_sha256 = "75a68f98c437dfd17d264730c5bc72d57e5f1e18d10472a9f53261ffcc091352",
+    amd64_url = "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.0.3-R2198.1&file=muse-x86-linux",
+    binary_name = "muse",
+    package_dir = "/usr/local/bin",
+)
+
 multiarch_http_file(
     name = "ttyd",
     amd64_sha256 = "8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55",

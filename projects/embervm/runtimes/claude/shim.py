@@ -20,6 +20,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 import zlib
 
 
@@ -519,8 +520,14 @@ CODEX_DUMMY_ACCOUNT_ID = "guest-subscription-account"
 PI_MODELS = {
     "spark": "muse-spark-1.3-contributor",
 }
-PI_MODEL_ALIASES = {"qwen": "spark"}
+PI_MODEL_ALIASES = {"qwen": "spark", "pi-spark": "spark"}
 DEFAULT_PI_MODEL = "spark"
+# Muse requires -contributor model IDs. Contributor tier: $0.10/$0.20 per M input/output.
+# Plain tier (muse-spark-1.3) is $1.25/$4.25, a 12.5x price cliff. Always pass the model
+# explicitly via --model; muse resolves its default from server catalog.
+MUSE_MODELS = {"spark": "muse-spark-1.3-contributor"}
+MUSE_MODEL_ALIASES = {"qwen": "spark"}
+DEFAULT_MUSE_MODEL = "spark"
 
 
 def _canonical_pi_model(model):
@@ -3134,10 +3141,323 @@ url = %s
         _reap_orphans()
 
 
+INFERENCE_BASE_URL = "https://api.meta.ai/v1"
+
+
+class MuseProcess:
+    """Run one Muse exec process per turn, retaining server-side session identity."""
+
+    # See ClaudeProcess.requires_git_checkout.
+    requires_git_checkout = False
+
+    def __init__(self, workspace=None, executable="muse"):
+        self.workspace = workspace or os.environ.get(
+            "EMBER_CLAUDE_WORKSPACE", DEFAULT_WORKSPACE
+        )
+        self.executable = executable
+        self.session_id = uuid.uuid4().hex
+        self.process = None
+        self.turn_lock = threading.Lock()
+        self.process_lock = threading.Lock()
+        self.stderr_lines = collections.deque(maxlen=5)
+        self._stderr_thread = None
+        self._stdout_queue = None
+
+    def ready(self):
+        with self.process_lock:
+            return os.path.isdir(self.workspace)
+
+    def _child_env(self):
+        # Muse follows XDG paths, while the guest's $HOME is a read-only rootfs.
+        # Keep both trees on the durable workspace so --session-id continuity
+        # survives bank and relight even though each turn gets a fresh process.
+        muse_home = os.path.join(self.workspace, ".muse")
+        config_home = os.path.join(muse_home, "config")
+        data_home = os.path.join(muse_home, "data")
+        _ensure_cli_dir(config_home)
+        _ensure_cli_dir(data_home)
+        child_env = os.environ.copy()
+        child_env.update(egress_proxy_env())
+        child_env["XDG_CONFIG_HOME"] = config_home
+        child_env["XDG_DATA_HOME"] = data_home
+        return child_env
+
+    def _spawn(self, prompt, model):
+        if not _workspace_ready_for_spawn(self.workspace, self.requires_git_checkout):
+            raise StartupError("workspace does not exist: %s" % self.workspace)
+        model = MUSE_MODEL_ALIASES.get(model, model)
+        model_name = MUSE_MODELS.get(model, MUSE_MODELS[DEFAULT_MUSE_MODEL])
+        if not model_name.endswith("-contributor"):
+            raise ValueError(
+                "muse model must use the contributor tier: %s" % model_name
+            )
+        command = [
+            self.executable,
+            "exec",
+            "--json",
+            "--session-id",
+            self.session_id,
+            "--model",
+            model_name,
+            "--base-url",
+            INFERENCE_BASE_URL,
+            "--api-key-stdin",
+            "--approval-mode",
+            "never",
+            "--disable-sandbox",
+            "--trust-workspace",
+            "--no-foreign-personal-context",
+            "--no-session-log",
+            prompt,
+        ]
+        process = subprocess.Popen(
+            command,
+            cwd=self.workspace,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=self._child_env(),
+            **_cli_privilege_kwargs(),
+        )
+        output_queue = queue.Queue()
+        with self.process_lock:
+            self.process = process
+            self._stdout_queue = output_queue
+            self._process_workspace_identity = _workspace_identity(self.workspace)
+            _managed_child_pids.add(process.pid)
+        threading.Thread(
+            target=self._pump_stdout,
+            args=(process, output_queue),
+            daemon=True,
+        ).start()
+        self.stderr_lines = collections.deque(maxlen=5)
+        self._stderr_thread = threading.Thread(
+            target=ClaudeProcess._pump_stderr,
+            args=(self, process, self.stderr_lines),
+            daemon=True,
+        )
+        self._stderr_thread.start()
+        # The egress sidecar injects the real credential. Muse insists on
+        # reading a value before execution, so send an inert placeholder and
+        # close stdin to let the one-shot command proceed.
+        process.stdin.write(b"sk-noauth\n")
+        process.stdin.close()
+        return process
+
+    @staticmethod
+    def _pump_stdout(process, output_queue):
+        try:
+            for raw in process.stdout:
+                output_queue.put(raw)
+        finally:
+            output_queue.put(None)
+
+    def _read_event(self, timeout):
+        with self.process_lock:
+            output_queue = self._stdout_queue
+        if output_queue is None:
+            return None
+        while True:
+            try:
+                raw = output_queue.get(timeout=timeout)
+            except queue.Empty as exc:
+                raise TimeoutError from exc
+            if raw is None:
+                return None
+            try:
+                return json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                # Muse writes its workspace banner to stdout before the JSONL
+                # stream. It is diagnostic noise, not a failed turn.
+                continue
+
+    @staticmethod
+    def _empty_stream_error(process):
+        code = None if process is None else process.poll()
+        if code is None and process is not None:
+            code = process.wait()
+        return RuntimeError(
+            "muse exited before run.terminal.completed, exit code %s" % code
+        )
+
+    @staticmethod
+    def _usage_from_event(event):
+        """Extract provider token details when a Muse release exposes them."""
+        candidates = []
+
+        def visit(value):
+            if isinstance(value, dict):
+                if "usage" in value and isinstance(value["usage"], dict):
+                    candidates.append(value["usage"])
+                if "provider_details" in value and isinstance(
+                    value["provider_details"], dict
+                ):
+                    candidates.append(value["provider_details"])
+                for child in value.values():
+                    visit(child)
+            elif isinstance(value, list):
+                for child in value:
+                    visit(child)
+
+        visit(event)
+        for candidate in reversed(candidates):
+            input_tokens = candidate.get(
+                "input_tokens",
+                candidate.get("inputTokens", candidate.get("input")),
+            )
+            output_tokens = candidate.get(
+                "output_tokens",
+                candidate.get("outputTokens", candidate.get("output")),
+            )
+            if input_tokens is not None or output_tokens is not None:
+                return {
+                    "input_tokens": input_tokens or 0,
+                    "output_tokens": output_tokens or 0,
+                }
+        return {}
+
+    def turn(
+        self,
+        message,
+        session_id=None,
+        model=DEFAULT_MUSE_MODEL,
+        progress_token=None,
+        system_prompt=None,
+    ):
+        with self.turn_lock:
+            if session_id and session_id != self.session_id:
+                raise SessionConflictError(
+                    "session_id %r does not match active session %r"
+                    % (session_id, self.session_id)
+                )
+            prompt = message
+            if system_prompt:
+                prompt = "%s\n\n%s" % (system_prompt, message)
+            cli_ready_start = _turn_timing_now()
+            process = self._spawn(prompt, model)
+            _emit_elapsed("cli_ready", cli_ready_start, path="spawn")
+            accumulated_text = ""
+            result_text = ""
+            usage = {}
+            terminal_reason = "completed"
+            try:
+                pusher = _ProgressPusher(progress_token) if progress_token else None
+            except Exception:
+                pusher = None
+            try:
+                self._turn_timing_model_start = _turn_timing_now()
+                while True:
+                    try:
+                        event = self._read_event(TURN_READ_TIMEOUT)
+                    except TimeoutError as exc:
+                        self._close_process(kill=True)
+                        raise RuntimeError(
+                            "timed out waiting for Muse output after %s seconds"
+                            % TURN_READ_TIMEOUT
+                        ) from exc
+                    if event is None:
+                        raise self._empty_stream_error(process)
+                    event_usage = self._usage_from_event(event)
+                    if event_usage:
+                        usage = event_usage
+                    if event.get("error_kind"):
+                        sys.stderr.write(
+                            "ember-claude-shim: muse retryable error: %s\n"
+                            % json.dumps(event)[:1500]
+                        )
+                        sys.stderr.flush()
+                        continue
+                    event_type = event.get("payload_type")
+                    payload = event.get("payload", {})
+                    if event_type == "run.output.delta":
+                        text = payload.get("text", "")
+                        if isinstance(text, str):
+                            accumulated_text += text
+                            if pusher:
+                                try:
+                                    pusher.push(accumulated_text, [])
+                                except Exception:
+                                    pass
+                    elif event_type == "run.terminal.completed":
+                        text = payload.get("text", "")
+                        if isinstance(text, str):
+                            result_text = text
+                        terminal = payload.get("terminal")
+                        reason = payload.get("reason")
+                        terminal_reason = reason or terminal or "completed"
+                        if pusher:
+                            try:
+                                pusher.push(result_text or accumulated_text, [])
+                            except Exception:
+                                pass
+                        _emit_elapsed(
+                            "model", getattr(self, "_turn_timing_model_start", None)
+                        )
+                        return {
+                            "result": result_text,
+                            "terminal_reason": terminal_reason,
+                            "session_id": self.session_id,
+                            "model": MUSE_MODEL_ALIASES.get(model, model),
+                            "usage": usage,
+                            "voice": voice_summary(result_text),
+                            "activities": [],
+                        }
+                    elif isinstance(event_type, str) and event_type.startswith(
+                        "task.lifecycle."
+                    ):
+                        continue
+            finally:
+                if pusher:
+                    try:
+                        pusher.stop()
+                    except Exception:
+                        pass
+                self._close_process(kill=False)
+
+    def interrupt(self, timeout=INTERRUPT_TIMEOUT):
+        with self.process_lock:
+            process = self.process
+        if process is None or process.poll() is not None:
+            return {
+                "terminal_reason": "user_interrupt",
+                "killed": False,
+                "timeout": False,
+            }
+        process.send_signal(signal.SIGINT)
+        try:
+            process.wait(timeout=timeout)
+            timed_out = False
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            process.kill()
+            process.wait()
+        self._close_process(kill=False)
+        return {
+            "terminal_reason": "user_interrupt",
+            "killed": timed_out,
+            "timeout": timed_out,
+        }
+
+    def _close_process(self, kill=False):
+        with self.process_lock:
+            process = self.process
+            self.process = None
+            self._stdout_queue = None
+        if process is None:
+            return
+        if kill and process.poll() is None:
+            process.kill()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        _managed_child_pids.discard(process.pid)
+        _reap_orphans()
+
+
 class PiProcess:
     """Own one long-lived Pi RPC process and bind sessions lazily."""
-
-    INFERENCE_BASE_URL = "https://api.meta.ai/v1"
 
     # See ClaudeProcess.requires_git_checkout.
     requires_git_checkout = False
@@ -3190,7 +3510,7 @@ class PiProcess:
         config = {
             "providers": {
                 "openai-completions": {
-                    "baseUrl": self.INFERENCE_BASE_URL,
+                    "baseUrl": INFERENCE_BASE_URL,
                     "api": "openai-completions",
                     "apiKey": "sk-noauth",
                     "compat": {
@@ -3941,6 +4261,7 @@ class ProcessManager:
         claude_executable="claude",
         codex_executable="codex",
         pi_executable="pi",
+        muse_executable="muse",
     ):
         _ensure_persistence_mountpoint_writable(_persistence_mount_path())
         self.workspace = os.path.abspath(
@@ -3973,6 +4294,7 @@ class ProcessManager:
         self.claude._manager = self
         self.codex = CodexProcess(cli_workspace, codex_executable)
         self.pi = PiProcess(cli_workspace, pi_executable)
+        self.muse = MuseProcess(cli_workspace, muse_executable)
         if self._prewarm_clis and self.fatal_error is None:
             self._prewarm_thread = threading.Thread(
                 target=self.prewarm, name="cli-prewarm", daemon=True
@@ -4112,6 +4434,7 @@ class ProcessManager:
                 self.claude.workspace = checkout_dir
                 self.codex.workspace = checkout_dir
                 self.pi.workspace = checkout_dir
+                self.muse.workspace = checkout_dir
                 _emit_elapsed("hydration", hydration_start, status="skipped_existing")
                 return
             # A durable volume can contain a partial clone from a prior failure,
@@ -4219,16 +4542,19 @@ class ProcessManager:
         exclude_file = os.path.join(checkout_dir, ".git/info/exclude")
         _ensure_cli_dir(os.path.dirname(exclude_file))
         with open(exclude_file, "a") as stream:
-            stream.write(".codex/\n.pi/\n")
+            stream.write(".codex/\n.pi/\n.muse/\n")
         self._checkout_dir = checkout_dir
         self._hydration_status = "ok"
         self.claude.workspace = checkout_dir
         self.codex.workspace = checkout_dir
         self.pi.workspace = checkout_dir
+        self.muse.workspace = checkout_dir
         _emit_elapsed("hydration", hydration_start, status="cloned")
 
     def _adapter(self, model):
         if model in ("spark", "qwen"):
+            return self.muse
+        if model == "pi-spark":
             return self.pi
         if isinstance(model, str) and model in CODEX_MODELS:
             return self.codex
@@ -4242,7 +4568,12 @@ class ProcessManager:
         # unset, but must wait for every configured prewarm to complete.
         if self.fatal_error is not None or not self._prewarm_complete:
             return False
-        if not self.claude.ready() or not self.codex.ready() or not self.pi.ready():
+        if (
+            not self.claude.ready()
+            or not self.codex.ready()
+            or not self.pi.ready()
+            or not self.muse.ready()
+        ):
             return False
         # Base build safety depends on the noded placeholder volume staying blank
         # (zero-filled, no filesystem). Guest-init in guest init forbids mounting a
@@ -4307,7 +4638,7 @@ class ProcessManager:
                     # volume now hides, so close each one whose identity moved
                     # (or that died) and leave the respawn to the turn path's
                     # proven lazy spawn for that family.
-                    for adapter in (self.claude, self.codex, self.pi):
+                    for adapter in (self.claude, self.codex, self.pi, self.muse):
                         process = getattr(adapter, "process", None)
                         process_dead = (
                             process is not None and process.poll() is not None
@@ -4364,7 +4695,7 @@ class ProcessManager:
             # Sticky, because the repo is fixed at session create and a later
             # repo-less turn must not reopen the gap. Prewarm runs before any
             # turn and keeps the plain existence check it has always had.
-            for adapter in (self.claude, self.codex, self.pi):
+            for adapter in (self.claude, self.codex, self.pi, self.muse):
                 adapter.requires_git_checkout = True
             # Say what the guest is doing while it clones. Without this the UI
             # falls through to "starting the agent..." for the whole hydration,
@@ -4402,6 +4733,13 @@ class ProcessManager:
                     thinking=thinking,
                     **(extra | prompt),
                 )
+            elif adapter is self.muse:
+                record = adapter.turn(
+                    message,
+                    session_id,
+                    model or DEFAULT_MUSE_MODEL,
+                    **(extra | prompt),
+                )
             elif adapter is self.codex:
                 record = adapter.turn(
                     message,
@@ -4411,7 +4749,7 @@ class ProcessManager:
                 )
             else:
                 record = adapter.turn(message, session_id, model, **(extra | prompt))
-            # Only Claude can recover a Claude prewarm failure. Codex and pi
+            # Only Claude can recover a Claude prewarm failure. Codex, Muse and pi
             # turns must not clear the manager's Claude fatal state.
             if adapter is self.claude:
                 self.fatal_error = None
@@ -4441,20 +4779,24 @@ class ProcessManager:
             _emit_elapsed("total", total_start)
 
     def interrupt(self):
-        # An interrupt has no model in its request, so interrupt both adapters.
+        # An interrupt has no model in its request, so interrupt every adapter.
         pi_result = self.pi.interrupt()
+        muse_result = self.muse.interrupt()
         codex_result = self.codex.interrupt()
         claude_result = self.claude.interrupt()
         if claude_result.get("killed"):
             return claude_result
         if codex_result.get("killed"):
             return codex_result
+        if muse_result.get("killed"):
+            return muse_result
         return pi_result
 
     def _close_process(self, kill=False):
         self.claude._close_process(kill=kill)
         self.codex._close_process(kill=kill)
         self.pi._close_process(kill=kill)
+        self.muse._close_process(kill=kill)
 
 
 Manager = ProcessManager
@@ -4664,7 +5006,10 @@ def main():
     server = None
     try:
         manager = ProcessManager(
-            claude_executable="claude", codex_executable="codex", pi_executable="pi"
+            claude_executable="claude",
+            codex_executable="codex",
+            pi_executable="pi",
+            muse_executable="muse",
         )
         server = build_server(manager)
         sys.stderr.write(

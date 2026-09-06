@@ -143,13 +143,16 @@ apko_image(
         # through the same shim, spawn-per-turn with `exec resume` rather than
         # the claude CLI's long-lived stream-json REPL (#4234).
         "@codex_cli//:tar_amd64",
+        # Meta's Muse Code CLI, a statically linked ELF from the Meta release
+        # channel, the native harness for the Spark family, driving the spark
+        # model that pi previously served.
+        "@muse_cli//:tar_amd64",
         # The pi coding agent, a self-contained ELF from the GitHub release (see
-        # pi_coding_agent in MODULE.bazel). It drives Qwen against the in-cluster
-        # vLLM endpoint, chosen over the claude CLI because its small tool set
-        # and replaceable system prompt fit Qwen's context window (#4234).
+        # pi_coding_agent in MODULE.bazel). It remains as the explicit pi-spark
+        # rollback harness for the Spark model (#4234).
         "@pi_coding_agent//:tar_amd64",
         # Pi's search and page-fetch tools. This path must exist in both runtime
-        # images because the shared shim can route qwen through either one.
+        # images because the shared shim still exposes the pi-spark rollback.
         "//projects/embervm/runtimes/pi:web_research_extension_tar",
         # Pi's bridge to the agents MCP server, loaded by the shim only when the
         # endpoint is configured and reachable (#5569).
