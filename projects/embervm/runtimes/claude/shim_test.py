@@ -604,7 +604,9 @@ for flag in (
 assert args[args.index("--approval-mode") + 1] == "never"
 assert args[-2] == "--prompt-file"
 prompt_path = args[-1]
-assert os.path.dirname(prompt_path) == os.getcwd()
+# MuseProcess's state workspace owns prompts. ProcessManager points it at
+# /workspace while the checkout cwd is /workspace/src.
+assert os.path.dirname(prompt_path).endswith(os.path.join(".muse", "prompts"))
 with open(prompt_path) as stream:
     prompt = stream.read()
 assert os.environ["XDG_CONFIG_HOME"] == os.path.join(os.getcwd(), ".muse", "config")
@@ -652,80 +654,161 @@ def emit(sequence, payload_type, payload, record_type="event", durability="durab
 def run_stream():
     return {"kind": "run", "id": command_id}
 
+# The default records below come from muse-exec-events.jsonl. The tool branch
+# comes from muse-turn1.jsonl. Prompt and workspace values vary with the test
+# invocation; each emit comment names the capture record that defines its
+# payload shape.
 print("muse: workspace root: %s (cwd default)" % os.getcwd(), flush=True)
+# muse-exec-events.jsonl record 1.
 emit(1, "runtime.command.accepted", {
     "kind": "command_accepted", "command_id": command_id,
     "client_id": None, "command_kind": "turn.submit",
 }, "reconciliation")
+# muse-exec-events.jsonl record 2.
 emit(2, "session.run.linked", {
     "kind": "session_run_linked", "command_id": command_id,
     "run_stream": run_stream(),
 })
+# muse-exec-events.jsonl record 3.
 emit(3, "run.model.configured", {
     "kind": "run_model_configured", "command_id": command_id,
     "run_stream": run_stream(), "provider_id": "meta", "profile_id": None,
     "model_id": "muse-spark-1.3-contributor",
     "display_label": "muse-spark-1.3-contributor", "source": "startup",
 })
+# muse-exec-events.jsonl record 4.
 emit(4, "session.workspace_branch.observed", {
     "kind": "workspace_branch_observed", "command_id": command_id,
     "record": {"command_id": command_id, "workspace_root": os.getcwd(),
                "reference": {"kind": "branch", "name": "main"}, "vcs": "git"},
 })
+# muse-exec-events.jsonl record 5.
 emit(5, "turn.input.user", {
     "kind": "turn_input_user", "command_id": command_id,
     "run_stream": run_stream(), "prompt": prompt,
 }, "status", "ephemeral")
+# muse-exec-events.jsonl record 6.
 emit(6, "run.lifecycle.started", {
     "kind": "run_started", "command_id": command_id,
     "run_stream": run_stream(), "prompt": prompt,
 })
+task_id = "cec8a1d5-20f5-41b3-af9e-a62d3fb4104b"
+tool_activity = os.environ.get("FAKE_MUSE_SCENARIO") == "tool-activity"
+if tool_activity:
+    # muse-turn1.jsonl records 18-25 contain this real add_memory task. Its
+    # operation is a string label and carries no tool arguments.
+    task_id = "a752f028-3d1e-4bcf-a0c6-7486fd9bd02b"
+# muse-exec-events.jsonl record 7, or muse-turn1.jsonl record 18 for the tool.
 emit(7, "task.stream.linked", {
     "kind": "task_stream_linked", "command_id": command_id,
-    "run_stream": run_stream(), "task_id": "task-1",
-    "task_stream": {"kind": "task", "id": "task-1"},
+    "run_stream": run_stream(), "task_id": task_id,
+    "task_stream": {"kind": "task", "id": task_id},
 })
-for sequence, kind in enumerate((
-    "proposed", "accepted", "scheduled", "side_effect_intent", "started", "status"
-), 8):
-    lifecycle_event = {"kind": kind, "task_id": "task-1"}
+lifecycle_kinds = (
+    ("proposed", "accepted", "scheduled", "side_effect_intent", "started")
+    if tool_activity
+    else ("proposed", "accepted", "scheduled", "side_effect_intent", "started", "status")
+)
+for sequence, kind in enumerate(lifecycle_kinds, 8):
+    lifecycle_event = {"kind": kind, "task_id": task_id}
     if kind == "proposed":
         lifecycle_event["task_kind"] = (
-            "tool.bash"
-            if os.environ.get("FAKE_MUSE_SCENARIO") == "tool-activity"
+            "tool.add_memory"
+            if tool_activity
             else "model.meta.response"
         )
-    if kind == "scheduled" and os.environ.get("FAKE_MUSE_SCENARIO") == "tool-activity":
-        lifecycle_event["operation"] = {"command": "echo muse"}
+    if kind == "scheduled":
+        lifecycle_event["idempotency_key"] = (
+            "tool:call_01a0779d7f5d7a028043e9cd5fb1e536"
+            if tool_activity
+            else "model:%s:%s" % (command_id, task_id)
+        )
+    if kind == "side_effect_intent":
+        lifecycle_event.update({
+            "operation": (
+                "tool:add_memory"
+                if tool_activity
+                else "model.meta.response"
+            ),
+            "idempotency_key": (
+                "tool:call_01a0779d7f5d7a028043e9cd5fb1e536"
+                if tool_activity
+                else "model:%s:%s" % (command_id, task_id)
+            ),
+            "policy_decision": (
+                "allow:policy"
+                if tool_activity
+                else "not_applicable"
+            ),
+            "cancellation_handle": None,
+            "parent_task_id": None,
+        })
+    if kind == "started" and tool_activity:
+        lifecycle_event["span_id"] = "4a2adbc0be102cd9"
+    if kind == "status":
+        lifecycle_event["message"] = "opening meta model stream attempt 1/10"
+    # Default records 8-13 are from muse-exec-events.jsonl. Tool records 19-23
+    # are from muse-turn1.jsonl.
     emit(sequence, "task.lifecycle.%s" % kind, {
         "kind": "task_lifecycle", "command_id": command_id,
-        "run_stream": run_stream(), "task_id": "task-1",
-        "task_stream": {"kind": "task", "id": "task-1"},
+        "run_stream": run_stream(), "task_id": task_id,
+        "task_stream": {"kind": "task", "id": task_id},
         "event": lifecycle_event,
     })
-emit(14, "run.output.delta", {
+if tool_activity:
+    # muse-turn1.jsonl records 24 and 25.
+    emit(13, "task.lifecycle.output", {
+        "kind": "task_lifecycle", "command_id": command_id,
+        "run_stream": run_stream(), "task_id": task_id,
+        "task_stream": {"kind": "task", "id": task_id},
+        "event": {
+            "kind": "output", "task_id": task_id,
+            "chunk": (
+                "{\"success\":true,\"scope\":\"personal\","
+                "\"path\":\"preferences.md\",\"operation\":\"add\","
+                "\"message\":\"memory note written\"}"
+            ),
+        },
+    })
+    emit(14, "task.lifecycle.completed", {
+        "kind": "task_lifecycle", "command_id": command_id,
+        "run_stream": run_stream(), "task_id": task_id,
+        "task_stream": {"kind": "task", "id": task_id},
+        "event": {"kind": "completed", "task_id": task_id},
+    })
+    output_text = "OK"
+    output_sequence = 15
+else:
+    output_text = "pong"
+    output_sequence = 14
+# muse-exec-events.jsonl record 14, or muse-turn1.jsonl record 34 for the tool.
+emit(output_sequence, "run.output.delta", {
     "kind": "run_output_delta", "command_id": command_id,
-    "run_stream": run_stream(), "text": "pong",
+    "run_stream": run_stream(), "text": output_text,
 }, "status", "ephemeral")
-emit(15, "task.lifecycle.status", {
-    "kind": "task_lifecycle", "command_id": command_id,
-    "run_stream": run_stream(), "task_id": "task-1",
-    "task_stream": {"kind": "task", "id": "task-1"},
-    "event": {"kind": "status", "task_id": "task-1",
-              "message": "completed meta model stream attempt 1/10"},
-})
-emit(16, "task.lifecycle.completed", {
-    "kind": "task_lifecycle", "command_id": command_id,
-    "run_stream": run_stream(), "task_id": "task-1",
-    "task_stream": {"kind": "task", "id": "task-1"},
-    "event": {"kind": "completed", "task_id": "task-1"},
-})
+if not tool_activity:
+    # muse-exec-events.jsonl records 15 and 16.
+    emit(15, "task.lifecycle.status", {
+        "kind": "task_lifecycle", "command_id": command_id,
+        "run_stream": run_stream(), "task_id": task_id,
+        "task_stream": {"kind": "task", "id": task_id},
+        "event": {"kind": "status", "task_id": task_id,
+                  "message": "completed meta model stream attempt 1/10"},
+    })
+    emit(16, "task.lifecycle.completed", {
+        "kind": "task_lifecycle", "command_id": command_id,
+        "run_stream": run_stream(), "task_id": task_id,
+        "task_stream": {"kind": "task", "id": task_id},
+        "event": {"kind": "completed", "task_id": task_id},
+    })
 if os.environ.get("FAKE_MUSE_SCENARIO") != "missing-terminal":
+    # muse-exec-events.jsonl record 17, or muse-turn1.jsonl record 37 for the tool.
     emit(17, "run.terminal.completed", {
         "kind": "run_terminal", "command_id": command_id,
         "run_stream": run_stream(), "terminal": "completed",
-        "text": "pong", "reason": None,
+        "text": output_text, "reason": None,
     })
+# muse-exec-events.jsonl record 18, or muse-turn1.jsonl record 38 for the tool.
 emit(18, "session.workspace_branch.observed", {
     "kind": "workspace_branch_observed", "command_id": command_id,
     "record": {"command_id": command_id, "workspace_root": os.getcwd(),
@@ -942,6 +1025,49 @@ def test_muse_passes_prompt_via_file(tmp_path, monkeypatch, prompt):
     assert not list((tmp_path / "workspace").glob(".muse-prompt-*"))
 
 
+def test_muse_prompt_is_readable_by_dropped_cli_and_outside_checkout(
+    tmp_path, monkeypatch
+):
+    """The root-owned prompt must remain readable after Popen drops uid."""
+    checkout = tmp_path / "workspace" / "src"
+    checkout.mkdir(parents=True)
+    manager = shim.MuseProcess(
+        str(checkout),
+        str(tmp_path / "unused-muse"),
+        state_workspace=str(tmp_path / "workspace"),
+    )
+    manager.session_id = "capture-permissions"
+    inspected = []
+
+    class PromptInspected(Exception):
+        pass
+
+    def inspect_popen(command, **kwargs):
+        prompt_path = command[command.index("--prompt-file") + 1]
+        prompt_stat = os.stat(prompt_path)
+        prompt_dir_stat = os.stat(os.path.dirname(prompt_path))
+        privilege_kwargs = shim._cli_privilege_kwargs()
+
+        assert os.path.commonpath([prompt_path, str(checkout)]) != str(checkout)
+        assert prompt_stat.st_mode & 0o777 == 0o444
+        assert prompt_stat.st_mode & 0o004
+        assert prompt_stat.st_uid == os.geteuid()
+        expected_dir_uid = privilege_kwargs.get("user", os.geteuid())
+        assert prompt_dir_stat.st_uid == expected_dir_uid
+        assert {key: kwargs[key] for key in privilege_kwargs} == privilege_kwargs
+        inspected.append(prompt_path)
+        raise PromptInspected
+
+    monkeypatch.delenv(shim.AGENT_MCP_URL_ENV, raising=False)
+    monkeypatch.setattr(shim.subprocess, "Popen", inspect_popen)
+
+    with pytest.raises(PromptInspected):
+        manager._spawn("secret prompt", "spark")
+
+    assert len(inspected) == 1
+    assert not os.path.exists(inspected[0])
+
+
 def test_muse_settings_json_has_mcp_servers_when_configured(tmp_path, monkeypatch):
     agent_mcp_url = "http://agents.test:8092/mcp"
     monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, agent_mcp_url)
@@ -1004,6 +1130,26 @@ def test_muse_mcp_probe_runs_once_per_adapter(tmp_path, monkeypatch):
     assert probes == [agent_mcp_url]
 
 
+def test_muse_mcp_probe_recovers_after_negative_result(tmp_path, monkeypatch):
+    agent_mcp_url = "http://agents.test:8092/mcp"
+    probes = []
+    results = iter((False, True))
+    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, agent_mcp_url)
+    monkeypatch.setattr(
+        shim,
+        "_agent_mcp_endpoint_alive",
+        lambda url: probes.append(url) or next(results),
+    )
+    manager = _muse_manager(tmp_path, monkeypatch)
+
+    manager.turn("tier is down", model="spark")
+    manager.turn("tier recovered", model="spark")
+
+    assert probes == [agent_mcp_url, agent_mcp_url]
+    settings = json.loads((tmp_path / "muse-settings.json").read_text())
+    assert settings["mcp_servers"]["agents"]["enabled"] is True
+
+
 def test_muse_settings_file_readonly(tmp_path, monkeypatch):
     monkeypatch.delenv(shim.AGENT_MCP_URL_ENV, raising=False)
     manager = _muse_manager(tmp_path, monkeypatch)
@@ -1038,7 +1184,31 @@ def test_muse_reports_tool_activity(tmp_path, monkeypatch):
 
     record = manager.turn("use a tool", model="spark")
 
-    assert record["activities"] == [{"type": "bash", "command": "echo muse"}]
+    assert record["activities"] == [{"type": "tool_use", "name": "add_memory"}]
+
+
+def test_muse_pushes_tool_activity_during_turn(tmp_path, monkeypatch):
+    pushes = []
+
+    class FakePusher:
+        def __init__(self, token):
+            assert token == "muse-token"
+
+        def push(self, text, activities):
+            pushes.append((text, activities))
+
+        def stop(self):
+            pass
+
+    monkeypatch.setenv("FAKE_MUSE_SCENARIO", "tool-activity")
+    monkeypatch.setattr(shim, "_ProgressPusher", FakePusher)
+    manager = _muse_manager(tmp_path, monkeypatch)
+
+    manager.turn("use a tool", model="spark", progress_token="muse-token")
+
+    activity = [{"type": "tool_use", "name": "add_memory"}]
+    assert ("OK", activity) in pushes
+    assert pushes[-1] == ("OK", activity)
 
 
 def test_pi_first_turn_returns_text_session_and_usage(tmp_path, monkeypatch):

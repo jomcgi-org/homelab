@@ -107,7 +107,7 @@ progress:
 agents:
   # Current production selection, listed explicitly so new supported models do
   # not appear in the console or Discord command without a values change.
-  models: "luna,terra,sol,opus,sonnet,fable,spark"
+  models: "luna,terra,sol,opus,sonnet,fable,spark,pi-spark"
   sessions:
     # Thread-bound sessions always post into their Discord thread. For sessions
     # started elsewhere, post only turns that need a human by default.
@@ -1205,9 +1205,9 @@ sandbox:
   workloadPrefix: "sandbox-"
 
 agentSessions:
-  # EmberVM workload the spark (pi) family creates its guest sessions on.
+  # EmberVM workload the pi-spark family creates its guest sessions on.
   # Empty means "use the code default" (pi-runtime). This is the REVERT
-  # LEVER for routing spark back to the claude-runtime lane: set it to
+  # LEVER for routing pi-spark back to the claude-runtime lane: set it to
   # "claude-runtime" to revert by values edit, no code deploy.
   #
   # A consumer values file that OMITS agentSessions renders fine, because

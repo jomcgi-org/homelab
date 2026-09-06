@@ -15,12 +15,12 @@ from pydantic import BaseModel
 from sqlmodel import Session, func, select
 
 from agent_sessions import (
+    SUPPORTED_MODELS,
     mcp,
     model_family,
     normalize_model,
     offered_models,
     store,
-    transport as transport_module,
     voice_ui,
 )
 from agent_sessions.codex_login import codex_login_gate, watch_for_login
@@ -490,7 +490,9 @@ async def _refresh_cp_state() -> tuple[dict[str, dict], bool] | None:
     # lane: that default serves the operator tool, where the per-workload
     # session CAP is the thing being managed. This map is keyed by session_id
     # and wants the union.
-    lanes = list(dict.fromkeys([_transport.workload, transport_module.PI_WORKLOAD]))
+    lanes = list(
+        dict.fromkeys(_transport._workload_for(model) for model in SUPPORTED_MODELS)
+    )
     items = []
     complete = True
     try:

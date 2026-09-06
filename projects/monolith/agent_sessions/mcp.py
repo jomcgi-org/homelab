@@ -1040,10 +1040,11 @@ async def monolith_agent_session_start(
     Args:
         prompt: The first message for the session.
         model: Optional model, which also pins the session's adapter family.
-            Claude workload: opus, sonnet, fable, spark. Codex family: luna,
-            terra, sol. Pi family: pi-spark. The deprecated qwen alias is
-            accepted as spark. Omit for the claude CLI default. Later
-            sends may only name models within the pinned family.
+            Claude family: opus, sonnet, fable. Codex family: luna, terra,
+            sol. Muse family: spark. Pi family: pi-spark. Claude, Codex, and
+            Muse run on claude-runtime; Pi runs on pi-runtime. The deprecated
+            qwen alias is accepted as spark. Omit for the Claude CLI default.
+            Later sends may only name models within the pinned family.
         repo: owner/repo to check out into the guest workspace, defaulting to
             jomcgi-org/homelab. Must be in the catalog. Pass an empty string for a
             session with NO checkout, which starts faster and suits a session
@@ -1238,9 +1239,10 @@ async def monolith_agent_session_send(
         session_id: The session to send to.
         message: The message text for the next turn.
         model: Optional per-turn model within the session's pinned family.
-            Claude workload: opus, sonnet, fable, spark. Codex family: luna,
-            terra, sol. Pi family: pi-spark. The deprecated qwen alias is
-            accepted as spark. Defaults to the session's model.
+            Claude family: opus, sonnet, fable. Codex family: luna, terra,
+            sol. Muse family: spark. Pi family: pi-spark. Claude, Codex, and
+            Muse run on claude-runtime; Pi runs on pi-runtime. The deprecated
+            qwen alias is accepted as spark. Defaults to the session's model.
     """
     row = await asyncio.to_thread(_load_session_row, session_id)
     if row is None:
@@ -1355,9 +1357,10 @@ async def monolith_agent_session_vms(
     monolith-agent-session-destroy.
 
     Args:
-        workload: Which lane to list, defaults to the claude runtime. Pass
-            "pi-runtime" to see the pi-spark rollback lane instead. The two
-            lanes are never aggregated, since the session cap is per workload.
+        workload: Which lane to list, defaults to claude-runtime, which serves
+            the Claude, Codex, and Muse families. Pass "pi-runtime" to see the
+            pi-spark rollback lane. The lanes are never aggregated, since the
+            session cap is per workload.
     """
     try:
         return await _transport.list_sessions(

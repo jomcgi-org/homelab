@@ -483,12 +483,16 @@ class EmberVmShimTransport:
     def _workload_for(self, model: str | None) -> str:
         """Resolve the target workload for a session of this model.
 
-        model=None resolves to self.workload (the claude family default, see
-        model_family), same as every other family that is not "pi".
+        Adapter family and workload placement are separate decisions. Muse and
+        Claude use different session identities even though both currently run
+        in the larger claude-runtime guest.
         """
-        if model_family(model) == "pi":
-            return PI_WORKLOAD
-        return self.workload
+        return {
+            "claude": self.workload,
+            "codex": self.workload,
+            "muse": self.workload,
+            "pi": PI_WORKLOAD,
+        }[model_family(model)]
 
     async def create_session(
         self,

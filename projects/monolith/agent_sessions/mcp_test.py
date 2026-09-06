@@ -35,8 +35,8 @@ def clear_negative_oracle_memo():
         ("luna", "codex"),
         ("terra", "codex"),
         ("sol", "codex"),
-        ("spark", "claude"),
-        ("qwen", "claude"),
+        ("spark", "muse"),
+        ("qwen", "muse"),
         ("pi-spark", "pi"),
     ],
 )
@@ -275,7 +275,29 @@ def test_cross_family_send_is_rejected_without_pending_row(session):
     row = store.create_session(session, "sid-123", "/workspace", "main", model="luna")
     result = asyncio.run(mcp.monolith_agent_session_send(row.id, "hello", model="qwen"))
     assert result["accepted"] is False
-    assert "codex" in result["error"] and "claude" in result["error"]
+    assert "codex" in result["error"] and "muse" in result["error"]
+    assert store.get_pending_message(session, row.id, 1) is None
+
+
+@pytest.mark.parametrize(
+    ("session_model", "requested_model"),
+    [("spark", "opus"), ("opus", "spark")],
+)
+def test_muse_and_claude_sessions_reject_cross_adapter_send(
+    session, session_model, requested_model
+):
+    row = store.create_session(
+        session, "adapter-pinned", "/workspace", "main", model=session_model
+    )
+
+    result = asyncio.run(
+        mcp.monolith_agent_session_send(
+            row.id, "do not switch adapters", model=requested_model
+        )
+    )
+
+    assert result["accepted"] is False
+    assert "muse" in result["error"] and "claude" in result["error"]
     assert store.get_pending_message(session, row.id, 1) is None
 
 
