@@ -502,6 +502,19 @@ red, which is why the list above states enforcement rather than intent.
 | Review-time static checks | `bazel/semgrep/rules/` (inert until #4777 closes) |
 | Findings register | `docs/THREAT-MODEL.md`, the `security-finding` label, `projects/*/stpa/security.json` |
 
+## Direction
+
+Decided and not yet built, each with the issue that tracks it. A row leaves
+this table when the work ships or the issue closes without it.
+
+| Direction | Decided in | Tracks | State |
+| --- | --- | --- | --- |
+| Public-tier egress scopes to its four documented destinations, enforced on the hub | Network | #5276 | not started |
+| Per-workload EmberVM egress allowlists replace the single allowlist shared across every workload | Network | #5320 | not started |
+| The monolith constructs delegated, attenuation-only authority instead of relying only on standing tokens | Identity | #4940, #4943, #4944 | not started |
+| The private monolith container gets a read-only root filesystem, matching every other hardened chart | Decision history (security/004) | #3898 | not started |
+| Semgrep findings reach the hosted App under required credentials, replacing the offline placeholder token | Static checks and review gates | #3893 | not started |
+
 ## Decision history
 
 The ADR files were removed on 2026-09-06 (#4667); `git log -- docs/decisions/`

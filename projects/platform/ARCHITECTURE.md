@@ -268,6 +268,21 @@ dependency and keeps its write credentials scoped through 1Password.
 
 ---
 
+## Direction
+
+Decided and not yet built, each with the issue that tracks it. A row leaves
+this table when the work ships or the issue closes without it.
+
+| Direction | Decided in | Tracks | State |
+| --- | --- | --- | --- |
+| Plain `NetworkPolicy` replaces the inert Cilium templates on the hub | section 3 | #5816, #3897, #5277 | blocked on #5485 |
+| The home cluster is fully decommissioned; the hub is the sole management plane | section 1 | #5485 | not started |
+| The hub gets a GPU pool for model serving | section 6 | #5461 | not started |
+| Kargo promotion on the hub gains a functional verification gate, not just stage ordering | section 4 | #4745 | not started |
+| Per-PR preview environments exist for the monolith, with copy-on-write CNPG clones | section 4 | #3882 | not started |
+| A trace query surface (the demos waterfall) is restored on the Honeycomb-backed span store | section 7 | #5363 | not started |
+| Values-only PRs flip on mTLS for SPIFFE-issued workloads and retire the static bearer token | section 8 | #5759 | not started |
+
 ## Decision history
 
 The ADR files were removed on 2026-09-06 (#4667); `git log -- docs/decisions/`

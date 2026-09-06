@@ -75,6 +75,9 @@ because it discards placement and snapshot locality. A BEAM control plane over a
 Firecracker data plane was chosen with an accepted Elixir toolchain cost and a
 smaller contributor ecosystem (ADR embervm/001).
 
+Hard multi-tenancy (virtual control planes) is deferred pending real demand.
+Internal rung IDs R0-R9 map onto the capabilities above.
+
 ---
 
 ## 2. System overview
@@ -721,6 +724,16 @@ second alerting path. This does not reopen in-place pod resize, which ADR
 embervm/013 section 7 and ADR embervm/039's own alternatives already declined
 to reopen. Implementation is tracked on #5505.
 
+The availability contract is spot semantics with two budgets: a routine
+roll, upgrade, or scale-down gives a workload up to 110 seconds of drain
+notice, and a GCE Spot preemption about 30 seconds (ADR 040). noded's GCE
+preemption-notice watcher (`drain.preemptionNoticeEnabled`, a 20 second
+preemption budget) is armed on the hub since 2026-09-06 (#5819) and off in
+the chart default, so a deployment without the hub overlay is still told
+the 110 second figure when a preemption arrives. State durability within the stated archive interval is
+the guarantee, connection continuity is not. Artifact retention TTLs and the
+GC sweep behaviour are in [deploy/README.md](deploy/README.md).
+
 **Why.** Per-invocation pods and Kubernetes objects made pod churn and etcd the
 ceiling for short work, yet bypassing Kubernetes meant its autoscaler could no
 longer observe Firecracker demand (ADR embervm/001, ADR embervm/005). A pod per
@@ -1175,34 +1188,19 @@ scratch, and an external durable store as the minimum deployment contract.
 
 ---
 
-## 12. Roadmap state
+## 12. Direction
 
-The section 1 capability matrix carries per-capability status.
+Decided and not yet built, each with the issue that tracks it. A row leaves
+this table when the work ships or the issue closes without it.
 
-**Decided direction**:
-
-- distribution: vendor-aware placement over the export/restore verbs
-  (needs a second warm-capable node to matter)
-- standalone packaging
-- the management-surface actor / principal / permission split
-- the kubernetes-sigs/agent-sandbox interface backed by an edge adapter
-  (ADR embervm/004), deferred until that interface has traction
-
-Hard multi-tenancy (virtual control planes) is deferred pending real
-demand. Internal rung IDs R0-R9 map onto the capabilities.
-
-**Current work**: promoting brick autoscale from `up` to `full`,
-node-local activator soak, and the conciseness program (#4009).
-
-The availability contract is spot semantics with two budgets: a routine
-roll, upgrade, or scale-down gives a workload up to 110 seconds of drain
-notice, and a GCE Spot preemption about 30 seconds (ADR 040). noded's GCE
-preemption-notice watcher (`drain.preemptionNoticeEnabled`, a 20 second
-preemption budget) is **Built** and off in every deployment, so until it is
-armed the control plane is still told the 110 second figure when a
-preemption arrives. State durability within the stated archive interval is
-the guarantee, connection continuity is not. Artifact retention TTLs and the
-GC sweep behaviour are in [deploy/README.md](deploy/README.md).
+| Direction | Decided in | Tracks | State |
+| --- | --- | --- | --- |
+| The Firecracker jailer arms on every brick, closing the direct-root-exec gap between co-resident guests | section 10 | #5255 | not started |
+| EmberVM ships a standalone quickstart and packaging boundary independent of the homelab's deployment configuration | Decision history (embervm/009) | #3858 | not started |
+| OCI images convert to deterministic EROFS manifests and immutable content-addressed chunks, hydrated through a local-only read-only ublk device | section 8 | #4182 | not started |
+| The brick `maxReplicas` ceiling itself moves on sustained denial pressure, not only the replica count clamped inside it | section 7 | #5505 | not started |
+| SPIFFE-issued identity moves beyond issuance: mTLS on the CP-to-noded hop, per-principal guest JWT-SVIDs, and GCP federation | section 9 | #5706 | not started |
+| A session workspace gets a size budget instead of unbounded growth | Decision history (embervm/027) | #5074 | not started |
 
 ---
 
