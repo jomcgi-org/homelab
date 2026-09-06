@@ -5,7 +5,7 @@ _Reviewed against commit 1a61e7d5d._
 Open security findings across everything the cluster hosts, ranked.
 The live list is the
 [`security-finding` label](https://github.com/jomcgi-org/homelab/issues?q=label%3Asecurity-finding+is%3Aopen);
-ADR [security/007](decisions/security/007-aggregate-threat-model-index.md)
+[security.md](security.md#findings-and-threat-model)
 records why this page exists, and the
 [maintenance runbook](runbooks/threat-model-maintenance.md) is the
 procedure for updating it. A project's deep model is the security lens in
