@@ -905,7 +905,6 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
-        ":agent_sessions_constants",
         ":pkg_core",
         ":pkg_framework",
         ":pkg_scheduler",
@@ -1249,7 +1248,6 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
-        ":agent_sessions_constants",
         ":pkg_artifact",
         ":pkg_cluster",
         ":pkg_core",
@@ -1283,13 +1281,6 @@ py_library(
 )
 
 py_library(
-    name = "agent_sessions_constants",
-    srcs = ["agent_sessions/constants.py"],
-    imports = ["."],
-    visibility = ["//:__subpackages__"],
-)
-
-py_library(
     name = "agent_sessions_rationale",
     srcs = ["agent_sessions/rationale.py"],
     imports = ["."],
@@ -1306,14 +1297,12 @@ py_library(
             "**/*_test.py",
             "**/test_*.py",
             "*/tests/**/*.py",
-            "agent_sessions/constants.py",
             "agent_sessions/rationale.py",
         ],
     ),
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
-        ":agent_sessions_constants",
         ":agent_sessions_rationale",
         # mcp.py and router.py read the request principal via auth.api.
         ":pkg_auth",
@@ -1365,7 +1354,6 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
-        ":agent_sessions_constants",
         ":agent_sessions_rationale",
         ":pkg_agent_sessions",
         ":pkg_core",
