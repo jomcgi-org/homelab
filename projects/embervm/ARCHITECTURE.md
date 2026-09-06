@@ -423,11 +423,10 @@ becomes a declared soft budget. `persistence.filesystem.retention` is inert
 today, and artifact GC keeps only the newest artifact. `latest + N` remains the
 planned retention direction.
 
-Repo-backed sessions hydrate their workspace with a direct HTTPS clone through
-the egress lane. The node-local git mirror sidecar (`gitMirror`) is **Built**
-but off in every deployment and has never served a hydration: the shim's
-mirror attempt is denied at the egress proxy and falls through to the direct
-clone.
+Repo-backed sessions hydrate their workspace with one direct HTTPS clone
+through the egress lane: single branch, `--filter=blob:none`, and the
+credential opt-in header the sidecar replaces on the way out, so the guest
+never holds the token.
 
 A sequential Firecracker dirty-page diff bank path exists and is dormant:
 `noded.diffBanking` defaults false because the merge-at-bank step copies the
@@ -1282,13 +1281,13 @@ column carries the wording the monolith map uses for the same rows.
 | agents/034 | Per-tier guest MCP ACLs | Draft, not shipped (#3838) | contested with mcp, left in place |
 | agents/037 | Label-driven Firecracker node enrollment | Accepted, shipped (section 2) | deleted in this PR |
 | agents/040 | Caller-provided context injection | Draft, not shipped | deleted in this PR |
-| agents/041 | Hot git mirror for agent workspaces | Draft; sidecar Built, off everywhere (section 4) | deleted in this PR |
+| agents/041 | Hot git mirror for agent workspaces | Draft; the sidecar was removed on 2026-09-06 (#5825), hydration is a direct clone (section 4) | deleted |
 | agents/044 | Code executor sandbox, self-describing guest runtimes | Accepted, shipped (task-class guests, monolith sandbox tools) | deleted in this PR |
 | agents/045 | FaaS on the fc-invoke sandbox runtime | Accepted, execution migrated to the EmberVM zip lane | deleted in this PR |
 | agents/046 | MMDS for dynamic per-workload guest env | Accepted, shipped as the metadata seam for stateful and group guests | deleted in this PR |
 | agents/047 | Per-principal egress credentials, broker identity envelope | Draft; broker grants shipped (section 9), per-principal scoping moves to 041 phase 4 | deleted in this PR |
 | agents/048 | Codex OAuth single-owner token broker | Accepted, shipped (section 9) | shared with monolith, left in place |
-| agents/050 | Workspace hydration from the git mirror | Accepted; hydration shipped by direct clone, mirror off | deleted in this PR |
+| agents/050 | Workspace hydration from the git mirror | Accepted; hydration shipped as a direct clone, the mirror never served one (section 4) | deleted |
 | agents/051 | Guest-pushed mid-turn progress | Accepted, shipped | shared with monolith, left in place |
 | agents/055 | Tool-mediated GitHub access | Superseded by agents/059 | shared with monolith and mcp, left in place |
 | agents/057 | Per-language sandbox guests | Draft, shipped (`runtimes/`) | deleted in this PR |
