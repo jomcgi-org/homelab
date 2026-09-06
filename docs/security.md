@@ -28,7 +28,7 @@ the tailnet until #5485 finishes the teardown. The cluster roots are
 `values-gke.yaml` overlay, and that overlay is where most security-relevant
 keys are set, so read it before the base values file.
 
-(see: `projects/platform-gke/`, `projects/gke-apps/`, `docs/decisions/platform/016-gke-hub-two-pool-shape.md`)
+(see: `projects/platform-gke/`, `projects/gke-apps/`, `projects/platform/ARCHITECTURE.md` section 1)
 
 **Why.** Spot preemptions were blipping the platform singletons several
 times a day, and the E2 family has no nested virtualization, so no single
