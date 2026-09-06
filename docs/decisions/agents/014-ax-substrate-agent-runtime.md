@@ -3,7 +3,7 @@
 **Author:** jomcgi
 **Status:** Deprecated (AX+Substrate not adopted)
 **Created:** 2026-05-22
-**Supersedes:** None (retires the dispatch plumbing of [007-agent-orchestrator](007-agent-orchestrator.md) and the autonomous-loop plumbing of [008-cluster-patrol-loop-resilience](008-cluster-patrol-loop-resilience.md))
+**Supersedes:** None (retires the dispatch plumbing of 007-agent-orchestrator and the autonomous-loop plumbing of 008-cluster-patrol-loop-resilience)
 **Depends on:** [security/003 — gVisor RuntimeClass](../../../projects/platform/ARCHITECTURE.md)
 
 ---
@@ -165,8 +165,8 @@ These are questions to answer during execution, not gates that block the decisio
 | [google/ax](https://github.com/google/ax)                                                                                                                                               | Distributed agent runtime; v0.1.0 May 2026   |
 | [agent-substrate/substrate](https://github.com/agent-substrate/substrate)                                                                                                               | K8s actor multiplexer; v0.0.0                |
 | [security/003 — gVisor RuntimeClass](../../../projects/platform/ARCHITECTURE.md)                                                                                                           | Hard prerequisite                            |
-| [007 — Agent Run Orchestration Service](007-agent-orchestrator.md)                                                                                                                      | Dispatch plumbing retired by this ADR        |
-| [008 — Cluster Patrol Loop Resilience](008-cluster-patrol-loop-resilience.md)                                                                                                           | Autonomous-loop plumbing retired by this ADR |
+| 007 — Agent Run Orchestration Service                                                                                                                      | Dispatch plumbing retired by this ADR        |
+| 008 — Cluster Patrol Loop Resilience                                                                                                           | Autonomous-loop plumbing retired by this ADR |
 | [003 — Context Forge](003-context-forge.md)                                                                                                                                             | MCP gateway, unchanged                       |
 | platform/001 — Monolith Migration                                                                                               | Strategic direction this ADR rides           |
 | [projects/agent_platform/README.md](../../../projects/agent_platform/README.md)                                                                                                         | Current topology being replaced              |
