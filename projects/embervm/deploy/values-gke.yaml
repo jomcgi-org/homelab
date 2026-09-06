@@ -4,13 +4,14 @@
 # safe store-disabled mode, and no object-store credentials are rendered.
 noded:
   jailer:
-    # Armed on the hub (#4667 decision C13, #5255): the jailer shipped dark in
-    # #5533 so it could be verified on one brick with a values-only change.
-    # Every brick class here is Spot and recreated on preemption, so a bad
-    # arming shows up as failed session boots within one roll and reverts the
-    # same way. Without it an escape lands in a root process holding
-    # /dev/kvm, the store credential and the noded bearer token.
-    enabled: true
+    # Disarmed again on 2026-09-06 after the arming (#5843) broke every VM
+    # restore on the rolled bricks: the jailed Firecracker cannot open the
+    # node-shared base rootfs under /var/lib/embervm/scratch ("Permission
+    # denied (os error 13)" from the virtio block backend), so the 2gi and
+    # 4gi bricks came up with no bootable VM. The scratch tree is owned by
+    # noded's uid and the jailer drops to its own; that ownership contract
+    # has to land before the flag can go back on. Tracked on #5255.
+    enabled: false
   drain:
     # GCE preemption notice watcher (ADR embervm/040 decision 5). Armed on the
     # hub only: the watcher hangs GETs on the instance/preempted metadata value,
