@@ -1345,3 +1345,131 @@ def test_shared_s3_rejects_non_map(tmp_path, gate):
     override = _write_values(tmp_path, "bad.yaml", {"sharedS3": gate})
     with pytest.raises(RuntimeError, match=r"sharedS3 must be a map"):
         _render("recovery", [override])
+
+
+_NOTIFICATION_ENV = {
+    "MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID",
+    "MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID",
+    "MONOLITH_AGENT_DISCORD_AGENT_SESSIONS_CHANNEL_ID",
+    "AGENT_SESSIONS_CHANNEL_NOTIFY",
+    "OWNER_DISCORD_USER_ID",
+}
+
+
+def _notification_projection(rendered):
+    return [
+        item
+        for item in _deployment_backend_env(rendered)
+        if item["name"] in _NOTIFICATION_ENV
+    ]
+
+
+def _chat_secret_producers(rendered):
+    return [
+        doc
+        for doc in yaml.safe_load_all(rendered)
+        if isinstance(doc, dict)
+        and doc.get("kind") == "OnePasswordItem"
+        and doc["metadata"]["name"].endswith("-chat-secrets")
+    ]
+
+
+@pytest.mark.parametrize("policy", [None, "none"])
+def test_session_notification_policy_without_discord_configuration(tmp_path, policy):
+    overrides = []
+    if policy is not None:
+        overrides.append(
+            _write_values(
+                tmp_path,
+                "notification-policy.yaml",
+                {"agents": {"sessions": {"channelNotify": policy}}},
+            )
+        )
+    rendered = _render("recovery-notify", overrides)
+    assert _notification_projection(rendered) == [
+        {"name": "AGENT_SESSIONS_CHANNEL_NOTIFY", "value": policy or "needs-input"}
+    ]
+    assert _chat_secret_producers(rendered) == []
+
+
+@pytest.mark.parametrize("chat_enabled", [False, True])
+@pytest.mark.parametrize("sessions_channel", [None, "sessions-channel"])
+def test_discord_owner_reference_follows_chat_producer(
+    tmp_path, chat_enabled, sessions_channel
+):
+    discord = {"defaultServerId": "test-server", "defaultChannelId": "test-channel"}
+    expected = [
+        {"name": "MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID", "value": "test-server"},
+        {"name": "MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID", "value": "test-channel"},
+    ]
+    if sessions_channel is not None:
+        discord["agentSessionsChannelId"] = sessions_channel
+        expected.append(
+            {
+                "name": "MONOLITH_AGENT_DISCORD_AGENT_SESSIONS_CHANNEL_ID",
+                "value": sessions_channel,
+            }
+        )
+    expected.append({"name": "AGENT_SESSIONS_CHANNEL_NOTIFY", "value": "none"})
+    if chat_enabled:
+        expected.append(
+            {
+                "name": "OWNER_DISCORD_USER_ID",
+                "valueFrom": {
+                    "secretKeyRef": {
+                        "name": "recovery-notify-chat-secrets",
+                        "key": "OWNER_DISCORD_USER_ID",
+                    }
+                },
+            }
+        )
+    override = _write_values(
+        tmp_path,
+        "notification-owner.yaml",
+        {
+            "agent": {"discord": discord},
+            "agents": {"sessions": {"channelNotify": "none"}},
+            "chat": {"enabled": chat_enabled},
+        },
+    )
+    rendered = _render("recovery-notify", [override])
+    assert _notification_projection(rendered) == expected
+    producers = _chat_secret_producers(rendered)
+    if chat_enabled:
+        assert len(producers) == 1
+        assert producers[0]["metadata"]["name"] == "recovery-notify-chat-secrets"
+        assert producers[0]["metadata"]["namespace"] == "recovery-notify"
+    else:
+        assert producers == []
+
+
+@pytest.mark.parametrize("environment", ["prod", "gke"])
+def test_production_notification_projection_is_preserved(environment, renders):
+    rendered = renders[environment]
+    assert _notification_projection(rendered) == [
+        {
+            "name": "MONOLITH_AGENT_DISCORD_DEFAULT_SERVER_ID",
+            "value": "1501965852042330302",
+        },
+        {
+            "name": "MONOLITH_AGENT_DISCORD_DEFAULT_CHANNEL_ID",
+            "value": "1501965852969402517",
+        },
+        {
+            "name": "MONOLITH_AGENT_DISCORD_AGENT_SESSIONS_CHANNEL_ID",
+            "value": "1533337680463663254",
+        },
+        {"name": "AGENT_SESSIONS_CHANNEL_NOTIFY", "value": "needs-input"},
+        {
+            "name": "OWNER_DISCORD_USER_ID",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "monolith-chat-secrets",
+                    "key": "OWNER_DISCORD_USER_ID",
+                }
+            },
+        },
+    ]
+    producers = _chat_secret_producers(rendered)
+    assert len(producers) == 1
+    assert producers[0]["metadata"]["name"] == "monolith-chat-secrets"
