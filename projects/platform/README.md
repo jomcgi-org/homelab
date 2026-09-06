@@ -37,7 +37,6 @@ for the home cluster; the hub's root is `projects/gke-cluster/`, which lists the
 | Component                            | Purpose                                                                                                                         |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
 | `longhorn`         | Distributed block storage backing Kubernetes `PersistentVolume`s.                                                               |
-| `seaweedfs`        | Undeployed since the 2026-08-30 migration to Cloudflare R2; the chart directories remain with no Application. |
 | `cloudnative-pg`   | Postgres operator; every service's database is a `Cluster` custom resource rather than a hand-run instance.                     |
 | `atlas-operator`   | Schema migration operator: reads each service's migrations ConfigMap and applies them to its Postgres database.                 |
 

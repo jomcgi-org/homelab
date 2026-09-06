@@ -139,8 +139,6 @@ concurrent branches becoming stale after every merge still holds.
 
 **Blob storage** is Cloudflare R2 for the monolith and monolith-public (artifacts, images, chat attachments, the stars grid, knowledge raws), with bucket names unchanged from the previous store and credentials delivered as `OnePasswordItem`s: a read-write item for the backend and its CronWorkflows, a read-only item for the public tier. EmberVM's base store and volume exports on the hub go to same-region GCS through the S3 interop endpoint.
 
-**SeaweedFS is undeployed.** It left the home root on 2026-08-30 with the R2 migration and runs nowhere; the three chart directories (`seaweedfs`, `seaweedfs-node4`, `seaweedfs-node4b`) remain in the tree with no Application. Bucket provisioning via COSI (ADR platform/007) was accepted for it and never deployed; its target store is gone. #3888 is the record.
-
 **Longhorn** (home only) provides distributed block storage for the residual PVCs, single-replica by default, with a `longhorn-gpu` StorageClass pinned to the GPU node. There is no S3 backup target for Longhorn volumes.
 
 **atlas-operator** applies each service's database migrations from its ConfigMap on both clusters. The ConfigMap carries the entire migration history, and ArgoCD applies it as a single object with a 256 KiB last-applied-configuration annotation ceiling (see: `.claude/CLAUDE.md`).
@@ -153,8 +151,8 @@ was removed (ADR platform/007). Application self-provisioning was rejected becau
 it remains invisible to GitOps and still has no deletion path; Crossplane was
 rejected as too much infrastructure for bucket provisioning alone. COSI was
 chosen for declarative ownership and reclaim policy, accepting beta APIs and a
-community driver; the decision remains accepted and undeployed, and the store it
-targeted has since been replaced by R2. EmberVM's bases stay on GCS rather than
+community driver; the decision was never deployed, and the store it targeted
+was replaced by R2 and GCS. EmberVM's bases stay on GCS rather than
 R2 because same-region GCS bandwidth is free in both directions while R2 would
 pay GCP egress on every export.
 
@@ -282,7 +280,7 @@ Rationale only; these ADRs recorded decisions, not current state. This document 
 | Iceberg-on-SeaweedFS lakehouse | platform/004 | Superseded; decommissioned 2026-06-14 (PR #2596) | deleted in this PR |
 | Per-PR preview environments for the monolith | platform/005 | Draft, not built; #3882 | deleted in this PR |
 | Decommission Obsidian, Postgres as the body of record | platform/006 | Accepted, shipped | monolith's, left in place |
-| SeaweedFS bucket provisioning via COSI | platform/007 | Accepted, never deployed; target store gone; #3888 | deleted in this PR |
+| SeaweedFS bucket provisioning via COSI | platform/007 | Accepted, never deployed; the store it targeted was replaced by R2 and GCS (#3888) | deleted in this PR |
 | Monolith module boundaries | platform/008 | Accepted | monolith's, left in place |
 | Post-merge chart versioning and Kargo promotion | platform/009 | Decisions 1 and 2 shipped as specified; decision 3 shipped as `argocd-update` on the live Application, prod-only on the hub; decision 4 superseded; no verification gate, #4745 | deleted in this PR |
 | Memory oversubscription via Burstable QoS and PriorityClass | platform/010 | Accepted, shipped; a third class added 2026-09-01 | deleted in this PR |
