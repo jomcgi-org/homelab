@@ -154,8 +154,6 @@ knowledge:
   # Postgres (knowledge.notes.content); raws live in SeaweedFS. The note
   # read/write paths are DB-only and the /vault disk dependency is gone, so
   # there is no sidecar, no vault volume, and no git-sync backup left to wire.
-  gaps:
-    rewriteDiscardable: true
   feeds:
     emberSessions:
       # Dark feed verified in the 0.412 templates (#5527); no backfill because
@@ -300,17 +298,6 @@ agents:
     # the routine lane. docFixAutoMerge stays at the chart default (false)
     # until a few docfix-review verdicts have been read.
     docFixEnabled: true
-
-# Taken offline 2026-06-14 for the ADR 006 Phase 4 transition: with the
-# gardener paused, the raw export / file moves can be done as a controlled
-# one-off, and the gardener stays down until the CLI-based version (Phase 4a-ii)
-# is ready. Dropping the token makes garden_handler() skip cleanly (it logs a
-# warning and returns when CLAUDE_CODE_OAUTH_TOKEN is absent). Re-enable by
-# flipping this back to true.
-gardener:
-  enabled: false
-  onepassword:
-    itemPath: "vaults/k8s-homelab/items/litellm-claude-auth"
 
 # Grimoire D&D ingest pipeline (private tier only; spec
 # the grimoire pg-first design). Enabled here so the two
