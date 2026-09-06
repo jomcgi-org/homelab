@@ -12,6 +12,7 @@ import httpx
 from sqlalchemy import text
 from sqlmodel import Session
 
+from agent_sessions.constants import UNKNOWN_INVOCATION
 from core.github import GITHUB_API, GITHUB_REPO
 
 DOCFIX_REVIEW_TEMPLATE_VERSION = "docfix-review/luna@v1"
@@ -173,12 +174,17 @@ def schedule_docfix_review(
               FROM {table}
              WHERE name LIKE :prefix
                AND (next_run_at IS NOT NULL
+                    OR last_status = :unknown_outcome
                     OR locked_by IS NOT NULL
                     OR last_run_at >= :cutoff)
              LIMIT 1
             """
         ),
-        {"prefix": f"{DOCFIX_REVIEW_JOB_PREFIX}%", "cutoff": cutoff},
+        {
+            "prefix": f"{DOCFIX_REVIEW_JOB_PREFIX}%",
+            "cutoff": cutoff,
+            "unknown_outcome": UNKNOWN_INVOCATION,
+        },
     ).first()
     if active is not None:
         return False
@@ -226,9 +232,14 @@ def prune_completed_docfix_reviews(session: Session) -> int:
                AND next_run_at IS NULL
                AND locked_by IS NULL
                AND last_run_at < :cutoff
+               AND (last_status IS NULL OR last_status != :unknown_outcome)
             """
         ),
-        {"prefix": f"{DOCFIX_REVIEW_JOB_PREFIX}%", "cutoff": cutoff},
+        {
+            "prefix": f"{DOCFIX_REVIEW_JOB_PREFIX}%",
+            "cutoff": cutoff,
+            "unknown_outcome": UNKNOWN_INVOCATION,
+        },
     )
     session.commit()
     return result.rowcount

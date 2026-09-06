@@ -17,6 +17,8 @@ from agent_sessions.constants import (
     INTERRUPTED_TERMINAL_REASONS,
     LEGACY_QWEN_SYNTHETIC_PROMPT,
     SYNTHETIC_SESSION_PREFIX,
+    UNKNOWN_INVOCATION,
+    UNKNOWN_INVOCATION_MESSAGE,
 )
 from agent_sessions.models import (
     AgentSession,
@@ -33,11 +35,6 @@ logger = logging.getLogger(__name__)
 _UNSET = object()
 RECLAIM_LEASE = timedelta(seconds=30)
 MAX_PENDING_DISPATCHES = 3
-UNKNOWN_INVOCATION = "invocation_outcome_unknown"
-UNKNOWN_INVOCATION_MESSAGE = (
-    "This session has an unknown invocation outcome. Reconcile the guest and any "
-    "remote side effects, then start a new session. Sending again cannot resume it."
-)
 
 
 class SessionOutcomeUnknown(ValueError):
@@ -72,6 +69,11 @@ def _lock_session(session: Session, session_id: int) -> AgentSession | None:
 def _assert_sendable(session: Session, session_id: int) -> None:
     if session.exec(select(_unknown_outcome_exists(session_id))).one():
         raise SessionOutcomeUnknown(UNKNOWN_INVOCATION_MESSAGE)
+
+
+def has_unknown_outcome(session: Session, session_id: int) -> bool:
+    """Expose the durable hold to consumers before automatic cleanup or retry."""
+    return session.exec(select(_unknown_outcome_exists(session_id))).one()
 
 
 def _attempted(pending: PendingMessage) -> bool:

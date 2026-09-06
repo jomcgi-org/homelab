@@ -1289,3 +1289,39 @@ def test_implementer_feedback_loop_stores_intent(monkeypatch):
         review_feedback="Fix X\nVERDICT: REQUEST_CHANGES",
     )[0]
     assert intents[2] == (102, 0, expected)
+
+
+@pytest.mark.parametrize("stage", ["implement", "review", "send_back"])
+def test_unknown_outcome_stops_before_retry_or_partial_review_verdict(
+    monkeypatch, stage
+):
+    unknown = {
+        "terminal_reason": "error",
+        "stop_reason": "invocation_outcome_unknown",
+        "result_text": "Partial notes\nVERDICT: APPROVE",
+        "cost_usd": None,
+    }
+    if stage == "implement":
+        turns, heads, held_id = {101: unknown}, [None], 101
+    elif stage == "review":
+        turns = {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+            201: unknown,
+        }
+        heads, held_id = [None, "abc"], 201
+    else:
+        turns = {
+            101: {"commit_sha": "abc", "result_text": "done", "cost_usd": 1},
+            201: {"result_text": "VERDICT: REQUEST_CHANGES", "cost_usd": 1},
+            102: unknown,
+        }
+        heads, held_id = [None, "abc", "abc"], 102
+    calls = run(monkeypatch, turns, heads=heads)
+    result = workflow("task", "repo", "main")
+    assert len(calls) == len(turns)
+    assert result["status"] == "escalated"
+    assert result["stop_reason"] == "invocation_outcome_unknown"
+    assert result["unknown_session_id"] == held_id
+    assert result["review_verdict"] is None
+    assert result["commit_sha"] is None
+    assert "start a new session" in result["error"]

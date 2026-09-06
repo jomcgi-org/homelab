@@ -123,6 +123,7 @@ def _create_routine_jobs(session: Session) -> None:
                 routine_kind TEXT NOT NULL,
                 interval_secs INTEGER,
                 next_run_at TIMESTAMP,
+                last_status TEXT,
                 payload TEXT,
                 created_by TEXT
             )

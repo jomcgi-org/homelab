@@ -5,7 +5,11 @@ import logging
 
 from dbos import DBOS
 
-from agent_sessions.constants import INTERRUPTED_TERMINAL_REASONS
+from agent_sessions.constants import (
+    INTERRUPTED_TERMINAL_REASONS,
+    UNKNOWN_INVOCATION,
+    UNKNOWN_INVOCATION_MESSAGE,
+)
 from swarm import config
 from swarm.budget import effective_budget
 from swarm.policy import (
@@ -355,6 +359,25 @@ def _review_cycles_exhausted(
     return output
 
 
+def _unknown_outcome(
+    attempt: int,
+    implementer_session_id: int,
+    branch_name: str,
+    total_cost: float,
+    reviewer_session_id: int | None = None,
+) -> dict:
+    output = _escalated(
+        attempt, implementer_session_id, None, branch_name, cost_usd=total_cost
+    )
+    output.update(
+        stop_reason=UNKNOWN_INVOCATION,
+        error=UNKNOWN_INVOCATION_MESSAGE,
+        unknown_session_id=reviewer_session_id or implementer_session_id,
+        reviewer_session_id=reviewer_session_id,
+    )
+    return output
+
+
 @DBOS.workflow()
 def implement_then_review(
     task: str,
@@ -426,6 +449,10 @@ def implement_then_review(
         implementer_turn = _await_turn(
             implementer_session_id, 0, plan["turn_timeout_seconds"]
         )
+        if (implementer_turn or {}).get("stop_reason") == UNKNOWN_INVOCATION:
+            return _unknown_outcome(
+                attempt, implementer_session_id, branch_name, total_cost
+            )
         total_cost += _cost(implementer_turn)
         _record_turn_intent(implementer_session_id, implementer_turn, impl_intent)
         head_sha = read_branch_head(repo, branch_name)
@@ -596,6 +623,14 @@ def implement_then_review(
         reviewer_turn = _await_turn(
             reviewer_session_id, 0, plan["turn_timeout_seconds"]
         )
+        if (reviewer_turn or {}).get("stop_reason") == UNKNOWN_INVOCATION:
+            return _unknown_outcome(
+                attempt,
+                implementer_session_id,
+                branch_name,
+                total_cost,
+                reviewer_session_id,
+            )
         total_cost += _cost(reviewer_turn)
         _record_turn_intent(reviewer_session_id, reviewer_turn, reviewer_intent)
         verdict = parse_review_verdict(
@@ -642,6 +677,10 @@ def implement_then_review(
                 implementer_turn = _await_turn(
                     implementer_session_id, 0, plan["turn_timeout_seconds"]
                 )
+                if (implementer_turn or {}).get("stop_reason") == UNKNOWN_INVOCATION:
+                    return _unknown_outcome(
+                        attempt, implementer_session_id, branch_name, total_cost
+                    )
                 total_cost += _cost(implementer_turn)
                 _record_turn_intent(
                     implementer_session_id, implementer_turn, impl_intent

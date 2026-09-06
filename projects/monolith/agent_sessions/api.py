@@ -287,6 +287,11 @@ def _sessions_for_workflow(workflow_id: str):
         return store.sessions_for_workflow(db_session, workflow_id)
 
 
+def _session_outcome_unknown(session_id: int) -> bool:
+    with Session(get_engine()) as db_session:
+        return store.has_unknown_outcome(db_session, session_id)
+
+
 async def reap_sessions_for_workflow(workflow_id: str) -> dict:
     """Destroy and unbind every guest session owned by a swarm workflow.
 
@@ -308,6 +313,9 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
             summary["skipped"].append(row.id)
             continue
         try:
+            if await asyncio.to_thread(_session_outcome_unknown, row.id):
+                summary["skipped"].append(row.id)
+                continue
             try:
                 await _transport.destroy_session(ember_session_id)
             except EmberSessionGone:
