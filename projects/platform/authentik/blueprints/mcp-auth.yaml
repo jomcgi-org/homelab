@@ -151,8 +151,11 @@ entries:
   # This is weaker than real token exchange and the difference is worth stating:
   # exchange mints a SEPARATE token per audience, so a backend cannot replay it
   # elsewhere. One multi-audience token is a single bearer credential valid at
-  # both. That replay path is closed at the network layer instead, by the
-  # CiliumNetworkPolicy in the monolith chart.
+  # both. The monolith chart carries an egress-deny CiliumNetworkPolicy for
+  # that replay path (ciliumPolicy.tokenReplayDeny), but it is off by default,
+  # no deploy overlay enables it, and on the GKE hub it cannot apply at all
+  # because Dataplane V2 exposes no Cilium policy CRD. What bounds replay
+  # today is that no code path in the monolith calls the gateway.
   - model: authentik_providers_oauth2.scopemapping
     id: mcp-audience
     identifiers:
