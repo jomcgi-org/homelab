@@ -55,7 +55,9 @@ def _child(tmp_path, environment, role, argument, pass_fds=()):
         process = subprocess.Popen(
             [
                 sys.executable,
-                str(Path(__file__).with_name("process_crash_driver_test.py")),
+                "-P",
+                "-m",
+                "agent_sessions.process_crash_driver_test",
                 role,
                 str(argument),
             ],
@@ -107,12 +109,19 @@ def crash_lane(pg, tmp_path, monkeypatch):
             url = f"http://127.0.0.1:{listener.getsockname()[1]}"
             # An explicit allowlist, never os.environ.copy(). All URLs and
             # credentials below belong to this fresh test's loopback resources.
+            # Pytest can prepend the test directory. Keep its package root,
+            # so agent_sessions/mcp.py cannot shadow the installed mcp package.
+            test_directory = Path(__file__).parent.resolve()
+            test_directories = {test_directory, Path(__file__).resolve().parent}
+            import_paths = [str(test_directory.parent)] + [
+                str(Path(p).resolve())
+                for p in sys.path
+                if p and Path(p).resolve() not in test_directories
+            ]
             environment = {
                 "PATH": "/usr/bin:/bin",
                 "LC_ALL": "C.UTF-8",
-                "PYTHONPATH": os.pathsep.join(
-                    str(Path(p).resolve()) for p in sys.path if p
-                ),
+                "PYTHONPATH": os.pathsep.join(import_paths),
                 "PYTHONUNBUFFERED": "1",
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "PYTHONUTF8": "1",
