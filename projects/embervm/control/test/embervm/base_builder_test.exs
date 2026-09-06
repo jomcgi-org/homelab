@@ -5100,6 +5100,112 @@ defmodule Embervm.BaseBuilderTest do
            }
   end
 
+  test "co-located sibling refs stay visible until every instance converges without operational work" do
+    agent = start_recorder()
+    {:ok, effects} = Agent.start_link(fn -> [] end)
+    record_effect = fn kind -> Agent.update(effects, &[kind | &1]) end
+    table = new_cap_table()
+
+    for {uid, ref} <- [{"small", "w__old"}, {"mid", "w__old"}, {"big", "w__new"}] do
+      put_vendor_fact(table, "node-4", uid, "w", ref, "intel")
+    end
+
+    builder =
+      start_builder(
+        nodes: [%{id: "node-4/big", address: "big"}],
+        capacity_table: table,
+        status_writer: recording_status_writer(agent),
+        build_fun: fn :fake_channel, _req ->
+          record_effect.(:build)
+          {:ok, resp("w__new")}
+        end,
+        export_fun: fn :fake_channel, _req ->
+          record_effect.(:export)
+          {:error, :unexpected_export}
+        end,
+        restore_fun: fn :fake_channel, _req ->
+          record_effect.(:restore)
+          {:error, :unexpected_restore}
+        end,
+        evict_fun: fn :fake_channel, _workload, _ref ->
+          record_effect.(:evict)
+          {:error, :unexpected_eviction}
+        end
+      )
+
+    build_current(builder, agent, "w__new")
+    status = latest(agent, "w")
+    assert status["snapshotRef"] == "w__new"
+    assert status["snapshotRefs"] == %{"intel" => ["w__new", "w__old"]}
+    # Coverage still attests one desired-signature build per vendor. It does
+    # not hide or reinterpret the independently observed sibling disagreement.
+    assert %{"status" => "True"} = condition(status, "BaseVendorCoverage")
+    assert Agent.get(effects, & &1) == [:build]
+
+    # Updating the first stale sibling cannot hide the remaining stale one.
+    put_vendor_fact(table, "node-4", "small", "w", "w__new", "intel")
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+    assert latest(agent, "w")["snapshotRefs"] == %{"intel" => ["w__new", "w__old"]}
+
+    put_vendor_fact(table, "node-4", "mid", "w", "w__new", "intel")
+    send(builder, :export_reconcile)
+    state = :sys.get_state(builder)
+    assert latest(agent, "w") == %{"snapshotRefs" => %{"intel" => ["w__new"]}}
+    assert state.workloads["w"].snapshot_ref == "w__new"
+    assert MapSet.size(state.hydrating) == 0
+    assert Enum.all?(state.nodes, fn {_id, node} -> node.queue == [] end)
+    assert Agent.get(effects, & &1) == [:build]
+
+    settled = recorded(agent)
+    send(builder, :export_reconcile)
+    _ = :sys.get_state(builder)
+    assert recorded(agent) == settled
+  end
+
+  test "a failed sibling-ref status patch retries the same union without losing the last published map" do
+    agent = start_recorder()
+    {:ok, fail_next} = Agent.start_link(fn -> false end)
+    table = new_cap_table()
+    put_vendor_fact(table, "node-4", nil, "w", "w__old", "intel")
+    put_vendor_fact(table, "node-4", "sibling", "w", "w__new", "intel")
+
+    writer = fn namespace, name, status_map ->
+      recording_status_writer(agent).(namespace, name, status_map)
+
+      if Agent.get_and_update(fail_next, fn fail -> {fail, false} end),
+        do: {:error, :temporary_status_error},
+        else: :ok
+    end
+
+    builder =
+      start_builder(
+        capacity_table: table,
+        status_writer: writer,
+        build_fun: fn :fake_channel, _req -> {:ok, resp("w__new")} end
+      )
+
+    build_current(builder, agent, "w__new")
+    published = %{"intel" => ["w__new", "w__old"]}
+    assert latest(agent, "w")["snapshotRefs"] == published
+    Agent.update(fail_next, fn _ -> true end)
+    put_vendor_fact(table, "node-4", nil, "w", "w__new", "intel")
+
+    capture_log(fn ->
+      send(builder, :export_reconcile)
+      state = :sys.get_state(builder)
+      assert state.workloads["w"].last_snapshot_refs == published
+    end)
+
+    failed = latest(agent, "w")
+    send(builder, :export_reconcile)
+    state = :sys.get_state(builder)
+    assert latest(agent, "w") == failed
+    assert state.workloads["w"].last_snapshot_refs == %{"intel" => ["w__new"]}
+    attempts = recorded(agent) |> Enum.take(-2) |> Enum.map(&elem(&1, 2))
+    assert attempts == [failed, failed]
+  end
+
   test "a node reporting no CPU vendor is left out rather than keyed under an empty vendor" do
     agent = start_recorder()
     table = new_cap_table()

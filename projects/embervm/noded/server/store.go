@@ -458,6 +458,9 @@ func enumerateArtifactFiles(localDir string) ([]string, error) {
 // or the drain deadline. Called once from the daemon entrypoint after the
 // startup reconcile sequence; ctx cancels every loop on shutdown.
 func (s *Server) StartStoreLoops(ctx context.Context) {
+	// Local additive discovery also runs without a remote store. It never builds
+	// or reclaims shared bases and never blocks the WatchNode heartbeat.
+	s.startBaseDiscovery(ctx)
 	s.startExportQueue(ctx)
 	s.startStoreProbe(ctx)
 	s.enqueueReconcileExports(ctx)

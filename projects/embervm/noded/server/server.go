@@ -196,6 +196,9 @@ type Server struct {
 	scratchReconcileMu      sync.Mutex
 	scratchGeneration       string
 	scratchReconcilePending bool
+	baseDiscoveryOnce       sync.Once
+	baseDiscoveryMu         sync.Mutex
+	baseDiscoveryAfter      string // rotating cursor, guarded by baseDiscoveryMu
 	// registry is the control-plane-pushed workload table (artifact-decoupling
 	// Phase 2). The daemon boots with it empty (or a STALE boot-cache load) and
 	// admits no new work until the control plane replays it over SyncRegistry
@@ -2993,6 +2996,178 @@ func (s *Server) snapshotSessionsDir() string {
 		return ""
 	}
 	return filepath.Join(warmth, "sessions")
+}
+
+// ---- additive sibling base discovery --------------------------------------
+
+const (
+	// Two candidates per 30s pass bound format subprocess work to at most 20s
+	// (two 5s probes each). The cursor advances even on refusal, so an invalid
+	// earlier bundle cannot starve a later publication. Cancellation is observed
+	// between probes, at most the current 5s probe plus local filesystem reads.
+	baseDiscoveryInterval   = 30 * time.Second
+	baseDiscoveryCandidates = 2
+	baseDiscoveryBudget     = 2 * baseDiscoveryCandidates * fcProbeTimeout
+)
+
+var discoverableBaseKey = regexp.MustCompile(`^[a-zA-Z0-9_-]+__[a-f0-9]{12}$`)
+
+func (s *Server) startBaseDiscovery(ctx context.Context) {
+	s.baseDiscoveryOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(baseDiscoveryInterval)
+			defer ticker.Stop()
+			s.runBaseDiscovery(ctx, ticker.C)
+		}()
+	})
+}
+
+func (s *Server) runBaseDiscovery(ctx context.Context, ticks <-chan time.Time) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case _, ok := <-ticks:
+			if !ok {
+				return
+			}
+			s.discoverSiblingBases(ctx)
+		}
+	}
+}
+
+// discoverSiblingBases adds only missing local base facts. Startup reconcile's
+// cleanup/rename paths are intentionally not used by this live maintenance.
+// Format probes run outside the scratch/registry locks and the heartbeat path.
+func (s *Server) discoverSiblingBases(parent context.Context) int {
+	if !s.baseDiscoveryMu.TryLock() {
+		return 0
+	}
+	defer s.baseDiscoveryMu.Unlock()
+	ctx, cancel := context.WithTimeout(parent, baseDiscoveryBudget)
+	defer cancel()
+	if ctx.Err() != nil || s.isDraining() || s.cfg.SnapshotRoot == "" {
+		return 0
+	}
+	if !s.scratchReconcileMu.TryLock() {
+		return 0 // a generation reconcile can be probing many bundles
+	}
+	generation, err := s.readScratchGeneration()
+	usable := err == nil && !s.scratchReconcilePending && generation == s.scratchGeneration
+	epoch := s.bases.discoveryEpoch()
+	s.scratchReconcileMu.Unlock()
+	if !usable {
+		return 0 // the existing generation owner must reconcile first
+	}
+	entries, err := os.ReadDir(filepath.Join(s.cfg.SnapshotRoot, "bases"))
+	if err != nil {
+		return 0 // additive discovery never clears an existing fact on read failure
+	}
+	// ReadDir sorts names. Start after the previous candidate and wrap once.
+	start := 0
+	for i, entry := range entries {
+		if entry.Name() > s.baseDiscoveryAfter {
+			start = i
+			break
+		}
+	}
+	added, attempted := 0, 0
+	for i := 0; i < len(entries) && attempted < baseDiscoveryCandidates; i++ {
+		if ctx.Err() != nil || s.isDraining() {
+			break
+		}
+		entry := entries[(start+i)%len(entries)]
+		key := entry.Name()
+		if !entry.IsDir() || !discoverableBaseKey.MatchString(key) {
+			continue
+		}
+		if _, known := s.bases.get(key); known {
+			continue
+		}
+		s.baseDiscoveryAfter = key
+		attempted++
+		base, files, ok := s.inspectSiblingBase(ctx, key)
+		if ok && s.commitDiscoveredBase(ctx, generation, epoch, base, files) {
+			added++
+		}
+	}
+	if added > 0 {
+		s.signalChange()
+	}
+	return added
+}
+
+type baseDiscoveryFile struct {
+	path string
+	info os.FileInfo
+}
+
+func (s *Server) inspectSiblingBase(ctx context.Context, key string) (baseEntry, []baseDiscoveryFile, bool) {
+	dir := filepath.Join(s.cfg.SnapshotRoot, "bases", key)
+	if !isCompleteBase(dir, nodev1.BaseBuildState_BASE_BUILD_STATE_UNSPECIFIED) {
+		return baseEntry{}, nil, false
+	}
+	paths := []string{dir}
+	for _, name := range []string{"imageref", "rootfspath", "rootfsid", "snapfile", "memfile"} {
+		paths = append(paths, filepath.Join(dir, name))
+	}
+	files := make([]baseDiscoveryFile, 0, len(paths)+1)
+	for i, path := range paths {
+		info, err := os.Lstat(path)
+		if err != nil || (i == 0 && !info.IsDir()) || (i > 0 && !info.Mode().IsRegular()) {
+			return baseEntry{}, nil, false
+		}
+		files = append(files, baseDiscoveryFile{path: path, info: info})
+	}
+	imageRef := s.readBaseImageRef(key)
+	rootfsPath := s.readBaseRootfsPath(key)
+	if imageRef == "" || rootfsPath == "" {
+		return baseEntry{}, nil, false
+	}
+	rootfs, err := os.Stat(rootfsPath)
+	if err != nil || !rootfs.Mode().IsRegular() {
+		return baseEntry{}, nil, false
+	}
+	files = append(files, baseDiscoveryFile{path: rootfsPath, info: rootfs})
+	if ok, _ := baseRootfsMatches(dir, rootfsPath); !ok {
+		return baseEntry{}, nil, false
+	}
+	if s.discoveryFormatRefusal(ctx, filepath.Join(dir, "snapfile")) != "" {
+		return baseEntry{}, nil, false
+	}
+	return baseEntry{
+		snapshotRef: key, workload: workloadFromBaseKey(key), imageDigest: imageRef,
+		rootfsPath: rootfsPath, readyPath: defaultReadyPath,
+		sizeBytes:       files[4].info.Size() + files[5].info.Size(),
+		createdAtUnixMs: files[0].info.ModTime().UnixMilli(),
+		state:           nodev1.BaseBuildState_BASE_BUILD_STATE_READY,
+	}, files, true
+}
+
+func (s *Server) commitDiscoveredBase(ctx context.Context, generation string, epoch uint64, base baseEntry, files []baseDiscoveryFile) bool {
+	if !s.scratchReconcileMu.TryLock() {
+		return false
+	}
+	defer s.scratchReconcileMu.Unlock()
+	if !s.drainingMu.TryRLock() {
+		return false
+	}
+	defer s.drainingMu.RUnlock()
+	current, err := s.readScratchGeneration()
+	if err != nil || current != generation || s.scratchGeneration != generation ||
+		s.scratchReconcilePending || s.draining || ctx.Err() != nil {
+		return false
+	}
+	// Publication, replacement and rootfs changes during validation all defer to
+	// a later pass. No file contents or modification times are changed here.
+	for _, file := range files {
+		info, err := os.Stat(file.path)
+		if err != nil || !os.SameFile(file.info, info) || info.Size() != file.info.Size() ||
+			info.Mode() != file.info.Mode() || !info.ModTime().Equal(file.info.ModTime()) {
+			return false
+		}
+	}
+	return ctx.Err() == nil && s.bases.discover(base, epoch)
 }
 
 // ---- startup base reconciliation -------------------------------------------

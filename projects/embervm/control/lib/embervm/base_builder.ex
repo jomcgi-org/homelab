@@ -4016,7 +4016,7 @@ defmodule Embervm.BaseBuilder do
     ready = ready_condition(state, w)
     base_built = base_built_condition(state, phase)
     vendor_coverage = base_vendor_coverage_condition(state, w)
-    refs = snapshot_refs_by_vendor(state, w)
+    refs = observed_snapshot_refs_by_vendor(state, w)
 
     status_map =
       if(include_conditions?,
@@ -4096,7 +4096,7 @@ defmodule Embervm.BaseBuilder do
   # capacity-fact gap or brick roll is not evidence that every live base vanished.
   defp refresh_snapshot_refs(state) do
     Enum.reduce(state.workloads, state, fn {_name, w}, acc ->
-      refs = snapshot_refs_by_vendor(acc, w)
+      refs = observed_snapshot_refs_by_vendor(acc, w)
       coverage = base_vendor_coverage_condition(acc, w)
 
       refs_changed? = map_size(refs) > 0 and refs != w.last_snapshot_refs
@@ -4126,7 +4126,16 @@ defmodule Embervm.BaseBuilder do
     end)
   end
 
-  # The base refs the FLEET reports for this workload, grouped by CPU vendor:
+  # Status observes EVERY instance, including disagreeing siblings on one host.
+  # Physical-node deduplication remains in the operational helper below: its
+  # hydration fallback and retention callers have a separate selection contract.
+  defp observed_snapshot_refs_by_vendor(state, w) do
+    state.capacity_table
+    |> Embervm.NodeCapacity.all()
+    |> group_snapshot_refs_by_vendor(w)
+  end
+
+  # The representative base refs, grouped by CPU vendor:
   #
   #     %{"amd" => ["bazel-query__426e..."], "intel" => ["bazel-query__00ad..."]}
   #
@@ -4138,13 +4147,17 @@ defmodule Embervm.BaseBuilder do
   # iteration order and could report a superseded ref as current during exactly
   # the window a reader consults status to decide whether a rollout has landed.
   #
-  # status.snapshotRef stays the single builder-advanced ref and is unchanged;
-  # this field is observability, not a resolution input. Placement and the pool
-  # already resolve each node's ref from that node's own reported facts, so no
-  # consumer reads this to decide what to restore.
+  # This operational view is used by hydration fallback and remote retention.
+  # Status uses observed_snapshot_refs_by_vendor/2 instead. Session placement
+  # continues to resolve the selected instance's own reported ref.
   defp snapshot_refs_by_vendor(state, w) do
     state
     |> representative_facts_by_node(w.name)
+    |> group_snapshot_refs_by_vendor(w)
+  end
+
+  defp group_snapshot_refs_by_vendor(facts, w) do
+    facts
     |> Enum.reduce(%{}, fn fact, acc ->
       vendor = fact |> Map.get(:cpu_vendor, "") |> to_string() |> String.trim()
       ref = get_in(fact, [:workloads, w.name, :snapshot_ref])
@@ -4184,7 +4197,9 @@ defmodule Embervm.BaseBuilder do
 
   defp base_vendor_coverage_condition(state, w) do
     vendors = fleet_vendors(state, w) |> Enum.sort()
-    observed_refs = snapshot_refs_by_vendor(state, w)
+    # Coverage attests a build per vendor, not adoption by every sibling. The
+    # status ref list keeps any mixed old/new observations visible separately.
+    observed_refs = observed_snapshot_refs_by_vendor(state, w)
 
     missing =
       Enum.filter(vendors, fn vendor ->

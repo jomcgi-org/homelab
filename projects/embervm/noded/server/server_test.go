@@ -3340,6 +3340,392 @@ func TestBaseKeyForZipDiffersAcrossVendor(t *testing.T) {
 	}
 }
 
+func newBaseDiscoveryServer(t *testing.T, root, uid string) (*Server, *fakeDriver) {
+	t.Helper()
+	marker := filepath.Join(root, ".scratch-generation")
+	if err := os.WriteFile(marker, []byte("generation-1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	drv := &fakeDriver{}
+	s := New(Options{
+		Config: config.Config{
+			Node: "shared-node", PodUID: uid, Arch: "amd64", SnapshotRoot: root,
+			WarmthRoot: filepath.Join(root, "i", uid), ScratchGenerationPath: marker,
+			Images: map[string]config.Image{"img:1": {RootfsPath: filepath.Join(root, "image.ext4")}},
+		},
+		Driver: drv, Transport: &fakeTransport{},
+		NewBuildDriver: func(BuildDriverSpec) BuildDriver { return drv },
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	s.fcSupportedVersionFn = func(string) (snapVersion, error) { return snapVersion{10, 2, 0}, nil }
+	s.fcDescribeVersionFn = func(string, string) (snapVersion, error) { return snapVersion{10, 2, 0}, nil }
+	if err := s.ReconcileBasesFromDisk(); err != nil {
+		t.Fatal(err)
+	}
+	return s, drv
+}
+
+func assertNoDiscoveryVMWork(t *testing.T, drv *fakeDriver) {
+	t.Helper()
+	if claims, releases, removes, stats := drv.counts(); claims != 0 || releases != 0 || removes != 0 || stats != 0 {
+		t.Fatalf("discovery touched VM lifecycle: claims=%d releases=%d removes=%d stats=%d", claims, releases, removes, stats)
+	}
+	if drv.snapshots != 0 {
+		t.Fatal("discovery built a snapshot")
+	}
+}
+
+func TestSiblingBaseDiscoveryConvergesWithoutBuildOrLiveVMChanges(t *testing.T) {
+	root := t.TempDir()
+	bases := filepath.Join(root, "bases")
+	oldRef, newRef := "echo__ffffffffffff", "echo__000000000001"
+	writeReconcileBase(t, bases, oldRef, "img:1")
+	oldTime := time.Unix(100, 0)
+	if err := os.Chtimes(filepath.Join(bases, oldRef), oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	publisher, publisherDriver := newBaseDiscoveryServer(t, root, "publisher")
+	follower, followerDriver := newBaseDiscoveryServer(t, root, "follower")
+	oldEntry, _ := follower.bases.get(oldRef)
+	follower.vms.add(&vmEntry{id: "task-live", workload: "echo", snapshotRef: oldRef, state: vmPrimed})
+	follower.sessionVMs.add(&sessionEntry{vmID: "session-live", sessionID: "s-live", workload: "echo", snapshotRef: oldRef})
+	writeReconcileBase(t, bases, newRef, "img:1")
+	newTime := time.Unix(200, 0)
+	if err := os.Chtimes(filepath.Join(bases, newRef), newTime, newTime); err != nil {
+		t.Fatal(err)
+	}
+	publisher.bases.readyBuild(newRef, "echo", "img:1", publisher.readBaseRootfsPath(newRef), defaultReadyPath, 7)
+	// Only the publisher knows about this completed same-generation publication.
+	if _, ok := follower.bases.get(newRef); ok {
+		t.Fatal("registries unexpectedly shared")
+	}
+	before := map[string]baseDiscoveryFile{}
+	for _, ref := range []string{oldRef, newRef} {
+		for _, name := range []string{"snapfile", "memfile", "imageref", "rootfsid", "rootfspath"} {
+			path := filepath.Join(bases, ref, name)
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before[path] = baseDiscoveryFile{path: path, info: info}
+		}
+	}
+	changes := follower.subscribe()
+	defer follower.unsubscribe(changes)
+	if got := follower.discoverSiblingBases(context.Background()); got != 1 {
+		t.Fatalf("adopted=%d, want one missing sibling base", got)
+	}
+	select {
+	case <-changes:
+	default:
+		t.Fatal("adoption did not wake WatchNode")
+	}
+	entry, ok := follower.bases.get(newRef)
+	if !ok || entry.createdAtUnixMs != newTime.UnixMilli() || entry.state != nodev1.BaseBuildState_BASE_BUILD_STATE_READY {
+		t.Fatalf("adopted entry=%+v, want original disk creation time and READY", entry)
+	}
+	status := follower.nodeStatus()
+	if len(status.Workloads) != 1 || status.Workloads[0].SnapshotRef != newRef || len(status.SessionVms) != 1 || status.SessionVms[0].VmId != "session-live" {
+		t.Fatalf("unexpected status after discovery: %+v", status)
+	}
+	if ids := primedIDs(status, "echo"); len(ids) != 1 || ids[0] != "task-live" {
+		t.Fatalf("primed residency changed: %v", ids)
+	}
+	if old, _ := follower.bases.get(oldRef); old != oldEntry {
+		t.Fatal("discovery modified the old READY entry")
+	}
+	if got := follower.discoverSiblingBases(context.Background()); got != 0 {
+		t.Fatalf("repeated discovery added %d entries", got)
+	}
+	select {
+	case <-changes:
+		t.Fatal("unchanged discovery emitted a heartbeat change")
+	default:
+	}
+	for path, file := range before {
+		info, err := os.Stat(path)
+		if err != nil || !os.SameFile(file.info, info) || info.Size() != file.info.Size() || !info.ModTime().Equal(file.info.ModTime()) {
+			t.Fatalf("discovery modified shared file %s", path)
+		}
+	}
+	assertNoDiscoveryVMWork(t, publisherDriver)
+	assertNoDiscoveryVMWork(t, followerDriver)
+}
+
+func TestSiblingBaseDiscoveryDefersUnusableBundles(t *testing.T) {
+	for _, name := range []string{"imageref", "rootfspath", "rootfsid", "memfile", "snapfile", "temporary", "rootfs_missing", "rootfs_mismatch", "format", "unreadable_format", "building", "stale", "malformed"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			s, drv := newBaseDiscoveryServer(t, root, "follower")
+			key := "echo__000000000001"
+			if name == "building" {
+				key += ".building"
+			} else if name == "stale" {
+				key += ".stale.1"
+			} else if name == "malformed" {
+				key = "echo__not-a-base"
+			}
+			bases := filepath.Join(root, "bases")
+			writeReconcileBase(t, bases, key, "img:1")
+			dir := filepath.Join(bases, key)
+			switch name {
+			case "imageref", "rootfspath", "rootfsid", "memfile", "snapfile":
+				if err := os.Remove(filepath.Join(dir, name)); err != nil {
+					t.Fatal(err)
+				}
+			case "temporary":
+				if err := os.WriteFile(filepath.Join(dir, "publish.tmp"), []byte("partial"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "rootfs_missing":
+				if err := os.Remove(s.readBaseRootfsPath(key)); err != nil {
+					t.Fatal(err)
+				}
+			case "rootfs_mismatch":
+				if err := os.WriteFile(filepath.Join(dir, "rootfsid"), []byte(testRootfsUUIDB), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "format":
+				s.fcDescribeVersionFn = func(string, string) (snapVersion, error) { return snapVersion{99, 0, 0}, nil }
+			case "unreadable_format":
+				s.fcDescribeVersionFn = func(string, string) (snapVersion, error) { return snapVersion{}, errors.New("bad snapshot") }
+			}
+			if n := s.discoverSiblingBases(context.Background()); n != 0 {
+				t.Fatalf("unusable candidate adopted: %d", n)
+			}
+			if _, err := os.Stat(dir); err != nil {
+				t.Fatal("discovery removed the unusable bundle")
+			}
+			if len(s.bases.snapshot()) != 0 {
+				t.Fatal("refusal manufactured a registry state")
+			}
+			if name == "imageref" {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte("img:1"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if n := s.discoverSiblingBases(context.Background()); n != 1 {
+					t.Fatal("completed publication was not retried")
+				}
+			}
+			assertNoDiscoveryVMWork(t, drv)
+		})
+	}
+}
+
+func TestSiblingBaseDiscoveryBudgetFairnessAndProvisioningGate(t *testing.T) {
+	if baseDiscoveryInterval != 30*time.Second || baseDiscoveryCandidates != 2 || baseDiscoveryBudget != 20*time.Second {
+		t.Fatal("review discovery bounds when changing its cadence or probe budget")
+	}
+	root := t.TempDir()
+	s, drv := newBaseDiscoveryServer(t, root, "follower")
+	for _, key := range []string{"echo__000000000001", "echo__000000000002", "echo__000000000003"} {
+		writeReconcileBase(t, filepath.Join(root, "bases"), key, "img:1")
+	}
+	probes := 0
+	s.fcDescribeVersionFn = func(_, path string) (snapVersion, error) {
+		probes++
+		if strings.Contains(path, "000000000003") {
+			return snapVersion{10, 2, 0}, nil
+		}
+		return snapVersion{}, errors.New("unusable earlier candidate")
+	}
+	if n := s.discoverSiblingBases(context.Background()); n != 0 || probes != 2 {
+		t.Fatalf("first pass adopted=%d probes=%d, want 0/2", n, probes)
+	}
+	s.cfg.Images = map[string]config.Image{}
+	if n := s.discoverSiblingBases(context.Background()); n != 1 {
+		t.Fatal("earlier invalid candidates starved the valid later publication")
+	}
+	if caps := s.nodeStatus().Workloads; len(caps) != 0 {
+		t.Fatalf("unprovisioned runtime was advertised: %+v", caps)
+	}
+	assertNoDiscoveryVMWork(t, drv)
+}
+
+func TestSiblingBaseDiscoveryCommitFences(t *testing.T) {
+	for _, name := range []string{"building", "ready", "failed", "none", "reset", "replace", "generation", "missing_marker", "cancel", "drain", "reconcile_lock", "file_replace", "sidecar_change"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			s, drv := newBaseDiscoveryServer(t, root, "follower")
+			key := "echo__000000000001"
+			writeReconcileBase(t, filepath.Join(root, "bases"), key, "img:1")
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			entered, release := make(chan struct{}, 1), make(chan struct{})
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			defer unblock()
+			s.fcDescribeVersionFn = func(string, string) (snapVersion, error) {
+				entered <- struct{}{}
+				select {
+				case <-release:
+					return snapVersion{10, 2, 0}, nil
+				case <-time.After(2 * time.Second):
+					return snapVersion{}, errors.New("test barrier timed out")
+				}
+			}
+			done := make(chan int, 1)
+			go func() { done <- s.discoverSiblingBases(ctx) }()
+			select {
+			case <-entered:
+			case <-time.After(time.Second):
+				t.Fatal("discovery never reached the validation barrier")
+			}
+			switch name {
+			case "building":
+				s.bases.beginBuild(key, "echo", "owned-rootfs", "owned-ready")
+			case "ready", "failed", "none":
+				states := map[string]nodev1.BaseBuildState{"ready": nodev1.BaseBuildState_BASE_BUILD_STATE_READY, "failed": nodev1.BaseBuildState_BASE_BUILD_STATE_FAILED, "none": nodev1.BaseBuildState_BASE_BUILD_STATE_NONE}
+				s.bases.register(baseEntry{snapshotRef: key, state: states[name], rootfsPath: "owned-rootfs"})
+			case "reset":
+				s.bases.reset()
+			case "replace":
+				s.bases.replace(nil)
+			case "generation":
+				if err := os.WriteFile(s.cfg.ScratchGenerationPath, []byte("generation-2"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "missing_marker":
+				if err := os.Remove(s.cfg.ScratchGenerationPath); err != nil {
+					t.Fatal(err)
+				}
+			case "cancel":
+				cancel()
+			case "drain":
+				s.SetDraining(time.Now().Add(time.Minute))
+			case "reconcile_lock":
+				s.scratchReconcileMu.Lock()
+				defer s.scratchReconcileMu.Unlock()
+			case "file_replace":
+				path := filepath.Join(root, "bases", key, "memfile")
+				if err := os.Rename(path, path+".previous"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("mem"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "sidecar_change":
+				if err := os.WriteFile(filepath.Join(root, "bases", key, "imageref"), []byte("img:changed"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			unblock()
+			select {
+			case n := <-done:
+				if n != 0 {
+					t.Fatal("discovery committed after losing its fence")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("discovery did not finish after the barrier")
+			}
+			if e, exists := s.bases.get(key); exists && e.rootfsPath != "owned-rootfs" {
+				t.Fatalf("discovery overwrote the winning entry: %+v", e)
+			}
+			assertNoDiscoveryVMWork(t, drv)
+		})
+	}
+}
+
+func TestSiblingDiscoveryLoopDoesNotBlockHeartbeatOrOverlap(t *testing.T) {
+	root := t.TempDir()
+	s, drv := newBaseDiscoveryServer(t, root, "follower")
+	writeReconcileBase(t, filepath.Join(root, "bases"), "echo__000000000001", "img:1")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered, release := make(chan struct{}, 1), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	s.fcDescribeVersionFn = func(string, string) (snapVersion, error) {
+		select {
+		case entered <- struct{}{}:
+		default:
+			return snapVersion{}, errors.New("overlapping discovery")
+		}
+		select {
+		case <-release:
+			return snapVersion{10, 2, 0}, nil
+		case <-time.After(2 * time.Second):
+			return snapVersion{}, errors.New("test barrier timed out")
+		}
+	}
+	ticks, stopped := make(chan time.Time, 1), make(chan struct{})
+	go func() { s.runBaseDiscovery(ctx, ticks); close(stopped) }()
+	ticks <- time.Now()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("maintenance tick did not start discovery")
+	}
+	if n := s.discoverSiblingBases(ctx); n != 0 {
+		t.Fatal("concurrent pass was not excluded")
+	}
+	heartbeat := make(chan *nodev1.NodeStatus, 1)
+	go func() { status, _ := s.GetNodeStatus(ctx, &nodev1.GetNodeStatusRequest{}); heartbeat <- status }()
+	select {
+	case status := <-heartbeat:
+		if status.PodUid != "follower" {
+			t.Fatal("heartbeat did not return this instance")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("format probe blocked the heartbeat")
+	}
+	cancel()
+	unblock()
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("maintenance loop survived cancellation")
+	}
+	if len(s.bases.snapshot()) != 0 {
+		t.Fatal("cancelled loop adopted a base")
+	}
+	assertNoDiscoveryVMWork(t, drv)
+}
+
+func TestSiblingDiscoveryDefersBusyReconciliationAndFormatProbe(t *testing.T) {
+	for _, name := range []string{"reconciliation", "format"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			s, drv := newBaseDiscoveryServer(t, root, "follower")
+			writeReconcileBase(t, filepath.Join(root, "bases"), "echo__000000000001", "img:1")
+			if name == "reconciliation" {
+				s.scratchReconcileMu.Lock()
+				defer s.scratchReconcileMu.Unlock()
+			} else {
+				s.fcVerMu.Lock()
+				defer s.fcVerMu.Unlock()
+			}
+			done := make(chan int, 1)
+			go func() { done <- s.discoverSiblingBases(context.Background()) }()
+			select {
+			case n := <-done:
+				if n != 0 {
+					t.Fatal("discovery adopted while its validation owner was busy")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("discovery waited on a busy validation owner")
+			}
+			assertNoDiscoveryVMWork(t, drv)
+		})
+	}
+}
+
+func TestSiblingDiscoveryKeepsUnknownLocalFormatCompatibility(t *testing.T) {
+	root := t.TempDir()
+	s, drv := newBaseDiscoveryServer(t, root, "follower")
+	writeReconcileBase(t, filepath.Join(root, "bases"), "echo__000000000001", "img:1")
+	s.fcSupportedVersionFn = func(string) (snapVersion, error) { return snapVersion{}, errors.New("local probe unavailable") }
+	s.fcDescribeVersionFn = func(string, string) (snapVersion, error) {
+		t.Error("unknown local format should preserve the existing compatibility allowance")
+		return snapVersion{}, errors.New("unexpected describe")
+	}
+	if n := s.discoverSiblingBases(context.Background()); n != 1 {
+		t.Fatal("changed the existing unknown-local-version policy")
+	}
+	assertNoDiscoveryVMWork(t, drv)
+}
+
 func writeReconcileBase(t *testing.T, basesDir, baseKey, ref string) {
 	t.Helper()
 	d := filepath.Join(basesDir, baseKey)
