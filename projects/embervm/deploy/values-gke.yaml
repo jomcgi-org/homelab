@@ -146,3 +146,11 @@ scratchPrep:
 # the big classes are capped off, including the chart default 16gi warm floor
 # (a home policy for the scratch-k8s composite). Revisit the session-class
 # ceiling and group-spread when the Spark lane revives (#5459, #5461).
+
+statefulSweeper:
+  pressureBanking:
+    # Armed on the hub (#4667 decision D15). The lane landed off because
+    # cross-brick stateful relight was broken (#5502); #5502 and #5521 are
+    # closed, so the stated reason to stay off is gone. Thresholds stay at the
+    # chart defaults. Revert is this one line.
+    enabled: true
