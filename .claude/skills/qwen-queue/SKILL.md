@@ -198,7 +198,7 @@ Review keys on diff class, not author.
 
 Lane PRs are human-merged except docs-only `docs:` PRs, which a demand-driven
 `docfix-review` job verifies against main and queues when `docFixAutoMerge` is
-on. The protected set (`.claude/**`, `AGENTS.md`, skills, runbooks, and ADRs) is
+on. The protected set (`.claude/**`, `AGENTS.md`, skills, and runbooks) is
 always human-merged.
 
 The review gate is what makes audit-and-fix affordable. A false positive costs
@@ -321,7 +321,7 @@ So the rule is about the SEARCH SPACE, not the combination:
   and let the dispatcher pick what is worth fixing.
 
 An audit-and-fix job must also **report rather than edit** when the fix needs
-judgement: superseded ADR wording, whether a doc is aspirational or describes
+judgement: superseded architecture wording, whether a doc is aspirational or describes
 something lost, anything touching more than one line. `docs/security.md`
 describing a Kyverno layer that is not deployed is the canonical example, since
 the fix is either a docs rewrite or restoring the policies and only a human

@@ -1,4 +1,4 @@
-"""Unit tests for the ADR link guard.
+"""Unit tests for the retired ADR path guard.
 
 Synthetic inputs only: a test that breaks when an unrelated ADR is deleted
 would defeat the purpose of the guard it is testing.
@@ -8,12 +8,9 @@ from __future__ import annotations
 
 import check_doc_links as c
 
-REAL = "docs/decisions/agents/020-deprecate-context-forge-mcp-gateway.md"
-GONE = "docs/decisions/agents/003-context-forge.md"
-
-
-def _exists(present):
-    return lambda ref: ref in present
+PREFIX = c._DECISIONS_PREFIX
+REAL = f"{PREFIX}agents/020-deprecate-context-forge-mcp-gateway.md"
+GONE = f"{PREFIX}agents/003-context-forge.md"
 
 
 def test_finds_a_reference():
@@ -26,27 +23,29 @@ def test_deduplicates_and_keeps_order():
 
 
 def test_ignores_a_bare_category_path():
-    assert c.find_refs("everything under docs/decisions/agents/ is rationale") == []
+    assert c.find_refs(f"everything under {PREFIX}agents/ is rationale") == []
 
 
 def test_ignores_an_unnumbered_file():
-    assert c.find_refs("docs/decisions/embervm/README.md") == []
+    assert c.find_refs(f"{PREFIX}embervm/README.md") == []
 
 
-def test_resolving_reference_is_clean():
-    assert c.check_file("projects/x/main.go", f"// {REAL}", _exists({REAL})) == []
+def test_reference_is_rejected():
+    out = c.check_file("projects/x/main.go", f"// {REAL}")
+    assert len(out) == 1
+    assert REAL in out[0]
 
 
-def test_missing_reference_is_a_violation():
-    out = c.check_file("projects/x/main.go", f"// {GONE}", _exists({REAL}))
+def test_retired_reference_is_a_violation():
+    out = c.check_file("projects/x/main.go", f"// {GONE}")
     assert len(out) == 1
     assert GONE in out[0]
     assert "ARCHITECTURE.md" in out[0]
 
 
 def test_reports_every_missing_reference_in_one_file():
-    text = f"{GONE} and docs/decisions/agents/005-role-based-mcp-access.md"
-    assert len(c.check_file("a/b.md", text, _exists({REAL}))) == 2
+    text = f"{GONE} and {PREFIX}agents/005-role-based-mcp-access.md"
+    assert len(c.check_file("a/b.md", text)) == 2
 
 
 def test_test_files_are_skipped():
@@ -58,13 +57,13 @@ def test_test_files_are_skipped():
         "projects/x/thing_test.sh",
     ):
         assert not c.should_scan(path), path
-        assert c.check_file(path, f"{GONE}", _exists(set())) == []
+        assert c.check_file(path, f"{GONE}") == []
 
 
 def test_generated_manifests_are_skipped():
     path = "projects/monolith/knowledge/repo_docs_manifest.ndjson"
     assert not c.should_scan(path)
-    assert c.check_file(path, f"{GONE}", _exists(set())) == []
+    assert c.check_file(path, f"{GONE}") == []
 
 
 def test_ordinary_source_is_scanned():
@@ -82,12 +81,10 @@ def test_binary_suffixes_are_skipped():
     assert not c.should_scan("charts/thing-1.0.0.tgz")
 
 
-def test_an_adr_referencing_a_deleted_sibling_is_caught():
-    """The cross-link population: 747 links across the ADR tree."""
+def test_an_adr_referencing_a_sibling_is_caught():
     out = c.check_file(
-        "docs/decisions/agents/020-deprecate-context-forge-mcp-gateway.md",
+        f"{PREFIX}agents/020-deprecate-context-forge-mcp-gateway.md",
         "**Supersedes:** [003](003-context-forge.md)",
-        _exists({REAL}),
     )
     assert len(out) == 1
     assert GONE in out[0]
@@ -95,13 +92,13 @@ def test_an_adr_referencing_a_deleted_sibling_is_caught():
 
 def test_relative_sibling_link_resolves_against_the_adr_directory():
     text = "[020](020-deprecate-context-forge-mcp-gateway.md)"
-    assert c.find_relative_links("docs/decisions/agents/003-x.md", text) == [REAL]
+    assert c.find_relative_links(f"{PREFIX}agents/003-x.md", text) == [REAL]
 
 
 def test_relative_link_across_categories_resolves():
     text = "[041](../agents/041-hot-git-mirror-agent-workspaces.md)"
-    assert c.find_relative_links("docs/decisions/tooling/011-x.md", text) == [
-        "docs/decisions/agents/041-hot-git-mirror-agent-workspaces.md"
+    assert c.find_relative_links(f"{PREFIX}tooling/011-x.md", text) == [
+        f"{PREFIX}agents/041-hot-git-mirror-agent-workspaces.md"
     ]
 
 
@@ -111,7 +108,7 @@ def test_relative_links_outside_the_adr_tree_are_out_of_scope():
         "[plan](../../plans/2026-05-07-thing.md) "
         "[code](../../../projects/agent_platform/README.md)"
     )
-    assert c.find_relative_links("docs/decisions/agents/042-x.md", text) == []
+    assert c.find_relative_links(f"{PREFIX}agents/042-x.md", text) == []
 
 
 def test_links_inside_a_fenced_block_are_illustrations_not_references():
@@ -124,7 +121,7 @@ def test_links_inside_a_fenced_block_are_illustrations_not_references():
             "```",
         ]
     )
-    assert c.find_relative_links("docs/decisions/agents/999-x.md", text) == [REAL]
+    assert c.find_relative_links(f"{PREFIX}agents/999-x.md", text) == [REAL]
 
 
 def test_relative_links_only_apply_inside_the_adr_tree():
@@ -134,4 +131,4 @@ def test_relative_links_only_apply_inside_the_adr_tree():
 
 def test_anchor_suffix_is_stripped():
     text = "[020](020-deprecate-context-forge-mcp-gateway.md#decision)"
-    assert c.find_relative_links("docs/decisions/agents/003-x.md", text) == [REAL]
+    assert c.find_relative_links(f"{PREFIX}agents/003-x.md", text) == [REAL]

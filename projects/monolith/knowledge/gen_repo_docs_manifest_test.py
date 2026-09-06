@@ -19,7 +19,7 @@ def test_derive_title_falls_back_to_path():
 def test_should_index_includes_and_excludes():
     # Included: *.md under docs/ or projects/, and any CLAUDE.md.
     assert _should_index("docs/a.md")
-    assert _should_index("docs/decisions/004.md")
+    assert _should_index("docs/architecture-notes/004.md")
     assert _should_index("projects/svc/README.md")
     assert _should_index("CLAUDE.md")
     assert _should_index(".claude/CLAUDE.md")

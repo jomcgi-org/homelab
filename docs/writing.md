@@ -24,7 +24,7 @@ register: "the egress sidecar makes the call and attaches the real token;
 the secret never enters the VM" carries the meaning without the
 certificate-issuance mechanics.
 
-**Repo docs** (READMEs, `ARCHITECTURE.md`, runbooks, ADR prose). Readers
+**Repo docs** (READMEs, `ARCHITECTURE.md`, runbooks). Readers
 are engineers, including future maintainers and agents. Mechanics belong
 here: exact resource names, ports, verbs, file paths. The voice rules
 below still apply in full.

@@ -39,7 +39,7 @@
 # slot ONLY, so CI never reformats .md or .yaml. The local fast-format.sh runs a
 # bare `prettier --write .`, which DOES cover prettier's default extensions incl.
 # Markdown and YAML, so a whole-repo local run reflowed hundreds of hand-written
-# ADRs/docs/READMEs and rule YAMLs that CI leaves untouched forever (emphasis
+# Docs/READMEs and rule YAMLs that CI leaves untouched forever (emphasis
 # `*x*` -> `_x_`, blank-line-before-list, etc.), producing spurious churn a
 # contributor then has to hand-revert. Ignoring these here scopes local prettier
 # to match CI: prose is hand-written (see the repo's no-em-dash / minimal-churn

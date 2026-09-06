@@ -60,13 +60,10 @@ def test_repo_structure_digest_sorted():
     paths = [
         "projects/zeta/README.md",
         "projects/alpha/x.py",
-        "docs/decisions/tooling/001-x.md",
-        "docs/decisions/agents/002-y.md",
     ]
     lines = repo_structure_digest(paths)
     joined = "\n".join(lines)
     assert joined.index("- alpha") < joined.index("- zeta")
-    assert joined.index("- agents") < joined.index("- tooling")
 
 
 def test_assemble_bundle_is_byte_deterministic():
@@ -103,7 +100,6 @@ def test_committed_bundle_recipe_catalog_lines_sorted_and_well_formed():
 def test_committed_bundle_contains_repo_structure_digest():
     assert "## Repo structure" in _COMMITTED_BUNDLE
     assert "Top-level projects/ directories:" in _COMMITTED_BUNDLE
-    assert "docs/decisions/ categories:" in _COMMITTED_BUNDLE
     assert "- monolith" in _COMMITTED_BUNDLE
 
 

@@ -7,7 +7,7 @@ The cluster deployment of **Context Forge**, the MCP (Model Context Protocol) ga
 Two facts to hold before changing anything here:
 
 - Context Forge is one of **two** MCP entry points. Ember guests never reach it; they talk to the monolith-agents tier through the egress sidecar. See [Topology](ARCHITECTURE.md#topology).
-- Its removal is decided but not executed. ADR agents/059 (Draft) supersedes agents/020 and keeps the same end state, the monolith serving `mcp.jomcgi.dev` directly; #3832 (cutover) and #3833 (decommission) carry the work, and everything below is still the deployed reality. The decision history is the [ADR map](ARCHITECTURE.md#adr-map).
+- Its removal is decided but not executed. ADR agents/059 (Draft) supersedes agents/020 and keeps the same end state, the monolith serving `mcp.jomcgi.dev` directly; #3832 (cutover) and #3833 (decommission) carry the work, and everything below is still the deployed reality. The [decision history](ARCHITECTURE.md#decision-history) preserves that rationale.
 
 ## What it is
 

@@ -8,8 +8,7 @@ stable prefix of its `system` message (so provider prompt caching applies):
 2. A recipe catalog: one ``- <name>: <description>`` line per recipe YAML
    under ``projects/monolith/goosecracker/recipes/*.yaml``,
    sorted by recipe name (the filename stem).
-3. A repo structure digest: the sorted top-level entries under ``projects/``
-   and the sorted category list under ``docs/decisions/``.
+3. A repo structure digest: the sorted top-level entries under ``projects/``.
 
 Byte-determinism is the whole point (spec section 4: "no timestamps, ids, or
 unsorted collections anywhere before the volatile tail"): two runs over the
@@ -45,7 +44,6 @@ BUNDLE_REL = "projects/monolith/chat/orchestrator_bundle.md"
 PROMPT_REL = "projects/monolith/chat/orchestrator_prompt.md"
 RECIPES_DIR_REL = "projects/monolith/goosecracker/recipes"
 PROJECTS_DIR_REL = "projects"
-DECISIONS_DIR_REL = "docs/decisions"
 
 _DESCRIPTION_RE = re.compile(r'^description:\s*"(.*)"\s*$')
 _TITLE_RE = re.compile(r'^title:\s*"(.*)"\s*$')
@@ -104,7 +102,7 @@ def iter_recipe_paths(all_paths: list[str]) -> list[str]:
 
 
 def repo_structure_digest(all_paths: list[str]) -> list[str]:
-    """Sorted top-level ``projects/`` entries + sorted ``docs/decisions`` categories."""
+    """Sorted top-level ``projects/`` entries."""
     project_prefix = f"{PROJECTS_DIR_REL}/"
     project_dirs = sorted(
         {
@@ -114,20 +112,8 @@ def repo_structure_digest(all_paths: list[str]) -> list[str]:
         }
     )
 
-    decisions_prefix = f"{DECISIONS_DIR_REL}/"
-    decision_categories = sorted(
-        {
-            p[len(decisions_prefix) :].split("/", 1)[0]
-            for p in all_paths
-            if p.startswith(decisions_prefix) and "/" in p[len(decisions_prefix) :]
-        }
-    )
-
     lines = ["Top-level projects/ directories:"]
     lines.extend(f"- {d}" for d in project_dirs)
-    lines.append("")
-    lines.append("docs/decisions/ categories:")
-    lines.extend(f"- {c}" for c in decision_categories)
     return lines
 
 

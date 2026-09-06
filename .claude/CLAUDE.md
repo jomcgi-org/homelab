@@ -26,15 +26,15 @@ things you would only learn by breaking them.
 - **`ci` is the feedback loop, not PR CI.** Run it before pushing. The full
   remote `ci test` is opt-in at push time (`RUN_CI_TEST=1`): PR CI and the
   queue candidate both test every change after push.
-- **No em-dashes in anything you write**: site copy, CV content, docs, ADRs,
+- **No em-dashes in anything you write**: site copy, CV content, docs,
   commit messages, PR bodies, code comments. Use a comma, colon, parentheses, or
   split the sentence. Existing ones are grandfathered, so do not churn files to
   strip them.
 - **Conventional Commits**, enforced by a `commit-msg` hook.
-- **GitHub Issues are the source of truth for outstanding work**, not ADRs and
-  not committed plan files. `docs/plans/` is retired and a hook blocks writes
-  there. ADRs record the decision and its rationale; the issue records what is
-  left to do.
+- **GitHub Issues are the source of truth for outstanding work**, not committed
+  plan files. `docs/plans/` is retired and a hook blocks writes there. The
+  domain's `ARCHITECTURE.md` records the decision and its rationale; the issue
+  records what is left to do.
 
 ## Working style
 
@@ -292,15 +292,14 @@ Anything a worker must know goes in `AGENTS.md` or in the spec you hand it.
 | Operator changes | `projects/operators/best-practices.md` |
 | How a domain works today | `projects/<domain>/ARCHITECTURE.md` (embervm, monolith, mcp, platform). Source of truth for current state, and what to link to. Each section's `**Why.**` paragraph carries the decision rationale |
 | Build, CI, tooling: Bazel, BuildBuddy, the `ci` loop, images, formatters, hooks, Semgrep, OCaml | `bazel/ARCHITECTURE.md` |
-| Design proposals and decision rationale | `docs/decisions/` is being retired (#4667): the surviving files are shared or retained ADRs awaiting the final sweep. Never cite one as current state |
-| Rolling a domain's ADRs up into `ARCHITECTURE.md` | `docs/runbooks/rollup-architecture-docs.md` |
+| Recording a decision or a planned direction | the domain's ARCHITECTURE.md: a **Why.** paragraph under the section it changes and a Direction row with its issue; no ADRs (#4667) |
 
-**Skills** (`.claude/skills/`, auto-matched): `ship`, `adr`, `stpa`,
+**Skills** (`.claude/skills/`, auto-matched): `ship`, `stpa`,
 `codex-implement`, `pr-workflow`, `ci-triage`, `improve-buildbuddy-usage`,
 `qwen-queue`.
 
 **Agents** (`.claude/agents/`): `implementer` (Sol), `reviewer` (Opus),
-`adr-author` and `stpa-analyst` (Sonnet), `escalation` (Fable). Dispatch work to
+`stpa-analyst` (Sonnet), `escalation` (Fable). Dispatch work to
 these rather than doing it in the main loop: each gets its own context, and the
 three that must not write code have no `Write` or `Edit` tool.
 

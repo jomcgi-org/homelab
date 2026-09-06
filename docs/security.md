@@ -440,7 +440,7 @@ a convention this document asks for and nothing enforces.
 | Public chat grants | `chat_public_grants_test` | live in CI |
 | Public library image digests | `public_library_image_digest_guard_test` | live in CI |
 | Published doc content | `public_content.py` in the Format stage | live in CI, marker list only |
-| ADR link integrity | `bazel/tools/format/doc_links/check_doc_links.py` | live in CI |
+| Retired ADR path guard | `bazel/tools/format/doc_links/check_doc_links.py` | live in CI |
 | STPA security rows carry `status` and `issue` | the `stpa` skill | skill-side, at authoring time |
 | `public_reader` grant, migration size, chart and `targetRevision` sync, em-dashes | PreToolUse hooks in `.claude/settings.json`, `bazel/tools/hooks/` | agent-side only; a hand edit or a Codex worker bypasses them |
 | `kubectl` read-only | convention; the `no-kubectl-mutate` rule is inert | review-only |
@@ -502,17 +502,20 @@ red, which is why the list above states enforcement rather than intent.
 | Review-time static checks | `bazel/semgrep/rules/` (inert until #4777 closes) |
 | Findings register | `docs/THREAT-MODEL.md`, the `security-finding` label, `projects/*/stpa/security.json` |
 
-## ADR map
+## Decision history
 
-Rationale only; these ADRs record decisions, not current state. This
+The ADR files were removed on 2026-09-06 (#4667); `git log -- docs/decisions/`
+has the full text.
+
+Rationale only; these records describe decisions, not current state. This
 document carries what shipped.
 
 | ADR | Decision | Status today | Disposition |
 |-----|----------|--------------|-------------|
-| security/001 Hermetic Semgrep via Bazel | vendor `semgrep-core` as an OCI artifact and run rules as cached Bazel tests | Accepted; every target passes without scanning (#4777, #3893) | shared with tooling, left in place |
-| security/002 Semgrep rule generation via RL | RL-finetuned model generates rules from CVEs | Deprecated; nothing live | shared with tooling, left in place |
-| security/003 gVisor RuntimeClass | `runsc` for agent sandbox pods | Accepted, never built (#3894); the sandboxes it targeted became Firecracker guests | shared with platform, left in place |
-| security/004 Public read-only service isolation | separate public composition, `public_reader` on a replica, default-deny egress | Accepted; composition, role, replica and imports test shipped; egress policy inert on the hub (#3897, #5277); read-only rootfs open (#3898); tracking #3895 | shared with monolith, left in place |
-| security/005 Public chat adversarial hardening | Turnstile sessions, reserved headroom, server-side limits, DB-confined retrieval | Implemented except the purge (#3899); inference moved off-cluster | shared with monolith, left in place |
-| security/006 Friends authorization lane | `/moving` on `friends.jomcgi.dev` behind an authentik `family` group | Accepted, shipped (#4968) | shared with monolith and platform, left in place |
-| security/007 Aggregate threat model index | one ranked index over labelled issues, re-ranked by hand | Accepted; decisions 1, 2 and 4 live, decision 3 superseded by STPA lenses (#5294) | deleted in this PR |
+| security/001 Hermetic Semgrep via Bazel | vendor `semgrep-core` as an OCI artifact and run rules as cached Bazel tests | Accepted; every target passes without scanning (#4777, #3893) | deleted |
+| security/002 Semgrep rule generation via RL | RL-finetuned model generates rules from CVEs | Deprecated; nothing live | deleted |
+| security/003 gVisor RuntimeClass | `runsc` for agent sandbox pods | Accepted, never built (#3894); the sandboxes it targeted became Firecracker guests | deleted |
+| security/004 Public read-only service isolation | separate public composition, `public_reader` on a replica, default-deny egress | Accepted; composition, role, replica and imports test shipped; egress policy inert on the hub (#3897, #5277); read-only rootfs open (#3898); tracking #3895 | deleted |
+| security/005 Public chat adversarial hardening | Turnstile sessions, reserved headroom, server-side limits, DB-confined retrieval | Implemented except the purge (#3899); inference moved off-cluster | deleted |
+| security/006 Friends authorization lane | `/moving` on `friends.jomcgi.dev` behind an authentik `family` group | Accepted, shipped (#4968) | deleted |
+| security/007 Aggregate threat model index | one ranked index over labelled issues, re-ranked by hand | Accepted; decisions 1, 2 and 4 live, decision 3 superseded by STPA lenses (#5294) | deleted |

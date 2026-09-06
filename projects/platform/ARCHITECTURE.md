@@ -1,6 +1,6 @@
 # Platform Architecture
 
-The cluster infrastructure: the pieces every service depends on, plus the repo-level delivery machinery (chart publish, promotion, merge queue) that puts them there, across the two clusters that exist today. Current as of e18559df9 (2026-09-05). Unflagged claims are built and live; anything decided but not shipped says so and names its tracking issue. ADR references in the body are rationale pointers; the ADR map at the end says which ones still exist.
+The cluster infrastructure: the pieces every service depends on, plus the repo-level delivery machinery (chart publish, promotion, merge queue) that puts them there, across the two clusters that exist today. Current as of e18559df9 (2026-09-05). Unflagged claims are built and live; anything decided but not shipped says so and names its tracking issue. Historical ADR labels in the body point to the decision history at the end.
 
 ---
 
@@ -268,37 +268,40 @@ dependency and keeps its write credentials scoped through 1Password.
 
 ---
 
-## ADR map
+## Decision history
 
-Rationale only; these ADRs recorded decisions, not current state. This document carries what shipped. ADRs marked deleted were harvested into it under #4667; their history is in git.
+The ADR files were removed on 2026-09-06 (#4667); `git log -- docs/decisions/`
+has the full text.
+
+Rationale only; these records describe decisions, not current state. This document carries what shipped.
 
 | Decision | ADR | Status | Disposition |
 |---|---|---|---|
-| Obsidian vault migration into the monolith | platform/001 | Superseded by 006 | monolith's, left in place |
-| CDN-cached data fetching for public routes | platform/002 | Superseded by 003 | deleted in this PR |
-| CDN cache rule scoped to the public hostname | platform/003 | Implemented on the apex; Cloudflare-side only, #3876 | deleted in this PR |
-| Iceberg-on-SeaweedFS lakehouse | platform/004 | Superseded; decommissioned 2026-06-14 (PR #2596) | deleted in this PR |
-| Per-PR preview environments for the monolith | platform/005 | Draft, not built; #3882 | deleted in this PR |
-| Decommission Obsidian, Postgres as the body of record | platform/006 | Accepted, shipped | monolith's, left in place |
-| SeaweedFS bucket provisioning via COSI | platform/007 | Accepted, never deployed; the store it targeted was replaced by R2 and GCS (#3888) | deleted in this PR |
-| Monolith module boundaries | platform/008 | Accepted | monolith's, left in place |
-| Post-merge chart versioning and Kargo promotion | platform/009 | Decisions 1 and 2 shipped as specified; decision 3 shipped as `argocd-update` on the live Application, prod-only on the hub; decision 4 superseded; no verification gate, #4745 | deleted in this PR |
-| Memory oversubscription via Burstable QoS and PriorityClass | platform/010 | Accepted, shipped; a third class added 2026-09-01 | deleted in this PR |
-| Idempotent chart publish with missed-bump detection | platform/011 | Accepted, shipped | deleted in this PR |
-| Cilium replaces Linkerd | platform/012 | Shipped at home; the hub runs GKE's managed Cilium instead | deleted in this PR |
-| Design system contract with distinct themes | platform/013 | Accepted, shipped in part; contract tokens exist, primitives and `/design` open at #4449; `.impeccable.md` is canonical for themes | left in place, deleted after #5170 |
-| Stateless merge-queue reconciler | platform/014 | Accepted, never built; native GitHub queue instead, #4915 closed | deleted in this PR |
-| Remove SigNoz, opt-in OTel collector to Honeycomb | platform/015 | Accepted, shipped on both clusters | deleted in this PR |
-| GKE hub runs two node pools | platform/016 | Accepted, shipped; live pools match | deleted in this PR |
-| Cloudflare tunnel plus Envoy Gateway | networking/001 | Implemented | deleted in this PR |
-| Path-based ingress tiers with automatic DNS | networking/002 | Implemented; two tiers live | deleted in this PR |
-| Incremental Cilium capability adoption | networking/003 | Partly shipped at home, moot on the hub; #3873, #3824, #3875 | deleted in this PR |
-| Monorepo structure and dotfile housekeeping | repo/001 | Accepted, shipped in both phases | deleted in this PR |
-| Static docs site (VitePress on Cloudflare Pages) | docs/001 | Superseded by docs/002 | deleted in this PR |
-| Retire standalone frontends, docs into the monolith | docs/002 | Accepted, shipped; docs render at `jomcgi.dev/docs` | deleted in this PR |
-| gVisor RuntimeClass for agent sandboxes | security/003 | Accepted, never deployed; EmberVM microVMs took the role; #3894 | deleted in this PR |
-| Moving app on `friends.jomcgi.dev` as a second authorization lane | security/006 | Accepted, shipped; route and policy live on the hub | shared with monolith, left in place |
-| SPIFFE workload identity on self-hosted SPIRE | embervm/041 | Accepted; phase 1 and phase 2 issuance live on the hub, consumers pending #5759 | shared with embervm, left in place |
+| Obsidian vault migration into the monolith | platform/001 | Superseded by 006 | deleted |
+| CDN-cached data fetching for public routes | platform/002 | Superseded by 003 | deleted |
+| CDN cache rule scoped to the public hostname | platform/003 | Implemented on the apex; Cloudflare-side only, #3876 | deleted |
+| Iceberg-on-SeaweedFS lakehouse | platform/004 | Superseded; decommissioned 2026-06-14 (PR #2596) | deleted |
+| Per-PR preview environments for the monolith | platform/005 | Draft, not built; #3882 | deleted |
+| Decommission Obsidian, Postgres as the body of record | platform/006 | Accepted, shipped | deleted |
+| SeaweedFS bucket provisioning via COSI | platform/007 | Accepted, never deployed; the store it targeted was replaced by R2 and GCS (#3888) | deleted |
+| Monolith module boundaries | platform/008 | Accepted | deleted |
+| Post-merge chart versioning and Kargo promotion | platform/009 | Decisions 1 and 2 shipped as specified; decision 3 shipped as `argocd-update` on the live Application, prod-only on the hub; decision 4 superseded; no verification gate, #4745 | deleted |
+| Memory oversubscription via Burstable QoS and PriorityClass | platform/010 | Accepted, shipped; a third class added 2026-09-01 | deleted |
+| Idempotent chart publish with missed-bump detection | platform/011 | Accepted, shipped | deleted |
+| Cilium replaces Linkerd | platform/012 | Shipped at home; the hub runs GKE's managed Cilium instead | deleted |
+| Design system contract with distinct themes | platform/013 | Accepted, shipped in part; contract tokens exist, primitives and `/design` open at #4449; `.impeccable.md` is canonical for themes; deletion tracked by #5170 | deleted |
+| Stateless merge-queue reconciler | platform/014 | Accepted, never built; native GitHub queue instead, #4915 closed | deleted |
+| Remove SigNoz, opt-in OTel collector to Honeycomb | platform/015 | Accepted, shipped on both clusters | deleted |
+| GKE hub runs two node pools | platform/016 | Accepted, shipped; live pools match | deleted |
+| Cloudflare tunnel plus Envoy Gateway | networking/001 | Implemented | deleted |
+| Path-based ingress tiers with automatic DNS | networking/002 | Implemented; two tiers live | deleted |
+| Incremental Cilium capability adoption | networking/003 | Partly shipped at home, moot on the hub; #3873, #3824, #3875 | deleted |
+| Monorepo structure and dotfile housekeeping | repo/001 | Accepted, shipped in both phases | deleted |
+| Static docs site (VitePress on Cloudflare Pages) | docs/001 | Superseded by docs/002 | deleted |
+| Retire standalone frontends, docs into the monolith | docs/002 | Accepted, shipped; docs render at `jomcgi.dev/docs` | deleted |
+| gVisor RuntimeClass for agent sandboxes | security/003 | Accepted, never deployed; EmberVM microVMs took the role; #3894 | deleted |
+| Moving app on `friends.jomcgi.dev` as a second authorization lane | security/006 | Accepted, shipped; route and policy live on the hub | deleted |
+| SPIFFE workload identity on self-hosted SPIRE | embervm/041 | Accepted; phase 1 and phase 2 issuance live on the hub, consumers pending #5759 | deleted |
 
 ---
 

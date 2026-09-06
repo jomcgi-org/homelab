@@ -1,27 +1,12 @@
-"""Guard references to ADR paths against the real tree.
+"""Reject references to the retired ADR tree.
 
-Under the rollup programme (#4667) an ADR is deleted once its domain's
-``ARCHITECTURE.md`` carries the current state. Deletion is therefore routine,
-and the thing that makes it safe is knowing nothing still points at the file.
-Two populations point at ADRs:
+ADR files were removed on 2026-09-06 under #4667. Decision rationale now lives
+in each domain's ``ARCHITECTURE.md``. This checker guards that references to a
+retired decision-tree path do not reappear, while preserving explicit
+exemptions for frozen fixtures and applied migrations.
 
-  1. **Other ADRs.** They cross-link heavily (747 links across 141 files at the
-     time of writing), so deleting one silently rots its neighbours.
-  2. **Code, BUILD files, values files and pages.** Nine live references, plus
-     one published page that deep-links an ADR.
-
-Neither is checked by anything today, so this closes that.
-
-Why a working-tree check and not a git-history lookup: BuildBuddy clones with
-``--depth=1``, so anything resolving a deleted file through history reads the
-graft boundary rather than the file, and reports a confident wrong answer. The
-only reliable question is "does this path exist in the tree I am holding".
-
-Why ``git ls-files`` and not a filesystem walk: the sibling
-``check_readme_structure.py`` walks the filesystem and consequently fails on
-untracked build artifacts locally while passing in CI, which clones from git.
-The doc-manifest generators already made this choice and documented it. This
-follows them.
+``git ls-files`` keeps the scanned population deterministic and excludes local
+build artifacts.
 
 Invoked two ways, mirroring ``bazel/tools/format/readme_structure/``:
 
@@ -38,17 +23,18 @@ import re
 import subprocess
 import sys
 
-# A reference to a numbered ADR by full repo path:
-# docs/decisions/<category>/<NNN>-<slug>.md
-_ADR_REF_RE = re.compile(r"docs/decisions/[a-z0-9_]+/\d{3}-[a-z0-9-]+\.md")
+_DECISIONS_PREFIX = "docs/" + "decisions/"
+
+# A reference to a numbered ADR by full repo path.
+_ADR_REF_RE = re.compile(
+    re.escape(_DECISIONS_PREFIX) + r"[a-z0-9_]+/\d{3}-[a-z0-9-]+\.md"
+)
 
 # A markdown link to a relative .md path, e.g. [003](003-context-forge.md) or
 # [020](../agents/020-deprecate.md). ADRs cite each other this way rather than
 # by full repo path, and that is the population that actually breaks on
 # deletion, so full-path matching alone would miss most of it.
 _REL_MD_LINK_RE = re.compile(r"\]\(([^)\s#]+\.md)(?:#[^)]*)?\)")
-
-_DECISIONS_PREFIX = "docs/decisions/"
 
 # A fenced code block. Links inside one are illustrations, not references:
 # the (since harvested) static-docs-site ADR demonstrated link rewriting with
@@ -88,20 +74,18 @@ _TEST_FILE_SUFFIXES: tuple[str, ...] = (
 # than as a link. Keep this list short and commented: an entry here is a claim
 # that the path is an example, not a reference.
 #
-# The model-bench research task pins a docs/decisions snapshot at a fixed
+# The model-bench research task pins a historical decision snapshot at a fixed
 # commit and asks the agent to name the ADR file in that snapshot, so its
 # expected answer is a path in history, not a reference to the working tree.
 #
-# The knowledge extraction fixture carries evidence paths as atoms' provenance
-# strings; they describe what an agent cited at the time, not a live link.
 _EXAMPLE_ALLOWLIST: frozenset[str] = frozenset(
     {
-        "projects/model-bench/tasks/research-adr-writeback-01/task.yaml",
-        # Frozen knowledge-gate calibration fixture: an atom's evidence text
-        # quotes the ADR path it was extracted from. Rewriting the evidence
-        # would change what the calibration test grades, and the ADR it names
-        # was harvested into projects/embervm/ARCHITECTURE.md.
+        # Frozen knowledge-gate calibration fixtures: an atom's evidence text
+        # quotes the ADR path it was extracted from, and rewriting the evidence
+        # would change what the calibration test grades.
         "projects/monolith/knowledge/testdata/atoms-all.tsv",
+        "projects/monolith/knowledge/testdata/atoms-graded.tsv",
+        "projects/model-bench/tasks/research-adr-writeback-01/task.yaml",
     }
 )
 
@@ -169,7 +153,7 @@ def find_refs(text: str) -> list[str]:
 def find_relative_links(rel_path: str, text: str) -> list[str]:
     """Repo-relative targets of markdown links inside a doc, resolved from its dir.
 
-    Only applied to files under ``docs/decisions/``: elsewhere a relative .md
+    Only applied to files under the retired decision tree: elsewhere a relative .md
     link is not an ADR reference and is out of scope for this guard.
     """
     if not rel_path.startswith(_DECISIONS_PREFIX):
@@ -190,21 +174,19 @@ def find_relative_links(rel_path: str, text: str) -> list[str]:
     return list(seen)
 
 
-def check_file(rel_path: str, text: str, exists) -> list[str]:
-    """Violation lines for one file. ``exists`` maps a repo-relative path to bool."""
+def check_file(rel_path: str, text: str) -> list[str]:
+    """Violation lines for one file."""
     if not should_scan(rel_path):
         return []
     violations = [
-        f"{rel_path}: references a missing ADR: {ref} "
-        f"(deleted by a rollup? point at the domain's ARCHITECTURE.md instead)"
+        f"{rel_path}: references the retired ADR path: {ref} "
+        f"(point at the domain's ARCHITECTURE.md instead)"
         for ref in find_refs(text)
-        if not exists(ref)
     ]
     violations.extend(
-        f"{rel_path}: links to a missing doc: {ref} "
-        f"(an ADR this one cites was deleted; drop or repoint the link)"
+        f"{rel_path}: links within the retired ADR tree: {ref} "
+        f"(drop or repoint the link)"
         for ref in find_relative_links(rel_path, text)
-        if not exists(ref)
     )
     return violations
 
@@ -224,9 +206,6 @@ def tracked_files(repo_root: pathlib.Path) -> list[str]:
 def check(repo_root: pathlib.Path) -> list[str]:
     """Return human-readable violation lines; empty means every reference resolves."""
 
-    def exists(ref: str) -> bool:
-        return (repo_root / ref).is_file()
-
     violations: list[str] = []
     for rel_path in tracked_files(repo_root):
         if not should_scan(rel_path):
@@ -235,7 +214,7 @@ def check(repo_root: pathlib.Path) -> list[str]:
             text = (repo_root / rel_path).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        violations.extend(check_file(rel_path, text, exists))
+        violations.extend(check_file(rel_path, text))
     return violations
 
 

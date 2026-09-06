@@ -133,9 +133,8 @@ success on a subset.
 ## Issues
 
 Outstanding work lives in GitHub Issues, never in a committed plan file. Title
-them `<area>: <summary>`, label `agent-ready` when autonomously pickable, and
-append `, ADR <cat>/<NNN>` when the work came out of an ADR. Closing the issue is
-how "shipped" is recorded.
+them `<area>: <summary>` and label `agent-ready` when autonomously pickable.
+Closing the issue is how "shipped" is recorded.
 
 Multi-part work gets a parent tracking issue with sub-issues:
 

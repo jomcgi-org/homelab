@@ -11,7 +11,7 @@ Personal monorepo. Dev tooling and deployment for my projects.
 - [**Discord bot**](projects/monolith/chat/): LLM-powered chat with vision, web search, knowledge graph context, and a per-user trust ledger ([monolith architecture, section 5](projects/monolith/ARCHITECTURE.md)).
 - [**OCI Model Cache**](projects/operators/oci-model-cache/): Kubernetes operator that syncs ML models from HuggingFace to OCI registries. Compiler-enforced state machines.
 - [**Sextant**](projects/sextant/): code generator that turns YAML state-machine specs into type-safe Go for operators. Invalid transitions are compile errors, idempotency keys are forced into transition signatures. Generates the OCI Model Cache machine, drift-checked in CI.
-- [**Design system**](projects/design-system/): the shared `--ds-*` token contract the frontends build against. One namespaced vocabulary, three deliberately distinct themes (neobrutalist, ember, Grimoire) that override it inside their own scope class. Rationale in [ADR platform/013](docs/decisions/platform/013-design-system-contract-distinct-themes.md).
+- [**Design system**](projects/design-system/): the shared `--ds-*` token contract the frontends build against. One namespaced vocabulary, three deliberately distinct themes (neobrutalist, ember, Grimoire) that override it inside their own scope class. Rationale in [the platform architecture](projects/platform/ARCHITECTURE.md#decision-history).
 - [**Build system**](bazel/): custom Bazel rules for Helm, Semgrep SAST, and Cloudflare Pages. All builds run remotely via BuildBuddy RBE.
 - [**Buck2 rules**](buck2/): reusable Buck2 rules for container images (apko/OCI) and Helm charts, the Buck2 counterparts to the Bazel rules, consumable by other Buck2 projects as an external cell.
 
@@ -69,14 +69,14 @@ projects/             # All services, operators, websites, colocated with deploy
 └── platform-gke/     #   GKE cluster-critical infrastructure overlays (Tailscale, ArgoCD, Otel, Cloudflare)
 bazel/                # Build infrastructure (rules, tools, images, semgrep)
 buck2/                # Reusable Buck2 image/helm/apko rules (consumable as a cell)
-docs/                 # Design docs, ADRs, and plans
+docs/                 # Cross-domain documentation and runbooks
 ```
 
-See [docs/contributing.md](docs/contributing.md) for the full structure. Architecture decisions are tracked in [docs/decisions/](docs/decisions/).
+See [docs/contributing.md](docs/contributing.md) for the full structure. Each domain's `ARCHITECTURE.md` records its current state, decided direction, and decision history.
 
 ## What's next
 
-Active initiatives and their rationale are tracked as ADRs: [docs/decisions/](docs/decisions/)
+Active initiatives are tracked in GitHub Issues. Decision rationale lives in each domain's `ARCHITECTURE.md`.
 
 ---
 
