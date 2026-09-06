@@ -302,13 +302,6 @@ spec:
               value: {{ .Values.chat.changelogs | toJson | quote }}
             {{- end }}
             {{- end }}
-            {{- if .Values.gardener.enabled }}
-            - name: CLAUDE_CODE_OAUTH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "monolith.fullname" . }}-gardener
-                  key: CLAUDE_AUTH_TOKEN
-            {{- end }}
             {{- if .Values.semgrep.onepassword.itemPath }}
             # Semgrep AppSec Platform token for the Route B CI-reporting relay
             # (semgrep_scan/report.py). The 1Password item's SEMGREP_API_TOKEN
@@ -427,10 +420,6 @@ spec:
               value: {{ .Values.knowledge.feeds.repoDiff.enabled | quote }}
             - name: KG_DOCFIX_REVIEW_ENABLED
               value: {{ .Values.knowledge.feeds.docFixReview.enabled | quote }}
-            {{- if .Values.knowledge.gaps.rewriteDiscardable }}
-            - name: KNOWLEDGE_GAPS_REWRITE_DISCARDABLE
-              value: "1"
-            {{- end }}
             - name: KNOWLEDGE_LAYOUT_SCALING_RATIO
               value: {{ .Values.knowledge.layout.scalingRatio | quote }}
             - name: KNOWLEDGE_LAYOUT_GRAVITY

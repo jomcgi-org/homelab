@@ -1090,12 +1090,6 @@ knowledge:
     docFixReview:
       # Demand-driven only. There is no schedule, so an idle queue costs nothing.
       enabled: false
-  gaps:
-    # When true, the gardener rewrites [[X]] -> bare text in source notes
-    # whose stub is marked `triaged: discardable`, then tombstones the gap
-    # row + stub once no references remain. Off by default — opt-in per
-    # cluster.
-    rewriteDiscardable: false
   layout:
     scalingRatio: 2.0
     gravity: 0.1
@@ -1310,15 +1304,6 @@ swarm:
   # Concurrent Codex dispatches. Three concurrent dispatches have been killed
   # before, so this stays at 2 until there is evidence it can go higher.
   codexConcurrency: 2
-
-# Knowledge gardener: LLM-driven decomposition of raw vault notes into
-# typed knowledge artifacts via the claude Code CLI. Uses CLAUDE_CODE_OAUTH_TOKEN
-# from the litellm-claude-auth 1Password item (same token as goose agents).
-# Disabled by default for portability.
-gardener:
-  enabled: false
-  onepassword:
-    itemPath: ""
 
 # Grimoire: D&D campaign manager ingest pipeline (private tier only; spec
 # the grimoire pg-first design). Two daily scheduled jobs
