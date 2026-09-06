@@ -27,7 +27,17 @@ CHART="$3"
 NAMESPACE="$4"
 shift 4
 
-source "$(dirname "${BASH_SOURCE[0]}")/semgrep-common.sh"
+# rules_shell places a renamed wrapper in the consuming target's package.
+# Shared support stays at its declared runfiles path, not beside that copy.
+SEMGREP_SUPPORT="$(dirname "${BASH_SOURCE[0]}")/semgrep-common.sh"
+if [[ ! -f "$SEMGREP_SUPPORT" ]]; then
+	SEMGREP_SUPPORT="${RUNFILES_DIR:-${TEST_SRCDIR:-.}}/${TEST_WORKSPACE:-_main}/bazel/semgrep/defs/semgrep-common.sh"
+fi
+if [[ ! -f "$SEMGREP_SUPPORT" ]]; then
+	echo "INFRASTRUCTURE: semgrep wrapper support not found in runfiles" >&2
+	exit 2
+fi
+source "$SEMGREP_SUPPORT"
 semgrep_setup
 
 # Parse exclude items: filename-based exclusion (EXCLUDE_LIST) and

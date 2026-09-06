@@ -22,6 +22,38 @@ def nonempty_string(value):
     return isinstance(value, str) and bool(value.strip())
 
 
+def validate_position(position, context):
+    require(isinstance(position, dict), f"missing or invalid {context}")
+    for field in ("line", "col") + (("offset",) if "offset" in position else ()):
+        value = position.get(field)
+        require(
+            type(value) is int and value >= (-1 if field == "offset" else 1),
+            f"invalid {context}.{field}",
+        )
+
+
+def validate_metavars(metavars):
+    require(isinstance(metavars, dict), "invalid result extra.metavars")
+    for value in metavars.values():
+        require(isinstance(value, dict), "invalid metavar value")
+        for key in ("start", "end"):
+            validate_position(value.get(key), f"metavar {key}")
+        require(
+            isinstance(value.get("abstract_content"), str),
+            "invalid metavar abstract_content",
+        )
+        if "propagated_value" in value:
+            propagated = value["propagated_value"]
+            require(isinstance(propagated, dict), "invalid metavar propagated_value")
+            require(
+                isinstance(propagated.get("svalue_abstract_content"), str),
+                "invalid metavar svalue_abstract_content",
+            )
+            for key in ("svalue_start", "svalue_end"):
+                if key in propagated:
+                    validate_position(propagated[key], f"metavar {key}")
+
+
 def read_output(path):
     with path.open() as stream:
         data = json.load(stream)
@@ -42,23 +74,12 @@ def read_output(path):
         for key in ("check_id", "path"):
             require(nonempty_string(match.get(key)), f"missing or invalid result {key}")
         for key in ("start", "end"):
-            position = match.get(key)
-            require(isinstance(position, dict), f"missing or invalid result {key}")
-            for field in ("line", "col") + (
-                ("offset",) if "offset" in position else ()
-            ):
-                value = position.get(field)
-                require(
-                    type(value) is int and value >= (-1 if field == "offset" else 1),
-                    f"invalid result {key}.{field}",
-                )
+            validate_position(match.get(key), f"result {key}")
         extra = match.get("extra")
         require(isinstance(extra, dict), "missing or invalid result extra")
         if "message" in extra:
             require(isinstance(extra["message"], str), "invalid result extra.message")
-        require(
-            isinstance(extra.get("metavars"), dict), "invalid result extra.metavars"
-        )
+        validate_metavars(extra.get("metavars"))
         require(
             type(extra.get("is_ignored")) is bool, "invalid result extra.is_ignored"
         )

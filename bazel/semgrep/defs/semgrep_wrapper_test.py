@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 
 import pytest
@@ -87,6 +88,9 @@ def run_wrapper(
     source="input.py",
     lockfile=None,
     helm="render",
+    copied_wrapper=False,
+    missing_support=False,
+    runfiles_env="RUNFILES_DIR",
 ):
     runfiles = tmp_path / "runfiles"
     for kind, name in (("oss", "semgrep-core"), ("pro", "semgrep-core-proprietary")):
@@ -109,7 +113,7 @@ def run_wrapper(
     test_tmp.mkdir()
     env = {
         "PATH": os.path.dirname(sys.executable) + os.pathsep + os.defpath,
-        "RUNFILES_DIR": str(runfiles),
+        runfiles_env: str(runfiles),
         "TEST_TMPDIR": str(test_tmp),
         "SEMGREP_APP_TOKEN": "fake-engine-offline-test",
         "SEMGREP_URL": "http://127.0.0.1:0",
@@ -135,8 +139,19 @@ def run_wrapper(
         fake_helm.chmod(0o755)
         args = [str(fake_helm), "fixture", ".", "default", *rules, "--"]
         script = "semgrep-manifest-test.sh"
+    executable = WRAPPERS / script
+    if copied_wrapper:
+        # Model rules_shell's renamed copy in a different consumer package.
+        executable = runfiles / "_main/consumer_package/scanner_test"
+        executable.parent.mkdir(parents=True)
+        shutil.copyfile(WRAPPERS / script, executable)
+        if not missing_support:
+            support = runfiles / "_main/bazel/semgrep/defs"
+            support.mkdir(parents=True)
+            for filename in ("semgrep-common.sh", "semgrep-output.py"):
+                shutil.copyfile(WRAPPERS / filename, support / filename)
     result = subprocess.run(
-        ["bash", str(WRAPPERS / script), *args],
+        ["bash", str(executable), *args],
         cwd=tmp_path,
         env=env,
         text=True,
@@ -408,3 +423,80 @@ def test_lockfile_version_filter_only_changes_valid_findings(
     merged = json.loads((tmp_path / "test-tmp" / "results.json").read_text())
     assert len(merged["results"]) == expected_exit
     assert merged["paths"]["scanned"] == ["requirements.txt"]
+
+
+@pytest.mark.parametrize("runfiles_env", ["RUNFILES_DIR", "TEST_SRCDIR"])
+def test_copied_wrapper_resolves_declared_runfiles_support(
+    tmp_path, wrapper, runfiles_env
+):
+    result = run_wrapper(
+        tmp_path, wrapper, copied_wrapper=True, runfiles_env=runfiles_env
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "SCANNED: 1 distinct engine-confirmed path(s)" in result.stdout
+
+
+def test_copied_wrapper_missing_support_fails_as_infrastructure(tmp_path, wrapper):
+    result = run_wrapper(tmp_path, wrapper, copied_wrapper=True, missing_support=True)
+    assert_infrastructure(result)
+    assert "wrapper support not found in runfiles" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "metavar",
+    [
+        None,
+        {},
+        {"start": {"line": 2, "col": 1}, "end": {"line": 2, "col": 1}},
+        {"start": None, "end": {"line": 2, "col": 1}, "abstract_content": ""},
+        {
+            "start": {"line": True, "col": 1},
+            "end": {"line": 2, "col": 1},
+            "abstract_content": "",
+        },
+        {
+            "start": {"line": 2, "col": 1},
+            "end": {"line": 2, "col": 1},
+            "abstract_content": None,
+        },
+        {
+            "start": {"line": 2, "col": 1},
+            "end": {"line": 2, "col": 1},
+            "abstract_content": "",
+            "propagated_value": {},
+        },
+    ],
+)
+def test_invalid_metavar_cannot_be_excluded_to_pass(tmp_path, wrapper, metavar):
+    data = output(finding=True)
+    data["results"][0]["extra"]["metavars"] = {"$X": metavar}
+    result = run_wrapper(
+        tmp_path,
+        wrapper,
+        [{"output": data}],
+        copied_wrapper=True,
+        env_extra={"SEMGREP_EXCLUDE_RULES": "finding"},
+    )
+    assert_infrastructure(result)
+    assert "metavar" in result.stderr
+
+
+def test_valid_empty_metavar_and_propagated_value_can_be_excluded(tmp_path, wrapper):
+    data = output(finding=True)
+    data["results"][0]["extra"]["metavars"] = {
+        "$...ARGS": {
+            "start": {"line": 2, "col": 1},
+            "end": {"line": 2, "col": 1},
+            "abstract_content": "",
+            "propagated_value": {"svalue_abstract_content": ""},
+        }
+    }
+    result = run_wrapper(
+        tmp_path,
+        wrapper,
+        [{"output": data}],
+        copied_wrapper=True,
+        env_extra={"SEMGREP_EXCLUDE_RULES": "finding"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "EXCLUDED: 1 finding(s)" in result.stdout

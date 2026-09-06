@@ -13,7 +13,7 @@ semgrep_error() {
 
 semgrep_setup() {
 	local search_root core pro dependency probe version status
-	search_root="${RUNFILES_DIR:-.}"
+	search_root="${RUNFILES_DIR:-${TEST_SRCDIR:-.}}"
 	core=$(find "$search_root" -name semgrep-core \( -type f -o -type l \) -print -quit)
 	pro=$(find "$search_root" -name semgrep-core-proprietary \( -type f -o -type l \) -print -quit)
 	[[ -n "$core" && -n "$pro" ]] || semgrep_error "both OSS and Pro engines are required in runfiles"

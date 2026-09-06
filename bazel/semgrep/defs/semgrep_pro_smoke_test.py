@@ -24,6 +24,7 @@ def test_real_pro_wrapper_control(tmp_path, kind, positive):
     env = {
         "PATH": os.path.dirname(sys.executable) + os.pathsep + os.defpath,
         "RUNFILES_DIR": str(runfiles),
+        "TEST_WORKSPACE": os.environ["TEST_WORKSPACE"],
         "TEST_TMPDIR": str(test_tmp),
         "SEMGREP_APP_TOKEN": "semgrep-wrapper-offline-smoke",
         "SEMGREP_URL": "http://127.0.0.1:0",
@@ -65,8 +66,13 @@ def test_real_pro_wrapper_control(tmp_path, kind, positive):
         expected_line = (
             11  # Helm's document separator and source comment add two lines.
         )
+    # Bazel sh_test copies/renames the script into the consuming package. Run
+    # the real Pro controls from that layout, with support only in runfiles.
+    copied_wrapper = work / "consumer_package/scanner_test"
+    copied_wrapper.parent.mkdir()
+    shutil.copyfile(wrappers / script, copied_wrapper)
     result = subprocess.run(
-        ["bash", str(wrappers / script), *args],
+        ["bash", str(copied_wrapper), *args],
         cwd=work,
         env=env,
         text=True,
