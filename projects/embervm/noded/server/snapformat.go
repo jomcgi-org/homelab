@@ -162,6 +162,38 @@ func (s *Server) supportedSnapshotFormat() *snapVersion {
 // refusal reason destined for the base entry's buildErr.
 func (s *Server) snapshotFormatRefusal(snapfile string) string {
 	bin := s.supportedSnapshotFormat()
+	return s.snapshotFormatRefusalFor(snapfile, bin)
+}
+
+// Discovery never waits behind another supported-version probe. Deferring one
+// candidate preserves its bounded maintenance budget without interpreting a busy
+// probe as the legacy unknown-version compatibility allowance.
+func (s *Server) discoveryFormatRefusal(ctx context.Context, snapfile string) string {
+	if err := ctx.Err(); err != nil {
+		return err.Error()
+	}
+	if !s.fcVerMu.TryLock() {
+		return "snapshot format probe busy"
+	}
+	bin := s.fcSupportedVer
+	if bin == nil {
+		if version, err := s.fcSupportedVersionFn(s.cfg.BinPath); err == nil {
+			s.fcSupportedVer = &version
+			bin = s.fcSupportedVer
+		}
+	}
+	s.fcVerMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err.Error()
+	}
+	refusal := s.snapshotFormatRefusalFor(snapfile, bin)
+	if err := ctx.Err(); err != nil {
+		return err.Error()
+	}
+	return refusal
+}
+
+func (s *Server) snapshotFormatRefusalFor(snapfile string, bin *snapVersion) string {
 	if bin == nil {
 		// Fail open: without knowing our own binary's format support we cannot
 		// judge the file, and absent information never invalidates a base.

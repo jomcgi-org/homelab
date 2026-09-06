@@ -413,6 +413,8 @@ type baseEntry struct {
 type baseRegistry struct {
 	mu    sync.Mutex
 	bases map[string]*baseEntry
+	// epoch fences slow additive discovery against any inventory reset/replacement.
+	epoch uint64
 }
 
 func newBaseRegistry() *baseRegistry {
@@ -424,6 +426,7 @@ func newBaseRegistry() *baseRegistry {
 // can never survive into the new generation.
 func (b *baseRegistry) reset() {
 	b.mu.Lock()
+	b.epoch++
 	b.bases = make(map[string]*baseEntry)
 	b.mu.Unlock()
 }
@@ -438,8 +441,31 @@ func (b *baseRegistry) replace(entries []baseEntry) {
 		bases[e.snapshotRef] = &entry
 	}
 	b.mu.Lock()
+	b.epoch++
 	b.bases = bases
 	b.mu.Unlock()
+}
+
+func (b *baseRegistry) discoveryEpoch() uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.epoch
+}
+
+// discover inserts a validated disk entry only if neither a lifecycle write nor
+// a generation reset won while the caller was inspecting its files.
+func (b *baseRegistry) discover(e baseEntry, epoch uint64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.epoch != epoch {
+		return false
+	}
+	if _, exists := b.bases[e.snapshotRef]; exists {
+		return false
+	}
+	entry := e
+	b.bases[e.snapshotRef] = &entry
+	return true
 }
 
 // get returns a copy of the base entry for a snapshot_ref.
