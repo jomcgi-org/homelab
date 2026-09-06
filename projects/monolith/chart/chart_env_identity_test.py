@@ -976,3 +976,372 @@ def test_cnpg_yaml_looking_secret_names_remain_exact_strings(tmp_path, key, secr
     ]["name"]
     assert isinstance(actual_name, str)
     assert actual_name == secret
+
+
+# Shared S3 configuration gate (recovery isolation slice).
+#
+# sharedS3.enabled defaults true and preserves every projection below. False
+# omits the chart-owned R2 OnePasswordItem producer and all shared S3 consumer
+# references in the backend and in job containers. False deletes nothing,
+# revokes nothing, and stops nothing: it only stops this chart from
+# provisioning or injecting the shared configuration. Unrelated jobs keep
+# their schedules and must be disarmed separately with jobs.image "".
+#
+# Two chart-owned blocks are known defects and stay untouched here: the
+# grimoire job credential block repeats secretKeyRef and names no Secret, and
+# the .s3 job block hardcodes its Secret name. The tests below pin only env
+# names, values, and credential keys around those blocks, never their
+# validity, and the custom-release case keeps jobs disarmed.
+
+_DEFAULT_S3_ENDPOINT = (
+    "https://7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com"
+)
+_DEFAULT_S3_REGION = "auto"
+_DEFAULT_ITEM_PATH = "vaults/k8s-homelab/items/r2-s3-credentials"
+
+_SHARED_ENV = [
+    "SEAWEEDFS_S3_ENDPOINT",
+    "AWS_REGION",
+    "S3_ACCESS_KEY_ID",
+    "S3_SECRET_ACCESS_KEY",
+]
+_S3_JOB_ENV = _SHARED_ENV + [
+    "STARS_GRID_S3_BUCKET",
+    "STARS_GRID_S3_KEY",
+    "STARS_CLIMATOLOGY_S3_KEY",
+    "STARS_SITES_S3_KEY",
+    "STARS_MAP_S3_KEY",
+    "STARS_HISTORY_MAP_S3_KEY",
+]
+_BACKEND_SHARED_ENV = _SHARED_ENV + [
+    "STARS_GRID_S3_BUCKET",
+    "STARS_GRID_S3_KEY",
+    "STARS_CLIMATOLOGY_S3_KEY",
+    "CHAT_BLOB_S3_BUCKET",
+    "ARTIFACTS_S3_BUCKET",
+    "ARTIFACT_PUBLIC_BASE",
+]
+_GRIMOIRE_OWN_ENV = [
+    "EMBEDDING_URL",
+    "EMBED_BATCH_READ_TIMEOUT",
+    "EMBED_RETRY_TIMEOUT",
+    "GRIMOIRE_EXTRACT_API_KEY",
+    "GRIMOIRE_S3_BUCKET",
+    "GRIMOIRE_EXTRACT_MODEL",
+]
+_SHARED_CREDENTIAL_KEYS = {"access-key-id", "secret-access-key"}
+
+
+def _write_values(tmp_path, name, data):
+    path = tmp_path / name
+    path.write_text(yaml.safe_dump(data))
+    return path
+
+
+def _deployment_backend_env(rendered):
+    for doc in yaml.safe_load_all(rendered):
+        if isinstance(doc, dict) and doc.get("kind") == "Deployment":
+            containers = doc["spec"]["template"]["spec"]["containers"]
+            return next(c for c in containers if c["name"] == "backend").get("env", [])
+    raise AssertionError("no Deployment rendered; cannot assess shared S3 env")
+
+
+def _cron_containers(rendered):
+    out = []
+    for doc in yaml.safe_load_all(rendered):
+        if isinstance(doc, dict) and doc.get("kind") == "CronWorkflow":
+            container = doc["spec"]["workflowSpec"]["templates"][0]["container"]
+            out.append((doc["metadata"]["name"], container.get("env", [])))
+    return out
+
+
+def _cron_docs(rendered):
+    return {
+        doc["metadata"]["name"]: doc
+        for doc in yaml.safe_load_all(rendered)
+        if isinstance(doc, dict) and doc.get("kind") == "CronWorkflow"
+    }
+
+
+def _r2_producers(rendered):
+    return [
+        doc
+        for doc in yaml.safe_load_all(rendered)
+        if isinstance(doc, dict)
+        and doc.get("kind") == "OnePasswordItem"
+        and doc.get("metadata", {}).get("name", "").endswith("-r2-s3")
+    ]
+
+
+def _secret_keys(env):
+    keys = set()
+    for item in env:
+        ref = (item.get("valueFrom") or {}).get("secretKeyRef") or {}
+        if ref.get("key"):
+            keys.add(ref["key"])
+    return keys
+
+
+def _env_by_name(env):
+    out = {}
+    for item in env:
+        out.setdefault(item["name"], item)
+    return out
+
+
+def _shared_s3_projection(rendered):
+    jobs = sorted(_cron_containers(rendered), key=lambda pair: pair[0])
+    return (_r2_producers(rendered), _deployment_backend_env(rendered), jobs)
+
+
+def test_shared_s3_default_preserves_complete_projection():
+    rendered = _render("recovery", [])
+    producers = _r2_producers(rendered)
+    assert len(producers) == 1, "default gate must emit exactly one R2 producer"
+    assert producers[0]["spec"]["itemPath"] == _DEFAULT_ITEM_PATH
+    env = _deployment_backend_env(rendered)
+    by_name = _env_by_name(env)
+    names = [item["name"] for item in env]
+    assert [n for n in names if n in set(_BACKEND_SHARED_ENV)] == _BACKEND_SHARED_ENV
+    assert by_name["SEAWEEDFS_S3_ENDPOINT"].get("value") == _DEFAULT_S3_ENDPOINT
+    assert by_name["AWS_REGION"].get("value") == _DEFAULT_S3_REGION
+    for var, key in (
+        ("S3_ACCESS_KEY_ID", "access-key-id"),
+        ("S3_SECRET_ACCESS_KEY", "secret-access-key"),
+    ):
+        ref = by_name[var]["valueFrom"]["secretKeyRef"]
+        assert ref["key"] == key
+        assert ref["name"].endswith("-r2-s3")
+    assert by_name["STARS_GRID_S3_BUCKET"].get("value") == "stars"
+    assert by_name["STARS_GRID_S3_KEY"].get("value") == "grid.json"
+    assert by_name["STARS_CLIMATOLOGY_S3_KEY"].get("value") == "climatology.json"
+    assert by_name["CHAT_BLOB_S3_BUCKET"].get("value") == "chat"
+    assert by_name["ARTIFACTS_S3_BUCKET"].get("value") == "artifacts"
+    assert by_name["ARTIFACT_PUBLIC_BASE"].get("value") == "https://jomcgi.dev"
+    grid = dict(_cron_containers(rendered)).get("stars-load-grid")
+    assert grid is not None, "default .s3 job must render under the forced jobs image"
+    grid_names = [item["name"] for item in grid]
+    assert [n for n in grid_names if n in set(_S3_JOB_ENV)] == _S3_JOB_ENV
+
+
+def test_shared_s3_explicit_true_matches_default(tmp_path):
+    default_rendered = _render("recovery", [])
+    override = _write_values(tmp_path, "s3-true.yaml", {"sharedS3": {"enabled": True}})
+    true_rendered = _render("recovery", [override])
+    assert _shared_s3_projection(true_rendered) == _shared_s3_projection(
+        default_rendered
+    )
+
+
+@pytest.mark.parametrize("environment", ["prod", "gke"])
+def test_home_and_gke_preserve_shared_s3_projection(environment, renders):
+    rendered = renders[environment]
+    assert _r2_producers(rendered), f"{environment} renders no R2 producer"
+    names = [item["name"] for item in _deployment_backend_env(rendered)]
+    assert [n for n in names if n in set(_BACKEND_SHARED_ENV)] == _BACKEND_SHARED_ENV
+
+
+def test_shared_s3_false_omits_producer_and_all_consumer_references(tmp_path):
+    override = _write_values(tmp_path, "s3-off.yaml", {"sharedS3": {"enabled": False}})
+    rendered = _render("recovery", [override])
+    assert _r2_producers(rendered) == []
+    env = _deployment_backend_env(rendered)
+    names = {item["name"] for item in env}
+    assert not (set(_BACKEND_SHARED_ENV) & names)
+    assert not (_SHARED_CREDENTIAL_KEYS & _secret_keys(env))
+    assert "DATABASE_URL" in names
+    jobs = _cron_containers(rendered)
+    assert jobs, "no CronWorkflows rendered; omission proves nothing without jobs"
+    for workflow, container_env in jobs:
+        container_names = {item["name"] for item in container_env}
+        assert not (set(_SHARED_ENV) & container_names), workflow
+        assert not (_SHARED_CREDENTIAL_KEYS & _secret_keys(container_env)), workflow
+    grid = dict(jobs).get("stars-load-grid")
+    assert grid is not None, "the .s3 job stays scheduled; only its storage env goes"
+    assert "DATABASE_URL" in {item["name"] for item in grid}
+
+
+_PROBE_JOBS = {
+    "grimoire": {"enabled": True},
+    "jobs": {
+        "cronWorkflows": [
+            {
+                "name": "probe-s3-job",
+                "args": ["probe-s3"],
+                "schedule": "0 * * * *",
+                "concurrencyPolicy": "Forbid",
+                "activeDeadlineSeconds": 120,
+                "suspend": False,
+                "replaces": "probe.s3_job",
+                "s3": True,
+                "env": {"PROBE_KEEP": "kept"},
+            },
+            {
+                "name": "probe-grimoire-job",
+                "args": ["probe-grimoire"],
+                "schedule": "30 2 * * *",
+                "concurrencyPolicy": "Forbid",
+                "activeDeadlineSeconds": 120,
+                "suspend": False,
+                "grimoire": True,
+                "env": {"PROBE_KEEP": "kept"},
+            },
+        ]
+    },
+}
+
+
+def _probe_renders(tmp_path):
+    base = _write_values(tmp_path, "probe.yaml", _PROBE_JOBS)
+    off = _write_values(
+        tmp_path, "probe-off.yaml", {"sharedS3": {"enabled": False}, **_PROBE_JOBS}
+    )
+    return _cron_docs(_render("recovery", [base])), _cron_docs(
+        _render("recovery", [off])
+    )
+
+
+def test_shared_s3_probe_jobs_positive_then_omission(tmp_path):
+    true_docs, false_docs = _probe_renders(tmp_path)
+    assert set(true_docs) == {"probe-s3-job", "probe-grimoire-job"}
+    assert set(false_docs) == {"probe-s3-job", "probe-grimoire-job"}
+    s3_env = _env_by_name(
+        true_docs["probe-s3-job"]["spec"]["workflowSpec"]["templates"][0]["container"][
+            "env"
+        ]
+    )
+    assert s3_env["SEAWEEDFS_S3_ENDPOINT"].get("value") == _DEFAULT_S3_ENDPOINT
+    assert s3_env["AWS_REGION"].get("value") == _DEFAULT_S3_REGION
+    assert s3_env["STARS_GRID_S3_BUCKET"].get("value") == "stars"
+    assert s3_env["STARS_SITES_S3_KEY"].get("value") == "sites.json"
+    assert s3_env["PROBE_KEEP"].get("value") == "kept"
+    assert "DATABASE_URL" in s3_env
+    grimoire_env = _env_by_name(
+        true_docs["probe-grimoire-job"]["spec"]["workflowSpec"]["templates"][0][
+            "container"
+        ]["env"]
+    )
+    for name in _SHARED_ENV + _GRIMOIRE_OWN_ENV:
+        assert name in grimoire_env, f"positive grimoire control lacks {name}"
+    for name, gated in (
+        ("probe-s3-job", _S3_JOB_ENV),
+        ("probe-grimoire-job", _SHARED_ENV),
+    ):
+        get_env = lambda doc: doc["spec"]["workflowSpec"]["templates"][0]["container"][
+            "env"
+        ]  # noqa: E731
+        true_env = {i["name"]: i for i in get_env(true_docs[name])}
+        false_env = {i["name"]: i for i in get_env(false_docs[name])}
+        assert not (set(gated) & set(false_env)), name
+        assert {k: v for k, v in true_env.items() if k not in gated} == {
+            k: v for k, v in false_env.items() if k not in gated
+        }, name
+        assert (
+            true_docs[name]["spec"]["schedules"]
+            == false_docs[name]["spec"]["schedules"]
+        )
+        assert (
+            true_docs[name]["spec"]["workflowSpec"]["templates"][0]["container"]["args"]
+            == false_docs[name]["spec"]["workflowSpec"]["templates"][0]["container"][
+                "args"
+            ]
+        )
+        assert true_docs[name]["metadata"].get("annotations") == false_docs[name][
+            "metadata"
+        ].get("annotations")
+    for name in ("probe-s3-job", "probe-grimoire-job"):
+        assert "PROBE_KEEP" in {
+            i["name"]
+            for i in false_docs[name]["spec"]["workflowSpec"]["templates"][0][
+                "container"
+            ]["env"]
+        }
+    for name in _GRIMOIRE_OWN_ENV:
+        assert name in {
+            i["name"]
+            for i in false_docs["probe-grimoire-job"]["spec"]["workflowSpec"][
+                "templates"
+            ][0]["container"]["env"]
+        }, f"grimoire-owned {name} must survive the shared gate"
+
+
+def test_shared_s3_false_disarmed_recovery_release(tmp_path):
+    override = _write_values(
+        tmp_path,
+        "recovery.yaml",
+        {"sharedS3": {"enabled": False}, "jobs": {"image": ""}},
+    )
+    rendered = _render("recovery", [override])
+    assert _r2_producers(rendered) == []
+    env = _deployment_backend_env(rendered)
+    names = {item["name"] for item in env}
+    assert not (set(_BACKEND_SHARED_ENV) & names)
+    assert not (_SHARED_CREDENTIAL_KEYS & _secret_keys(env))
+    assert "CronWorkflow" not in [kind for kind, _n, _d in _docs(rendered)]
+    db = _env_by_name(env)["DATABASE_URL"]["valueFrom"]["secretKeyRef"]
+    assert db["key"] == "uri" and db["name"].endswith("-pg-app")
+    deployments = [
+        doc
+        for doc in yaml.safe_load_all(rendered)
+        if isinstance(doc, dict) and doc.get("kind") == "Deployment"
+    ]
+    assert deployments, "no Deployment rendered"
+    progress = [
+        c
+        for c in deployments[0]["spec"]["template"]["spec"]["containers"]
+        if c["name"] == "progress-ingest"
+    ]
+    assert progress and "DATABASE_URL" in {
+        i["name"] for i in progress[0].get("env", [])
+    }
+    kinds = {(k, n) for k, n, _d in _docs(rendered)}
+    assert any(k == "ClusterRole" for k, _n in kinds)
+
+
+def test_shared_s3_false_with_cleared_item_path_still_omits(tmp_path):
+    override = _write_values(
+        tmp_path,
+        "s3-off-cleared.yaml",
+        {"sharedS3": {"enabled": False}, "stars": {"onepassword": {"itemPath": ""}}},
+    )
+    rendered = _render("recovery", [override])
+    assert _r2_producers(rendered) == []
+    names = {item["name"] for item in _deployment_backend_env(rendered)}
+    assert not (set(_BACKEND_SHARED_ENV) & names)
+
+
+def test_shared_s3_true_with_cleared_item_path_keeps_external_consumers(tmp_path):
+    override = _write_values(
+        tmp_path,
+        "s3-on-cleared.yaml",
+        {"sharedS3": {"enabled": True}, "stars": {"onepassword": {"itemPath": ""}}},
+    )
+    rendered = _render("recovery", [override])
+    assert _r2_producers(rendered) == []
+    by_name = _env_by_name(_deployment_backend_env(rendered))
+    assert by_name["SEAWEEDFS_S3_ENDPOINT"].get("value") == _DEFAULT_S3_ENDPOINT
+    assert by_name["AWS_REGION"].get("value") == _DEFAULT_S3_REGION
+    ref = by_name["S3_ACCESS_KEY_ID"]["valueFrom"]["secretKeyRef"]
+    assert ref["key"] == "access-key-id" and ref["name"].endswith("-r2-s3")
+
+
+@pytest.mark.parametrize(
+    "enabled",
+    ["false", "true", 1, 0, None, [True]],
+    ids=["quoted-false", "quoted-true", "int-one", "int-zero", "null", "list"],
+)
+def test_shared_s3_enabled_rejects_non_boolean(tmp_path, enabled):
+    override = _write_values(tmp_path, "bad.yaml", {"sharedS3": {"enabled": enabled}})
+    with pytest.raises(RuntimeError, match=r"sharedS3\.enabled must be a boolean"):
+        _render("recovery", [override])
+
+
+@pytest.mark.parametrize(
+    "gate",
+    [None, "false", 1, [True]],
+    ids=["null", "string", "int", "list"],
+)
+def test_shared_s3_rejects_non_map(tmp_path, gate):
+    override = _write_values(tmp_path, "bad.yaml", {"sharedS3": gate})
+    with pytest.raises(RuntimeError, match=r"sharedS3 must be a map"):
+        _render("recovery", [override])
