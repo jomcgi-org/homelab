@@ -651,13 +651,13 @@ this table when the work ships or the issue closes without it.
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
 | The orchestration-level graph becomes a mutable DAG dispatched per node, replacing the workflow's Python control flow | section 4 | #5419 | not started |
-| One factory conductor above every per-run conductor selects and coordinates work under a versioned charter, acting on Joe's behalf | The factory conductor, below | #5784 | not started |
-| The charter document and its loader govern what the conductor may read, coordinate, or act on | The factory conductor, below | #5785 | not started |
-| Product-goal records, the factory index, and acceptance evidence drive work selection | The factory conductor, below | #5786 | not started |
-| Conductor journal, memory assembly, and session lifecycle persist across restarts | The factory conductor, below | #5787 | not started |
-| One factory conversation spans web, Discord, and voice for the same conductor | The factory conductor, below | #5788 | not started |
-| Conductor mutations are server-gated by tier, ledgered, and stoppable, with health gates before autonomous action | The factory conductor, below | #5789 | not started |
-| Shared admission and reservations schedule product-goal work across lanes with downstream backpressure | The factory conductor, below | #5804 | not started |
+| One factory conductor above every per-run conductor selects and coordinates work under a versioned charter, acting on Joe's behalf | The factory conductor | #5784 | not started |
+| The charter document and its loader govern what the conductor may read, coordinate, or act on | The factory conductor | #5785 | not started |
+| Product-goal records, the factory index, and acceptance evidence drive work selection | The factory conductor | #5786 | not started |
+| Conductor journal, memory assembly, and session lifecycle persist across restarts | The factory conductor | #5787 | not started |
+| One factory conversation spans web, Discord, and voice for the same conductor | The factory conductor | #5788 | not started |
+| Conductor mutations are server-gated by tier, ledgered, and stoppable, with health gates before autonomous action | The factory conductor | #5789 | not started |
+| Shared admission and reservations schedule product-goal work across lanes with downstream backpressure | The factory conductor | #5804 | not started |
 | Per-caller result scoping restricts what each MCP caller's tool calls can return | section 7 | #4569 | not started |
 | Discord chat automation gets persisted scheduled tasks, configurable message triggers, and per-channel memory notes | Decision history (services/002) | #3901 | not started |
 | Grimoire post-extraction quality passes (evidence-grounded stat verification, review-approved alias merges) ship | Decision history (services/014) | #3912 | not started |
@@ -666,63 +666,66 @@ this table when the work ships or the issue closes without it.
 
 ### The factory conductor
 
-One logical conductor per operator sits above every per-run conductor and
-drain lane. It is a fenced EmberVM session, starting on Opus, that answers
-what advanced, what is running, what needs Joe, and why capacity is idle, and
-that selects and coordinates work on Joe's behalf under a versioned charter.
-Its objective is to keep all safely available subscription quota doing useful
-work toward agreed product goals while preserving platform health,
-interactive responsiveness, and the capacity to finish and verify what it
-started. The monolith owns the durable state and the deterministic
-enforcement; planning and execution stay in EmberVM guests. Tracked by #5784
-and the six sub-issues in the table below; the full design text is on #5784.
+One logical conductor per operator sits above every per-run conductor and drain
+lane. It runs in a replaceable fenced EmberVM session, starting on Opus, and
+selects and coordinates work on Joe's behalf under a versioned charter. An
+escalation means Joe is needed. Its default view answers what advanced, what is
+running, what needs Joe, and why capacity is idle. Its objective is to keep all
+safely available subscription quota doing useful work toward agreed product
+goals while preserving platform health, interactive responsiveness, and the
+capacity to finish and verify what it started. The monolith owns the durable
+state and the deterministic enforcement; planning and execution stay in EmberVM
+guests. Tracked by #5784 and the six sub-issues in the table below; the full
+design text is on #5784.
 
 | Aspect | Decision | Owner |
 | --- | --- | --- |
-| Entry point | One factory conversation across web, Discord, and voice, integrating the existing launcher on the private agents page; no choice of model, session, run, or conductor is required | #5788 |
+| Entry point | One factory conversation across web, Discord, and voice, integrating the existing launcher (#4781) on the private agents page; no choice of model, session, run, or conductor is required | #5788 |
 | Responsiveness | Input is persisted and acknowledged before model execution; one durable ordered queue feeds one executor, operator input ahead of coalesced background events; pause and stop are authenticated deterministic controls that bypass the model; status reads from records when the model is busy | #5787 |
-| Charter | A versioned document under `projects/monolith`, changed by reviewed PR, with a stable identifier per clause; goals in priority order are platform stability, useful product progress, efficient quota use; the loader, prompt, admission layer and ledger expose the same version hash, so a stale prompt cannot keep revoked authority | #5785 |
+| Charter | A versioned document under `projects/monolith`, changed by reviewed PR, with a stable identifier per clause; goals in priority order are platform stability, useful product progress, efficient quota use; the loader, prompt, admission layer and ledger expose the same version hash; a retained prompt or a replaced session cannot preserve revoked authority; the ask-first set is charter or quota-policy changes, security-relevant changes, anything needing a new or amended decision record, and irreversible or production-impacting actions outside the allowed GitOps operations, and no clause authorises a cluster write the GitOps invariant forbids | #5785 |
 | Work selection | Durable records link product outcome to milestone, task, and acceptance evidence; a completion claim or a session count does not satisfy acceptance; every selected task advances an agreed goal or has a bounded maintenance allocation | #5786 |
-| Factory index | A materialised join of goal and task records, sessions, runs, drainer jobs, issues and PRs, decision rows, distress, platform health, provider quota, and reservations, served as MCP tools (`factory_status`, `task_status`, `queue_next`, `overlaps`); every row carries source time and freshness, and cloud sessions are an explicit coverage gap | #5786 |
-| Scheduling | The conductor proposes work; the server admits it against every active provider window, observation freshness, in-flight reservations, VM and CI and review throughput, and work-in-progress limits; reservations are atomic and shared across lanes; a reset permits a probe, never an assumption of recovery | #5804 |
-| Continuity | Journal plus KG recall, never a memory file; pending actions, task focus, and operator decisions are persisted before summarisation; one active executor per operator with ownership fencing, and replacement reconciles action IDs and reservations before retrying | #5787 |
-| Authority | Read, coordinate, act, and escalate are separately gated tiers; every mutation validates principal, target, tier, charter version, executor ownership, and control generation on the server; every tool call has a ledger row with intent persisted before the side effect | #5789 |
-| Stop | Pause admissions, pause task, and stop factory have distinct semantics; stop fences the conductor and its descendants, cancels queued starts, and survives any wakeup or restart; an unreachable worker stays explicitly unconfirmed rather than reported stopped | #5789 |
+| Factory index | A materialised join of goal and task records, sessions, runs, drainer jobs, issues and PRs, decision rows, distress, platform health, provider quota, and reservations, served as MCP tools (`factory_status`, `task_status`, `queue_next`, `overlaps`), where `queue_next` only recommends; every row carries source time and freshness, and cloud sessions are an explicit coverage gap; index rows are untrusted evidence, so every mutation revalidates target state, ownership, health, and reservations at execution time | #5786 |
+| Scheduling | The conductor proposes work through #3840's existing dispatch boundary, with no second queue; the server admits it against every active provider window, observation freshness, in-flight reservations, VM and CI and review throughput, and work-in-progress limits; capacity for Joe's interactive work, the conductor, and the review and correction needed to finish admitted work is reserved first, and unknown capacity is not headroom; reservations are atomic and shared across lanes; a reset permits only a probe | #5804 |
+| Continuity | Journal plus KG recall (#5680); pending actions, task focus, and operator decisions are persisted before summarisation; one active executor per operator with ownership fencing, and replacement reconciles action IDs and reservations before retrying | #5787 |
+| Authority | Read, coordinate, act, and escalate are separately gated tiers; every mutation validates principal, target, tier, charter version, executor ownership, and control generation on the server; every tool call has a ledger row with intent persisted before the side effect; timestamped health inputs drive normal, reduced-concurrency, admissions-paused, and recovering behaviour | #5789 |
+| Stop | Pause admissions, pause task, and stop factory have distinct semantics; stop fences the conductor and its descendants, cancels queued starts, and survives any wakeup or restart; an unreachable worker stays explicitly unconfirmed | #5789 |
 
-Rollout order is quota routing and observation recovery (#5753, #5803), the
+Rollout priority is quota routing and observation recovery (#5753, #5803), the
 message board (#5704), goal records and the read-only conductor, coordinate
-with its controls, then act. Act waits on the conductor's own budget line,
+with its controls, then act. Read-only index and recommendation work does not
+wait for the mutation gates. Act waits on the conductor's own budget line,
 shared reservations across every covered dispatch path, the health gates, and
 an STPA governance pass. Reserve values, estimation margins, freshness and
 probe intervals, health thresholds, work-in-progress limits, and receipt and
 control latency targets are chosen and validated by the implementing issues
-before the matching autonomous control is enabled; the model does not invent
-its own limits. Fable is evaluated against recorded coordination correctness,
-unnecessary escalations, latency, and cost before any switch from Opus.
+before the matching autonomous control is enabled. Fable is evaluated against
+recorded coordination correctness, unnecessary escalations, latency, and cost
+before any switch from Opus.
 
 **Why.** A per-run conductor owns one DAG and cannot pick priorities or
 reconcile overlap across local and cloud Claude sessions, Codex workers,
-drainer lanes, and swarm runs, so every added run added coordination work for
+drainer lanes, and swarm runs, so every added run adds coordination work for
 Joe. Quota observation and per-lane routing (#5752, #5753) see headroom but do
 not decide what should fill it, and independent dispatchers reading the same
 headroom oversubscribe it while starving review and CI. The node-boundary
 budget check that closed #4784 is a building block for this, since it bounds
-one run and never the fleet. A second chat box beside the launcher was
-rejected because it makes the operator choose an execution abstraction before
-describing the work. A single unbounded conversation carrying work and
-controls was rejected because a long turn delays a correction; controls
-therefore bypass the model. Destroying the conductor session as the stop was
-rejected because it leaves delegated work and uncertain side effects
-unaccounted for. The design amends ADR agents/062 by adding coordination above
-individual runs and ADR agents/060 by resolving delegated decisions inside the
-charter before anything reaches Joe, so an escalation means Joe is needed.
+one run only. A second chat box beside the launcher was rejected because it
+makes the operator choose an execution abstraction before describing the work.
+A single unbounded conversation carrying work and controls was rejected because
+a long turn delays a correction; controls therefore bypass the model.
+Destroying the conductor session as the stop was rejected because it leaves
+delegated work and uncertain side effects unaccounted for. The design amends
+ADR agents/062 by adding coordination above individual runs and ADR agents/060
+by resolving delegated decisions inside the charter before anything reaches
+Joe.
 
 ---
 
 ## 12. Decision history
 
 The ADR files were removed on 2026-09-06 (#4667); `git log -- docs/decisions/`
-has the full text.
+has the full text. ADR 064 never reached main; its text is a comment on
+#5784.
 
 The status text below starts with each historical record. `Accepted, shipped` and
 `Accepted, not shipped` are reconciliation annotations based on the cited
