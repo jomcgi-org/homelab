@@ -143,6 +143,43 @@ def test_value_gate_keeps_graded_behavioral_fact(session):
     assert len(result["atoms"]) == 1
 
 
+def test_process_gate_rejects_run_disposition(session):
+    raw = _raw(session)
+
+    result = apply_extraction(
+        session,
+        raw.raw_id,
+        _result(
+            _assertion(
+                "the-implementation-was-left-uncommitted",
+                "The implementation was left uncommitted and unpublished.",
+            )
+        ),
+    )
+
+    assert result["atoms"] == []
+    assert [item["reason_code"] for item in result["rejected"]] == ["process"]
+
+
+def test_process_gate_keeps_causal_failure_mechanism(session):
+    raw = _raw(session)
+
+    result = apply_extraction(
+        session,
+        raw.raw_id,
+        _result(
+            _assertion(
+                "quota-exhaustion-ends-a-dispatch-with-no-diff",
+                "When the worker hit exit 42 quota, the dispatch ended with no "
+                "diff and the spec had to be re-run.",
+            )
+        ),
+    )
+
+    assert "process" not in [item["reason_code"] for item in result["rejected"]]
+    assert result["atoms"] != []
+
+
 def test_duplicate_gate_attaches_raw_to_existing_note(session, monkeypatch):
     existing = Note(
         note_id="qwen-is-a-deprecated-alias-for-the-spark-pi-model",

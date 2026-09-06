@@ -62,9 +62,10 @@ _SESSION_BEHAVIOUR_RULES = (
     "ONLY as the mechanism of a behaviour, phrased as the behaviour, for "
     "example `past the daily cap the drainer defers the rest an hour`, never "
     "as a bare value such as `the cap is 40`. Skip restatements of constants, "
-    "docstrings, READMEs, ADRs, commit messages, and anything a reader gets by "
-    "opening one file. Skip anything already stated by a related note unless "
-    "this raw contradicts it; then emit the contradiction with "
+    "docstrings, READMEs, ADRs, commit messages, anything a reader gets by "
+    "opening one file, and one-run delivery outcomes such as whether this session "
+    "committed, pushed, or opened a pull request. Skip anything already stated by "
+    "a related note unless this raw contradicts it; then emit the contradiction with "
     "`edges.contradicts`. Prefer what cost the session something: failures, "
     "corrections, workarounds, surprises, contradictions between docs and "
     "reality, and things confirmed by tool output rather than asserted by the "
@@ -128,6 +129,20 @@ _BEHAVIOUR_CONNECTIVE_RE = re.compile(
 _VALUE_PREDICATE_RE = re.compile(
     r"\b(is|are|is set to|defaults? to|lists|maps|uses|targets|"
     r"points to|resolves to|has|contains)\b",
+    re.I,
+)
+_PROCESS_SUBJECT_RE = re.compile(
+    r"\b(worker|implementer|implementation|dispatch|session|run|change|edit|"
+    r"task|agent|pull request|pr)\b",
+    re.I,
+)
+_PROCESS_DISPOSITION_RE = re.compile(
+    r"\b(uncommitted|unpushed|unpublished|undelivered"
+    r"|left (?:the |its )?\w+ (?:uncommitted|unpublished|undelivered)"
+    r"|not (?:committed|pushed|delivered)"
+    r"|without (?:a |the )?(?:commit|pull request|pr|handoff|delivery|final handoff)"
+    r"|ended without"
+    r"|did not (?:commit|push|create|open|deliver))\b",
     re.I,
 )
 _FILE_LINE_RE = re.compile(r"(?:^|\s)[\w.@+-]+(?:/[\w.@+-]+)*\.[A-Za-z0-9]+:\d+\b")
@@ -817,6 +832,28 @@ def _value_rejection(assertion: _Assertion) -> str | None:
     return None
 
 
+def _process_rejection(assertion: _Assertion) -> str | None:
+    # A single run's delivery disposition (left uncommitted, ended without a
+    # pull request, no handoff) reproduces nothing and is not a fact about the
+    # system. A behaviour connective means the assertion frames a recurring
+    # mechanism ("when the worker hit exit 42, the dispatch ended with no
+    # diff"), so defer to the other gates and the behavioural lens instead.
+    # Gates are precision-first: a falsely rejected assertion is silently lost.
+    inspected = _normalise_gate_text(
+        f"{assertion.title}\n{_first_sentence(assertion.body)}"
+    )
+    if _BEHAVIOUR_CONNECTIVE_RE.search(inspected):
+        return None
+    if _PROCESS_SUBJECT_RE.search(inspected) and _PROCESS_DISPOSITION_RE.search(
+        inspected
+    ):
+        return (
+            "The assertion records one run's delivery or disposition, not a "
+            "reproducible behavior of the system."
+        )
+    return None
+
+
 def _looks_like_bare_value(body: str) -> bool:
     sentences = [
         sentence
@@ -879,8 +916,10 @@ def render_correction_prompt(rejected: list[dict]) -> str:
         "name what fails, operational state with validity timestamps, or measured "
         "observations. A constant, default, or setting is accepted only as the "
         "mechanism of a behavior, never as a bare value. Skip per-session events, "
-        "restated constants, docstrings, READMEs, ADRs, commit messages, facts found "
-        "by opening one file, and duplicates of related notes. Empty is fine. Return "
+        "one-run delivery outcomes (whether this run committed, pushed, or opened a "
+        "pull request), restated constants, docstrings, READMEs, ADRs, commit "
+        "messages, facts found by opening one file, and duplicates of related notes. "
+        "Empty is fine. Return "
         "one fenced json block with ONLY assertions that are new relative to your "
         "previous answer and satisfy the rules; an empty list is acceptable."
     )
@@ -949,6 +988,10 @@ def apply_extraction(
         value_reason = _value_rejection(assertion)
         if value_reason is not None:
             rejected.append(_rejection(assertion, "value", value_reason))
+            continue
+        process_reason = _process_rejection(assertion)
+        if process_reason is not None:
+            rejected.append(_rejection(assertion, "process", process_reason))
             continue
         body = assertion.body
         if assertion.evidence:
