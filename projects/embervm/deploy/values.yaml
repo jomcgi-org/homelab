@@ -837,6 +837,8 @@ claudeRuntimeWorkload:
     # refcount-pinning the stale intel base against retention. Vendor-blind
     # conditions and the dangling intel ref are tracked in #4937.
     EMBER_BASE_EPOCH: "diff-capture-2"
+    # Rebuild only after every build brick has the progress callback boot arg.
+    EMBER_PROGRESS_EPOCH: "progress-url-1"
     # Prewarm config deliberately does NOT live here anymore. EMBER_PREWARM_CLIS
     # used to sit in this map as documented intent, but nothing here reaches the
     # guest (see above), so prewarm silently no-oped for every family, which is
@@ -887,6 +889,9 @@ claudeRuntimeWorkload:
 # The follow-up that routes model=qwen here is a monolith-side change.
 piRuntimeWorkload:
   enabled: true
+  # Keep the shared shim's base on the same verified callback configuration.
+  initEnv:
+    EMBER_PROGRESS_EPOCH: "progress-url-1"
   # Volume quadrant, same as claude-runtime: a repo-attached qwen session has
   # to clone somewhere that is not the 256 MiB tmpfs. Every repo session on
   # this lane failed at hydration with "Out of diskspace" from 2026-08-16 until
