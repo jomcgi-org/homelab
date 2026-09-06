@@ -28,6 +28,10 @@ RECALL_MIN_PROMPT_CHARS = 24
 RECALL_QUERY_CAP = 2000
 RECALL_TIMEOUT_SECONDS = 4.0
 RECALL_TITLE_CAP = 160
+# Recall drops leads below this score. The store floors search at 0.4, but
+# session recall needs a higher bar or a prompt with no strong match still
+# gets filler; observed boundary is useful hits ~0.70+, noise ~0.55.
+RECALL_MIN_SCORE = float(os.environ.get("KNOWLEDGE_RECALL_MIN_SCORE", "0.62"))
 DEFAULT_REPO_SCOPE = "repo:jomcgi-org/homelab"
 
 logger = logging.getLogger(__name__)
@@ -110,12 +114,18 @@ def search_related(session: Session, text: str, *, limit: int) -> list[dict]:
 
     from knowledge.store import KnowledgeStore
 
-    return KnowledgeStore(session).search_notes_with_context(
+    results = KnowledgeStore(session).search_notes_with_context(
         vector,
         limit=limit,
         scope_filter=_get_repo_scope(),
         exclude_invalidated=True,
     )
+    # Results are score-ordered, so a note past the limit always scores below
+    # every kept one: a floor only trims the weak tail, it never drops a lead
+    # that would have out-ranked a kept one.
+    return [
+        item for item in results if float(item.get("score") or 0.0) >= RECALL_MIN_SCORE
+    ]
 
 
 def _search_with_session(text: str, limit: int) -> list[dict]:
