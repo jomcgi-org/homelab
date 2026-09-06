@@ -200,7 +200,9 @@ promotion:
           # because a soak is a constraint on how long the UPSTREAM stage must
           # hold Freight, and there is no upstream stage to hold it.
           upstream: []
-          autoPromotion: true
+          # Temporary manual promotion while #4322's development recovery drill
+          # is verified under #4745. Re-enable only by explicit operator decision.
+          autoPromotion: false
     - name: embervm
       warehouse: embervm-chart
       project: kargo-embervm
