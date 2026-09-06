@@ -21,19 +21,18 @@ Discord agent, agent console, Grimoire, and public applications.
 (see: /projects/monolith/framework/core.py)
 (see: /projects/monolith/frontend/src/routes)
 
-The deployed service has three audience tiers. The private monolith carries the
-full route and MCP surface. The public deployment is a pruned composition that
-uses a read-only database role for most requests and a separately scoped writer
-for the two public chat domains. The friends tier exposes only the moving
-planner, its browser API, and the SvelteKit bundle. That hostname has no
-Cloudflare Access application in front of it: an Envoy `SecurityPolicy` doing
-authentik OIDC plus a `groups` claim check with `defaultAction: Deny` is the
-only thing between it and the internet, and a `SecurityPolicy` is a separate
-object from the route it targets, so verify the deny path against the live URL
-rather than the manifest. A fourth composition, the agents tier, serves guests
-and is described in sections 2 and 7.
+The deployed service has three audience tiers, plus the agents tier of sections
+2 and 7: the private monolith carries the full route and MCP surface, the public
+deployment is a pruned composition on a read-only database role with a
+separately scoped writer for the two public chat domains, and the friends tier
+exposes only the moving planner, its browser API, and the SvelteKit bundle. The
+friends hostname has no Cloudflare Access application in front of it, only an
+authentik `SecurityPolicy` that is a separate object from its route, so verify
+the deny path against the live URL with the checklist kept beside the
+`cfIngress.friends` values rather than trusting the manifest.
 (see: /projects/monolith/app/modules_private.py)
 (see: /projects/monolith/app/modules_public.py)
+(see: /projects/monolith/deploy/values.yaml)
 (see: /projects/monolith/chart/templates/httproute-friends.yaml)
 
 ```mermaid
@@ -184,14 +183,10 @@ roles takes its password from an out-of-band basic-auth Secret because the
 (see: /projects/monolith/chat_public_grants_test.py)
 (see: /projects/monolith/deploy/agents-writer-secret.md)
 
-The home overlay owns a nightly logical refresh into a disposable development
-database, dumped from the production primary rather than the read replica: a
-standby cancels any query whose snapshot blocks WAL replay, and the COPY of
-knowledge chunks was long enough to hit that on every run. The hub has no
-development database, so the refresh is off there. The development overlay
-disables duplicate refresh ownership and all external-identity singletons.
+The home overlay's nightly logical refresh into a development database (dumped
+from the primary, because a standby cancels any query that blocks WAL replay)
+is off on the hub, which has no development database.
 (see: /projects/monolith/chart/templates/cnpg-dev-refresh-cronworkflow.yaml)
-(see: /projects/monolith/dev/deploy/values.yaml)
 
 **Why.** Keeping Obsidian and Postgres as writable peers created synchronization,
 conflict, and recovery questions, while a filesystem mount inside every replica
@@ -500,9 +495,9 @@ hand.
 
 Context Forge filters tool visibility tags against caller team membership,
 which is tool-granular authorization. The monolith validates any bearer token
-on each stateless MCP message, but anonymous discovery remains allowed and
-per-caller result scoping is not live because caller tokens have not been
-observed on the Claude.ai path. The broader gateway architecture, identity
+on each stateless MCP message, but anonymous discovery remains allowed, and
+per-caller result scoping is not built (#4569), although caller tokens now
+reach the monolith on the Claude.ai path. The broader gateway architecture, identity
 limitations, and catalogue refresh behavior are documented in
 [MCP architecture](../mcp/ARCHITECTURE.md).
 (see: /projects/monolith/auth/middleware.py)
@@ -523,7 +518,6 @@ by trust in the guest.
 
 ## 8. Public apps
 
-- `/health`: same-origin proxy to composite backend health, with healthy-only edge caching. (see: /projects/monolith/frontend/src/routes/public/health/+server.js)
 - `/app/hikes`: walk catalogue and forecasts, served as cacheable public data. (see: /projects/monolith/hikes/router.py)
 - `/app/trips`: geotagged trip and photo feed with a private ingest path and public cached reads. (see: /projects/monolith/trips/read_router.py)
 - `/app/stars`: astronomy forecasts and historical climatology heatmaps. (see: /projects/monolith/stars/router.py)
@@ -633,15 +627,11 @@ deploy. Read the live one:
 (see: /projects/monolith/deploy/values-gke.yaml)
 (see: /projects/platform/kargo/values.yaml)
 
-The home Application still carries the write-back-maintained revision and the
-Kargo authorization annotation, but that deployment is dormant: backend
-replicas are zero by values commit since the writer stop, and the WhatsApp
-singleton is off. The write-back keeps maintaining the value deliberately, as
-the revert lever. The development overlays exist and are inert until
-development Applications exist on the hub.
+The home Application is dormant (backend replicas zero by values commit,
+WhatsApp off) and keeps its write-back-maintained revision as the revert lever
+until the home cluster is wiped (#4964); the development overlays are inert
+until development Applications exist on the hub.
 (see: /projects/monolith/deploy/application.yaml)
-(see: /projects/monolith/deploy/values.yaml)
-(see: /projects/monolith/dev/deploy/application.yaml)
 
 **Why.** Branch-side version bumps made concurrent pull requests collide and
 could leave a merged change unpublished, while floating OCI revisions are not
