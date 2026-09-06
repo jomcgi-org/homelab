@@ -68,9 +68,9 @@ tokenBroker:
   enabled: true
   networkPolicy:
     enabled: false
-  # authentik client_credentials minter (#5633 1f). The agent tier lives on the
-  # hub, so this is where the grant is minted. authentik itself is on the home
-  # cluster, reached over its public hostname.
+  # authentik client_credentials minter (#5633 1f). The agent tier and authentik
+  # both run on the hub; the broker still reaches authentik over its public
+  # hostname, the same route every other client uses.
   authentik:
     enabled: true
     tokenEndpoint: "https://auth.jomcgi.dev/application/o/token/"

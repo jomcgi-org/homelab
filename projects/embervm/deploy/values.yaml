@@ -556,12 +556,14 @@ egress:
     # egress-enabled workload (today the claude runtime) too.
     #
     # Do NOT justify that by saying these endpoints are already reachable
-    # in-cluster. They are not. Both frontends are Cilium ingress default-deny,
-    # and reaching them at all required adding explicit
-    # namespace-embervm-to-3000 rules to monolith-public's cilium-policy and
-    # monolith's cilium-ingress-policy in the same change. ADR 035 section 4
-    # makes that claim and it is wrong; the conclusion survives because the
-    # widening is SMALLER than stated, not because it is nil.
+    # in-cluster. On the home cluster they are not: both frontends are Cilium
+    # ingress default-deny there, and reaching them required explicit
+    # namespace-embervm-to-3000 rules in monolith-public's cilium-policy and
+    # monolith's cilium-ingress-policy in the same change. On the GKE hub no
+    # Cilium CRDs exist, so nothing but this allowlist bounds the reach. ADR
+    # embervm/035 section 4 claimed the endpoints were already reachable and
+    # that is wrong; the conclusion survives because the widening is SMALLER
+    # than stated, not because it is nil.
     #
     # What actually bounds the widening is that this entry only makes a
     # destination permissible, and permission is not reach: no other egress
