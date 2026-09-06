@@ -320,12 +320,19 @@ def test_models_endpoint_narrows_to_configured_list(client, monkeypatch):
     assert body == {"models": [{"name": "luna", "family": "codex"}]}
 
 
-def test_models_endpoint_offers_spark_as_pi_family(client, monkeypatch):
-    monkeypatch.setenv("AGENT_MODELS", "spark")
+def test_models_endpoint_offers_spark_and_pi_spark_in_resolved_families(
+    client, monkeypatch
+):
+    monkeypatch.setenv("AGENT_MODELS", "spark,pi-spark")
 
     body = client.get("/api/agents/models").json()
 
-    assert body == {"models": [{"name": "spark", "family": "pi"}]}
+    assert body == {
+        "models": [
+            {"name": "spark", "family": "claude"},
+            {"name": "pi-spark", "family": "pi"},
+        ]
+    }
 
 
 def test_models_endpoint_ignores_unknown_names_and_blank_parts(client, monkeypatch):

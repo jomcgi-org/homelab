@@ -67,6 +67,7 @@ _ALL_AGENT_MODEL_CHOICES = (
     "sonnet",
     "fable",
     "spark",
+    "pi-spark",
 )
 
 

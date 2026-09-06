@@ -202,8 +202,8 @@ EMBERVM_URL = os.environ.get("EMBERVM_URL", "")
 # agentSessions.piWorkload value. There is no security semantic here (unlike
 # an egress allowlist), so an unset OR blank value means "use the code
 # default", not "deny": this is a REVERT LEVER (set it to claude-runtime to
-# put spark back on the old lane by a values edit, no code deploy), never a
-# deny-by-default control.
+# put pi-spark on the claude-runtime lane by a values edit, no code deploy),
+# never a deny-by-default control.
 #
 # Extracted as a function purely so the env-reading behaviour is testable
 # WITHOUT importlib.reload. Reloading this module rebinds EmberSessionGone to a

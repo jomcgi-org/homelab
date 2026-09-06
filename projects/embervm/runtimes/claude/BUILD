@@ -102,7 +102,7 @@ tar(
 )
 
 # The CLIs this image prewarms at shim boot (#4423), read by the shared shim's
-# ProcessManager._read_prewarm_clis. This image carries all three families, so
+# ProcessManager._read_prewarm_clis. This image carries all four families, so
 # a base build parks a claude CLI, a codex app-server and a pi RPC process in
 # the snapshot and every family's first turn adopts instead of lazy-spawning.
 #

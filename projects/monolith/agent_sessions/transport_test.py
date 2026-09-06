@@ -192,7 +192,7 @@ def test_create_session_retryable_backoff_and_restore_payload(monkeypatch):
     assert result.session_id == "s1"
 
 
-def test_create_session_retry_keeps_spark_on_the_pi_workload(monkeypatch):
+def test_create_session_retry_keeps_pi_spark_on_the_pi_workload(monkeypatch):
     """The retryable-backoff recursion must carry the model too.
 
     This is the fifth create path and the easiest to leave unguarded: it
@@ -200,7 +200,7 @@ def test_create_session_retry_keeps_spark_on_the_pi_workload(monkeypatch):
     invisible except that the retried create lands on the 4 GiB lane. It is
     live rather than theoretical, because a retryable create denial is exactly
     what pi-runtime's cap of 2 produces when the */5 probe overlaps an
-    interactive spark turn.
+    interactive pi-spark turn.
     """
     attempts = []
 
@@ -219,7 +219,7 @@ def test_create_session_retry_keeps_spark_on_the_pi_workload(monkeypatch):
 
     _client(monkeypatch, handler)
     monkeypatch.setattr(transport.asyncio, "sleep", fake_sleep)
-    asyncio.run(transport.EmberVmShimTransport().create_session(model="spark"))
+    asyncio.run(transport.EmberVmShimTransport().create_session(model="pi-spark"))
 
     assert len(attempts) == 3
     # EVERY attempt, not just the first: the recursion must not lose the model.
@@ -302,10 +302,10 @@ def test_create_session_restoring_posts_restore_lineage_body(monkeypatch):
     assert json.loads(requests[0].content) == {"restore_lineage": "s1"}
 
 
-# -- spark (pi family) routing: create_session targets pi-runtime -----------
+# -- spark and pi-spark workload routing ------------------------------------
 
 
-def test_create_session_spark_targets_pi_runtime_workload(monkeypatch):
+def test_create_session_spark_targets_claude_runtime_workload(monkeypatch):
     requests = []
 
     async def handler(request):
@@ -319,10 +319,13 @@ def test_create_session_spark_targets_pi_runtime_workload(monkeypatch):
     _client(monkeypatch, handler)
     asyncio.run(transport.EmberVmShimTransport().create_session(model="spark"))
 
-    assert str(requests[0].url) == "https://ember.test/v1/workloads/pi-runtime/sessions"
+    assert (
+        str(requests[0].url)
+        == "https://ember.test/v1/workloads/claude-runtime/sessions"
+    )
 
 
-def test_create_session_qwen_alias_targets_pi_runtime_workload(monkeypatch):
+def test_create_session_qwen_alias_targets_claude_runtime_workload(monkeypatch):
     requests = []
 
     async def handler(request):
@@ -335,6 +338,26 @@ def test_create_session_qwen_alias_targets_pi_runtime_workload(monkeypatch):
 
     _client(monkeypatch, handler)
     asyncio.run(transport.EmberVmShimTransport().create_session(model="qwen"))
+
+    assert (
+        str(requests[0].url)
+        == "https://ember.test/v1/workloads/claude-runtime/sessions"
+    )
+
+
+def test_create_session_pi_spark_targets_pi_runtime_workload(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            201,
+            json={"session_id": "s1", "session_token": "t1"},
+            request=request,
+        )
+
+    _client(monkeypatch, handler)
+    asyncio.run(transport.EmberVmShimTransport().create_session(model="pi-spark"))
 
     assert str(requests[0].url) == "https://ember.test/v1/workloads/pi-runtime/sessions"
 
@@ -1607,12 +1630,12 @@ def test_deliver_with_no_ember_and_no_restore_from_is_unchanged(monkeypatch):
     assert turn.result == "ok"
 
 
-# -- spark (pi family) routing end-to-end through deliver --------------------
+# -- spark and pi-spark routing end-to-end through deliver ------------------
 # These exercise the REAL create_session (no monkeypatch on it), so the
 # create URL is the thing under test, not a fake's return value.
 
 
-def test_deliver_creates_spark_session_on_pi_workload(monkeypatch):
+def test_deliver_creates_spark_session_on_claude_workload(monkeypatch):
     requests = []
 
     async def handler(request):
@@ -1620,7 +1643,7 @@ def test_deliver_creates_spark_session_on_pi_workload(monkeypatch):
         if str(request.url).endswith("/sessions"):
             return httpx.Response(
                 201,
-                json={"session_id": "s-pi", "session_token": "t-pi"},
+                json={"session_id": "s-claude", "session_token": "t-claude"},
                 request=request,
             )
         return _turn_response(request)
@@ -1631,12 +1654,13 @@ def test_deliver_creates_spark_session_on_pi_workload(monkeypatch):
 
     create_request, invoke_request = requests
     assert (
-        str(create_request.url) == "https://ember.test/v1/workloads/pi-runtime/sessions"
+        str(create_request.url)
+        == "https://ember.test/v1/workloads/claude-runtime/sessions"
     )
     # The workload choice must not leak into the invoke URL: it is always
     # session-scoped regardless of which workload the session lives on.
-    assert str(invoke_request.url) == "https://ember.test/v1/sessions/s-pi/invoke"
-    assert used.session_id == "s-pi"
+    assert str(invoke_request.url) == "https://ember.test/v1/sessions/s-claude/invoke"
+    assert used.session_id == "s-claude"
     assert turn.result == "ok"
 
 
@@ -1661,7 +1685,7 @@ def test_deliver_with_existing_ember_issues_no_create(monkeypatch):
     assert turn.result == "ok"
 
 
-def test_deliver_restore_from_passes_model_to_pi_workload(monkeypatch):
+def test_deliver_restore_from_passes_pi_spark_to_pi_workload(monkeypatch):
     requests = []
 
     async def handler(request):
@@ -1683,7 +1707,7 @@ def test_deliver_restore_from_passes_model_to_pi_workload(monkeypatch):
     client = transport.EmberVmShimTransport()
     turn, used = asyncio.run(
         client.deliver(
-            None, "cli-prior", "hello", model="spark", restore_from="lineage-1"
+            None, "cli-prior", "hello", model="pi-spark", restore_from="lineage-1"
         )
     )
 
@@ -1696,7 +1720,9 @@ def test_deliver_restore_from_passes_model_to_pi_workload(monkeypatch):
     assert turn.result == "ok"
 
 
-def test_deliver_restore_denied_falls_back_to_blank_on_pi_workload(monkeypatch):
+def test_deliver_pi_spark_restore_denied_falls_back_to_blank_on_pi_workload(
+    monkeypatch,
+):
     """A cross-workload restore is one of the CP's documented denial reasons
     (workload/principal mismatch). The existing degrade-to-blank fallback
     must still land on the CORRECT (pi) workload, not silently drop back to
@@ -1720,7 +1746,7 @@ def test_deliver_restore_denied_falls_back_to_blank_on_pi_workload(monkeypatch):
     client = transport.EmberVmShimTransport()
     turn, used = asyncio.run(
         client.deliver(
-            None, "cli-prior", "hello", model="spark", restore_from="lineage-1"
+            None, "cli-prior", "hello", model="pi-spark", restore_from="lineage-1"
         )
     )
 
@@ -1739,7 +1765,7 @@ def test_deliver_restore_denied_falls_back_to_blank_on_pi_workload(monkeypatch):
     }
 
 
-def test_deliver_session_gone_recreates_spark_on_pi_workload(monkeypatch):
+def test_deliver_session_gone_recreates_pi_spark_on_pi_workload(monkeypatch):
     """The 403/410 mid-conversation recovery arm must recreate on the PI lane.
 
     This arm is the one that fails silently if the model is not threaded: the
@@ -1767,7 +1793,10 @@ def test_deliver_session_gone_recreates_spark_on_pi_workload(monkeypatch):
     client = transport.EmberVmShimTransport()
     turn, used = asyncio.run(
         client.deliver(
-            transport.EmberSession("s1", "t1", None), "cli-1", "hello", model="spark"
+            transport.EmberSession("s1", "t1", None),
+            "cli-1",
+            "hello",
+            model="pi-spark",
         )
     )
 
@@ -1790,9 +1819,8 @@ def test_deliver_session_gone_recreates_spark_on_pi_workload(monkeypatch):
 # -- AGENT_PI_WORKLOAD revert lever ------------------------------------------
 
 
-def test_agent_pi_workload_override_sends_spark_to_claude_runtime(monkeypatch):
-    """The revert lever: setting the override to claude-runtime must put
-    spark back on the old lane by a values edit, with no code deploy."""
+def test_agent_pi_workload_override_sends_pi_spark_to_claude_runtime(monkeypatch):
+    """The revert lever sends pi-spark to the larger lane by a values edit."""
     requests = []
 
     async def handler(request):
@@ -1805,7 +1833,7 @@ def test_agent_pi_workload_override_sends_spark_to_claude_runtime(monkeypatch):
 
     _client(monkeypatch, handler)
     monkeypatch.setattr(transport, "PI_WORKLOAD", "claude-runtime")
-    asyncio.run(transport.EmberVmShimTransport().create_session(model="spark"))
+    asyncio.run(transport.EmberVmShimTransport().create_session(model="pi-spark"))
 
     assert (
         str(requests[0].url)
