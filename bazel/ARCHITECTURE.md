@@ -151,6 +151,18 @@ Their suites are genrules, not test rules, tagged `verification` so `affected-ta
 
 ---
 
+## Direction
+
+Decided and not yet built, each with the issue that tracks it. A row leaves
+this table when the work ships or the issue closes without it.
+
+| Direction | Decided in | Tracks | State |
+| --- | --- | --- | --- |
+| Semgrep tests fail closed instead of skip-passing when the engine or Pro image can't run | section 8 | #4777 | in progress (#5838) |
+| The native Linux ARM64 OCaml CI shard runs again instead of sitting registered and unexercised | section 9 | #3927 | not started |
+| The ArgoCD live-diff target exists again for charts with `generate_diff` enabled | section 1 | #3916 | not started |
+| A Copier template scaffolds new services instead of copying `projects/monolith/deploy/` by hand | Decision history (tooling/002) | #3918 | not started |
+
 ## Decision history
 
 The ADR files were removed on 2026-09-06 (#4667); `git log -- docs/decisions/`

@@ -426,6 +426,17 @@ accepts a stateful catalogue and a gateway-wide failure domain, risks ADR
 agents/020 and ADR agents/059 retain as reasons for the planned direct-monolith
 cutover.
 
+## Direction
+
+Decided and not yet built, each with the issue that tracks it. A row leaves
+this table when the work ships or the issue closes without it.
+
+| Direction | Decided in | Tracks | State |
+| --- | --- | --- | --- |
+| Authentik federates identity and the monolith serves MCP directly, retiring Context Forge | State | #3832, #3833 | not started |
+| Guest egress tokens are swapped per tier so each tier reaches only its allow-listed tool set, and guests cannot reach the main MCP port | Routing | #3838 | not started |
+| `monolith-agents` federates upstream MCP servers (BuildBuddy, Honeycomb, GitHub, and more) as namespaced tools on its own endpoint | Tool catalogue refresh | #5636 | not started |
+
 ## Decision history
 
 The ADR files were removed on 2026-09-06 (#4667); `git log -- docs/decisions/`

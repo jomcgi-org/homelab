@@ -643,7 +643,27 @@ runtime `targetRevision` is cluster state and, on the hub, that a point-in-time
 health wait stands in for a settling window until a development stage exists
 there (ADR platform/009).
 
-## 11. Decision history
+## 11. Direction
+
+Decided and not yet built, each with the issue that tracks it. A row leaves
+this table when the work ships or the issue closes without it.
+
+| Direction | Decided in | Tracks | State |
+| --- | --- | --- | --- |
+| The orchestration-level graph becomes a mutable DAG dispatched per node, replacing the workflow's Python control flow | section 4 | #5419 | not started |
+| One factory conductor above every per-run conductor selects and coordinates work under a versioned charter, acting on Joe's behalf | PR #5792 (design pending) | #5784 | not started |
+| The charter document and its loader govern what the conductor may read, coordinate, or act on | PR #5792 (design pending) | #5785 | not started |
+| Conductor journal, memory assembly, and session lifecycle persist across restarts | PR #5792 (design pending) | #5787 | not started |
+| One factory conversation spans web, Discord, and voice for the same conductor | PR #5792 (design pending) | #5788 | not started |
+| Per-caller result scoping restricts what each MCP caller's tool calls can return | section 7 | #4569 | not started |
+| Discord chat automation gets persisted scheduled tasks, configurable message triggers, and per-channel memory notes | Decision history (services/002) | #3901 | not started |
+| Grimoire post-extraction quality passes (evidence-grounded stat verification, review-approved alias merges) ship | Decision history (services/014) | #3912 | not started |
+| Public chat retention and takedown purge tooling ships | Decision history (security/005) | #3899 | not started |
+| A role-separated GitHub App review gate lets swarm merge autonomously | Decision history (agents/027) | #3835 | not started |
+
+---
+
+## 12. Decision history
 
 The ADR files were removed on 2026-09-06 (#4667); `git log -- docs/decisions/`
 has the full text.
