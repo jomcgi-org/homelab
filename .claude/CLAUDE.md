@@ -1,7 +1,10 @@
 # CLAUDE.md - Secure Kubernetes Homelab
 
-A single-cluster Kubernetes homelab at
-[jomcgi/homelab](https://github.com/jomcgi/homelab). Services, operators, and
+A two-cluster Kubernetes homelab at
+[jomcgi/homelab](https://github.com/jomcgi/homelab): a GKE hub (`homelab-hub`)
+has served every workload since 2026-08-31, and the home k3s cluster is a
+residual under teardown (#5485). `projects/platform/ARCHITECTURE.md` has the
+shape. Services, operators, and
 websites live under `projects/<name>/`, each colocating its Helm `chart/` with
 the `deploy/` config ArgoCD ships it from. Everything builds with Bazel (bzlmod,
 not WORKSPACE) and deploys from Git. Go, Python, JavaScript, and Starlark. The
@@ -80,8 +83,10 @@ preference, it is how the budget lasts. Three lanes:
   mechanical bulk or if quota tightens; Terra stays the middle rung; there is
   no rung above Sol, so a spec Sol fails twice gets fixed or stays on Opus as
   the exception. The autonomous work queue (`implementerModel` in
-  `projects/monolith/chart/values.yaml`) deliberately stays on `luna` until
-  `budget_usd` enforcement lands (#4784): do not flip it to chase this bullet.
+  `projects/monolith/chart/values.yaml`) stays on `luna` on purpose:
+  `budget_usd` is enforced at node boundaries (#4784 closed 2026-09-05), but
+  the drainer's spend has not been re-evaluated since, so do not flip it to
+  chase this bullet.
   Sonnet only when Codex is unavailable or the work genuinely needs
   Claude-side skills, MCP, or session context. On exit 42 (quota exhausted),
   send one `warn` notify and fall back to Sonnet: no retry loop, no second
@@ -146,7 +151,9 @@ than in yours, and your next push is non-fast-forward until you fetch and
 rebase.
 
 Tooling is vendored: `./bootstrap.sh` then `direnv allow` puts `ci`, `helm`,
-`crane`, `kind`, `go`, `python`, `pnpm`, `node`, `bb`, and the formatters on PATH.
+`crane`, `kind`, `go`, `python`, `pnpm`, `node`, and the formatters on PATH.
+`bb` is not in the tools image: install it from buildbuddy.io (`ci` says so
+when it is missing).
 
 ## Knowledge: two stores, different in kind
 
@@ -167,8 +174,8 @@ it as a scratchpad of operational leads with a short half-life.
   that smells like it has been hit before: a deploy that will not roll, a red
   gate, a wedged control plane. The KG is write-heavy and read-cold, and
   re-deriving a fact someone already verified is the expensive failure.
-- Once `knowledge.recall.enabled` is on (off until a follow-up flips it),
-  Ember sessions get a recall block in their system prompt at creation
+- `knowledge.recall.enabled` has been on since 2026-09-05 (#5680), so Ember
+  sessions get a recall block in their system prompt at creation
   (`knowledge/recall.py`): top facts by
   embedding similarity, repo-scoped, each marked with its `verification_state`.
   Treat them as leads to confirm. The Mac main loop is not an Ember session and
@@ -201,25 +208,27 @@ Anything a worker must know goes in `AGENTS.md` or in the spec you hand it.
   now carries no bump, and the deploy lands one commit after the merge rather
   than in it. If a change has not rolled out, check that write-back commit
   landed before assuming a missed bump.
-- **For the monolith only, `targetRevision` in git no longer says what is
-  deployed.** Since #4744 Kargo owns it for `monolith` and `monolith-dev`,
-  patching the live Application (`argocd-update`); `canada` carries an
-  `ignoreDifferences` entry plus `RespectIgnoreDifferences=true` so ArgoCD does
-  not stamp the git value back. The write-back still maintains production's
-  copy on purpose, as the revert lever, so `git != live` is CORRECT here rather
-  than a stuck deploy. Read the live value:
+- **For `monolith`, `monolith-public` and `embervm`, `targetRevision` in git
+  no longer says what is deployed.** On the hub Kargo owns it for those three
+  (one prod stage each, no dev), patching the live Application
+  (`argocd-update`); the cluster root carries an `ignoreDifferences` entry plus
+  `RespectIgnoreDifferences=true` so ArgoCD does not stamp the git value back.
+  The `projects/gke-apps/` pins are hand-edited floors kept as the revert
+  lever, so `git != live` is CORRECT there rather than a stuck deploy. Read the
+  live value against the hub context:
   `kubectl get application monolith -n argocd -o jsonpath='{.spec.sources[0].targetRevision}'`.
-  Dev's copy is frozen at a bootstrap floor (`0.293.0`) and drifts further
-  every publish, by design. Every other chart still deploys off the git value.
+  Every other chart still deploys off the git value.
 - **Never hand-pin `@sha256:` digests in values files.** Bazel
   `helm_images_values` deep-merges pinned tags at build time. Hand-pinned digests
-  go stale after the next CI rebuild and turn into `ImagePullBackOff`. Semgrep
-  `no-hardcoded-image-digest` catches it.
+  go stale after the next CI rebuild and turn into `ImagePullBackOff`. A
+  Semgrep rule (`no-hardcoded-image-digest`) exists for it but gates nothing
+  until #4777 closes.
 - **Helm prepends the release name to service names.** A service `web` in release
   `myapp` resolves at `myapp-web.<namespace>.svc.cluster.local`, so a release
   rename silently breaks any hardcoded URL. Never hardcode one in a Go default:
-  use `envOr("URL", "")` with no default and set it in `values.yaml`. Semgrep
-  `no-hardcoded-k8s-service-url` catches it.
+  use `envOr("URL", "")` with no default and set it in `values.yaml`. A
+  Semgrep rule (`no-hardcoded-k8s-service-url`) exists for it but gates nothing
+  until #4777 closes.
 - **New monolith endpoints that read cluster resources need matching
   `ClusterRole` verbs.** Check every `get` / `list` / `watch` the code calls
   before merging. Missing verbs fail silently in prod as `Forbidden`, which shows
@@ -238,8 +247,9 @@ Anything a worker must know goes in `AGENTS.md` or in the spec you hand it.
   log. Truncated reads are how false-green reports happen, and `ci test`
   has exited 0 without running anything (#4118). Judge a run by its
   `Executed N out of M tests` summary line, never by exit code alone.
-- **Images are apko plus `rules_apko`, never Dockerfiles**, amd64 only, always
-  non-root on uid 65532 with `runAsNonRoot: true`. Every node is amd64 and no
+- **Images are apko plus `rules_apko`, never Dockerfiles**, amd64 only by
+  convention (every caller passes `arm64 = False`; the macro default is
+  `arm64 = True`), always non-root on uid 65532 with `runAsNonRoot: true`. Every node is amd64 and no
   chart pins an arch, so the aarch64 half had no consumer. To re-add one, pass
   `arm64 = True` **and** per-arch `tars`: `arm64 = False` with `multiarch_tars`
   fails to push a layer blob, at push time, so PR CI stays green.
@@ -250,11 +260,15 @@ Anything a worker must know goes in `AGENTS.md` or in the spec you hand it.
   hardcode one.
 - **Nothing is exposed to the internet directly.** All traffic goes through
   Cloudflare.
-- **The kubernetes and ArgoCD MCP servers do not exist.** Context Forge
-  is the gateway every MCP caller reaches, and it distributes tools by caller
-  identity, but its registered upstreams are the monolith and GitHub. So do not
-  spend turns on `ToolSearch +kubernetes` or `+argocd`. Use `kubectl` and the UI
-  at `private.jomcgi.dev/app/argocd`. See `projects/mcp/ARCHITECTURE.md`. The
+- **The kubernetes and ArgoCD MCP servers do not exist.** Context Forge is
+  the gateway every human MCP caller reaches (claude.ai, Claude Code) and it
+  distributes tools by caller identity, but its only enabled upstream is the
+  monolith (a GitHub registration exists, disabled, with no tools). Ember
+  guests use a second surface, the `monolith-agents` tier, through the egress
+  sidecar. So do not spend turns on `ToolSearch +kubernetes` or `+argocd`. Use
+  `kubectl` against the hub context; the ArgoCD UI has no route on either
+  cluster, and the Kargo UI is at `private.jomcgi.dev/app/kargo`. See
+  `projects/mcp/ARCHITECTURE.md`. The
   BuildBuddy MCP needs `${BUILDBUDDY_API_KEY}` in the shell env *before* the
   session starts, and there is no fallback for inspecting CI without it.
 - **New service:** copy a recent `deploy/` directory (`projects/monolith/deploy/`
@@ -276,8 +290,9 @@ Anything a worker must know goes in `AGENTS.md` or in the spec you hand it.
 | Frontend or design work: tokens, palette, motion, a11y | `.impeccable.md` (four scoped design systems, deliberately not converged) |
 | Writing or editing prose humans read: site copy, READMEs, runbooks, posts | `docs/writing.md` |
 | Operator changes | `projects/operators/best-practices.md` |
-| How a domain works today | `projects/<domain>/ARCHITECTURE.md` where one exists (`embervm` today). Source of truth for current state, and what to link to. The ADRs are rationale |
-| Design proposals and decision rationale | `docs/decisions/`, numbered per category. Never cite one as current state: an ADR records what was decided, not what shipped |
+| How a domain works today | `projects/<domain>/ARCHITECTURE.md` (embervm, monolith, mcp, platform). Source of truth for current state, and what to link to. Each section's `**Why.**` paragraph carries the decision rationale |
+| Build, CI, tooling: Bazel, BuildBuddy, the `ci` loop, images, formatters, hooks, Semgrep, OCaml | `bazel/ARCHITECTURE.md` |
+| Design proposals and decision rationale | `docs/decisions/` is being retired (#4667): the surviving files are shared or retained ADRs awaiting the final sweep. Never cite one as current state |
 | Rolling a domain's ADRs up into `ARCHITECTURE.md` | `docs/runbooks/rollup-architecture-docs.md` |
 
 **Skills** (`.claude/skills/`, auto-matched): `ship`, `adr`, `stpa`,
