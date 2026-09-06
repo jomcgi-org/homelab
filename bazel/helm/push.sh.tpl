@@ -56,9 +56,8 @@ done
 # the same multirun and fell open to a warning). CRANE is still resolved above
 # because the PR-side call site passes it through.
 
-# _fail_missed_bump lived here. It told the author to run bump-chart.sh, which
-# is advice that no longer applies: with the version computed post-merge there
-# is no bump for a PR to miss.
+# _fail_missed_bump lived here. Its manual bump advice no longer applies: with
+# the version computed post-merge there is no bump for a PR to miss.
 #
 # CHECK_MISSED_BUMP is very much still wired, despite ADR platform/009 saying
 # the guard is "retired". Retiring it PRE-MERGE was right, because a PR carries

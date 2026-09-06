@@ -35,10 +35,9 @@ program from this repo's `//:gazelle_binary` (bazel-gazelle plus the helm,
 semgrep, bzl, go, proto and python extensions). Put it on `$PATH` and anything
 calling bare `gazelle` regenerates BUILD files by aspect-gazelle's defaults,
 which rewrites external Go deps to `:go_default_library` targets that do not
-exist and fails analysis. `//bazel/tools/BUILD` already excluded it from
-`bazel_env` for this reason; the exclusion was lost when ADR tooling/001 moved
-tool distribution to this image, and shipping it here reintroduced the silent
-corruption.
+exist and fails analysis. The former PATH tool bundle already excluded it for
+this reason; the exclusion was lost when ADR tooling/001 moved tool distribution
+to this image, and shipping it here reintroduced the silent corruption.
 
 Building the correct binary here is not an option either. It links a cgo
 tree-sitter through `@rules_python_gazelle_plugin//python`, and MODULE.bazel

@@ -114,22 +114,10 @@ projects/
 
 ## Format Command
 
-Run before committing changes:
-
-```bash
-format
-```
-
-This command:
-
-- **Formats code** (Go, Python, JavaScript, Shell, Starlark)
-- **Updates apko lock files** (container image definitions)
-- **Updates Python lock files** (from pyproject.toml)
-- **Validates apko configurations**
-- **Regenerates `projects/home-cluster/kustomization.yaml`**
-- **Runs in parallel** using Bazel for fast builds
-
-Note: Helm manifests are rendered by ArgoCD at deploy time, not committed to the repo.
+The loop is `ci` (lint changed files, selective regen, remote affected tests),
+`ci lint` for format only, and `ci regen` for generators. See
+[`bazel/ARCHITECTURE.md`](../bazel/ARCHITECTURE.md) sections on the `ci` wrapper,
+formatting, and generators for detail.
 
 ## Adding Python Dependencies
 
@@ -147,18 +135,16 @@ format
 2. **Run `format`** to format code and update lock files
 3. **Verify deployment** works end-to-end
 4. **Check observability** - metrics, logs, traces
-5. **Create PR** - BuildBuddy CI runs format check + `bazel test //...`
+5. **Create PR** - BuildBuddy runs `pr-checks` on affected targets, with a full-suite fallback on graph-shape changes; the merge queue is the authoritative full-suite gate
 6. **Merge** - ArgoCD automatically syncs changes to production cluster
 
 ## Merge Discipline
 
 All changes land by rebase merge; squash and merge commits are disabled.
-Required checks are strict: a branch must be up to date with main before it
-can merge, so every open PR re-runs CI against post-merge main. That re-run
-is what makes chart version collisions between concurrent PRs detectable
-(see [ADR platform/011](decisions/platform/011-idempotent-chart-publish-missed-bump-detection.md)).
-Any PR whose code must deploy bumps its chart version in the same PR; a
-missed bump fails the main-branch image push loudly with the fix command.
+GitHub's merge queue rebases and tests every candidate, so never rebase for
+`BEHIND`; rebase only to resolve a real conflict. PRs never carry a version
+bump; the post-merge publish writes versions back. See the
+[`pr-workflow` skill](../.claude/skills/pr-workflow/SKILL.md) for mechanics.
 Renovate opens weekly dependency PRs. Patch and minor upgrades may rebase-merge
 automatically after a three-day release age and all required checks pass. Major
 upgrades remain isolated for changelog review. A sibling Argo CronWorkflow

@@ -18,8 +18,8 @@ load(":python_tar.bzl", "python_tar")
 # proto and python extensions. Running the multitool one regenerates BUILD
 # files by its own defaults: it rewrites external Go deps to
 # :go_default_library targets that do not exist, and the tree then fails
-# analysis. //bazel/tools/BUILD has excluded it from bazel_env for the same
-# reason since before this image existed. BUILD generation belongs to CI's
+# analysis. The former PATH tool bundle excluded it for the same reason before
+# this image existed. BUILD generation belongs to CI's
 # Format stage, which runs //:gazelle through
 # //bazel/tools/format:format.
 multitool_tar(

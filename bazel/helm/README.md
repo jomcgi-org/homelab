@@ -171,6 +171,6 @@ helm_annotation_test(
 - Load only from `//bazel/helm:defs.bzl`.
 - The Helm binary is the vendored `@multitool//tools/helm`; rules never assume a
   system `helm`.
-- Bump `Chart.yaml` version and `deploy/application.yaml` `targetRevision`
-  together (the `chart-version-bot` automates this; manual bumps must keep both
-  in sync, or ArgoCD keeps deploying the old version).
+- A PR never touches `Chart.yaml` `version:` or `deploy/application.yaml`
+  `targetRevision:`; `main`'s publish computes the next version, pushes the OCI
+  chart and writes both lines back as `chart-version-bot`.
