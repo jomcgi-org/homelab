@@ -322,12 +322,11 @@ defmodule Embervm.StatefulManager do
   volume out from under it would silently orphan the bundle) so deletion is
   always an explicit, unambiguous act against a workload with nothing left
   attached. Synchronous; returns `{:ok, %{deleted: true, unreachable: nodes}}`
-  or the refusal. `unreachable` names anchors skipped rather than treated as
-  retryable RPC failures: those absent from capacity facts BEYOND the registry
-  expiry window, and those never observed by a manager that has itself been up
-  for longer than that window. An anchor quiet for less than the window, or
-  unobserved by a manager younger than it, is a retryable failure instead, so
-  the durable row survives an ordinary node blip or a control-plane restart.
+  or the refusal. `unreachable` names nodes beyond the registry expiry window
+  that did not answer a bounded best-effort DeleteVolume. An anchor quiet for
+  less than the window, or unobserved by a manager younger than it, is a
+  retryable failure instead, so the durable row survives an ordinary node blip
+  or a control-plane restart.
   """
   @spec delete_volume(GenServer.server(), String.t()) ::
           {:ok, %{deleted: true, unreachable: [String.t()]}} | {:error, term()}
@@ -365,6 +364,10 @@ defmodule Embervm.StatefulManager do
       # from permanent disconnects. This is deliberately process-local: after a CP
       # restart the full window must elapse again.
       node_last_reported_at_ms: %{},
+      # configured node_id -> last dial-home instance id reported by that node.
+      # Retained across capacity loss so destructive cleanup can still make one
+      # bounded best-effort attempt against the instance known to NodeChannel.
+      node_last_dial_id: %{},
       # node_id -> first manager-clock millisecond at which that durable volume
       # anchor was absent from NodeCapacity. Presence clears the observation.
       # Keying by anchor identity prevents a newly restored anchor from inheriting
@@ -2759,8 +2762,8 @@ defmodule Embervm.StatefulManager do
 
       # Capacity facts are the dispatchability registry. Reporting nodes require
       # a successful daemon RPC. Nodes missing within the quiet window remain
-      # retryable failures. Nodes absent beyond the window, or never observed,
-      # may be skipped and must remain visible in the success result.
+      # retryable failures. #5632: nodes absent beyond the window get one bounded
+      # best-effort attempt and remain visible only when they do not answer.
       {reachable_node_ids, not_reporting} =
         Enum.split_with(node_ids, &node_reporting?(state, &1))
 
@@ -2770,8 +2773,12 @@ defmodule Embervm.StatefulManager do
       unreachable_node_ids = Enum.sort(unreachable_node_ids)
       outcomes = Enum.map(reachable_node_ids, &{&1, safe_delete_volume(state, &1, workload)})
 
-      {successful_deletes, still_unreachable} =
-        Enum.split_with(unreachable_node_ids, fn node_id ->
+      # #5632: this loop runs inside handle_call, so each attempt costs up to the
+      # connect plus RPC deadline on the manager. It is bounded: nodes_with_volume
+      # reads the capacity table, where everything is reporting, so the
+      # not-reporting set is in practice only the durable row's anchor.
+      unreachable_node_ids =
+        Enum.reject(unreachable_node_ids, fn node_id ->
           case safe_delete_volume(state, node_id, workload) do
             :ok ->
               true
@@ -2786,8 +2793,6 @@ defmodule Embervm.StatefulManager do
           end
         end)
 
-      unreachable_node_ids = Enum.sort(still_unreachable)
-      outcomes = outcomes ++ Enum.map(successful_deletes, &{&1, :ok})
       failed_node_ids =
         ((for {node_id, :error} <- outcomes, do: node_id) ++ quiet_window_node_ids)
         |> Enum.sort()
@@ -2803,7 +2808,7 @@ defmodule Embervm.StatefulManager do
             # #5632: every node beyond the quiet window was already sent a
             # best-effort DeleteVolume above, so `unreachable` now names only
             # nodes that did not answer. The eviction dials a live node (see
-            # store_eviction_node/2) rather than blindly dialing the anchor.
+            # store_eviction_node/3) rather than blindly dialing the anchor.
             _ = evict_remote_volume(state, volume, workload)
 
             state = clear_negative_store_truth(state, workload)
@@ -2831,8 +2836,9 @@ defmodule Embervm.StatefulManager do
 
   defp safe_delete_volume(state, node_id, workload) when is_binary(node_id) do
     req = %DeleteVolumeRequest{trace: %Trace{workload: workload}, workload: workload}
+    dial = dial_id_for(state, node_id)
 
-    case safe_channel(state.channel_fun, node_id) do
+    case safe_channel(state.channel_fun, dial) do
       {:ok, channel} ->
         try do
           case state.delete_volume_fun.(channel, req) do
@@ -2845,7 +2851,7 @@ defmodule Embervm.StatefulManager do
         catch
           # Same dead-ConnectionProcess invalidation as stop_stateful_destroy.
           :exit, _ ->
-            _ = state.invalidate_fun.(node_id, channel)
+            _ = state.invalidate_fun.(dial, channel)
             :error
 
           _, _ ->
@@ -2858,6 +2864,20 @@ defmodule Embervm.StatefulManager do
   end
 
   defp safe_delete_volume(_state, _node_id, _workload), do: :ok
+
+  # #5632: NodeChannel is keyed by dial-home instance id, not configured name.
+  defp dial_id_for(state, node_id) do
+    case NodeCapacity.fetch(state.capacity_table, node_id) do
+      {:ok, fact} ->
+        Brick.dial_id(fact)
+
+      :error ->
+        case Map.get(state.node_last_dial_id, node_id) do
+          nil -> node_id
+          dial_id -> dial_id
+        end
+    end
+  end
 
   # -- adoption ------------------------------------------------------------
 
@@ -2880,24 +2900,33 @@ defmodule Embervm.StatefulManager do
     # refresh_volume_facts. The two fields coincide today only because noded
     # reports its configured name, so keying on the wrong one would leave every
     # quiet-window lookup missing and silently restore the 15 second skip.
-    reporting_configured_ids =
-      facts
-      |> Enum.map(&Map.get(&1, :configured_id))
-      |> Enum.reject(&is_nil/1)
-
     # One clock read for the whole sweep, so every node seen in this pass shares
     # a timestamp and the quiet-window comparison cannot straddle two readings.
     reported_at = state.clock.()
 
-    last_reported =
-      Enum.reduce(reporting_configured_ids, state.node_last_reported_at_ms, fn node_id, acc ->
-        Map.put(acc, node_id, reported_at)
-      end)
+    {last_reported, last_dial_ids} =
+      Enum.reduce(
+        facts,
+        {state.node_last_reported_at_ms, state.node_last_dial_id},
+        fn fact, {reported_acc, dial_acc} ->
+          case Map.get(fact, :configured_id) do
+            node_id when is_binary(node_id) ->
+              {
+                Map.put(reported_acc, node_id, reported_at),
+                Map.put(dial_acc, node_id, Brick.dial_id(fact))
+              }
+
+            _ ->
+              {reported_acc, dial_acc}
+          end
+        end
+      )
 
     state = %{
       state
       | seen_reporting_nodes: MapSet.union(state.seen_reporting_nodes, reporting_nodes),
-        node_last_reported_at_ms: last_reported
+        node_last_reported_at_ms: last_reported,
+        node_last_dial_id: last_dial_ids
     }
     state = observe_missing_volume_anchors(state)
     live_vms = index_stateful_vms(facts)
@@ -3995,31 +4024,31 @@ defmodule Embervm.StatefulManager do
   # -- remote volume eviction (R6, Task 9) ------------------------------------
 
   # Drop the store copy of a workload's VOLUME (EvictArtifact, remote=true, kind
-  # VOLUME) alongside DeleteVolume. Best-effort; the daemon refuses the evict if a
-  # bundle still pairs (its own generation guard), and here delete was already
-  # refused while any instance existed, so the guard is doubly held.
+  # VOLUME) alongside DeleteVolume. Best-effort. The control-plane guard (refusal
+  # while a non-terminal instance exists) is the primary lock; the daemon's
+  # generation guard is secondary and runs on the node holding the volume.
   defp evict_remote_volume(state, %{node_id: anchor}, workload) when is_binary(anchor) do
-    node_id = store_eviction_node(state, anchor, workload)
-
     # Ref EMPTY for the same reason as restore_volume: the export lives at
     # volume/<workload>/, so a ref-bearing evict silently deleted nothing.
     artifact = %ArtifactRef{kind: :ARTIFACT_KIND_VOLUME, workload: workload}
     req = %EvictArtifactRequest{artifact: artifact, remote: true, trace: %Trace{workload: workload}}
 
+    dial_id = store_eviction_node(state, anchor, workload)
+
     result =
-      case safe_channel(state.channel_fun, node_id) do
+      case safe_channel(state.channel_fun, dial_id) do
         {:ok, channel} ->
           try do
             case state.evict_artifact_fun.(channel, req) do
-              {:error, reason} -> {:error, reason}
-              :error -> {:error, :error}
-              _ -> :ok
+              {:ok, _} -> :ok
+              :ok -> :ok
+              other -> {:error, {:unexpected, other}}
             end
           rescue
             error -> {:error, {:raised, error}}
           catch
             :exit, reason ->
-              _ = state.invalidate_fun.(node_id, channel)
+              _ = state.invalidate_fun.(dial_id, channel)
               {:error, {:exit, reason}}
 
             kind, reason ->
@@ -4039,7 +4068,8 @@ defmodule Embervm.StatefulManager do
 
       {:error, reason} ->
         Logger.warning("embervm stateful: store eviction failed, store copy may be orphaned",
-          node_id: node_id,
+          node_id: anchor,
+          dial_id: dial_id,
           workload: workload,
           error: inspect(reason)
         )
@@ -4050,33 +4080,37 @@ defmodule Embervm.StatefulManager do
 
   defp evict_remote_volume(_state, _volume, _workload), do: :ok
 
-  # #5632: the node the store eviction dials. The anchor while it reports;
-  # otherwise any reporting node, preferring one that reports a reachable store,
-  # since the eviction only needs a daemon that can talk to the object store.
-  # With no reporting node at all, fall back to the anchor and say so: the
-  # eviction is then best-effort against a node the CP cannot see.
+  # #5632: the dial id the store eviction uses. Only a daemon reporting a
+  # reachable store may be dialed (a daemon with no store configured answers a
+  # remote evict with success, which would leak the copy silently). The anchor
+  # wins when it qualifies, then configured node order. With no qualifying node,
+  # fall back to the anchor's last-known dial id and say so.
   defp store_eviction_node(state, anchor, workload) do
-    if node_reporting?(state, anchor) do
-      anchor
-    else
-      reporting =
-        state.capacity_table
-        |> NodeCapacity.all()
-        |> Enum.filter(&is_binary(Map.get(&1, :configured_id)))
-        |> Enum.sort_by(&{Map.get(&1, :store_reachable, false) != true, &1.configured_id})
+    candidates =
+      state.capacity_table
+      |> NodeCapacity.all()
+      |> Enum.filter(fn fact ->
+        Map.get(fact, :store_reachable) == true and is_binary(Map.get(fact, :configured_id))
+      end)
 
-      case reporting do
-        [%{configured_id: node_id} | _] ->
-          node_id
+    case Enum.find(candidates, &(&1.configured_id == anchor)) do
+      %{} = anchor_fact ->
+        Brick.dial_id(anchor_fact)
 
-        [] ->
-          Logger.warning("embervm stateful: no reporting node for store eviction, dialing the anchor",
-            node_id: anchor,
-            workload: workload
-          )
+      nil ->
+        case Enum.sort_by(candidates, & &1.configured_id) do
+          [fact | _] ->
+            Brick.dial_id(fact)
 
-          anchor
-      end
+          [] ->
+            Logger.warning(
+              "embervm stateful: no store-reachable node for store eviction, dialing the anchor best-effort",
+              node_id: anchor,
+              workload: workload
+            )
+
+            dial_id_for(state, anchor)
+        end
     end
   end
 

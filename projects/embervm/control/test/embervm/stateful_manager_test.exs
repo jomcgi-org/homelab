@@ -189,7 +189,7 @@ defmodule Embervm.StatefulManagerTest do
   end
 
   defp stateful_node(ctx, node_id, opts \\ []) do
-    NodeCapacity.put(ctx.cap_table, node_id, %{
+    fact = %{
       configured_id: node_id,
       node_id: node_id,
       # CPU-vendor fact (Bug B): stamped onto a vendor-bound restore ref (STATEFUL),
@@ -212,7 +212,25 @@ defmodule Embervm.StatefulManagerTest do
       stateful_bundles: Keyword.get(opts, :stateful_bundles, []),
       volumes: Keyword.get(opts, :volumes, []),
       store_reachable: Keyword.get(opts, :store_reachable, false)
-    })
+    }
+
+    fact =
+      case Keyword.fetch(opts, :instance_id) do
+        {:ok, instance_id} -> Map.put(fact, :instance_id, instance_id)
+        :error -> fact
+      end
+
+    NodeCapacity.put(ctx.cap_table, node_id, fact)
+  end
+
+  defp instance_only_channel_fun do
+    fn key ->
+      if String.contains?(key, "/") do
+        {:ok, key}
+      else
+        {:error, :unknown_node}
+      end
+    end
   end
 
   # Registration opens a deliberately blocked fake WatchNode stream, and each
@@ -2253,8 +2271,8 @@ defmodule Embervm.StatefulManagerTest do
       allocated_bytes: 1
     })
 
-    # A skipped node beyond the quiet window IS dialed best-effort; a failed dial
-    # abandons it without blocking the delete.
+    # A skipped node beyond the quiet window is dialed best-effort; a failed dial
+    # (channel error) abandons it without a DeleteVolume RPC being attempted.
     Agent.update(now, &(&1 + 90_001))
 
     assert {:ok, %{deleted: true, unreachable: ["node-gone"]}} =
@@ -2456,13 +2474,10 @@ defmodule Embervm.StatefulManagerTest do
     ctx =
       start_stack(
         clock: clock,
-        channel_fun: fn
-          "node-1" -> {:error, :unknown_node}
-          node_id -> {:ok, node_id}
-        end,
+        channel_fun: instance_only_channel_fun(),
         delete_volume_fun: fn node_id, req ->
           Agent.update(deleted, &[{node_id, req} | &1])
-          {:ok, %{}}
+          if node_id == "node-1/pod-x", do: {:error, :boom}, else: {:ok, %{}}
         end,
         evict_artifact_fun: fn node_id, req ->
           Agent.update(evicted, &[{node_id, req} | &1])
@@ -2473,10 +2488,11 @@ defmodule Embervm.StatefulManagerTest do
     stateful_workload(ctx, "wl-a")
 
     stateful_node(ctx, "node-1",
+      instance_id: "node-1/pod-x",
       volumes: [%{workload: "wl-a", generation: 1, size_bytes: 10, allocated_bytes: 1}]
     )
 
-    stateful_node(ctx, "node-2", store_reachable: true)
+    stateful_node(ctx, "node-2", instance_id: "node-2/pod-x", store_reachable: true)
     StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-1", generation: 1})
     :ok = StatefulManager.reconcile(ctx.mgr)
 
@@ -2487,9 +2503,9 @@ defmodule Embervm.StatefulManagerTest do
              StatefulManager.delete_volume(ctx.mgr, "wl-a")
 
     assert StatefulStore.get_volume(ctx.store, "wl-a") == nil
-    refute Enum.any?(Agent.get(deleted, & &1), fn {node_id, _req} -> node_id == "node-1" end)
+    assert [{"node-1/pod-x", _delete_req}] = Agent.get(deleted, & &1)
 
-    assert [{"node-2", req}] = Agent.get(evicted, & &1)
+    assert [{"node-2/pod-x", req}] = Agent.get(evicted, & &1)
     assert req.remote
     assert req.artifact.kind == :ARTIFACT_KIND_VOLUME
     assert req.artifact.workload == "wl-a"
@@ -2500,7 +2516,7 @@ defmodule Embervm.StatefulManagerTest do
 
     ctx =
       start_stack(
-        channel_fun: fn node_id -> {:ok, node_id} end,
+        channel_fun: instance_only_channel_fun(),
         delete_volume_fun: fn _node_id, _req -> {:ok, %{}} end,
         evict_artifact_fun: fn node_id, req ->
           Agent.update(evicted, &[{node_id, req} | &1])
@@ -2509,9 +2525,14 @@ defmodule Embervm.StatefulManagerTest do
       )
 
     stateful_workload(ctx, "wl-a")
-    stateful_node(ctx, "node-1", volumes: [%{workload: "wl-a"}])
+    stateful_node(ctx, "node-1",
+      instance_id: "node-1/pod-x",
+      volumes: [%{workload: "wl-a"}],
+      store_reachable: true
+    )
 
     stateful_node(ctx, "node-2",
+      instance_id: "node-2/pod-x",
       volumes: [%{workload: "wl-a"}],
       store_reachable: true
     )
@@ -2521,7 +2542,7 @@ defmodule Embervm.StatefulManagerTest do
     assert {:ok, %{deleted: true, unreachable: []}} =
              StatefulManager.delete_volume(ctx.mgr, "wl-a")
 
-    assert [{"node-1", req}] = Agent.get(evicted, & &1)
+    assert [{"node-1/pod-x", req}] = Agent.get(evicted, & &1)
     assert req.remote
     assert req.artifact.kind == :ARTIFACT_KIND_VOLUME
     assert req.artifact.workload == "wl-a"
@@ -2535,9 +2556,9 @@ defmodule Embervm.StatefulManagerTest do
     ctx =
       start_stack(
         clock: clock,
-        channel_fun: fn node_id -> {:ok, node_id} end,
+        channel_fun: instance_only_channel_fun(),
         delete_volume_fun: fn
-          "anchor-node", _req -> {:error, :boom}
+          "anchor-node/pod-x", _req -> {:error, :boom}
           _node_id, _req -> {:ok, %{}}
         end,
         evict_artifact_fun: fn node_id, req ->
@@ -2549,6 +2570,7 @@ defmodule Embervm.StatefulManagerTest do
     stateful_workload(ctx, "wl-a")
 
     stateful_node(ctx, "anchor-node",
+      instance_id: "anchor-node/pod-x",
       volumes: [%{workload: "wl-a", generation: 1, size_bytes: 10, allocated_bytes: 1}]
     )
 
@@ -2558,6 +2580,7 @@ defmodule Embervm.StatefulManagerTest do
     NodeCapacity.drop(ctx.cap_table, "anchor-node")
 
     stateful_node(ctx, "node-2",
+      instance_id: "node-2/pod-x",
       volumes: [%{workload: "wl-a", generation: 1, size_bytes: 10, allocated_bytes: 1}],
       store_reachable: true
     )
@@ -2568,7 +2591,7 @@ defmodule Embervm.StatefulManagerTest do
              StatefulManager.delete_volume(ctx.mgr, "wl-a")
 
     assert StatefulStore.get_volume(ctx.store, "wl-a") == nil
-    assert [{"node-2", _req}] = Agent.get(evicted, & &1)
+    assert [{"node-2/pod-x", _req}] = Agent.get(evicted, & &1)
   end
 
   test "delete_volume invalidates channel on best-effort delete exit" do
@@ -2579,13 +2602,13 @@ defmodule Embervm.StatefulManagerTest do
     ctx =
       start_stack(
         clock: clock,
-        channel_fun: fn node_id -> {:ok, node_id} end,
+        channel_fun: instance_only_channel_fun(),
         invalidate_fun: fn node_id, channel ->
           Agent.update(invalidated, &[{node_id, channel} | &1])
           :ok
         end,
         delete_volume_fun: fn
-          "anchor", _req -> exit(:noproc)
+          "anchor/pod-x", _req -> exit(:noproc)
           _node_id, _req -> {:ok, %{}}
         end,
         evict_artifact_fun: fn _node_id, _req -> {:ok, %{}} end
@@ -2594,6 +2617,7 @@ defmodule Embervm.StatefulManagerTest do
     stateful_workload(ctx, "wl-a")
 
     stateful_node(ctx, "anchor",
+      instance_id: "anchor/pod-x",
       volumes: [%{workload: "wl-a", generation: 1, size_bytes: 10, allocated_bytes: 1}]
     )
 
@@ -2603,6 +2627,7 @@ defmodule Embervm.StatefulManagerTest do
     NodeCapacity.drop(ctx.cap_table, "anchor")
 
     stateful_node(ctx, "node-2",
+      instance_id: "node-2/pod-x",
       volumes: [%{workload: "wl-a", generation: 1, size_bytes: 10, allocated_bytes: 1}],
       store_reachable: true
     )
@@ -2612,8 +2637,187 @@ defmodule Embervm.StatefulManagerTest do
     assert {:ok, %{deleted: true, unreachable: ["anchor"]}} =
              StatefulManager.delete_volume(ctx.mgr, "wl-a")
 
-    assert {"anchor", "anchor"} in Agent.get(invalidated, & &1)
+    assert {"anchor/pod-x", "anchor/pod-x"} in Agent.get(invalidated, & &1)
     assert StatefulStore.get_volume(ctx.store, "wl-a") == nil
+  end
+
+  test "best-effort delete reaches an anchor that stopped reporting through its last-known dial id" do
+    {:ok, now} = Agent.start_link(fn -> 1_000 end)
+    {:ok, deleted} = Agent.start_link(fn -> [] end)
+    {:ok, evicted} = Agent.start_link(fn -> [] end)
+    clock = fn -> Agent.get(now, & &1) end
+
+    ctx =
+      start_stack(
+        clock: clock,
+        channel_fun: instance_only_channel_fun(),
+        delete_volume_fun: fn node_id, req ->
+          Agent.update(deleted, &[{node_id, req} | &1])
+          {:ok, %{}}
+        end,
+        evict_artifact_fun: fn node_id, req ->
+          Agent.update(evicted, &[{node_id, req} | &1])
+          {:ok, %{}}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+
+    stateful_node(ctx, "node-1",
+      instance_id: "node-1/pod-x",
+      volumes: [%{workload: "wl-a", generation: 1, size_bytes: 10, allocated_bytes: 1}]
+    )
+
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{
+      node_id: "node-1",
+      generation: 1,
+      size_bytes: 10,
+      allocated_bytes: 1
+    })
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    NodeCapacity.drop(ctx.cap_table, "node-1")
+    Agent.update(now, &(&1 + 90_001))
+
+    assert {:ok, %{deleted: true, unreachable: []}} =
+             StatefulManager.delete_volume(ctx.mgr, "wl-a")
+
+    assert [{"node-1/pod-x", delete_req}] = Agent.get(deleted, & &1)
+    assert delete_req.workload == "wl-a"
+    assert StatefulStore.get_volume(ctx.store, "wl-a") == nil
+    assert [{"node-1/pod-x", evict_req}] = Agent.get(evicted, & &1)
+    assert evict_req.artifact.workload == "wl-a"
+  end
+
+  test "a never-reporting anchor has no dial id and is abandoned" do
+    {:ok, now} = Agent.start_link(fn -> 1_000 end)
+    {:ok, deleted} = Agent.start_link(fn -> [] end)
+    {:ok, evicted} = Agent.start_link(fn -> [] end)
+    clock = fn -> Agent.get(now, & &1) end
+
+    ctx =
+      start_stack(
+        clock: clock,
+        channel_fun: instance_only_channel_fun(),
+        delete_volume_fun: fn node_id, req ->
+          Agent.update(deleted, &[{node_id, req} | &1])
+          {:ok, %{}}
+        end,
+        evict_artifact_fun: fn node_id, req ->
+          Agent.update(evicted, &[{node_id, req} | &1])
+          {:ok, %{}}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{
+      node_id: "node-never",
+      generation: 1,
+      size_bytes: 10,
+      allocated_bytes: 1
+    })
+
+    stateful_node(ctx, "node-2",
+      instance_id: "node-2/pod-x",
+      store_reachable: true,
+      volumes: [%{workload: "wl-a", generation: 1, size_bytes: 10, allocated_bytes: 1}]
+    )
+
+    Agent.update(now, &(&1 + 90_001))
+
+    assert {:ok, %{deleted: true, unreachable: ["node-never"]}} =
+             StatefulManager.delete_volume(ctx.mgr, "wl-a")
+
+    assert [{"node-2/pod-x", delete_req}] = Agent.get(deleted, & &1)
+    assert delete_req.workload == "wl-a"
+    assert StatefulStore.get_volume(ctx.store, "wl-a") == nil
+    assert [{"node-2/pod-x", evict_req}] = Agent.get(evicted, & &1)
+    assert evict_req.artifact.workload == "wl-a"
+  end
+
+  test "store eviction skips a reporting node without a reachable store" do
+    {:ok, now} = Agent.start_link(fn -> 1_000 end)
+    {:ok, evicted} = Agent.start_link(fn -> [] end)
+    clock = fn -> Agent.get(now, & &1) end
+
+    ctx =
+      start_stack(
+        clock: clock,
+        channel_fun: instance_only_channel_fun(),
+        delete_volume_fun: fn
+          "node-1/pod-x", _req -> {:error, :boom}
+          _node_id, _req -> {:ok, %{}}
+        end,
+        evict_artifact_fun: fn node_id, req ->
+          Agent.update(evicted, &[{node_id, req} | &1])
+          {:ok, %{}}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+
+    stateful_node(ctx, "node-1",
+      instance_id: "node-1/pod-x",
+      volumes: [%{workload: "wl-a", generation: 1, size_bytes: 10, allocated_bytes: 1}]
+    )
+
+    stateful_node(ctx, "node-2", instance_id: "node-2/pod-x")
+    stateful_node(ctx, "node-3", instance_id: "node-3/pod-x", store_reachable: true)
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-1", generation: 1})
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    NodeCapacity.drop(ctx.cap_table, "node-1")
+    Agent.update(now, &(&1 + 90_001))
+
+    assert {:ok, %{deleted: true, unreachable: ["node-1"]}} =
+             StatefulManager.delete_volume(ctx.mgr, "wl-a")
+
+    assert StatefulStore.get_volume(ctx.store, "wl-a") == nil
+    assert [{"node-3/pod-x", req}] = Agent.get(evicted, & &1)
+    assert req.artifact.workload == "wl-a"
+  end
+
+  test "store eviction warns and dials the anchor when no node reports a reachable store" do
+    {:ok, now} = Agent.start_link(fn -> 1_000 end)
+    {:ok, evicted} = Agent.start_link(fn -> [] end)
+    clock = fn -> Agent.get(now, & &1) end
+
+    ctx =
+      start_stack(
+        clock: clock,
+        channel_fun: instance_only_channel_fun(),
+        delete_volume_fun: fn _node_id, _req -> {:error, :boom} end,
+        evict_artifact_fun: fn node_id, req ->
+          Agent.update(evicted, &[{node_id, req} | &1])
+          {:ok, %{}}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+
+    stateful_node(ctx, "node-1",
+      instance_id: "node-1/pod-x",
+      volumes: [%{workload: "wl-a", generation: 1, size_bytes: 10, allocated_bytes: 1}]
+    )
+
+    StatefulStore.upsert_volume(ctx.store, "wl-a", %{node_id: "node-1", generation: 1})
+    :ok = StatefulManager.reconcile(ctx.mgr)
+    NodeCapacity.drop(ctx.cap_table, "node-1")
+    Agent.update(now, &(&1 + 90_001))
+
+    log =
+      capture_log(fn ->
+        assert {:ok, %{deleted: true, unreachable: ["node-1"]}} =
+                 StatefulManager.delete_volume(ctx.mgr, "wl-a")
+      end)
+
+    assert log =~
+             "no store-reachable node for store eviction, dialing the anchor best-effort"
+
+    assert StatefulStore.get_volume(ctx.store, "wl-a") == nil
+    assert [{"node-1/pod-x", req}] = Agent.get(evicted, & &1)
+    assert req.artifact.workload == "wl-a"
   end
 
   test "delete_volume treats a never-seen node as long-gone" do
