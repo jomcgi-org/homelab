@@ -582,6 +582,136 @@ for line in sys.stdin:
 """
 
 
+FAKE_MUSE_CLI = r"""#!/usr/bin/env python3
+import json
+import os
+import sys
+
+args = sys.argv[1:]
+assert args[0] == "exec"
+assert "--json" in args
+assert args[args.index("--model") + 1] == "muse-spark-1.3-contributor"
+assert args[args.index("--base-url") + 1] == "https://api.meta.ai/v1"
+for flag in (
+    "--api-key-stdin",
+    "--disable-sandbox",
+    "--trust-workspace",
+    "--no-foreign-personal-context",
+    "--no-session-log",
+):
+    assert flag in args
+assert args[args.index("--approval-mode") + 1] == "never"
+assert os.environ["XDG_CONFIG_HOME"] == os.path.join(os.getcwd(), ".muse", "config")
+assert os.environ["XDG_DATA_HOME"] == os.path.join(os.getcwd(), ".muse", "data")
+assert os.path.isdir(os.environ["XDG_CONFIG_HOME"])
+assert os.path.isdir(os.environ["XDG_DATA_HOME"])
+assert sys.stdin.readline().strip() == "sk-noauth"
+
+args_path = os.environ.get("FAKE_MUSE_ARGS")
+if args_path:
+    with open(args_path, "a") as stream:
+        json.dump(args, stream)
+        stream.write("\n")
+
+session_id = args[args.index("--session-id") + 1]
+prompt = args[-1]
+command_id = "15cf6510-9de2-4c3d-aa2e-07c039e42394"
+stream_id = "01a0779b-bcc0-7a73-b0a7-86189d921714"
+
+def emit(sequence, payload_type, payload, record_type="event", durability="durable"):
+    print(json.dumps({
+        "schema_version": 1,
+        "id": "018f0000-0000-7000-8000-%012x" % (50000 + sequence),
+        "stream": {"kind": "session", "id": stream_id},
+        "sequence": sequence,
+        "recorded_at": 1780531400000000 + sequence,
+        "record_type": record_type,
+        "durability": durability,
+        "causation_id": command_id,
+        "payload_type": payload_type,
+        "payload_schema_version": 1,
+        "payload": payload,
+    }), flush=True)
+
+def run_stream():
+    return {"kind": "run", "id": command_id}
+
+print("muse: workspace root: %s (cwd default)" % os.getcwd(), flush=True)
+emit(1, "runtime.command.accepted", {
+    "kind": "command_accepted", "command_id": command_id,
+    "client_id": None, "command_kind": "turn.submit",
+}, "reconciliation")
+emit(2, "session.run.linked", {
+    "kind": "session_run_linked", "command_id": command_id,
+    "run_stream": run_stream(),
+})
+emit(3, "run.model.configured", {
+    "kind": "run_model_configured", "command_id": command_id,
+    "run_stream": run_stream(), "provider_id": "meta", "profile_id": None,
+    "model_id": "muse-spark-1.3-contributor",
+    "display_label": "muse-spark-1.3-contributor", "source": "startup",
+})
+emit(4, "session.workspace_branch.observed", {
+    "kind": "workspace_branch_observed", "command_id": command_id,
+    "record": {"command_id": command_id, "workspace_root": os.getcwd(),
+               "reference": {"kind": "branch", "name": "main"}, "vcs": "git"},
+})
+emit(5, "turn.input.user", {
+    "kind": "turn_input_user", "command_id": command_id,
+    "run_stream": run_stream(), "prompt": prompt,
+}, "status", "ephemeral")
+emit(6, "run.lifecycle.started", {
+    "kind": "run_started", "command_id": command_id,
+    "run_stream": run_stream(), "prompt": prompt,
+})
+emit(7, "task.stream.linked", {
+    "kind": "task_stream_linked", "command_id": command_id,
+    "run_stream": run_stream(), "task_id": "task-1",
+    "task_stream": {"kind": "task", "id": "task-1"},
+})
+for sequence, kind in enumerate((
+    "proposed", "accepted", "scheduled", "side_effect_intent", "started", "status"
+), 8):
+    emit(sequence, "task.lifecycle.%s" % kind, {
+        "kind": "task_lifecycle", "command_id": command_id,
+        "run_stream": run_stream(), "task_id": "task-1",
+        "task_stream": {"kind": "task", "id": "task-1"},
+        "event": {"kind": kind, "task_id": "task-1"},
+    })
+if os.environ.get("FAKE_MUSE_SCENARIO") == "error-recovery":
+    print(json.dumps({"error_kind": "server", "message": "retrying"}), flush=True)
+emit(14, "run.output.delta", {
+    "kind": "run_output_delta", "command_id": command_id,
+    "run_stream": run_stream(), "text": "pong",
+}, "status", "ephemeral")
+emit(15, "task.lifecycle.status", {
+    "kind": "task_lifecycle", "command_id": command_id,
+    "run_stream": run_stream(), "task_id": "task-1",
+    "task_stream": {"kind": "task", "id": "task-1"},
+    "event": {"kind": "status", "task_id": "task-1",
+              "message": "completed meta model stream attempt 1/10"},
+})
+emit(16, "task.lifecycle.completed", {
+    "kind": "task_lifecycle", "command_id": command_id,
+    "run_stream": run_stream(), "task_id": "task-1",
+    "task_stream": {"kind": "task", "id": "task-1"},
+    "event": {"kind": "completed", "task_id": "task-1"},
+})
+if os.environ.get("FAKE_MUSE_SCENARIO") != "missing-terminal":
+    emit(17, "run.terminal.completed", {
+        "kind": "run_terminal", "command_id": command_id,
+        "run_stream": run_stream(), "terminal": "completed",
+        "text": "pong", "reason": None,
+    })
+emit(18, "session.workspace_branch.observed", {
+    "kind": "workspace_branch_observed", "command_id": command_id,
+    "record": {"command_id": command_id, "workspace_root": os.getcwd(),
+               "reference": {"kind": "branch", "name": "main"},
+               "vcs": "git", "dirty": False},
+})
+"""
+
+
 FAKE_EMPTY_CODEX_CLI = r"""#!/usr/bin/env python3
 import sys
 
@@ -607,6 +737,10 @@ def test_fake_codex_cli_fixture_syntax_is_valid():
 
 def test_fake_pi_cli_fixture_syntax_is_valid():
     ast.parse(FAKE_PI_CLI)
+
+
+def test_fake_muse_cli_fixture_syntax_is_valid():
+    ast.parse(FAKE_MUSE_CLI)
 
 
 def _codex_manager(tmp_path, monkeypatch):
@@ -639,6 +773,17 @@ def _pi_manager(tmp_path, monkeypatch):
     return shim.PiProcess(str(workspace), str(executable))
 
 
+def _muse_manager(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executable = tmp_path / "fake-muse"
+    executable.write_text(FAKE_MUSE_CLI)
+    os.chmod(executable, 0o755)
+    monkeypatch.setenv("FAKE_MUSE_ARGS", str(tmp_path / "muse-args.jsonl"))
+    monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
+    return shim.MuseProcess(str(workspace), str(executable))
+
+
 def _manager_with_empty_cli(tmp_path, monkeypatch, cli, process_type):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -665,6 +810,82 @@ def test_codex_empty_event_stream_raises_error(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="codex empty event stream") as exc_info:
         manager.turn("hello", model="luna")
     assert "exit code 0" in str(exc_info.value)
+
+
+def test_muse_first_turn_returns_terminal_text(tmp_path, monkeypatch):
+    manager = _muse_manager(tmp_path, monkeypatch)
+
+    record = manager.turn("ping", model="spark")
+
+    assert record == {
+        "result": "pong",
+        "terminal_reason": "completed",
+        "session_id": manager.session_id,
+        "model": "spark",
+        "usage": {},
+        "voice": "pong",
+        "activities": [],
+    }
+
+
+def test_muse_argv_uses_contributor_model_and_reuses_session_id(tmp_path, monkeypatch):
+    manager = _muse_manager(tmp_path, monkeypatch)
+
+    first = manager.turn("first", model="spark")
+    second = manager.turn("second", session_id=first["session_id"], model="qwen")
+
+    calls = [
+        json.loads(line)
+        for line in (tmp_path / "muse-args.jsonl").read_text().splitlines()
+    ]
+    assert len(calls) == 2
+    assert all("--json" in call for call in calls)
+    assert all(
+        call[call.index("--model") + 1] == "muse-spark-1.3-contributor"
+        for call in calls
+    )
+    session_ids = [call[call.index("--session-id") + 1] for call in calls]
+    assert session_ids == [first["session_id"], first["session_id"]]
+    assert second["session_id"] == first["session_id"]
+
+
+def test_muse_retryable_error_record_does_not_fail_turn(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("FAKE_MUSE_SCENARIO", "error-recovery")
+    manager = _muse_manager(tmp_path, monkeypatch)
+
+    record = manager.turn("retry", model="spark")
+
+    assert record["result"] == "pong"
+    assert "muse retryable error" in capsys.readouterr().err
+
+
+def test_muse_missing_terminal_event_raises_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_MUSE_SCENARIO", "missing-terminal")
+    manager = _muse_manager(tmp_path, monkeypatch)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"muse exited before run\.terminal\.completed, exit code 0",
+    ):
+        manager.turn("no terminal", model="spark")
+
+
+def test_muse_models_are_always_contributor_tier():
+    # Plain Muse Spark costs 12.5x the contributor tier on input tokens.
+    assert all(model.endswith("-contributor") for model in shim.MUSE_MODELS.values())
+
+
+def test_muse_extracts_provider_usage_when_present():
+    event = {
+        "payload": {
+            "provider_details": {"usage": {"input_tokens": 3, "output_tokens": 4}}
+        }
+    }
+
+    assert shim.MuseProcess._usage_from_event(event) == {
+        "input_tokens": 3,
+        "output_tokens": 4,
+    }
 
 
 def test_pi_first_turn_returns_text_session_and_usage(tmp_path, monkeypatch):
@@ -1207,21 +1428,24 @@ def test_pi_resume_uses_session_flag(tmp_path, monkeypatch):
     manager._close_process()
 
 
-def test_manager_routes_spark_to_pi(tmp_path, monkeypatch):
+def test_manager_routes_muse_and_pi_spark_rollback_alias(tmp_path, monkeypatch):
     manager = shim.ProcessManager(
         tmp_path / "workspace",
         tmp_path / "fake-claude",
         tmp_path / "fake-codex",
         tmp_path / "fake-pi",
+        tmp_path / "fake-muse",
     )
-    assert manager._adapter("spark") is manager.pi
-    assert manager._adapter("qwen") is manager.pi
+    assert manager._adapter("spark") is manager.muse
+    assert manager._adapter("qwen") is manager.muse
+    assert manager._adapter("pi-spark") is manager.pi
     assert manager._adapter("luna") is manager.codex
     assert manager._adapter(None) is manager.claude
 
 
 def test_pi_model_alias_normalizes_to_spark():
     assert shim._canonical_pi_model("qwen") == "spark"
+    assert shim._canonical_pi_model("pi-spark") == "spark"
     assert shim._canonical_pi_model("spark") == "spark"
 
 
@@ -1231,6 +1455,7 @@ def _adapter_manager(prewarm_clis):
     manager.claude = object()
     manager.codex = object()
     manager.pi = object()
+    manager.muse = object()
     return manager
 
 
@@ -1251,7 +1476,9 @@ def test_manager_explicit_model_routing_precedes_cli_fallback(prewarm_clis):
     manager = _adapter_manager(prewarm_clis)
     codex_model = next(iter(shim.CODEX_MODELS))
 
-    assert manager._adapter("spark") is manager.pi
+    assert manager._adapter("spark") is manager.muse
+    assert manager._adapter("qwen") is manager.muse
+    assert manager._adapter("pi-spark") is manager.pi
     assert manager._adapter(codex_model) is manager.codex
 
 
@@ -1809,6 +2036,29 @@ def _new_process_manager():
     manager._prewarm_clis = ()
     manager._mount_lock = threading.Lock()
     manager._thread_factory = threading.Thread
+
+    class MuseAdapter:
+        workspace = None
+        process = None
+        requires_git_checkout = False
+
+        def __init__(self):
+            self.turn_lock = threading.Lock()
+
+        def ready(self):
+            return True
+
+        def interrupt(self):
+            return {
+                "terminal_reason": "user_interrupt",
+                "killed": False,
+                "timeout": False,
+            }
+
+        def _close_process(self, **_kwargs):
+            self.process = None
+
+    manager.muse = MuseAdapter()
     return manager
 
 
@@ -2773,6 +3023,7 @@ def test_process_manager_normalizes_non_repo_workspace_to_src(tmp_path, monkeypa
     monkeypatch.setattr(shim, "ClaudeProcess", Adapter)
     monkeypatch.setattr(shim, "CodexProcess", Adapter)
     monkeypatch.setattr(shim, "PiProcess", Adapter)
+    monkeypatch.setattr(shim, "MuseProcess", Adapter)
 
     manager = shim.ProcessManager(tmp_path / "workspace", "claude", "codex", "pi")
 
@@ -2933,9 +3184,10 @@ def test_takeover_remediation_closes_stranded_process_without_respawn(
 def test_takeover_remediation_closes_stranded_prewarms_of_every_family(
     tmp_path, monkeypatch
 ):
-    """#4423 parity: a volume takeover strands parked codex and pi too.
+    """#4423 parity: a volume takeover strands every active CLI process.
 
-    All three families were spawned against the base's tmpfs workspace; when
+    All four families can have a process against the base's tmpfs workspace;
+    when
     the session volume bind-mounts over /workspace, each parked process holds
     config paths on the hidden tmpfs, so remediation must close all of them
     and let each family's turn path lazy-spawn against the volume.
@@ -2967,6 +3219,7 @@ def test_takeover_remediation_closes_stranded_prewarms_of_every_family(
     manager.claude = Adapter()
     manager.codex = Adapter()
     manager.pi = Adapter()
+    manager.muse = Adapter()
     # The takeover has happened: current identity (2, 2) differs from every
     # parked process's spawn-time identity (1, 1).
     manager._workspace_identity = lambda _path: (2, 2)
@@ -2977,7 +3230,7 @@ def test_takeover_remediation_closes_stranded_prewarms_of_every_family(
 
     assert manager.ready()
     manager._remediation_thread.join(timeout=1)
-    for name in ("claude", "codex", "pi"):
+    for name in ("claude", "codex", "pi", "muse"):
         assert getattr(manager, name).process is None
 
 
@@ -3020,6 +3273,7 @@ def test_remediation_recreates_cli_workspace_hidden_by_volume_mount(
     manager.claude = Adapter()
     manager.codex = manager.claude
     manager.pi = manager.claude
+    manager.muse = manager.claude
     manager._workspace_identity = lambda _path: (1, 1)
 
     def fake_mount():
@@ -3151,14 +3405,15 @@ def test_remediation_bound_session_closes_without_respawn(tmp_path, monkeypatch)
             calls.append("spawn")
 
     manager.claude = Adapter()
-    # The remediation pass covers every family now; codex and pi are dormant
-    # stubs here (no process, never spawned), so closing them records nothing.
+    # The remediation pass covers every family now; the other adapters are
+    # dormant stubs here (no process, never spawned).
     manager.codex = Adapter()
     manager.pi = Adapter()
+    manager.muse = Adapter()
     monkeypatch.setattr(shim, "ensure_workspace_volume", lambda: None)
     manager._workspace_identity = lambda _path: (2, 2)
     manager._remediate_workspace()
-    assert calls.count("close") == 3
+    assert calls.count("close") == 4
     assert "spawn" not in calls
     assert manager.claude.session_id == "bound-session"
 
@@ -3296,6 +3551,7 @@ def test_remediation_attempts_cap_at_three(tmp_path, monkeypatch):
     manager.claude = Adapter()
     manager.codex = manager.claude
     manager.pi = manager.claude
+    manager.muse = manager.claude
     manager._workspace_identity = lambda _path: (1, 1)
     monkeypatch.setattr(shim, "_workspace_is_tmpfs", lambda: True)
     monkeypatch.setattr(shim, "_volume_has_ext4", lambda: True)
@@ -3358,6 +3614,7 @@ def test_concurrent_ensure_workspace_volume_serializes(tmp_path, monkeypatch):
     manager.claude = Adapter()
     manager.codex = manager.claude
     manager.pi = manager.claude
+    manager.muse = manager.claude
     manager._workspace_identity = lambda _path: (1, 1)
     monkeypatch.setattr(shim, "ensure_workspace_volume", ensure)
     monkeypatch.setattr(shim, "_ensure_cli_dir", lambda _path: None)
@@ -4131,6 +4388,7 @@ def test_process_manager_forwards_adapter_specific_turn_options(monkeypatch):
     manager.claude = FakeAdapter()
     manager.codex = FakeAdapter()
     manager.pi = FakeAdapter()
+    manager.muse = FakeAdapter()
 
     manager.turn(
         "msg",
@@ -4149,9 +4407,14 @@ def test_process_manager_forwards_adapter_specific_turn_options(monkeypatch):
     assert "progress_token" not in calls[0][1]
 
     calls.clear()
-    manager.turn("msg", session_id="s1", model="spark", thinking="high")
+    manager.turn("msg", session_id="s1", model="pi-spark", thinking="high")
     assert len(calls) == 1
     assert calls[0][1].get("thinking") == "high"
+
+    calls.clear()
+    manager.turn("msg", session_id="s1", model="spark", thinking="high")
+    assert len(calls) == 1
+    assert "thinking" not in calls[0][1]
 
     calls.clear()
     manager.turn("msg", session_id="s1", model=None, thinking="high")
@@ -5296,7 +5559,7 @@ def test_hydration_diagnostics_generic_exception(capsys, monkeypatch, tmp_path):
 
 
 class _WorkspaceAdapter:
-    """Minimal stand-in for the three CLI adapters hydration reassigns."""
+    """Minimal stand-in for the four CLI adapters hydration reassigns."""
 
     def __init__(self):
         self.workspace = None
@@ -5314,6 +5577,7 @@ def _hydration_manager(tmp_path, monkeypatch):
     manager.claude = _WorkspaceAdapter()
     manager.codex = _WorkspaceAdapter()
     manager.pi = _WorkspaceAdapter()
+    manager.muse = _WorkspaceAdapter()
     monkeypatch.setattr(shim.os, "geteuid", lambda: 1000)
     return manager
 
@@ -5408,8 +5672,8 @@ def test_claude_spawn_rejects_an_empty_checkout_on_a_repo_backed_session(
 
 
 def test_pi_spawn_rejects_the_git_stub_on_a_repo_backed_session(tmp_path, monkeypatch):
-    # spark routes to Pi, and the drainer's failure taxonomy keys on this exact
-    # message, so the stub has to raise it rather than start a turn.
+    # pi-spark keeps the Pi rollback route, and the drainer's failure taxonomy
+    # keys on this exact message, so the stub has to raise instead of starting.
     _install_fake_git(monkeypatch)
     checkout = tmp_path / "src"
     (checkout / ".git" / "info").mkdir(parents=True)
@@ -5434,8 +5698,9 @@ def test_hydration_clones_once_then_skips_a_usable_checkout(tmp_path, monkeypatc
     assert manager._hydration_status == "ok"
     assert manager._checkout_dir == checkout
     assert manager.pi.workspace == checkout
+    assert manager.muse.workspace == checkout
     with open(os.path.join(checkout, ".git", "info", "exclude")) as stream:
-        assert ".codex/" in stream.read()
+        assert stream.read().endswith(".codex/\n.pi/\n.muse/\n")
 
     # Re-entry on a checkout that is still there must stay cheap: no re-clone.
     manager._hydrate_workspace("jomcgi/homelab", "main")
@@ -5551,6 +5816,7 @@ def test_turn_marks_every_adapter_as_repo_backed(tmp_path, monkeypatch):
     assert manager.claude.requires_git_checkout is True
     assert manager.codex.requires_git_checkout is True
     assert manager.pi.requires_git_checkout is True
+    assert manager.muse.requires_git_checkout is True
 
 
 def test_egress_copy_counts_bytes(capsys):
