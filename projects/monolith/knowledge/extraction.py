@@ -28,6 +28,10 @@ from shared.embedding import EmbeddingClient
 KG_JOB_KIND = "kg-drain"
 KG_NODE_KEY = "kg-drain"
 EXTRACTION_VERSION = "kg-drain/luna@v1"
+# Each re-observation of an existing note nudges its confidence toward 1.0.
+_REOBSERVE_CONFIDENCE_STEP = float(
+    os.environ.get("KG_REOBSERVE_CONFIDENCE_STEP", "0.02")
+)
 # Producers arrive in #5566 (agent-report and dispute via MCP tools), #5567
 # (the ember-session feed), and #5568 (the Mac collector's claude-session and
 # codex-session feeds), so this lane remains inert until those changes merge.
@@ -1045,6 +1049,28 @@ def apply_extraction(
                         gardener_version=EXTRACTION_VERSION,
                     )
                 )
+                base_confidence = existing_note.confidence
+                if base_confidence is None:
+                    base_confidence = (
+                        assertion.confidence
+                        if assertion.confidence is not None
+                        else 0.9
+                    )
+                existing_note.confidence = min(
+                    1.0, base_confidence + _REOBSERVE_CONFIDENCE_STEP
+                )
+                if assertion.observed_at:
+                    reobserved = datetime.fromisoformat(
+                        assertion.observed_at.replace("Z", "+00:00")
+                    )
+                    if reobserved.tzinfo is None:
+                        reobserved = reobserved.replace(tzinfo=timezone.utc)
+                    current_observed = existing_note.observed_at
+                    if current_observed is not None and current_observed.tzinfo is None:
+                        current_observed = current_observed.replace(tzinfo=timezone.utc)
+                    if current_observed is None or reobserved > current_observed:
+                        existing_note.observed_at = reobserved
+                session.add(existing_note)
                 rejected.append(
                     _rejection(
                         assertion,
