@@ -4722,6 +4722,19 @@ py_test(
     ],
 )
 
+bdd_test(
+    name = "agent_sessions_store_postgres_test",
+    srcs = ["agent_sessions/store_postgres_test.py"],
+)
+
+bdd_test(
+    name = "agent_sessions_process_crash_test",
+    srcs = [
+        "agent_sessions/process_crash_driver_test.py",
+        "agent_sessions/process_crash_test.py",
+    ],
+)
+
 py_test(
     name = "agent_sessions_api_test",
     srcs = ["agent_sessions/api_test.py"],

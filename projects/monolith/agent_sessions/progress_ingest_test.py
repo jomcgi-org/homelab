@@ -223,12 +223,19 @@ def test_progress_ingest_rate_limit_drops_second_push(monkeypatch, tmp_path):
     try:
         with Session(engine) as session:
             agent_session = session.exec(select(AgentSession)).one()
+            session_id = agent_session.id
             session.add(
                 PendingMessage(
                     session_id=agent_session.id, seq=1, message_text="prompt"
                 )
             )
             session.commit()
+        assert (
+            store.claim_pending_message_for_session_sync(
+                session_id, "progress-test-owner"
+            )
+            == 1
+        )
         response1 = client.post(
             "/ingest/progress",
             headers={"Authorization": "Bearer token"},
@@ -257,12 +264,19 @@ def test_progress_ingest_rate_limit_window_150ms(monkeypatch, tmp_path):
     try:
         with Session(engine) as session:
             agent_session = session.exec(select(AgentSession)).one()
+            session_id = agent_session.id
             session.add(
                 PendingMessage(
                     session_id=agent_session.id, seq=1, message_text="prompt"
                 )
             )
             session.commit()
+        assert (
+            store.claim_pending_message_for_session_sync(
+                session_id, "progress-test-owner"
+            )
+            == 1
+        )
         client.post(
             "/ingest/progress",
             headers={"Authorization": "Bearer token"},
@@ -297,3 +311,31 @@ def test_healthz_passes_middleware_without_content_length():
 
     response = TestClient(app).get("/healthz")
     assert response.status_code == 200
+
+
+def test_late_progress_does_not_mark_unclaimed_turn_as_attempted(monkeypatch, tmp_path):
+    client, engine, schemas = _client(monkeypatch, tmp_path)
+    try:
+        with Session(engine) as session:
+            agent = session.exec(select(AgentSession)).one()
+            session_id = agent.id
+            store.create_pending_message(session, session_id, "untouched successor")
+        response = client.post(
+            "/ingest/progress",
+            headers={"Authorization": "Bearer token"},
+            json={
+                "partial_text": "late prior output",
+                "activities": [{"type": "tool"}],
+            },
+        )
+        assert response.status_code == 204
+        with Session(engine) as session:
+            pending = session.exec(select(PendingMessage)).one()
+            assert pending.partial_text is None
+            assert pending.partial_activities is None
+            assert pending.dispatch_count == 0
+        assert (
+            store.claim_pending_message_for_session_sync(session_id, "new-owner") == 1
+        )
+    finally:
+        _restore_schemas(schemas)

@@ -1,8 +1,19 @@
 # ADR 007: Stars quality model and heatmap
 
 **Author:** Joe McGinley
-**Status:** Accepted
+**Status:** Superseded
 **Created:** 2026-06-13
+
+**Supersession note (2026-09-06):** The shipped Stars v2 implementation uses
+[clear-dark hours](../../../projects/monolith/stars/scoring.py): `sun < -12°`
+and `cloud < 10%`, with that strict metric driving live ranking and history.
+The live endpoint alone may surface clear twilight hours at `sun < -10°` when
+no true-dark hours are available. Live ordering keeps `clear_dark_hours`
+primary, then uses `clear_twilight_hours` to break ties in the summer fallback;
+the live map uses those twilight counts when no dark hours exist. History
+remains strict-only `clear_dark_hours`. See the [live selection](../../../projects/monolith/stars/router.py),
+[v2 hour migration](../../../projects/monolith/chart/migrations/20260614000010_stars_v2_site_hours.sql),
+and [ADR 008 historical Q context](008-stars-live-historical-heatmaps.md).
 
 ---
 

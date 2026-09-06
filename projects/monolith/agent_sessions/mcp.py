@@ -11,7 +11,6 @@ import time
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 import httpx
@@ -395,10 +394,13 @@ def _claim_pending_message_sync(
 
 
 def _release_pending_message_claim_sync(
-    session_id: int, turn_seq: int, claim_owner: str | None = None
-) -> None:
-    store.release_pending_message_claim_sync(
-        session_id, turn_seq, claim_owner or _REPLICA_ID
+    session_id: int,
+    turn_seq: int,
+    claim_owner: str | None = None,
+    cause: str = "observer_released",
+) -> bool:
+    return store.release_pending_message_claim_sync(
+        session_id, turn_seq, claim_owner or _REPLICA_ID, cause
     )
 
 
@@ -411,6 +413,8 @@ def _persist_turn_from_pending_sync(
     status: str,
     cli_session_id: str | None = None,
     model: str | None = None,
+    claim_owner: str | None = None,
+    dispatch_count: int | None = None,
 ) -> AgentTurn:
     return store.persist_turn_from_pending_sync(
         session_id,
@@ -421,6 +425,8 @@ def _persist_turn_from_pending_sync(
         status,
         cli_session_id,
         model,
+        claim_owner,
+        dispatch_count,
     )
 
 
@@ -428,12 +434,16 @@ def _delete_pending_message_sync(session_id: int, turn_seq: int) -> None:
     store.delete_pending_message_sync(session_id, turn_seq)
 
 
-def _mark_turn_error_sync(session_id: int, turn_seq: int, error_msg: str) -> None:
-    store.mark_turn_error_sync(session_id, turn_seq, error_msg)
+def _mark_turn_error_sync(
+    session_id: int, turn_seq: int, error_msg: str, claim_owner: str | None = None
+) -> None:
+    store.mark_turn_error_sync(session_id, turn_seq, error_msg, claim_owner)
 
 
-def _mark_turn_interrupted_sync(session_id: int, turn_seq: int) -> None:
-    store.mark_turn_interrupted_sync(session_id, turn_seq)
+def _mark_turn_interrupted_sync(
+    session_id: int, turn_seq: int, claim_owner: str | None = None
+) -> None:
+    store.mark_turn_interrupted_sync(session_id, turn_seq, claim_owner)
 
 
 def _clear_ember_session_sync(session_id: int) -> None:
@@ -547,11 +557,10 @@ async def _execute_pending_message(session_id: int) -> None:
     guarantee anyway, since it says nothing about what another replica is doing.
 
     Once claimed, a background task refreshes the claim every 10 seconds. If a
-    refresh reports the claim is no longer ours, another replica has reclaimed
-    it and this turn aborts rather than writing a duplicate. That keeps a
-    long-running turn (which may take many minutes) safe from reclaim while
-    still recovering from a crashed replica within one lease interval
-    (30s, three missed refreshes).
+    refresh reports the claim is no longer ours, this executor stops writing.
+    A lost observer leaves a durable unknown-outcome hold after one lease
+    interval (30s, three missed refreshes). Only a recorded preemption grants
+    one retry of the exact interrupted attempt.
     """
 
     claim_owner = f"{_REPLICA_ID}:{uuid4()}"
@@ -570,6 +579,7 @@ async def _execute_pending_message(session_id: int) -> None:
     claim_released = False
     stolen_exit_logged = False
     refresh_task = None
+    release_cause = "observer_released"
 
     def _abort_stolen_executor(stage: str) -> bool:
         nonlocal stolen_exit_logged
@@ -634,6 +644,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 )
 
     async def _do_execute() -> None:
+        nonlocal release_cause
         if _abort_stolen_executor("startup"):
             return
 
@@ -648,7 +659,11 @@ async def _execute_pending_message(session_id: int) -> None:
             if _abort_stolen_executor("missing-session error"):
                 return
             await asyncio.to_thread(
-                _mark_turn_error_sync, session_id, claimed_seq, "Session not found"
+                _mark_turn_error_sync,
+                session_id,
+                claimed_seq,
+                "Session not found",
+                claim_owner,
             )
             _clear_negative_oracle_verdict(session_id)
             return
@@ -735,11 +750,15 @@ async def _execute_pending_message(session_id: int) -> None:
                 return
             if row.dispatch_count > store.MAX_PENDING_DISPATCHES:
                 await asyncio.to_thread(
-                    _mark_turn_error_sync, session_id, claimed_seq, str(exc)
+                    _mark_turn_error_sync,
+                    session_id,
+                    claimed_seq,
+                    str(exc),
+                    claim_owner,
                 )
             else:
                 await asyncio.to_thread(
-                    _mark_turn_interrupted_sync, session_id, claimed_seq
+                    _mark_turn_interrupted_sync, session_id, claimed_seq, claim_owner
                 )
                 await asyncio.to_thread(
                     _release_pending_message_claim_sync,
@@ -757,7 +776,7 @@ async def _execute_pending_message(session_id: int) -> None:
             if not fresh_binding_persisted:
                 await asyncio.to_thread(_clear_ember_session_sync, session_id)
             await asyncio.to_thread(
-                _mark_turn_error_sync, session_id, claimed_seq, str(exc)
+                _mark_turn_error_sync, session_id, claimed_seq, str(exc), claim_owner
             )
             _clear_negative_oracle_verdict(session_id)
             return
@@ -766,7 +785,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 return
             # Terminal failure: row is deleted by mark_turn_error_sync (noqa: BLE001)
             await asyncio.to_thread(
-                _mark_turn_error_sync, session_id, claimed_seq, str(exc)
+                _mark_turn_error_sync, session_id, claimed_seq, str(exc), claim_owner
             )
             _clear_negative_oracle_verdict(session_id)
             return
@@ -787,20 +806,13 @@ async def _execute_pending_message(session_id: int) -> None:
                 status,
                 turn.session_id,  # Store for resumption
                 turn.model or effective_model,
+                claim_owner,
+                row.dispatch_count,
             )
-        except IntegrityError:
-            # Turn already exists (duplicate seq), likely from a retry of a completed turn.
-            # Delete the pending row to prevent infinite retry.
-            logger.warning(
-                "Turn %s for session %s already exists (duplicate seq), discarding retry",
-                claimed_seq,
-                session_id,
-            )
-            await asyncio.to_thread(
-                store.delete_pending_message_sync, session_id, claimed_seq
-            )
+        except (store.PendingClaimLost, store.SessionOutcomeUnknown):
             return
         except Exception:
+            release_cause = "result_persistence_failed"
             logger.exception(
                 "Failed to persist queued turn %s for session %s",
                 claimed_seq,
@@ -822,6 +834,9 @@ async def _execute_pending_message(session_id: int) -> None:
         # Start the heartbeat refresh task
         refresh_task = asyncio.create_task(_refresh_heartbeat())
         await _do_execute()
+    except asyncio.CancelledError:
+        release_cause = "executor_cancelled"
+        raise
     finally:
         # Cancel the refresh task
         if refresh_task:
@@ -836,6 +851,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 session_id,
                 claimed_seq,
                 claim_owner,
+                release_cause,
             )
 
 
@@ -881,6 +897,9 @@ async def recover_zombie_session_if_needed(
             return None
 
     _clear_negative_oracle_verdict(session_id)
+    if claim.get("outcome_unknown"):
+        logger.warning("Held session %s: invocation outcome unknown", session_id)
+        return claim
     ember_session_id = claim["ember_session_id"]
     if ember_session_id:
         try:
@@ -895,14 +914,6 @@ async def recover_zombie_session_if_needed(
                 exc_info=True,
             )
         await asyncio.to_thread(_clear_ember_bindings_for, ember_session_id)
-
-    if claim.get("recovery_declined"):
-        logger.error(
-            "Stopped zombie recovery for session %s turn %s after too many dispatches",
-            session_id,
-            claim["turn_seq"],
-        )
-        return claim
 
     retry_seq = await asyncio.to_thread(
         _finalize_zombie_session_recovery_sync,
@@ -959,9 +970,9 @@ async def _sweep_orphaned_pending_messages() -> None:
     """Pick up pending messages left behind by a crash or restart.
 
     The sweep does two things:
-    1. Reclaim any claims that have expired (replica crashed), making them
-       available for re-execution by the current leader.
-    2. Execute any pending messages that are not yet claimed.
+    1. Record expired attempts as unknown outcomes, except for exact
+       preemption retries.
+    2. Execute untouched pending messages and permitted preemption retries.
     """
     while True:
         recovered = await _reconcile_zombie_sessions()
@@ -1265,6 +1276,8 @@ async def monolith_agent_session_send(
         turn = await asyncio.to_thread(
             _persist_pending_message, session_id, message, effective_model
         )
+    except store.SessionOutcomeUnknown as exc:
+        return {"accepted": False, "error": str(exc), "session_id": session_id}
     except Exception:  # noqa: BLE001 - MCP gates return structured failures
         logger.exception("Could not persist message for session %s", session_id)
         return {

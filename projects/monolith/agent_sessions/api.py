@@ -7,7 +7,6 @@ import secrets
 import logging
 from uuid import uuid4
 
-from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from agent_sessions import model_family, normalize_model, store
@@ -46,7 +45,8 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
     This is intentionally a direct, awaited form of the session worker for
     probes. It still uses the shared transport and turn persistence, but gives
     the caller the completed turn instead of requiring a background task and a
-    database poll. The session is always destroyed before returning.
+    database poll. Completed probes are destroyed; unknown outcomes retain
+    their guest for operator reconciliation.
     """
     from agent_sessions.mcp import _turn_status
 
@@ -113,6 +113,8 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
 
     refresh_task = asyncio.create_task(_refresh_heartbeat())
     ember = None
+    result_received = False
+    release_cause = "observer_released"
 
     async def persist_callback(created_ember, _cli_session_id):
         nonlocal ember
@@ -146,6 +148,7 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
             progress_token=progress_token,
         )
         ember = _returned_ember
+        result_received = True
         if claim_stolen:
             logger.warning(
                 "Claim was stolen during deliver for turn %s in session %s, not persisting result",
@@ -157,43 +160,47 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
             # take theirs, leaving the turn persisted by nobody.
             return None
         status = _turn_status(turn)
-        try:
-            await asyncio.to_thread(
-                _persist_turn_from_pending_sync,
-                row.id,
-                turn_seq,
-                prompt,
-                turn,
-                turn.result.strip()[:200],
-                status,
-                turn.session_id,
-                turn.model or model,
-            )
-        except IntegrityError:
-            logger.warning(
-                "Turn %s for session %s already exists (duplicate seq), discarding retry",
-                turn_seq,
-                row.id,
-            )
-            await asyncio.to_thread(_delete_pending_message_sync, row.id, turn_seq)
-            return turn
+        await asyncio.to_thread(
+            _persist_turn_from_pending_sync,
+            row.id,
+            turn_seq,
+            prompt,
+            turn,
+            turn.result.strip()[:200],
+            status,
+            turn.session_id,
+            turn.model or model,
+            claim_owner,
+        )
         await asyncio.to_thread(_delete_pending_message_sync, row.id, turn_seq)
         return turn
+    except asyncio.CancelledError:
+        release_cause = "executor_cancelled"
+        raise
+    except (store.PendingClaimLost, store.SessionOutcomeUnknown):
+        claim_stolen = True
+        return None
     except Exception as exc:
         # Transport errors already contain _status_error_detail when the
         # control plane supplied a response body. Persist that same detail on
         # the failed turn, not only in the transport log.
-        await asyncio.to_thread(_mark_turn_error_sync, row.id, turn_seq, str(exc))
+        if result_received:
+            release_cause = "result_persistence_failed"
+        else:
+            await asyncio.to_thread(
+                _mark_turn_error_sync, row.id, turn_seq, str(exc), claim_owner
+            )
         raise
     finally:
         refresh_task.cancel()
-        await asyncio.to_thread(
+        outcome_unknown = await asyncio.to_thread(
             _release_pending_message_claim_sync,
             row.id,
             claimed_seq,
             claim_owner,
+            release_cause,
         )
-        if ember is not None:
+        if ember is not None and not outcome_unknown and not claim_stolen:
             try:
                 await _transport.destroy_session(ember.session_id)
             except EmberSessionGone:
@@ -280,6 +287,11 @@ def _sessions_for_workflow(workflow_id: str):
         return store.sessions_for_workflow(db_session, workflow_id)
 
 
+def _session_outcome_unknown(session_id: int) -> bool:
+    with Session(get_engine()) as db_session:
+        return store.has_unknown_outcome(db_session, session_id)
+
+
 async def reap_sessions_for_workflow(workflow_id: str) -> dict:
     """Destroy and unbind every guest session owned by a swarm workflow.
 
@@ -301,6 +313,9 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
             summary["skipped"].append(row.id)
             continue
         try:
+            if await asyncio.to_thread(_session_outcome_unknown, row.id):
+                summary["skipped"].append(row.id)
+                continue
             try:
                 await _transport.destroy_session(ember_session_id)
             except EmberSessionGone:
@@ -403,6 +418,8 @@ async def send_to_thread_session(thread_id: str, message: str) -> dict | None:
         turn = await asyncio.to_thread(
             _persist_pending_message, session_id, message, model
         )
+    except store.SessionOutcomeUnknown as exc:
+        return {"accepted": False, "error": str(exc), "session_id": session_id}
     except Exception:  # noqa: BLE001 - send gates return structured failures
         logger.exception("Could not persist message for session %s", session_id)
         return {

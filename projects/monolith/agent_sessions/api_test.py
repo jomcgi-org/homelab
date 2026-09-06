@@ -60,8 +60,8 @@ def test_run_synthetic_session_claims_pending_before_deliver(monkeypatch):
     monkeypatch.setattr(
         api,
         "_release_pending_message_claim_sync",
-        lambda session_id, turn_seq, claim_owner: released.append(
-            (session_id, turn_seq)
+        lambda session_id, turn_seq, claim_owner, cause="observer_released": (
+            released.append((session_id, turn_seq))
         ),
     )
 
@@ -103,7 +103,7 @@ def test_run_synthetic_session_persists_actual_guest_model(monkeypatch):
     result = asyncio.run(api.run_synthetic_session("probe", model="luna"))
 
     assert result is turn
-    assert persisted[0][-1] == "terra"
+    assert persisted[0][-2] == "terra"
 
 
 def test_run_synthetic_session_does_not_deliver_when_claim_lost(monkeypatch):
@@ -193,7 +193,7 @@ def test_run_synthetic_session_aborts_when_claim_stolen_mid_deliver(monkeypatch)
     monkeypatch.setattr(
         api,
         "_release_pending_message_claim_sync",
-        lambda session_id, turn_seq, claim_owner: None,
+        lambda session_id, turn_seq, claim_owner, cause="observer_released": None,
     )
 
     result = asyncio.run(api.run_synthetic_session("probe"))
@@ -205,7 +205,9 @@ def test_run_synthetic_session_aborts_when_claim_stolen_mid_deliver(monkeypatch)
     assert deleted == []
 
 
-def test_run_synthetic_session_tolerates_duplicate_turn_insert(monkeypatch):
+def test_run_synthetic_session_does_not_assume_integrity_error_means_duplicate(
+    monkeypatch,
+):
     row = AgentSession(
         id=43,
         local_session_id="codex-synthetic-test",
@@ -237,15 +239,15 @@ def test_run_synthetic_session_tolerates_duplicate_turn_insert(monkeypatch):
     monkeypatch.setattr(
         api,
         "_release_pending_message_claim_sync",
-        lambda session_id, turn_seq, claim_owner: released.append(
-            (session_id, turn_seq)
+        lambda session_id, turn_seq, claim_owner, cause="observer_released": (
+            released.append((session_id, turn_seq))
         ),
     )
 
-    result = asyncio.run(api.run_synthetic_session("probe"))
+    with pytest.raises(IntegrityError):
+        asyncio.run(api.run_synthetic_session("probe"))
 
-    assert result is turn
-    assert deleted == [(43, 1)]
+    assert deleted == []
     assert released == [(43, 1)]
 
 
@@ -304,7 +306,7 @@ def test_run_synthetic_session_refreshes_claim_and_delivers_once_when_lease_woul
     monkeypatch.setattr(
         api,
         "_release_pending_message_claim_sync",
-        lambda session_id, turn_seq, claim_owner: None,
+        lambda session_id, turn_seq, claim_owner, cause="observer_released": None,
     )
 
     result = asyncio.run(api.run_synthetic_session("probe"))
@@ -477,6 +479,7 @@ async def test_reap_sessions_for_workflow_skips_reaps_and_continues_on_failure(
             raise EmberVMTransportError("control plane unavailable")
         return {}
 
+    monkeypatch.setattr(api, "_session_outcome_unknown", lambda _: False)
     monkeypatch.setattr(api, "_sessions_for_workflow", lambda _: rows)
     monkeypatch.setattr(api._transport, "destroy_session", destroy)
     monkeypatch.setattr(
@@ -506,6 +509,7 @@ async def test_reap_sessions_for_workflow_treats_404_as_reaped(monkeypatch):
         raise EmberSessionGone("404 session not found")
 
     cleared = []
+    monkeypatch.setattr(api, "_session_outcome_unknown", lambda _: False)
     monkeypatch.setattr(api, "_sessions_for_workflow", lambda _: [row])
     monkeypatch.setattr(api._transport, "destroy_session", destroy)
     monkeypatch.setattr(
@@ -545,6 +549,7 @@ async def test_reap_does_not_treat_a_500_mentioning_404_as_gone(monkeypatch):
             "'http://embervm/v1/sessions/s-404ABCDEF' not found upstream"
         )
 
+    monkeypatch.setattr(api, "_session_outcome_unknown", lambda _: False)
     monkeypatch.setattr(api, "_sessions_for_workflow", lambda _: [row])
     monkeypatch.setattr(api._transport, "destroy_session", destroy)
     monkeypatch.setattr(
@@ -555,4 +560,33 @@ async def test_reap_does_not_treat_a_500_mentioning_404_as_gone(monkeypatch):
 
     assert result["reaped"] == []
     assert result["failed"][0]["session_id"] == 7
+    assert cleared == []
+
+
+@pytest.mark.asyncio
+async def test_workflow_reap_retains_guest_with_unknown_outcome(monkeypatch):
+    row = AgentSession(
+        id=2448,
+        local_session_id="held",
+        workspace="w",
+        branch="main",
+        ember_session_id="guest-retain",
+    )
+    destroyed, cleared = [], []
+
+    async def destroy(guest_id):
+        destroyed.append(guest_id)
+
+    monkeypatch.setattr(api, "_sessions_for_workflow", lambda _: [row])
+    monkeypatch.setattr(api, "_session_outcome_unknown", lambda _: True)
+    monkeypatch.setattr(api._transport, "destroy_session", destroy)
+    monkeypatch.setattr(
+        api, "_clear_ember_bindings_for", lambda guest: cleared.append(guest)
+    )
+    assert await api.reap_sessions_for_workflow("held-workflow") == {
+        "reaped": [],
+        "failed": [],
+        "skipped": [2448],
+    }
+    assert destroyed == []
     assert cleared == []

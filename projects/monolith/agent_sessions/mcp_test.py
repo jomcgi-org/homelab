@@ -521,101 +521,40 @@ def test_zombie_recovery_cas_has_one_winner(session):
     assert store.get_session(session, row.id).status == "recovering"
 
 
-def test_zombie_recovery_surfaces_status_and_retries_prompt(monkeypatch, session):
+def test_zombie_recovery_holds_attempt_without_destroying_guest(monkeypatch, session):
     now = datetime.now(timezone.utc)
-    row = store.create_session(
-        session,
-        "zombie-flow",
-        "<guest>",
-        "main",
-        model="luna",
-        repo="jomcgi/homelab",
-    )
-    row.ember_session_id = "ember-dead"
-    row.ember_session_token = "token-dead"
-    session.add_all(
-        [
-            row,
-            PendingMessage(
-                session_id=row.id,
-                seq=1,
-                message_text="keep the original prompt",
-                model="luna",
-                claimed_by_replica="dead-pod",
-                claimed_at=now - timedelta(seconds=181),
-                created_at=now - timedelta(seconds=181),
-            ),
-            PendingMessage(
-                session_id=row.id,
-                seq=2,
-                message_text="queued follow-up",
-                model="luna",
-            ),
-        ]
+    row = store.create_session(session, "zombie-flow", "<guest>", "main", model="terra")
+    row.ember_session_id = "guest-investigate"
+    session.add(row)
+    session.add(
+        PendingMessage(
+            session_id=row.id,
+            seq=1,
+            message_text="original",
+            partial_text="review findings",
+            model="terra",
+            dispatch_count=1,
+            claimed_by_replica="dead-pod",
+            claimed_at=now - timedelta(seconds=181),
+            created_at=now - timedelta(seconds=181),
+        )
     )
     session.commit()
-    scheduled = []
-    destroy_started = asyncio.Event()
-    finish_destroy = asyncio.Event()
 
-    async def destroy(ember_session_id):
-        assert ember_session_id == "ember-dead"
-        destroy_started.set()
-        await finish_destroy.wait()
-        return {"status": "destroyed"}
+    async def must_not_destroy(_guest):
+        pytest.fail("unknown invocation must retain its guest")
 
-    monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
-    monkeypatch.setattr(mcp, "_schedule_next_message", scheduled.append)
+    def must_not_schedule(_session):
+        pytest.fail("unknown invocation must not redispatch")
 
-    async def recover():
-        task = asyncio.create_task(
-            mcp.recover_zombie_session_if_needed(row.id, now=now)
-        )
-        await destroy_started.wait()
-        recovering = await asyncio.to_thread(mcp._load_session_row, row.id)
-        finish_destroy.set()
-        result = await task
-        return recovering, result
-
-    recovering, result = asyncio.run(recover())
-
-    assert recovering.status == "recovering"
-    assert recovering.recovery_workspace_loss is True
-    assert result["retry_seq"] == 1
+    monkeypatch.setattr(mcp._transport, "destroy_session", must_not_destroy)
+    monkeypatch.setattr(mcp, "_schedule_next_message", must_not_schedule)
+    result = asyncio.run(mcp.recover_zombie_session_if_needed(row.id, now=now))
+    assert result["outcome_unknown"] is True
     session.expire_all()
-    pending = session.exec(
-        select(PendingMessage)
-        .where(PendingMessage.session_id == row.id)
-        .order_by(PendingMessage.seq)
-    ).all()
-    assert [(message.seq, message.message_text) for message in pending] == [
-        (1, "keep the original prompt"),
-        (2, "queued follow-up"),
-    ]
-    recovered_session = store.get_session(session, row.id)
-    assert recovered_session.status == "running"
-    assert recovered_session.ember_session_id is None
-    assert recovered_session.recovery_workspace_loss is None
-    assert recovered_session.recovery_completed_at is not None
-    assert scheduled == [row.id]
-
-    executions = []
-
-    async def deliver(_ember, _cli, message, _model, **_kwargs):
-        executions.append(message)
-        return _completed_turn(message), EmberSession("ember-new", "token-new", None)
-
-    async def no_notify(*_args):
-        return None
-
-    monkeypatch.setattr(mcp._transport, "deliver", deliver)
-    monkeypatch.setattr(mcp, "_notify_terminal", no_notify)
-    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _session_id: None)
-
-    asyncio.run(mcp._execute_pending_message(row.id))
-    asyncio.run(mcp._execute_pending_message(row.id))
-
-    assert executions == ["keep the original prompt", "queued follow-up"]
+    assert store.get_session(session, row.id).ember_session_id == "guest-investigate"
+    assert store.get_turn(session, row.id, 1).result_text == "review findings"
+    assert asyncio.run(mcp.recover_zombie_session_if_needed(row.id, now=now)) is None
 
 
 def _hung_claim(session, now, *, dispatch_count=1):
@@ -649,7 +588,7 @@ def _hung_claim(session, now, *, dispatch_count=1):
     return row
 
 
-def test_hung_claim_never_invoked_fresh_cp_answer_fires_recovery(monkeypatch, session):
+def test_hung_claim_cp_snapshot_does_not_authorize_unknown_replay(monkeypatch, session):
     assert mcp.HUNG_CLAIM_THRESHOLD_SECONDS == 600
     now = datetime.now(timezone.utc)
     row = _hung_claim(session, now)
@@ -680,13 +619,13 @@ def test_hung_claim_never_invoked_fresh_cp_answer_fires_recovery(monkeypatch, se
     result = asyncio.run(mcp.recover_zombie_session_if_needed(row.id, now=now))
 
     assert result is not None
-    assert result["retry_seq"] == 1
-    assert destroyed == ["ember-hung-1"]
-    assert scheduled == [row.id]
+    assert result["outcome_unknown"] is True
+    assert destroyed == []
+    assert scheduled == []
     session.expire_all()
-    pending = store.get_pending_message(session, row.id, 1)
-    assert pending.claimed_by_replica is None
-    assert store.get_session(session, row.id).status == "running"
+    assert store.get_pending_message(session, row.id, 1) is None
+    assert store.get_session(session, row.id).status == "failed"
+    assert store.get_session(session, row.id).ember_session_id == "ember-hung-1"
 
 
 def test_hung_claim_in_flight_first_turn_never_fires(monkeypatch, session):
@@ -783,23 +722,20 @@ def test_hung_claim_dispatch_bound_marks_session_failed(monkeypatch, session):
     result = asyncio.run(mcp.recover_zombie_session_if_needed(row.id, now=now))
 
     assert result is not None
-    assert result["recovery_declined"] is True
-    assert destroyed == ["ember-hung-4"]
+    assert result["outcome_unknown"] is True
+    assert destroyed == []
     assert scheduled == []
     session.expire_all()
     failed = store.get_session(session, row.id)
-    pending = store.get_pending_message(session, row.id, 1)
     assert failed.status == "failed"
-    assert "4 dispatch attempts" in failed.voice_summary
-    assert failed.ember_session_id is None
-    assert pending is None
+    assert failed.ember_session_id == "ember-hung-4"
+    assert store.get_pending_message(session, row.id, 1) is None
+    turn = store.get_turn(session, row.id, 1)
+    import json
 
-    follow_up = store.create_pending_message(session, row.id, "try a fresh lane")
-    assert follow_up.seq == 1
-    assert store.activate_session_after_enqueue(session, row.id) is True
-    session.refresh(failed)
-    assert failed.status == "running"
-    assert store.claim_pending_message_for_session_sync(row.id, "fresh-pod") == 1
+    assert json.loads(turn.usage_json)["recovery"]["dispatch_count"] == 4
+    with pytest.raises(store.SessionOutcomeUnknown, match="start a new session"):
+        store.create_pending_message(session, row.id, "try a fresh lane")
 
 
 def _completed_turn(message: str) -> Turn:
@@ -1686,10 +1622,10 @@ def test_stale_claim_is_reclaimed(session, monkeypatch):
 
     # Verify the message is no longer claimed
     session.expire_all()
-    pending_row = store.get_pending_message(session, row.id, pending.seq)
-    assert pending_row is not None
-    assert pending_row.claimed_by_replica is None
-    assert pending_row.claimed_at is None
+    pending_row = store.get_pending_message(session, row.id, claimed_seq)
+    assert pending_row is None
+    failed_turn = store.get_turn(session, row.id, claimed_seq)
+    assert failed_turn.stop_reason == store.UNKNOWN_INVOCATION
 
 
 def test_heartbeat_refresh_with_real_replica_id(session, monkeypatch):
@@ -2326,3 +2262,86 @@ def test_agent_sessions_channel_unset_falls_back_to_default(monkeypatch):
         "MONOLITH_AGENT_DISCORD_AGENT_SESSIONS_CHANNEL_ID", raising=False
     )
     assert mcp.agent_api.agent_sessions_channel_id() is None
+
+
+@pytest.mark.parametrize("failure", ["cancel", "persist", "integrity"])
+def test_lost_executor_holds_original_prompt_and_partial_evidence(
+    monkeypatch, session, failure
+):
+    import json
+    from sqlalchemy.exc import IntegrityError
+
+    row = store.create_session(session, "lost-executor", "<guest>", "main")
+    session_id, token = row.id, row.progress_token
+    guest = EmberSession("guest-retain", "guest-token", None, "lineage-retain")
+    store.create_pending_message(session, session_id, "review the original diff")
+    delivered = []
+
+    async def deliver(*args, **kwargs):
+        delivered.append(args[2])
+        await kwargs["on_create"](guest, None)
+        await asyncio.to_thread(
+            store.write_progress_sync,
+            token,
+            "partial finding",
+            [{"tool": "read", "path": "store.py"}],
+        )
+        if failure == "cancel":
+            raise asyncio.CancelledError
+        return _completed_turn(args[2]), guest
+
+    def fail_persistence(*args):
+        if failure == "integrity":
+            raise IntegrityError("INSERT", {}, RuntimeError("not a duplicate"))
+        raise RuntimeError("result storage unavailable")
+
+    monkeypatch.setattr(mcp._transport, "deliver", deliver)
+    monkeypatch.setattr(mcp, "_persist_turn_from_pending_sync", fail_persistence)
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _: None)
+    if failure == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(mcp._execute_pending_message(session_id))
+    else:
+        asyncio.run(mcp._execute_pending_message(session_id))
+    session.expire_all()
+    failed = store.get_turn(session, session_id, 1)
+    assert failed.prompt == "review the original diff"
+    assert failed.result_text == "partial finding"
+    assert failed.stop_reason == store.UNKNOWN_INVOCATION
+    cause = "executor_cancelled" if failure == "cancel" else "result_persistence_failed"
+    assert json.loads(failed.usage_json)["recovery"]["cause"] == cause
+    assert store.get_session(session, session_id).ember_session_id == "guest-retain"
+    assert store.get_pending_message(session, session_id, 1) is None
+    asyncio.run(mcp._execute_pending_message(session_id))
+    assert delivered == ["review the original diff"]
+    response = asyncio.run(mcp.monolith_agent_session_send(session_id, "retry"))
+    assert response["accepted"] is False
+    assert "start a new session" in response["error"]
+
+
+def test_synthetic_cancellation_retains_guest_and_unknown_record(monkeypatch, session):
+    from agent_sessions import api
+
+    row = store.create_session(session, "synthetic-lost", "<guest>", "main")
+    session_id = row.id
+    guest = EmberSession("synthetic-retain", "guest-token", None, "lineage-retain")
+    destroyed = []
+
+    async def deliver(*args, **kwargs):
+        await kwargs["on_create"](guest, None)
+        raise asyncio.CancelledError
+
+    async def destroy(guest_id):
+        destroyed.append(guest_id)
+
+    monkeypatch.setattr(api, "_persist_session", lambda *args: row)
+    monkeypatch.setattr(api._transport, "deliver", deliver)
+    monkeypatch.setattr(api._transport, "destroy_session", destroy)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(api.run_synthetic_session("probe"))
+    session.expire_all()
+    assert destroyed == []
+    assert store.get_session(session, session_id).ember_session_id == "synthetic-retain"
+    assert (
+        store.get_turn(session, session_id, 1).stop_reason == store.UNKNOWN_INVOCATION
+    )

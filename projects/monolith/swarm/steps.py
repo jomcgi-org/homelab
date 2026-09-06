@@ -328,6 +328,7 @@ def poll_turn(session_id: int, after_seq: int) -> dict | None:
                 "result_text": turn.result_text,
                 "rationale": parse_rationale(turn.result_text),
                 "terminal_reason": turn.terminal_reason,
+                "stop_reason": turn.stop_reason,
                 "cost_usd": turn.cost_usd,
             }
 

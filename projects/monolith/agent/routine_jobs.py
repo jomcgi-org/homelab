@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy import bindparam, text
 from sqlmodel import Session
 
+from shared.invocation_outcomes import UNKNOWN_INVOCATION
 from core.db import get_engine
 
 
@@ -115,6 +116,7 @@ def claim_job(
             SELECT name, locked_by, locked_at, ttl_secs
               FROM {table}
              WHERE name = :name
+               AND (last_status IS NULL OR last_status != :unknown_outcome)
              {"" if sqlite else "FOR UPDATE"}
             """
         )
@@ -130,6 +132,7 @@ def claim_job(
             SELECT name, locked_by, locked_at, ttl_secs
               FROM {table}
              WHERE next_run_at IS NOT NULL
+               AND (last_status IS NULL OR last_status != :unknown_outcome)
                AND next_run_at <= {now_expr}
                AND (
                     locked_by IS NULL
@@ -154,6 +157,7 @@ def claim_job(
                locked_at = {now_expr},
                ttl_secs = :ttl
          WHERE name = :name
+           AND (last_status IS NULL OR last_status != :unknown_outcome)
         RETURNING name, routine_kind, interval_secs, next_run_at, last_run_at,
                   last_status, last_summary, locked_by, locked_at, ttl_secs,
                   payload, created_by, created_at
@@ -162,10 +166,17 @@ def claim_job(
 
     with Session(get_engine()) as session:
         if name is not None:
-            row = session.execute(select_sql, {"name": name}).first()
+            row = session.execute(
+                select_sql, {"name": name, "unknown_outcome": UNKNOWN_INVOCATION}
+            ).first()
         else:
             row = session.execute(
-                select_sql, {"kind": kind, "kinds": list(kinds or [])}
+                select_sql,
+                {
+                    "kind": kind,
+                    "kinds": list(kinds or []),
+                    "unknown_outcome": UNKNOWN_INVOCATION,
+                },
             ).first()
 
         if row is None:
@@ -199,11 +210,42 @@ def claim_job(
                 return None
 
         claimed = session.execute(
-            update_sql, {"holder": holder, "ttl": ttl_secs, "name": row.name}
+            update_sql,
+            {
+                "holder": holder,
+                "ttl": ttl_secs,
+                "name": row.name,
+                "unknown_outcome": UNKNOWN_INVOCATION,
+            },
         ).first()
         session.commit()
 
     return _row_to_dict(claimed) if claimed else None
+
+
+def hold_job_for_unknown_outcome(name: str, session_id: int, summary: str) -> bool:
+    """Retain the job and its payload while disabling automatic re-admission."""
+    engine = get_engine()
+    sqlite = engine.dialect.name == "sqlite"
+    table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
+    now_expr = "CURRENT_TIMESTAMP" if sqlite else "now()"
+    with Session(engine) as session:
+        result = session.execute(
+            text(f"""
+                UPDATE {table}
+                   SET next_run_at = NULL, last_run_at = {now_expr},
+                       last_status = :status, last_summary = :summary,
+                       locked_by = NULL, locked_at = NULL
+                 WHERE name = :name
+            """),
+            {
+                "name": name,
+                "status": UNKNOWN_INVOCATION,
+                "summary": f"session_id={session_id}: {summary}",
+            },
+        )
+        session.commit()
+        return result.rowcount > 0
 
 
 def complete_job(name: str, status: str, summary: str | None = None) -> bool:
@@ -215,25 +257,41 @@ def complete_job(name: str, status: str, summary: str | None = None) -> bool:
     One-shot rows clear ``next_run_at`` and remain idle until ``trigger_job``
     re-arms them.
     """
+    engine = get_engine()
+    sqlite = engine.dialect.name == "sqlite"
+    table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
+    now_expr = "CURRENT_TIMESTAMP" if sqlite else "now()"
+    next_expr = (
+        "datetime(CURRENT_TIMESTAMP, '+' || interval_secs || ' seconds')"
+        if sqlite
+        else "now() + (interval_secs || ' seconds')::interval"
+    )
     sql = text(
-        """
-        UPDATE claude_agent.routine_jobs
-           SET last_run_at = now(),
+        f"""
+        UPDATE {table}
+           SET last_run_at = {now_expr},
                last_status = :status,
                last_summary = COALESCE(:summary, last_summary),
                locked_by = NULL,
                locked_at = NULL,
                next_run_at = CASE
                    WHEN interval_secs IS NOT NULL
-                   THEN now() + (interval_secs || ' seconds')::interval
+                   THEN {next_expr}
                    ELSE NULL
                END
          WHERE name = :name
+           AND (last_status IS NULL OR last_status != :unknown_outcome)
         """
     )
     with Session(get_engine()) as session:
         result = session.execute(
-            sql, {"name": name, "status": status, "summary": summary}
+            sql,
+            {
+                "name": name,
+                "status": status,
+                "summary": summary,
+                "unknown_outcome": UNKNOWN_INVOCATION,
+            },
         )
         session.commit()
     return result.rowcount > 0
@@ -275,21 +333,39 @@ def register_job(
 
 
 def deregister_job(name: str) -> bool:
-    """Delete a routine_jobs row. Returns True if a row was deleted."""
-    sql = text("DELETE FROM claude_agent.routine_jobs WHERE name = :name")
-    with Session(get_engine()) as session:
-        result = session.execute(sql, {"name": name})
+    """Remove a job unless it retains an unresolved invocation outcome."""
+    engine = get_engine()
+    table = (
+        "routine_jobs"
+        if engine.dialect.name == "sqlite"
+        else "claude_agent.routine_jobs"
+    )
+    sql = text(f"""
+        DELETE FROM {table} WHERE name = :name
+          AND (last_status IS NULL OR last_status != :unknown_outcome)
+    """)
+    with Session(engine) as session:
+        result = session.execute(
+            sql, {"name": name, "unknown_outcome": UNKNOWN_INVOCATION}
+        )
         session.commit()
     return result.rowcount > 0
 
 
 def trigger_job(name: str) -> bool:
-    """Re-arm a row by setting ``next_run_at = now()`` so it is claimable."""
-    sql = text(
-        "UPDATE claude_agent.routine_jobs SET next_run_at = now() WHERE name = :name"
-    )
-    with Session(get_engine()) as session:
-        result = session.execute(sql, {"name": name})
+    """Re-arm a row unless its invocation outcome is held for reconciliation."""
+    engine = get_engine()
+    sqlite = engine.dialect.name == "sqlite"
+    table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
+    now_expr = "CURRENT_TIMESTAMP" if sqlite else "now()"
+    sql = text(f"""
+        UPDATE {table} SET next_run_at = {now_expr} WHERE name = :name
+          AND (last_status IS NULL OR last_status != :unknown_outcome)
+    """)
+    with Session(engine) as session:
+        result = session.execute(
+            sql, {"name": name, "unknown_outcome": UNKNOWN_INVOCATION}
+        )
         session.commit()
     return result.rowcount > 0
 
@@ -310,10 +386,14 @@ def defer_job(name: str, seconds: int) -> bool:
                locked_by = NULL,
                locked_at = NULL
          WHERE name = :name
+           AND (last_status IS NULL OR last_status != :unknown_outcome)
         """
     )
     with Session(get_engine()) as session:
-        result = session.execute(sql, {"name": name, "seconds": seconds})
+        result = session.execute(
+            sql,
+            {"name": name, "seconds": seconds, "unknown_outcome": UNKNOWN_INVOCATION},
+        )
         session.commit()
     return result.rowcount > 0
 
