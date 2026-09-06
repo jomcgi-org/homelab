@@ -1,3 +1,14 @@
+# Optional Kubernetes integrations. Disable all three for a DBOS-only recovery
+# lane; these grants are independent of leader singletons and database leases.
+rbac:
+  clusterAccess:
+    enabled: true
+  schedulerWorkflows:
+    enabled: true
+  # The current FaaS client targets the production embervm namespace.
+  faas:
+    enabled: true
+
 backend:
   # Whether this deployment runs the leader-elected singletons (Discord bot,
   # chat outbox drain, DBOS swarm runtime, AIS ingest, cd probe writer). True

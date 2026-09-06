@@ -1,3 +1,23 @@
+{{- $scope := .Values.rbac.scope }}
+{{- if not (kindIs "string" $scope) }}
+{{- fail "rbac.scope must be cluster or namespace" }}
+{{- end }}
+{{- if not (has $scope (list "cluster" "namespace")) }}
+{{- fail "rbac.scope must be cluster or namespace" }}
+{{- end }}
+{{- if eq $scope "namespace" }}
+{{- if not (kindIs "slice" .Values.rbac.secretNames) }}
+{{- fail "rbac.secretNames must be a list of Secret names" }}
+{{- end }}
+{{- range .Values.rbac.secretNames }}
+{{- if not (kindIs "string" .) }}
+{{- fail "rbac.secretNames entries must be valid Secret names" }}
+{{- end }}
+{{- if or (gt (len .) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" .)) }}
+{{- fail "rbac.secretNames entries must be valid Secret names" }}
+{{- end }}
+{{- end }}
+{{- end }}
 # Control-plane RBAC. Every verb here maps to a specific API call the control
 # plane makes; a missing verb fails silently in prod as a Forbidden that looks
 # like a generic 5xx, so the set is kept exact.
@@ -20,9 +40,8 @@
 # instance POSTs its identity to /v1/nodes/register, so no discovery.k8s.io RBAC
 # is needed.
 #
-# ClusterRole (not Role) because tokenreviews.authentication.k8s.io is cluster-
-# scoped, and the watcher may observe Workloads (and now their Secrets) across
-# namespaces.
+# TokenReview requires a ClusterRole. Namespace mode moves runtime access to
+# a Role matching the already namespace-scoped Workload watcher.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -30,6 +49,7 @@ metadata:
   labels:
     {{- include "embervm.labels" . | nindent 4 }}
 rules:
+{{- if eq $scope "cluster" }}
   - apiGroups:
       - embervm.dev
     resources:
@@ -46,12 +66,14 @@ rules:
       - get
       - update
       - patch
+{{- end }}
   - apiGroups:
       - authentication.k8s.io
     resources:
       - tokenreviews
     verbs:
       - create
+{{- if eq $scope "cluster" }}
   - apiGroups:
       - ""
     resources:
@@ -78,6 +100,7 @@ rules:
     verbs:
       - get
       - patch
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -93,7 +116,65 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "embervm.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
-{{- if .Values.bricks.enabled }}
+{{- if eq $scope "namespace" }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "embervm.fullname" . }}-runtime
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "embervm.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["embervm.dev"]
+    resources: ["workloads"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["embervm.dev"]
+    resources: ["workloads/status"]
+    verbs: ["get", "update", "patch"]
+{{- if .Values.rbac.secretNames }}
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      {{- toYaml .Values.rbac.secretNames | nindent 6 }}
+    verbs: ["get"]
+{{- end }}
+{{- if and .Values.bricks.enabled .Values.bricks.classes }}
+{{- $deployments := list }}
+{{- range .Values.bricks.classes }}
+{{- $deployments = append $deployments (printf "%s-brick-%s" (include "embervm.noded.fullname" $) .name) }}
+{{- end }}
+  # Static reconcile still scales in off/observe mode. Only regular class
+  # Deployments are controller targets; floor Deployments remain static.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames:
+      {{- toYaml $deployments | nindent 6 }}
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    resourceNames:
+      {{- toYaml $deployments | nindent 6 }}
+    verbs: ["get", "patch"]
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "embervm.fullname" . }}-runtime
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "embervm.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "embervm.fullname" . }}-runtime
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "embervm.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if and .Values.bricks.enabled (or (eq $scope "cluster") (eq .Values.bricks.autoscale.mode "full")) }}
 ---
 # Drain-aware brick scale-down (Axis C, bricks.autoscale.mode=full): before
 # shrinking a brick Deployment the BrickController picks its own idle,
@@ -103,7 +184,8 @@ subjects:
 # the annotation. A namespaced Role (not more rules on the ClusterRole above):
 # the controller only ever touches brick pods in its own release namespace, and
 # pods patch is too broad a grant to hold cluster-wide. Rendered only when
-# bricks are enabled, matching the brick Deployments themselves.
+# bricks are enabled by default; namespace mode additionally requires full
+# autoscale, the only mode that selects and patches drain victims.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

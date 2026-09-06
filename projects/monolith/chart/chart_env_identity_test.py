@@ -498,3 +498,161 @@ def test_gke_recovery_has_app_credentials_and_a_distinct_archive(renders):
         "CNPG requires the recovery source to remain on the home archive while "
         "the recovered cluster writes to a distinct archive."
     )
+
+
+# Snapshot of the default grants before optional RBAC gates. Comparing complete
+# rule/binding projections catches a differently named binding into production.
+_DEFAULT_CLUSTER_RULES = [
+    {
+        "apiGroups": [""],
+        "resources": [
+            "nodes",
+            "pods",
+            "services",
+            "configmaps",
+            "events",
+            "namespaces",
+        ],
+        "verbs": ["get", "list"],
+    },
+    {"apiGroups": [""], "resources": ["pods/log"], "verbs": ["get"]},
+    {"apiGroups": [""], "resources": ["nodes/proxy"], "verbs": ["get"]},
+    {
+        "apiGroups": ["apps"],
+        "resources": ["deployments", "statefulsets", "daemonsets", "replicasets"],
+        "verbs": ["get", "list"],
+    },
+    {
+        "apiGroups": ["argoproj.io"],
+        "resources": ["applications"],
+        "verbs": ["get", "list", "patch"],
+    },
+    {
+        "apiGroups": ["kargo.akuity.io"],
+        "resources": ["freights"],
+        "verbs": ["get", "list"],
+    },
+    {
+        "apiGroups": ["metrics.k8s.io"],
+        "resources": ["nodes", "pods"],
+        "verbs": ["get", "list"],
+    },
+]
+_DEFAULT_SCHEDULER_RULES = [
+    {"apiGroups": ["argoproj.io"], "resources": ["cronworkflows"], "verbs": ["list"]},
+    {"apiGroups": ["argoproj.io"], "resources": ["workflows"], "verbs": ["create"]},
+]
+_DEFAULT_FAAS_RULES = [
+    {
+        "apiGroups": ["embervm.dev"],
+        "resources": ["workloads"],
+        "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"],
+    },
+    {"apiGroups": ["embervm.dev"], "resources": ["workloads/status"], "verbs": ["get"]},
+]
+_RBAC_KINDS = {"Role", "ClusterRole", "RoleBinding", "ClusterRoleBinding"}
+
+
+def _rbac_objects(rendered):
+    return {
+        (doc["kind"], doc["metadata"].get("namespace"), doc["metadata"]["name"]): {
+            key: doc[key] for key in ("rules", "roleRef", "subjects") if key in doc
+        }
+        for doc in yaml.safe_load_all(rendered)
+        if isinstance(doc, dict) and doc.get("kind") in _RBAC_KINDS
+    }
+
+
+def _expected_rbac(release, enabled):
+    subject = {"kind": "ServiceAccount", "name": release, "namespace": release}
+    expected = {}
+    for gate, kind, namespace, name, rules, subjects in [
+        (
+            "clusterAccess",
+            "ClusterRole",
+            None,
+            release,
+            _DEFAULT_CLUSTER_RULES,
+            [subject],
+        ),
+        (
+            "schedulerWorkflows",
+            "Role",
+            "monolith-workflows",
+            f"{release}-scheduler-workflows",
+            _DEFAULT_SCHEDULER_RULES,
+            [subject],
+        ),
+        (
+            "faas",
+            "Role",
+            "embervm",
+            f"{release}-faas",
+            _DEFAULT_FAAS_RULES,
+            [
+                subject,
+                {
+                    "kind": "ServiceAccount",
+                    "name": "monolith-stats",
+                    "namespace": "monolith-workflows",
+                },
+            ],
+        ),
+    ]:
+        if not enabled[gate]:
+            continue
+        expected[kind, namespace, name] = {"rules": rules}
+        expected[f"{kind}Binding", namespace, name] = {
+            "roleRef": {
+                "apiGroup": "rbac.authorization.k8s.io",
+                "kind": kind,
+                "name": name,
+            },
+            "subjects": subjects,
+        }
+    return expected
+
+
+@pytest.mark.parametrize("environment", ["defaults", "prod", "gke"])
+def test_default_rbac_preserves_rule_and_binding_contract(environment, renders):
+    release = _release_name(Path(os.environ["PROD_APPLICATION"]))
+    rendered = (
+        _render(release, []) if environment == "defaults" else renders[environment]
+    )
+    assert _rbac_objects(rendered) == _expected_rbac(
+        release, {"clusterAccess": True, "schedulerWorkflows": True, "faas": True}
+    )
+
+
+@pytest.mark.parametrize("cluster", [False, True])
+@pytest.mark.parametrize("scheduler", [False, True])
+@pytest.mark.parametrize("faas", [False, True])
+def test_optional_rbac_gates_remove_both_roles_and_all_subject_bindings(
+    tmp_path, cluster, scheduler, faas
+):
+    # Layer onto actual home values, where the accidental production grants
+    # matter, while keeping a distinct release identity.
+    enabled = {"clusterAccess": cluster, "schedulerWorkflows": scheduler, "faas": faas}
+    override = tmp_path / "rbac.yaml"
+    override.write_text(
+        yaml.safe_dump(
+            {"rbac": {key: {"enabled": value} for key, value in enabled.items()}}
+        )
+    )
+    actual = _rbac_objects(
+        _render("recovery", [Path(os.environ["DEPLOY_VALUES"]), override])
+    )
+    assert actual == _expected_rbac("recovery", enabled)
+    if not any(enabled.values()):
+        # No additive alternate binding may retain access for either the
+        # backend or the cross-namespace monolith-stats workflow identity.
+        assert actual == {}
+
+
+@pytest.mark.parametrize("gate", ["clusterAccess", "schedulerWorkflows", "faas"])
+@pytest.mark.parametrize("invalid", ["false", 1])
+def test_rbac_gate_rejects_non_boolean_values(tmp_path, gate, invalid):
+    override = tmp_path / "invalid-rbac.yaml"
+    override.write_text(yaml.safe_dump({"rbac": {gate: {"enabled": invalid}}}))
+    with pytest.raises(RuntimeError, match=rf"rbac\.{gate}\.enabled must be a boolean"):
+        _render("recovery", [override])

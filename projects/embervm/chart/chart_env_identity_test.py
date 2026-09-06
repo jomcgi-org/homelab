@@ -1151,3 +1151,323 @@ def test_session_banked_ttl_at_or_above_gc_session_ttl_fails_render() -> None:
             "e",
             ["claudeRuntimeWorkload.enabled=true", "warmthS3Gc.sessionTtlMs=1800000"],
         )
+
+
+_WORKLOAD_RULES = [
+    {
+        "apiGroups": ["embervm.dev"],
+        "resources": ["workloads"],
+        "verbs": ["get", "list", "watch"],
+    },
+    {
+        "apiGroups": ["embervm.dev"],
+        "resources": ["workloads/status"],
+        "verbs": ["get", "update", "patch"],
+    },
+]
+_TOKEN_REVIEW_RULE = {
+    "apiGroups": ["authentication.k8s.io"],
+    "resources": ["tokenreviews"],
+    "verbs": ["create"],
+}
+_POD_RULE = {"apiGroups": [""], "resources": ["pods"], "verbs": ["list", "patch"]}
+_DEFAULT_CLUSTER_RULES = [
+    *_WORKLOAD_RULES,
+    _TOKEN_REVIEW_RULE,
+    {"apiGroups": [""], "resources": ["secrets"], "verbs": ["get"]},
+    {"apiGroups": ["apps"], "resources": ["deployments"], "verbs": ["get"]},
+    {
+        "apiGroups": ["apps"],
+        "resources": ["deployments/scale"],
+        "verbs": ["get", "patch"],
+    },
+]
+_RBAC_KINDS = {"Role", "ClusterRole", "RoleBinding", "ClusterRoleBinding"}
+
+
+def _rbac_objects(documents):
+    return {
+        (doc["kind"], doc["metadata"].get("namespace"), doc["metadata"]["name"]): {
+            key: doc[key] for key in ("rules", "roleRef", "subjects") if key in doc
+        }
+        for doc in documents
+        if isinstance(doc, dict) and doc.get("kind") in _RBAC_KINDS
+    }
+
+
+def _role_pair(kind, name, namespace, rules, service_account, service_namespace):
+    return {
+        (kind, namespace, name): {"rules": rules},
+        (f"{kind}Binding", namespace, name): {
+            "roleRef": {
+                "apiGroup": "rbac.authorization.k8s.io",
+                "kind": kind,
+                "name": name,
+            },
+            "subjects": [
+                {
+                    "kind": "ServiceAccount",
+                    "name": service_account,
+                    "namespace": service_namespace,
+                }
+            ],
+        },
+    }
+
+
+def _effective_grants(objects, service_account, namespace):
+    """Resolve every additive binding, including a RoleBinding to a ClusterRole."""
+    subject = {
+        "kind": "ServiceAccount",
+        "name": service_account,
+        "namespace": namespace,
+    }
+    grants = []
+    for (kind, binding_namespace, _), binding in objects.items():
+        if kind not in {"RoleBinding", "ClusterRoleBinding"}:
+            continue
+        if subject not in binding["subjects"]:
+            continue
+        ref = binding["roleRef"]
+        role_namespace = None if ref["kind"] == "ClusterRole" else binding_namespace
+        role = objects[ref["kind"], role_namespace, ref["name"]]
+        grants.extend((binding_namespace, rule) for rule in role["rules"])
+    return sorted(grants, key=repr)
+
+
+def _broker_rules(names):
+    return [
+        {
+            "apiGroups": [""],
+            "resources": ["secrets"],
+            "resourceNames": [f"embervm-oauth-grant-{name}" for name in names],
+            "verbs": ["get", "update"],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "values_names, bricks_enabled, grant_names",
+    [
+        ([], False, ["codex-cluster"]),
+        (["PROD_VALUES"], True, ["codex-cluster"]),
+        (["PROD_VALUES", "GKE_VALUES"], True, ["codex-cluster", "agent-mcp"]),
+    ],
+    ids=["defaults", "home", "gke"],
+)
+def test_default_rbac_preserves_all_rule_and_binding_contracts(
+    values_names, bricks_enabled, grant_names
+):
+    release = "embervm"
+    name = "embervm-embervm"
+    documents = list(
+        yaml.safe_load_all(
+            _render(release, [Path(os.environ[key]) for key in values_names])
+        )
+    )
+    expected = _role_pair(
+        "ClusterRole", name, None, _DEFAULT_CLUSTER_RULES, name, release
+    )
+    if bricks_enabled:
+        expected.update(
+            _role_pair(
+                "Role", f"{name}-brick-pods", release, [_POD_RULE], name, release
+            )
+        )
+    expected.update(
+        _role_pair(
+            "Role",
+            f"{name}-tokenbroker",
+            release,
+            _broker_rules(grant_names),
+            f"{name}-tokenbroker",
+            release,
+        )
+    )
+    assert _rbac_objects(documents) == expected
+
+
+def _scoped_documents(
+    tmp_path, *, mode="observe", secrets=(), bricks=True, classes=True
+):
+    # Custom class and chart names exercise the exact Deployment identity seam;
+    # a static floor is deliberately present and must never receive scale RBAC.
+    class_template = yaml.safe_load((_chart_dir() / "values.yaml").read_text())[
+        "bricks"
+    ]["classes"][0]
+    class_values = (
+        [dict(class_template, name=name) for name in ("small", "large")]
+        if classes
+        else []
+    )
+    override = tmp_path / "scoped-rbac.yaml"
+    override.write_text(
+        yaml.safe_dump(
+            {
+                "nameOverride": "lane",
+                "rbac": {"scope": "namespace", "secretNames": list(secrets)},
+                "bricks": {
+                    "enabled": bricks,
+                    "autoscale": {"mode": mode},
+                    "classes": class_values,
+                    "nodeFloors": [{"node": "fixture-node", "class": "small"}]
+                    if classes
+                    else [],
+                },
+                "conformance": {"enabled": True},
+                "tokenBroker": {
+                    "grants": [
+                        {
+                            "name": "recovery-only",
+                            "provider": "codex-chatgpt",
+                            "fqdn": "auth.openai.com",
+                        }
+                    ]
+                },
+            }
+        )
+    )
+    return [
+        doc
+        for doc in yaml.safe_load_all(_render("recovery", [override]))
+        if isinstance(doc, dict)
+    ]
+
+
+@pytest.mark.parametrize("mode", ["off", "observe", "up", "full"])
+@pytest.mark.parametrize("secret_names", [[], ["fixture-a", "fixture.b"]])
+def test_namespace_rbac_effective_grants_and_subject_boundaries(
+    tmp_path, mode, secret_names
+):
+    documents = _scoped_documents(tmp_path, mode=mode, secrets=secret_names)
+    objects = _rbac_objects(documents)
+    name = "recovery-lane"
+    runtime_rules = list(_WORKLOAD_RULES)
+    if secret_names:
+        runtime_rules.append(
+            {
+                "apiGroups": [""],
+                "resources": ["secrets"],
+                "resourceNames": secret_names,
+                "verbs": ["get"],
+            }
+        )
+    deployments = [f"{name}-noded-brick-small", f"{name}-noded-brick-large"]
+    runtime_rules.extend(
+        [
+            {
+                "apiGroups": ["apps"],
+                "resources": ["deployments"],
+                "resourceNames": deployments,
+                "verbs": ["get"],
+            },
+            {
+                "apiGroups": ["apps"],
+                "resources": ["deployments/scale"],
+                "resourceNames": deployments,
+                "verbs": ["get", "patch"],
+            },
+        ]
+    )
+    expected = _role_pair(
+        "ClusterRole", name, None, [_TOKEN_REVIEW_RULE], name, "recovery"
+    )
+    expected.update(
+        _role_pair(
+            "Role", f"{name}-runtime", "recovery", runtime_rules, name, "recovery"
+        )
+    )
+    if mode == "full":
+        expected.update(
+            _role_pair(
+                "Role", f"{name}-brick-pods", "recovery", [_POD_RULE], name, "recovery"
+            )
+        )
+    expected.update(
+        _role_pair(
+            "Role",
+            f"{name}-tokenbroker",
+            "recovery",
+            _broker_rules(["recovery-only"]),
+            f"{name}-tokenbroker",
+            "recovery",
+        )
+    )
+    assert objects == expected
+    cp_grants = [(None, _TOKEN_REVIEW_RULE)] + [
+        ("recovery", rule) for rule in runtime_rules
+    ]
+    if mode == "full":
+        cp_grants.append(("recovery", _POD_RULE))
+    assert _effective_grants(objects, name, "recovery") == sorted(cp_grants, key=repr)
+    assert _effective_grants(objects, f"{name}-tokenbroker", "recovery") == [
+        ("recovery", _broker_rules(["recovery-only"])[0])
+    ]
+    service_accounts = {
+        doc["metadata"]["name"]
+        for doc in documents
+        if doc.get("kind") == "ServiceAccount"
+    }
+    for unprivileged in (f"{name}-noded", f"{name}-conformance"):
+        assert unprivileged in service_accounts
+        assert _effective_grants(objects, unprivileged, "recovery") == []
+    # A SA with the same name in a different namespace receives no authority.
+    assert _effective_grants(objects, name, "embervm") == []
+    rendered_deployments = {
+        doc["metadata"]["name"] for doc in documents if doc.get("kind") == "Deployment"
+    }
+    assert set(deployments) <= rendered_deployments
+    assert f"{name}-noded-brick-small-fixture-node" in rendered_deployments
+    control = next(
+        doc
+        for doc in documents
+        if doc.get("kind") == "Deployment" and doc["metadata"]["name"] == name
+    )
+    env = {
+        entry["name"]: entry.get("value")
+        for container in control["spec"]["template"]["spec"]["containers"]
+        for entry in container.get("env", [])
+    }
+    assert env["EMBERVM_BRICK_DEPLOYMENT_PREFIX"] == f"{name}-noded-brick-"
+
+
+@pytest.mark.parametrize("bricks, classes", [(False, True), (True, False)])
+def test_namespace_rbac_omits_scale_rule_when_no_class_deployments(
+    tmp_path, bricks, classes
+):
+    documents = _scoped_documents(tmp_path, bricks=bricks, classes=classes)
+    objects = _rbac_objects(documents)
+    grants = _effective_grants(objects, "recovery-lane", "recovery")
+    assert grants == sorted(
+        [(None, _TOKEN_REVIEW_RULE), *[("recovery", rule) for rule in _WORKLOAD_RULES]],
+        key=repr,
+    )
+    assert not any(
+        doc.get("kind") == "Deployment" and "-brick-" in doc["metadata"]["name"]
+        for doc in documents
+    )
+
+
+@pytest.mark.parametrize(
+    "rbac, message",
+    [
+        ({"scope": "namespaced"}, "rbac.scope must be cluster or namespace"),
+        ({"scope": False}, "rbac.scope must be cluster or namespace"),
+        (
+            {"scope": "namespace", "secretNames": "fixture"},
+            "rbac.secretNames must be a list",
+        ),
+        *[
+            (
+                {"scope": "namespace", "secretNames": [name]},
+                "rbac.secretNames entries must be valid Secret names",
+            )
+            for name in ("", " ", "*", "UPPER", "fixture/other", "a" * 254, 1)
+        ],
+    ],
+)
+def test_namespace_rbac_rejects_invalid_inputs(tmp_path, rbac, message):
+    override = tmp_path / "invalid-rbac.yaml"
+    override.write_text(yaml.safe_dump({"rbac": rbac}))
+    with pytest.raises(RuntimeError, match=re.escape(message)):
+        _render("recovery", [override])
