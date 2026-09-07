@@ -18,3 +18,4 @@ CREATE TABLE knowledge.interventions (
 );
 
 GRANT INSERT (raw_id) ON knowledge.interventions TO agents_writer;
+GRANT SELECT (raw_id) ON knowledge.interventions TO agents_writer;

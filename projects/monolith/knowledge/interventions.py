@@ -5,12 +5,18 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlmodel import Session
 
+from knowledge.models import Intervention
+
 
 def create_intervention(session: Session, raw_id: str) -> bool:
     """Create the open inbox row, returning true only for the insert winner."""
+    table = Intervention.__table__
+    table_name = ".".join(
+        part for part in (table.schema, table.name) if part is not None
+    )
     row = session.execute(
         text(
-            "INSERT INTO knowledge.interventions (raw_id) VALUES (:raw_id) "
+            f"INSERT INTO {table_name} (raw_id) VALUES (:raw_id) "
             "ON CONFLICT (raw_id) DO NOTHING RETURNING raw_id"
         ),
         {"raw_id": raw_id},
