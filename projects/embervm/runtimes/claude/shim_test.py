@@ -2,6 +2,7 @@
 
 import ast
 import base64
+import copy
 import datetime
 import io
 import json
@@ -949,10 +950,13 @@ def test_muse_first_turn_returns_terminal_text(tmp_path, monkeypatch):
         # The provider id actually sent, not the short family name the caller
         # asked for: the console renders this value. Pi reports the same way.
         "model": "muse-spark-1.3-contributor",
-        "usage": {},
+        "usage": record["usage"],
         "voice": "pong",
         "activities": [],
     }
+    assert record["usage"]["muse"]["status"] == "unavailable"
+    assert record["usage"]["muse"]["reason"] == "collection_failed"
+    assert "input_tokens" not in record["usage"]
 
 
 def test_muse_argv_uses_contributor_model_and_reuses_session_id(tmp_path, monkeypatch):
@@ -7344,3 +7348,396 @@ def test_turn_base_failure_reason_includes_git_stderr(monkeypatch, tmp_path, cap
     captured = capsys.readouterr().err
     assert "outcome=rev_parse_failed" in captured
     assert "dubious ownership" in captured
+
+
+_MUSE_USAGE_SERVE_BRANCH = r"""
+if args[0] == "serve":
+    import time
+    assert args == ["serve", "--disable-write", "--disable-shell"]
+    with open(os.environ["FAKE_MUSE_USAGE_PAGES"]) as stream:
+        pages = json.load(stream)
+    scenario = os.environ.get("FAKE_MUSE_USAGE_SCENARIO")
+    index = 0
+    for line in sys.stdin:
+        request = json.loads(line)
+        method = request["method"]
+        assert method in ("initialize", "initialized", "session/read", "view/page")
+        with open(os.environ["FAKE_MUSE_USAGE_REQUESTS"], "a") as stream:
+            stream.write(json.dumps(request) + "\n")
+        if method == "initialized":
+            continue
+        if method == "initialize":
+            import re
+            assert re.fullmatch("[a-z0-9_]+", request["params"]["clientInfo"]["name"])
+        if scenario == "hang":
+            time.sleep(60)
+        if scenario == "oversized":
+            print("x" * 4096, flush=True)
+            continue
+        if method == "session/read":
+            assert request["params"]["excludeItems"] is True
+            result = {"viewCursor": "head"}
+        elif method == "view/page":
+            assert request["params"]["direction"] == "backward"
+            result = pages[min(index, len(pages) - 1)]
+            index += 1
+        else:
+            result = {}
+        print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+    sys.exit(0)
+"""
+
+
+def _muse_usage_transport_manager(tmp_path, monkeypatch, pages):
+    manager = _muse_manager(tmp_path, monkeypatch)
+    executable = tmp_path / "fake-muse"
+    executable.write_text(
+        FAKE_MUSE_CLI.replace(
+            'assert args[0] == "exec"',
+            _MUSE_USAGE_SERVE_BRANCH + '\nassert args[0] == "exec"',
+            1,
+        )
+    )
+    page_file = tmp_path / "usage-pages.json"
+    page_file.write_text(json.dumps(pages))
+    monkeypatch.setenv("FAKE_MUSE_USAGE_PAGES", str(page_file))
+    monkeypatch.setenv(
+        "FAKE_MUSE_USAGE_REQUESTS", str(tmp_path / "usage-requests.jsonl")
+    )
+    manager.session_id = _MUSE_USAGE_RECORDED_EVENTS[0]["params"]["sessionId"]
+    return manager
+
+
+def test_muse_usage_reader_pages_back_to_exact_turn_and_drops_content(
+    tmp_path, monkeypatch
+):
+    events = _MUSE_USAGE_RECORDED_EVENTS
+    pages = [
+        {"events": events[2:], "nextCursor": "terminal"},
+        {"events": [events[1]], "nextCursor": "usage"},
+        {
+            "events": [
+                {"method": "item/completed", "params": {"text": "PRIVATE_CONTENT"}},
+                events[0],
+            ],
+            "nextCursor": "older-unrelated-history",
+        },
+    ]
+    manager = _muse_usage_transport_manager(tmp_path, monkeypatch, pages)
+    before = set(shim._managed_child_pids)
+    usage = manager._collect_usage(events[0]["params"]["commandId"], 1)
+    assert usage["input_tokens"] == 23415
+    assert usage["output_tokens"] == 24
+    assert usage["model_ms"] == 1871
+    assert "PRIVATE_CONTENT" not in json.dumps(usage)
+    assert "total_cost_usd" not in usage
+    assert set(shim._managed_child_pids) == before
+    requests = [
+        json.loads(line)
+        for line in (tmp_path / "usage-requests.jsonl").read_text().splitlines()
+    ]
+    assert [request["params"].get("cursor") for request in requests[3:]] == [
+        None,
+        "terminal",
+        "usage",
+    ]
+    assert [request["method"] for request in requests[:3]] == [
+        "initialize",
+        "initialized",
+        "session/read",
+    ]
+
+
+@pytest.mark.parametrize("scenario", ["hang", "oversized"])
+def test_muse_usage_reader_failure_is_bounded_and_reaps_child(
+    tmp_path, monkeypatch, scenario
+):
+    manager = _muse_usage_transport_manager(tmp_path, monkeypatch, [])
+    monkeypatch.setenv("FAKE_MUSE_USAGE_SCENARIO", scenario)
+    monkeypatch.setattr(shim, "MUSE_USAGE_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(shim, "MUSE_USAGE_MAX_BYTES", 1024)
+    before = set(shim._managed_child_pids)
+    started = time.monotonic()
+    usage = manager._collect_usage("owned-command", 1)
+    assert time.monotonic() - started < 2
+    assert usage["muse"]["status"] == "unavailable"
+    assert usage["muse"]["reason"] == "collection_failed"
+    assert "input_tokens" not in usage
+    assert set(shim._managed_child_pids) == before
+
+
+def test_muse_usage_reader_refuses_repeated_cursor(tmp_path, monkeypatch):
+    manager = _muse_usage_transport_manager(
+        tmp_path, monkeypatch, [{"events": [], "nextCursor": "stuck"}]
+    )
+    usage = manager._collect_usage("owned-command", 1)
+    assert usage["muse"]["reason"] == "collection_failed"
+    requests = (tmp_path / "usage-requests.jsonl").read_text().splitlines()
+    assert len(requests) == 5
+
+
+def test_muse_usage_reader_cannot_submit_a_turn():
+    # The method guard precedes access to any process handles.
+    with pytest.raises(ValueError, match="not read-only"):
+        shim._MuseUsageReader.request(object(), "turn/start", {})
+
+
+def test_muse_usage_collection_uses_observed_completions_after_exec_exit(
+    tmp_path, monkeypatch
+):
+    manager = _muse_manager(tmp_path, monkeypatch)
+    # This test concerns the exec-to-read handoff, not Linux orphan adoption.
+    monkeypatch.setattr(shim, "_reap_orphans", lambda: None)
+    executable = tmp_path / "fake-muse"
+    executable.write_text(
+        FAKE_MUSE_CLI.replace(
+            '"message": "completed meta model stream attempt 1/10"',
+            '"message": "completed meta model stream attempt 1/10", '
+            '"details": {"phase": "stream_succeeded", "facets": ['
+            '{"kind": "external_attempt", "operation": "model.response", "attempt": 1}]}',
+        )
+    )
+    received = []
+
+    def collect(command_id, completions):
+        assert manager.process is None
+        assert not list((tmp_path / "workspace" / ".muse" / "prompts").iterdir())
+        received.append((command_id, completions))
+        return {"input_tokens": 23415, "muse": {"cost_status": "not_reported"}}
+
+    monkeypatch.setattr(manager, "_collect_usage", collect)
+    turn = manager.turn("ping", model="spark")
+    assert received == [("15cf6510-9de2-4c3d-aa2e-07c039e42394", 1)]
+    assert turn["usage"]["input_tokens"] == 23415
+    assert turn["terminal_reason"] == "completed"
+    assert "total_cost_usd" not in turn
+
+
+def _muse_usage_project(events=None, count=1, command_id=None):
+    if events is None:
+        events = copy.deepcopy(_MUSE_USAGE_RECORDED_EVENTS)
+    return shim._muse_usage_projection(
+        events,
+        _MUSE_USAGE_RECORDED_EVENTS[0]["params"]["sessionId"],
+        command_id or _MUSE_USAGE_RECORDED_EVENTS[0]["params"]["commandId"],
+        count,
+    )
+
+
+def test_muse_usage_real_retained_capture_preserves_native_provenance():
+    usage = _muse_usage_project()
+    assert usage["muse"]["status"] == "complete"
+    assert usage["muse"]["cost_status"] == "not_reported"
+    assert usage["input_tokens"] == usage["prompt_tokens"] == 23415
+    assert usage["output_tokens"] == 24
+    assert usage["total_tokens"] == 23439
+    assert usage["cached_tokens"] == 0
+    assert usage["cache_read_input_tokens"] == 0
+    assert usage["cache_creation_input_tokens"] == 0
+    assert usage["reasoning_tokens"] == 10
+    assert usage["model_ms"] == 1871
+    assert usage["muse"]["observations"] == [_MUSE_USAGE_RECORDED_EVENTS[1]["params"]]
+    assert "total_cost_usd" not in usage
+
+
+def test_muse_usage_counts_only_this_turn_not_prior_session_or_terminal_totals():
+    events = copy.deepcopy(_MUSE_USAGE_RECORDED_EVENTS)
+    first = events[1]["params"]
+    first["usage"] = {
+        "inputTokens": 10,
+        "outputTokens": 2,
+        "cachedTokens": 4,
+        "reasoningTokens": 1,
+    }
+    # Input/cache convention is owned by Muse. Its counted-once prompt differs
+    # from raw input and is never re-derived by the adapter.
+    first.update(
+        promptTokens=14,
+        totalTokens=16,
+        cumulative={"promptTokens": 114, "outputTokens": 22, "totalTokens": 136},
+    )
+    second = copy.deepcopy(events[1])
+    second["params"].update(viewCursor="next-model", durationMs=100)
+    second["params"]["sourceRange"]["first"] = {"id": "second", "sequence": 46}
+    second["params"]["sourceRange"]["last"] = {"id": "second", "sequence": 46}
+    second["params"].update(
+        cumulative={"promptTokens": 128, "outputTokens": 24, "totalTokens": 152}
+    )
+    events.insert(2, second)
+    events[-1]["params"]["usage"] = {
+        "inputTokens": 20,
+        "outputTokens": 4,
+        "cachedTokens": 8,
+        "reasoningTokens": 2,
+    }
+    usage = _muse_usage_project(events, count=2)
+    assert usage["muse"]["status"] == "complete"
+    assert usage["input_tokens"] == 20
+    assert usage["prompt_tokens"] == 28
+    assert usage["output_tokens"] == 4
+    assert usage["total_tokens"] == 32
+    assert usage["model_ms"] == 1971
+    assert "cache_read_input_tokens" not in usage
+
+
+@pytest.mark.parametrize("different_cursor", [False, True])
+def test_muse_usage_replayed_native_event_is_counted_once(different_cursor):
+    events = copy.deepcopy(_MUSE_USAGE_RECORDED_EVENTS)
+    duplicate = copy.deepcopy(events[1])
+    if different_cursor:
+        duplicate["params"]["viewCursor"] = "replayed-cursor"
+    events.insert(2, duplicate)
+    usage = _muse_usage_project(events)
+    assert usage["input_tokens"] == 23415
+    assert len(usage["muse"]["observations"]) == 1
+
+
+def test_muse_usage_conflicting_replay_does_not_export_totals():
+    events = copy.deepcopy(_MUSE_USAGE_RECORDED_EVENTS)
+    duplicate = copy.deepcopy(events[1])
+    duplicate["params"]["usage"]["inputTokens"] += 1
+    events.insert(2, duplicate)
+    usage = _muse_usage_project(events)
+    assert usage["muse"]["reason"] == "invalid_evidence"
+    assert "input_tokens" not in usage
+
+
+def test_muse_usage_command_mapping_ignores_other_turn_and_session():
+    events = copy.deepcopy(_MUSE_USAGE_RECORDED_EVENTS)
+    for event in events:
+        event["params"]["turnId"] = "mapped-turn"
+    unrelated = copy.deepcopy(_MUSE_USAGE_RECORDED_EVENTS)
+    for event in unrelated:
+        event["params"]["sessionId"] = "foreign-session"
+    unrelated[0]["params"]["commandId"] = "foreign-command"
+    usage = _muse_usage_project(unrelated + events)
+    assert usage["muse"]["turn_id"] == "mapped-turn"
+    assert usage["input_tokens"] == 23415
+
+
+def test_muse_usage_absent_optional_counters_remain_unmeasured():
+    events = copy.deepcopy(_MUSE_USAGE_RECORDED_EVENTS)
+    params = events[1]["params"]
+    del params["durationMs"]
+    del params["modelId"]
+    del params["usage"]["cacheReadTokens"]
+    del params["usage"]["cacheWriteTokens"]
+    usage = _muse_usage_project(events)
+    assert usage["muse"]["status"] == "complete"
+    assert "model_ms" not in usage
+    assert "cache_read_input_tokens" not in usage
+    assert "cache_creation_input_tokens" not in usage
+    assert "modelId" not in usage["muse"]["observations"][0]
+
+
+@pytest.mark.parametrize("value", [True, -1, 1.5, "23", None])
+def test_muse_usage_rejects_invalid_counter(value):
+    events = copy.deepcopy(_MUSE_USAGE_RECORDED_EVENTS)
+    events[1]["params"]["usage"]["inputTokens"] = value
+    usage = _muse_usage_project(events)
+    assert usage["muse"]["reason"] == "invalid_evidence"
+    assert "input_tokens" not in usage
+
+
+@pytest.mark.parametrize("count", [0, 2, None, True])
+def test_muse_usage_partial_reporting_is_explicit(count):
+    usage = _muse_usage_project(count=count)
+    assert usage["muse"]["status"] == "incomplete"
+    assert usage["muse"]["reason"] == "completion_count_mismatch"
+    assert len(usage["muse"]["observations"]) == 1
+    assert "input_tokens" not in usage
+
+
+@pytest.mark.parametrize("indices", [[], [0], [0, 1], [1, 2], [0, 2]])
+def test_muse_usage_missing_boundary_or_usage_never_means_zero(indices):
+    events = [copy.deepcopy(_MUSE_USAGE_RECORDED_EVENTS[i]) for i in indices]
+    usage = _muse_usage_project(events)
+    assert usage["muse"]["status"] == "unavailable"
+    assert "input_tokens" not in usage
+
+
+def test_muse_usage_rejects_cumulative_gap_and_terminal_mismatch():
+    events = copy.deepcopy(_MUSE_USAGE_RECORDED_EVENTS)
+    second = copy.deepcopy(events[1])
+    second["params"]["viewCursor"] = "second"
+    second["params"]["sourceRange"]["first"]["id"] = "second"
+    events.insert(2, second)
+    assert _muse_usage_project(events, count=2)["muse"]["reason"] == "invalid_evidence"
+    events = copy.deepcopy(_MUSE_USAGE_RECORDED_EVENTS)
+    events[-1]["params"]["usage"] = dict(events[1]["params"]["usage"], inputTokens=1)
+    assert _muse_usage_project(events)["muse"]["reason"] == "invalid_evidence"
+
+
+# Native Muse 1.0.3 retained metadata captured 2026-09-07 for issue5889.
+# Only usage and identity fields are retained; no prompt or result content.
+_MUSE_USAGE_RECORDED_EVENTS = [
+    {
+        "method": "turn/started",
+        "params": {
+            "sessionId": "18614dbb-43a4-4d9e-a03c-07b5b9b8240e",
+            "turnId": "f27e9eec-cca5-46fc-8ddb-517b214b6c0d",
+            "commandId": "f27e9eec-cca5-46fc-8ddb-517b214b6c0d",
+            "sourceRange": {
+                "stream": {
+                    "kind": "session",
+                    "id": "18614dbb-43a4-4d9e-a03c-07b5b9b8240e",
+                },
+                "first": {"id": "04ccda49-7ead-4d45-a194-86dfef4b67cd", "sequence": 16},
+                "last": {"id": "04ccda49-7ead-4d45-a194-86dfef4b67cd", "sequence": 16},
+            },
+            "viewCursor": "v:18614dbb-43a4-4d9e-a03c-07b5b9b8240e:1",
+        },
+    },
+    {
+        "method": "session/tokenUsage",
+        "params": {
+            "sessionId": "18614dbb-43a4-4d9e-a03c-07b5b9b8240e",
+            "turnId": "f27e9eec-cca5-46fc-8ddb-517b214b6c0d",
+            "sourceRange": {
+                "stream": {
+                    "kind": "session",
+                    "id": "18614dbb-43a4-4d9e-a03c-07b5b9b8240e",
+                },
+                "first": {"id": "77b775dd-5462-4798-ac13-fe688d807fca", "sequence": 45},
+                "last": {"id": "77b775dd-5462-4798-ac13-fe688d807fca", "sequence": 45},
+            },
+            "viewCursor": "v:18614dbb-43a4-4d9e-a03c-07b5b9b8240e:4",
+            "usage": {
+                "inputTokens": 23415,
+                "outputTokens": 24,
+                "cachedTokens": 0,
+                "cacheWriteTokens": 0,
+                "cacheReadTokens": 0,
+                "reasoningTokens": 10,
+            },
+            "promptTokens": 23415,
+            "totalTokens": 23439,
+            "cumulative": {
+                "promptTokens": 23415,
+                "outputTokens": 24,
+                "totalTokens": 23439,
+            },
+            "modelId": "muse-spark-1.3-contributor",
+            "durationMs": 1871,
+        },
+    },
+    {
+        "method": "turn/completed",
+        "params": {
+            "sessionId": "18614dbb-43a4-4d9e-a03c-07b5b9b8240e",
+            "turnId": "f27e9eec-cca5-46fc-8ddb-517b214b6c0d",
+            "sourceRange": {
+                "stream": {
+                    "kind": "session",
+                    "id": "18614dbb-43a4-4d9e-a03c-07b5b9b8240e",
+                },
+                "first": {"id": "5928d947-c2de-4608-b9b8-f3eb94d1fd2d", "sequence": 48},
+                "last": {"id": "5928d947-c2de-4608-b9b8-f3eb94d1fd2d", "sequence": 48},
+            },
+            "viewCursor": "v:18614dbb-43a4-4d9e-a03c-07b5b9b8240e:5",
+            "durationMs": 2113,
+            "timeToFirstTokenMs": 1899,
+            "terminal": "completed",
+        },
+    },
+]

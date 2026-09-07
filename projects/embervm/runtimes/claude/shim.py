@@ -9,6 +9,7 @@ import math
 import os
 import queue
 import re
+import selectors
 import signal
 import shutil
 import socket
@@ -3145,6 +3146,260 @@ url = %s
 INFERENCE_BASE_URL = "https://api.meta.ai/v1"
 
 
+MUSE_USAGE_TIMEOUT_SECONDS = 5.0
+MUSE_USAGE_MAX_PAGES = 20
+MUSE_USAGE_PAGE_SIZE = 100
+MUSE_USAGE_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _muse_usage_projection(events, session_id, command_id, expected_completions):
+    """Project one complete retained turn, with native counter provenance.
+
+    MSP emits per-model usage and session cumulative counters separately. Sum
+    only unique per-model observations; a missing observation is not zero usage.
+    """
+    meta = {
+        "source": "msp_retained_session_view",
+        "scope": "turn",
+        "coverage": "reported_model_completions",
+        "status": "unavailable",
+        "reason": "missing_turn_boundary",
+        "session_id": session_id,
+        "command_id": command_id,
+        "cost_status": "not_reported",
+        "observed_model_completions": (
+            expected_completions
+            if type(expected_completions) is int and expected_completions >= 0
+            else None
+        ),
+    }
+    result = {"muse": meta}
+
+    def integer(value):
+        if type(value) is not int or value < 0:
+            raise ValueError("invalid usage integer")
+        return value
+
+    def identity(value):
+        if not isinstance(value, str) or not value or len(value) > 512:
+            raise ValueError("invalid usage identity")
+        return value
+
+    def source_range(value):
+        projected = {
+            "stream": {key: identity(value["stream"][key]) for key in ("kind", "id")}
+        }
+        for key in ("first", "last"):
+            projected[key] = {
+                "id": identity(value[key]["id"]),
+                "sequence": integer(value[key]["sequence"]),
+            }
+        if projected["first"]["sequence"] > projected["last"]["sequence"]:
+            raise ValueError("invalid usage source range")
+        return projected
+
+    raw_fields = ("inputTokens", "outputTokens", "cachedTokens", "reasoningTokens")
+    cache_fields = ("cacheReadTokens", "cacheWriteTokens")
+
+    def raw_usage(value):
+        raw = {key: integer(value[key]) for key in raw_fields}
+        raw.update({key: integer(value[key]) for key in cache_fields if key in value})
+        return raw
+
+    try:
+        identity(session_id)
+        identity(command_id)
+        starts = [
+            event["params"]
+            for event in events
+            if event.get("method") == "turn/started"
+            and event.get("params", {}).get("sessionId") == session_id
+            and event.get("params", {}).get("commandId") == command_id
+        ]
+        if not starts:
+            return result
+        turn_ids = {identity(start["turnId"]) for start in starts}
+        if len(turn_ids) != 1:
+            raise ValueError("ambiguous turn identity")
+        turn_id = next(iter(turn_ids))
+        meta["turn_id"] = turn_id
+        selected = []
+        by_cursor = {}
+        by_source = {}
+        for event in events:
+            method, params = event.get("method"), event.get("params", {})
+            if (
+                method not in ("turn/started", "turn/completed", "session/tokenUsage")
+                or params.get("sessionId") != session_id
+                or params.get("turnId") != turn_id
+            ):
+                continue
+            projected = {
+                "sessionId": session_id,
+                "turnId": turn_id,
+                "viewCursor": identity(params["viewCursor"]),
+                "sourceRange": source_range(params["sourceRange"]),
+            }
+            if method == "turn/started":
+                if params.get("commandId") != command_id:
+                    raise ValueError("conflicting command identity")
+                projected["commandId"] = command_id
+            if "usage" in params:
+                projected["usage"] = raw_usage(params["usage"])
+            if method == "session/tokenUsage":
+                if "usage" not in projected:
+                    raise ValueError("missing raw counters")
+                for key in ("promptTokens", "totalTokens"):
+                    projected[key] = integer(params[key])
+                projected["cumulative"] = {
+                    key: integer(params["cumulative"][key])
+                    for key in ("promptTokens", "outputTokens", "totalTokens")
+                }
+                if "modelId" in params and params["modelId"] is not None:
+                    projected["modelId"] = identity(params["modelId"])
+            for key in ("durationMs", "timeToFirstTokenMs"):
+                if key in params:
+                    projected[key] = integer(params[key])
+            if method == "turn/completed":
+                projected["terminal"] = identity(params["terminal"])
+            # A native view cursor and durable source identify a single event.
+            # Compare the allowlisted payload too, so conflicting replay fails.
+            signature = json.dumps(
+                {
+                    "method": method,
+                    "params": {k: v for k, v in projected.items() if k != "viewCursor"},
+                },
+                sort_keys=True,
+            )
+            cursor_key = projected["viewCursor"]
+            source_key = (method, json.dumps(projected["sourceRange"], sort_keys=True))
+            for mapping, key in ((by_cursor, cursor_key), (by_source, source_key)):
+                if key in mapping and mapping[key] != signature:
+                    raise ValueError("conflicting replay")
+            duplicate = cursor_key in by_cursor or source_key in by_source
+            by_cursor[cursor_key] = by_source[source_key] = signature
+            if not duplicate:
+                selected.append((method, projected))
+        if (
+            not selected
+            or selected[0][0] != "turn/started"
+            or selected[-1][0] != "turn/completed"
+            or any(method != "session/tokenUsage" for method, _ in selected[1:-1])
+        ):
+            return result
+        meta["terminal"] = selected[-1][1]
+        observations = [params for _, params in selected[1:-1]]
+        meta["observations"] = observations
+        meta["reported_usage_completions"] = len(observations)
+        if not observations:
+            meta["reason"] = "usage_not_reported"
+            return result
+        previous = None
+        for observation in observations:
+            counts = {
+                "promptTokens": observation["promptTokens"],
+                "outputTokens": observation["usage"]["outputTokens"],
+                "totalTokens": observation["totalTokens"],
+            }
+            cumulative = observation["cumulative"]
+            for values in (counts, cumulative):
+                if (
+                    values["totalTokens"]
+                    != values["promptTokens"] + values["outputTokens"]
+                ):
+                    raise ValueError("inconsistent counted-once totals")
+            for key, count in counts.items():
+                if previous is None:
+                    if cumulative[key] < count:
+                        raise ValueError("cumulative below observation")
+                elif cumulative[key] - previous[key] != count:
+                    raise ValueError("missing or conflicting cumulative usage")
+            previous = cumulative
+        if type(expected_completions) is not int or expected_completions != len(
+            observations
+        ):
+            meta.update(status="incomplete", reason="completion_count_mismatch")
+            return result
+        totals = {
+            key: sum(observation["usage"][key] for observation in observations)
+            for key in raw_fields + cache_fields
+            if all(key in observation["usage"] for observation in observations)
+        }
+        terminal_usage = meta["terminal"].get("usage", {})
+        if any(totals.get(key) != value for key, value in terminal_usage.items()):
+            raise ValueError("terminal aggregate mismatch")
+        names = {
+            "inputTokens": "input_tokens",
+            "outputTokens": "output_tokens",
+            "cachedTokens": "cached_tokens",
+            "reasoningTokens": "reasoning_tokens",
+            "cacheReadTokens": "cache_read_input_tokens",
+            "cacheWriteTokens": "cache_creation_input_tokens",
+        }
+        result.update({names[key]: value for key, value in totals.items()})
+        result["prompt_tokens"] = sum(row["promptTokens"] for row in observations)
+        result["total_tokens"] = sum(row["totalTokens"] for row in observations)
+        if all("durationMs" in row for row in observations):
+            result["model_ms"] = sum(row["durationMs"] for row in observations)
+        meta.update(status="complete", reason="reported_usage")
+    except (ValueError, TypeError, KeyError, AttributeError):
+        meta.update(status="unavailable", reason="invalid_evidence")
+    return result
+
+
+class _MuseUsageReader:
+    """Bounded, read-only MSP client. No session attach or model submission."""
+
+    def __init__(self, process):
+        self.process = process
+        self.deadline = time.monotonic() + MUSE_USAGE_TIMEOUT_SECONDS
+        self.buffer = bytearray()
+        self.bytes_read = 0
+        self.request_id = 0
+        self.selector = selectors.DefaultSelector()
+        self.selector.register(process.stdout, selectors.EVENT_READ)
+
+    def request(self, method, params, notification=False):
+        if method not in ("initialize", "initialized", "session/read", "view/page"):
+            raise ValueError("usage reader method is not read-only")
+        self.request_id += 1
+        request = {"jsonrpc": "2.0", "method": method, "params": params}
+        if not notification:
+            request["id"] = self.request_id
+        # Requests are small metadata-only frames, below the pipe capacity.
+        self.process.stdin.write(_json_line(request))
+        self.process.stdin.flush()
+        if notification:
+            return None
+        while True:
+            if time.monotonic() >= self.deadline:
+                raise TimeoutError("usage metadata deadline")
+            while b"\n" in self.buffer:
+                line, _, remainder = self.buffer.partition(b"\n")
+                self.buffer[:] = remainder
+                message = json.loads(line)
+                if not isinstance(message, dict):
+                    raise ValueError("invalid MSP frame")
+                if message.get("id") == self.request_id:
+                    if "error" in message:
+                        # Native errors can contain paths or content. Export no text.
+                        raise ValueError("MSP metadata read failed")
+                    return message["result"]
+            remaining = self.deadline - time.monotonic()
+            if remaining <= 0 or not self.selector.select(remaining):
+                raise TimeoutError("usage metadata deadline")
+            chunk = os.read(self.process.stdout.fileno(), 65536)
+            if not chunk:
+                raise ValueError("MSP metadata EOF")
+            self.bytes_read += len(chunk)
+            if self.bytes_read > MUSE_USAGE_MAX_BYTES:
+                raise ValueError("usage metadata byte limit")
+            self.buffer.extend(chunk)
+
+    def close(self):
+        self.selector.close()
+
+
 class MuseProcess:
     """Run one Muse exec process per turn, retaining server-side session identity."""
 
@@ -3392,6 +3647,91 @@ class MuseProcess:
             error_msg += "\nCLI stderr:\n%s" % stderr
         return RuntimeError(error_msg)
 
+    def _collect_usage(self, command_id, expected_completions):
+        unavailable = _muse_usage_projection(
+            [], self.session_id, command_id, expected_completions
+        )
+        if not isinstance(command_id, str) or not command_id:
+            return unavailable
+        process = None
+        reader = None
+        try:
+            # exec retains logs already. Read after its exit so the durable
+            # terminal has flushed, using the same XDG paths and CLI identity.
+            process = subprocess.Popen(
+                [self.executable, "serve", "--disable-write", "--disable-shell"],
+                cwd=self.workspace,
+                env=self._child_env(),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                **_cli_privilege_kwargs(),
+            )
+            _managed_child_pids.add(process.pid)
+            reader = _MuseUsageReader(process)
+            reader.request(
+                "initialize",
+                {"clientInfo": {"name": "ember_muse_usage", "version": "1"}},
+            )
+            reader.request("initialized", {}, notification=True)
+            reader.request(
+                "session/read", {"sessionId": self.session_id, "excludeItems": True}
+            )
+            events = []
+            cursor = None
+            cursors = set()
+            for _ in range(MUSE_USAGE_MAX_PAGES):
+                params = {
+                    "sessionId": self.session_id,
+                    "limit": MUSE_USAGE_PAGE_SIZE,
+                    "direction": "backward",
+                }
+                if cursor is not None:
+                    params["cursor"] = cursor
+                page = reader.request("view/page", params)
+                # Pages can contain transcript items. Discard them in-process;
+                # only usage and exact turn identity reach the stored result.
+                page_events = [
+                    event
+                    for event in page["events"]
+                    if event.get("method")
+                    in ("turn/started", "turn/completed", "session/tokenUsage")
+                ]
+                events = page_events + events
+                if any(
+                    event.get("method") == "turn/started"
+                    and event.get("params", {}).get("sessionId") == self.session_id
+                    and event.get("params", {}).get("commandId") == command_id
+                    for event in page_events
+                ):
+                    return _muse_usage_projection(
+                        events, self.session_id, command_id, expected_completions
+                    )
+                cursor = page["nextCursor"]
+                if cursor is None:
+                    break
+                if not isinstance(cursor, str) or cursor in cursors:
+                    raise ValueError("non-progressing usage page")
+                cursors.add(cursor)
+            return _muse_usage_projection(
+                events, self.session_id, command_id, expected_completions
+            )
+        except Exception:
+            unavailable["muse"]["reason"] = "collection_failed"
+            return unavailable
+        finally:
+            if reader is not None:
+                reader.close()
+            if process is not None:
+                # This process owns metadata reads only. Stop it without adding
+                # another model-side timeout or changing the executed outcome.
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
+                process.stdin.close()
+                process.stdout.close()
+                _managed_child_pids.discard(process.pid)
+
     def turn(
         self,
         message,
@@ -3419,9 +3759,7 @@ class MuseProcess:
             _emit_elapsed("cli_ready", cli_ready_start, path="spawn")
             accumulated_text = ""
             result_text = ""
-            # Muse usage shape is not yet observed in captures; report empty
-            # until verified.
-            usage = {}
+            completed_model_attempts = set()
             terminal_reason = "completed"
             tasks_by_id = {}
             cached_activities = []
@@ -3473,6 +3811,10 @@ class MuseProcess:
                         _emit_elapsed(
                             "model", getattr(self, "_turn_timing_model_start", None)
                         )
+                        self._close_process(kill=False)
+                        usage = self._collect_usage(
+                            payload.get("command_id"), len(completed_model_attempts)
+                        )
                         return {
                             "result": result_text,
                             "terminal_reason": terminal_reason,
@@ -3488,6 +3830,24 @@ class MuseProcess:
                         lifecycle = payload.get("event", {})
                         if isinstance(lifecycle, dict):
                             task_id = payload.get("task_id") or lifecycle.get("task_id")
+                            details = lifecycle.get("details", {})
+                            if (
+                                task_id
+                                and isinstance(details, dict)
+                                and details.get("phase") == "stream_succeeded"
+                            ):
+                                facets = details.get("facets", [])
+                                for facet in facets if isinstance(facets, list) else []:
+                                    if (
+                                        isinstance(facet, dict)
+                                        and facet.get("kind") == "external_attempt"
+                                        and facet.get("operation") == "model.response"
+                                        and type(facet.get("attempt")) is int
+                                        and facet["attempt"] > 0
+                                    ):
+                                        completed_model_attempts.add(
+                                            (task_id, facet["attempt"])
+                                        )
                             if task_id:
                                 tasks_by_id.setdefault(task_id, {}).update(lifecycle)
                                 # Captures carry only a label such as
