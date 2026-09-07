@@ -293,7 +293,7 @@ agents:
     # queued raws on 2026-09-04), now that the behavioural lens and the
     # extraction gates are live (#5608). Re-grade the next batch before
     # touching it again.
-    kgMaxJobsPerDay: 150
+    kgMaxJobsPerDay: 400
     # Doc drift found by the repo-diff feed opens human-reviewed docs PRs on
     # the routine lane. docFixAutoMerge stays at the chart default (false)
     # until a few docfix-review verdicts have been read.
