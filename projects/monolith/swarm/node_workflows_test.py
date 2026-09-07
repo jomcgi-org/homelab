@@ -853,3 +853,38 @@ def test_reconcile_branch_read_failure_cannot_settle_reservation(
     monkeypatch.setattr(nodes, "_read_reconciliation_head", unavailable)
     with pytest.raises(RuntimeError, match="GitHub unavailable"):
         nodes.reconcile_completed_node(state.pin, 7)
+
+
+def test_reconcile_missing_id_finds_only_exact_deterministic_session(reconciliation_db):
+    state = reconciliation_db
+    state.complete()
+    with Session(state.engine) as session:
+        session.add(
+            AgentSession(
+                id=8,
+                local_session_id="factory:t-11:implement:2",
+                workspace="guest",
+                repo=state.pin["repo"],
+                branch="main",
+                model="luna",
+                workflow_id=state.pin["workflow_id"],
+                node_key="implement",
+                node_attempt=2,
+            )
+        )
+        session.commit()
+    result = nodes.reconcile_completed_node(state.pin, None)
+    assert result["status"] == "succeeded"
+    assert result["session_id"] == 7
+    assert result["attempt"] == 1
+    assert result["value"] == {"ok": True}
+
+
+def test_reconcile_missing_id_without_matching_session_returns_none(reconciliation_db):
+    state = reconciliation_db
+    state.complete()
+    assert (
+        nodes.reconcile_completed_node({**state.pin, "task_id": "t-other"}, None)
+        is None
+    )
+    assert state.reads == []
