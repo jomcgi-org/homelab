@@ -660,3 +660,108 @@ def execute_node(pin: dict) -> dict:
         # A checkpoint failure is separate from already recorded turn evidence.
         result["cleanup"] = {"status": "pending", "reason": type(exc).__name__}
     return result
+
+
+def _read_reconciliation_head(repo: str, branch: str) -> str | None:
+    # This caller is outside workflow replay. Invoke the underlying bounded
+    # GitHub GET, not a DBOS checkpoint or a previously cached head observation.
+    return read_branch_head.__wrapped__(repo, branch)
+
+
+def reconcile_completed_node(pin: dict, session_id: int) -> dict | None:
+    """Observe late completion outside durable replay, without causing work.
+
+    A timed-out workflow's immutable result cannot observe a later turn. The
+    conductor may use this fresh, read-only observation to settle that same
+    reservation. Missing/unfinished evidence retains the hold; mismatched
+    ownership raises instead of silently adopting another session's work.
+    Cleanup and ledger mutations remain the caller's separate responsibility.
+    """
+    from sqlmodel import Session, select
+
+    from agent_sessions import normalize_model
+    from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
+    from core.db import get_engine
+
+    pin = _validate_pin(pin)
+    if not _is_int(session_id) or session_id < 1:
+        raise ValueError("session_id must be a positive int")
+    key = _session_key(pin["task_id"], pin["node_key"], pin["attempt"])
+    expected = {
+        "local_session_id": key,
+        "workflow_id": pin["workflow_id"],
+        "node_key": pin["node_key"],
+        "node_attempt": pin["attempt"],
+        "repo": pin["repo"],
+        "branch": pin["hydration_branch"],
+        "model": normalize_model(pin["model"]),
+    }
+    with Session(get_engine()) as session:
+        owner = session.get(AgentSession, session_id)
+        if owner is None:
+            return None
+        for field, value in expected.items():
+            if getattr(owner, field) != value:
+                raise ValueError(f"node session ownership conflict: {field}")
+        # Each node attempt creates exactly one fresh session and first turn.
+        # A follow-up or remaining pending message is outside that admission.
+        pending = session.exec(
+            select(PendingMessage.id).where(PendingMessage.session_id == session_id)
+        ).first()
+        extra = session.exec(
+            select(AgentTurn.id).where(
+                AgentTurn.session_id == session_id, AgentTurn.seq != 1
+            )
+        ).first()
+        if pending is not None or extra is not None:
+            return None
+        turn = session.exec(
+            select(AgentTurn).where(
+                AgentTurn.session_id == session_id, AgentTurn.seq == 1
+            )
+        ).first()
+        if (
+            turn is None
+            or turn.terminal_reason not in CLEAN_TERMINAL_REASONS
+            or turn.stop_reason == UNKNOWN_INVOCATION
+        ):
+            return None
+        cost = _known_cost(turn.cost_usd)
+        artifact = _evaluate_stored_artifact(
+            turn.artifact_path,
+            turn.artifact_blob,
+            turn.diff_blob,
+            turn.diff_truncated,
+            pin["artifact_path"],
+            pin["artifact_schema"],
+            turn.artifact_outcome,
+        )
+
+    head_sha = _read_reconciliation_head(pin["repo"], pin["branch"])
+    reasons = []
+    if cost is None:
+        reasons.append("unknown_cost: consume the full admission reservation")
+    overrun = cost is not None and cost > pin["max_cost_usd"]
+    if overrun:
+        reasons.append(
+            "cost_exceeded: reported spend exceeds reservation; provider cutoff is not enforced"
+        )
+    if artifact["status"] != "ok":
+        reasons.append(
+            f"artifact_{artifact['status']}: {'; '.join(artifact['errors'])}"
+        )
+    result = _result(
+        "failed" if overrun or artifact["status"] != "ok" else "succeeded",
+        session_id,
+        pin["attempt"],
+        cost,
+        head_sha,
+        artifact,
+        artifact["value"],
+        "; ".join(reasons) or None,
+    )
+    result["cleanup"] = {
+        "status": "pending",
+        "reason": "read-only reconciliation did not reap the guest",
+    }
+    return result

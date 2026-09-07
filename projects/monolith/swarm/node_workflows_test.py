@@ -646,3 +646,210 @@ def test_retry_context_is_passed_as_untrusted_evidence_without_changing_limits(h
     assert "Artifact failed: required field" in prompt
     assert "head_sha" in prompt
     assert "/workspace/src/.factory/11/implement-1.json" in prompt
+
+
+@pytest.fixture
+def reconciliation_db(tmp_path, monkeypatch):
+    from agent_sessions.models import PendingMessage
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'reconciliation.db'}"
+    ).execution_options(
+        schema_translate_map={"agent_sessions": None},
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[AgentSession.__table__, AgentTurn.__table__, PendingMessage.__table__],
+    )
+    monkeypatch.setattr(core.db, "get_engine", lambda: engine)
+    admitted = nodes._validate_pin(
+        pin(hydration_branch="main", retry_context="prior timeout")
+    )
+    with Session(engine) as session:
+        session.add(
+            AgentSession(
+                id=7,
+                local_session_id="factory:t-11:implement:1",
+                workspace="guest",
+                repo=admitted["repo"],
+                branch="main",
+                model="luna",
+                workflow_id=admitted["workflow_id"],
+                node_key="implement",
+                node_attempt=1,
+            )
+        )
+        session.commit()
+    reads = []
+    monkeypatch.setattr(
+        nodes,
+        "_read_reconciliation_head",
+        lambda repo, branch: reads.append((repo, branch)) or "fresh-head",
+    )
+    for seam in ("_session_api", "_start_node_session", "_cleanup_node", "_reap_api"):
+        monkeypatch.setattr(
+            nodes,
+            seam,
+            lambda *args, **kwargs: pytest.fail("reconciliation caused work"),
+        )
+
+    def complete(**overrides):
+        fields = {
+            "session_id": 7,
+            "seq": 1,
+            "prompt": nodes._node_prompt(
+                admitted["prompt"],
+                admitted["artifact_path"],
+                admitted["artifact_schema"],
+                admitted["retry_context"],
+            ),
+            "result_text": "prose does not decide completion",
+            "terminal_reason": "completed",
+            "stop_reason": "end_turn",
+            "cost_usd": 0.5,
+            "artifact_path": admitted["artifact_path"],
+            "artifact_outcome": "ok",
+            "artifact_blob": b'{"ok":true}',
+            **overrides,
+        }
+        with Session(engine) as session:
+            session.add(AgentTurn(**fields))
+            session.commit()
+
+    yield SimpleNamespace(engine=engine, pin=admitted, complete=complete, reads=reads)
+    engine.dispose()
+
+
+def test_reconcile_observes_late_completion_without_dispatch_or_cleanup(
+    reconciliation_db,
+):
+    state = reconciliation_db
+    assert nodes.reconcile_completed_node(state.pin, 7) is None
+    assert state.reads == []
+    state.complete()
+    result = nodes.reconcile_completed_node(state.pin, 7)
+    assert result["status"] == "succeeded"
+    assert result["session_id"] == 7
+    assert result["attempt"] == 1
+    assert result["value"] == {"ok": True}
+    assert result["head_sha"] == "fresh-head"
+    assert state.reads == [("org/repo", "factory/11")]
+    assert result["cleanup"]["status"] == "pending"
+    assert nodes.reconcile_completed_node(state.pin, 7) == result
+    with Session(state.engine) as session:
+        assert session.get(AgentSession, 7).branch == "main"
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"stop_reason": UNKNOWN_INVOCATION},
+        {"terminal_reason": "interrupted"},
+        {"terminal_reason": "error"},
+        {"seq": 2},
+    ],
+)
+def test_reconcile_does_not_settle_unknown_or_wrong_turn(reconciliation_db, fields):
+    state = reconciliation_db
+    state.complete(**fields)
+    assert nodes.reconcile_completed_node(state.pin, 7) is None
+    assert state.reads == []
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("local_session_id", "factory:t-other:implement:1"),
+        ("workflow_id", "other-workflow"),
+        ("node_key", "other-node"),
+        ("node_attempt", 2),
+        ("repo", "other/repo"),
+        ("branch", "other-branch"),
+        ("model", "opus"),
+    ],
+)
+def test_reconcile_rejects_mismatched_session_ownership(
+    reconciliation_db, field, value
+):
+    state = reconciliation_db
+    state.complete()
+    with Session(state.engine) as session:
+        owner = session.get(AgentSession, 7)
+        setattr(owner, field, value)
+        session.add(owner)
+        session.commit()
+    with pytest.raises(ValueError, match="ownership conflict"):
+        nodes.reconcile_completed_node(state.pin, 7)
+    assert state.reads == []
+
+
+def test_reconcile_does_not_rebuild_a_possibly_newer_prompt_template(
+    reconciliation_db, monkeypatch
+):
+    state = reconciliation_db
+    state.complete()
+    monkeypatch.setattr(
+        nodes, "_node_prompt", lambda *args: pytest.fail("mutable prompt template used")
+    )
+    assert nodes.reconcile_completed_node(state.pin, 7)["status"] == "succeeded"
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_reconcile_retains_hold_when_session_has_more_work(reconciliation_db, pending):
+    from agent_sessions.models import PendingMessage
+
+    state = reconciliation_db
+    state.complete()
+    if pending:
+        with Session(state.engine) as session:
+            session.add(PendingMessage(session_id=7, seq=2, message_text="extra"))
+            session.commit()
+    else:
+        state.complete(seq=2, stop_reason=UNKNOWN_INVOCATION)
+    assert nodes.reconcile_completed_node(state.pin, 7) is None
+    assert state.reads == []
+
+
+@pytest.mark.parametrize(
+    "fields,status,cost",
+    [
+        ({"cost_usd": None}, "succeeded", None),
+        ({"cost_usd": 3.0}, "failed", 3.0),
+        ({"artifact_blob": b'{"ok":"bad"}'}, "failed", 0.5),
+        (
+            {
+                "artifact_path": None,
+                "artifact_outcome": None,
+                "artifact_blob": None,
+                "diff_blob": zlib.compress(added_diff().encode()),
+            },
+            "succeeded",
+            0.5,
+        ),
+    ],
+)
+def test_reconcile_validates_stored_artifact_and_preserves_accounting(
+    reconciliation_db, fields, status, cost
+):
+    state = reconciliation_db
+    state.complete(**fields)
+    result = nodes.reconcile_completed_node(state.pin, 7)
+    assert result["status"] == status
+    assert result["cost_usd"] == cost
+    if cost is None:
+        assert result["accounting"] == "unknown_cost"
+        assert "full admission reservation" in result["reason"]
+
+
+def test_reconcile_branch_read_failure_cannot_settle_reservation(
+    reconciliation_db, monkeypatch
+):
+    state = reconciliation_db
+    state.complete()
+
+    def unavailable(*args):
+        raise RuntimeError("GitHub unavailable")
+
+    monkeypatch.setattr(nodes, "_read_reconciliation_head", unavailable)
+    with pytest.raises(RuntimeError, match="GitHub unavailable"):
+        nodes.reconcile_completed_node(state.pin, 7)
