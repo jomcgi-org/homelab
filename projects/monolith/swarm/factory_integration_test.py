@@ -276,7 +276,7 @@ def test_real_receipt_graph_controls_complete_string_task_plan_work_review_pr(
     assert len(dbos.started_pins) == 5
 
 
-def test_restart_repairs_graph_outcome_factory_settlement_gap_without_redispatch(
+def test_restart_retries_atomic_outcome_settlement_without_redispatch(
     db, policy, monkeypatch
 ):
     task_id = admit(policy)
@@ -285,12 +285,12 @@ def test_restart_repairs_graph_outcome_factory_settlement_gap_without_redispatch
     original = controls.record_start_outcome
 
     def crash(*_args, **_kwargs):
-        raise RuntimeError("simulated loss after durable graph settlement")
+        raise RuntimeError("simulated loss during atomic graph settlement")
 
     monkeypatch.setattr(controls, "record_start_outcome", crash)
     with pytest.raises(RuntimeError, match="simulated loss"):
         conductor.reconcile_task(task_id, policy, dbos)
-    assert graph.node_runs(task_id)[0]["status"] == "succeeded"
+    assert graph.node_runs(task_id)[0]["status"] == "admitted"
     assert controls.task_snapshot(task_id)["starts"][0]["status"] == "reserved"
     monkeypatch.setattr(controls, "record_start_outcome", original)
     db.dispose()
@@ -313,6 +313,7 @@ def test_real_factory_turn_rejection_rolls_back_graph_dispatch_and_arming(db, po
         ),
     )
     assert controls.task_snapshot(task_id)["turns_used"] == 1
+
     # The graph has cost/attempt room. The distinct factory turn cap must reject
     # the composed reservation and roll back the graph's inserted/armed run.
     before = graph.node_runs(task_id)
@@ -324,4 +325,37 @@ def test_real_factory_turn_rejection_rolls_back_graph_dispatch_and_arming(db, po
     assert work["armed_at"] is None
     snapshot = controls.task_snapshot(task_id)
     assert snapshot["turns_used"] == 1 and snapshot["task_paused"]
+    assert len(dbos.started_pins) == 1
+
+
+def test_late_confirmed_result_settles_unknown_identity_without_new_vm(
+    db, policy, monkeypatch
+):
+    from swarm import node_workflows
+
+    task_id = admit(policy)
+    dbos = CompletedNodes()
+    reconcile_until(task_id, policy, dbos, lambda: len(dbos.started_pins) == 1)
+    key = dbos.started_pins[0]["workflow_id"]
+    completed = copy.deepcopy(dbos.results[key])
+    dbos.results[key] = {
+        "status": "uncertain",
+        "session_id": None,
+        "cost_usd": None,
+        "reason": "submit observation lost",
+    }
+    observed = {"result": None}
+    monkeypatch.setattr(
+        node_workflows,
+        "reconcile_completed_node",
+        lambda pin, identity: observed["result"],
+    )
+    conductor.reconcile_task(task_id, policy, dbos)
+    assert graph.node_runs(task_id)[0]["status"] == "uncertain"
+    assert controls.task_snapshot(task_id)["state"] == "uncertain"
+    observed["result"] = completed
+    conductor.reconcile_task(task_id, policy, dbos)
+    run = graph.node_runs(task_id)[0]
+    assert run["status"] == "succeeded" and run["session_id"] == completed["session_id"]
+    assert controls.task_snapshot(task_id)["unresolved_starts"] == 0
     assert len(dbos.started_pins) == 1
