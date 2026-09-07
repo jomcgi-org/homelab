@@ -1233,12 +1233,13 @@ def test_claim_step_span_lives_inside_the_step_body(monkeypatch):
     assert _spans_named("drain.claim_job") == []
 
 
+@pytest.mark.parametrize("outcome", ["ok", "final-failure", "early-failure"])
 def test_repo_scout_and_actual_derived_raw_get_bounded_validated_service(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, outcome
 ):
     from sqlmodel import SQLModel, select
     from agent import routine_jobs
-    from knowledge.extraction import ExtractionOutputInvalid
+    from knowledge.extraction import ExtractionOutputInvalid, enqueue_extraction
     from knowledge.models import AtomRawProvenance, RawInput
 
     engine = create_engine(f"sqlite:///{tmp_path / 'freshness-roundtrip.db'}")
@@ -1292,8 +1293,14 @@ def test_repo_scout_and_actual_derived_raw_get_bounded_validated_service(
         )
         assert routine_jobs.complete_job("kg-repo-diff", "ok")
         assert claim()["name"] == "old-a"
-        assert routine_jobs.complete_job("old-a", "ok")
+        assert drainer.finish_drainer_job.__wrapped__("old-a", "ok", "done", True)
         with Session(engine) as session:
+            assert (
+                session.execute(
+                    text("SELECT name FROM routine_jobs WHERE name = 'old-a'")
+                ).first()
+                is None
+            )
             raw = session.exec(select(RawInput)).one()
             assert raw.raw_id == scout["raw_id"] and raw.source == "repo-diff"
             payload = session.execute(
@@ -1309,22 +1316,63 @@ def test_repo_scout_and_actual_derived_raw_get_bounded_validated_service(
             session.commit()
         derived = claim()
         assert derived["name"] == f"kg:{scout['raw_id']}"
+        with Session(engine) as session:
+            session.add(
+                RawInput(
+                    raw_id="second-diff",
+                    path="raws/second-diff.md",
+                    content_hash="second-diff",
+                    source="repo-diff",
+                )
+            )
+            session.commit()
+            assert enqueue_extraction(session, "second-diff")
         payload = json.loads(derived["payload"])
         with pytest.raises(ExtractionOutputInvalid):
             drainer.apply_kg_extraction.__wrapped__(derived["name"], payload, "invalid")
-        applied = drainer.apply_kg_extraction.__wrapped__(
-            derived["name"], payload, '```json\n{"assertions": []}\n```'
-        )
-        assert not applied["failed"] and not applied["replayed"]
-        assert routine_jobs.complete_job(derived["name"], "ok")
-        with Session(engine) as session:
-            raw = session.exec(select(RawInput)).one()
-            assert raw.extra["extraction_passes"] == 1
-            assert (
-                session.exec(select(AtomRawProvenance)).one().derived_note_id
-                == "no-new-notes"
+        if outcome == "ok":
+            applied = drainer.apply_kg_extraction.__wrapped__(
+                derived["name"], payload, '```json\n{"assertions": []}\n```'
             )
+            assert not applied["failed"] and not applied["replayed"]
+        elif outcome == "final-failure":
+            drainer.record_kg_failure.__wrapped__(scout["raw_id"], "invalid", 3)
+        # Production deletes ordinary one-shots here. Freshness evidence must
+        # survive this exact path, even when failure wrote no provenance.
+        status = "ok" if outcome == "ok" else "error"
+        assert drainer.finish_drainer_job.__wrapped__(
+            derived["name"], status, "finished", deregister=True
+        )
+        url = engine.url
+        engine.dispose()
+        engine = create_engine(url)
+        with Session(engine) as session:
+            retained = session.execute(
+                text("SELECT * FROM routine_jobs WHERE name = :name"),
+                {"name": derived["name"]},
+            ).one()
+            assert retained.last_status == status
+            assert retained.next_run_at is None and retained.locked_by is None
+            assert retained.last_run_at is not None
+            assert retained.payload == derived["payload"]
+            raw = session.exec(
+                select(RawInput).where(RawInput.raw_id == scout["raw_id"])
+            ).one()
+            if outcome == "ok":
+                assert raw.extra["extraction_passes"] == 1
+                assert (
+                    session.exec(select(AtomRawProvenance)).one().derived_note_id
+                    == "no-new-notes"
+                )
+            elif outcome == "final-failure":
+                assert (
+                    session.exec(select(AtomRawProvenance)).one().derived_note_id
+                    == "failed"
+                )
+            else:
+                assert session.exec(select(AtomRawProvenance)).all() == []
         assert claim()["name"] == "old-b"
+        assert claim()["name"] == "kg:second-diff"
     finally:
         for table in SQLModel.metadata.tables.values():
             table.schema = schemas.get(table.name)
