@@ -82,7 +82,16 @@ def delivery(monkeypatch, *, review_head=None, draft=False, check_state="success
             "node_key": "implement_fix",
             "status": "succeeded",
             "session_id": 10,
-            "outcome_json": json.dumps({"value": {"pr_number": 3, "head_sha": head}}),
+            "outcome_json": json.dumps(
+                {
+                    "value": {
+                        "status": "complete",
+                        "summary": "Implemented the requested fix.",
+                        "pr_number": 3,
+                        "head_sha": head,
+                    }
+                }
+            ),
         },
         {
             "id": 2,
@@ -97,11 +106,16 @@ def delivery(monkeypatch, *, review_head=None, draft=False, check_state="success
                         "pr_number": 3,
                         "head_sha": review_head or head,
                         "verdict": "approve",
+                        "summary": "Reviewed the exact head.",
                     }
                 }
             ),
         },
     ]
+    for run in runs:
+        outcome = json.loads(run["outcome_json"])
+        outcome["artifact"] = {"status": "ok", "value": outcome["value"], "errors": []}
+        run["outcome_json"] = json.dumps(outcome)
     return task, runs
 
 
@@ -727,7 +741,11 @@ def test_planner_keeps_completed_review_after_recursive_historical_prompts(monke
             "workflow_id": f"factory-node:t-1:{key}:1",
         }
         run["outcome_json"] = json.dumps(
-            {"value": value, "artifact": value, "raw_detail": nested}
+            {
+                "value": value,
+                "artifact": {"status": "ok", "value": value, "errors": []},
+                "raw_detail": nested,
+            }
         )
         runs.append(run)
         nodes.append(
@@ -935,3 +953,141 @@ def test_planner_bounds_encoded_protected_text_without_losing_review(monkeypatch
     ):
         assert value.endswith(" [text omitted]")
         assert len(json.dumps(value)) <= conductor.PLANNER_TEXT_CHARS
+
+
+@pytest.mark.parametrize("status", ["failed", "uncertain"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        {
+            "action": "add_node",
+            "reason": "repair",
+            "node_key": "fix",
+            "role": "implement",
+            "prompt": "Fix the issue",
+            "deps": None,
+        },
+        ["not-an-artifact-object"],
+        None,
+    ],
+)
+def test_planner_reports_actual_invalid_evaluator_output(monkeypatch, status, value):
+    import copy
+    import json
+    from dataclasses import asdict
+    from swarm.turn_artifact import evaluate_content
+
+    evaluated = evaluate_content(
+        json.dumps(value), ".factory/decision.json", conductor.DECISION_SCHEMA
+    )
+    assert evaluated.status == "invalid" and evaluated.value == value
+    reason = "artifact_invalid: " + "; ".join(evaluated.errors)
+    run = {
+        "id": 1,
+        "node_key": "conductor_1",
+        "attempt": 1,
+        "status": status,
+        "session_id": 2804,
+        "pin": {"model": "opus"},
+        "reserved_cost_usd": 5,
+        "accounted_cost_usd": 5,
+        "cost_usd": None,
+        "outcome_json": json.dumps(
+            {
+                "status": status,
+                "artifact": asdict(evaluated),
+                "value": evaluated.value,
+                "reason": reason,
+            }
+        ),
+    }
+    before = copy.deepcopy(run)
+    monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
+    prompt = conductor.planner_prompt(
+        {"id": "t-1", "task_text": "Fix the reported issue."}, [], [run]
+    )
+    context = planner_context(prompt)
+    projected = context["runs"][0]
+    assert projected["status"] == status
+    assert projected["reason"] == reason
+    assert projected["session_id"] == 2804
+    assert projected["artifact"] == {}
+    assert projected["artifact_validation"]["status"] == "invalid"
+    assert projected["artifact_validation"]["errors"] == evaluated.errors
+    assert context["delivery_evidence"] == {
+        "latest_implement": None,
+        "latest_review": None,
+    }
+    assert len(prompt.split("\n", 1)[1].encode()) <= conductor.PLANNER_CONTEXT_CHARS
+    assert run == before
+
+
+@pytest.mark.parametrize("status", ["failed", "succeeded"])
+def test_planner_does_not_promote_invalid_review_or_crash_on_structured_reason(
+    monkeypatch,
+    status,
+):
+    import json
+    from dataclasses import asdict
+    from swarm.turn_artifact import evaluate_content
+
+    task, runs = delivery(monkeypatch)
+    task["task_text"] = "Deliver an independently reviewed change."
+    invalid = {
+        "verdict": "approve",
+        "pr_number": 3,
+        "head_sha": "a" * 40,
+        "summary": "Looks good",
+        "deps": None,
+    }
+    evaluated = evaluate_content(
+        json.dumps(invalid), ".factory/review.json", conductor.REVIEW_SCHEMA
+    )
+    assert evaluated.status == "invalid"
+    runs[-1]["status"] = status
+    runs[-1]["outcome_json"] = json.dumps(
+        {
+            "artifact": asdict(evaluated),
+            "value": invalid,
+            "reason": {"legacy": "structured reason"},
+        }
+    )
+    monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
+    context = planner_context(conductor.planner_prompt(task, [], runs))
+    assert context["delivery_evidence"]["latest_review"] is None
+    review = context["runs"][-1]
+    assert (
+        review["artifact"] == {}
+        and review["artifact_validation"]["status"] == "invalid"
+    )
+    assert review["reason"] == "invalid structured reason"
+
+
+def test_planner_uses_captured_validation_without_reinterpreting_pinned_schema(
+    monkeypatch,
+):
+    import json
+    from dataclasses import asdict
+    from swarm.turn_artifact import evaluate_content
+
+    task, runs = delivery(monkeypatch)
+    task["task_text"] = "Deliver the reviewed change."
+    value = json.loads(runs[-1]["outcome_json"])["value"]
+    value["historical_note"] = "accepted by the pinned schema"
+    pinned_schema = {**conductor.REVIEW_SCHEMA, "additionalProperties": True}
+    evaluated = evaluate_content(
+        json.dumps(value), ".factory/review.json", pinned_schema
+    )
+    assert evaluated.status == "ok"
+    assert schema_errors(value, conductor.REVIEW_SCHEMA)
+    runs[-1]["pin"]["artifact_schema"] = pinned_schema
+    runs[-1]["outcome_json"] = json.dumps(
+        {"value": value, "artifact": asdict(evaluated)}
+    )
+    monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
+    context = planner_context(conductor.planner_prompt(task, [], runs))
+    review = context["delivery_evidence"]["latest_review"]
+    assert review["artifact_validation"]["status"] == "ok"
+    assert review["artifact"]["verdict"] == "approve"
+    assert review["artifact"]["head_sha"] == "a" * 40
+    assert "historical_note" not in review["artifact"]

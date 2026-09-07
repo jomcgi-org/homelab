@@ -375,10 +375,49 @@ def _planner_run(run: dict) -> dict:
     )
     result.update(_planner_fields(run.get("pin") or {}, ("model", "workflow_id")))
     outcome = _outcome(run)
-    result["reason"] = _planner_fields(outcome, ("reason",))["reason"]
+    result["reason"] = _planner_fields(outcome, ("reason",)).get(
+        "reason", "invalid structured reason"
+    )
+    # Failed/uncertain results retain the evaluator's invalid parsed value.
+    # Its presence never establishes a usable typed artifact.
+    stored = outcome.get("artifact")
+    validation = stored if isinstance(stored, dict) else {}
+    artifact = outcome.get("value", validation.get("value"))
+    status = validation.get("status", "unvalidated")
+    recorded_errors = validation.get("errors")
+    errors = (
+        [error for error in recorded_errors if isinstance(error, str)]
+        if isinstance(recorded_errors, list)
+        else []
+    )
+    # Captured validation used the immutable pin's schema. Do not reinterpret
+    # historical artifacts using today's schema; guard only accessed shapes.
+    if status == "ok" and (
+        errors
+        or not isinstance(artifact, dict)
+        or (
+            "deps" in artifact
+            and (
+                not isinstance(artifact["deps"], list)
+                or not all(isinstance(dep, str) for dep in artifact["deps"])
+            )
+        )
+    ):
+        status = "invalid"
+        errors = ["validated artifact has an inconsistent object/dependency shape"]
+    result["artifact_validation"] = {
+        "status": status,
+        "errors": [
+            _bounded_planner_text(error, PLANNER_TEXT_CHARS, " [text omitted]")
+            for error in errors[:3]
+        ],
+        "omitted_errors": max(0, len(errors) - 3),
+    }
+    if status != "ok" or not isinstance(artifact, dict) or errors:
+        result["artifact"] = {}
+        return result
     # Planner artifacts contain another node prompt. Copy only the decision and
     # result fields the next planner needs, even when value and artifact overlap.
-    artifact = _artifact(run)
     result["artifact"] = _planner_fields(
         artifact,
         (
@@ -408,7 +447,9 @@ def _planner_context(task: dict, nodes: list[dict], runs: list[dict]) -> str:
         completed = [
             run
             for run in projected_runs
-            if run["node_key"].startswith(role + "_") and run["status"] == "succeeded"
+            if run["node_key"].startswith(role + "_")
+            and run["status"] == "succeeded"
+            and run["artifact_validation"]["status"] == "ok"
         ]
         delivery["latest_" + role] = completed[-1] if completed else None
     projected_nodes = []
