@@ -16,10 +16,13 @@ filegroup(
     visibility = ["//projects/embervm/chart:__pkg__"],
 )
 
-# The INACTIVE GKE recovery preset, exposed only to the chart render test.
+# The INACTIVE GKE recovery preset, exposed to chart and consumer-join tests.
 # No Application or kustomization references it; no live deployment loads it.
 filegroup(
     name = "recovery_values",
     srcs = ["values-recovery-gke.yaml"],
-    visibility = ["//projects/embervm/chart:__pkg__"],
+    visibility = [
+        "//projects/embervm/chart:__pkg__",
+        "//projects/monolith:__pkg__",
+    ],
 )
