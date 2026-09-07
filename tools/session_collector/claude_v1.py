@@ -86,8 +86,8 @@ def parse(path: Path) -> Session:
         "cache_write_tokens": 0,
         "reasoning_tokens": 0,
     }
-    usage_messages = 0
-    seen_message_ids: set[str] = set()
+    usage_by_message_id: dict[str, dict[str, int]] = {}
+    usage_without_message_id: list[dict[str, int]] = []
 
     for record in records:
         if record.get("type") != "assistant":
@@ -100,14 +100,28 @@ def parse(path: Path) -> Session:
         message_usage = message.get("usage")
         if not isinstance(message_usage, dict):
             continue
+        usage = {
+            target: _token_count(message_usage.get(source))
+            for source, target in USAGE_FIELDS
+        }
+        output_details = message_usage.get("output_tokens_details")
+        usage["reasoning_tokens"] = (
+            _token_count(output_details.get("thinking_tokens"))
+            if isinstance(output_details, dict)
+            else 0
+        )
         message_id = message.get("id")
         if isinstance(message_id, str):
-            if message_id in seen_message_ids:
-                continue
-            seen_message_ids.add(message_id)
-        usage_messages += 1
-        for source, target in USAGE_FIELDS:
-            usage_totals[target] += _token_count(message_usage.get(source))
+            # Keep the last record because Claude's final content block has the
+            # true count.
+            usage_by_message_id[message_id] = usage
+        else:
+            usage_without_message_id.append(usage)
+
+    usage_records = [*usage_by_message_id.values(), *usage_without_message_id]
+    for usage in usage_records:
+        for target in usage_totals:
+            usage_totals[target] += usage[target]
 
     for record in records:
         if record.get("isSidechain") is True or record.get("isMeta") is True:
@@ -190,7 +204,7 @@ def parse(path: Path) -> Session:
         turns=turns,
         usage={
             **usage_totals,
-            "messages": usage_messages,
+            "messages": len(usage_records),
             "shape": "claude",
         },
         models=sorted(models),
