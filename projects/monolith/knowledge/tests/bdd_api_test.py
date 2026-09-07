@@ -101,3 +101,63 @@ class TestTasks:
             json={"status": "done"},
         )
         assert r.status_code in (200, 404)
+
+
+class TestInterventions:
+    @covers_route("/api/knowledge/interventions")
+    def test_list_interventions(self, live_server_with_fake_embedding):
+        assert httpx.get(
+            f"{live_server_with_fake_embedding}/api/knowledge/interventions"
+        ).status_code < 500
+
+    @covers_route("/api/knowledge/interventions/{raw_id}")
+    def test_get_intervention(self, live_server_with_fake_embedding):
+        assert httpx.get(
+            f"{live_server_with_fake_embedding}/api/knowledge/interventions/missing"
+        ).status_code in (403, 404)
+
+    @covers_route("/api/knowledge/interventions/{raw_id}/acknowledge", method="POST")
+    def test_acknowledge_intervention(self, live_server_with_fake_embedding):
+        assert httpx.post(
+            f"{live_server_with_fake_embedding}/api/knowledge/interventions/missing/acknowledge",
+            json={"revision": 1},
+        ).status_code in (403, 404, 422)
+
+    @covers_route("/api/knowledge/interventions/{raw_id}/decision", method="POST")
+    def test_associate_decision(self, live_server_with_fake_embedding):
+        assert httpx.post(
+            f"{live_server_with_fake_embedding}/api/knowledge/interventions/missing/decision",
+            json={"decision_id": 1, "revision": 1},
+        ).status_code in (403, 404, 422)
+
+    @covers_route(
+        "/api/knowledge/interventions/{raw_id}/associate-decision", method="POST"
+    )
+    def test_associate_decision_explicit_route(self, live_server_with_fake_embedding):
+        assert httpx.post(
+            f"{live_server_with_fake_embedding}/api/knowledge/interventions/missing/associate-decision",
+            json={"decision_id": 1, "revision": 1},
+        ).status_code in (403, 404, 422)
+
+    @covers_route("/api/knowledge/interventions/{raw_id}/resolve", method="POST")
+    def test_resolve_intervention(self, live_server_with_fake_embedding):
+        assert httpx.post(
+            f"{live_server_with_fake_embedding}/api/knowledge/interventions/missing/resolve",
+            json={"revision": 1, "disposition": "resolved", "resolution": "done"},
+        ).status_code in (403, 404, 422)
+
+    @covers_route("/api/knowledge/interventions/{raw_id}/evidence", method="POST")
+    def test_submit_evidence(self, live_server_with_fake_embedding):
+        assert httpx.post(
+            f"{live_server_with_fake_embedding}/api/knowledge/interventions/missing/evidence",
+            json={"evidence": "done"},
+        ).status_code in (403, 404, 409, 422)
+
+    @covers_route(
+        "/api/knowledge/interventions/{raw_id}/submit-evidence", method="POST"
+    )
+    def test_submit_evidence_explicit_route(self, live_server_with_fake_embedding):
+        assert httpx.post(
+            f"{live_server_with_fake_embedding}/api/knowledge/interventions/missing/submit-evidence",
+            json={"evidence": "done"},
+        ).status_code in (403, 404, 409, 422)
