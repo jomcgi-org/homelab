@@ -1606,21 +1606,25 @@ def test_recovery_namespace_rbac_matches_contract(recovery_render) -> None:
 
 def test_recovery_lane_isolation(recovery_render) -> None:
     rendered = recovery_render
-    assert rendered.count("kind:") > 5, "recovery render looks inert"
-    assert "namespace: embervm\n" not in rendered
-    assert not [name for kind, name, _ in _docs(rendered) if kind == "DaemonSet"], (
-        "recovery must render no DaemonSet (no wildcard noded, no scratch-prep)"
-    )
-    assert "kind: CiliumNetworkPolicy" not in rendered
-    assert "kubernetes.io/hostname" not in rendered
+    documents = [d for d in yaml.safe_load_all(rendered) if isinstance(d, dict)]
+    assert len(documents) > 5, "recovery render looks inert"
+    # Template comments describe production and floor selectors too. Check
+    # resource fields, not those explanatory comments in Helm's output.
+    for document in documents:
+        assert document["metadata"].get("namespace") in {None, _RECOVERY_NS}
+        assert document["kind"] not in {"DaemonSet", "CiliumNetworkPolicy"}
     bricks = {
         doc["metadata"]["name"]: doc
         for doc in yaml.safe_load_all(rendered)
         if isinstance(doc, dict)
         and doc.get("kind") == "Deployment"
-        and "-noded-brick-" in doc.get("metadata", {}).get("name", "")
+        and any(
+            c["name"] == "noded" for c in doc["spec"]["template"]["spec"]["containers"]
+        )
     }
-    assert bricks, "recovery rendered no brick Deployment; this test is inert"
+    assert set(bricks) == {
+        f"{_RECOVERY_CP}-noded-brick-{size}" for size in _RECOVERY_CLASSES
+    }, "unexpected or missing brick/floor Deployment"
     live = [
         name
         for name, doc in bricks.items()
