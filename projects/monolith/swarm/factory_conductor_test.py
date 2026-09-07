@@ -47,6 +47,7 @@ def test_missing_delivery_branch_hydrates_base_without_hiding_outages(monkeypatc
 
 
 def delivery(monkeypatch, *, review_head=None, draft=False, check_state="success"):
+    monkeypatch.setattr(conductor, "_budget_evidence", lambda _task: {})
     head = "a" * 40
     task = {
         "id": "t-1",
@@ -761,6 +762,7 @@ def test_planner_keeps_completed_review_after_recursive_historical_prompts(monke
         )
         nested = json.dumps({"graph": nodes, "runs": runs})[:200_000]
     before = copy.deepcopy((task, nodes, runs))
+    monkeypatch.setattr(conductor, "_budget_evidence", lambda _task: {})
     monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
     prompt = conductor.planner_prompt(task, nodes, runs)
     context = planner_context(prompt)
@@ -874,6 +876,7 @@ def test_planner_preserves_later_review_rejection_and_recorded_head_mismatch(
     outcome["value"].update(verdict="changes_requested", head_sha="b" * 40)
     later["outcome_json"] = json.dumps(outcome)
     runs.append(later)
+    monkeypatch.setattr(conductor, "_budget_evidence", lambda _task: {})
     monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
     review = planner_context(conductor.planner_prompt(task, [], runs))[
         "delivery_evidence"
@@ -905,6 +908,7 @@ def test_planner_keeps_unknown_execution_and_missing_cost_distinct(monkeypatch):
             ),
         }
     ]
+    monkeypatch.setattr(conductor, "_budget_evidence", lambda _task: {})
     monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
     context = planner_context(conductor.planner_prompt(task, [], runs))
     run = context["runs"][0]
@@ -1002,6 +1006,7 @@ def test_planner_reports_actual_invalid_evaluator_output(monkeypatch, status, va
         ),
     }
     before = copy.deepcopy(run)
+    monkeypatch.setattr(conductor, "_budget_evidence", lambda _task: {})
     monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
     prompt = conductor.planner_prompt(
         {"id": "t-1", "task_text": "Fix the reported issue."}, [], [run]
@@ -1052,6 +1057,7 @@ def test_planner_does_not_promote_invalid_review_or_crash_on_structured_reason(
             "reason": {"legacy": "structured reason"},
         }
     )
+    monkeypatch.setattr(conductor, "_budget_evidence", lambda _task: {})
     monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
     context = planner_context(conductor.planner_prompt(task, [], runs))
     assert context["delivery_evidence"]["latest_review"] is None
@@ -1084,6 +1090,7 @@ def test_planner_uses_captured_validation_without_reinterpreting_pinned_schema(
     runs[-1]["outcome_json"] = json.dumps(
         {"value": value, "artifact": asdict(evaluated)}
     )
+    monkeypatch.setattr(conductor, "_budget_evidence", lambda _task: {})
     monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
     context = planner_context(conductor.planner_prompt(task, [], runs))
     review = context["delivery_evidence"]["latest_review"]
@@ -1091,3 +1098,237 @@ def test_planner_uses_captured_validation_without_reinterpreting_pinned_schema(
     assert review["artifact"]["verdict"] == "approve"
     assert review["artifact"]["head_sha"] == "a" * 40
     assert "historical_note" not in review["artifact"]
+
+
+def test_refused_356_then_applied_357_remains_timestamped_history(feedback_db):
+    import json
+    from datetime import datetime
+    from sqlmodel import Session, select
+    from swarm.models import SwarmConductorCall
+
+    task, policy = feedback_task()
+    refused_at = datetime(2026, 9, 7, 14, 20, 16)
+    cause = "factory-plan:conductor_4"
+    with Session(feedback_db) as db:
+        db.add(
+            SwarmConductorCall(
+                id=356,
+                task_id=task["id"],
+                conductor_model="opus",
+                tool="add_node",
+                args_json=json.dumps({"cause_ref": cause, "node_key": "conductor_4"}),
+                outcome="refused",
+                refusal_code="budget_exceeded",
+                created_at=refused_at,
+                version_before=0,
+                version_after=0,
+            )
+        )
+        db.commit()
+    # The real graph owner creates the successful call and plan version.
+    assert conductor._add(
+        task, policy, "conductor_4", "next", [], "opus", cause, "retry after fix"
+    ).ok
+    with Session(feedback_db) as db:
+        applied = db.get(SwarmConductorCall, 357)
+        applied.created_at = datetime(2026, 9, 7, 15, 12, 27)
+        db.add(applied)
+        db.commit()
+        before = [r.model_dump() for r in db.exec(select(SwarmConductorCall)).all()]
+    evidence = conductor._decision_evidence(task["id"])
+    assert len(evidence) == 1
+    item = evidence[0]
+    assert item["graph_call_id"] == 356 and item["refusal_code"] == "budget_exceeded"
+    assert (
+        item["evidence_state"] == "superseded" and item["superseded_by_call_id"] == 357
+    )
+    assert item["recorded_at"] == refused_at.isoformat()
+    assert item["applied_at"] == "2026-09-07T15:12:27" and item["applied_version"] == 1
+    context = planner_context(
+        conductor.planner_prompt(task, conductor.graph.load_graph(task["id"]), [])
+    )
+    assert {key: context["decision_feedback"][0][key] for key in item} == item
+    with Session(feedback_db) as db:
+        assert [
+            r.model_dump() for r in db.exec(select(SwarmConductorCall)).all()
+        ] == before
+
+
+@pytest.mark.parametrize(
+    "difference",
+    [
+        "cause",
+        "operation",
+        "node_key",
+        "earlier",
+        "missing_identity",
+        "no_version_change",
+    ],
+)
+def test_refusal_requires_later_success_of_exact_edit(feedback_db, difference):
+    import json
+    from datetime import datetime, timedelta
+    from sqlmodel import Session
+    from swarm.models import SwarmConductorCall
+
+    task, _policy = feedback_task()
+    args = {"cause_ref": "decision:4", "node_key": "implement_fix"}
+    later_args = dict(args)
+    tool = "add_node"
+    stamp = datetime(2026, 9, 7, 14, 20)
+    later_stamp = stamp + timedelta(minutes=1)
+    if difference == "cause":
+        later_args["cause_ref"] = "decision:5"
+    elif difference == "operation":
+        tool = "discard_node"
+    elif difference == "node_key":
+        later_args["node_key"] = "implement_other"
+    elif difference == "earlier":
+        later_stamp = stamp - timedelta(minutes=1)
+    elif difference == "missing_identity":
+        args["cause_ref"] = later_args["cause_ref"] = None
+    with Session(feedback_db) as db:
+        db.add(
+            SwarmConductorCall(
+                id=356,
+                task_id=task["id"],
+                conductor_model="opus",
+                tool="add_node",
+                args_json=json.dumps(args),
+                outcome="refused",
+                refusal_code="budget_exceeded",
+                created_at=stamp,
+                version_before=6,
+                version_after=6,
+            )
+        )
+        db.add(
+            SwarmConductorCall(
+                id=357,
+                task_id=task["id"],
+                conductor_model="opus",
+                tool=tool,
+                args_json=json.dumps(later_args),
+                outcome="applied",
+                created_at=later_stamp,
+                version_before=6,
+                version_after=6 if difference == "no_version_change" else 7,
+            )
+        )
+        db.commit()
+    item = conductor._decision_evidence(task["id"])[0]
+    assert item["evidence_state"] == "refused" and "superseded_by_call_id" not in item
+
+
+def test_newer_refusal_survives_old_success_and_audit(feedback_db):
+    import json
+    from datetime import datetime, timedelta
+    from sqlmodel import Session
+    from swarm.models import SwarmConductorCall
+    from swarm.factory_models import FactoryAudit
+
+    task, _policy = feedback_task()
+    stamp = datetime(2026, 9, 7, 14, 20)
+    args = json.dumps({"cause_ref": "decision:4", "node_key": "implement_fix"})
+    with Session(feedback_db) as db:
+        for number, outcome in ((356, "refused"), (357, "applied"), (358, "refused")):
+            db.add(
+                SwarmConductorCall(
+                    id=number,
+                    task_id=task["id"],
+                    conductor_model="opus",
+                    tool="add_node",
+                    args_json=args,
+                    outcome=outcome,
+                    refusal_code="budget_exceeded" if outcome == "refused" else None,
+                    created_at=stamp + timedelta(seconds=number - 356),
+                    version_before=6,
+                    version_after=7 if outcome == "applied" else 6,
+                )
+            )
+        db.add(
+            FactoryAudit(
+                actor="factory:reconciler",
+                action="conductor_rejected",
+                task_id=task["id"],
+                created_at=stamp + timedelta(microseconds=1),
+                detail_json=json.dumps(
+                    {
+                        "cause": "decision:4",
+                        "decision_action": "add_node",
+                        "refusal_code": "budget_exceeded",
+                        "reason": "old refusal detail",
+                    }
+                ),
+            )
+        )
+        db.commit()
+    evidence = conductor._decision_evidence(task["id"])
+    assert len(evidence) == 2
+    assert (
+        evidence[0]["graph_call_id"] == 358
+        and evidence[0]["evidence_state"] == "refused"
+    )
+    assert (
+        evidence[1]["graph_call_id"] == 356
+        and evidence[1]["evidence_state"] == "superseded"
+    )
+    assert evidence[1]["reason"] == "old refusal detail"
+
+
+def test_budget_projection_shares_admission_accounting_and_retry_ceiling(feedback_db):
+    from swarm import factory_controls as controls
+
+    task, policy = feedback_task()
+    known = complete_feedback_node(
+        task,
+        policy,
+        "implement_done",
+        {"status": "complete", "summary": "done", "pr_number": None, "head_sha": None},
+    )
+    for key in ("implement_retry", "implement_unknown", "implement_active"):
+        assert conductor._add(
+            task, policy, key, "bounded", [], "luna", "test:" + key, "test"
+        ).ok
+        admitted = conductor.graph.admit_dispatch(task["id"], key)
+        assert admitted.ok and admitted.pin["max_cost_usd"] == 2
+        if key == "implement_retry":
+            assert conductor.graph.record_outcome(
+                task["id"], key, 1, "failed", 0.5, None, "{}"
+            ).ok
+            retry = conductor.graph.admit_dispatch(task["id"], key)
+            assert retry.ok and retry.pin["max_cost_usd"] == 1.5
+            assert conductor.graph.record_outcome(
+                task["id"], key, 2, "uncertain", None, None, "{}"
+            ).ok
+        elif key == "implement_unknown":
+            assert conductor.graph.record_outcome(
+                task["id"], key, 1, "succeeded", None, None, "{}"
+            ).ok
+    before = conductor.graph.node_runs(task["id"])
+    projection = conductor._budget_evidence(task["id"])
+    # Known success: .25. Failed .5 + uncertain retry1.5 share one2 ceiling.
+    # Unknown-cost success charges2. Active attempt reserves2. Never2*attempts.
+    assert projection["accounted_cost_usd"] == 6.25
+    assert projection["planned_cost_usd"] == 6.25
+    assert projection["active_accounted_cost_usd"] == 3.5
+    assert projection["settled_accounted_cost_usd"] == 2.75
+    assert projection["active_attempts"] == 2 and projection["uncertain_attempts"] == 1
+    assert projection["unallocated_cost_usd"] == 23.75
+    assert projection["new_node_max_cost_usd"] == 2 and projection["max_attempts"] == 2
+    assert projection["pending_planner_max_cost_usd"] == 2
+    assert (
+        projection["turns_used"] == 1
+        and projection["max_turns_per_task"] == policy["max_turns_per_task"]
+    )
+    assert (
+        projection["deadline_at"] == controls.task_snapshot(task["id"])["deadline_at"]
+    )
+    context = planner_context(conductor.planner_prompt(task, [], []))
+    assert context["budget_evidence"] == projection
+    assert conductor.graph.node_runs(task["id"]) == before
+    assert known["cost_usd"] == 0.25
+    assert (
+        "never multiply the ceiling by the attempt count"
+        in conductor.planner_prompt(task, [], [])
+    )
