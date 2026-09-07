@@ -14,11 +14,15 @@ from sqlalchemy import text
 from sqlmodel import Session, select
 
 from agent.routine_reconciliation_models import RoutineReconciliation
-from agent_sessions import admission
-from agent_sessions.constants import KG_NODE_KEY, UNKNOWN_INVOCATION
-from agent_sessions.models import AgentCapacityReservation, AgentSession
+from agent_sessions.api import (
+    KG_NODE_KEY,
+    confirm_reconciled_guest_cessation,
+    lock_capacity_pool,
+    lock_cessation_session,
+)
 from core.db import get_engine
-from knowledge.extraction import EXTRACTION_VERSION
+from knowledge.api import EXTRACTION_VERSION
+from shared.invocation_outcomes import UNKNOWN_INVOCATION
 
 MAX_EVIDENCE_AGE_SECONDS = 60
 
@@ -175,7 +179,7 @@ def _proof_time(proof):
 
 
 def _reconcile(db, request):
-    admission.lock_pool(db)
+    lock_capacity_pool(db)
     request_hash = _sha(request)
     previous = db.get(RoutineReconciliation, request["reconciliation_key"])
     if previous is not None:
@@ -188,26 +192,21 @@ def _reconcile(db, request):
     if not 0 <= (now - observed).total_seconds() <= MAX_EVIDENCE_AGE_SECONDS:
         raise ValueError("Fresh cessation evidence is required")
     # Pool -> session -> job is the admission owner's lock ordering.
-    agent = db.exec(
-        select(AgentSession)
-        .where(AgentSession.id == request["session_id"])
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    ).one()
+    agent = lock_cessation_session(db, request["session_id"])
     jobs = _table(db, "claude_agent", "routine_jobs")
     lock = " FOR UPDATE" if db.bind.dialect.name != "sqlite" else ""
     db.execute(
         text(f"SELECT name FROM {jobs} WHERE name=:name{lock}"),
         {"name": request["job_name"]},
     ).one()
-    state = read_reconciliation_state(db, request["job_name"], agent.id)
+    state = read_reconciliation_state(db, request["job_name"], agent["id"])
     if state["state_sha256"] != request["expected_state_sha256"]:
         raise ValueError("Expected reconciliation state changed")
     if (
         state["job_status"] != UNKNOWN_INVOCATION
         or state["routine_kind"] != "kg-drain"
-        or state["binding_session_ids"] != [agent.id]
-        or state["latest_routine_session_id"] != agent.id
+        or state["binding_session_ids"] != [agent["id"]]
+        or state["latest_routine_session_id"] != agent["id"]
         or state["next_run_at"] is not None
         or state["locked_by"] is not None
         or state["locked_at"] is not None
@@ -216,9 +215,9 @@ def _reconcile(db, request):
         or state["pending"]
         or state["latest_stop_reason"] != UNKNOWN_INVOCATION
         or state["latest_terminal_reason"] != "error"
-        or not (state["last_summary"] or "").startswith(f"session_id={agent.id}:")
-        or agent.local_session_id
-        != f"{agent.workflow_id}:kg-drain:{request['job_name']}"
+        or not (state["last_summary"] or "").startswith(f"session_id={agent['id']}:")
+        or agent["local_session_id"]
+        != f"{agent['workflow_id']}:kg-drain:{request['job_name']}"
         or len(state["workflow"]) != 1
         or state["workflow"][0]["name"] != "drain_cycle"
         or state["workflow"][0]["status"] not in {"SUCCESS", "ERROR", "CANCELLED"}
@@ -232,7 +231,7 @@ def _reconcile(db, request):
         raise ValueError("Guest cessation must follow the unknown turn")
     if db.exec(
         select(RoutineReconciliation).where(
-            RoutineReconciliation.session_id == agent.id,
+            RoutineReconciliation.session_id == agent["id"],
             RoutineReconciliation.unknown_turn_seq == state["latest_turn_seq"],
         )
     ).first():
@@ -245,7 +244,7 @@ def _reconcile(db, request):
             text(f"SELECT id FROM {raw_table} WHERE raw_id=:raw{lock}"),
             {"raw": request["job_name"][3:]},
         ).one()
-        if read_reconciliation_state(db, request["job_name"], agent.id) != state:
+        if read_reconciliation_state(db, request["job_name"], agent["id"]) != state:
             raise ValueError("Provenance changed during reconciliation")
     if request["disposition"] == "rearm":
         if state["provenance_count"] or state["extraction_passes"] != 0:
@@ -258,42 +257,12 @@ def _reconcile(db, request):
         <= MAX_EVIDENCE_AGE_SECONDS
     ):
         raise ValueError("Cessation evidence expired while acquiring ownership")
-    admission.adopt_existing(db)
-    if db.exec(
-        select(AgentCapacityReservation).where(
-            AgentCapacityReservation.routine_job_name == request["job_name"],
-            AgentCapacityReservation.state != "settled",
-            (
-                (AgentCapacityReservation.session_id != agent.id)
-                | AgentCapacityReservation.session_id.is_(None)
-                | AgentCapacityReservation.state.in_(("reserved", "running"))
-            ),
-        )
-    ).first():
-        raise ValueError("A newer or still admitted execution owns this job")
-    admission.confirm_guest_cessation(db, agent)
-    if db.exec(
-        select(AgentCapacityReservation).where(
-            AgentCapacityReservation.session_id == agent.id,
-            AgentCapacityReservation.state != "settled",
-        )
-    ).first():
-        raise ValueError("Attempt still owns an execution permit")
-    if agent.ember_lineage_id:
-        agent.prior_ember_lineage_id = agent.ember_lineage_id
-    if agent.cli_session_id:
-        agent.prior_cli_session_id = agent.cli_session_id
-    agent.ember_session_id = None
-    agent.ember_session_token = None
-    agent.ember_session_expires_at = None
-    agent.ember_lineage_id = None
-    agent.cli_session_id = None
-    db.add(agent)
+    confirm_reconciled_guest_cessation(db, agent["id"], request["job_name"])
     next_run = now if request["disposition"] == "rearm" else None
     result = {
         "reconciliation_key": request["reconciliation_key"],
         "job_name": request["job_name"],
-        "session_id": agent.id,
+        "session_id": agent["id"],
         "unknown_turn_seq": state["latest_turn_seq"],
         "disposition": request["disposition"],
         "next_run_at": next_run.isoformat() if next_run else None,
@@ -311,7 +280,7 @@ def _reconcile(db, request):
         },
     )
     db.flush()
-    after = read_reconciliation_state(db, request["job_name"], agent.id)
+    after = read_reconciliation_state(db, request["job_name"], agent["id"])
     for field in (
         "turns_sha256",
         "payload_sha256",
@@ -333,7 +302,7 @@ def _reconcile(db, request):
             request_sha256=request_hash,
             actor=request["actor"],
             job_name=request["job_name"],
-            session_id=agent.id,
+            session_id=agent["id"],
             unknown_turn_seq=state["latest_turn_seq"],
             disposition=request["disposition"],
             evidence_json=_json({"request": request, "before": state, "after": after}),
@@ -408,7 +377,7 @@ def reconcile_held_job(
     if session is not None:
         # Start the outer write transaction before SAVEPOINT, including SQLite's
         # deferred-BEGIN driver, so releasing a savepoint cannot commit the call.
-        admission.lock_pool(session)
+        lock_capacity_pool(session)
         with session.begin_nested():
             return _reconcile(session, request)
     with Session(get_engine()) as db, db.begin():

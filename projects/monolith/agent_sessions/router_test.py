@@ -11,7 +11,8 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from agent import config as agent_config
 from agent import routine_jobs
-from agent_sessions import api, store
+from agent_sessions import execution_api as api
+from agent_sessions import store
 from agent_sessions import mcp
 from agent_sessions import transport
 import agent_sessions.router as agent_router

@@ -698,7 +698,7 @@ def reserve_drainer_workers(
     confirmed terminal workflow, or this workflow's own completed job loop,
     can make its slot available. No lease expiration releases worker slots.
     """
-    from agent_sessions.admission import lock_pool
+    from agent_sessions.api import lock_capacity_pool as lock_pool
 
     terminal = {"SUCCESS", "ERROR", "CANCELLED", "MAX_RECOVERY_ATTEMPTS_EXCEEDED"}
     engine = get_engine()

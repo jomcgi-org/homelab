@@ -269,7 +269,7 @@ def test_only_uncreated_reserved_session_can_cancel(database):
 def test_synthetic_direct_path_uses_real_admission_without_transport(
     database, monkeypatch
 ):
-    from agent_sessions import api
+    from agent_sessions import execution_api as api
 
     for n in range(4):
         assert reserve(database, f"occupied-{n}")

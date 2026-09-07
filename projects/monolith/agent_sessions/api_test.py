@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine
 
-import agent_sessions.api as api
+import agent_sessions.execution_api as api
 import agent_sessions.mcp as mcp
 from agent_sessions.models import AgentSession
 from agent_sessions.transport import EmberSessionGone, Turn
@@ -591,3 +591,43 @@ async def test_workflow_reap_retains_guest_with_unknown_outcome(monkeypatch):
     }
     assert destroyed == []
     assert cleared == []
+
+
+def test_public_capacity_facade_is_lightweight_and_execution_exports_are_identical():
+    import os
+    import subprocess
+    import sys
+
+    script = """
+import sys
+import agent_sessions.api as public
+
+assert callable(public.lock_capacity_pool)
+assert callable(public.lock_cessation_session)
+assert callable(public.confirm_reconciled_guest_cessation)
+assert public.KG_NODE_KEY == "kg-drain"
+for module in (
+    "agent_sessions.execution_api", "agent_sessions.mcp", "agent_sessions.store",
+    "agent_sessions.transport", "goosecracker.api",
+):
+    assert module not in sys.modules, module
+
+# Access through the public boundary must retain the real function object,
+# including its signature, coroutine kind and implementation globals.
+first = public.run_synthetic_session
+from agent_sessions import execution_api
+assert first is execution_api.run_synthetic_session
+for name in (
+    "start_session_for_swarm", "send_to_swarm_session", "reap_sessions_for_workflow",
+    "start_session_for_thread", "send_to_thread_session", "session_id_for_thread",
+):
+    assert getattr(public, name) is getattr(execution_api, name), name
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
