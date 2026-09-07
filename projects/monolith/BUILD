@@ -7999,7 +7999,13 @@ semgrep_target_test(
 py_test(
     name = "recovery_network_test",
     srcs = ["recovery_network_test.py"],
-    data = ["//projects/monolith/dev/deploy:recovery_support_manifests"],
+    data = [
+        "//projects/embervm/dev/deploy:recovery_values",
+        "//projects/monolith/dev/deploy:recovery_support_manifests",
+    ],
+    env = {
+        "EMBER_RECOVERY_VALUES": "$(rootpath //projects/embervm/dev/deploy:recovery_values)",
+    },
     deps = [
         "@pip//pytest",
         "@pip//pyyaml",

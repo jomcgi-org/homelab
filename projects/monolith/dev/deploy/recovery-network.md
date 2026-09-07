@@ -33,6 +33,9 @@ loopback, link-local, shared-address and multicast ranges are excluded from
 that rule. PostgreSQL has no general public egress. GKE Dataplane V2 does not
 match pod traffic through `ipBlock`, so pod connections use explicit selectors.
 The CNPG operator namespace and its webhook policies are not changed here.
+This fresh-session profile uses dedicated credentials and no object store or
+GKE Workload Identity token exchange. Metadata-server access is deliberately
+denied; a future component requiring it needs an explicit reviewed grant.
 
 This is **not a public hostname allowlist**. GKE FQDN policies are not enabled
 on the observed hub, and the existing guest proxy intentionally permits public
@@ -66,6 +69,9 @@ Do not duplicate those resources or copy production refresh tokens. Before
 CNPG bootstrap, verify the generated Secret's owner, basic-auth type,
 `cnpg.io/reload` label and required key names without logging secret values.
 Verify both op-log consumers join the same dev role, database and password.
+The static test joins the broker's expected Secret name and `app-password`
+key to the Ember preset. Only activation can verify that the actual 1Password
+item and generated Secret contain that nonempty key for the intended principal.
 Stop on an existing Secret or owner conflict: the Operator refuses to change
 an existing Secret's type. This profile creates fresh state.
 

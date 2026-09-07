@@ -4,6 +4,7 @@ This evaluates only the selector/ipBlock/port subset used by this manifest.
 It is a static contract test, not a substitute for GKE dataplane probes.
 """
 
+import os
 from ipaddress import ip_address, ip_network
 from pathlib import Path
 
@@ -12,6 +13,13 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parent / "dev" / "deploy"
+EMBER_VALUES = Path(
+    os.environ.get(
+        "EMBER_RECOVERY_VALUES",
+        Path(__file__).resolve().parents[1]
+        / "embervm/dev/deploy/values-recovery-gke.yaml",
+    )
+)
 MONOLITH = "monolith-dev"
 EMBER = "embervm-dev"
 
@@ -75,6 +83,8 @@ def _allows(policies, direction, subject, other, port, protocol="TCP", address=N
         and _matches(p["spec"]["podSelector"], subject[1])
     ]
     if not selected:
+        # The existing operator/DNS namespaces are outside this policy set.
+        # Their own egress policy must also be checked during activation.
         return True
     peer_key = "to" if direction == "egress" else "from"
     for policy in selected:
@@ -170,6 +180,9 @@ def test_backend_cannot_manage_database_or_call_guest_directly(policies):
 def test_secret_resources_join_recovery_consumers_without_values():
     items = list(yaml.safe_load_all((ROOT / "recovery-secrets.yaml").read_text()))
     values = yaml.safe_load((ROOT / "values-recovery-gke.yaml").read_text())
+    ember = yaml.safe_load(EMBER_VALUES.read_text())
+    op_log = ember["opLog"]["postgres"]
+    auth = ember["tokenBroker"]["authentik"]
     assert len(items) == 2
     for item in items:
         assert set(item) == {"apiVersion", "kind", "metadata", "type", "spec"}
@@ -183,13 +196,16 @@ def test_secret_resources_join_recovery_consumers_without_values():
         "labels": {"cnpg.io/reload": ""},
     }
     assert database["type"] == "kubernetes.io/basic-auth"
-    assert database["spec"]["itemPath"] == (
-        "vaults/k8s-homelab/items/embervm-recovery-oplog-db"
-    )
+    assert database["metadata"]["name"] == op_log["secretName"]
+    assert database["spec"]["itemPath"] == op_log["onepassword"]["itemPath"]
+    assert op_log["secretKey"] == "password"
+    assert op_log["user"] == values["postgres"]["embervmOpLog"]["role"]
     assert identity["metadata"] == {
         "namespace": EMBER,
-        "name": "embervm-authentik-recovery-agent",
+        "name": auth["appPasswordRef"]["name"],
     }
+    assert auth["appPasswordRef"]["key"] == "app-password"
+    assert auth["username"] == "kg-agent-recovery-sa"
     assert identity["type"] == "Opaque"
     assert identity["spec"]["itemPath"] == (
         "vaults/k8s-homelab/items/embervm-authentik-recovery-agent"
