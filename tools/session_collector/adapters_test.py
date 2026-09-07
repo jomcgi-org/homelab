@@ -15,10 +15,10 @@ def test_claude_fixture_turns_and_drops_records():
     assert session.collector_version == "claude-v2"
     assert session.usage == {
         "input_tokens": 107,
-        "output_tokens": 25,
+        "output_tokens": 55,
         "cache_read_tokens": 32,
         "cache_write_tokens": 43,
-        "reasoning_tokens": 0,
+        "reasoning_tokens": 12,
         "messages": 2,
         "shape": "claude",
     }
@@ -69,6 +69,7 @@ def test_codex_fixture_turns_and_drops_records():
         "messages": 2,
         "shape": "codex",
     }
+    assert session.models == ["gpt-test"]
     assert "## Turn 1" in output.markdown
     assert "`tool: exec_command` input" in output.markdown
     assert "`result:`" in output.markdown

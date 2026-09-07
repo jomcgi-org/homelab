@@ -50,6 +50,7 @@ def parse(path: Path) -> Session:
     session_id = path.stem
     cwd = ""
     model: str | None = None
+    models: set[str] = set()
     first_user = ""
     event_user = ""
     branch: str | None = None
@@ -69,8 +70,10 @@ def parse(path: Path) -> Session:
         if not isinstance(payload, dict):
             continue
         if record_type == "event_msg" and payload.get("type") == "token_count":
-            usage_messages += 1
             total_usage = payload.get("info")
+            if total_usage is None:
+                continue
+            usage_messages += 1
             if isinstance(total_usage, dict):
                 total_usage = total_usage.get("total_token_usage")
             if not isinstance(total_usage, dict):
@@ -100,6 +103,7 @@ def parse(path: Path) -> Session:
             kept += 1
             if isinstance(payload.get("model"), str):
                 model = payload["model"]
+                models.add(model)
             continue
         if record_type != "response_item":
             continue
@@ -179,4 +183,5 @@ def parse(path: Path) -> Session:
             "messages": usage_messages,
             "shape": "codex",
         },
+        models=sorted(models),
     )

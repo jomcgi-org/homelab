@@ -19,7 +19,10 @@ Transcript content and secret values are never logged.
 The upload metadata includes an `extra.usage` field with input, output, cache,
 reasoning, and message counts. Claude transcript usage is deduplicated by
 `message.id`, and the resulting values reflect cumulative token usage for the
-whole session.
+whole session. The `messages` count means assistant messages for Claude and
+`token_count` events (turns) for Codex. The `extra.models` field is a sorted
+list of distinct models seen in the session. The monolith reads these fields in
+a follow-up PR.
 
 Inspect a redacted transcript before enabling uploads:
 
