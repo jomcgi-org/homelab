@@ -7554,6 +7554,7 @@ py_test(
     deps = [
         ":agent_sessions_admission",
         ":pkg_cyclegroup",
+        ":pkg_swarm",
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
