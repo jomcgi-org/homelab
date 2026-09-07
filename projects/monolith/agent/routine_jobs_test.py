@@ -11,11 +11,8 @@ from sqlmodel import Session, create_engine
 from agent import routine_jobs
 
 
-def test_guarded_unknown_hold_matches_exact_claim_and_is_idempotent(
-    monkeypatch, tmp_path
-):
-    engine = create_engine(f"sqlite:///{tmp_path / 'guarded-hold.db'}")
-    monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
+def _guarded_engine(tmp_path, name, *, locked_at, status=None, next_run_at=None):
+    engine = create_engine(f"sqlite:///{tmp_path / (name.replace(':', '-') + '.db')}")
     with Session(engine) as session:
         session.execute(
             text(
@@ -36,19 +33,30 @@ def test_guarded_unknown_hold_matches_exact_claim_and_is_idempotent(
                     (name, routine_kind, next_run_at, last_status, last_summary,
                      locked_by, locked_at, payload, created_by, created_at)
                 VALUES
-                    (:name, 'kg-drain', CURRENT_TIMESTAMP, NULL, NULL,
-                     'luna-drainer', :locked_at, :payload, 'factory', :created_at)
+                    (:name, 'kg-drain', :next_run_at, :status, :summary,
+                     :locked_by, :locked_at, :payload, 'factory', :created_at)
                 """
             ),
             {
-                "name": "kg:sha256",
-                "locked_at": "2026-09-07 00:00:00",
+                "name": name,
+                "next_run_at": next_run_at,
+                "status": status,
+                "summary": None,
+                "locked_by": "luna-drainer" if locked_at is not None else None,
+                "locked_at": locked_at,
                 "payload": json.dumps({"prompt": "keep"}),
                 "created_at": "2026-01-01 00:00:00",
             },
         )
         session.commit()
+    return engine
 
+
+def test_guarded_unknown_hold_matches_exact_claim(monkeypatch, tmp_path):
+    engine = _guarded_engine(
+        tmp_path, "kg:sha256", locked_at="2026-09-07 00:00:00", next_run_at=None
+    )
+    monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
     expected = datetime(2026, 9, 7, tzinfo=timezone.utc)
     assert routine_jobs.hold_job_for_unknown_outcome(
         "kg:sha256",
@@ -57,20 +65,6 @@ def test_guarded_unknown_hold_matches_exact_claim_and_is_idempotent(
         expected_locked_by="luna-drainer",
         expected_locked_at=expected.isoformat(),
     )
-    assert routine_jobs.hold_job_for_unknown_outcome(
-        "kg:sha256",
-        2797,
-        "unknown",
-        expected_locked_by="luna-drainer",
-        expected_locked_at=expected,
-    )
-    assert not routine_jobs.hold_job_for_unknown_outcome(
-        "kg:sha256",
-        2797,
-        "different session",
-        expected_locked_by="luna-drainer",
-        expected_locked_at="2026-09-07T00:00:01+00:00",
-    )
     with Session(engine) as session:
         row = session.execute(text("SELECT * FROM routine_jobs")).one()
     assert row.payload == json.dumps({"prompt": "keep"})
@@ -78,6 +72,54 @@ def test_guarded_unknown_hold_matches_exact_claim_and_is_idempotent(
     assert row.name == "kg:sha256"
     assert row.last_status == routine_jobs.UNKNOWN_INVOCATION
     assert row.next_run_at is None
+    assert row.locked_by is None
+    assert row.locked_at is None
+
+
+def test_guarded_unknown_hold_idempotency_is_unlocked(monkeypatch, tmp_path):
+    engine = _guarded_engine(
+        tmp_path,
+        "kg:idempotent",
+        locked_at=None,
+        status=routine_jobs.UNKNOWN_INVOCATION,
+        next_run_at=None,
+    )
+    monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
+    with Session(engine) as session:
+        session.execute(
+            text("UPDATE routine_jobs SET last_summary = :summary WHERE name = :name"),
+            {"name": "kg:idempotent", "summary": "session_id=2797: original"},
+        )
+        session.commit()
+    assert routine_jobs.hold_job_for_unknown_outcome(
+        "kg:idempotent", 2797, "replacement", expected_locked_by="luna-drainer",
+        expected_locked_at="2026-09-07T00:00:01+00:00",
+    )
+    with Session(engine) as session:
+        row = session.execute(text("SELECT * FROM routine_jobs")).one()
+    assert row.last_summary == "session_id=2797: original"
+    assert row.payload == json.dumps({"prompt": "keep"})
+    assert row.created_by == "factory"
+
+
+def test_guarded_unknown_hold_does_not_touch_successor(monkeypatch, tmp_path):
+    engine = _guarded_engine(
+        tmp_path,
+        "kg:successor",
+        locked_at="2026-09-07 00:00:02",
+        status="running",
+        next_run_at="2026-09-07 00:01:00",
+    )
+    monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
+    assert not routine_jobs.hold_job_for_unknown_outcome(
+        "kg:successor", 2797, "stale", expected_locked_by="luna-drainer",
+        expected_locked_at="2026-09-07T00:00:00+00:00",
+    )
+    with Session(engine) as session:
+        row = session.execute(text("SELECT * FROM routine_jobs")).one()
+    assert (row.locked_by, row.locked_at, row.last_status, row.next_run_at) == (
+        "luna-drainer", "2026-09-07 00:00:02", "running", "2026-09-07 00:01:00"
+    )
 
 
 def test_update_job_payload_replaces_only_payload(monkeypatch, tmp_path):

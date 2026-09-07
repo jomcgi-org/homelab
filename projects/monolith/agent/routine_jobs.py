@@ -290,7 +290,8 @@ def hold_job_for_unknown_outcome(
         if result.rowcount == 0 and guarded:
             row = session.execute(
                 text(
-                    f"SELECT last_status, next_run_at, last_summary FROM {table} "
+                    f"SELECT last_status, next_run_at, last_summary, "
+                    f"locked_by, locked_at FROM {table} "
                     "WHERE name = :name"
                 ),
                 {"name": name},
@@ -300,6 +301,8 @@ def hold_job_for_unknown_outcome(
                 row
                 and row.last_status == UNKNOWN_INVOCATION
                 and row.next_run_at is None
+                and row.locked_by is None
+                and row.locked_at is None
                 and isinstance(row.last_summary, str)
                 and row.last_summary.startswith(f"session_id={session_id}:")
             )
