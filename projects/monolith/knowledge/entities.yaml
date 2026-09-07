@@ -1,0 +1,98 @@
+entities:
+  - kind: project
+    slug: embervm
+    title: EmberVM
+    aliases: [embervm, noded, brick, bricks, firecracker, jailer, snapshot, stateful, warmth]
+  - kind: project
+    slug: firecracker
+    title: Firecracker
+    aliases: [firecracker-site]
+  - kind: project
+    slug: gke-apps
+    title: GKE Apps
+    aliases: []
+  - kind: project
+    slug: gke-cluster
+    title: GKE Cluster
+    aliases: [gke, spot, preemption]
+  - kind: project
+    slug: home-cluster
+    title: Home Cluster
+    aliases: []
+  - kind: project
+    slug: inference
+    title: Inference
+    aliases: [inference, qwen, vllm, freetoken]
+  - kind: project
+    slug: mcp
+    title: MCP
+    aliases: [mcp, context-forge, muse]
+  - kind: project
+    slug: model-bench
+    title: Model Bench
+    aliases: [model-bench, leaderboard]
+  - kind: project
+    slug: monolith
+    title: Monolith
+    aliases: [monolith, swarm, drainer, knowledge, chat, agent-sessions, kg]
+  - kind: project
+    slug: monolith-agents
+    title: Monolith Agents
+    aliases: [monolith-agents, agents-tier]
+  - kind: project
+    slug: monolith-public
+    title: Monolith Public
+    aliases: []
+  - kind: project
+    slug: operators
+    title: Operators
+    aliases: [operators, oci-model-cache]
+  - kind: project
+    slug: platform
+    title: Platform
+    aliases: [argocd, kargo, helm, cilium, otel-collector, observability, honeycomb]
+  - kind: project
+    slug: platform-gke
+    title: Platform GKE
+    aliases: []
+  - kind: project
+    slug: sextant
+    title: Sextant
+    aliases: [sextant]
+
+  # Pseudo-project for repository-wide build and CI work. It has no projects/ directory.
+  - kind: project
+    slug: tooling
+    title: Build and CI
+    aliases: [ci, bazel, buildbuddy, semgrep, apko, gazelle]
+
+  - kind: service
+    slug: context-forge-gateway
+    title: Context Forge Gateway
+    aliases: []
+  - kind: service
+    slug: embervm
+    title: EmberVM
+    aliases: []
+  - kind: service
+    slug: inference
+    title: Inference
+    aliases: []
+  - kind: service
+    slug: monolith
+    title: Monolith
+    aliases: []
+  - kind: service
+    slug: monolith-agents
+    title: Monolith Agents
+    aliases: []
+  - kind: service
+    slug: monolith-public
+    title: Monolith Public
+    aliases: []
+
+  - kind: environment
+    slug: homelab
+    title: Homelab
+    aliases: []
+    scope: environment:homelab

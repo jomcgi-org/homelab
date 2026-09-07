@@ -9,6 +9,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
 from knowledge.frontmatter import ParsedFrontmatter
+from knowledge.entities import Entity, NoteEntity
 from knowledge.links import Link
 from knowledge.models import Chunk, Note, NoteLink
 from knowledge.store import KnowledgeStore
@@ -445,6 +446,7 @@ class TestSearchNotesWithContext:
             "observed_at",
             "disputed",
             "provenance",
+            "entities",
         }
         assert row["note_id"] == "n1"
         assert row["title"] == "Attention"
@@ -579,6 +581,7 @@ class TestGetNoteById:
             "observed_at": None,
             "disputed": False,
             "provenance": [],
+            "entities": [],
         }
 
     def test_returns_content_when_set(self, store):
@@ -597,6 +600,113 @@ class TestGetNoteById:
 
     def test_returns_none_when_missing(self, store):
         assert store.get_note_by_id("nope") is None
+
+
+class TestEntityLinks:
+    def test_entities_for_note_and_note_payload(self, store, session):
+        _upsert(
+            store,
+            note_id="entity-note",
+            path="entity-note.md",
+            title="Entity note",
+            metadata=_meta(
+                title="Entity note",
+                type="fact",
+                verification_state="verified",
+            ),
+        )
+        entity = Entity(
+            kind="project",
+            slug="monolith",
+            title="Monolith",
+            aliases=["kg"],
+            source="manifest",
+        )
+        session.add(entity)
+        session.flush()
+        session.add(
+            NoteEntity(
+                note_id="entity-note",
+                entity_id=entity.id,
+                role="subject",
+                source="extraction",
+            )
+        )
+        session.commit()
+
+        expected = [
+            {
+                "kind": "project",
+                "slug": "monolith",
+                "title": "Monolith",
+                "role": "subject",
+            }
+        ]
+        assert store.entities_for_note("entity-note") == expected
+        assert store.get_note_by_id("entity-note")["entities"] == expected
+
+    def test_notes_for_entity_filters_state_and_deleted_notes(self, store, session):
+        entity = Entity(
+            kind="project",
+            slug="embervm",
+            title="EmberVM",
+            aliases=[],
+            source="manifest",
+        )
+        session.add(entity)
+        session.flush()
+        _upsert(
+            store,
+            note_id="verified-fact",
+            path="verified.md",
+            title="Verified",
+            metadata=_meta(
+                title="Verified",
+                type="fact",
+                verification_state="verified",
+            ),
+        )
+        _upsert(
+            store,
+            note_id="unverified-fact",
+            path="unverified.md",
+            title="Unverified",
+            metadata=_meta(
+                title="Unverified",
+                type="fact",
+                verification_state="unverified",
+            ),
+        )
+        session.add_all(
+            [
+                NoteEntity(
+                    note_id="verified-fact",
+                    entity_id=entity.id,
+                    role="subject",
+                    source="backfill",
+                ),
+                NoteEntity(
+                    note_id="unverified-fact",
+                    entity_id=entity.id,
+                    role="mentions",
+                    source="backfill",
+                ),
+            ]
+        )
+        session.commit()
+
+        rows = store.notes_for_entity(entity.id, states=["verified"], limit=10)
+
+        assert rows == [
+            {
+                "note_id": "verified-fact",
+                "title": "Verified",
+                "type": "fact",
+                "scope": None,
+                "verification_state": "verified",
+                "role": "subject",
+            }
+        ]
 
 
 class TestGetNoteLinks:

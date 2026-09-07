@@ -1,7 +1,7 @@
 """Read-only SQLModel mappings for the public_api views.
 
-These map to Postgres VIEWS (public_api.knowledge_notes / knowledge_note_links)
-created by migration 20260617020000. They exist so the public knowledge
+These map to Postgres views in ``public_api``, including the knowledge notes,
+links, and entity spine views. They exist so the public knowledge
 handlers can read the public surface as the public_reader role, which has no
 access to the knowledge schema. In SQLite tests the real_session fixture strips
 the schema and create_all materializes them as plain tables that tests seed
@@ -64,6 +64,39 @@ class PublicNoteLink(SQLModel, table=True):
     target: str
     kind: str
     edge_type: str | None = None
+
+
+class PublicEntity(SQLModel, table=True):
+    """Maps to the public entity catalog view."""
+
+    __tablename__ = "knowledge_entities"
+    __table_args__ = {"schema": "public_api", "extend_existing": True}
+
+    id: int = Field(primary_key=True)
+    kind: str
+    slug: str
+    title: str
+    aliases: list[str] = Field(default_factory=list, sa_column=Column(_STRING_ARRAY))
+    scope: str | None = None
+    source: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class PublicNoteEntity(SQLModel, table=True):
+    """Maps to entity links whose stable note id is publicly visible."""
+
+    __tablename__ = "knowledge_note_entities"
+    __table_args__ = {"schema": "public_api", "extend_existing": True}
+
+    id: int = Field(primary_key=True)
+    note_id: str
+    entity_id: int
+    role: str
+    source: str
+    created_at: datetime
+    verification_state: str
+    note_indexed_at: datetime
 
 
 class PublicChunk(SQLModel, table=True):

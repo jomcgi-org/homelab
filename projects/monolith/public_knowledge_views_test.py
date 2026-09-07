@@ -97,6 +97,28 @@ def _seed(session) -> None:
         ),
         {"fk": a_id},
     )
+    entity_id = session.execute(
+        text(
+            """
+            INSERT INTO knowledge.entities (kind, slug, title, source)
+            VALUES ('project', 'view-test-project', 'View Test Project', 'test')
+            RETURNING id
+            """
+        )
+    ).scalar_one()
+    session.execute(
+        text(
+            """
+            INSERT INTO knowledge.note_entities
+                (note_id, entity_id, role, source)
+            VALUES
+                ('note-a', :entity_id, 'subject', 'test'),
+                ('note-c', :entity_id, 'subject', 'test'),
+                ('note-d', :entity_id, 'mentions', 'test')
+            """
+        ),
+        {"entity_id": entity_id},
+    )
     session.commit()
 
 
@@ -127,6 +149,17 @@ def test_views_derive_public_only_and_endpoints_filter(session, client):
         ("note-a", "note-c"),
     ]
 
+    entity_rows = session.execute(
+        text("SELECT slug FROM public_api.knowledge_entities")
+    ).all()
+    assert [row[0] for row in entity_rows] == ["view-test-project"]
+    note_entity_rows = session.execute(
+        text(
+            "SELECT note_id, verification_state FROM public_api.knowledge_note_entities"
+        )
+    ).all()
+    assert [(row[0], row[1]) for row in note_entity_rows] == [("note-a", "legacy")]
+
     # --- public_reader can read the views, sees the same public-only rows ---
     session.execute(text("SET ROLE public_reader"))
     reader_notes = [
@@ -143,6 +176,18 @@ def test_views_derive_public_only_and_endpoints_filter(session, client):
         ("note-a", "note-b"),
         ("note-a", "note-c"),
     }
+    assert (
+        session.execute(
+            text("SELECT count(*) FROM public_api.knowledge_entities")
+        ).scalar_one()
+        == 1
+    )
+    assert (
+        session.execute(
+            text("SELECT count(*) FROM public_api.knowledge_note_entities")
+        ).scalar_one()
+        == 1
+    )
     session.execute(text("RESET ROLE"))
 
     # --- endpoints over the views ---
@@ -275,3 +320,37 @@ def test_public_reader_denied_on_knowledge_note_links(pg):
             assert "permission denied" in str(exc.value).lower()
     finally:
         engine.dispose()
+
+
+def test_scope_shape_constraint_accepts_known_prefix_and_rejects_invalid(session):
+    session.execute(
+        _INSERT_NOTE,
+        {
+            "note_id": "valid-scope",
+            "path": "valid-scope.md",
+            "title": "Valid scope",
+            "content_hash": "valid-scope-hash",
+            "content": "body",
+            "visibility": "private",
+            "type": "fact",
+            "deleted_at": None,
+        },
+    )
+    session.execute(
+        text(
+            "UPDATE knowledge.notes SET scope = 'repo:jomcgi-org/homelab' "
+            "WHERE note_id = 'valid-scope'"
+        )
+    )
+    session.flush()
+
+    with pytest.raises(Exception) as exc:
+        session.execute(
+            text(
+                "UPDATE knowledge.notes SET scope = 'project:monolith' "
+                "WHERE note_id = 'valid-scope'"
+            )
+        )
+        session.flush()
+    session.rollback()
+    assert "notes_scope_shape_chk" in str(exc.value)

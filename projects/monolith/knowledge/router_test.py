@@ -19,7 +19,12 @@ from knowledge.gaps import (
     GapWrongStateError,
 )
 from knowledge.links import Link
-from knowledge.public_models import PublicNote, PublicNoteLink
+from knowledge.public_models import (
+    PublicEntity,
+    PublicNote,
+    PublicNoteEntity,
+    PublicNoteLink,
+)
 from knowledge.router import get_embedding_client
 from knowledge.store import KnowledgeStore
 
@@ -827,6 +832,87 @@ def _seed_public_link(session, *, source, target, kind="link", edge_type=None):
     session.add(link)
     session.commit()
     return link
+
+
+def _seed_public_entity(session, *, slug="monolith", kind="project"):
+    now = datetime.now(timezone.utc)
+    entity = PublicEntity(
+        kind=kind,
+        slug=slug,
+        title=slug.title(),
+        aliases=[slug],
+        scope=None,
+        source="manifest",
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(entity)
+    session.commit()
+    return entity
+
+
+class TestPublicEntitiesEndpoint:
+    def test_lists_entities_with_public_note_counts_and_cache(self, real_session):
+        entity = _seed_public_entity(real_session)
+        now = datetime.now(timezone.utc)
+        real_session.add_all(
+            [
+                PublicNoteEntity(
+                    note_id="verified-note",
+                    entity_id=entity.id,
+                    role="subject",
+                    source="extraction",
+                    created_at=now,
+                    verification_state="verified",
+                    note_indexed_at=now,
+                ),
+                PublicNoteEntity(
+                    note_id="disputed-note",
+                    entity_id=entity.id,
+                    role="mentions",
+                    source="backfill",
+                    created_at=now,
+                    verification_state="disputed",
+                    note_indexed_at=now,
+                ),
+            ]
+        )
+        real_session.commit()
+
+        app.dependency_overrides[get_session] = lambda: real_session
+        try:
+            client = TestClient(app, raise_server_exceptions=False)
+            first = client.get("/api/knowledge/public/entities")
+            second = client.get(
+                "/api/knowledge/public/entities",
+                headers={"If-None-Match": first.headers["etag"]},
+            )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert first.status_code == 200
+        assert first.json() == [
+            {
+                "id": entity.id,
+                "kind": "project",
+                "slug": "monolith",
+                "title": "Monolith",
+                "aliases": ["monolith"],
+                "scope": None,
+                "source": "manifest",
+                "created_at": first.json()[0]["created_at"],
+                "updated_at": first.json()[0]["updated_at"],
+                "note_counts": {
+                    "legacy": 0,
+                    "unverified": 0,
+                    "verified": 1,
+                    "disputed": 1,
+                    "invalidated": 0,
+                },
+            }
+        ]
+        assert "s-maxage=3600" in first.headers["cache-control"]
+        assert second.status_code == 304
 
 
 class TestPublicGraphEndpoint:

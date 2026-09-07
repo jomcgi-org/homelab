@@ -26,6 +26,7 @@ from knowledge.extraction import (
     record_extraction_failure,
     sweep_unqueued_raws,
 )
+from knowledge.entities import Entity, NoteEntity, seed_entities
 from knowledge.models import AtomRawProvenance, Chunk, Dispute, Note, NoteLink, RawInput
 
 
@@ -254,6 +255,9 @@ def test_prompt_uses_source_lens(session, monkeypatch, source, phrase):
 
     assert phrase in prompt
     assert "/workspace/src" in prompt
+    assert "Allowed project subject slugs:" in prompt
+    assert '"subjects": [slug]' in prompt
+    assert '"unresolved_subject": string|null' in prompt
     assert "- [nearby] Nearby (repo:acme/repo, verified):" in prompt
     related_match = re.search(
         r"<<<RELATED NOTE ([0-9a-f]{12})>>>known detail"
@@ -567,6 +571,44 @@ def test_apply_writes_atom_provenance_and_scoped_columns(session, monkeypatch):
     ).one()
     assert provenance.raw_fk == raw.id
     assert provenance.gardener_version == EXTRACTION_VERSION
+
+
+def test_apply_links_resolved_subjects_and_records_unresolved(session, monkeypatch):
+    seed_entities(session)
+    raw = _raw(session, "agent-report")
+    monkeypatch.setattr("knowledge.atoms.EmbeddingClient", _Embedder)
+
+    applied = apply_extraction(
+        session,
+        raw.raw_id,
+        _result(
+            [
+                {
+                    "title": "Monolith retries extraction",
+                    "body": "When extraction fails, Monolith retries the work.",
+                    "scope": "repo:acme/repo",
+                    "verification_state": "unverified",
+                    "confidence": 0.8,
+                    "edges": {
+                        "subjects": ["monolith", "missing-project"],
+                    },
+                    "unresolved_subject": "new-runtime",
+                }
+            ]
+        ),
+    )
+
+    assert applied["atoms"] == ["monolith-retries-extraction"]
+    link = session.exec(select(NoteEntity)).one()
+    entity = session.exec(select(Entity).where(Entity.id == link.entity_id)).one()
+    assert (entity.kind, entity.slug) == ("project", "monolith")
+    assert (link.note_id, link.role, link.source) == (
+        "monolith-retries-extraction",
+        "subject",
+        "extraction",
+    )
+    session.refresh(raw)
+    assert raw.extra["unresolved_subjects"] == ["missing-project", "new-runtime"]
 
 
 def test_empty_assertions_write_sentinel(session):
