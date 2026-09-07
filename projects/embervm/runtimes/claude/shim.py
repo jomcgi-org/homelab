@@ -3720,17 +3720,43 @@ class MuseProcess:
             unavailable["muse"]["reason"] = "collection_failed"
             return unavailable
         finally:
-            if reader is not None:
-                reader.close()
-            if process is not None:
-                # This process owns metadata reads only. Stop it without adding
-                # another model-side timeout or changing the executed outcome.
-                if process.poll() is None:
-                    process.kill()
-                process.wait()
-                process.stdin.close()
-                process.stdout.close()
-                _managed_child_pids.discard(process.pid)
+            try:
+                if reader is not None:
+                    try:
+                        reader.close()
+                    except Exception:
+                        pass
+                if process is not None:
+                    stdin = getattr(process, "stdin", None)
+                    if stdin is not None:
+                        try:
+                            stdin.close()
+                        except OSError:
+                            pass
+                    try:
+                        process.wait(timeout=1)
+                    except Exception:
+                        try:
+                            if process.poll() is None:
+                                process.kill()
+                        except Exception:
+                            pass
+                        try:
+                            process.wait(timeout=1)
+                        except Exception:
+                            pass
+                    stdout = getattr(process, "stdout", None)
+                    if stdout is not None:
+                        try:
+                            stdout.close()
+                        except Exception:
+                            pass
+            finally:
+                if process is not None:
+                    try:
+                        _managed_child_pids.discard(process.pid)
+                    except Exception:
+                        pass
 
     def turn(
         self,
@@ -3812,9 +3838,43 @@ class MuseProcess:
                             "model", getattr(self, "_turn_timing_model_start", None)
                         )
                         self._close_process(kill=False)
-                        usage = self._collect_usage(
-                            payload.get("command_id"), len(completed_model_attempts)
-                        )
+                        usage_collect_start = _turn_timing_now()
+                        try:
+                            usage = self._collect_usage(
+                                payload.get("command_id"),
+                                len(completed_model_attempts),
+                            )
+                        except Exception:
+                            usage = _muse_usage_projection(
+                                [],
+                                self.session_id,
+                                payload.get("command_id"),
+                                len(completed_model_attempts),
+                            )
+                            usage["muse"]["reason"] = "collection_failed"
+                        try:
+                            muse_meta = (
+                                usage.get("muse", {}) if isinstance(usage, dict) else {}
+                            )
+                            status = str(muse_meta.get("status"))[:32]
+                            reason = str(muse_meta.get("reason"))[:64]
+                            reported = muse_meta.get("reported_usage_completions")
+                            expected = muse_meta.get("observed_model_completions")
+                            sys.stderr.write(
+                                "ember-claude-shim: muse-usage"
+                                " status=%s reason=%s observations=%s"
+                                " expected=%s\n"
+                                % (
+                                    status,
+                                    reason,
+                                    reported if type(reported) is int else "unknown",
+                                    expected if type(expected) is int else "unknown",
+                                )
+                            )
+                            sys.stderr.flush()
+                        except Exception:
+                            pass
+                        _emit_elapsed("usage_collect", usage_collect_start)
                         return {
                             "result": result_text,
                             "terminal_reason": terminal_reason,
