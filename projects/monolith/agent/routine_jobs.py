@@ -442,17 +442,25 @@ def register_job(
     return True
 
 
-def deregister_job(name: str) -> bool:
-    """Remove a job unless it retains an unresolved invocation outcome."""
+def deregister_job(name: str, *, preserve_repo_freshness: bool = False) -> bool:
+    """Remove a job unless it retains an unresolved invocation outcome.
+
+    The drainer retains completed repository freshness rows as cooldown
+    evidence. Their next_run_at is already NULL, so retention does not rearm
+    them. Explicit operator deregistration keeps its existing behavior.
+    """
     engine = get_engine()
-    table = (
-        "routine_jobs"
-        if engine.dialect.name == "sqlite"
-        else "claude_agent.routine_jobs"
+    sqlite = engine.dialect.name == "sqlite"
+    table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
+    retention = (
+        f"AND NOT {_repo_freshness_sql('candidate', sqlite=sqlite)}"
+        if preserve_repo_freshness
+        else ""
     )
     sql = text(f"""
-        DELETE FROM {table} WHERE name = :name
+        DELETE FROM {table} AS candidate WHERE name = :name
           AND (last_status IS NULL OR last_status != :unknown_outcome)
+          {retention}
     """)
     with Session(engine) as session:
         result = session.execute(
