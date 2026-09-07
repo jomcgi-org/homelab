@@ -1,12 +1,28 @@
+# This manifest is applied manually after deployment through the suspended
+# seed-entities CronWorkflow, followed by backfill-entities. Submit the jobs
+# with `argo submit --from cronworkflow/<name> -n monolith-workflows`; do not
+# exec into a running API or jobs pod.
 entities:
   - kind: project
     slug: embervm
     title: EmberVM
-    aliases: [embervm, noded, brick, bricks, firecracker, jailer, snapshot, stateful, warmth]
+    aliases:
+      - {name: embervm, title: true}
+      - {name: noded, title: true}
+      - brick
+      - bricks
+      - jailer
   - kind: project
-    slug: firecracker
+    slug: firecracker-site
     title: Firecracker
-    aliases: [firecracker-site]
+    aliases:
+      - {name: firecracker, title: true}
+    path: projects/firecracker
+  - kind: project
+    slug: design-system
+    title: Design System
+    aliases: [design-system, impeccable, tokens]
+    path: projects/design-system
   - kind: project
     slug: gke-apps
     title: GKE Apps
@@ -22,11 +38,18 @@ entities:
   - kind: project
     slug: inference
     title: Inference
-    aliases: [inference, qwen, vllm, freetoken]
+    aliases:
+      - inference
+      - qwen
+      - {name: vllm, title: true}
+      - {name: freetoken, title: true}
   - kind: project
     slug: mcp
     title: MCP
-    aliases: [mcp, context-forge, muse]
+    aliases:
+      - mcp
+      - {name: context-forge, title: true}
+      - muse
   - kind: project
     slug: model-bench
     title: Model Bench
@@ -34,7 +57,7 @@ entities:
   - kind: project
     slug: monolith
     title: Monolith
-    aliases: [monolith, swarm, drainer, knowledge, chat, agent-sessions, kg]
+    aliases: [monolith, swarm, drainer, agent-sessions, kg]
   - kind: project
     slug: monolith-agents
     title: Monolith Agents
@@ -50,7 +73,14 @@ entities:
   - kind: project
     slug: platform
     title: Platform
-    aliases: [argocd, kargo, helm, cilium, otel-collector, observability, honeycomb]
+    aliases:
+      - {name: argocd, title: true}
+      - {name: kargo, title: true}
+      - helm
+      - cilium
+      - otel-collector
+      - observability
+      - honeycomb
   - kind: project
     slug: platform-gke
     title: Platform GKE
@@ -58,13 +88,20 @@ entities:
   - kind: project
     slug: sextant
     title: Sextant
-    aliases: [sextant]
+    aliases:
+      - {name: sextant, title: true}
 
   # Pseudo-project for repository-wide build and CI work. It has no projects/ directory.
   - kind: project
     slug: tooling
     title: Build and CI
-    aliases: [ci, bazel, buildbuddy, semgrep, apko, gazelle]
+    aliases:
+      - ci
+      - bazel
+      - {name: buildbuddy, title: true}
+      - {name: semgrep, title: true}
+      - apko
+      - gazelle
 
   - kind: service
     slug: context-forge-gateway

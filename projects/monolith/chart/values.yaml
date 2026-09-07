@@ -309,6 +309,36 @@ jobs:
     # workflowSpec). The yearly schedule is inert belt-and-suspenders: even an
     # accidental un-suspend can only fire it once a year, not constantly.
     #
+    # Knowledge entity rollout is a two-step manual operation after deploy:
+    #   argo submit --from cronworkflow/seed-entities -n monolith-workflows
+    #   argo submit --from cronworkflow/backfill-entities -n monolith-workflows
+    # Both jobs receive DATABASE_URL from jobs.dbSecretName in the shared
+    # CronWorkflow template. Run seed first so backfill resolves the manifest.
+    - name: seed-entities
+      args: ["seed-entities"]
+      schedule: "0 0 1 1 *" # inert; suspended, manual-only
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 600
+      suspend: true
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
+    - name: backfill-entities
+      args: ["backfill-entities", "--apply"]
+      schedule: "0 0 1 1 *" # inert; suspended, manual-only
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 1800
+      suspend: true
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
+    #
     # hikes.scrape_walks: full WalkHighlands corpus scrape, ~hours. The corpus
     # barely changes; trigger by hand when a refresh is wanted.
     - name: hikes-scrape-walks

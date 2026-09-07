@@ -254,8 +254,9 @@ class KnowledgeStore:
         entity_id: int,
         states: Iterable[str] | None = None,
         limit: int = 100,
+        public_only: bool = False,
     ) -> list[dict]:
-        """Fetch live notes linked to an entity, optionally filtered by state."""
+        """Fetch live notes linked to an entity with optional state/visibility filters."""
         stmt = (
             select(
                 Note.note_id,
@@ -278,6 +279,8 @@ class KnowledgeStore:
             if not state_values:
                 return []
             stmt = stmt.where(Note.verification_state.in_(state_values))
+        if public_only:
+            stmt = stmt.where(Note.visibility == "public")
         return [
             {
                 "note_id": row.note_id,

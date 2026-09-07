@@ -905,6 +905,8 @@ py_library(
             "*/tests/**/*.py",
         ],
     ),
+    # entities.yaml is 2.5 KB and deliberately ships as runfiles data, unlike
+    # the multi-megabyte ndjson manifest isolated in its own image layer below.
     data = ["knowledge/entities.yaml"],
     imports = ["."],
     visibility = ["//:__subpackages__"],
@@ -1584,6 +1586,8 @@ py_library(
             "trips/backfill/**",
         ],
     ),  # keep
+    # entities.yaml is 2.5 KB and deliberately ships as runfiles data, unlike
+    # the multi-megabyte ndjson manifest isolated in its own image layer.
     data = ["knowledge/entities.yaml"],
     visibility = ["//:__subpackages__"],
     deps = [

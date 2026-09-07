@@ -57,6 +57,10 @@ GapState = Literal[
 # chart/migrations/20260508000000_knowledge_notes_visibility.sql - keep in sync.
 Visibility = Literal["public", "private"]
 
+# Mirror of knowledge.notes.notes_scope_shape_chk. Keep every producer and
+# parser on the same scope grammar so invalid input fails before persistence.
+SCOPE_PATTERN = r"^(personal|org|repo|environment|session):.+$"
+
 # Postgres uses native TEXT[] for tags/aliases; SQLite falls back to JSON
 # so the in-memory test fixture can create the tables.
 _STRING_ARRAY = PG_ARRAY(String).with_variant(JSON(), "sqlite")

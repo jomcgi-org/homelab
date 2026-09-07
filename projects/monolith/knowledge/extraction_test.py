@@ -437,6 +437,8 @@ def test_parser_uses_last_json_block_and_clamps_fields():
                         "scope": "repo:acme/repo",
                         "verification_state": "verified",
                         "confidence": 9,
+                        "edges": {"subjects": [f"project-{i}" for i in range(25)]},
+                        "unresolved_subject": "u" * 250,
                     }
                 ],
                 "unknown": True,
@@ -448,6 +450,8 @@ def test_parser_uses_last_json_block_and_clamps_fields():
     assert result.assertions[0].title == "Last"
     assert len(result.assertions[0].body) == 20_000
     assert result.assertions[0].confidence == 1.0
+    assert len(result.assertions[0].edges.subjects) == 20
+    assert len(result.assertions[0].unresolved_subject or "") == 200
 
 
 @pytest.mark.parametrize(

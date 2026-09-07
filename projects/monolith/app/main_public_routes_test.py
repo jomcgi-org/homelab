@@ -58,6 +58,7 @@ def _paths() -> set[str]:
 
 REQUIRED_PATHS = [
     "/api/knowledge/public/graph",
+    "/api/knowledge/public/entities",
     "/api/knowledge/public/notes/{note_id}",
     "/api/home/observability/stats",
     "/api/agents/public/merges",

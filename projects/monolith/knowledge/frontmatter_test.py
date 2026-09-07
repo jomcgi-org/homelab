@@ -60,6 +60,15 @@ class TestParse:
         with pytest.raises(FrontmatterError):
             parse(raw)
 
+    def test_invalid_scope_raises_frontmatter_error_naming_value(self):
+        raw = "---\nscope: jomcgi-org/homelab\n---\nBody text."
+
+        with pytest.raises(
+            FrontmatterError,
+            match="invalid frontmatter scope: 'jomcgi-org/homelab'",
+        ):
+            parse(raw)
+
     def test_invalid_date_yields_none(self):
         raw = "---\ncreated: not-a-date\n---\nx"
         meta, _ = parse(raw)
