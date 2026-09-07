@@ -1308,6 +1308,8 @@ metaSpark:
 # not both run the recovery loop. Private tier only: the module is registered in
 # modules_private and never in modules_public.
 swarm:
+  # Availability gate only. Operator policy and durable enable are separate.
+  factoryEnabled: false
   enabled: false
   # The cheap implementer lane and the reviewer that gates it. The reviewer is
   # never below Opus: ADR 038 decision 5 floors anything assessable only by

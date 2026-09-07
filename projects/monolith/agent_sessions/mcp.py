@@ -563,6 +563,16 @@ async def _execute_pending_message(session_id: int) -> None:
     one retry of the exact interrupted attempt.
     """
 
+    # Factory controls also fence the shared pending-message sweep. Checking
+    # only while creating a session leaves a queued turn free to create a VM
+    # after an operator stop. Paused turns retain their unclaimed receipt.
+    from swarm.api import factory_session_allowed
+
+    factory_row, _ = await asyncio.to_thread(_load_session, session_id)
+    if factory_row is not None and not await asyncio.to_thread(
+        factory_session_allowed, getattr(factory_row, "local_session_id", None)
+    ):
+        return
     claim_owner = f"{_REPLICA_ID}:{uuid4()}"
     claimed_seq = await asyncio.to_thread(
         _claim_pending_message_sync, session_id, claim_owner
@@ -729,6 +739,28 @@ async def _execute_pending_message(session_id: int) -> None:
             if session_row.reasoning:
                 deliver_kwargs["reasoning"] = True
             effective_model = normalize_model(row.model)
+            if (getattr(session_row, "local_session_id", "") or "").startswith(
+                "factory:"
+            ):
+
+                async def factory_admission_check() -> None:
+                    if not await asyncio.to_thread(
+                        factory_session_allowed, session_row.local_session_id
+                    ):
+                        raise EmberVMTransportError("Factory admission is fenced")
+
+                deliver_kwargs["admission_check"] = factory_admission_check
+            if not await asyncio.to_thread(
+                factory_session_allowed, getattr(session_row, "local_session_id", None)
+            ):
+                await asyncio.to_thread(
+                    _mark_turn_error_sync,
+                    session_id,
+                    claimed_seq,
+                    "Factory admission stopped before guest dispatch",
+                    claim_owner,
+                )
+                return
             turn, ember = await _transport.deliver(
                 existing_ember,
                 cli_session_id,

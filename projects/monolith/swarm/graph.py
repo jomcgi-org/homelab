@@ -37,7 +37,15 @@ _TERMINAL_RUN_STATUSES = ("succeeded", "failed", "escalated", "cancelled")
 MAX_ATTEMPTS = 10
 MAX_TURN_TIMEOUT_SECONDS = 7200
 _CONTEXT_FIELDS = frozenset(
-    ("repo", "branch", "workflow_id", "artifact_path", "artifact_schema")
+    (
+        "repo",
+        "branch",
+        "workflow_id",
+        "artifact_path",
+        "artifact_schema",
+        "hydration_branch",
+        "retry_context",
+    )
 )
 
 

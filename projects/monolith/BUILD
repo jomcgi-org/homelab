@@ -4481,6 +4481,122 @@ py_test(
 )
 
 py_test(
+    name = "swarm_factory_conductor_test",
+    srcs = ["swarm/factory_conductor_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        ":pkg_auth",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "swarm_factory_controls_test",
+    srcs = ["swarm/factory_controls_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        ":pkg_auth",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "swarm_factory_intake_test",
+    srcs = ["swarm/factory_intake_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        ":pkg_auth",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "swarm_factory_fence_test",
+    srcs = ["swarm/factory_fence_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        ":pkg_auth",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "swarm_factory_router_test",
+    srcs = ["swarm/factory_router_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        ":pkg_auth",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "swarm_factory_integration_test",
+    srcs = ["swarm/factory_integration_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        ":pkg_auth",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "swarm_node_workflows_test",
+    srcs = ["swarm/node_workflows_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        ":pkg_auth",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "agent_sessions_factory_transport_test",
+    srcs = ["agent_sessions/factory_transport_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        "@pip//httpx",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "swarm_router_test",
     srcs = ["swarm/router_test.py"],
     imports = ["."],
