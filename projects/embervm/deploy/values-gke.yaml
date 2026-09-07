@@ -90,6 +90,12 @@ tokenBroker:
       provider: authentik
       fqdn: auth.jomcgi.dev
 
+# Task demos use spare GKE capacity without a warm minimum.
+semgrepWorkload:
+  floor: 0
+bazelQueryWorkload:
+  floor: 0
+
 # 2gi bricks scale horizontally for the small guests; the 4gi class exists
 # because the fleet has consumers that cannot fit a 2gi brick at all: the
 # semgrep task guest is 1536 MiB (its primed floor sat unsatisfied and every
