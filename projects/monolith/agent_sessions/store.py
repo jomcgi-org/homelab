@@ -20,7 +20,9 @@ from agent_sessions.constants import (
     UNKNOWN_INVOCATION,
     UNKNOWN_INVOCATION_MESSAGE,
 )
+from agent_sessions import admission
 from agent_sessions.models import (
+    AgentCapacityReservation,
     AgentSession,
     AgentTurn,
     PendingMessage,
@@ -46,9 +48,15 @@ class PendingClaimLost(RuntimeError):
 
 
 def _unknown_outcome_exists(session_id_column):
-    return exists().where(
-        AgentTurn.session_id == session_id_column,
-        AgentTurn.stop_reason == UNKNOWN_INVOCATION,
+    return or_(
+        exists().where(
+            AgentTurn.session_id == session_id_column,
+            AgentTurn.stop_reason == UNKNOWN_INVOCATION,
+        ),
+        exists().where(
+            AgentCapacityReservation.session_id == session_id_column,
+            AgentCapacityReservation.state == "uncertain",
+        ),
     )
 
 
@@ -58,6 +66,7 @@ def _lock_session(session: Session, session_id: int) -> AgentSession | None:
     Always lock the session before its pending row. The no-op UPDATE acquires a
     database write lock without changing user-visible timestamps.
     """
+    admission.lock_pool(session)
     session.execute(
         update(AgentSession)
         .where(AgentSession.id == session_id)
@@ -137,6 +146,9 @@ def _finish_unknown_locked(
         # A completed result may have committed before an old executor's cleanup.
         session.delete(pending)
         return
+    admission.settle(
+        session, row, pending.seq, outcome=cause, cessation_confirmed=False
+    )
     usage = _progress_usage(pending, cause)
     if existing is not None:
         usage["prior_interruption"] = {
@@ -330,7 +342,11 @@ def create_session(
     triggered_by: str | None = None,
     node_key: str | None = None,
     node_attempt: int | None = None,
+    admission_tier: str = "interactive",
 ) -> AgentSession:
+    if admission_tier not in admission.TIERS:
+        raise ValueError("Invalid server admission tier")
+    admission.lock_pool(session)
     row = AgentSession(
         local_session_id=local_session_id,
         workspace=workspace,
@@ -338,6 +354,7 @@ def create_session(
         repo=repo,
         discord_thread=discord_thread,
         model=model,
+        admission_tier=admission_tier,
         progress_token=secrets.token_urlsafe(32),
         system_prompt=system_prompt,
         reasoning=reasoning,
@@ -350,6 +367,8 @@ def create_session(
         triggered_by=(triggered_by or "").strip().lower() or None,
     )
     session.add(row)
+    session.flush()
+    admission.bind_session(session, row)
     session.commit()
     session.refresh(row)
     return row
@@ -461,7 +480,7 @@ def clear_ember_session(session: Session, session_id: int) -> AgentSession:
     clear on an already-blank binding must not wipe out a good prior with a
     nil.
     """
-    row = session.get(AgentSession, session_id)
+    row = _lock_session(session, session_id)
     if row is None:
         raise ValueError(f"Unknown agent session {session_id}")
     if row.ember_lineage_id:
@@ -500,6 +519,7 @@ def clear_ember_bindings_by_ember_id(session: Session, ember_id: str) -> list[in
 
     Returns the ids of the affected AgentSession rows.
     """
+    admission.lock_pool(session)
     rows = session.exec(
         select(AgentSession).where(AgentSession.ember_session_id == ember_id)
     ).all()
@@ -1101,6 +1121,7 @@ def claim_pending_message_for_session_sync(
         if pending is None or pending.claimed_by_replica is not None:
             return None
         previous = get_turn(session, session_id, pending.seq)
+        retry_usage = None
         if _attempted(pending):
             if not _retry_permission(previous, pending):
                 _finish_unknown_locked(session, row, pending, "unclaimed_attempt")
@@ -1108,12 +1129,18 @@ def claim_pending_message_for_session_sync(
                 return None
             # Consume permission before the next attempt starts. If this attempt
             # loses its observer, the previous interrupted row cannot authorize it.
-            usage = json.loads(previous.usage_json)
-            usage.pop("retry_dispatch_count")
-            previous.usage_json = json.dumps(usage)
-            session.add(previous)
+            retry_usage = json.loads(previous.usage_json)
         elif row.status == "recovering":
             return None
+        if not admission.claim_pending(session, row, pending, replica_id):
+            # Persist conservative adoption of old active/unknown attempts even
+            # when the new start does not fit. No retry grant was consumed.
+            session.commit()
+            return None
+        if retry_usage is not None:
+            retry_usage.pop("retry_dispatch_count")
+            previous.usage_json = json.dumps(retry_usage)
+            session.add(previous)
         seq = pending.seq
         pending.claimed_by_replica = replica_id
         pending.claimed_at = func.now()
@@ -1253,6 +1280,17 @@ def persist_turn_from_pending_sync(
         session.add(sess_row)
         if pending is not None:
             session.delete(pending)
+        admission.settle(
+            session,
+            sess_row,
+            turn_seq,
+            outcome=turn.terminal_reason,
+            cessation_confirmed=(
+                turn.stop_reason != UNKNOWN_INVOCATION
+                and turn.terminal_reason
+                in CLEAN_TERMINAL_REASONS | INTERRUPTED_TERMINAL_REASONS | {"error"}
+            ),
+        )
         session.commit()
         session.refresh(row)
         return row
@@ -1268,7 +1306,12 @@ def delete_pending_message_sync(session_id: int, turn_seq: int) -> None:
 
 
 def mark_turn_error_sync(
-    session_id: int, turn_seq: int, error_msg: str, claim_owner: str | None = None
+    session_id: int,
+    turn_seq: int,
+    error_msg: str,
+    claim_owner: str | None = None,
+    *,
+    cessation_confirmed: bool = False,
 ) -> None:
     """Retain progress on a terminal delivery error without allowing replay."""
     with Session(get_engine()) as session:
@@ -1309,6 +1352,15 @@ def mark_turn_error_sync(
         sess.status = "warn"
         sess.voice_summary = error_summary
         sess.last_turn_at = datetime.now(timezone.utc)
+        permit = admission.reservation(session, sess.local_session_id, turn_seq)
+        admission.settle(
+            session,
+            sess,
+            turn_seq,
+            outcome="delivery_error",
+            cessation_confirmed=cessation_confirmed
+            or (permit is not None and permit.state == "reserved"),
+        )
         session.add(sess)
         session.delete(row)
         session.commit()

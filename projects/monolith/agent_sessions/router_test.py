@@ -1712,7 +1712,9 @@ def test_send_message_session_not_found(client, monkeypatch):
     assert body == {"accepted": False, "error": "Unknown agent session 999"}
 
 
-def test_prewarm_bound_session_wakes_once(client, session, monkeypatch):
+def test_prewarm_idle_bound_session_does_not_bypass_admission(
+    client, session, monkeypatch
+):
     row = _session(
         session,
         "prewarm-bound",
@@ -1728,6 +1730,7 @@ def test_prewarm_bound_session_wakes_once(client, session, monkeypatch):
         calls.append((ember_session_id, ember_session_token))
 
     monkeypatch.setattr("agent_sessions.router._load_session_row", lambda _: row)
+    monkeypatch.setattr(store.admission, "get_engine", lambda: session.bind)
     monkeypatch.setattr(
         "agent_sessions.router._transport.prewarm_session", fake_prewarm
     )
@@ -1736,7 +1739,7 @@ def test_prewarm_bound_session_wakes_once(client, session, monkeypatch):
 
     assert response.status_code == 204
     assert response.content == b""
-    assert calls == [("ember-1", "token-1")]
+    assert calls == []
     session.expire_all()
     unchanged = session.get(AgentSession, row.id)
     assert unchanged.status == "completed"
@@ -1773,10 +1776,12 @@ def test_prewarm_repeats_only_after_10s_ttl(client, session, monkeypatch):
     calls = []
     now = [100.0]
 
-    async def fake_prewarm(*args):
+    async def fake_prewarm(*args, **kwargs):
+        await kwargs["admission_check"]()
         calls.append(args)
 
     monkeypatch.setattr("agent_sessions.router._load_session_row", lambda _: row)
+    monkeypatch.setattr(store.admission, "recheck_prewarm", lambda _: True)
     monkeypatch.setattr("agent_sessions.router.time.monotonic", lambda: now[0])
     monkeypatch.setattr(
         "agent_sessions.router._transport.prewarm_session", fake_prewarm

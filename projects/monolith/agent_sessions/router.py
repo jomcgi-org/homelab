@@ -1119,7 +1119,24 @@ async def prewarm_session(session_id: int) -> Response:
         # Claim the TTL before awaiting so concurrent requests in this process
         # cannot both start a relight.
         _prewarm_timestamps[session_id] = now
-        await _transport.prewarm_session(row.ember_session_id, row.ember_session_token)
+
+        async def admission_check() -> None:
+            from agent_sessions import admission
+            from swarm.api import factory_session_allowed
+
+            if not await asyncio.to_thread(
+                factory_session_allowed, row.local_session_id
+            ):
+                raise RuntimeError("Factory admission is fenced")
+            if not await asyncio.to_thread(admission.recheck_prewarm, session_id):
+                raise RuntimeError("Prewarm requires an admitted execution")
+
+        await admission_check()
+        await _transport.prewarm_session(
+            row.ember_session_id,
+            row.ember_session_token,
+            admission_check=admission_check,
+        )
     except Exception as exc:  # noqa: BLE001 - prewarm must swallow every failure
         # Prewarm is an invisible latency optimization. It must never create a
         # composer error channel or affect the real send that follows.

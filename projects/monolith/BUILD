@@ -1248,6 +1248,7 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":agent_sessions_admission",
         ":pkg_artifact",
         ":pkg_cluster",
         ":pkg_core",
@@ -1288,6 +1289,24 @@ py_library(
 )
 
 py_library(
+    name = "agent_sessions_admission",
+    srcs = [
+        "agent_sessions/__init__.py",
+        "agent_sessions/admission.py",
+        "agent_sessions/constants.py",
+        "agent_sessions/models.py",
+    ],
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        ":pkg_shared",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_library(
     name = "pkg_agent_sessions",
     srcs = glob(
         [
@@ -1298,11 +1317,16 @@ py_library(
             "**/test_*.py",
             "*/tests/**/*.py",
             "agent_sessions/rationale.py",
+            "agent_sessions/__init__.py",
+            "agent_sessions/admission.py",
+            "agent_sessions/constants.py",
+            "agent_sessions/models.py",
         ],
     ),
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":agent_sessions_admission",
         ":agent_sessions_rationale",
         # mcp.py and router.py read the request principal via auth.api.
         ":pkg_auth",
@@ -1380,6 +1404,7 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":agent_sessions_admission",
         ":agent_sessions_rationale",
         ":pkg_agent_sessions",
         ":pkg_core",
@@ -4869,6 +4894,17 @@ py_test(
 )
 
 py_test(
+    name = "agent_sessions_admission_test",
+    srcs = ["agent_sessions/admission_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "agent_sessions_store_test",
     srcs = ["agent_sessions/store_test.py"],
     imports = ["."],
@@ -7502,6 +7538,7 @@ py_test(
     srcs = ["agent/routine_jobs_test.py"],
     imports = ["."],
     deps = [
+        ":agent_sessions_admission",
         ":pkg_cyclegroup",
         "@pip//pytest",
         "@pip//sqlalchemy",

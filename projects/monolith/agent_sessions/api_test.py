@@ -69,6 +69,7 @@ def test_run_synthetic_session_claims_pending_before_deliver(monkeypatch):
 
     assert result is turn
     assert len(delivered) == 1
+    assert callable(delivered[0][1]["admission_check"])
     assert deleted == [(41, 1)]
     assert released == [(41, 1)]
 
