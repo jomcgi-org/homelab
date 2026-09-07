@@ -120,6 +120,13 @@ def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> di
         if len(provenance) >= 1001:
             raise ValueError("Provenance exceeds the reconciliation bound")
     latest = turns[-1]
+    reservations = _rows(
+        db,
+        f"SELECT state,outcome,pending_seq FROM "
+        f"{_table(db, 'agent_sessions', 'capacity_reservations')} "
+        "WHERE session_id=:id AND pending_seq=:seq",
+        {"id": session_id, "seq": latest["seq"]},
+    )
     state = {
         "job_name": job_name,
         "session_id": session_id,
@@ -148,6 +155,12 @@ def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> di
         "latest_turn_seq": latest["seq"],
         "latest_stop_reason": latest["stop_reason"],
         "latest_terminal_reason": latest["terminal_reason"],
+        "reservation_state": (
+            reservations[0]["state"] if len(reservations) == 1 else None
+        ),
+        "reservation_outcome": (
+            reservations[0]["outcome"] if len(reservations) == 1 else None
+        ),
         "extraction_version": EXTRACTION_VERSION,
         "raw_sha256": _sha(raw),
         "provenance_sha256": _sha(provenance),
@@ -202,6 +215,16 @@ def _reconcile(db, request):
     state = read_reconciliation_state(db, request["job_name"], agent["id"])
     if state["state_sha256"] != request["expected_state_sha256"]:
         raise ValueError("Expected reconciliation state changed")
+    delivery_error_hold = (
+        state["latest_stop_reason"] is None
+        and state["latest_terminal_reason"] == "error"
+        and state["reservation_state"] == "uncertain"
+        and state["reservation_outcome"] == "delivery_error"
+    )
+    unknown_hold = (
+        state["latest_stop_reason"] == UNKNOWN_INVOCATION
+        and state["session_status"] == "failed"
+    )
     if (
         state["job_status"] != UNKNOWN_INVOCATION
         or state["routine_kind"] != "kg-drain"
@@ -210,10 +233,12 @@ def _reconcile(db, request):
         or state["next_run_at"] is not None
         or state["locked_by"] is not None
         or state["locked_at"] is not None
-        or state["session_status"] != "failed"
+        or not (
+            unknown_hold
+            or (delivery_error_hold and state["session_status"] == "warn")
+        )
         or state["node_key"] != KG_NODE_KEY
         or state["pending"]
-        or state["latest_stop_reason"] != UNKNOWN_INVOCATION
         or state["latest_terminal_reason"] != "error"
         or not (state["last_summary"] or "").startswith(f"session_id={agent['id']}:")
         or agent["local_session_id"]
@@ -266,7 +291,9 @@ def _reconcile(db, request):
         "unknown_turn_seq": state["latest_turn_seq"],
         "disposition": request["disposition"],
         "next_run_at": next_run.isoformat() if next_run else None,
-        "original_outcome": UNKNOWN_INVOCATION,
+        "original_outcome": (
+            "delivery_error" if delivery_error_hold else UNKNOWN_INVOCATION
+        ),
         "guest_cessation_confirmed": True,
     }
     db.execute(
@@ -293,7 +320,7 @@ def _reconcile(db, request):
     if (
         after["guest_id"] is not None
         or after["pending"]
-        or after["session_status"] != "failed"
+        or after["session_status"] not in {"failed", "warn"}
     ):
         raise ValueError("Reconciliation postconditions failed")
     db.add(

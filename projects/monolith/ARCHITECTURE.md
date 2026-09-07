@@ -278,6 +278,15 @@ the session is bound to a thread.
 (see: /projects/monolith/agent_sessions/voice.py)
 (see: /projects/monolith/chart/values.yaml)
 
+**Why.** An unconfirmed delivery error is one hold represented consistently
+across the turn, capacity reservation, routine job and health views. Capacity
+is released only by the explicit reconciliation owner after fresh authoritative
+terminal proof for the exact guest, generation, session and turn. Non-routine
+uncertain reservations, such as synthetic probe sessions without a routine job,
+remain a deliberate residual gap: an operator-owned cessation caller must supply
+that exact proof to the session reconciliation owner; this lane does not invent
+an automatic release, sweeper or timeout.
+
 Monolith batch work is rendered as Argo CronWorkflows in the workflows
 namespace, whose controller owns cadence, concurrency, deadlines, and history.
 Each entry runs the digest-pinned jobs image with one `jobs_main.py`

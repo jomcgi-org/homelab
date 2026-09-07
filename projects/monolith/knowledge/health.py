@@ -34,10 +34,26 @@ def _kg_health_core(session: Session, cap: int) -> dict:
     queue = session.execute(
         text(
             """
-            SELECT count(*) AS queued,
-                   EXTRACT(EPOCH FROM (now() - MIN(next_run_at))) AS oldest_seconds
+            WITH held AS (
+                SELECT name
+                  FROM claude_agent.routine_jobs
+                 WHERE last_status = 'unknown_invocation'
+                UNION
+                SELECT routine_job_name
+                  FROM agent_sessions.capacity_reservations
+                 WHERE state != 'settled' AND routine_job_name IS NOT NULL
+            )
+            SELECT count(*) FILTER (
+                       WHERE next_run_at IS NOT NULL
+                         AND name NOT IN (SELECT name FROM held)
+                   ) AS queued,
+                   count(*) FILTER (WHERE name IN (SELECT name FROM held)) AS held,
+                   EXTRACT(EPOCH FROM (now() - MIN(next_run_at) FILTER (
+                       WHERE next_run_at IS NOT NULL
+                         AND name NOT IN (SELECT name FROM held)
+                   ))) AS oldest_seconds
               FROM claude_agent.routine_jobs
-             WHERE routine_kind = :kind AND next_run_at IS NOT NULL
+             WHERE routine_kind = :kind
             """
         ),
         {"kind": KG_JOB_KIND},
@@ -137,6 +153,7 @@ def _kg_health_core(session: Session, cap: int) -> dict:
             and not (failed_24h > 0 and atoms_24h == 0)
         ),
         "queued": int(queue.queued),
+        "held": int(getattr(queue, "held", 0)),
         "oldest_queued_seconds": oldest,
         "failed_24h": failed_24h,
         "atoms_24h": atoms_24h,
