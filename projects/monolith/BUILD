@@ -4647,6 +4647,8 @@ py_test(
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
     ],
 )
 
