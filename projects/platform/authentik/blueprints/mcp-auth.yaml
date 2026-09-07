@@ -26,6 +26,15 @@ entries:
     attrs:
       is_superuser: false
 
+  # Literal name operators is required by the standing human factory and
+  # intervention guards, which match this exact group name.
+  - model: authentik_core.group
+    id: operators
+    identifiers:
+      name: operators
+    attrs:
+      is_superuser: false
+
   # ── 2. Membership ───────────────────────────────────────────────────────
   # `attrs` REPLACES a many-to-many rather than merging into it, so the
   # existing "authentik Admins" membership has to be restated here or applying
@@ -38,6 +47,7 @@ entries:
       groups:
         - !Find [authentik_core.group, [name, authentik Admins]]
         - !KeyOf homelab-admin
+        - !KeyOf operators
         # `family` is declared and owned by moving-auth.yaml, not here, and
         # referencing it across files is deliberate rather than sloppy.
         #

@@ -61,6 +61,18 @@ py_test(
     ],
 )
 
+# Guards the operators group entitlement and the single-writer ownership of
+# the intended human's memberships. See operator_membership_test.py.
+py_test(
+    name = "operator_membership_test",
+    srcs = ["operator_membership_test.py"],
+    data = glob(["blueprints/*.yaml"]),
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
 semgrep_test(
     name = "blueprint_tags_test_semgrep_test",
     srcs = ["blueprint_tags_test.py"],
