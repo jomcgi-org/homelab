@@ -422,3 +422,16 @@ def test_legacy_routine_identity_is_adopted_from_trusted_workflow_fields(databas
         db.commit()
         assert admission.reserved_routine_jobs(db) == {"kg:raw"}
     assert not reserve(database, "new-owner", "kg", routine_job_name="kg:raw")
+
+
+@pytest.mark.parametrize("allowed", [False, True])
+def test_factory_priority_requires_current_start_permission(
+    database, monkeypatch, allowed
+):
+    from swarm import factory_controls
+
+    queued(database, "factory:task:node:1", "project")
+    monkeypatch.setattr(
+        factory_controls, "can_start", lambda *_args, **_kwargs: {"ok": allowed}
+    )
+    assert reserve(database, "kg", "kg") is (not allowed)

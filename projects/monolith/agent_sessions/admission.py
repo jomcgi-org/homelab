@@ -140,6 +140,19 @@ def _higher_priority_waiting(db: Session, tier: str) -> bool:
             continue
         seen.add(agent.id)
         if not pending.dispatch_count and pending.claimed_by_replica is None:
+            if agent.local_session_id.startswith("factory:"):
+                from swarm.factory_controls import can_start
+
+                fields = agent.local_session_id.split(":")
+                if len(fields) != 4 or not fields[3].isdigit():
+                    continue
+                try:
+                    if not can_start(fields[1], session=db)["ok"]:
+                        continue
+                except (
+                    Exception
+                ):  # Inventory uncertainty cannot grant a lower-priority start.
+                    return True
             if not db.exec(
                 select(AgentTurn.id).where(
                     AgentTurn.session_id == agent.id,
