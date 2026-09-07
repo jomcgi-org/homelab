@@ -37,6 +37,24 @@ Ember creates and invokes the guest. It does not submit an Argo Workflow.
 Keeping `ARGO_JOBS` populated suppresses the inherited scheduler registry
 entries while `jobs.image: ""` prevents their CronWorkflows from rendering.
 
+This proof uses Ember's node-local artifact mode: an empty store endpoint,
+no object-store credentials and no artifact KEK. The selected fault leaves the
+executor and its scratch disk alive. Fresh session creation, invocation and
+local banking do not require remote artifacts; the durable recovery disposition
+and drainer hold live in PostgreSQL. A separate bucket, GCS HMAC identity and
+remote artifact encryption are not prerequisites for this proof. Production's
+existing object store is unchanged.
+
+Admit a fresh session without `restore_lineage`. Do not use this preset to
+restore an old workspace or prove executor-loss recovery: workspace restore
+and retirement refuse when the store is disabled, even if local workspace
+bytes remain. Retain those bytes for the bounded cleanup review. An executor
+failure or an unexpected workspace restore requirement stops the attempt;
+do not turn a restore error into an empty successful workspace. Store encryption
+and restore-capability enforcement remain configured on noded but are dormant
+while the store endpoint is empty. A later test needing remote artifacts must
+provision its own isolated store and encryption identities before activation.
+
 Prepare these facts before creating either deployment:
 
 - Confirm both dev namespaces are unused on the target cluster and no existing
@@ -48,13 +66,13 @@ Prepare these facts before creating either deployment:
   The current production guest count is not a capacity reservation. Confirm
   the selected node has the existing scratch mount; use only its disjoint
   `/var/lib/embervm/scratch/recovery` subtree.
-- Provision the planned recovery-only object-store bucket, scoped GCS HMAC
-  identity, KEK, noded bearer and registry-read-only pull credential through
+- Provision the noded bearer and registry-read-only pull credential through
   dedicated 1Password items. The registry item supplies `.dockerconfigjson` to
   `embervm-recovery-imagepull-secret`; do not inherit the shared pull item.
   Names in the preset are planned identities, not evidence they exist. Do not
-  reuse production credentials or grant the recovery identity access to the
-  production base bucket.
+  reuse production credentials or grant access to the production base bucket.
+  Verify the rendered store endpoint is empty and no store or KEK secret is
+  rendered or referenced by the control plane, noded or rootfs builders.
 - Supply `monolith-dev-pg-embervm-oplog` in both namespaces from one dedicated
   1Password source. CNPG requires the `monolith-dev` copy to have
   `kubernetes.io/basic-auth` type, `username`/`password` keys and its reload
@@ -81,7 +99,7 @@ Prepare these facts before creating either deployment:
   proxy, not the control-plane pod's PostgreSQL connection; the native policy
   must separately allow the dev op-log connection to port 5432.
   Allow only the required dev control/progress/MCP/database paths, DNS and
-  selected provider/store/authentication egress.
+  selected provider/authentication egress.
 - Build and attest a fresh dev base on the correctly configured brick. The
   guest shim captures `EMBER_PROGRESS_URL` and `EMBER_AGENT_MCP_URL` from
   kernel-delivered environment at base build. `initEnv` changes the identity

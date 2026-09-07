@@ -1,14 +1,14 @@
 # Inactive recovery preset, loaded ONLY over chart defaults. Fixed release
 # and namespace: embervm-dev. No Application or kustomization references it.
 # Activation requirements: projects/monolith/dev/deploy/recovery-gke.md.
-# All recovery bucket, principal and 1Password identities below are planned;
+# All recovery principal and 1Password identities below are planned;
 # their existence, permissions and credential delivery require verification.
 #
 # The shared scratch mount must already exist. Only its recovery subtree is
 # used; this release must not create a second scratch-prep daemon.
 #
 # claude-runtime is Monolith's session API contract, scoped to embervm-dev by
-# the control-plane watcher. Its dedicated epoch, bucket and scratch path
+# the control-plane watcher. Its dedicated epoch and scratch path
 # isolate the base. The hypervisor epoch includes the current default; update
 # this value when the vendored hypervisor epoch changes.
 #
@@ -91,15 +91,18 @@ noded:
     nvmeRootHostPathType: DirectoryOrCreate
     kernelBootArgs: console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro ember.env.EMBER_PROGRESS_URL=aHR0cDovL21vbm9saXRoLWRldi5tb25vbGl0aC1kZXY6ODA5MS9pbmdlc3QvcHJvZ3Jlc3M ember.env.EMBER_AGENT_MCP_URL=aHR0cDovL21vbm9saXRoLWRldi5tb25vbGl0aC1kZXY6ODAwMC9tY3A
   store:
-    endpoint: https://storage.googleapis.com
-    bucket: h0melab-ember-recovery
+    # The selected fault is a Monolith backend loss while this node survives.
+    # Fresh sessions and local banking need no off-node artifact store. Do not
+    # use this profile for workspace restoration or executor-loss recovery.
+    endpoint: ''
+    bucket: ''
     compress: true
     encrypt: true
     credentials:
-      enabled: true
+      enabled: false
       secretName: ''
       onepassword:
-        itemPath: vaults/k8s-homelab/items/embervm-recovery-store
+        itemPath: ''
   drain:
     preemptionNoticeEnabled: true
   priorityClassName: homelab-preemptible
@@ -210,11 +213,11 @@ sandboxJavascript:
   guestImage:
     repository: ''
 artifactEncryption:
-  enabled: true
+  enabled: false
 kekRoot:
-  enabled: true
+  enabled: false
   onepassword:
-    itemPath: vaults/k8s-homelab/items/embervm-recovery-kek-root
+    itemPath: ''
 tokenBroker:
   enabled: true
   networkPolicy:
