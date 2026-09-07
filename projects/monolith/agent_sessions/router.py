@@ -757,6 +757,7 @@ def get_session_detail(
                 "base_sha": turn.base_sha,
                 "usage": _decode(turn.usage_json, {}),
                 "cost_usd": turn.cost_usd,
+                "cost_source": turn.cost_source,
                 "created_at": _iso(turn.created_at),
             }
             for turn in turns

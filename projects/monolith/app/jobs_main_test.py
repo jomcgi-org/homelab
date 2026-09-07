@@ -13,9 +13,11 @@ from unittest import mock
 
 import httpx
 import pytest
+from sqlmodel import Session, SQLModel, create_engine, select
 from typer.testing import CliRunner
 
 import app.jobs_main as jobs_main
+from agent_sessions.models import AgentSession, AgentTurn
 from faas.reconcile import ReconcileReport
 
 runner = CliRunner()
@@ -138,6 +140,75 @@ def test_no_args_lists_commands():
     result = runner.invoke(jobs_main.app, [])
     # no_args_is_help exits non-zero and prints the command list.
     assert "worldcup-sim" in result.output
+
+
+def test_price_turns_backfill_prices_only_eligible_rows(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'turn-pricing.db'}")
+    original_schemas = {}
+    for table in SQLModel.metadata.tables.values():
+        if table.schema is not None:
+            original_schemas[table.name] = table.schema
+            table.schema = None
+    try:
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as session:
+            agent = AgentSession(
+                local_session_id="backfill",
+                workspace="<guest>",
+                branch="main",
+            )
+            session.add(agent)
+            session.commit()
+            session.refresh(agent)
+            session.add_all(
+                [
+                    AgentTurn(
+                        session_id=agent.id,
+                        seq=1,
+                        prompt="priceable",
+                        result_text="done",
+                        model="luna",
+                        usage_json=json.dumps({"input_tokens": 1_000_000}),
+                    ),
+                    AgentTurn(
+                        session_id=agent.id,
+                        seq=2,
+                        prompt="unknown",
+                        result_text="done",
+                        model="gpt-6-astra",
+                        usage_json=json.dumps({"input_tokens": 1_000}),
+                    ),
+                    AgentTurn(
+                        session_id=agent.id,
+                        seq=3,
+                        prompt="already priced",
+                        result_text="done",
+                        model="luna",
+                        usage_json=json.dumps({"input_tokens": 1_000}),
+                        cost_usd=0.123,
+                        cost_source="reported",
+                    ),
+                ]
+            )
+            session.commit()
+
+            report = jobs_main._price_turns_backfill_core(session, chunk_size=1)
+
+            assert report == jobs_main.TurnPricingBackfillReport(1, 1, 0)
+            rows = session.exec(select(AgentTurn).order_by(AgentTurn.seq)).all()
+            assert rows[0].cost_usd == pytest.approx(0.40)
+            assert rows[0].cost_source == "list"
+            assert rows[1].cost_usd is None
+            assert rows[1].cost_source is None
+            assert rows[2].cost_usd == pytest.approx(0.123)
+            assert rows[2].cost_source == "reported"
+
+            rerun = jobs_main._price_turns_backfill_core(session, chunk_size=1)
+            assert rerun.priced == 0
+    finally:
+        for table in SQLModel.metadata.tables.values():
+            if table.name in original_schemas:
+                table.schema = original_schemas[table.name]
 
 
 def test_setup_otel_skips_when_endpoint_is_absent(monkeypatch):

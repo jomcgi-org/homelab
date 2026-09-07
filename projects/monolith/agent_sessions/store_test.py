@@ -114,6 +114,53 @@ def test_create_session_persists_optional_system_prompt(monkeypatch, tmp_path):
         _restore_schemas(schemas)
 
 
+@pytest.mark.parametrize(
+    ("reported_cost", "model", "usage", "expected_source", "has_cost"),
+    [
+        (0.0123, "luna", {"input_tokens": 1_000_000}, "reported", True),
+        (None, "luna", {"input_tokens": 1_000_000}, "list", True),
+        (None, "gpt-6-astra", {"input_tokens": 1_000}, None, False),
+    ],
+)
+def test_create_turn_records_cost_source(
+    monkeypatch,
+    tmp_path,
+    reported_cost,
+    model,
+    usage,
+    expected_source,
+    has_cost,
+):
+    engine, schemas = _database(monkeypatch, tmp_path)
+    try:
+        with Session(engine) as session:
+            agent = store.create_session(session, "priced", "<guest>", "main")
+            turn = store.create_turn(
+                session,
+                session_id=agent.id,
+                seq=1,
+                prompt="price this",
+                voice_summary=None,
+                result_text="done",
+                terminal_reason="success",
+                stop_reason=None,
+                permission_denials=None,
+                commit_sha=None,
+                usage=usage,
+                cost_usd=reported_cost,
+                model=model,
+            )
+
+            assert turn.cost_source == expected_source
+            if has_cost:
+                assert turn.cost_usd is not None
+                assert turn.cost_usd > 0
+            else:
+                assert turn.cost_usd is None
+    finally:
+        _restore_schemas(schemas)
+
+
 def test_create_session_persists_normalized_triggered_by(monkeypatch, tmp_path):
     engine, schemas = _database(monkeypatch, tmp_path)
     try:

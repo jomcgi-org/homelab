@@ -61,6 +61,7 @@ from knowledge.redact import redact_text
 from knowledge.raw_paths import compute_raw_id
 from knowledge.store import KnowledgeStore
 from shared.embedding import EmbeddingClient
+from shared.pricing import price_usage
 
 logger = logging.getLogger(__name__)
 
@@ -568,12 +569,21 @@ def create_raw(
             status_code=413,
             detail="content exceeds the 2 MiB limit",
         )
+    extra = dict(data.extra)
+    if "usage" in extra and "model" in extra:
+        try:
+            priced = price_usage(extra.get("model"), extra.get("usage"))
+            if priced is not None:
+                extra["usage_cost_usd"] = priced.cost_usd
+                extra["usage_cost_source"] = priced.source
+        except Exception:
+            logger.warning("Failed to price raw usage", exc_info=True)
     raw, created = ingest_raw_with_status(
         session,
         content=data.content,
         source=data.source,
         original_url=data.original_url,
-        extra=data.extra,
+        extra=extra,
     )
     return JSONResponse(
         status_code=201,

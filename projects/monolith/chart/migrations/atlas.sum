@@ -1,4 +1,4 @@
-h1:FcWrSJsKRdZy32WptaHZc77PpenwtuycVCIJhtapr8E=
+h1:OaSS+Ec55cmLmx9/BKhu70OxkAdxsZk7KK1Su58A5+A=
 20260330000000_initial_schema.sql h1:J2futpSW0nJAIRR7nR7ssT7LwXIYrvRI+PkHb5Y4tLI=
 20260403000000_chat_schema.sql h1:pERUFC0vzM95etRuzp43XzkCV7lBCzrrtY5Mk7aF3CA=
 20260404000000_chat_attachments.sql h1:tv+Fdbr1rQC5nzUxfaBC0O6fu2OMGgLWf+YNg1WQXi4=
@@ -188,3 +188,4 @@ h1:FcWrSJsKRdZy32WptaHZc77PpenwtuycVCIJhtapr8E=
 20260907101000_intervention_request_identity.sql h1:AqX0VMH8VvQw++jb2HllCxYRYvFZjpX8EwzPCvhQHD0=
 20260907170000_agent_shared_capacity.sql h1:iDOF4zHp0P4ZqknN6rNmqm1Y31JbtT4zXVEqSCeAB3k=
 20260907172000_routine_reconciliation.sql h1:IrzRYYpKh047hUA5mwdf0NffrnWZsxIR41Ke45Og8uE=
+20260908000000_agent_turn_cost_source.sql h1:vrwnyFHeRgCDKfyEC/fNW4Nod1SZw8KFBvp6Ge07FQc=
