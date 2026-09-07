@@ -216,6 +216,9 @@ type servingEntry struct {
 
 	mu       sync.Mutex // guards inFlight
 	inFlight bool
+	// spliceReservations protects an admitted proxy from a concurrent bank or
+	// withdrawal without holding mu across network I/O.
+	spliceReservations int
 }
 
 func (e *servingEntry) healthyAndFresh(now time.Time) bool {
@@ -270,6 +273,13 @@ func (r *servingRegistry) firstByWorkload(workload string) (*servingEntry, bool)
 	return nil, false
 }
 
+func (r *servingRegistry) byID(vmID string) (*servingEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.vms[vmID]
+	return e, ok
+}
+
 // snapshotByWorkload returns a fixed candidate set for an activator request.
 // The activator must not rescan entries registered by a replacement wake in the
 // same request.
@@ -286,9 +296,8 @@ func (r *servingRegistry) snapshotByWorkload(workload string) []*servingEntry {
 }
 
 // withHealthyFreshSplice reserves the entry against a concurrent bank for the
-// duration of fn. The registry lock is released before fn runs, while the
-// entry's bank guard remains held, so status and unrelated registry operations
-// are not blocked by proxying.
+// duration of fn. Both locks are released before fn runs, so status, banking,
+// and unrelated registry operations are not blocked by proxying.
 func (r *servingRegistry) withHealthyFreshSplice(entry *servingEntry, now time.Time, fn func()) bool {
 	r.mu.Lock()
 	if r.vms[entry.vmID] != entry {
@@ -296,11 +305,19 @@ func (r *servingRegistry) withHealthyFreshSplice(entry *servingEntry, now time.T
 		return false
 	}
 	entry.mu.Lock()
-	r.mu.Unlock()
-	defer entry.mu.Unlock()
 	if entry.inFlight || !entry.healthyAndFresh(now) {
+		entry.mu.Unlock()
+		r.mu.Unlock()
 		return false
 	}
+	entry.spliceReservations++
+	entry.mu.Unlock()
+	r.mu.Unlock()
+	defer func() {
+		entry.mu.Lock()
+		entry.spliceReservations--
+		entry.mu.Unlock()
+	}()
 	fn()
 	return true
 }
@@ -316,7 +333,7 @@ func (r *servingRegistry) withdrawIfIdle(entry *servingEntry) (*servingEntry, bo
 	}
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
-	if entry.inFlight {
+	if entry.inFlight || entry.spliceReservations > 0 {
 		return nil, false
 	}
 	delete(r.vms, entry.vmID)
@@ -337,7 +354,7 @@ func (r *servingRegistry) beginBank(id string) (*servingEntry, bool) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.inFlight {
+	if e.inFlight || e.spliceReservations > 0 {
 		return nil, false
 	}
 	e.inFlight = true

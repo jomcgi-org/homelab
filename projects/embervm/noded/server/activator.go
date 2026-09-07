@@ -268,12 +268,13 @@ func (a *activator) boot(workload string, reg workloadEntry) (*servingEntry, err
 		}
 		req.Source = &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: image.baseKey}}
 	}
-	if _, err := a.server.startServing(context.Background(), req, nodev1.InstanceOrigin_INSTANCE_ORIGIN_ACTIVATOR); err != nil {
+	started, err := a.server.startServing(context.Background(), req, nodev1.InstanceOrigin_INSTANCE_ORIGIN_ACTIVATOR)
+	if err != nil {
 		return nil, err
 	}
-	entry, ok := a.server.servingVMs.firstByWorkload(workload)
+	entry, ok := a.server.servingVMs.byID(started.GetVmId())
 	if !ok {
-		return nil, fmt.Errorf("noded: activated serving vm for workload %q was not registered", workload)
+		return nil, fmt.Errorf("noded: activated serving vm %q for workload %q was not registered", started.GetVmId(), workload)
 	}
 	return entry, nil
 }
