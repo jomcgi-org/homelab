@@ -115,21 +115,20 @@ def test_create_session_persists_optional_system_prompt(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("reported_cost", "model", "usage", "expected_source", "has_cost"),
+    ("reported_cost", "model", "usage", "has_list_cost"),
     [
-        (0.0123, "luna", {"input_tokens": 1_000_000}, "reported", True),
-        (None, "luna", {"input_tokens": 1_000_000}, "list", True),
-        (None, "gpt-6-astra", {"input_tokens": 1_000}, None, False),
+        (0.0123, "luna", {"input_tokens": 1_000_000}, False),
+        (None, "luna", {"input_tokens": 1_000_000}, True),
+        (None, "gpt-6-astra", {"input_tokens": 1_000}, False),
     ],
 )
-def test_create_turn_records_cost_source(
+def test_create_turn_keeps_reported_and_list_costs_separate(
     monkeypatch,
     tmp_path,
     reported_cost,
     model,
     usage,
-    expected_source,
-    has_cost,
+    has_list_cost,
 ):
     engine, schemas = _database(monkeypatch, tmp_path)
     try:
@@ -151,12 +150,12 @@ def test_create_turn_records_cost_source(
                 model=model,
             )
 
-            assert turn.cost_source == expected_source
-            if has_cost:
-                assert turn.cost_usd is not None
-                assert turn.cost_usd > 0
+            assert turn.cost_usd == reported_cost
+            if has_list_cost:
+                assert turn.list_cost_usd is not None
+                assert turn.list_cost_usd > 0
             else:
-                assert turn.cost_usd is None
+                assert turn.list_cost_usd is None
     finally:
         _restore_schemas(schemas)
 
@@ -606,6 +605,8 @@ def test_release_preserves_interrupted_turn_and_pending_row(monkeypatch, tmp_pat
             retry = store.get_pending_message(session, session_id, turn_seq)
             assert interrupted.terminal_reason == "interrupted"
             assert interrupted.stop_reason == "brick_preempted"
+            assert interrupted.cost_usd is None
+            assert interrupted.list_cost_usd is None
             assert retry.claimed_by_replica is None
             assert store.get_session(session, session_id).status == "recovering"
     finally:
@@ -860,6 +861,7 @@ def test_unknown_release_preserves_evidence_and_holds_session(uncertain_lane):
         assert turn.stop_reason == store.UNKNOWN_INVOCATION
         assert turn.terminal_reason == "error"
         assert turn.cost_usd is None
+        assert turn.list_cost_usd is None
         assert usage["activities"] == [{"tool": "read", "path": "a.py"}]
         assert usage["recovery"]["dispatch_count"] == 1
         assert usage["recovery"]["claim_owner"] == "owner-1"

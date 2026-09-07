@@ -68,10 +68,10 @@ def _usage_has_tokens(usage: object) -> bool:
 
 
 def _price_turns_backfill_core(
-    session, chunk_size: int = 500
+    engine, chunk_size: int = 500
 ) -> TurnPricingBackfillReport:
     """Price eligible tracked turns, committing each bounded result page."""
-    from sqlmodel import select
+    from sqlmodel import Session, select
 
     from agent_sessions.models import AgentTurn
     from shared.pricing import price_usage
@@ -80,39 +80,44 @@ def _price_turns_backfill_core(
     skipped_unknown_model = 0
     skipped_zero = 0
     last_id = 0
-    while True:
-        rows = session.exec(
-            select(AgentTurn)
-            .where(
-                AgentTurn.id > last_id,
-                AgentTurn.cost_usd.is_(None),
-                AgentTurn.usage_json.is_not(None),
-                AgentTurn.model.is_not(None),
-            )
-            .order_by(AgentTurn.id)
-            .limit(chunk_size)
-        ).all()
-        if not rows:
-            break
+    with Session(engine) as session:
+        while True:
+            rows = session.exec(
+                select(AgentTurn)
+                .where(
+                    AgentTurn.id > last_id,
+                    AgentTurn.cost_usd.is_(None),
+                    AgentTurn.list_cost_usd.is_(None),
+                    AgentTurn.usage_json.is_not(None),
+                    AgentTurn.model.is_not(None),
+                )
+                .order_by(AgentTurn.id)
+                .limit(chunk_size)
+            ).all()
+            if not rows:
+                break
 
-        for row in rows:
-            try:
-                usage = json.loads(row.usage_json or "{}")
-            except (TypeError, json.JSONDecodeError):
-                usage = None
-            if not _usage_has_tokens(usage):
-                skipped_zero += 1
-                continue
-            calculated = price_usage(row.model, usage)
-            if calculated is None:
-                skipped_unknown_model += 1
-                continue
-            row.cost_usd = calculated.cost_usd
-            row.cost_source = "list"
-            priced_count += 1
+            for row in rows:
+                try:
+                    usage = json.loads(row.usage_json or "{}")
+                    if not _usage_has_tokens(usage):
+                        skipped_zero += 1
+                        continue
+                    calculated = price_usage(row.model, usage)
+                    if calculated is None:
+                        skipped_unknown_model += 1
+                        continue
+                    row.list_cost_usd = calculated.cost_usd
+                    priced_count += 1
+                except Exception:
+                    logger.warning(
+                        "price-turns-backfill: failed to price turn id=%s",
+                        row.id,
+                        exc_info=True,
+                    )
 
-        last_id = rows[-1].id
-        session.commit()
+            last_id = rows[-1].id
+            session.commit()
 
     return TurnPricingBackfillReport(
         priced=priced_count,
@@ -208,14 +213,11 @@ def agent_drain_trigger() -> None:
 @app.command("price-turns-backfill")
 def price_turns_backfill() -> None:
     """Fill list-price costs for previously unpriced agent turns."""
-    from sqlmodel import Session
-
     from core.db import get_engine
 
     configure_logging()
     logger.info("price-turns-backfill: starting")
-    with Session(get_engine()) as session:
-        report = _price_turns_backfill_core(session)
+    report = _price_turns_backfill_core(get_engine())
     logger.info(
         "price-turns-backfill: priced=%d skipped-unknown-model=%d skipped-zero=%d",
         report.priced,
