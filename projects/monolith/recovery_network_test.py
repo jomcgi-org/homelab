@@ -41,6 +41,21 @@ PODS = {
     "noded": (EMBER, _app("embervm-noded", EMBER, "noded-brick")),
     "postgres": (MONOLITH, {"cnpg.io/cluster": "monolith-dev-pg"}),
     "operator": ("cnpg-system", _app("cloudnative-pg", "cnpg")),
+    "atlas": (
+        "argocd",
+        {
+            **_app("atlas-operator", "atlas-operator"),
+            "control-plane": "controller-manager",
+        },
+    ),
+    "atlas_dev_db": (
+        MONOLITH,
+        {
+            **_app("atlas-dev-db", "monolith-dev-atlas-dev-db"),
+            "app.kubernetes.io/part-of": "atlas-operator",
+            "atlasgo.io/engine": "postgres",
+        },
+    ),
     "dns": ("kube-system", {"k8s-app": "kube-dns"}),
 }
 
@@ -119,6 +134,8 @@ def test_default_deny_covers_unknown_pods_in_both_namespaces(policies):
         ("noded", "broker", [8080]),
         ("noded", "backend", [8000, 8091]),
         ("operator", "postgres", [8000, 5432]),
+        ("atlas", "postgres", [5432]),
+        ("atlas", "atlas_dev_db", [5432]),
         ("postgres", "postgres", [5432]),
     ],
 )
@@ -155,7 +172,7 @@ def test_public_https_does_not_grant_private_addresses_or_pod_access(policies):
 
 
 def test_namespaces_and_complete_pod_identity_are_required(policies):
-    for role in ("backend", "control", "broker", "noded", "postgres"):
+    for role in ("backend", "control", "broker", "noded", "postgres", "atlas_dev_db"):
         for peer_namespace, peer_labels in PODS.values():
             impostors = [("production", peer_labels), (peer_namespace, {})]
             impostors += [
@@ -175,6 +192,16 @@ def test_backend_cannot_manage_database_or_call_guest_directly(policies):
         assert not _allows(policies, "ingress", PODS["noded"], PODS["backend"], port)
     for port in (3000, 8081, 9090):
         assert not _allows(policies, "ingress", PODS["backend"], PODS["noded"], port)
+
+
+def test_atlas_helper_is_private_to_the_migration_controller(policies):
+    helper = PODS["atlas_dev_db"]
+    for role, pod in PODS.items():
+        assert _allows(policies, "ingress", helper, pod, 5432) == (role == "atlas")
+        for port in (53, 443, 5432, 8000):
+            assert not _allows(policies, "egress", helper, pod, port)
+    assert not _allows(policies, "egress", helper, None, 443, address="8.8.8.8")
+    assert not _allows(policies, "ingress", PODS["postgres"], PODS["atlas"], 8000)
 
 
 def test_secret_resources_join_recovery_consumers_without_values():

@@ -428,6 +428,18 @@ spec:
       port: 5432
     - protocol: TCP
       port: 8000
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: argocd
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: atlas-operator
+          app.kubernetes.io/instance: atlas-operator
+          control-plane: controller-manager
+    ports:
+    - protocol: TCP
+      port: 5432
   egress:
   - to:
     - namespaceSelector:
@@ -459,3 +471,35 @@ spec:
     ports:
     - protocol: TCP
       port: 5432
+---
+# AtlasMigration creates this helper Deployment in the migration's namespace.
+# It needs only the operator's database connection, with no outbound access.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: recovery-atlas-dev-db
+  namespace: monolith-dev
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: atlas-dev-db
+      app.kubernetes.io/instance: monolith-dev-atlas-dev-db
+      app.kubernetes.io/part-of: atlas-operator
+      atlasgo.io/engine: postgres
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: argocd
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: atlas-operator
+          app.kubernetes.io/instance: atlas-operator
+          control-plane: controller-manager
+    ports:
+    - protocol: TCP
+      port: 5432
+  egress: []
