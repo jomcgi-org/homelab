@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 import logging
 import time
-from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Response
+from sqlalchemy import text
+from sqlmodel import Session
 
 from agent.config import drainer_enabled, load_drainer_settings
+from agent.routine_jobs import hold_job_for_unknown_outcome
+from agent_sessions import store as agent_session_store
+from agent_sessions.constants import UNKNOWN_INVOCATION, UNKNOWN_INVOCATION_MESSAGE
+from core.db import get_engine
 from swarm import runtime
 from swarm.drainer import drain_cycle
 from swarm.queues import drainer_queue
@@ -45,6 +52,106 @@ _DRAINER_QUEUE_NAME = "drainer"
 # quantity it must exceed has nothing to do with turn_timeout or
 # max_jobs_per_cycle; tying it to those was the original error.
 _REAPER_STALENESS_SECONDS = 1800
+
+
+def _quarantine_unknown_outcome_jobs(dbos, workflow_id: str) -> bool:
+    """Hold every job whose workflow-owned session has unknown outcome."""
+    session_id_for_log = "<unknown>"
+    job_name_for_log = "<unknown>"
+    try:
+        with Session(get_engine()) as session:
+            rows = agent_session_store.sessions_for_workflow(session, workflow_id)
+            unknown_rows = [
+                row for row in rows if agent_session_store.has_unknown_outcome(session, row.id)
+            ]
+        if not unknown_rows:
+            return True
+
+        steps = dbos.list_workflow_steps(workflow_id, load_output=True)
+        evidence: dict[str, set[tuple[object, object]]] = {}
+        for step in steps:
+            function_name = (
+                step.get("function_name")
+                if isinstance(step, Mapping)
+                else getattr(step, "function_name", "")
+            )
+            output = (
+                step.get("output")
+                if isinstance(step, Mapping)
+                else getattr(step, "output", None)
+            )
+            if (
+                not function_name.endswith("claim_drainer_job")
+                or not isinstance(output, Mapping)
+            ):
+                continue
+            claimed_name = output.get("name")
+            if not isinstance(claimed_name, str):
+                continue
+            evidence.setdefault(claimed_name, set()).add(
+                (output.get("locked_by"), output.get("locked_at"))
+            )
+
+        for row in unknown_rows:
+            session_id_for_log = row.id
+            prefix = f"{workflow_id}:{row.node_key}:"
+            if (
+                not row.node_key
+                or not isinstance(row.local_session_id, str)
+                or not row.local_session_id.startswith(prefix)
+            ):
+                raise RuntimeError(
+                    "session local id does not match its workflow node prefix"
+                )
+            job_name = row.local_session_id[len(prefix):]
+            job_name_for_log = job_name
+            if (
+                not job_name
+                or job_name not in evidence
+                or len(evidence[job_name]) != 1
+            ):
+                raise RuntimeError("missing or ambiguous claim evidence")
+            locked_by, locked_at = next(iter(evidence[job_name]))
+            if locked_by is None or locked_at is None:
+                raise RuntimeError("claim evidence has no lock tuple")
+            if not hold_job_for_unknown_outcome(
+                job_name,
+                row.id,
+                UNKNOWN_INVOCATION_MESSAGE,
+                expected_locked_by=locked_by,
+                expected_locked_at=locked_at,
+            ):
+                raise RuntimeError("guarded job hold did not match")
+            table = (
+                "routine_jobs"
+                if get_engine().dialect.name == "sqlite"
+                else "claude_agent.routine_jobs"
+            )
+            with Session(get_engine()) as verify_session:
+                held = verify_session.execute(
+                    text(
+                        f"SELECT last_status, next_run_at FROM {table} "
+                        "WHERE name = :name"
+                    ),
+                    {"name": job_name},
+                ).first()
+            if (
+                not held
+                or held.last_status != UNKNOWN_INVOCATION
+                or held.next_run_at is not None
+            ):
+                raise RuntimeError("job hold was not persisted")
+        return True
+    except Exception:  # noqa: BLE001 - quarantine must fail closed
+        logger.warning(
+            "Luna drainer could not quarantine unknown outcome workflow %s "
+            "session %s job %s",
+            workflow_id,
+            session_id_for_log,
+            job_name_for_log,
+            exc_info=True,
+        )
+        return False
 
 
 def _reap_stale_drain_cycles(dbos) -> int:
@@ -111,6 +218,8 @@ def _reap_stale_drain_cycles(dbos) -> int:
                 age_seconds = age_ms / 1000
 
                 try:
+                    if not _quarantine_unknown_outcome_jobs(dbos, workflow_uuid):
+                        continue
                     # Sync cancel_workflow is correct here: trigger_drain is a plain def,
                     # not an async handler, so no event loop is running. The async version
                     # would be wrong because DBOS's async call checks for an active loop

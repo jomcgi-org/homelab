@@ -10,7 +10,7 @@ re-arms it by setting ``next_run_at = now()``.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import bindparam, text
@@ -223,27 +223,86 @@ def claim_job(
     return _row_to_dict(claimed) if claimed else None
 
 
-def hold_job_for_unknown_outcome(name: str, session_id: int, summary: str) -> bool:
+def _normalize_locked_at(value: datetime | str) -> datetime:
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def hold_job_for_unknown_outcome(
+    name: str,
+    session_id: int,
+    summary: str,
+    *,
+    expected_locked_by: str | None = None,
+    expected_locked_at: datetime | str | None = None,
+) -> bool:
     """Retain the job and its payload while disabling automatic re-admission."""
     engine = get_engine()
     sqlite = engine.dialect.name == "sqlite"
     table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
     now_expr = "CURRENT_TIMESTAMP" if sqlite else "now()"
+    guarded = expected_locked_by is not None and expected_locked_at is not None
+    if guarded:
+        expected_at = _normalize_locked_at(expected_locked_at)
+        # SQLite's CURRENT_TIMESTAMP is stored without an offset, while a
+        # value round-tripped through DBOS is normally ISO-8601. Normalize the
+        # bound value to the representation used by SQLite's datetime type.
+        if sqlite:
+            expected_at = expected_at.replace(tzinfo=None)
+            expected_at = expected_at.strftime(
+                "%Y-%m-%d %H:%M:%S.%f"
+                if expected_at.microsecond
+                else "%Y-%m-%d %H:%M:%S"
+            )
+    else:
+        expected_at = None
     with Session(engine) as session:
+        where = "WHERE name = :name"
+        params = {
+            "name": name,
+            "status": UNKNOWN_INVOCATION,
+            "summary": f"session_id={session_id}: {summary}",
+        }
+        if guarded:
+            where += (
+                " AND locked_by = :expected_locked_by"
+                " AND locked_at = :expected_locked_at"
+            )
+            params.update(
+                {
+                    "expected_locked_by": expected_locked_by,
+                    "expected_locked_at": expected_at,
+                }
+            )
         result = session.execute(
             text(f"""
                 UPDATE {table}
                    SET next_run_at = NULL, last_run_at = {now_expr},
                        last_status = :status, last_summary = :summary,
                        locked_by = NULL, locked_at = NULL
-                 WHERE name = :name
+                 {where}
             """),
-            {
-                "name": name,
-                "status": UNKNOWN_INVOCATION,
-                "summary": f"session_id={session_id}: {summary}",
-            },
+            params,
         )
+        if result.rowcount == 0 and guarded:
+            row = session.execute(
+                text(
+                    f"SELECT last_status, next_run_at, last_summary FROM {table} "
+                    "WHERE name = :name"
+                ),
+                {"name": name},
+            ).first()
+            session.rollback()
+            return bool(
+                row
+                and row.last_status == UNKNOWN_INVOCATION
+                and row.next_run_at is None
+                and isinstance(row.last_summary, str)
+                and row.last_summary.startswith(f"session_id={session_id}:")
+            )
         session.commit()
         return result.rowcount > 0
 

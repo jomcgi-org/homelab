@@ -4641,6 +4641,8 @@ py_test(
     srcs = ["swarm/drainer_router_test.py"],
     imports = ["."],
     deps = [
+        ":pkg_agent_sessions",
+        ":pkg_cyclegroup",
         ":pkg_swarm",
         "@pip//fastapi",
         "@pip//httpx",

@@ -3,11 +3,81 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 from sqlalchemy import text
 from sqlmodel import Session, create_engine
 
 from agent import routine_jobs
+
+
+def test_guarded_unknown_hold_matches_exact_claim_and_is_idempotent(
+    monkeypatch, tmp_path
+):
+    engine = create_engine(f"sqlite:///{tmp_path / 'guarded-hold.db'}")
+    monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
+    with Session(engine) as session:
+        session.execute(
+            text(
+                """
+                CREATE TABLE routine_jobs (
+                    name TEXT PRIMARY KEY, routine_kind TEXT, interval_secs INTEGER,
+                    next_run_at TEXT, last_run_at TEXT, last_status TEXT,
+                    last_summary TEXT, locked_by TEXT, locked_at TEXT,
+                    ttl_secs INTEGER, payload TEXT, created_by TEXT, created_at TEXT
+                )
+                """
+            )
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO routine_jobs
+                    (name, routine_kind, next_run_at, last_status, last_summary,
+                     locked_by, locked_at, payload, created_by, created_at)
+                VALUES
+                    (:name, 'kg-drain', CURRENT_TIMESTAMP, NULL, NULL,
+                     'luna-drainer', :locked_at, :payload, 'factory', :created_at)
+                """
+            ),
+            {
+                "name": "kg:sha256",
+                "locked_at": "2026-09-07 00:00:00",
+                "payload": json.dumps({"prompt": "keep"}),
+                "created_at": "2026-01-01 00:00:00",
+            },
+        )
+        session.commit()
+
+    expected = datetime(2026, 9, 7, tzinfo=timezone.utc)
+    assert routine_jobs.hold_job_for_unknown_outcome(
+        "kg:sha256",
+        2797,
+        "unknown",
+        expected_locked_by="luna-drainer",
+        expected_locked_at=expected.isoformat(),
+    )
+    assert routine_jobs.hold_job_for_unknown_outcome(
+        "kg:sha256",
+        2797,
+        "unknown",
+        expected_locked_by="luna-drainer",
+        expected_locked_at=expected,
+    )
+    assert not routine_jobs.hold_job_for_unknown_outcome(
+        "kg:sha256",
+        2797,
+        "different session",
+        expected_locked_by="luna-drainer",
+        expected_locked_at="2026-09-07T00:00:01+00:00",
+    )
+    with Session(engine) as session:
+        row = session.execute(text("SELECT * FROM routine_jobs")).one()
+    assert row.payload == json.dumps({"prompt": "keep"})
+    assert row.created_by == "factory"
+    assert row.name == "kg:sha256"
+    assert row.last_status == routine_jobs.UNKNOWN_INVOCATION
+    assert row.next_run_at is None
 
 
 def test_update_job_payload_replaces_only_payload(monkeypatch, tmp_path):
