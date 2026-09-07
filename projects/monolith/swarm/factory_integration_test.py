@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import copy
 from types import SimpleNamespace
+from urllib.parse import quote
 
 import pytest
 from sqlalchemy import event
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from swarm import factory_conductor as conductor
 from swarm import factory_controls as controls
@@ -62,6 +63,17 @@ def db(tmp_path, monkeypatch):
         session.commit()
     for module in (conductor, controls, graph):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
+
+    def github_branch(repo, suffix):
+        with Session(engine) as session:
+            expected = {
+                (task.repo, f"git/ref/heads/{quote('factory/' + task.id, safe='')}")
+                for task in session.exec(select(SwarmTask)).all()
+            }
+        assert (repo, suffix) in expected, f"unexpected GitHub read {repo}/{suffix}"
+        return {"object": {"sha": HEAD}}
+
+    monkeypatch.setattr(conductor, "github_get", github_branch)
     yield engine
     engine.dispose()
 
