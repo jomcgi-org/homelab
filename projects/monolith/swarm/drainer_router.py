@@ -151,14 +151,14 @@ def _quarantine_unknown_outcome_jobs(dbos, workflow_id: str) -> bool:
         return False
 
 
-def _reap_stale_drain_cycles(dbos) -> int:
+def _reap_stale_drain_cycles(dbos) -> tuple[int, bool]:
     """Cancel stale PENDING drain cycles that no executor will advance.
 
     Uses the last recorded step activity as the staleness signal, not updated_at.
     updated_at only advances on status transitions (enqueue, dequeue, completion, cancel),
     not on step checkpoints. Step activity is read from DBOS.list_workflow_steps().
 
-    Returns the count of workflows reaped.
+    Returns the count of workflows reaped and whether quarantine blocked one.
     """
     staleness_threshold_seconds = _REAPER_STALENESS_SECONDS
     # updated_at in dbos.workflow_status is bigint epoch milliseconds.
@@ -166,6 +166,7 @@ def _reap_stale_drain_cycles(dbos) -> int:
     now_ms = int(time.time() * 1000)
 
     reaped = 0
+    quarantine_blocked = False
     try:
         # Query DBOS workflow_status for PENDING drain cycles.
         workflows = dbos.list_workflows(
@@ -216,6 +217,7 @@ def _reap_stale_drain_cycles(dbos) -> int:
 
                 try:
                     if not _quarantine_unknown_outcome_jobs(dbos, workflow_uuid):
+                        quarantine_blocked = True
                         continue
                     # Sync cancel_workflow is correct here: trigger_drain is a plain def,
                     # not an async handler, so no event loop is running. The async version
@@ -247,7 +249,7 @@ def _reap_stale_drain_cycles(dbos) -> int:
             exc_info=True,
         )
 
-    return reaped + _reap_version_stranded_cycles(dbos)
+    return reaped + _reap_version_stranded_cycles(dbos), quarantine_blocked
 
 
 def _current_app_version() -> str:
@@ -414,7 +416,10 @@ def trigger_drain(response: Response) -> dict:
     # handle, preserving one reap attempt per tick. The version-stranded reaper
     # remains leader-only because _current_app_version() returns "" on a
     # follower, and its cannot-tell rule declines to cancel anything.
-    _reap_stale_drain_cycles(submitter)
+    _, quarantine_blocked = _reap_stale_drain_cycles(submitter)
+    if quarantine_blocked:
+        response.status_code = 200
+        return {"status": "quarantine_blocked"}
 
     # Make enqueue idempotent: do not stack another cycle if one is already live.
     # The CronWorkflow fires every 15 minutes regardless of whether the previous
