@@ -8,7 +8,7 @@ spec:
   sources:
     - repoURL: ghcr.io/jomcgi/homelab/charts
       chart: monolith-agents
-      targetRevision: 0.26.5
+      targetRevision: 0.27.13
       helm:
         releaseName: monolith-agents
         valueFiles:
