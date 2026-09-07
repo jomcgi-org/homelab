@@ -279,6 +279,9 @@ def test_follower_reaps_stale_pending_cycle(monkeypatch):
     )
     monkeypatch.setattr(drainer_router.runtime, "read_client", lambda: FakeDBOSClient())
     monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "")
+    monkeypatch.setattr(
+        drainer_router, "_quarantine_unknown_outcome_jobs", lambda *_args: True
+    )
     monkeypatch.setattr(drainer_router.asyncio, "run", close_coro)
 
     response = _client().post("/internal/agent/drain")
@@ -338,6 +341,9 @@ def test_stale_pending_reaper_then_enqueue(monkeypatch):
     monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
     monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
     monkeypatch.setattr(drainer_router, "drainer_queue", lambda: FakeQueue())
+    monkeypatch.setattr(
+        drainer_router, "_quarantine_unknown_outcome_jobs", lambda *_args: True
+    )
     monkeypatch.setattr(drainer_router.asyncio, "run", lambda coro: None)
 
     response = _client().post("/internal/agent/drain")
