@@ -4512,8 +4512,8 @@ py_test(
     srcs = ["swarm/factory_conductor_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_swarm",
         ":pkg_auth",
+        ":pkg_swarm",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -4527,8 +4527,8 @@ py_test(
     srcs = ["swarm/factory_controls_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_swarm",
         ":pkg_auth",
+        ":pkg_swarm",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -4542,8 +4542,8 @@ py_test(
     srcs = ["swarm/factory_intake_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_swarm",
         ":pkg_auth",
+        ":pkg_swarm",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -4557,8 +4557,8 @@ py_test(
     srcs = ["swarm/factory_fence_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_swarm",
         ":pkg_auth",
+        ":pkg_swarm",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -4572,8 +4572,8 @@ py_test(
     srcs = ["swarm/factory_router_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_swarm",
         ":pkg_auth",
+        ":pkg_swarm",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -4587,8 +4587,8 @@ py_test(
     srcs = ["swarm/factory_integration_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_swarm",
         ":pkg_auth",
+        ":pkg_swarm",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -4602,8 +4602,8 @@ py_test(
     srcs = ["swarm/node_workflows_test.py"],
     imports = ["."],
     deps = [
-        ":pkg_swarm",
         ":pkg_auth",
+        ":pkg_swarm",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
