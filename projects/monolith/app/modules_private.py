@@ -28,6 +28,7 @@ import hikes.module
 import home.module
 import knowledge.module
 import moving.module
+import observability.module
 import sandbox.module
 import scheduler.module
 import semgrep_scan.module
@@ -53,6 +54,7 @@ ALL_MODULES: tuple[Module, ...] = (
     dr_jobs.module.MODULE,
     campsites.module.MODULE,
     agent_sessions.module.MODULE,
+    observability.module.MODULE,
     worldcup.module.MODULE,
     artifact.module.MODULE,
     faas.module.MODULE,

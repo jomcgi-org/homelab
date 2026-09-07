@@ -6,9 +6,20 @@ SELECT
   COALESCE(s.model, 'unknown') AS model,
   COUNT(DISTINCT s.id) AS sessions,
   COUNT(t.id) AS turns,
-  SUM((t.usage_json::jsonb->>'input_tokens')::bigint) AS input_tokens,
-  SUM((t.usage_json::jsonb->>'output_tokens')::bigint) AS output_tokens,
-  SUM((t.usage_json::jsonb->>'cache_read_tokens')::bigint) AS cache_read_tokens,
+  SUM(NULLIF(t.usage_json::jsonb->>'input_tokens', '')::numeric::bigint) AS input_tokens,
+  SUM(NULLIF(t.usage_json::jsonb->>'output_tokens', '')::numeric::bigint) AS output_tokens,
+  SUM(COALESCE(
+    NULLIF(t.usage_json::jsonb->>'cache_read_tokens', '')::numeric::bigint,
+    NULLIF(t.usage_json::jsonb->>'cache_read_input_tokens', '')::numeric::bigint,
+    NULLIF(t.usage_json::jsonb->>'cached_input_tokens', '')::numeric::bigint,
+    0
+  )) AS cache_read_tokens,
+  SUM(COALESCE(
+    NULLIF(t.usage_json::jsonb->>'cache_write_tokens', '')::numeric::bigint,
+    NULLIF(t.usage_json::jsonb->>'cache_creation_input_tokens', '')::numeric::bigint,
+    NULLIF(t.usage_json::jsonb->>'cache_write_input_tokens', '')::numeric::bigint,
+    0
+  )) AS cache_write_tokens,
   SUM(t.cost_usd) AS cost_usd,
   SUM(t.list_cost_usd) AS list_cost_usd
 FROM agent_sessions.agent_turns t

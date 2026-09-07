@@ -26,6 +26,7 @@ def test_agent_activity_view_columns_and_types(session):
         ("input_tokens", "numeric"),
         ("output_tokens", "numeric"),
         ("cache_read_tokens", "numeric"),
+        ("cache_write_tokens", "numeric"),
         ("cost_usd", "numeric"),
         ("list_cost_usd", "double precision"),
     ]
@@ -110,7 +111,7 @@ def test_daily_view_aggregates_json_and_guards_empty_values(session):
         session,
         first,
         1,
-        '{"input_tokens":10,"output_tokens":5,"cache_read_tokens":3}',
+        '{"input_tokens":10.0,"output_tokens":5.0,"cache_read_tokens":3.0,"cache_write_tokens":4.0}',
         cost_usd=0.1,
         list_cost_usd=0.2,
     )
@@ -118,21 +119,21 @@ def test_daily_view_aggregates_json_and_guards_empty_values(session):
         session,
         first,
         2,
-        '{"input_tokens":2,"output_tokens":4,"cache_read_tokens":8}',
+        '{"input_tokens":2.0,"output_tokens":4.0,"cache_read_input_tokens":8.0,"cache_creation_input_tokens":7.0}',
         list_cost_usd=0.05,
     )
     _insert_turn(
         session,
         second,
         1,
-        '{"input_tokens":5,"output_tokens":6,"cache_read_tokens":9}',
+        '{"input_tokens":5.0,"output_tokens":6.0,"cached_input_tokens":9.0,"cache_write_input_tokens":11.0}',
         cost_usd=0.3,
     )
     _insert_turn(
         session,
         unknown,
         1,
-        '{"input_tokens":1,"output_tokens":2,"cache_read_tokens":3}',
+        '{"input_tokens":1.0,"output_tokens":2.0}',
     )
     _insert_turn(session, invalid, 1, None)
     _insert_turn(session, invalid, 2, "")
@@ -148,7 +149,7 @@ def test_daily_view_aggregates_json_and_guards_empty_values(session):
         text(
             """
             SELECT model, sessions, turns, input_tokens, output_tokens,
-                   cache_read_tokens, cost_usd, list_cost_usd
+                   cache_read_tokens, cache_write_tokens, cost_usd, list_cost_usd
             FROM public_api.agent_activity_daily
             ORDER BY model
             """
@@ -156,10 +157,10 @@ def test_daily_view_aggregates_json_and_guards_empty_values(session):
     ).all()
     assert len(rows) == 2
     luna, unknown_row = rows
-    assert tuple(luna[:6]) == ("luna", 2, 3, 17, 15, 20)
+    assert tuple(luna[:7]) == ("luna", 2, 3, 17, 15, 20, 22)
     assert float(luna.cost_usd) == pytest.approx(0.4)
     assert float(luna.list_cost_usd) == pytest.approx(0.25)
-    assert tuple(unknown_row) == ("unknown", 1, 1, 1, 2, 3, None, None)
+    assert tuple(unknown_row) == ("unknown", 1, 1, 1, 2, 0, 0, None, None)
 
 
 def test_public_reader_can_select_views_but_not_agent_tables(pg):

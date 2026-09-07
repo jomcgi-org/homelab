@@ -132,7 +132,6 @@ ALLOWED_PREFIXES = (
     "/api/agents/public",
     "/api/knowledge/public",
     "/api/home/observability",
-    "/api/agents/public",
     # Grimoire public tier (public-readonly design):
     # no campaign/grant params, whole corpus is a single global read view.
     "/api/grimoire",
@@ -225,7 +224,7 @@ def test_no_schedule_chat_scheduler_agent_paths():
     for prefix in forbidden_prefixes:
         for p in paths:
             if p.startswith(prefix):
-                assert p.startswith("/api/agents/public"), (
+                assert p.startswith("/api/agents/public/"), (
                     f"private path {p!r} under {prefix!r} leaked"
                 )
 

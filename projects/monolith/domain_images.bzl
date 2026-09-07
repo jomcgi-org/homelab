@@ -51,6 +51,7 @@ MONOLITH_DOMAINS = [
     "dr_jobs",
     "campsites",
     "agent_sessions",
+    "observability",
     "worldcup",
     "artifact",
     "faas",
