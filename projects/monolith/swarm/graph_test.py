@@ -225,6 +225,193 @@ def test_kind_and_budget_admission_rules(db):
     assert_recorded(db, fable, "add_node", "refused", "fable_requires_budget", 1, 1)
 
 
+def test_completed_nodes_release_only_unused_plan_budget(db):
+    task_id = make_task(db, budget=60.0)
+    # Six completed $10 nodes from the factory pause, including three whose
+    # unreported usage must still consume their entire immutable reservation.
+    costs = [0.853754, None, 1.748051, None, 1.636344, None]
+    for index, cost in enumerate(costs):
+        key = f"step-{index}"
+        assert add_work(task_id, key, index, max_cost_usd=10.0).ok
+        assert admit_dispatch(task_id, key, dispatch_key=key).ok
+        assert record_outcome(task_id, key, 1, "succeeded", cost, "head", "{}").ok
+
+    history = node_runs(task_id)
+    plan = load_graph(task_id)
+    assert sum(run["accounted_cost_usd"] for run in history) == pytest.approx(34.238149)
+    assert add_work(task_id, "next", 6, max_cost_usd=10.0).ok
+    assert load_graph(task_id)[:6] == plan
+    assert node_runs(task_id) == history
+    with Session(db) as session:
+        assert session.get(SwarmTask, task_id).budget_usd == 60.0
+    for run in history:
+        replay = admit_dispatch(
+            task_id, run["node_key"], dispatch_key=run["dispatch_key"]
+        )
+        assert replay.ok and replay.pin == run["pin"]
+        assert admit_dispatch(task_id, run["node_key"]).refusal_code == "node_succeeded"
+    assert node_runs(task_id) == history
+    assert admit_dispatch(task_id, "next").pin["max_cost_usd"] == 10.0
+
+
+@pytest.mark.parametrize(
+    "status",
+    [None, "admitted", "dispatched", "uncertain", "failed", "cancelled", "escalated"],
+)
+def test_unfinished_or_retryable_nodes_keep_remaining_plan_budget(db, status):
+    task_id = make_task(db, budget=5.0)
+    assert add_work(task_id, "one", 0, max_cost_usd=4.0).ok
+    if status is not None:
+        assert admit_dispatch(task_id, "one").ok
+        if status == "dispatched":
+            assert record_dispatch(task_id, "one", 1, 42, "base").ok
+        elif status != "admitted":
+            assert record_outcome(task_id, "one", 1, status, 1.0, None, "{}").ok
+    history = node_runs(task_id)
+    assert (
+        add_work(task_id, "too-large", 1, max_cost_usd=1.01).refusal_code
+        == "budget_exceeded"
+    )
+    assert add_work(task_id, "fits", 1).ok
+    assert node_runs(task_id) == history
+    if status in ("failed", "cancelled", "escalated"):
+        assert admit_dispatch(task_id, "one").pin["max_cost_usd"] == 3.0
+
+
+@pytest.mark.parametrize("final_cost,remaining", [(0.25, 0.25), (None, 0.0)])
+def test_successful_retry_keeps_spend_from_every_attempt(db, final_cost, remaining):
+    task_id = make_task(db, budget=1.0)
+    assert add_work(task_id, "one", 0).ok
+    assert admit_dispatch(task_id, "one").ok
+    assert record_outcome(task_id, "one", 1, "failed", 0.5, None, "{}").ok
+    assert admit_dispatch(task_id, "one").pin["max_cost_usd"] == 0.5
+    assert record_outcome(task_id, "one", 2, "succeeded", final_cost, "head", "{}").ok
+    history = node_runs(task_id)
+    assert (
+        add_work(task_id, "too-large", 1, max_cost_usd=remaining + 0.01).refusal_code
+        == "budget_exceeded"
+    )
+    if remaining:
+        assert add_work(task_id, "fits", 1, max_cost_usd=remaining).ok
+    assert node_runs(task_id) == history
+
+
+@pytest.mark.parametrize("tombstone", ["discarded_in_version", "cancelled_in_version"])
+@pytest.mark.parametrize(
+    "status,cost,accounted",
+    [("failed", 0.75, 0.75), ("succeeded", None, 1.0), ("uncertain", 0.25, 1.0)],
+)
+def test_hidden_node_history_remains_in_plan_budget(
+    db, tombstone, status, cost, accounted
+):
+    task_id = make_task(db, budget=2.0)
+    assert add_work(task_id, "old", 0).ok
+    assert admit_dispatch(task_id, "old").ok
+    assert record_outcome(task_id, "old", 1, status, cost, "head", "{}").ok
+    # Ordinary discard refuses acted nodes. Model a retained historical row
+    # hidden by cancellation or an earlier writer without erasing its ledger.
+    with Session(db) as session:
+        node = session.exec(select(SwarmPlanNode)).one()
+        setattr(node, tombstone, 1)
+        session.add(node)
+        session.commit()
+    assert load_graph(task_id) == []
+    history = node_runs(task_id)
+    assert (
+        add_work(task_id, "too-large", 1, max_cost_usd=2.01 - accounted).refusal_code
+        == "budget_exceeded"
+    )
+    assert add_work(task_id, "fits", 1, max_cost_usd=2.0 - accounted).ok
+    assert node_runs(task_id) == history
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed", "uncertain"])
+def test_plan_budget_retains_observed_overrun(db, status):
+    task_id = make_task(db, budget=2.0)
+    assert add_work(task_id, "one", 0).ok
+    assert admit_dispatch(task_id, "one").ok
+    assert record_outcome(task_id, "one", 1, status, 1.5, "head", "{}").ok
+    assert (
+        add_work(task_id, "too-large", 1, max_cost_usd=0.51).refusal_code
+        == "budget_exceeded"
+    )
+    assert add_work(task_id, "fits", 1, max_cost_usd=0.5).ok
+    assert node_runs(task_id)[0]["accounted_cost_usd"] == 1.5
+
+
+@pytest.mark.parametrize("status", ["admitted", "uncertain", "succeeded", "failed"])
+def test_hidden_legacy_unknown_reservation_cannot_change_on_readd(db, status):
+    task_id = make_task(db, budget=2.0)
+    assert add_work(task_id, "old", 0).ok
+    assert admit_dispatch(task_id, "old").ok
+    if status != "admitted":
+        assert record_outcome(task_id, "old", 1, status, None, None, "{}").ok
+    with Session(db) as session:
+        node = session.exec(select(SwarmPlanNode)).one()
+        node.cancelled_in_version = 1
+        run = session.exec(select(SwarmNodeRun)).one()
+        run.reserved_cost_usd = None
+        run.pin_json = None
+        session.add(node)
+        session.add(run)
+        session.commit()
+    history = node_runs(task_id)
+    assert history[0]["accounted_cost_usd"] == 1.0
+    for cap in (0.5, 1.5):
+        refused = add_work(task_id, "old", 1, max_cost_usd=cap)
+        assert refused.refusal_code == "legacy_reservation_conflict"
+        assert_recorded(
+            db, refused, "add_node", "refused", "legacy_reservation_conflict", 1, 1
+        )
+        assert load_graph(task_id) == []
+        assert node_runs(task_id) == history
+    assert add_work(task_id, "old", 1).ok
+    assert node_runs(task_id) == history
+
+
+@pytest.mark.parametrize("legacy", [True, False])
+def test_hidden_known_cost_can_readd_without_changing_history(db, legacy):
+    task_id = make_task(db, budget=2.0)
+    assert add_work(task_id, "old", 0).ok
+    assert admit_dispatch(task_id, "old").ok
+    assert record_outcome(task_id, "old", 1, "failed", 0.5, None, "{}").ok
+    with Session(db) as session:
+        node = session.exec(select(SwarmPlanNode)).one()
+        node.cancelled_in_version = 1
+        session.add(node)
+        if legacy:
+            run = session.exec(select(SwarmNodeRun)).one()
+            run.reserved_cost_usd = None
+            run.pin_json = None
+            session.add(run)
+        session.commit()
+    history = node_runs(task_id)
+    assert add_work(task_id, "old", 1, max_cost_usd=0.25).ok
+    assert node_runs(task_id) == history
+    assert add_work(task_id, "fits", 2, max_cost_usd=1.5).ok
+    assert admit_dispatch(task_id, "old").refusal_code == "node_budget_exhausted"
+
+
+def test_hidden_pinned_unknown_cost_survives_readd_with_lower_ceiling(db):
+    task_id = make_task(db, budget=2.0)
+    assert add_work(task_id, "old", 0).ok
+    assert admit_dispatch(task_id, "old").ok
+    assert record_outcome(task_id, "old", 1, "failed", None, None, "{}").ok
+    with Session(db) as session:
+        node = session.exec(select(SwarmPlanNode)).one()
+        node.cancelled_in_version = 1
+        session.add(node)
+        session.commit()
+    history = node_runs(task_id)
+    assert add_work(task_id, "old", 1, max_cost_usd=0.25).ok
+    assert node_runs(task_id) == history
+    assert add_work(task_id, "fits", 2).ok
+    assert (
+        add_work(task_id, "too-large", 3, max_cost_usd=0.01).refusal_code
+        == "budget_exceeded"
+    )
+
+
 def test_fable_cap_counts_discarded_escalation(db):
     task_id = make_task(db)
     first = add_work(task_id, "fable-one", 0, kind="fable_escalation")

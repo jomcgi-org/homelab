@@ -440,8 +440,31 @@ def add_node(
         if kind == "fable_escalation" and _fable_ever_created(db, task_id):
             return _refuse(db, task, "add_node", args, version, "fable_cap")
 
-        live_cost = sum(node.max_cost_usd for node in live.values())
-        if task.budget_usd is not None and live_cost + max_cost_usd > task.budget_usd:
+        existing = db.exec(
+            select(SwarmPlanNode).where(
+                SwarmPlanNode.task_id == task_id,
+                SwarmPlanNode.node_key == node_key,
+            )
+        ).first()
+        # Legacy runs without pinned reservations may still charge this row's
+        # ceiling. Reusing a hidden key must not rewrite their unknown cost.
+        if (
+            existing is not None
+            and existing.max_cost_usd != max_cost_usd
+            and any(
+                run.node_key == node_key
+                and run.reserved_cost_usd is None
+                and _accounting_basis(run) != "reported"
+                for run in _runs(db, task_id)
+            )
+        ):
+            return _refuse(
+                db, task, "add_node", args, version, "legacy_reservation_conflict"
+            )
+        if task.budget_usd is not None and (
+            _planned_cost(db, task_id, list(live.values())) + max_cost_usd
+            > task.budget_usd
+        ):
             return _refuse(db, task, "add_node", args, version, "budget_exceeded")
 
         new_version = version + 1
@@ -458,12 +481,6 @@ def add_node(
                 stated_reason=stated_reason,
             )
         )
-        existing = db.exec(
-            select(SwarmPlanNode).where(
-                SwarmPlanNode.task_id == task_id,
-                SwarmPlanNode.node_key == node_key,
-            )
-        ).first()
         if existing is None:
             existing = SwarmPlanNode(
                 task_id=task_id,
@@ -635,6 +652,27 @@ def _accounted_cost(run: SwarmNodeRun, budgets: dict[str, float]) -> float:
     if run.status in _TERMINAL_RUN_STATUSES and measured is not None:
         return float(measured)
     return max(_reservation(run, budgets), float(measured or 0.0))
+
+
+def _planned_cost(db: Session, task_id: str, live: list[SwarmPlanNode]) -> float:
+    budgets = _node_budgets(db, task_id)
+    accounted: dict[str, float] = {}
+    succeeded: set[str] = set()
+    # History remains charged even when its node is no longer visible.
+    for run in _runs(db, task_id):
+        accounted[run.node_key] = accounted.get(run.node_key, 0.0) + _accounted_cost(
+            run, budgets
+        )
+        if run.status == "succeeded":
+            succeeded.add(run.node_key)
+    # Successful nodes cannot dispatch again. Other visible nodes retain their
+    # unused ceiling, including failed nodes whose retry may become runnable.
+    remaining = sum(
+        max(0.0, node.max_cost_usd - accounted.get(node.node_key, 0.0))
+        for node in live
+        if node.node_key not in succeeded
+    )
+    return sum(accounted.values()) + remaining
 
 
 def _accounting_basis(run: SwarmNodeRun) -> str:
