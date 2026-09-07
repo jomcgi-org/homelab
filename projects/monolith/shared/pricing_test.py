@@ -1,4 +1,5 @@
 import pytest
+from genai_prices import Usage, calc_price
 
 from shared.pricing import price_usage
 
@@ -50,12 +51,26 @@ def test_opus_adds_exclusive_claude_cache_tokens_to_input():
         "opus",
         {"input_tokens": 1_000, "cache_read_tokens": 9_000, "output_tokens": 100},
     )
-    uncached = price_usage("opus", {"input_tokens": 1_000, "output_tokens": 100})
-
     assert blended is not None
-    assert uncached is not None
     assert blended.model_ref == "claude-opus-5"
-    assert blended.cost_usd > uncached.cost_usd
+    model_price = calc_price(
+        Usage(
+            input_tokens=10_000,
+            cache_read_tokens=9_000,
+            output_tokens=100,
+        ),
+        "claude-opus-5",
+        provider_id="anthropic",
+    ).model_price
+    expected = float(
+        (
+            1_000 * model_price.input_mtok
+            + 9_000 * model_price.cache_read_mtok
+            + 100 * model_price.output_mtok
+        )
+        / 1_000_000
+    )
+    assert blended.cost_usd == pytest.approx(expected)
 
 
 @pytest.mark.parametrize("model", ["spark", "qwen", "pi-spark"])
@@ -65,6 +80,23 @@ def test_muse_contributor_price(model):
     assert priced is not None
     assert priced.cost_usd == pytest.approx(0.30)
     assert priced.model_ref == "muse-spark-1.3-contributor"
+
+
+def test_muse_cache_reads_add_no_separate_cost():
+    with_cache = price_usage(
+        "pi-spark",
+        {
+            "input_tokens": 1_000_000,
+            "output_tokens": 100_000,
+            "cache_read_tokens": 500_000,
+        },
+    )
+    without_cache = price_usage(
+        "pi-spark", {"input_tokens": 1_000_000, "output_tokens": 100_000}
+    )
+
+    assert with_cache is not None
+    assert with_cache == without_cache
 
 
 def test_unknown_model_returns_none():

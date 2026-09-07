@@ -33,12 +33,13 @@ _MODEL_ALIASES = {
 }
 
 # Contributor-tier figures documented beside the guest model table in
-# projects/embervm/runtimes/claude/shim.py:527-529.
+# projects/embervm/runtimes/claude/shim.py:526-528. spark and qwen route to the
+# Muse adapter whose turn returns usage={} (shim.py:3424), so only pi-spark
+# reaches the table today.
 MUSE_PRICES = {
     "muse-spark-1.3-contributor": {
         "input_per_million": 0.10,
         "output_per_million": 0.20,
-        "cache_read_per_million": 0.10,
     }
 }
 
@@ -129,9 +130,10 @@ def price_usage(
 
         if provider_id == "muse":
             prices = MUSE_PRICES[model_ref]
+            # Muse prices input inclusively like OpenAI (cache_read_tokens are
+            # counted in input_tokens); do not charge separately for cache.
             cost = (
                 counts[0] * prices["input_per_million"]
-                + counts[2] * prices["cache_read_per_million"]
                 + counts[1] * prices["output_per_million"]
             ) / 1_000_000
             return PricedUsage(float(cost), "list", model_ref)

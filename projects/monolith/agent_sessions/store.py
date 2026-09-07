@@ -586,13 +586,13 @@ def create_turn(
         usage_json=json.dumps(usage or {}),
         cost_usd=cost_usd,
     )
-    if row.cost_usd is not None:
-        row.cost_source = "reported"
-    else:
-        priced = price_usage(row.model, usage)
-        if priced is not None:
-            row.cost_usd = priced.cost_usd
-            row.cost_source = priced.source
+    if cost_usd is None:
+        try:
+            priced = price_usage(model, usage)
+            if priced is not None:
+                row.list_cost_usd = priced.cost_usd
+        except Exception as exc:
+            logger.warning("Failed to price turn: %s", exc, exc_info=True)
     session.add(row)
     if commit:
         session.commit()

@@ -1592,6 +1592,7 @@ py_library(
         "@pip//discord_py",
         "@pip//fastapi",
         "@pip//fastmcp",
+        "@pip//genai_prices",
         "@pip//httpx",
         "@pip//icalendar",
         "@pip//kubernetes_asyncio",

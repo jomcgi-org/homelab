@@ -181,29 +181,28 @@ def test_price_turns_backfill_prices_only_eligible_rows(tmp_path):
                     AgentTurn(
                         session_id=agent.id,
                         seq=3,
-                        prompt="already priced",
+                        prompt="already list priced",
                         result_text="done",
                         model="luna",
                         usage_json=json.dumps({"input_tokens": 1_000}),
-                        cost_usd=0.123,
-                        cost_source="reported",
+                        list_cost_usd=0.123,
                     ),
                 ]
             )
             session.commit()
 
-            report = jobs_main._price_turns_backfill_core(session, chunk_size=1)
+            report = jobs_main._price_turns_backfill_core(engine, chunk_size=1)
 
             assert report == jobs_main.TurnPricingBackfillReport(1, 1, 0)
             rows = session.exec(select(AgentTurn).order_by(AgentTurn.seq)).all()
-            assert rows[0].cost_usd == pytest.approx(0.40)
-            assert rows[0].cost_source == "list"
+            assert rows[0].cost_usd is None
+            assert rows[0].list_cost_usd == pytest.approx(0.40)
             assert rows[1].cost_usd is None
-            assert rows[1].cost_source is None
-            assert rows[2].cost_usd == pytest.approx(0.123)
-            assert rows[2].cost_source == "reported"
+            assert rows[1].list_cost_usd is None
+            assert rows[2].cost_usd is None
+            assert rows[2].list_cost_usd == pytest.approx(0.123)
 
-            rerun = jobs_main._price_turns_backfill_core(session, chunk_size=1)
+            rerun = jobs_main._price_turns_backfill_core(engine, chunk_size=1)
             assert rerun.priced == 0
     finally:
         for table in SQLModel.metadata.tables.values():

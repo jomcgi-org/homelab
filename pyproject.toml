@@ -97,6 +97,7 @@ dependencies = [
     # (v2.0 removes the deprecated prepare_tools= callable and result accessors
     # this repo still uses). Revisit the v2 migration separately.
     "pydantic-ai-slim[openai]>=1.102.0,<2",
+    # Direct dependency of shared/pricing.py for model list prices.
     "genai-prices>=0.1.6,<0.2",
     "pgvector>=0.3",
     "psycopg[binary]>=3.1",

@@ -578,6 +578,14 @@ def create_raw(
                 extra["usage_cost_source"] = priced.source
         except Exception:
             logger.warning("Failed to price raw usage", exc_info=True)
+    encoded_extra = json.dumps(extra, ensure_ascii=False, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    if len(encoded_extra) > _MAX_RAW_EXTRA_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="extra exceeds the 64 KiB limit",
+        )
     raw, created = ingest_raw_with_status(
         session,
         content=data.content,

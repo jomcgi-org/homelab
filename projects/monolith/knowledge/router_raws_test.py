@@ -1,6 +1,7 @@
 """Tests for POST /api/knowledge/raws."""
 
 import dataclasses
+import json
 from unittest.mock import patch
 
 import pytest
@@ -128,6 +129,30 @@ def test_create_raw_prices_local_session_usage(client, session):
     ).one()
     assert raw.extra["usage_cost_usd"] == pytest.approx(0.40)
     assert raw.extra["usage_cost_source"] == "list"
+
+
+def test_create_raw_rechecks_extra_limit_after_pricing(client, session):
+    extra = {
+        "model": "luna",
+        "usage": {"input_tokens": 1},
+        "padding": "",
+    }
+    encoded = json.dumps(extra, ensure_ascii=False, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    extra["padding"] = "x" * (64 * 1024 - len(encoded))
+
+    response = client.post(
+        "/api/knowledge/raws",
+        json={
+            "content": "local session transcript",
+            "source": "local-session",
+            "extra": extra,
+        },
+    )
+
+    assert response.status_code == 413
+    assert session.exec(select(RawInput)).all() == []
 
 
 def test_create_extractable_raw_redacts_before_storage(client, session):

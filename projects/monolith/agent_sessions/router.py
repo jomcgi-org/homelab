@@ -88,6 +88,9 @@ def _aggregate_statement(status: str | None = None, session_id: int | None = Non
         AgentTurn.session_id,
         func.count(AgentTurn.id).label("turn_count"),
         func.coalesce(func.sum(AgentTurn.cost_usd), 0).label("total_cost_usd"),
+        func.coalesce(func.sum(AgentTurn.list_cost_usd), 0).label(
+            "total_list_cost_usd"
+        ),
     )
     if session_id is not None:
         turns_statement = turns_statement.where(AgentTurn.session_id == session_id)
@@ -126,6 +129,7 @@ def _aggregate_statement(status: str | None = None, session_id: int | None = Non
             AgentSession,
             func.coalesce(turns.c.turn_count, 0),
             func.coalesce(turns.c.total_cost_usd, 0),
+            func.coalesce(turns.c.total_list_cost_usd, 0),
             func.coalesce(pending.c.pending_count, 0),
             first_turn_prompt,
             first_pending_prompt,
@@ -163,6 +167,7 @@ def _session_payload(
     row: AgentSession,
     turn_count: int,
     total_cost_usd: float,
+    total_list_cost_usd: float,
     pending_count: int,
     first_turn_prompt: str | None = None,
     first_pending_prompt: str | None = None,
@@ -189,6 +194,7 @@ def _session_payload(
         "voice_summary": row.voice_summary,
         "turn_count": int(turn_count),
         "total_cost_usd": float(total_cost_usd or 0),
+        "total_list_cost_usd": float(total_list_cost_usd or 0),
         "pending_count": int(pending_count),
     }
 
@@ -722,7 +728,15 @@ def get_session_detail(
     ).first()
     if result is None:
         raise HTTPException(status_code=404, detail="Agent session not found")
-    row, turn_count, total_cost_usd, pending_count, first_turn, first_pending = result
+    (
+        row,
+        turn_count,
+        total_cost_usd,
+        total_list_cost_usd,
+        pending_count,
+        first_turn,
+        first_pending,
+    ) = result
     turns_statement = select(AgentTurn).where(AgentTurn.session_id == session_id)
     if after_seq is not None:
         turns_statement = turns_statement.where(AgentTurn.seq > after_seq)
@@ -737,6 +751,7 @@ def get_session_detail(
             row,
             turn_count,
             total_cost_usd,
+            total_list_cost_usd,
             pending_count,
             first_turn,
             first_pending,
@@ -757,7 +772,7 @@ def get_session_detail(
                 "base_sha": turn.base_sha,
                 "usage": _decode(turn.usage_json, {}),
                 "cost_usd": turn.cost_usd,
-                "cost_source": turn.cost_source,
+                "list_cost_usd": turn.list_cost_usd,
                 "created_at": _iso(turn.created_at),
             }
             for turn in turns

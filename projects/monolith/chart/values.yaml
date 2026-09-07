@@ -814,6 +814,22 @@ jobs:
         # with a 4Gi ceiling.
         limits:
           memory: 4Gi
+    # One-time list-price backfill for agent turns. DATABASE_URL is injected
+    # from jobs.dbSecretName by the shared CronWorkflow template. Ships
+    # SUSPENDED and is submitted manually with:
+    #   argo submit --from cronworkflow/price-turns-backfill -n monolith-workflows
+    - name: price-turns-backfill
+      args: ["price-turns-backfill"]
+      schedule: "0 0 1 1 *" # inert; suspended, manual-only
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 1800
+      suspend: true
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
     # whatsapp.morning_digest: render today's calendar + open reminders into one
     # whatsapp_outbox message per enabled household group (ADR 039 spec 5d). Runs
     # hourly so a group whose send time or quiet hours have just lifted still gets
