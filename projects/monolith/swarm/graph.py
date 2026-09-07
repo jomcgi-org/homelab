@@ -675,6 +675,36 @@ def _planned_cost(db: Session, task_id: str, live: list[SwarmPlanNode]) -> float
     return sum(accounted.values()) + remaining
 
 
+def budget_snapshot(task_id: str, *, session: Session | None = None) -> dict:
+    """Read the same conservative accounting and planned allocation as admission."""
+    with _session(session) as db:
+        task = db.get(SwarmTask, task_id)
+        if task is None:
+            raise ValueError("task not found")
+        version = _current_version(db, task_id)
+        runs = _runs(db, task_id)
+        budgets = _node_budgets(db, task_id)
+        accounted = sum(_accounted_cost(run, budgets) for run in runs)
+        active = [run for run in runs if run.status not in _TERMINAL_RUN_STATUSES]
+        active_cost = sum(_accounted_cost(run, budgets) for run in active)
+        planned = _planned_cost(db, task_id, _visible_nodes(db, task_id, version))
+        return {
+            "graph_version": version,
+            "task_budget_usd": task.budget_usd,
+            "accounted_cost_usd": accounted,
+            "settled_accounted_cost_usd": accounted - active_cost,
+            "active_accounted_cost_usd": active_cost,
+            "planned_cost_usd": planned,
+            "unallocated_cost_usd": (
+                max(0.0, task.budget_usd - planned)
+                if task.budget_usd is not None
+                else None
+            ),
+            "active_attempts": len(active),
+            "uncertain_attempts": sum(run.status == "uncertain" for run in active),
+        }
+
+
 def _accounting_basis(run: SwarmNodeRun) -> str:
     if run.status not in _TERMINAL_RUN_STATUSES:
         return "active_reservation"

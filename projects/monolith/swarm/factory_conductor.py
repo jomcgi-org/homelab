@@ -222,7 +222,7 @@ def _reject_decision(
 
 
 def _decision_evidence(task_id: str) -> list[dict]:
-    """Project recent rejection reasons, including already committed graph refusals."""
+    """Keep refusals, with timestamps and proven later applications of that edit."""
     from swarm.factory_models import FactoryAudit
 
     with Session(get_engine()) as db:
@@ -235,12 +235,6 @@ def _decision_evidence(task_id: str) -> list[dict]:
             .order_by(FactoryAudit.id.desc())
             .limit(DECISION_EVIDENCE_LIMIT)
         ).all()
-        evidence = [
-            (row.created_at, row.id, json.loads(row.detail_json)) for row in audit_rows
-        ]
-        known_causes = {item[2]["cause"] for item in evidence}
-        # Graph refusals commit in their own transaction. If the process died
-        # before our audit write, their cause and refusal still reach the planner.
         calls = db.exec(
             select(SwarmConductorCall)
             .where(
@@ -251,25 +245,105 @@ def _decision_evidence(task_id: str) -> list[dict]:
             .order_by(SwarmConductorCall.id.desc())
             .limit(DECISION_EVIDENCE_LIMIT)
         ).all()
-        for call in calls:
-            args = json.loads(call.args_json)
-            cause = args.get("cause_ref")
-            if cause not in known_causes:
-                evidence.append(
-                    (
-                        call.created_at,
-                        call.id,
-                        {
-                            "cause": cause,
-                            "decision_action": call.tool,
-                            "refusal_code": call.refusal_code,
-                            "reason": f"graph operation refused: {call.refusal_code}",
-                        },
-                    )
+        applied = db.exec(
+            select(SwarmConductorCall)
+            .where(
+                SwarmConductorCall.task_id == task_id,
+                SwarmConductorCall.outcome == "applied",
+                SwarmConductorCall.tool.in_(["add_node", "discard_node"]),
+            )
+            .order_by(SwarmConductorCall.id.desc())
+            .limit(DECISION_EVIDENCE_LIMIT)
+        ).all()
+        args = {call.id: json.loads(call.args_json) for call in [*calls, *applied]}
+
+        def identity(call):
+            values = args[call.id]
+            return values.get("cause_ref"), call.tool, values.get("node_key")
+
+        def graph_evidence(call):
+            cause, action, node_key = identity(call)
+            item = {
+                "cause": cause,
+                "decision_action": action,
+                "node_key": node_key,
+                "graph_call_id": call.id,
+                "refusal_recorded_at": call.created_at.isoformat(),
+                "evidence_state": "refused",
+                "refusal_code": call.refusal_code,
+                "reason": f"graph operation refused: {call.refusal_code}",
+            }
+            # A matching cause alone cannot resolve a different operation/key.
+            # Unknown/missing identity or truncated success history stays refused.
+            matches = [
+                newer
+                for newer in applied
+                if cause
+                and node_key
+                and identity(newer) == identity(call)
+                and newer.id > call.id
+                and newer.created_at >= call.created_at
+                and newer.version_before is not None
+                and newer.version_after == newer.version_before + 1
+            ]
+            if matches:
+                newer = min(matches, key=lambda row: row.id)
+                item.update(
+                    evidence_state="superseded",
+                    superseded_by_call_id=newer.id,
+                    applied_at=newer.created_at.isoformat(),
+                    applied_version=newer.version_after,
                 )
-                known_causes.add(cause)
+            return item
+
+        evidence = []
+        represented = set()
+        for row in audit_rows:
+            item = json.loads(row.detail_json)
+            matches = [
+                call
+                for call in calls
+                if identity(call)[:2]
+                == (item.get("cause"), item.get("decision_action"))
+                and call.refusal_code == item.get("refusal_code")
+                and call.created_at <= row.created_at
+            ]
+            # Do not guess which graph operation an ambiguous audit describes.
+            if len(matches) == 1:
+                call = matches[0]
+                item = {**graph_evidence(call), **item}
+                represented.add(call.id)
+            else:
+                item["evidence_state"] = "refused"
+            item.update(audit_id=row.id, recorded_at=row.created_at.isoformat())
+            evidence.append((row.created_at, row.id, item))
+        for call in calls:
+            if call.id not in represented:
+                item = graph_evidence(call)
+                item["recorded_at"] = call.created_at.isoformat()
+                evidence.append((call.created_at, call.id, item))
         evidence.sort(key=lambda item: (item[0], item[1]), reverse=True)
         return [item[2] for item in evidence[:DECISION_EVIDENCE_LIMIT]]
+
+
+def _budget_evidence(task_id: str) -> dict:
+    """Read the graph accounting owner and immutable factory limits for context."""
+    from swarm.factory_controls import task_snapshot
+
+    with Session(get_engine()) as db:
+        budget = graph.budget_snapshot(task_id, session=db)
+        receipt = task_snapshot(task_id, session=db)
+        policy = receipt["policy"]
+        return {
+            **budget,
+            "turns_used": receipt["turns_used"],
+            "max_turns_per_task": policy["max_turns_per_task"],
+            "deadline_at": receipt["deadline_at"],
+            "new_node_max_cost_usd": policy["turn_budget_usd"],
+            "max_attempts": policy["max_attempts"],
+            "pending_planner_max_cost_usd": policy["turn_budget_usd"],
+            "snapshot_phase": "before_this_planner_node_is_added_or_admitted",
+        }
 
 
 def _schema(node_key: str) -> dict:
@@ -478,12 +552,30 @@ def _planner_context(task: dict, nodes: list[dict], runs: list[dict]) -> str:
         projected_nodes.append(item)
     task_text = _bounded_planner_text(task["task_text"], PLANNER_TASK_CHARS)
     feedback = [
-        _planner_fields(item, ("cause", "decision_action", "refusal_code", "reason"))
+        _planner_fields(
+            item,
+            (
+                "cause",
+                "decision_action",
+                "node_key",
+                "refusal_code",
+                "reason",
+                "recorded_at",
+                "refusal_recorded_at",
+                "audit_id",
+                "graph_call_id",
+                "evidence_state",
+                "superseded_by_call_id",
+                "applied_at",
+                "applied_version",
+            ),
+        )
         for item in _decision_evidence(task["id"])
     ]
     context = {
         "delivery_evidence": delivery,
         "decision_feedback": feedback,
+        "budget_evidence": _budget_evidence(task["id"]),
         "task": task_text,
         "task_identity": _planner_fields(
             task, ("id", "repo", "base_branch", "conductor_model", "budget_usd")
@@ -538,7 +630,21 @@ def planner_prompt(task: dict, nodes: list[dict], runs: list[dict]) -> str:
         "required checks and an independent approving review at the same head. "
         "A failed or uncertain attempt is evidence, never permission to retry "
         "uncertain external effects. Use decision_feedback to repair rejected "
-        "decisions within the existing task, turn, time and budget limits. "
+        "decisions within the existing task, turn, time and budget limits. A refusal "
+        "marked superseded was followed by the recorded successful application of "
+        "that exact cause, operation and node key; retain it as history, not a "
+        "current denial of a new edit. A conductor_ key names a planner node, not "
+        "the work node you are being asked to choose. Unmatched or newer refusals "
+        "remain evidence. "
+        "budget_evidence comes from server accounting before this planner node "
+        "was added: its pending planner ceiling is not yet included. Each node's "
+        "max_cost_usd is ONE aggregate ceiling shared across all max_attempts; "
+        "never multiply the ceiling by the attempt count. A retry receives only "
+        "the unused node ceiling. Unknown usage consumes the reservation; unknown "
+        "execution retains it and blocks retries. Planned cost includes charged "
+        "history and remaining unfinished-node ceilings, not unused successful "
+        "node ceilings. These values are a snapshot, not permission or a hard "
+        "in-flight provider spend cap; all actual admissions recheck current bounds. "
         "delivery_evidence retains the latest completed implementation and review; "
         "check recorded verdict, PR, heads, model and session before requesting "
         "another review. Evidence does not replace the server's delivery checks. "
