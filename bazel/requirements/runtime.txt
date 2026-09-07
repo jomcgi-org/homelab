@@ -1070,10 +1070,12 @@ fsspec==2026.3.0 \
     --hash=sha256:1ee6a0e28677557f8c2f994e3eea77db6392b4de9cd1f5d7a9e87a0ae9d01b41 \
     --hash=sha256:d2ceafaad1b3457968ed14efa28798162f1638dbb5d2a6868a2db002a5ee39a4
     # via huggingface-hub
-genai-prices==0.0.71 \
-    --hash=sha256:1d13111563af2b1ce43ccfacf77b7ac3216ad704c644408a56e11b181fe0d128 \
-    --hash=sha256:de4db34ec38404f9ef383cb1ab29e204d16ccf27071af0b16d5747ee7affe36b
-    # via pydantic-ai-slim
+genai-prices==0.1.6 \
+    --hash=sha256:35ac8043dbcf2958488129413bfecba7304fe12a68ad4a78c5b0d15281e82814 \
+    --hash=sha256:802c1e4cc3ed5e70a09083b83af441a58d91f62e12768f7f1b6b26c98a33fcac
+    # via
+    #   homelab (pyproject.toml)
+    #   pydantic-ai-slim
 geopandas==1.1.2 \
     --hash=sha256:2bb0b1052cb47378addb4ba54c47f8d4642dcbda9b61375638274f49d9f0bb0d \
     --hash=sha256:33f7b33565c46a45b8459a2ab699ec943fdbb5716e58e251b3c413cf7783106c

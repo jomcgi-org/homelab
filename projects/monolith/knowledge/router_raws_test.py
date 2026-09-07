@@ -109,6 +109,27 @@ def test_create_raw_persists_extra(client, session):
     assert raw.original_path == "https://example.com/evidence"
 
 
+def test_create_raw_prices_local_session_usage(client, session):
+    response = client.post(
+        "/api/knowledge/raws",
+        json={
+            "content": "local session transcript",
+            "source": "local-session",
+            "extra": {
+                "model": "luna",
+                "usage": {"input_tokens": 1_000_000, "output_tokens": 0},
+            },
+        },
+    )
+
+    assert response.status_code == 201
+    raw = session.exec(
+        select(RawInput).where(RawInput.raw_id == response.json()["raw_id"])
+    ).one()
+    assert raw.extra["usage_cost_usd"] == pytest.approx(0.40)
+    assert raw.extra["usage_cost_source"] == "list"
+
+
 def test_create_extractable_raw_redacts_before_storage(client, session):
     token = "ghp_abcdefghijklmnopqrstuvwxyz123456"
     with patch("knowledge.ingest_queue.upload_raw") as upload:

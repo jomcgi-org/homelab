@@ -25,7 +25,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 
 import typer
 
@@ -38,6 +38,87 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+
+@dataclass(frozen=True)
+class TurnPricingBackfillReport:
+    priced: int
+    skipped_unknown_model: int
+    skipped_zero: int
+
+
+def _usage_has_tokens(usage: object) -> bool:
+    if not isinstance(usage, dict):
+        return False
+    token_keys = {
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+        "cached_input_tokens",
+        "cache_write_input_tokens",
+    }
+    return any(
+        isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+        for key, value in usage.items()
+        if key in token_keys
+    )
+
+
+def _price_turns_backfill_core(
+    session, chunk_size: int = 500
+) -> TurnPricingBackfillReport:
+    """Price eligible tracked turns, committing each bounded result page."""
+    from sqlmodel import select
+
+    from agent_sessions.models import AgentTurn
+    from shared.pricing import price_usage
+
+    priced_count = 0
+    skipped_unknown_model = 0
+    skipped_zero = 0
+    last_id = 0
+    while True:
+        rows = session.exec(
+            select(AgentTurn)
+            .where(
+                AgentTurn.id > last_id,
+                AgentTurn.cost_usd.is_(None),
+                AgentTurn.usage_json.is_not(None),
+                AgentTurn.model.is_not(None),
+            )
+            .order_by(AgentTurn.id)
+            .limit(chunk_size)
+        ).all()
+        if not rows:
+            break
+
+        for row in rows:
+            try:
+                usage = json.loads(row.usage_json or "{}")
+            except (TypeError, json.JSONDecodeError):
+                usage = None
+            if not _usage_has_tokens(usage):
+                skipped_zero += 1
+                continue
+            calculated = price_usage(row.model, usage)
+            if calculated is None:
+                skipped_unknown_model += 1
+                continue
+            row.cost_usd = calculated.cost_usd
+            row.cost_source = "list"
+            priced_count += 1
+
+        last_id = rows[-1].id
+        session.commit()
+
+    return TurnPricingBackfillReport(
+        priced=priced_count,
+        skipped_unknown_model=skipped_unknown_model,
+        skipped_zero=skipped_zero,
+    )
 
 
 def _setup_otel():
@@ -122,6 +203,26 @@ def ember_spark_synthetic_trigger() -> None:
 def agent_drain_trigger() -> None:
     """Trigger one asynchronous Luna work-queue drain cycle."""
     _post_internal("/internal/agent/drain", "agent-drain-trigger", timeout=90)
+
+
+@app.command("price-turns-backfill")
+def price_turns_backfill() -> None:
+    """Fill list-price costs for previously unpriced agent turns."""
+    from sqlmodel import Session
+
+    from core.db import get_engine
+
+    configure_logging()
+    logger.info("price-turns-backfill: starting")
+    with Session(get_engine()) as session:
+        report = _price_turns_backfill_core(session)
+    logger.info(
+        "price-turns-backfill: priced=%d skipped-unknown-model=%d skipped-zero=%d",
+        report.priced,
+        report.skipped_unknown_model,
+        report.skipped_zero,
+    )
+    typer.echo(json.dumps(asdict(report), sort_keys=True))
 
 
 @app.command("faas-reconcile")

@@ -31,6 +31,7 @@ from agent_sessions.models import (
 )
 from agent_sessions.transport import Turn
 from core.db import get_engine
+from shared.pricing import price_usage
 
 logger = logging.getLogger(__name__)
 
@@ -585,6 +586,13 @@ def create_turn(
         usage_json=json.dumps(usage or {}),
         cost_usd=cost_usd,
     )
+    if row.cost_usd is not None:
+        row.cost_source = "reported"
+    else:
+        priced = price_usage(row.model, usage)
+        if priced is not None:
+            row.cost_usd = priced.cost_usd
+            row.cost_source = priced.source
     session.add(row)
     if commit:
         session.commit()
