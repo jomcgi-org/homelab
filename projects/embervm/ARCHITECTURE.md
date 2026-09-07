@@ -401,10 +401,11 @@ For serving, Envoy's default overprovisioning factor makes the priority shift
 fractional, so one unhealthy host out of two can still send some traffic to the
 activator. The node-local serving straggler lookup only splices to an endpoint
 whose probe is healthy and no older than its configured probe cadence plus the
-bounded probe timeout; otherwise, and only when no bank owns the entry, it
-withdraws and tears down that endpoint before following the ordinary bounded
-wake path (#5818). A bank-owned entry is left for its bank operation, and the
-witnessed-connect withdrawal above remains stateful-only.
+bounded probe timeout; otherwise, and only when no bank or active splice owns
+the entry, it withdraws and tears down that endpoint before following the
+ordinary bounded wake path (#5818). A bank-owned or actively spliced entry is
+left for its operation, and the witnessed-connect withdrawal above remains
+stateful-only.
 
 ### Sessions: the durability ladder
 
