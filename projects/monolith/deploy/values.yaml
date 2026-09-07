@@ -289,10 +289,9 @@ swarm:
 agents:
   drainer:
     enabled: true
-    # Raised from the chart default of 40 for the session backlog (about 430
-    # queued raws on 2026-09-04), now that the behavioural lens and the
-    # extraction gates are live (#5608). Re-grade the next batch before
-    # touching it again.
+    # Operator-set rolling 24-hour limit (2026-09-07): keep extraction moving
+    # so agent context stays current. Temporary catch-up grants remain bounded
+    # separately; the extraction quality gates and serial worker limit apply.
     kgMaxJobsPerDay: 400
     # Doc drift found by the repo-diff feed opens human-reviewed docs PRs on
     # the routine lane. docFixAutoMerge stays at the chart default (false)
