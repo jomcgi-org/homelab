@@ -44,6 +44,8 @@ class RetrievedNote:
     title: str
     chunk_text: str
     score: float
+    verification_state: str = "legacy"
+    disputed: bool = False
 
 
 async def retrieve(
@@ -80,6 +82,8 @@ async def retrieve(
             title=row["title"],
             chunk_text=row["chunk_text"],
             score=row["score"],
+            verification_state=row["verification_state"],
+            disputed=row["disputed"],
         )
         for row in rows
     ]

@@ -58,6 +58,7 @@ def get_public_graph(
             PublicNote.note_id,
             PublicNote.title,
             PublicNote.type,
+            PublicNote.verification_state,
             PublicNote.indexed_at,
             # The view already COALESCEs layout_x_public/layout_x (and y), so
             # these columns are the public-preferred positions. Keep both
@@ -109,6 +110,7 @@ def get_public_graph(
             "id": row.note_id,
             "title": row.title,
             "type": row.type,
+            "verification_state": row.verification_state,
             "degree": degree_by_note_id.get(row.note_id, 0),
             "x": row.x,
             "y": row.y,
@@ -191,5 +193,13 @@ def get_public_note(
         "tags": list(note.tags or []),
         "aliases": list(note.aliases or []),
         "indexed_at": indexed_at.isoformat() if indexed_at is not None else None,
+        "verification_state": note.verification_state,
+        "confidence": note.confidence,
+        "observed_at": note.observed_at,
+        "scope": note.scope,
+        "valid_from": note.valid_from,
+        "valid_until": note.valid_until,
+        "published_at": note.published_at,
+        "disputed": note.disputed,
         "body": sanitized,
     }

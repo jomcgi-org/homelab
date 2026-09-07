@@ -6786,6 +6786,18 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_publish_test",
+    srcs = ["knowledge/publish_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "knowledge_notes_crud_test",
     srcs = ["knowledge/notes_crud_test.py"],
     imports = ["."],

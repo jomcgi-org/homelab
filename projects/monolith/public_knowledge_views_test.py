@@ -171,6 +171,81 @@ def test_views_derive_public_only_and_endpoints_filter(session, client):
     assert res_d.json() == res_missing.json()
 
 
+def test_published_fact_columns_and_unpublished_legacy_filtering(session):
+    """The widened view carries publication metadata for public facts only."""
+    insert = text(
+        """
+        INSERT INTO knowledge.notes
+            (note_id, path, title, content_hash, content, visibility,
+             visibility_verified, type, verification_state, confidence,
+             observed_at, scope, valid_from, valid_until, published_at)
+        VALUES
+            (:note_id, :path, :title, :content_hash, :content, :visibility,
+             :visibility_verified, 'fact', :verification_state, :confidence,
+             :observed_at, :scope, :valid_from, :valid_until, :published_at)
+        """
+    )
+    common = {
+        "content": "Public fact body.",
+        "visibility_verified": True,
+        "confidence": 0.8,
+        "observed_at": "2026-09-07T10:00:00+00:00",
+        "scope": "environment:homelab",
+        "valid_from": "2026-09-01T00:00:00+00:00",
+        "valid_until": None,
+        "published_at": "2026-09-07T11:00:00+00:00",
+    }
+    for note_id, visibility, verification_state in (
+        ("published-fact", "public", "verified"),
+        ("unpublished-fact", "private", "unverified"),
+        ("legacy-fact", "private", "legacy"),
+    ):
+        session.execute(
+            insert,
+            common
+            | {
+                "note_id": note_id,
+                "path": f"{note_id}.md",
+                "title": note_id,
+                "content_hash": f"hash-{note_id}",
+                "visibility": visibility,
+                "verification_state": verification_state,
+            },
+        )
+    session.execute(
+        text(
+            """
+            INSERT INTO knowledge.disputes (note_id, reason, state)
+            VALUES ('published-fact', 'Needs review', 'open')
+            """
+        )
+    )
+    session.commit()
+
+    rows = session.execute(
+        text(
+            """
+            SELECT note_id, verification_state, confidence, observed_at, scope,
+                   valid_from, valid_until, published_at, disputed
+              FROM public_api.knowledge_notes
+             WHERE note_id IN ('published-fact', 'unpublished-fact', 'legacy-fact')
+             ORDER BY note_id
+            """
+        )
+    ).all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.note_id == "published-fact"
+    assert row.verification_state == "verified"
+    assert row.confidence == pytest.approx(0.8)
+    assert row.scope == "environment:homelab"
+    assert row.observed_at is not None
+    assert row.valid_from is not None
+    assert row.valid_until is None
+    assert row.published_at is not None
+    assert row.disputed is True
+
+
 def test_public_reader_denied_on_knowledge_note_links(pg):
     """public_reader has SELECT on the edges view but no access to the
     underlying knowledge schema. Mirrors public_reader_grants_test for the

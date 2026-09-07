@@ -4,8 +4,6 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Literal, NewType
 
-NoteId = NewType("NoteId", str)
-
 from pgvector.sqlalchemy import Vector
 from pydantic import field_validator
 from sqlalchemy import (
@@ -22,6 +20,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
+
+NoteId = NewType("NoteId", str)
 
 # Mirror of the CHECK constraint in
 # chart/migrations/20260408000000_knowledge_schema.sql - keep in sync.
@@ -122,6 +122,9 @@ class Note(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factor
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
     valid_until: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    published_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
     observed_at: datetime | None = Field(

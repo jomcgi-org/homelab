@@ -1125,6 +1125,14 @@ class TestPublicNoteEndpoint:
             "tags",
             "aliases",
             "indexed_at",
+            "verification_state",
+            "confidence",
+            "observed_at",
+            "scope",
+            "valid_from",
+            "valid_until",
+            "published_at",
+            "disputed",
             "body",
         }
         assert "extra" not in body

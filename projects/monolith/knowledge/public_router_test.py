@@ -89,6 +89,8 @@ def _make_note(
     indexed_at: datetime = _NOW,
     x: float | None = None,
     y: float | None = None,
+    verification_state: str = "verified",
+    disputed: bool = False,
 ) -> PublicNote:
     return PublicNote(
         note_id=note_id,
@@ -99,6 +101,8 @@ def _make_note(
         path=f"atoms/{note_id}.md",
         layout_x=x,
         layout_y=y,
+        verification_state=verification_state,
+        disputed=disputed,
     )
 
 
@@ -221,6 +225,13 @@ class TestPublicGraphWithData:
         assert node["x"] == pytest.approx(3.14)
         assert node["y"] == pytest.approx(2.71)
 
+    def test_verification_state_included_in_node(self, client, session):
+        session.add(_make_note("n1", "Unverified", verification_state="unverified"))
+        session.commit()
+
+        node = client.get("/api/knowledge/public/graph").json()["nodes"][0]
+        assert node["verification_state"] == "unverified"
+
 
 # ---------------------------------------------------------------------------
 # GET /api/knowledge/public/graph -- caching / ETag
@@ -271,7 +282,19 @@ class TestPublicNote_:
         assert resp.status_code == 200
 
     def test_returned_note_fields(self, client, session):
-        session.add(_make_note("n1", "My Note", content="Body here."))
+        note = _make_note(
+            "n1",
+            "My Note",
+            content="Body here.",
+            verification_state="unverified",
+            disputed=True,
+        )
+        note.confidence = 0.7
+        note.scope = "org:jomcgi-org"
+        note.observed_at = _NOW
+        note.valid_from = _NOW
+        note.published_at = _NOW
+        session.add(note)
         session.commit()
 
         body = client.get("/api/knowledge/public/notes/n1").json()
@@ -281,6 +304,14 @@ class TestPublicNote_:
         assert "tags" in body
         assert "aliases" in body
         assert "indexed_at" in body
+        assert body["verification_state"] == "unverified"
+        assert body["confidence"] == pytest.approx(0.7)
+        assert body["scope"] == "org:jomcgi-org"
+        assert body["observed_at"] is not None
+        assert body["valid_from"] is not None
+        assert body["valid_until"] is None
+        assert body["published_at"] is not None
+        assert body["disputed"] is True
 
     def test_404_for_missing_note(self, client):
         resp = client.get("/api/knowledge/public/notes/does-not-exist")

@@ -43,6 +43,14 @@ class PublicNote(SQLModel, table=True):
     tags: list[str] = Field(default_factory=list, sa_column=Column(_STRING_ARRAY))
     aliases: list[str] = Field(default_factory=list, sa_column=Column(_STRING_ARRAY))
     path: str
+    verification_state: str = "legacy"
+    confidence: float | None = None
+    observed_at: datetime | None = None
+    scope: str | None = None
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
+    published_at: datetime | None = None
+    disputed: bool = False
 
 
 class PublicNoteLink(SQLModel, table=True):
