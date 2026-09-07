@@ -4,31 +4,47 @@
 
 Cleared the easy+standard viability floor (at most one miss). Ranked by hard-task pass, then cost.
 
-| Model | hard | mean tokens | mean turns | wall-time (s) | cost ($) | $/solve | tool-use ok |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| qwen/qwen3.8-flash-next | 9/9 | 207542 | 12.5 | 2931.4 | 0.0000 | 0.0000 | 1.00 |
-| qwen/qwen3-coder-30b-a3b-instruct | 7/7 | 71151 | 9.1 | 103.2 | 0.0063 | 0.0069 | 0.73 |
-| qwen/qwen3-coder-next | 7/7 | 217279 | 17.3 | 44.9 | 0.0279 | 0.0279 | 1.00 |
-| deepseek/deepseek-v4-pro | 7/7 | 98685 | 9.7 | 146.4 | 0.0454 | 0.0454 | 1.00 |
-| qwen/qwen3.7-plus | 7/7 | 290054 | 13.5 | 331.8 | 0.0992 | 0.0992 | 1.00 |
-| qwen/qwen3.8-27b | 6/7 | 113975 | 10.2 | 228.8 | 0.0000 | 0.0000 | 1.00 |
-| google/gemma-4-31b-it | 5/7 | 33064 | 6.5 | 260.1 | 0.0050 | 0.0061 | 1.00 |
-| deepseek/deepseek-v4-flash | 5/7 | 141741 | 12.2 | 237.6 | 0.0134 | 0.0164 | 1.00 |
-| z-ai/glm-4.7 | 5/7 | 95439 | 11.5 | 168.7 | 0.0442 | 0.0540 | 0.91 |
-| qwen/qwen3.6-27b | 5/7 | 218089 | 20.5 | 159.2 | 0.0748 | 0.0914 | 1.00 |
-| z-ai/glm-5.2 | 5/7 | 103929 | 10.9 | 124.4 | 0.1039 | 0.1270 | 0.91 |
-| mistralai/devstral-2512 | 5/7 | 233241 | 17.9 | 94.0 | 0.1064 | 0.1300 | 0.82 |
-| tencent/hy3:free | 4/7 | 81872 | 8.7 | 76.6 | 0.0000 | 0.0000 | 0.91 |
-| qwen/qwen3.6-35b-a3b | 4/7 | 204711 | 20.9 | 43.4 | 0.0332 | 0.0456 | 1.00 |
-| google/gemma-4-26b-a4b-it | 3/7 | 71642 | 9.5 | 199.9 | 0.0055 | 0.0101 | 0.82 |
-| google/gemini-3.5-flash | 3/6 | 83563 | 11.9 | 55.9 | 0.2104 | 0.3788 | 1.00 |
-| cohere/north-mini-code:free | 1/7 | 80576 | 14.1 | 113.8 | 0.0000 | 0.0000 | 0.82 |
+| Model | hard | mean tokens | mean turns | wall-time (s) | cost ($) | $/solve | tool-use ok | errored |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| qwen/qwen3.8-flash-next | 9/9 | 168342 | 12.3 | 528.9 | 0.0000 | 0.0000 | 1.00 | 1 |
+| qwen/qwen3-coder-30b-a3b-instruct | 7/7 | 71151 | 9.1 | 103.2 | 0.0063 | 0.0069 | 0.73 | 0 |
+| qwen/qwen3-coder-next | 7/7 | 217279 | 17.3 | 44.9 | 0.0279 | 0.0279 | 1.00 | 0 |
+| deepseek/deepseek-v4-pro | 7/7 | 98685 | 9.7 | 146.4 | 0.0454 | 0.0454 | 1.00 | 0 |
+| qwen/qwen3.7-plus | 7/7 | 290054 | 13.5 | 331.8 | 0.0992 | 0.0992 | 1.00 | 0 |
+| qwen/qwen3.8-27b | 6/7 | 113975 | 10.2 | 228.8 | 0.0000 | 0.0000 | 1.00 | 0 |
+| google/gemma-4-31b-it | 5/5 | 36490 | 7.0 | 225.8 | 0.0053 | 0.0053 | 1.00 | 2 |
+| deepseek/deepseek-v4-flash | 5/7 | 141741 | 12.2 | 237.6 | 0.0134 | 0.0164 | 1.00 | 0 |
+| z-ai/glm-4.7 | 5/7 | 95439 | 11.5 | 168.7 | 0.0442 | 0.0540 | 0.91 | 0 |
+| qwen/qwen3.6-27b | 5/7 | 218089 | 20.5 | 159.2 | 0.0748 | 0.0914 | 1.00 | 0 |
+| z-ai/glm-5.2 | 5/7 | 103929 | 10.9 | 124.4 | 0.1039 | 0.1270 | 0.91 | 0 |
+| mistralai/devstral-2512 | 5/7 | 233241 | 17.9 | 94.0 | 0.1064 | 0.1300 | 0.82 | 0 |
+| tencent/hy3:free | 4/5 | 90089 | 8.7 | 79.4 | 0.0000 | 0.0000 | 1.00 | 2 |
+| qwen/qwen3.6-35b-a3b | 4/7 | 204711 | 20.9 | 43.4 | 0.0332 | 0.0456 | 1.00 | 0 |
+| google/gemma-4-26b-a4b-it | 3/7 | 71642 | 9.5 | 199.9 | 0.0055 | 0.0101 | 0.82 | 0 |
+| google/gemini-3.5-flash | 3/6 | 83563 | 11.9 | 55.9 | 0.2104 | 0.3788 | 1.00 | 0 |
+| cohere/north-mini-code:free | 1/4 | 112188 | 17.1 | 154.7 | 0.0000 | 0.0000 | 1.00 | 4 |
 
 ## Agentic leaderboard: disqualified
 
 Missed more than one floor (easy/standard) viability task, so not yet viable.
 
 No disqualified models.
+
+## Excluded: harness errors
+
+These cells are excluded from rates because they failed before grading due to a provider error, context overflow, or harness bug.
+
+| Model | task_id |
+| --- | --- |
+| cohere/north-mini-code:free | campsites-region-rollup-01 |
+| cohere/north-mini-code:free | fc-warmpool-daemonset-01 |
+| cohere/north-mini-code:free | flights-module-01 |
+| cohere/north-mini-code:free | go-vsock-frame-01 |
+| google/gemma-4-31b-it | fc-warmpool-daemonset-01 |
+| google/gemma-4-31b-it | stars-climatology-months-01 |
+| qwen/qwen3.8-flash-next | embervm-pi-tools-01 |
+| tencent/hy3:free | campsites-region-rollup-01 |
+| tencent/hy3:free | fc-warmpool-daemonset-01 |
 
 ## Frontier ceiling (agentic)
 
@@ -50,7 +66,7 @@ No qualifying budget candidates yet.
 | tencent/hy3:free | config-plumbing | 0.50 | 0.0000 | can't | no |
 | qwen/qwen3.8-flash-next | config-plumbing | 0.50 | 0.0000 | needs-repair | no |
 | qwen/qwen3.8-27b | config-plumbing | 0.50 | 0.0000 | needs-repair | no |
-| cohere/north-mini-code:free | config-plumbing | 0.00 | 0.0000 | can't | no |
+| cohere/north-mini-code:free | config-plumbing | 0.00 | 0.0000 | needs-repair | no |
 | qwen/qwen3-coder-30b-a3b-instruct | config-plumbing | 0.50 | 0.0020 | can't | no |
 | deepseek/deepseek-v4-flash | config-plumbing | 0.50 | 0.0027 | can't | no |
 | google/gemma-4-26b-a4b-it | config-plumbing | 0.50 | 0.0035 | can't | no |
