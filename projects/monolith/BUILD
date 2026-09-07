@@ -8005,3 +8005,16 @@ py_test(
         "@pip//pyyaml",
     ],
 )
+
+semgrep_test(
+    name = "recovery_network_test_semgrep_test",
+    srcs = ["recovery_network_test.py"],
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
