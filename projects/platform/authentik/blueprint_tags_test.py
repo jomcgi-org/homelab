@@ -130,7 +130,8 @@ def test_blueprints_are_discovered():
     never produce.
     """
     assert BLUEPRINT_DIR.is_dir(), f"blueprint dir missing: {BLUEPRINT_DIR}"
-    found = _blueprint_files()
+    # The inactive recovery file must not satisfy the active discovery floor.
+    found = sorted(BLUEPRINT_DIR.glob("*.yaml"))
     assert len(found) >= 2, f"expected at least 2 blueprints, found {len(found)}"
 
 
