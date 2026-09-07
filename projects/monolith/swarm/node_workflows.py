@@ -668,13 +668,15 @@ def _read_reconciliation_head(repo: str, branch: str) -> str | None:
     return read_branch_head.__wrapped__(repo, branch)
 
 
-def reconcile_completed_node(pin: dict, session_id: int) -> dict | None:
+def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
     """Observe late completion outside durable replay, without causing work.
 
     A timed-out workflow's immutable result cannot observe a later turn. The
     conductor may use this fresh, read-only observation to settle that same
     reservation. Missing/unfinished evidence retains the hold; mismatched
     ownership raises instead of silently adopting another session's work.
+    If the original submit acknowledgement and identity read both failed, a
+    missing session_id resolves only the exact deterministic local identity.
     Cleanup and ledger mutations remain the caller's separate responsibility.
     """
     from sqlmodel import Session, select
@@ -684,8 +686,8 @@ def reconcile_completed_node(pin: dict, session_id: int) -> dict | None:
     from core.db import get_engine
 
     pin = _validate_pin(pin)
-    if not _is_int(session_id) or session_id < 1:
-        raise ValueError("session_id must be a positive int")
+    if session_id is not None and (not _is_int(session_id) or session_id < 1):
+        raise ValueError("session_id must be a positive int when supplied")
     key = _session_key(pin["task_id"], pin["node_key"], pin["attempt"])
     expected = {
         "local_session_id": key,
@@ -697,9 +699,16 @@ def reconcile_completed_node(pin: dict, session_id: int) -> dict | None:
         "model": normalize_model(pin["model"]),
     }
     with Session(get_engine()) as session:
-        owner = session.get(AgentSession, session_id)
+        owner = (
+            session.get(AgentSession, session_id)
+            if session_id is not None
+            else session.exec(
+                select(AgentSession).where(AgentSession.local_session_id == key)
+            ).first()
+        )
         if owner is None:
             return None
+        session_id = owner.id
         for field, value in expected.items():
             if getattr(owner, field) != value:
                 raise ValueError(f"node session ownership conflict: {field}")
