@@ -1,11 +1,12 @@
 """Public, read-only HTTP API for the knowledge graph.
 
-Holds the two public knowledge endpoints so they can be mounted on the
+Holds the public knowledge endpoints so they can be mounted on the
 public-only app (``app.main_public``) without pulling in the private-route
 module (``knowledge.router``):
 
 - ``GET /api/knowledge/public/graph``: public-only graph (public nodes,
   doubly-public edges).
+- ``GET /api/knowledge/public/entities``: entity catalog with public fact counts.
 - ``GET /api/knowledge/public/notes/{note_id}``: a single note iff its
   effective visibility is ``public``.
 
@@ -19,19 +20,106 @@ import logging
 from email.utils import format_datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from core.db import get_session
 from knowledge.gardener import _slugify
 from knowledge.http_cache import _as_utc, _graph_etag, _GRAPH_CACHE_CONTROL
 from knowledge.notes import resolve_note_body
-from knowledge.public_models import PublicNote, PublicNoteLink
+from knowledge.public_models import (
+    PublicEntity,
+    PublicNote,
+    PublicNoteEntity,
+    PublicNoteLink,
+)
 from knowledge.store import GRAPH_NOTE_TYPES
 from knowledge.visibility import strip_private_wikilinks
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
+
+_VERIFICATION_STATES = (
+    "legacy",
+    "unverified",
+    "verified",
+    "disputed",
+    "invalidated",
+)
+
+
+@router.get("/public/entities")
+def get_public_entities(
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+):
+    """List public entities with public-note counts by verification state."""
+    entities = session.exec(
+        select(PublicEntity).order_by(PublicEntity.kind, PublicEntity.slug)
+    ).all()
+    count_rows = session.execute(
+        select(
+            PublicNoteEntity.entity_id,
+            PublicNoteEntity.verification_state,
+            func.count(func.distinct(PublicNoteEntity.note_id)).label("note_count"),
+        ).group_by(
+            PublicNoteEntity.entity_id,
+            PublicNoteEntity.verification_state,
+        )
+    ).all()
+    counts_by_entity: dict[int, dict[str, int]] = {}
+    for row in count_rows:
+        counts_by_entity.setdefault(row.entity_id, {})[row.verification_state] = int(
+            row.note_count
+        )
+
+    payload = [
+        {
+            "id": entity.id,
+            "kind": entity.kind,
+            "slug": entity.slug,
+            "title": entity.title,
+            "aliases": list(entity.aliases or []),
+            "scope": entity.scope,
+            "source": entity.source,
+            "created_at": _as_utc(entity.created_at).isoformat(),
+            "updated_at": _as_utc(entity.updated_at).isoformat(),
+            "note_counts": {
+                state: counts_by_entity.get(entity.id, {}).get(state, 0)
+                for state in _VERIFICATION_STATES
+            },
+        }
+        for entity in entities
+    ]
+
+    latest_entity = max(
+        (_as_utc(entity.updated_at) for entity in entities), default=None
+    )
+    latest_note = session.exec(select(func.max(PublicNoteEntity.note_indexed_at))).one()
+    latest_note = _as_utc(latest_note)
+    indexed_at = max(
+        (value for value in (latest_entity, latest_note) if value is not None),
+        default=None,
+    )
+    linked_note_count = sum(
+        sum(counts.values()) for counts in counts_by_entity.values()
+    )
+    etag = _graph_etag(len(entities) + linked_note_count, indexed_at)
+    headers = {"Cache-Control": _GRAPH_CACHE_CONTROL, "ETag": etag}
+    if indexed_at is not None:
+        headers["Last-Modified"] = format_datetime(indexed_at, usegmt=True)
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    for key, value in headers.items():
+        response.headers[key] = value
+    logger.info(
+        "public.entities.served entities=%d linked_notes=%d",
+        len(entities),
+        linked_note_count,
+    )
+    return payload
 
 
 @router.get("/public/graph")

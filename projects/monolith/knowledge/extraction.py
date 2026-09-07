@@ -179,6 +179,7 @@ class _Edges(BaseModel):
     supersedes: list[str] = Field(default_factory=list)
     contradicts: list[str] = Field(default_factory=list)
     related: list[str] = Field(default_factory=list)
+    subjects: list[str] = Field(default_factory=list)
 
 
 class _Assertion(BaseModel):
@@ -193,6 +194,7 @@ class _Assertion(BaseModel):
     observed_at: str | None = None
     tags: list[str] = Field(default_factory=list)
     edges: _Edges = Field(default_factory=_Edges)
+    unresolved_subject: str | None = None
     evidence: list[str] = Field(default_factory=list)
 
     @field_validator("title", "body")
@@ -472,20 +474,29 @@ def build_extraction_prompt(session: Session, raw: RawInput) -> str:
         exclude_invalidated=True,
     )
     related_text = "\n".join(render_related_notes(related)) or "- none"
+    from knowledge.entities import load_manifest
+
+    project_slugs = sorted(
+        spec.slug for spec in load_manifest() if spec.kind == "project"
+    )
     raw_nonce = secrets.token_hex(6)
     output_contract = (
         "reply with exactly one fenced ```json block, last thing in the message, shaped "
         '{"assertions": [{"title", "body", "scope", "verification_state": '
         '"verified|unverified", "confidence": 0..1, "valid_from": iso|null, '
         '"observed_at": iso|null, "tags": [], "edges": {"supersedes": [note_id], '
-        '"contradicts": [note_id], "related": [note_id]}, "evidence": '
+        '"contradicts": [note_id], "related": [note_id], "subjects": [slug]}, '
+        '"unresolved_subject": string|null, "evidence": '
         '["short pointers"]}], "dispute_resolution": {"state", "rationale"} | '
         'null, "doc_drift": [{"doc_path", "doc_claim", "fact_title", '
         '"evidence": ["short pointers"], "suggested_fix"}], "notes": "free '
         'text"}; cap `doc_drift` at 10 items. `doc_path` must exist in the checkout '
         "and be a README.md, under docs/** or .claude/**, an AGENTS.md or "
         "ARCHITECTURE.md, a runbook, or an Accepted ADR. An empty `assertions` list "
-        "is a valid answer."
+        "is a valid answer. Allowed project subject slugs: "
+        f"{', '.join(project_slugs)}. Put only these exact slugs in "
+        "`edges.subjects`; when no allowed slug fits, leave subjects empty and put "
+        "the missing subject name in `unresolved_subject`."
     )
     return (
         "You are the knowledge gardener. Extract durable, atomic assertions from the "
@@ -989,12 +1000,14 @@ def apply_extraction(
 
     from knowledge.atoms import index_atom
     from knowledge.chunker import chunk_markdown
+    from knowledge.entities import link_subjects
 
     note_ids: list[str] = []
     note_ids_by_title: dict[str, str] = {}
     rejected: list[dict] = []
     docfix_jobs = 0
     prepared: list[tuple[_Assertion, str, list[float], list[list[float]]]] = []
+    unresolved_subjects: list[str] = []
     embedder = EmbeddingClient()
     for assertion in parsed.assertions:
         event_reason = _event_rejection(assertion)
@@ -1085,6 +1098,15 @@ def apply_extraction(
                     if current_observed is None or reobserved > current_observed:
                         existing_note.observed_at = reobserved
                 session.add(existing_note)
+                _, unknown = link_subjects(
+                    session,
+                    str(existing_note.note_id),
+                    assertion.edges.subjects,
+                    source="extraction",
+                )
+                unresolved_subjects.extend(unknown)
+                if assertion.unresolved_subject:
+                    unresolved_subjects.append(assertion.unresolved_subject.strip())
                 rejected.append(
                     _rejection(
                         assertion,
@@ -1120,7 +1142,7 @@ def apply_extraction(
                     visibility="private",
                     source_tier=raw.source,
                     tags=assertion.tags,
-                    edges=assertion.edges.model_dump(),
+                    edges=assertion.edges.model_dump(exclude={"subjects"}),
                     derived_from_raw=raw_id,
                     scope=assertion.scope,
                     verification_state=verification_state,
@@ -1132,6 +1154,15 @@ def apply_extraction(
                 )
             )
             note = session.exec(select(Note).where(Note.note_id == note_id)).one()
+            _, unknown = link_subjects(
+                session,
+                note_id,
+                assertion.edges.subjects,
+                source="extraction",
+            )
+            unresolved_subjects.extend(unknown)
+            if assertion.unresolved_subject:
+                unresolved_subjects.append(assertion.unresolved_subject.strip())
             session.add(
                 AtomRawProvenance(
                     atom_fk=note.id,
@@ -1176,6 +1207,16 @@ def apply_extraction(
         prior_rejected = list(extra.get("extraction_rejected") or [])
         extra["extraction_rejected"] = prior_rejected + rejected
         extra["extraction_notes"] = parsed.notes[:2000]
+        prior_unresolved = [
+            item
+            for item in extra.get("unresolved_subjects", [])
+            if isinstance(item, str) and item
+        ]
+        appended_unresolved = [item for item in unresolved_subjects if item]
+        if prior_unresolved or appended_unresolved:
+            extra["unresolved_subjects"] = (prior_unresolved + appended_unresolved)[
+                -20:
+            ]
         merged_doc_drift = []
         seen_doc_drift = set()
         for item in [

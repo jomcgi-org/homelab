@@ -905,6 +905,7 @@ py_library(
             "*/tests/**/*.py",
         ],
     ),
+    data = ["knowledge/entities.yaml"],
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
@@ -1583,6 +1584,7 @@ py_library(
             "trips/backfill/**",
         ],
     ),  # keep
+    data = ["knowledge/entities.yaml"],
     visibility = ["//:__subpackages__"],
     deps = [
         "@pip//dbos",
@@ -4767,6 +4769,17 @@ py_test(
         "@pip//pydantic",
         "@pip//pytest",
         "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "knowledge_entities_test",
+    srcs = ["knowledge/entities_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_knowledge",
+        "@pip//pytest",
         "@pip//sqlmodel",
     ],
 )

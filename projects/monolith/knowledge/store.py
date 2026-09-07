@@ -12,6 +12,7 @@ from sqlmodel import Session, delete, select
 
 from knowledge.frontmatter import ParsedFrontmatter
 from knowledge.extraction import LANE_OWNED_SOURCES
+from knowledge.entities import Entity, NoteEntity
 from knowledge.gardener import GARDENER_VERSION, MAX_GARDENER_RETRIES, _slugify
 from knowledge.links import Link
 from knowledge.models import (
@@ -132,6 +133,38 @@ def provenance_for_notes(
     return grouped
 
 
+def _entities_for_note_ids(
+    session: Session, note_ids: Iterable[str]
+) -> dict[str, list[dict]]:
+    """Return entity projections grouped by stable note id in one query."""
+    ids = list(note_ids)
+    if not ids:
+        return {}
+    rows = session.execute(
+        select(
+            NoteEntity.note_id,
+            Entity.kind,
+            Entity.slug,
+            Entity.title,
+            NoteEntity.role,
+        )
+        .join(Entity, Entity.id == NoteEntity.entity_id)
+        .where(NoteEntity.note_id.in_(ids))
+        .order_by(NoteEntity.note_id, Entity.kind, Entity.slug, NoteEntity.role)
+    ).all()
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(row.note_id, []).append(
+            {
+                "kind": row.kind,
+                "slug": row.slug,
+                "title": row.title,
+                "role": row.role,
+            }
+        )
+    return grouped
+
+
 def _rank_search_chunks(
     session: Session,
     query_embedding: list[float],
@@ -211,6 +244,51 @@ class KnowledgeStore:
             select(Note.path, Note.content_hash).where(Note.deleted_at.is_(None))
         )
         return {path: ch for path, ch in result.all()}
+
+    def entities_for_note(self, note_id: str) -> list[dict]:
+        """Fetch entity subjects and mentions linked to a stable note id."""
+        return _entities_for_note_ids(self.session, [note_id]).get(note_id, [])
+
+    def notes_for_entity(
+        self,
+        entity_id: int,
+        states: Iterable[str] | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Fetch live notes linked to an entity, optionally filtered by state."""
+        stmt = (
+            select(
+                Note.note_id,
+                Note.title,
+                Note.type,
+                Note.scope,
+                Note.verification_state,
+                NoteEntity.role,
+            )
+            .join(NoteEntity, NoteEntity.note_id == Note.note_id)
+            .where(
+                NoteEntity.entity_id == entity_id,
+                Note.deleted_at.is_(None),
+            )
+            .order_by(Note.indexed_at.desc(), Note.note_id, NoteEntity.role)
+            .limit(limit)
+        )
+        if states is not None:
+            state_values = list(states)
+            if not state_values:
+                return []
+            stmt = stmt.where(Note.verification_state.in_(state_values))
+        return [
+            {
+                "note_id": row.note_id,
+                "title": row.title,
+                "type": row.type,
+                "scope": row.scope,
+                "verification_state": row.verification_state,
+                "role": row.role,
+            }
+            for row in self.session.execute(stmt).all()
+        ]
 
     def notes_missing_content(self) -> list[Note]:
         """Live notes whose ``content`` column has not been populated yet.
@@ -457,7 +535,7 @@ class KnowledgeStore:
            best-matching chunk per top-N note, with no N+1.
 
         Results are stitched in Python into dicts with keys:
-        ``note_id, title, path, type, tags, score, section, snippet``.
+        ``note_id, title, path, type, tags, score, section, snippet, entities``.
         """
         if scope_filter is None:
             if exclude_invalidated:
@@ -552,6 +630,7 @@ class KnowledgeStore:
 
         disputed_note_ids = open_dispute_note_ids(self.session, top_note_ids)
         provenance_by_note = provenance_for_notes(self.session, top_note_ids)
+        entities_by_note = _entities_for_note_ids(self.session, top_note_ids)
 
         results: list[dict] = []
         for row in note_rows:
@@ -580,6 +659,7 @@ class KnowledgeStore:
                         or row.verification_state == "disputed"
                     ),
                     "provenance": provenance_by_note.get(row.note_id, []),
+                    "entities": entities_by_note.get(row.note_id, []),
                 }
             )
         return results
@@ -617,6 +697,7 @@ class KnowledgeStore:
             return None
         disputed_note_ids = open_dispute_note_ids(self.session, [row.note_id])
         provenance_by_note = provenance_for_notes(self.session, [row.note_id])
+        entities_by_note = _entities_for_note_ids(self.session, [row.note_id])
         return {
             "note_id": row.note_id,
             "title": row.title,
@@ -634,6 +715,7 @@ class KnowledgeStore:
                 row.note_id in disputed_note_ids or row.verification_state == "disputed"
             ),
             "provenance": provenance_by_note.get(row.note_id, []),
+            "entities": entities_by_note.get(row.note_id, []),
         }
 
     def get_graph(self) -> dict:

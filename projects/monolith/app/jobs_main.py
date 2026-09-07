@@ -266,6 +266,52 @@ def publish_facts(
             logger.info("(dry-run, no changes made)")
 
 
+@app.command("seed-entities")
+def seed_knowledge_entities() -> None:
+    """Upsert the knowledge entity manifest and link referenced issue numbers."""
+    from sqlmodel import Session
+
+    from core.db import get_engine
+    from knowledge.entities import link_issue_entities, seed_entities
+
+    configure_logging()
+    logger.info("seed-entities: starting")
+    with Session(get_engine()) as session:
+        report = seed_entities(session)
+        issue_links = link_issue_entities(session)
+    typer.echo(
+        json.dumps(
+            {**asdict(report), "issue_links": issue_links},
+            sort_keys=True,
+        )
+    )
+    logger.info("seed-entities: done")
+
+
+@app.command("backfill-entities")
+def backfill_knowledge_entities(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report without writing"),
+    apply_changes: bool = typer.Option(
+        False, "--apply", help="Write links in 500-note chunks"
+    ),
+) -> None:
+    """Backfill deterministic project, service, and environment fact links."""
+    if dry_run == apply_changes:
+        raise typer.BadParameter("choose exactly one of --dry-run or --apply")
+
+    from sqlmodel import Session
+
+    from core.db import get_engine
+    from knowledge.entities import backfill_links
+
+    configure_logging()
+    logger.info("backfill-entities: starting dry_run=%s", dry_run)
+    with Session(get_engine()) as session:
+        report = backfill_links(session, dry_run=dry_run)
+    typer.echo(json.dumps(asdict(report), sort_keys=True))
+    logger.info("backfill-entities: done")
+
+
 # Hub evidence from 2026-09-05 showed rollout disconnects at 07:30 and 08:40.
 # Keep retries bounded while covering the normal monolith rollout window.
 _INTERNAL_POST_RETRY_DELAYS_S = (2.0, 5.0, 10.0, 20.0, 30.0)

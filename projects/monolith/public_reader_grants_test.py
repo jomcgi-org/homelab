@@ -70,3 +70,37 @@ def test_public_reader_can_read_public_datasets(pg):
                 session.execute(text(f"SELECT count(*) FROM {table}"))
     finally:
         engine.dispose()
+
+
+def test_entity_spine_grants_are_read_only(pg):
+    engine = create_engine(pg.url)
+    try:
+        with Session(engine) as session:
+            session.execute(text("SET ROLE public_reader"))
+            session.execute(text("SELECT count(*) FROM public_api.knowledge_entities"))
+            session.execute(
+                text("SELECT count(*) FROM public_api.knowledge_note_entities")
+            )
+            with pytest.raises(Exception) as exc:
+                session.execute(text("SELECT count(*) FROM knowledge.entities"))
+            assert "permission denied" in str(exc.value).lower()
+    finally:
+        engine.dispose()
+
+    engine = create_engine(pg.url)
+    try:
+        with Session(engine) as session:
+            session.execute(text("SET ROLE agents_writer"))
+            session.execute(text("SELECT count(*) FROM knowledge.entities"))
+            session.execute(text("SELECT count(*) FROM knowledge.note_entities"))
+            with pytest.raises(Exception) as exc:
+                session.execute(
+                    text(
+                        "INSERT INTO knowledge.entities "
+                        "(kind, slug, title, source) "
+                        "VALUES ('project', 'forbidden', 'Forbidden', 'test')"
+                    )
+                )
+            assert "permission denied" in str(exc.value).lower()
+    finally:
+        engine.dispose()
