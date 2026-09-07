@@ -58,7 +58,7 @@ def database(tmp_path, monkeypatch):
     engine.dispose()
 
 
-def held(engine, *, scout=False, applied=False):
+def held(engine, *, scout=False, applied=False, delivery_error=False):
     name = "kg-repo-diff" if scout else "kg:raw"
     with Session(engine) as db:
         agent = AgentSession(
@@ -68,7 +68,7 @@ def held(engine, *, scout=False, applied=False):
             workflow_id="cycle",
             node_key="kg-drain",
             admission_tier="kg",
-            status="failed",
+            status="warn" if delivery_error else "failed",
             model="luna",
             ember_session_id="guest",
             ember_lineage_id="lineage",
@@ -86,7 +86,7 @@ def held(engine, *, scout=False, applied=False):
                 result_text="partial evidence",
                 terminal_reason="error",
                 created_at=datetime.now(timezone.utc) - timedelta(minutes=1),
-                stop_reason=UNKNOWN_INVOCATION,
+                stop_reason=None if delivery_error else UNKNOWN_INVOCATION,
                 usage_json='{"recovery":{"cause":"executor_cancelled"}}',
             )
         )
@@ -107,6 +107,18 @@ def held(engine, *, scout=False, applied=False):
                 "payload": json.dumps(payload),
             },
         )
+        if delivery_error:
+            db.add(
+                AgentCapacityReservation(
+                    local_session_id=agent.local_session_id,
+                    pending_seq=1,
+                    session_id=sid,
+                    tier="kg",
+                    routine_job_name=name,
+                    state="uncertain",
+                    outcome="delivery_error",
+                )
+            )
         db.execute(
             text(
                 "INSERT INTO workflow_status VALUES ('cycle','drain_cycle','SUCCESS','version')"
@@ -200,6 +212,22 @@ def test_rearm_preserves_unknown_history_payload_and_lineage(database):
             model="luna",
             routine_job_name="kg-repo-diff",
         )
+
+
+def test_delivery_error_hold_reconciles_with_recorded_outcome(database):
+    request, before = held(database, delivery_error=True)
+
+    result = reconciliation.reconcile_held_job(**request)
+
+    assert result["original_outcome"] == "delivery_error"
+    with Session(database) as db:
+        after = reconciliation.read_reconciliation_state(
+            db, request["job_name"], request["session_id"]
+        )
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        assert permit.state == "settled"
+        assert after["turns_sha256"] == before["turns_sha256"]
+        assert after["latest_stop_reason"] is None
 
 
 def test_existing_extraction_retained_without_false_correction_success(database):

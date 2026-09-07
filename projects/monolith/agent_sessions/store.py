@@ -86,6 +86,28 @@ def has_unknown_outcome(session: Session, session_id: int) -> bool:
     return session.exec(select(_unknown_outcome_exists(session_id))).one()
 
 
+def has_unknown_outcome_for_turn(
+    session: Session, session_id: int, turn_seq: int
+) -> bool:
+    """Return whether this exact turn still owns an unresolved admission hold."""
+    return session.exec(
+        select(
+            or_(
+                exists().where(
+                    AgentTurn.session_id == session_id,
+                    AgentTurn.seq == turn_seq,
+                    AgentTurn.stop_reason == UNKNOWN_INVOCATION,
+                ),
+                exists().where(
+                    AgentCapacityReservation.session_id == session_id,
+                    AgentCapacityReservation.pending_seq == turn_seq,
+                    AgentCapacityReservation.state == "uncertain",
+                ),
+            )
+        )
+    ).one()
+
+
 def _attempted(pending: PendingMessage) -> bool:
     # A claim is conservative dispatch evidence, not a count of provider calls.
     # Progress also protects rows created before dispatch tracing was added.
