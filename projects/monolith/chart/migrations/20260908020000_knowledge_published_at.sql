@@ -16,7 +16,14 @@ CREATE OR REPLACE VIEW public_api.knowledge_notes AS
         verification_state,
         confidence,
         observed_at,
-        scope,
+        CASE
+            WHEN scope IN (
+                'repo:jomcgi-org/homelab',
+                'org:jomcgi-org',
+                'environment:homelab'
+            ) THEN scope
+            ELSE NULL
+        END AS scope,
         valid_from,
         valid_until,
         published_at,

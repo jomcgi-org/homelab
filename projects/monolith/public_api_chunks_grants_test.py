@@ -15,6 +15,8 @@ projects/monolith/BUILD.
 import pytest
 from sqlmodel import Session, create_engine, text
 
+from knowledge.api import search_public_chunks
+
 # A 1024-dim pgvector literal (matches knowledge.chunks.embedding's Vector(1024)).
 # The exact direction is irrelevant: this test asserts row visibility, not ranking.
 _EMB = "[" + ",".join(["0.1"] * 1024) + "]"
@@ -132,6 +134,26 @@ def test_public_chunk_view_includes_repo_docs(pg):
                 ).all()
             ]
             assert "PRIVATE secret chunk text" not in chunk_texts
+    finally:
+        engine.dispose()
+
+
+def test_search_public_chunks_returns_repo_doc(pg):
+    """The retrieval join keeps repo docs that have no synthetic note row."""
+    engine = create_engine(pg.url)
+    _seed_repo_doc(engine)
+    try:
+        with Session(engine) as session:
+            session.execute(text("SET ROLE public_reader"))
+            rows = search_public_chunks(session, [0.1] * 1024, limit=1000)
+
+            repo_doc = next(
+                row for row in rows if row["note_id"] == "repo:docs/test-repo-doc.md"
+            )
+            assert repo_doc["title"] == "Test Repo Doc"
+            assert repo_doc["chunk_text"] == "REPO DOC grounding text"
+            assert repo_doc["verification_state"] == "verified"
+            assert repo_doc["disputed"] is False
     finally:
         engine.dispose()
 

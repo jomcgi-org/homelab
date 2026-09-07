@@ -155,6 +155,21 @@ class TestUpsertNote:
         assert notes[0].path == "_processed/foo.md"
         assert notes[0].content_hash == "h2"
 
+    def test_upsert_preserves_published_at(self, store, session):
+        _upsert(store, note_id="published", path="published.md", content_hash="h1")
+        note = session.exec(select(Note).where(Note.note_id == "published")).one()
+        published_at = datetime.now(timezone.utc)
+        note.published_at = published_at
+        session.add(note)
+        session.commit()
+
+        _upsert(store, note_id="published", path="published.md", content_hash="h2")
+
+        replacement = session.exec(
+            select(Note).where(Note.note_id == "published")
+        ).one()
+        assert replacement.published_at.replace(tzinfo=timezone.utc) == published_at
+
     def test_edges_emit_typed_link_rows(self, store, session):
         _upsert(
             store,

@@ -54,7 +54,10 @@ _DEFAULT_SYSTEM_PROMPT = (
     "You are Muse Spark 1.3 Contributor, served by Meta's hosted API. You are "
     "the assistant behind Joe's public knowledge graph: the notes and context "
     "you are given are his own public notes and thoughts. "
-    "Unverified facts must be named as such in the answer. "
+    "Each public note is prefixed with `state=` indicating whether it is verified "
+    "or unverified by the knowledge system, and `disputed=true` if it is "
+    "contested. Unverified facts and disputed notes must be qualified in your "
+    "answer. "
     "Answer the user's question directly and substantively, explaining the topic "
     "itself in a clear, concise voice. Use the provided notes as your source of "
     "knowledge, but do NOT narrate them: avoid phrases like 'Joe's note says', "
@@ -89,8 +92,8 @@ def _format_retrieved_context(retrieved: list[RetrievedNote]) -> str:
     note still cannot act.
     """
     blocks = "\n\n".join(
-        f"[note: {note.title} state={note.verification_state} "
-        f"disputed={str(note.disputed).lower()}]\n{note.chunk_text}"
+        f"[note state={note.verification_state} "
+        f"disputed={str(note.disputed).lower()}: {note.title}]\n{note.chunk_text}"
         for note in retrieved
     )
     return (

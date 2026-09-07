@@ -171,8 +171,8 @@ def test_views_derive_public_only_and_endpoints_filter(session, client):
     assert res_d.json() == res_missing.json()
 
 
-def test_published_fact_columns_and_unpublished_legacy_filtering(session):
-    """The widened view carries publication metadata for public facts only."""
+def test_public_reader_reads_published_fact_columns_and_sanitized_scope(session):
+    """The public role reads publication metadata, but only approved scopes."""
     insert = text(
         """
         INSERT INTO knowledge.notes
@@ -195,10 +195,11 @@ def test_published_fact_columns_and_unpublished_legacy_filtering(session):
         "valid_until": None,
         "published_at": "2026-09-07T11:00:00+00:00",
     }
-    for note_id, visibility, verification_state in (
-        ("published-fact", "public", "verified"),
-        ("unpublished-fact", "private", "unverified"),
-        ("legacy-fact", "private", "legacy"),
+    for note_id, visibility, verification_state, scope in (
+        ("published-fact", "public", "verified", "environment:homelab"),
+        ("personal-scope-fact", "public", "verified", "personal:joe"),
+        ("unpublished-fact", "private", "unverified", "environment:homelab"),
+        ("legacy-fact", "private", "legacy", "environment:homelab"),
     ):
         session.execute(
             insert,
@@ -210,6 +211,7 @@ def test_published_fact_columns_and_unpublished_legacy_filtering(session):
                 "content_hash": f"hash-{note_id}",
                 "visibility": visibility,
                 "verification_state": verification_state,
+                "scope": scope,
             },
         )
     session.execute(
@@ -222,19 +224,25 @@ def test_published_fact_columns_and_unpublished_legacy_filtering(session):
     )
     session.commit()
 
+    session.execute(text("SET ROLE public_reader"))
     rows = session.execute(
         text(
             """
             SELECT note_id, verification_state, confidence, observed_at, scope,
                    valid_from, valid_until, published_at, disputed
               FROM public_api.knowledge_notes
-             WHERE note_id IN ('published-fact', 'unpublished-fact', 'legacy-fact')
+             WHERE note_id IN (
+                 'published-fact', 'personal-scope-fact',
+                 'unpublished-fact', 'legacy-fact'
+             )
              ORDER BY note_id
             """
         )
     ).all()
-    assert len(rows) == 1
-    row = rows[0]
+    session.execute(text("RESET ROLE"))
+    assert len(rows) == 2
+    by_id = {row.note_id: row for row in rows}
+    row = by_id["published-fact"]
     assert row.note_id == "published-fact"
     assert row.verification_state == "verified"
     assert row.confidence == pytest.approx(0.8)
@@ -244,6 +252,7 @@ def test_published_fact_columns_and_unpublished_legacy_filtering(session):
     assert row.valid_until is None
     assert row.published_at is not None
     assert row.disputed is True
+    assert by_id["personal-scope-fact"].scope is None
 
 
 def test_public_reader_denied_on_knowledge_note_links(pg):
