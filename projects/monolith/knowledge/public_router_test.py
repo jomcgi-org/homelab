@@ -32,7 +32,12 @@ from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
 from core.db import get_session
-from knowledge.public_models import PublicNote, PublicNoteLink
+from knowledge.public_models import (
+    PublicEntity,
+    PublicNote,
+    PublicNoteEntity,
+    PublicNoteLink,
+)
 from knowledge.public_router import router
 
 _UTC = timezone.utc
@@ -110,6 +115,45 @@ def _make_link(
     id_: int, source: str, target: str, kind: str = "link"
 ) -> PublicNoteLink:
     return PublicNoteLink(id=id_, source=source, target=target, kind=kind)
+
+
+def _make_entity(
+    id_: int = 1,
+    *,
+    kind: str = "project",
+    slug: str = "embervm",
+    title: str = "EmberVM",
+) -> PublicEntity:
+    return PublicEntity(
+        id=id_,
+        kind=kind,
+        slug=slug,
+        title=title,
+        aliases=[],
+        source="knowledge/entities.yaml",
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+
+def _link_entity(
+    id_: int,
+    note_id: str,
+    *,
+    entity_id: int = 1,
+    role: str = "subject",
+    state: str = "verified",
+) -> PublicNoteEntity:
+    return PublicNoteEntity(
+        id=id_,
+        note_id=note_id,
+        entity_id=entity_id,
+        role=role,
+        source="extractor",
+        created_at=_NOW,
+        verification_state=state,
+        note_indexed_at=_NOW,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -360,3 +404,231 @@ class TestPublicNote_:
         assert body["indexed_at"] is not None
         parsed = datetime.fromisoformat(body["indexed_at"])
         assert isinstance(parsed, datetime)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/knowledge/public/entities/{kind}/{slug}/notes
+# ---------------------------------------------------------------------------
+
+
+class TestPublicEntityNotes:
+    def test_missing_entity_is_404(self, client):
+        response = client.get("/api/knowledge/public/entities/project/missing/notes")
+        assert response.status_code == 404
+
+    def test_returns_subjects_before_mentions_then_newest(self, client, session):
+        session.add(_make_entity())
+        older_subject = _make_note("subject-old", "Older subject")
+        older_subject.observed_at = datetime(2024, 5, 1, tzinfo=_UTC)
+        newer_subject = _make_note("subject-new", "Newer subject")
+        newer_subject.observed_at = datetime(2024, 5, 2, tzinfo=_UTC)
+        newest_mention = _make_note("mention", "Newest mention")
+        newest_mention.observed_at = datetime(2024, 5, 3, tzinfo=_UTC)
+        session.add(older_subject)
+        session.add(newer_subject)
+        session.add(newest_mention)
+        session.add(_link_entity(1, "subject-old"))
+        session.add(_link_entity(2, "subject-new"))
+        session.add(_link_entity(3, "mention", role="mentions"))
+        session.commit()
+
+        body = client.get("/api/knowledge/public/entities/project/embervm/notes").json()
+
+        assert body["entity"] == {
+            "kind": "project",
+            "slug": "embervm",
+            "title": "EmberVM",
+        }
+        assert [row["note_id"] for row in body["notes"]] == [
+            "subject-new",
+            "subject-old",
+            "mention",
+        ]
+
+    def test_filters_states_and_shapes_snippet(self, client, session):
+        session.add(_make_entity())
+        verified = _make_note("verified", "Verified", content="one\n\n two")
+        unverified = _make_note(
+            "unverified", "Unverified", verification_state="unverified"
+        )
+        session.add(verified)
+        session.add(unverified)
+        session.add(_link_entity(1, "verified"))
+        session.add(_link_entity(2, "unverified", state="unverified"))
+        session.commit()
+
+        response = client.get(
+            "/api/knowledge/public/entities/project/embervm/notes?state=verified"
+        )
+
+        assert response.status_code == 200
+        assert [row["note_id"] for row in response.json()["notes"]] == ["verified"]
+        assert response.json()["notes"][0]["snippet"] == "one two"
+
+    def test_rejects_unknown_state_and_large_limit(self, client, session):
+        session.add(_make_entity())
+        session.commit()
+
+        bad_state = client.get(
+            "/api/knowledge/public/entities/project/embervm/notes?state=legacy"
+        )
+        bad_limit = client.get(
+            "/api/knowledge/public/entities/project/embervm/notes?limit=61"
+        )
+
+        assert bad_state.status_code == 422
+        assert bad_limit.status_code == 422
+
+    def test_returns_contradictions_inside_entity_set(self, client, session):
+        session.add(_make_entity())
+        session.add(_make_note("fact-a", "Fact A"))
+        session.add(
+            _make_note(
+                "fact-b", "Fact B", verification_state="unverified", disputed=True
+            )
+        )
+        session.add(_make_note("outside", "Outside"))
+        session.add(_link_entity(1, "fact-a"))
+        session.add(_link_entity(2, "fact-b", state="unverified"))
+        session.add(
+            PublicNoteLink(
+                id=1,
+                source="fact-a",
+                target="fact-b",
+                kind="edge",
+                edge_type="contradicts",
+            )
+        )
+        session.add(
+            PublicNoteLink(
+                id=2,
+                source="fact-a",
+                target="outside",
+                kind="edge",
+                edge_type="contradicts",
+            )
+        )
+        session.commit()
+
+        body = client.get("/api/knowledge/public/entities/project/embervm/notes").json()
+
+        assert len(body["contradictions"]) == 1
+        pair = body["contradictions"][0]
+        assert {pair["a"]["note_id"], pair["b"]["note_id"]} == {
+            "fact-a",
+            "fact-b",
+        }
+
+    def test_sets_cache_headers_and_supports_304(self, client, session):
+        session.add(_make_entity())
+        session.add(_make_note("fact", "Fact"))
+        session.add(_link_entity(1, "fact"))
+        session.commit()
+
+        first = client.get("/api/knowledge/public/entities/project/embervm/notes")
+        second = client.get(
+            "/api/knowledge/public/entities/project/embervm/notes",
+            headers={"If-None-Match": first.headers["etag"]},
+        )
+
+        assert "public" in first.headers["cache-control"]
+        assert "last-modified" in first.headers
+        assert second.status_code == 304
+
+
+# ---------------------------------------------------------------------------
+# GET /api/knowledge/public/search
+# ---------------------------------------------------------------------------
+
+
+class TestPublicRecordSearch:
+    def test_grep_matches_title_and_content_case_insensitively(self, client, session):
+        session.add(_make_note("title", "Ember quarantine"))
+        session.add(_make_note("content", "Another fact", content="EMBER drain"))
+        session.add(_make_note("miss", "Other fact", content="nothing"))
+        session.commit()
+
+        body = client.get("/api/knowledge/public/search?q=ember").json()
+
+        assert {row["note_id"] for row in body} == {"title", "content"}
+
+    def test_grep_excludes_legacy_and_includes_entities(self, client, session):
+        session.add(_make_entity())
+        session.add(_make_note("current", "Needle current"))
+        session.add(_make_note("old", "Needle legacy", verification_state="legacy"))
+        session.add(_link_entity(1, "current"))
+        session.commit()
+
+        body = client.get("/api/knowledge/public/search?q=needle").json()
+
+        assert [row["note_id"] for row in body] == ["current"]
+        assert body[0]["entities"] == [
+            {"kind": "project", "slug": "embervm", "title": "EmberVM"}
+        ]
+
+    def test_blank_query_returns_no_rows(self, client, session):
+        session.add(_make_note("fact", "Fact"))
+        session.commit()
+
+        assert client.get("/api/knowledge/public/search?q=").json() == []
+
+    def test_validates_mode_query_length_and_limit(self, client):
+        assert (
+            client.get("/api/knowledge/public/search?mode=other&q=x").status_code == 422
+        )
+        assert (
+            client.get("/api/knowledge/public/search?q=" + ("x" * 201)).status_code
+            == 422
+        )
+        assert (
+            client.get("/api/knowledge/public/search?q=x&limit=51").status_code == 422
+        )
+
+    def test_semantic_search_uses_public_chunks(self, client, session, monkeypatch):
+        class FakeEmbeddingClient:
+            base_url = "http://embedding.test"
+
+            async def embed(self, query):
+                assert query == "quarantine"
+                return [0.1, 0.2]
+
+        session.add(_make_entity())
+        session.add(_make_note("semantic", "Semantic match"))
+        session.add(_link_entity(1, "semantic"))
+        session.commit()
+        monkeypatch.setattr(
+            "knowledge.public_router.EmbeddingClient", FakeEmbeddingClient
+        )
+        monkeypatch.setattr(
+            "knowledge.public_router.search_public_chunks",
+            lambda _session, vector, limit: [
+                {
+                    "note_id": "semantic",
+                    "title": "Semantic match",
+                    "verification_state": "verified",
+                    "disputed": False,
+                    "score": 0.9,
+                    "chunk_text": "match",
+                }
+            ],
+        )
+
+        response = client.get(
+            "/api/knowledge/public/search?q=quarantine&mode=semantic&limit=5"
+        )
+
+        assert response.status_code == 200
+        assert response.json()[0]["note_id"] == "semantic"
+        assert response.json()[0]["entities"][0]["slug"] == "embervm"
+
+    def test_search_supports_conditional_get(self, client, session):
+        session.add(_make_note("fact", "Needle"))
+        session.commit()
+
+        first = client.get("/api/knowledge/public/search?q=needle")
+        second = client.get(
+            "/api/knowledge/public/search?q=needle",
+            headers={"If-None-Match": first.headers["etag"]},
+        )
+
+        assert second.status_code == 304
