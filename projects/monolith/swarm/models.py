@@ -121,6 +121,9 @@ class SwarmNodeRun(SQLModel, table=True):
             "attempt",
             name="swarm_node_run_task_node_attempt_key",
         ),
+        UniqueConstraint(
+            "task_id", "dispatch_key", name="swarm_node_run_task_dispatch_key"
+        ),
         {"schema": "swarm", "extend_existing": True},
     )
 
@@ -128,6 +131,9 @@ class SwarmNodeRun(SQLModel, table=True):
     task_id: str = Field(foreign_key="swarm.swarm_task.id", index=True)
     node_key: str
     attempt: int
+    dispatch_key: str | None = None
+    pin_json: str | None = None
+    reserved_cost_usd: float | None = None
     session_id: int | None = None
     status: str
     cost_usd: float | None = None
