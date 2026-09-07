@@ -7,6 +7,9 @@ CREATE TABLE swarm.swarm_node_run (
     task_id TEXT NOT NULL REFERENCES swarm.swarm_task (id),
     node_key TEXT NOT NULL,
     attempt INTEGER NOT NULL,
+    dispatch_key TEXT,
+    pin_json TEXT,
+    reserved_cost_usd DOUBLE PRECISION,
     session_id INTEGER,
     status TEXT NOT NULL,
     cost_usd DOUBLE PRECISION,
@@ -16,7 +19,9 @@ CREATE TABLE swarm.swarm_node_run (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     finished_at TIMESTAMPTZ,
     CONSTRAINT swarm_node_run_task_node_attempt_key
-        UNIQUE (task_id, node_key, attempt)
+        UNIQUE (task_id, node_key, attempt),
+    CONSTRAINT swarm_node_run_task_dispatch_key
+        UNIQUE (task_id, dispatch_key)
 );
 
 CREATE INDEX swarm_node_run_task_id_idx

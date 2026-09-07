@@ -323,6 +323,7 @@ def test_admit_attempt_numbering_bound_and_armed_stamp(db):
 
     second = admit_dispatch(task_id, "node")
     assert second.ok and second.detail == "2"
+    assert record_outcome(task_id, "node", 2, "failed", 1.0, None, "{}").ok
     exhausted = admit_dispatch(task_id, "node")
     assert not exhausted.ok and exhausted.refusal_code == "attempts_exhausted"
     assert_recorded(
@@ -386,3 +387,301 @@ def test_dispatch_and_outcome_round_trip_records_calls(db):
     assert run["cost_usd"] == 0.25
     assert run["outcome_json"] == '{"summary":"done"}'
     assert run["finished_at"] is not None
+
+
+def test_supplied_session_rolls_back_admission_and_audit(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "node", 0).ok
+    with Session(db) as session:
+        result = admit_dispatch(
+            task_id, "node", dispatch_key="attempt-1", session=session
+        )
+        assert result.ok
+        session.rollback()
+    assert node_runs(task_id) == []
+    assert load_graph(task_id)[0]["armed_at"] is None
+    assert last_call(db).tool == "add_node"
+
+
+@pytest.mark.parametrize(
+    "field,value", [("max_attempts", 11), ("turn_timeout_seconds", 7201)]
+)
+def test_node_hard_limit_ceilings(db, field, value):
+    task_id = make_task(db)
+    assert not add_work(task_id, "node", 0, **{field: value}).ok
+
+
+def test_uncertain_reported_cost_cannot_release_active_reservation(db):
+    task_id = make_task(db, budget=1.0)
+    assert add_work(task_id, "one", 0, max_cost_usd=0.5).ok
+    assert add_work(task_id, "two", 1, max_cost_usd=0.5).ok
+    assert admit_dispatch(task_id, "one").ok
+    assert record_outcome(task_id, "one", 1, "uncertain", 0.1, None, "{}").ok
+    assert node_runs(task_id, "one")[0]["accounted_cost_usd"] == 0.5
+    assert node_runs(task_id, "one")[0]["accounting_basis"] == "active_reservation"
+    assert admit_dispatch(task_id, "two").ok
+
+
+def test_terminal_unknown_usage_allows_dependency_but_consumes_ceiling(db):
+    task_id = make_task(db, budget=1.0)
+    assert add_work(task_id, "one", 0, max_cost_usd=0.5).ok
+    assert add_work(task_id, "two", 1, max_cost_usd=0.5, deps=["one"]).ok
+    assert admit_dispatch(task_id, "one").ok
+    assert record_outcome(task_id, "one", 1, "succeeded", None, "head", "{}").ok
+    row = node_runs(task_id, "one")[0]
+    assert row["accounted_cost_usd"] == 0.5
+    assert row["accounting_basis"] == "reserved_unknown_cost"
+    assert admit_dispatch(task_id, "two").ok
+
+
+def test_dispatch_key_cannot_alias_another_node(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0).ok
+    assert add_work(task_id, "two", 1).ok
+    first = admit_dispatch(task_id, "one", dispatch_key="stable-key")
+    assert first.ok
+    conflict = admit_dispatch(task_id, "two", dispatch_key="stable-key")
+    assert not conflict.ok
+    assert len(node_runs(task_id)) == 1
+
+
+def test_replayed_admission_keeps_original_pin_after_graph_change(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0).ok
+    context = {
+        "repo": "org/repo",
+        "branch": "factory/work",
+        "workflow_id": "flow",
+        "artifact_path": "result-1.json",
+        "artifact_schema": {"type": "object"},
+    }
+    first = admit_dispatch(
+        task_id, "one", dispatch_key="one-1", execution_context=context
+    )
+    assert first.ok and first.attempt == 1
+    assert first.pin["prompt"] == "do one"
+    first.pin["artifact_schema"]["type"] = "string"
+    assert add_work(task_id, "two", 1).ok
+    replay = admit_dispatch(
+        task_id, "one", dispatch_key="one-1", execution_context=context
+    )
+    assert replay.ok and replay.pin["artifact_schema"] == {"type": "object"}
+    assert replay.pin["max_cost_usd"] == 1.0
+    assert len(node_runs(task_id)) == 1
+    conflict = admit_dispatch(
+        task_id,
+        "one",
+        dispatch_key="one-1",
+        execution_context={**context, "branch": "another"},
+    )
+    assert conflict.refusal_code == "dispatch_key_conflict"
+    assert record_outcome(task_id, "one", 1, "succeeded", 0.2, "sha", "{}").ok
+    assert admit_dispatch(
+        task_id, "one", dispatch_key="one-1", execution_context=context
+    ).ok
+    assert (
+        admit_dispatch(task_id, "one", dispatch_key="one-2").refusal_code
+        == "node_succeeded"
+    )
+
+
+def test_unknown_execution_blocks_retries_until_reconciled(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0).ok
+    assert admit_dispatch(task_id, "one").ok
+    assert admit_dispatch(task_id, "one").refusal_code == "active_attempt"
+    assert record_outcome(task_id, "one", 1, "uncertain", None, None, "{}").ok
+    assert node_runs(task_id)[0]["finished_at"] is None
+    assert admit_dispatch(task_id, "one").refusal_code == "active_attempt"
+    assert discard(task_id, "one", 1).refusal_code == "armed"
+    assert record_outcome(task_id, "one", 1, "failed", 0.25, None, "{}").ok
+    next_attempt = admit_dispatch(task_id, "one")
+    assert next_attempt.ok and next_attempt.pin["max_cost_usd"] == 0.75
+
+
+def test_dependencies_require_success(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0).ok
+    assert add_work(task_id, "two", 1, deps=["one"]).ok
+    assert admit_dispatch(task_id, "two").refusal_code == "dependency_not_succeeded"
+    assert admit_dispatch(task_id, "one").ok
+    assert record_outcome(task_id, "one", 1, "failed", 0.1, None, "{}").ok
+    assert admit_dispatch(task_id, "two").refusal_code == "dependency_not_succeeded"
+    assert admit_dispatch(task_id, "one").ok
+    assert record_outcome(task_id, "one", 2, "succeeded", 0.1, "sha", "{}").ok
+    assert admit_dispatch(task_id, "two").ok
+
+
+def test_dispatch_outcome_replays_cannot_change_identity_or_terminal_evidence(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0).ok
+    assert admit_dispatch(task_id, "one").ok
+    assert record_dispatch(task_id, "one", 1, 42, "base").ok
+    assert record_dispatch(task_id, "one", 1, 42, "base").ok
+    assert (
+        record_dispatch(task_id, "one", 1, 43, "base").refusal_code
+        == "dispatch_conflict"
+    )
+    assert record_outcome(task_id, "one", 1, "succeeded", 0.25, "head", "{}").ok
+    before = node_runs(task_id)[0]
+    assert record_dispatch(task_id, "one", 1, 42, "base").ok
+    assert record_outcome(task_id, "one", 1, "succeeded", 0.25, "head", "{}").ok
+    assert (
+        record_outcome(task_id, "one", 1, "failed", 0.25, "head", "{}").refusal_code
+        == "outcome_conflict"
+    )
+    assert (
+        record_outcome(task_id, "one", 1, "uncertain", None, None, "{}").refusal_code
+        == "outcome_conflict"
+    )
+    assert node_runs(task_id)[0] == before
+
+
+def test_task_budget_accounts_observed_overrun_and_other_reservations(db):
+    task_id = make_task(db, budget=2.0)
+    assert add_work(task_id, "one", 0).ok
+    assert add_work(task_id, "two", 1).ok
+    assert admit_dispatch(task_id, "one").ok
+    assert record_outcome(task_id, "one", 1, "failed", 1.25, None, "{}").ok
+    assert admit_dispatch(task_id, "one").refusal_code == "node_budget_exhausted"
+    assert admit_dispatch(task_id, "two").refusal_code == "task_budget_exhausted"
+    assert node_runs(task_id)[0]["accounted_cost_usd"] == 1.25
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -1, 0, True, 10**1000])
+def test_invalid_node_cost_is_refused_and_audited(db, value):
+    task_id = make_task(db)
+    result = add_work(task_id, "one", 0, max_cost_usd=value)
+    assert result.refusal_code == "invalid_node_budget"
+    assert json.loads(last_call(db).args_json)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("max_attempts", None),
+        ("max_attempts", 0),
+        ("max_attempts", -1),
+        ("max_attempts", True),
+        ("max_attempts", 1.5),
+        ("turn_timeout_seconds", None),
+        ("turn_timeout_seconds", 0),
+        ("turn_timeout_seconds", True),
+        ("turn_timeout_seconds", 1.5),
+    ],
+)
+def test_missing_or_unbounded_node_limits_are_refused(db, field, value):
+    task_id = make_task(db)
+    assert not add_work(task_id, "one", 0, **{field: value}).ok
+
+
+def test_dispatch_rejects_legacy_unbounded_node(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0).ok
+    with Session(db) as session:
+        node = session.exec(select(SwarmPlanNode)).one()
+        node.max_attempts = None
+        session.add(node)
+        session.commit()
+    assert admit_dispatch(task_id, "one").refusal_code == "invalid_max_attempts"
+
+
+def test_dispatch_requires_bounded_task_budget(db):
+    task_id = make_task(db, budget=None)
+    assert add_work(task_id, "one", 0).ok
+    assert admit_dispatch(task_id, "one").refusal_code == "invalid_task_budget"
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -1, True])
+def test_invalid_outcome_cost_does_not_release_reservation(db, value):
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0).ok
+    assert admit_dispatch(task_id, "one").ok
+    assert (
+        record_outcome(task_id, "one", 1, "failed", value, None, "{}").refusal_code
+        == "invalid_cost"
+    )
+    assert node_runs(task_id)[0]["status"] == "admitted"
+    assert node_runs(task_id)[0]["accounted_cost_usd"] == 1.0
+
+
+def test_old_revision_survives_readd_and_bootstrap_node_discard(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0).ok
+    assert discard(task_id, "one", 1).ok
+    assert add_work(task_id, "one", 2, prompt="replacement").ok
+    assert load_graph(task_id, 1)[0]["prompt"] == "do one"
+    assert load_graph(task_id, 1)[0]["discarded_in_version"] == 2
+    assert load_graph(task_id, 2) == []
+    assert load_graph(task_id, 3)[0]["prompt"] == "replacement"
+
+
+def test_supplied_session_rolls_back_semantic_graph_changes(db):
+    task_id = make_task(db)
+    with Session(db) as session:
+        assert add_work(task_id, "one", 0, session=session).ok
+        session.rollback()
+    assert current_version(task_id) == 0
+    assert load_graph(task_id) == []
+
+
+def test_bootstrap_fields_survive_discard_and_key_reuse(db):
+    task_id = make_task(db)
+    with Session(db) as session:
+        session.add(
+            SwarmPlanVersion(
+                task_id=task_id,
+                version=1,
+                op="bootstrap",
+                author_kind="system",
+                author="router",
+                change_json="{}",
+                cause_kind="classification",
+            )
+        )
+        session.add(
+            SwarmPlanNode(
+                task_id=task_id,
+                node_key="one",
+                kind="work",
+                prompt="bootstrap prompt",
+                model="worker",
+                deps_json="[]",
+                max_cost_usd=1.0,
+                max_attempts=2,
+                turn_timeout_seconds=60,
+                side_effects=False,
+                created_in_version=1,
+            )
+        )
+        session.commit()
+    assert discard(task_id, "one", 1).ok
+    assert add_work(task_id, "one", 2, prompt="replacement").ok
+    assert load_graph(task_id, 1)[0]["prompt"] == "bootstrap prompt"
+
+
+def test_completed_unknown_cost_consumes_node_budget(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0).ok
+    assert admit_dispatch(task_id, "one").ok
+    assert record_outcome(task_id, "one", 1, "failed", None, "sha", "{}").ok
+    assert admit_dispatch(task_id, "one").refusal_code == "node_budget_exhausted"
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        {"max_cost_usd": 100.0},
+        {"artifact_schema": {"value": float("nan")}},
+        {1: True},
+        {"artifact_schema": {1, 2}},
+    ],
+)
+def test_invalid_context_cannot_override_pinned_node_fields(db, context):
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0).ok
+    assert (
+        admit_dispatch(task_id, "one", execution_context=context).refusal_code
+        == "invalid_execution_context"
+    )
+    assert node_runs(task_id) == []
