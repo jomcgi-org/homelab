@@ -193,6 +193,19 @@ jobs:
       limits:
         memory: 512Mi
   cronWorkflows:
+    - name: publish-facts
+      args: ["publish-facts"]
+      schedule: "*/15 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 300
+      suspend: false
+      knowledgePublishFacts: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 256Mi
     # This job only asks the leader API pod to start a drain cycle, then exits.
     # It stays active while the drainer is disabled because the endpoint no-ops.
     - name: agent-drain
@@ -1133,6 +1146,9 @@ onepassword:
 
 knowledge:
   enabled: false
+  publishFacts:
+    # Note: this is a deliberate new publication-lane job for visibility flipping; ARCHITECTURE says no knowledge CronWorkflow remains today (legacy gardener jobs removed 2026-09-05)
+    enabled: false
   # Scope assigned to repository knowledge reports when callers propose repo.
   defaultRepoScope: "repo:jomcgi-org/homelab"
   # Recall top knowledge-graph facts into every Ember session's system prompt

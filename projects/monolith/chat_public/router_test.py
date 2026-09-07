@@ -24,9 +24,12 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
+from core.db import get_session
 from chat_public import inference, limits, sessions
+from chat_public import router as router_module
 from chat_public.db import get_chat_session
 from chat_public.models import ChatMessage, ChatSession
+from chat_public.retrieval import RetrievedNote
 from chat_public.router import router
 
 # Fixed reply the fake vLLM streams, so SSE-shape tests do not need a live model.
@@ -90,6 +93,7 @@ def client_fixture(session):
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_chat_session] = lambda: session
+    app.dependency_overrides[get_session] = lambda: session
     yield TestClient(app, raise_server_exceptions=False)
     app.dependency_overrides.clear()
 
@@ -101,6 +105,29 @@ def _parse_sse(text: str) -> list[dict]:
         if line.startswith("data: "):
             frames.append(json.loads(line[len("data: ") :]))
     return frames
+
+
+def test_public_note_context_renders_verification_and_dispute_state():
+    rendered = router_module._format_retrieved_context(
+        [
+            RetrievedNote(
+                "fact-1",
+                "A public fact",
+                "Grounding text",
+                0.9,
+                verification_state="unverified",
+                disputed=True,
+            )
+        ]
+    )
+    assert "state=unverified disputed=true" in rendered
+    assert "<public_notes>" in rendered
+
+
+def test_system_prompt_requires_unverified_facts_to_be_named():
+    assert "Unverified facts must be named as such in the answer." in (
+        router_module._DEFAULT_SYSTEM_PROMPT
+    )
 
 
 def _new_session(session: Session, **overrides) -> ChatSession:
@@ -312,7 +339,7 @@ def test_budget_knobs_defined_only_in_limits():
     pkg_dir = Path(importlib.import_module("chat_public").__file__).resolve().parent
     offenders = []
     for py_file in sorted(pkg_dir.glob("*.py")):
-        if py_file.name in ("limits.py", "router_test.py"):
+        if py_file.name == "limits.py" or py_file.name.endswith("_test.py"):
             continue
         text = py_file.read_text()
         # No sibling re-reads the budget env vars (that would be a second source

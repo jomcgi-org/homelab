@@ -135,7 +135,8 @@ def test_build_model_messages_injects_delimited_retrieved_context():
     assert "not instructions" in body.lower()
     assert "alpha grounding text" in body
     assert "beta grounding text" in body
-    assert "[note: Note A]" in body and "[note: Note B]" in body
+    assert "[note: Note A state=legacy disputed=false]" in body
+    assert "[note: Note B state=legacy disputed=false]" in body
 
     # The actual user turn is still present as the final user message.
     assert messages[-1] == {"role": "user", "content": "what is alpha?"}
@@ -249,8 +250,22 @@ async def test_retrieve_embeds_query_and_returns_public_notes(monkeypatch):
         seen["embedding"] = query_embedding
         seen["limit"] = limit
         return [
-            {"note_id": "n1", "title": "T1", "chunk_text": "c1", "score": 0.9},
-            {"note_id": "n2", "title": "T2", "chunk_text": "c2", "score": 0.7},
+            {
+                "note_id": "n1",
+                "title": "T1",
+                "chunk_text": "c1",
+                "score": 0.9,
+                "verification_state": "verified",
+                "disputed": False,
+            },
+            {
+                "note_id": "n2",
+                "title": "T2",
+                "chunk_text": "c2",
+                "score": 0.7,
+                "verification_state": "unverified",
+                "disputed": True,
+            },
         ]
 
     monkeypatch.setattr(retrieval, "search_public_chunks", fake_search)
@@ -266,6 +281,10 @@ async def test_retrieve_embeds_query_and_returns_public_notes(monkeypatch):
     assert [(n.note_id, n.title, n.chunk_text) for n in notes] == [
         ("n1", "T1", "c1"),
         ("n2", "T2", "c2"),
+    ]
+    assert [(n.verification_state, n.disputed) for n in notes] == [
+        ("verified", False),
+        ("unverified", True),
     ]
 
 

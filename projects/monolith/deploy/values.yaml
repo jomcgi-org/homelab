@@ -154,6 +154,8 @@ cfIngress:
 
 knowledge:
   enabled: true
+  publishFacts:
+    enabled: true
   # Obsidian fully decommissioned (ADR 006). Note bodies are authoritative in
   # Postgres (knowledge.notes.content); raws live in SeaweedFS. The note
   # read/write paths are DB-only and the /vault disk dependency is gone, so

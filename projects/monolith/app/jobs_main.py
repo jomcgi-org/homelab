@@ -242,6 +242,30 @@ def faas_reconcile(
         raise typer.Exit(code=1)
 
 
+@app.command("publish-facts")
+def publish_facts(
+    dry_run: bool = typer.Option(False, help="Preview changes without mutating"),
+) -> None:
+    """Publish verified and unverified agent-derived facts to the public tier.
+
+    This job identifies facts meeting the publication policy (verification_state,
+    scope, redaction, dispute status) and flips visibility to public, or unflips
+    when policy stops holding. Runs every 15 minutes by default (see chart values).
+    """
+    from sqlmodel import Session
+
+    from core.db import get_engine
+    from knowledge.publish import apply as publish_apply
+
+    configure_logging()
+    engine = get_engine()
+    with Session(engine) as session:
+        report = publish_apply(session, dry_run=dry_run)
+        logger.info("Publish facts: %s", report)
+        if dry_run:
+            logger.info("(dry-run, no changes made)")
+
+
 # Hub evidence from 2026-09-05 showed rollout disconnects at 07:30 and 08:40.
 # Keep retries bounded while covering the normal monolith rollout window.
 _INTERNAL_POST_RETRY_DELAYS_S = (2.0, 5.0, 10.0, 20.0, 30.0)

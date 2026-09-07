@@ -205,12 +205,12 @@ def search_public_chunks(
     view, so no query can surface one. Caller passes a public_reader session bound
     to the read replica.
 
-    Returns dicts ``{"note_id", "title", "chunk_text", "score"}`` where
-    ``score = 1 - cosine_distance`` (higher is closer).
+    Returns dicts with note identity, title, chunk text, verification state,
+    dispute status, and ``score = 1 - cosine_distance`` (higher is closer).
     """
     from sqlmodel import select
 
-    from knowledge.public_models import PublicChunk
+    from knowledge.public_models import PublicChunk, PublicNote
 
     distance = PublicChunk.embedding.cosine_distance(query_embedding)
     stmt = (
@@ -218,8 +218,11 @@ def search_public_chunks(
             PublicChunk.note_id,
             PublicChunk.title,
             PublicChunk.chunk_text,
+            PublicNote.verification_state,
+            PublicNote.disputed,
             distance.label("distance"),
         )
+        .join(PublicNote, PublicNote.note_id == PublicChunk.note_id)
         .order_by(distance.asc())
         .limit(max(1, limit) * _PUBLIC_CHUNK_OVERFETCH)
     )
@@ -238,6 +241,8 @@ def search_public_chunks(
                 "note_id": row.note_id,
                 "title": row.title,
                 "chunk_text": row.chunk_text,
+                "verification_state": row.verification_state,
+                "disputed": row.disputed,
                 "score": 1.0 - float(row.distance),
             }
         )
