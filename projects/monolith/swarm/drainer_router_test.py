@@ -361,21 +361,25 @@ def test_stale_pending_reaper_then_enqueue(monkeypatch):
 def test_real_quarantine_holds_before_reaper_cancels(monkeypatch, tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'quarantine.db'}")
     with Session(engine) as session:
-        session.execute(text("""
+        session.execute(
+            text("""
             CREATE TABLE routine_jobs (
                 name TEXT PRIMARY KEY, routine_kind TEXT, interval_secs INTEGER,
                 next_run_at TEXT, last_run_at TEXT, last_status TEXT,
                 last_summary TEXT, locked_by TEXT, locked_at TEXT,
                 ttl_secs INTEGER, payload TEXT, created_by TEXT, created_at TEXT
             )
-        """))
-        session.execute(text("""
+        """)
+        )
+        session.execute(
+            text("""
             INSERT INTO routine_jobs
                 (name, routine_kind, next_run_at, locked_by, locked_at,
                  payload, created_by)
             VALUES ('kg:with:colon', 'kg-drain', CURRENT_TIMESTAMP,
                     'luna-drainer', '2026-09-07 00:00:00', '{"x": 1}', 'factory')
-        """))
+        """)
+        )
         session.commit()
     monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
     monkeypatch.setattr(drainer_router, "get_engine", lambda: engine)
@@ -383,11 +387,13 @@ def test_real_quarantine_holds_before_reaper_cancels(monkeypatch, tmp_path):
         id=2797, node_key="node", local_session_id="wf:node:kg:with:colon"
     )
     monkeypatch.setattr(
-        drainer_router.agent_session_store, "sessions_for_workflow",
+        drainer_router.agent_session_store,
+        "sessions_for_workflow",
         lambda _session, _workflow: [unknown],
     )
     monkeypatch.setattr(
-        drainer_router.agent_session_store, "has_unknown_outcome",
+        drainer_router.agent_session_store,
+        "has_unknown_outcome",
         lambda _session, _session_id: True,
     )
     events = []
@@ -395,34 +401,49 @@ def test_real_quarantine_holds_before_reaper_cancels(monkeypatch, tmp_path):
     class FakeDBOS:
         def list_workflow_steps(self, _workflow_id, load_output=False):
             if load_output:
-                return [{
-                    "function_name": "claim_drainer_job",
-                    "output": {"name": "kg:with:colon", "locked_by": "luna-drainer",
-                               "locked_at": "2026-09-07T00:00:00+00:00"},
-                }]
+                return [
+                    {
+                        "function_name": "claim_drainer_job",
+                        "output": {
+                            "name": "kg:with:colon",
+                            "locked_by": "luna-drainer",
+                            "locked_at": "2026-09-07T00:00:00+00:00",
+                        },
+                    }
+                ]
             return []
 
         def cancel_workflow(self, workflow_id, cancel_children=False):
             with Session(engine) as session:
-                events.append(session.execute(text(
-                    "SELECT last_status, next_run_at, locked_by, locked_at "
-                    "FROM routine_jobs WHERE name = 'kg:with:colon'"
-                )).one())
+                events.append(
+                    session.execute(
+                        text(
+                            "SELECT last_status, next_run_at, locked_by, locked_at "
+                            "FROM routine_jobs WHERE name = 'kg:with:colon'"
+                        )
+                    ).one()
+                )
 
     dbos = FakeDBOS()
     assert drainer_router._quarantine_unknown_outcome_jobs(dbos, "wf")
     with Session(engine) as session:
-        held = session.execute(text(
-            "SELECT last_status, next_run_at, locked_by, locked_at, payload, created_by "
-            "FROM routine_jobs"
-        )).one()
+        held = session.execute(
+            text(
+                "SELECT last_status, next_run_at, locked_by, locked_at, payload, created_by "
+                "FROM routine_jobs"
+            )
+        ).one()
     assert held.last_status == routine_jobs.UNKNOWN_INVOCATION
-    assert held.next_run_at is None and held.locked_by is None and held.locked_at is None
+    assert (
+        held.next_run_at is None and held.locked_by is None and held.locked_at is None
+    )
     assert (held.payload, held.created_by) == ('{"x": 1}', "factory")
 
     monkeypatch.setattr(drainer_router.time, "time", lambda: 5000)
     monkeypatch.setattr(drainer_router, "_REAPER_STALENESS_SECONDS", 1)
-    dbos.list_workflows = lambda **_kwargs: [SimpleNamespace(workflow_id="wf", updated_at=0)]
+    dbos.list_workflows = lambda **_kwargs: [
+        SimpleNamespace(workflow_id="wf", updated_at=0)
+    ]
     monkeypatch.setattr(drainer_router.asyncio, "run", lambda coro: coro.close())
     assert drainer_router._reap_stale_drain_cycles(dbos) == 1
     assert events and events[0].last_status == routine_jobs.UNKNOWN_INVOCATION
@@ -431,20 +452,34 @@ def test_real_quarantine_holds_before_reaper_cancels(monkeypatch, tmp_path):
 def test_real_quarantine_fails_closed_without_admission(monkeypatch, tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'fail-closed.db'}")
     with Session(engine) as session:
-        session.execute(text("CREATE TABLE routine_jobs (name TEXT PRIMARY KEY, "
-                             "next_run_at TEXT, last_status TEXT, last_summary TEXT, "
-                             "locked_by TEXT, locked_at TEXT)"))
-        session.execute(text("INSERT INTO routine_jobs VALUES "
-                             "('kg:blocked', CURRENT_TIMESTAMP, NULL, NULL, "
-                             "'luna-drainer', '2026-09-07 00:00:00')"))
+        session.execute(
+            text(
+                "CREATE TABLE routine_jobs (name TEXT PRIMARY KEY, "
+                "next_run_at TEXT, last_status TEXT, last_summary TEXT, "
+                "locked_by TEXT, locked_at TEXT)"
+            )
+        )
+        session.execute(
+            text(
+                "INSERT INTO routine_jobs VALUES "
+                "('kg:blocked', CURRENT_TIMESTAMP, NULL, NULL, "
+                "'luna-drainer', '2026-09-07 00:00:00')"
+            )
+        )
         session.commit()
     monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
     monkeypatch.setattr(drainer_router, "get_engine", lambda: engine)
     row = SimpleNamespace(id=1, node_key="node", local_session_id="wf:node:kg:blocked")
-    monkeypatch.setattr(drainer_router.agent_session_store, "sessions_for_workflow",
-                        lambda _session, _workflow: [row])
-    monkeypatch.setattr(drainer_router.agent_session_store, "has_unknown_outcome",
-                        lambda _session, _id: True)
+    monkeypatch.setattr(
+        drainer_router.agent_session_store,
+        "sessions_for_workflow",
+        lambda _session, _workflow: [row],
+    )
+    monkeypatch.setattr(
+        drainer_router.agent_session_store,
+        "has_unknown_outcome",
+        lambda _session, _id: True,
+    )
 
     class FakeDBOS:
         def list_workflow_steps(self, _workflow_id, load_output=True):
@@ -452,9 +487,9 @@ def test_real_quarantine_fails_closed_without_admission(monkeypatch, tmp_path):
 
     assert not drainer_router._quarantine_unknown_outcome_jobs(FakeDBOS(), "wf")
     with Session(engine) as session:
-        untouched = session.execute(text(
-            "SELECT last_status, locked_by FROM routine_jobs"
-        )).one()
+        untouched = session.execute(
+            text("SELECT last_status, locked_by FROM routine_jobs")
+        ).one()
     assert (untouched.last_status, untouched.locked_by) == (None, "luna-drainer")
 
 
