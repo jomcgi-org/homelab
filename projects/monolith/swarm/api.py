@@ -19,7 +19,7 @@ def get_decision_reference(session, decision_id: int) -> dict | None:
     """Read one exact decision for knowledge association."""
     from swarm.models import SwarmDecision
 
-    row = session.get(SwarmDecision, decision_id)
+    row = session.get(SwarmDecision, decision_id, populate_existing=True)
     if row is None:
         return None
     return {

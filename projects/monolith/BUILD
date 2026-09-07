@@ -6763,10 +6763,12 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_auth",
+        ":pkg_core",
         ":pkg_cyclegroup",
         ":pkg_knowledge",
         ":swarm_factory_controls",
         "@pip//fastapi",
+        "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlalchemy",

@@ -17,6 +17,7 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.dialects.postgresql import JSONB
@@ -340,7 +341,9 @@ class Dispute(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fac
     )
 
 
-class Intervention(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class Intervention(
+    SQLModel, table=True
+):  # nosemgrep: sqlmodel-datetime-without-factory
     """Human lifecycle for a retained distress raw."""
 
     __tablename__ = "interventions"
@@ -364,22 +367,36 @@ class Intervention(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-withou
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(
-            DateTime(timezone=True), nullable=False, server_default="now()"
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
         ),
     )
     responder_subject: str | None = None
     acknowledged_by_subject: str | None = None
     acknowledged_at: datetime | None = None
+    acknowledged_request_revision: int | None = None
     decision_id: int | None = None
+    decision_state: str | None = None
+    associated_by_subject: str | None = None
+    associated_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    decision_request_revision: int | None = None
     workflow_id: str | None = None
     node_key: str | None = None
     disposition: str | None = None
     resolution: str | None = None
     resolved_at: datetime | None = None
+    resolved_request_revision: int | None = None
     revision: int = Field(
         default=1, sa_column=Column(Integer, nullable=False, server_default="1")
     )
     evidence_raw_id: str | None = None
+    evidence_by_subject: str | None = None
+    evidence_submitted_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
 
 
 class Gap(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
