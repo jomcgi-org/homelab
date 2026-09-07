@@ -119,19 +119,26 @@ func (a *activator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// That is bounded by the node live-VM cap and the workload max-instances and
 	// reaped by idle-bank, so it self-heals; Phase 1 tolerates it rather than
 	// holding a lock across the whole boot.
-	if live, ok := a.server.servingVMs.firstByWorkload(workload); ok {
-		a.proxy(w, r, live)
-		return
+	candidates := a.server.servingVMs.snapshotByWorkload(workload)
+	for _, live := range candidates {
+		if r.Context().Err() != nil {
+			return
+		}
+		if a.server.servingVMs.withHealthyFreshSplice(live, time.Now(), func() {
+			a.proxy(w, r, live)
+		}) {
+			return
+		}
 	}
 
-	// ADR embervm/037: a silenced brick wakes nothing new. Splice-through above
-	// still serves an already-live VM; only the boot path stops here.
+	// ADR embervm/037: a silenced brick wakes nothing new. Healthy/fresh
+	// splice-through above still serves an already-live VM, and stale cleanup
+	// must also wait behind this gate.
 	if err := a.server.refuseIfSilenced("activator serving wake"); err != nil {
 		a.server.logger.Warn("activator: refusing serving wake", "workload", workload, "err", err)
 		http.Error(w, status.Convert(err).Message(), http.StatusServiceUnavailable)
 		return
 	}
-
 	body, err := readActivatorBody(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
@@ -147,6 +154,15 @@ func (a *activator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer a.unpark()
 
 	if leader {
+		// Cleanup belongs to the admitted leader, not the pre-admission miss
+		// path. The candidate set is fixed above, so this cannot chase entries
+		// registered by this wake or synchronously reap without a wake slot.
+		for _, live := range candidates {
+			if live.healthyAndFresh(time.Now()) || live.isBanking() {
+				continue
+			}
+			a.withdraw(live)
+		}
 		entry, bootErr := a.boot(workload, reg)
 		a.complete(workload, flight, entry, bootErr)
 	}
@@ -165,6 +181,21 @@ func (a *activator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.proxyBuffered(w, r, body, flight.entry)
+}
+
+// withdraw removes an endpoint that the activator must not splice into. The
+// registry removal withdraws it from NodeStatus, while reaping releases the
+// VM and its DNAT/tap resources before the bounded wake path starts.
+func (a *activator) withdraw(entry *servingEntry) {
+	removed, ok := a.server.servingVMs.withdrawIfIdle(entry)
+	if !ok {
+		return
+	}
+	removed.probe.Stop()
+	if err := a.server.reapServing(removed.handle, removed.ip); err != nil {
+		a.server.logger.Warn("activator: failed to reap withdrawn serving vm", "workload", removed.workload, "vm", removed.vmID, "err", err)
+	}
+	a.server.signalChange()
 }
 
 // join accounts for one parked request and either joins the workload's existing
@@ -237,12 +268,13 @@ func (a *activator) boot(workload string, reg workloadEntry) (*servingEntry, err
 		}
 		req.Source = &nodev1.StartServingRequest_Fresh{Fresh: &nodev1.FreshSource{ServingImageRef: image.baseKey}}
 	}
-	if _, err := a.server.startServing(context.Background(), req, nodev1.InstanceOrigin_INSTANCE_ORIGIN_ACTIVATOR); err != nil {
+	started, err := a.server.startServing(context.Background(), req, nodev1.InstanceOrigin_INSTANCE_ORIGIN_ACTIVATOR)
+	if err != nil {
 		return nil, err
 	}
-	entry, ok := a.server.servingVMs.firstByWorkload(workload)
+	entry, ok := a.server.servingVMs.byID(started.GetVmId())
 	if !ok {
-		return nil, fmt.Errorf("noded: activated serving vm for workload %q was not registered", workload)
+		return nil, fmt.Errorf("noded: activated serving vm %q for workload %q was not registered", started.GetVmId(), workload)
 	}
 	return entry, nil
 }

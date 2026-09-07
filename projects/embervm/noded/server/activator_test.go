@@ -9,10 +9,14 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
+
+	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
+	"github.com/jomcgi/homelab/projects/embervm/noded/substrate"
 )
 
 type activatorRoundTripper func(*http.Request) (*http.Response, error)
@@ -81,16 +85,22 @@ func waitForActivatorParked(t *testing.T, a *activator, expected int) {
 func TestActivatorStragglerProxiesLiveVM(t *testing.T) {
 	var calls int
 	port, _ := activatorGuest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
 		if r.URL.Path == defaultReadyPath {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+		calls++
 		_, _ = w.Write([]byte("live"))
 	}))
 	s, _, driver := newServingTestServer(t)
 	enableActivatorWorkload(s, "wl-serve", port)
-	s.servingVMs.add(&servingEntry{vmID: "already-live", workload: "wl-serve", ip: net.ParseIP("127.0.0.1"), port: port})
+	probe := serving.StartProbe(serving.NewProber(5*time.Millisecond, 1), net.ParseIP("127.0.0.1"), port, defaultReadyPath)
+	t.Cleanup(func() {
+		probe.Stop()
+		<-probe.Done()
+	})
+	s.servingVMs.add(&servingEntry{vmID: "already-live", workload: "wl-serve", ip: net.ParseIP("127.0.0.1"), port: port, probe: probe})
+	time.Sleep(15 * time.Millisecond)
 
 	rec := activatorRequest(t, s.ActivatorHandler(), "wl-serve", "/invoke", "request")
 	if rec.Code != http.StatusOK || rec.Body.String() != "live" {
@@ -101,6 +111,197 @@ func TestActivatorStragglerProxiesLiveVM(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("guest calls = %d, want 1", calls)
+	}
+}
+
+func TestActivatorWithdrawsUnhealthyRegisteredVM(t *testing.T) {
+	var allowReplacement atomic.Bool
+	port, _ := activatorGuest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == defaultReadyPath && !allowReplacement.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("replacement"))
+	}))
+	s, _, driver := newServingTestServer(t)
+	enableActivatorWorkload(s, "wl-serve", port)
+	probe := serving.StartProbe(serving.NewProber(time.Millisecond, 1), net.ParseIP("127.0.0.1"), port, defaultReadyPath)
+	t.Cleanup(func() {
+		probe.Stop()
+		<-probe.Done()
+	})
+	s.servingVMs.add(&servingEntry{
+		vmID: "unhealthy", workload: "wl-serve", handle: substrate.Handle{ID: "unhealthy", ThreadID: "unhealthy"},
+		ip: net.ParseIP("127.0.0.1"), port: port, probe: probe,
+	})
+	deadline := time.Now().Add(time.Second)
+	for probe.Result().Healthy {
+		if time.Now().After(deadline) {
+			t.Fatal("probe did not report unhealthy")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	probe.Stop()
+	<-probe.Done()
+	allowReplacement.Store(true)
+
+	rec := activatorRequest(t, s.ActivatorHandler(), "wl-serve", "/invoke", "request")
+	if rec.Code != http.StatusOK || rec.Body.String() != "replacement" {
+		t.Fatalf("activator response = %d %q, want 200 replacement", rec.Code, rec.Body.String())
+	}
+	if driver.claims != 1 {
+		t.Errorf("ClaimServing calls = %d, want 1", driver.claims)
+	}
+	if _, ok := s.servingVMs.firstByWorkload("wl-serve"); !ok {
+		t.Fatal("replacement serving VM was not registered")
+	}
+}
+
+func TestActivatorWithdrawsStaleRegisteredVM(t *testing.T) {
+	port, _ := activatorGuest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("replacement"))
+	}))
+	s, _, driver := newServingTestServer(t)
+	enableActivatorWorkload(s, "wl-serve", port)
+	probe := serving.StartProbe(serving.NewProber(time.Millisecond, 1), net.ParseIP("127.0.0.1"), port, defaultReadyPath)
+	t.Cleanup(func() {
+		probe.Stop()
+		<-probe.Done()
+	})
+	s.servingVMs.add(&servingEntry{
+		vmID: "stale", workload: "wl-serve", handle: substrate.Handle{ID: "stale", ThreadID: "stale"},
+		ip: net.ParseIP("127.0.0.1"), port: port, probe: probe,
+	})
+	time.Sleep(20 * time.Millisecond)
+	probe.Stop()
+	<-probe.Done()
+	time.Sleep(20 * time.Millisecond)
+
+	rec := activatorRequest(t, s.ActivatorHandler(), "wl-serve", "/invoke", "request")
+	if rec.Code != http.StatusOK || rec.Body.String() != "replacement" {
+		t.Fatalf("activator response = %d %q, want 200 replacement", rec.Code, rec.Body.String())
+	}
+	if driver.claims != 1 {
+		t.Errorf("ClaimServing calls = %d, want 1", driver.claims)
+	}
+}
+
+func TestActivatorDoesNotWithdrawBankingVM(t *testing.T) {
+	oldPort, _ := activatorGuest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == defaultReadyPath {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("old"))
+	}))
+	replacementPort, _ := activatorGuest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == defaultReadyPath {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		_, _ = w.Write([]byte("replacement"))
+	}))
+	s, _, driver := newServingTestServer(t)
+	enableActivatorWorkload(s, "wl-serve", replacementPort)
+	probe := serving.StartProbe(serving.NewProber(time.Millisecond, 1), net.ParseIP("127.0.0.1"), oldPort, defaultReadyPath)
+	t.Cleanup(func() {
+		probe.Stop()
+		<-probe.Done()
+	})
+	entry := &servingEntry{
+		vmID: "banking", workload: "wl-serve", handle: substrate.Handle{ID: "banking", ThreadID: "banking"},
+		ip: net.ParseIP("127.0.0.1"), port: oldPort, probe: probe,
+	}
+	s.servingVMs.add(entry)
+	deadline := time.Now().Add(time.Second)
+	for probe.Result().Healthy {
+		if time.Now().After(deadline) {
+			t.Fatal("probe did not report unhealthy")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	probe.Stop()
+	<-probe.Done()
+	if _, ok := s.servingVMs.beginBank(entry.vmID); !ok {
+		t.Fatal("beginBank failed")
+	}
+
+	rec := activatorRequest(t, s.ActivatorHandler(), "wl-serve", "/invoke", "request")
+	if rec.Code != http.StatusOK || rec.Body.String() != "replacement" {
+		t.Fatalf("activator response = %d %q, want 200 replacement", rec.Code, rec.Body.String())
+	}
+	if driver.claims != 1 {
+		t.Errorf("ClaimServing calls = %d, want 1", driver.claims)
+	}
+	s.servingVMs.mu.Lock()
+	_, stillRegistered := s.servingVMs.vms[entry.vmID]
+	s.servingVMs.mu.Unlock()
+	if !stillRegistered {
+		t.Fatal("activator withdrew a VM owned by a bank")
+	}
+}
+
+func TestActivatorSpliceReservationDoesNotBlockRegistryOrParallelSplices(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{}, 2)
+	port, _ := activatorGuest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == defaultReadyPath {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		started <- struct{}{}
+		<-release
+		_, _ = w.Write([]byte("live"))
+	}))
+	s, _, driver := newServingTestServer(t)
+	enableActivatorWorkload(s, "wl-serve", port)
+	probe := serving.StartProbe(serving.NewProber(time.Hour, 1), net.ParseIP("127.0.0.1"), port, defaultReadyPath)
+	t.Cleanup(func() {
+		probe.Stop()
+		<-probe.Done()
+	})
+	entry := &servingEntry{
+		vmID: "splicing", workload: "wl-serve", handle: substrate.Handle{ID: "splicing", ThreadID: "splicing"},
+		ip: net.ParseIP("127.0.0.1"), port: port, probe: probe,
+	}
+	s.servingVMs.add(entry)
+
+	responses := make(chan *httptest.ResponseRecorder, 2)
+	for i := 0; i < 2; i++ {
+		go func() { responses <- activatorRequest(t, s.ActivatorHandler(), "wl-serve", "/invoke", "request") }()
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("spliced request did not reach blocked guest")
+		}
+	}
+
+	registryDone := make(chan struct{})
+	go func() {
+		_ = s.servingVMs.snapshot()
+		_ = s.servingVMs.count()
+		close(registryDone)
+	}()
+	select {
+	case <-registryDone:
+	case <-time.After(time.Second):
+		t.Fatal("registry operation blocked behind spliced request")
+	}
+	if _, ok := s.servingVMs.beginBank(entry.vmID); ok {
+		t.Fatal("bank acquired an entry with active splice reservations")
+	}
+
+	release <- struct{}{}
+	release <- struct{}{}
+	for i := 0; i < 2; i++ {
+		if rec := <-responses; rec.Code != http.StatusOK || rec.Body.String() != "live" {
+			t.Errorf("spliced response = %d %q, want 200 live", rec.Code, rec.Body.String())
+		}
+	}
+	if driver.claims != 0 {
+		t.Errorf("ClaimServing calls = %d, want 0", driver.claims)
 	}
 }
 
