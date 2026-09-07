@@ -396,6 +396,7 @@ py_library(
     deps = [
         "@pip//certifi",
         "@pip//fastapi",
+        "@pip//genai_prices",
         "@pip//httpx",
         "@pip//opentelemetry_exporter_otlp_proto_http",
         "@pip//opentelemetry_instrumentation_fastapi",
@@ -2872,6 +2873,16 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
+    name = "shared_pricing_test",
+    srcs = ["shared/pricing_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_shared",
+        "@pip//pytest",
     ],
 )
 
