@@ -106,9 +106,12 @@ class TestTasks:
 class TestInterventions:
     @covers_route("/api/knowledge/interventions")
     def test_list_interventions(self, live_server_with_fake_embedding):
-        assert httpx.get(
-            f"{live_server_with_fake_embedding}/api/knowledge/interventions"
-        ).status_code < 500
+        assert (
+            httpx.get(
+                f"{live_server_with_fake_embedding}/api/knowledge/interventions"
+            ).status_code
+            < 500
+        )
 
     @covers_route("/api/knowledge/interventions/{raw_id}")
     def test_get_intervention(self, live_server_with_fake_embedding):

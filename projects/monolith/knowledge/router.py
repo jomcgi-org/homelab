@@ -45,7 +45,7 @@ from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.http_cache import _as_utc, _graph_etag, _GRAPH_CACHE_CONTROL
 from knowledge.indexing import reindex_note_with_edits
 from knowledge.ingest_queue import IngestQueueItem, ingest_raw
-from knowledge.interventions import decision_reference
+from knowledge.interventions import decision_reference, lock_intervention
 from knowledge.models import AtomRawProvenance, Intervention, RawInput
 from knowledge.notes import (
     _note_to_review_dict,
@@ -58,6 +58,7 @@ from knowledge.notes import (
     verify_note_visibility,
 )
 from knowledge.redact import redact_text
+from knowledge.raw_paths import compute_raw_id
 from knowledge.store import KnowledgeStore
 from shared.embedding import EmbeddingClient
 
@@ -80,8 +81,8 @@ def _operator(principal: Principal = Depends(get_principal)) -> Principal:
 
 class InterventionDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    decision_id: int
-    revision: int
+    decision_id: int = Field(ge=1)
+    revision: int = Field(ge=1)
 
 
 class InterventionAcknowledgeRequest(BaseModel):
@@ -105,25 +106,47 @@ def _intervention_dict(row: Intervention) -> dict:
     return {
         "raw_id": row.raw_id,
         "state": row.state,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "created_at": _as_utc(row.created_at).isoformat() if row.created_at else None,
         "responder_subject": row.responder_subject,
         "acknowledged_by_subject": row.acknowledged_by_subject,
         "acknowledged_at": (
-            row.acknowledged_at.isoformat() if row.acknowledged_at else None
+            _as_utc(row.acknowledged_at).isoformat() if row.acknowledged_at else None
         ),
+        "acknowledged_request_revision": row.acknowledged_request_revision,
         "decision_id": row.decision_id,
+        "decision_state": row.decision_state,
+        "associated_by_subject": row.associated_by_subject,
+        "associated_at": _as_utc(row.associated_at).isoformat()
+        if row.associated_at
+        else None,
+        "decision_request_revision": row.decision_request_revision,
         "workflow_id": row.workflow_id,
         "node_key": row.node_key,
         "disposition": row.disposition,
         "resolution": row.resolution,
-        "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
+        "resolved_at": _as_utc(row.resolved_at).isoformat()
+        if row.resolved_at
+        else None,
+        "resolved_request_revision": row.resolved_request_revision,
         "revision": row.revision,
         "evidence_raw_id": row.evidence_raw_id,
+        "evidence_by_subject": row.evidence_by_subject,
+        "evidence_submitted_at": (
+            _as_utc(row.evidence_submitted_at).isoformat()
+            if row.evidence_submitted_at
+            else None
+        ),
     }
 
 
-def _get_intervention(session: Session, raw_id: str) -> Intervention:
-    row = session.get(Intervention, raw_id)
+def _get_intervention(
+    session: Session, raw_id: str, *, for_update: bool = False
+) -> Intervention:
+    row = (
+        lock_intervention(session, raw_id)
+        if for_update
+        else session.get(Intervention, raw_id)
+    )
     if row is None:
         raise HTTPException(status_code=404, detail="intervention not found")
     return row
@@ -157,8 +180,11 @@ def acknowledge_intervention(
     session: Session = Depends(get_session),
     principal: Principal = Depends(_operator),
 ) -> dict:
-    row = _get_intervention(session, raw_id)
-    if row.state == "acknowledged" and row.responder_subject == principal.subject:
+    row = _get_intervention(session, raw_id, for_update=True)
+    if (
+        row.acknowledged_request_revision == data.revision
+        and row.acknowledged_by_subject == principal.subject
+    ):
         return _intervention_dict(row)
     if row.state != "open" or row.revision != data.revision:
         raise HTTPException(status_code=409, detail="intervention changed")
@@ -166,6 +192,7 @@ def acknowledge_intervention(
     row.responder_subject = principal.subject
     row.acknowledged_by_subject = principal.subject
     row.acknowledged_at = datetime.now(timezone.utc)
+    row.acknowledged_request_revision = data.revision
     row.revision += 1
     session.commit()
     session.refresh(row)
@@ -177,21 +204,37 @@ def associate_intervention_decision(
     raw_id: str,
     data: InterventionDecisionRequest,
     session: Session = Depends(get_session),
-    _principal: Principal = Depends(_operator),
+    principal: Principal = Depends(_operator),
 ) -> dict:
-    row = _get_intervention(session, raw_id)
+    row = _get_intervention(session, raw_id, for_update=True)
+    if (
+        row.decision_request_revision == data.revision
+        and row.decision_id == data.decision_id
+        and row.associated_by_subject == principal.subject
+    ):
+        return _intervention_dict(row)
     if row.revision != data.revision or row.state == "resolved":
         raise HTTPException(status_code=409, detail="intervention changed")
-    if row.decision_id == data.decision_id:
-        return _intervention_dict(row)
+    if row.decision_id is not None:
+        raise HTTPException(status_code=409, detail="decision already associated")
     reference = decision_reference(session, data.decision_id)
     if reference is None:
         raise HTTPException(status_code=404, detail="decision not found")
-    if row.decision_id is not None:
-        raise HTTPException(status_code=409, detail="decision already associated")
+    if reference["decision_id"] != data.decision_id or reference["state"] not in {
+        "open",
+        "decided",
+    }:
+        raise HTTPException(
+            status_code=409, detail="decision identity or state conflicts"
+        )
     row.decision_id = data.decision_id
     row.workflow_id = reference["workflow_id"]
     row.node_key = reference["node_key"]
+    # This is the owner's observed state at association, not a live projection.
+    row.decision_state = reference["state"]
+    row.associated_by_subject = principal.subject
+    row.associated_at = datetime.now(timezone.utc)
+    row.decision_request_revision = data.revision
     row.revision += 1
     session.commit()
     return _intervention_dict(row)
@@ -204,11 +247,12 @@ def resolve_intervention(
     session: Session = Depends(get_session),
     principal: Principal = Depends(_operator),
 ) -> dict:
-    row = _get_intervention(session, raw_id)
+    row = _get_intervention(session, raw_id, for_update=True)
     resolution, _ = redact_text(data.resolution)
     if row.state == "resolved":
         if (
             row.responder_subject == principal.subject
+            and row.resolved_request_revision == data.revision
             and row.disposition == data.disposition
             and row.resolution == resolution
         ):
@@ -226,6 +270,7 @@ def resolve_intervention(
     row.disposition = data.disposition
     row.resolution = resolution
     row.resolved_at = datetime.now(timezone.utc)
+    row.resolved_request_revision = data.revision
     row.revision += 1
     session.commit()
     session.refresh(row)
@@ -237,9 +282,9 @@ def submit_intervention_evidence(
     raw_id: str,
     data: InterventionEvidenceRequest,
     session: Session = Depends(get_session),
-    _principal: Principal = Depends(_operator),
+    principal: Principal = Depends(_operator),
 ) -> dict:
-    row = _get_intervention(session, raw_id)
+    row = _get_intervention(session, raw_id, for_update=True)
     if row.state != "resolved" or row.resolution is None:
         raise HTTPException(status_code=409, detail="intervention is not resolved")
     evidence, _ = redact_text(data.evidence)
@@ -248,20 +293,47 @@ def submit_intervention_evidence(
         f"## Resolution ({row.disposition})\n\n{row.resolution}\n\n"
         f"## Evidence\n\n{evidence}\n"
     )
-    raw, _created = ingest_raw_with_status(
-        session,
-        content=content,
-        source="agent-report",
-        extra={"intervention_id": raw_id, "verification_state": "unverified"},
-        commit=False,
-    )
-    if row.evidence_raw_id is not None and row.evidence_raw_id != raw.raw_id:
-        session.rollback()
-        raise HTTPException(status_code=409, detail="evidence payload conflicts")
-    row.evidence_raw_id = raw.raw_id
-    session.commit()
+    evidence_raw_id = compute_raw_id(content)
+    if row.evidence_raw_id is not None:
+        if (
+            row.evidence_raw_id != evidence_raw_id
+            or row.evidence_by_subject != principal.subject
+        ):
+            raise HTTPException(status_code=409, detail="evidence request conflicts")
+    else:
+        try:
+            raw, _created = ingest_raw_with_status(
+                session,
+                content=content,
+                source="agent-report",
+                extra={
+                    "intervention_id": raw_id,
+                    "verification_state": "unverified",
+                    "reporter_subject": principal.subject,
+                    "reporter_authority": principal.authority.value,
+                    "reporter_kind": principal.kind.value,
+                },
+                commit=False,
+            )
+            if (
+                raw.raw_id != evidence_raw_id
+                or raw.source != "agent-report"
+                or raw.extra.get("reporter_subject") != principal.subject
+                or raw.extra.get("intervention_id") != raw_id
+            ):
+                raise HTTPException(
+                    status_code=409, detail="evidence provenance conflicts"
+                )
+            row.evidence_raw_id = raw.raw_id
+            row.evidence_by_subject = principal.subject
+            row.evidence_submitted_at = datetime.now(timezone.utc)
+            row.revision += 1
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
     return {
-        "raw_id": raw.raw_id,
+        "raw_id": evidence_raw_id,
         "intervention_id": raw_id,
         "verification_state": "unverified",
     }
