@@ -167,6 +167,34 @@ def test_artifact_failure_is_terminal_without_internal_retry(harness):
     assert len(harness.starts) == 1
 
 
+def test_first_planner_completes_before_task_branch_exists(harness, monkeypatch):
+    import httpx
+    from swarm import steps
+
+    requests = []
+    client_type = httpx.Client
+
+    def missing_branch(request):
+        requests.append(request.url.path)
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    monkeypatch.setattr(
+        steps.httpx,
+        "Client",
+        lambda **kwargs: client_type(
+            transport=httpx.MockTransport(missing_branch), **kwargs
+        ),
+    )
+    monkeypatch.setattr(nodes, "read_branch_head", steps.read_branch_head.__wrapped__)
+    result = nodes.execute_node.__wrapped__(pin(node_key="conductor_1", model="opus"))
+    assert result["status"] == "succeeded"
+    assert result["head_sha"] is None
+    assert result["value"] == {"ok": True}
+    assert requests == ["/repos/org/repo/git/ref/heads/factory/11"]
+    assert len(harness.starts) == 1
+    assert harness.cleanups == ["parent-run"]
+
+
 @pytest.mark.parametrize("cost", [None, float("nan"), float("inf"), -1, True, "1.0"])
 def test_missing_or_invalid_usage_consumes_reservation_without_inventing_uncertainty(
     harness, cost
