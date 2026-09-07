@@ -59,8 +59,9 @@ Prepare these facts before creating either deployment:
   1Password source. CNPG requires the `monolith-dev` copy to have
   `kubernetes.io/basic-auth` type, `username`/`password` keys and its reload
   label. The Ember copy supplies only its op-log connection. Follow the
-  existing [op-log credential procedure](../../deploy/embervm-oplog-secret.md)
-  with these dev identities; do not execute its production examples unchanged.
+  [recovery Secret delivery procedure](recovery-network.md#secret-delivery).
+  Its inactive OnePasswordItems use the installed Operator's typed-Secret and
+  label support; do not execute the older production manual-copy examples.
   Verify the role/database/host join and reject production connection strings.
 - Provision the dedicated Authentik `mcp-recovery` provider and
   `kg-agent-recovery-sa` principal. Join the issuer, audience
@@ -70,7 +71,10 @@ Prepare these facts before creating either deployment:
   broker grant through its own login; copying production refresh state can
   interfere with rotation and is not part of this plan.
 - Prepare GKE-native network policies and verify effective permissions with
-  the actual service accounts. Cilium policies are disabled because the hub
+  the actual service accounts. The inactive
+  [native policy and connection matrix](recovery-network.md) supplies these
+  rules, with explicit live checks before admission. Cilium policies are
+  disabled because the hub
   has no Cilium CRDs. Both `noded.networkPolicy` and
   `tokenBroker.networkPolicy` gate `cilium.io/v2` resources. A disabled Cilium
   template is not network isolation. `egress.internal` governs the guest

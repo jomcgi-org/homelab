@@ -7994,3 +7994,14 @@ semgrep_target_test(
     rules = ["//bazel/semgrep/rules:python_rules"],
     target = ":main_agents",
 )
+
+# Static boundary contract for the inactive GKE recovery manifests.
+py_test(
+    name = "recovery_network_test",
+    srcs = ["recovery_network_test.py"],
+    data = ["//projects/monolith/dev/deploy:recovery_support_manifests"],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)

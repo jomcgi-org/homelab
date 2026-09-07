@@ -15,3 +15,13 @@ filegroup(
     srcs = ["values-recovery-gke.yaml"],
     visibility = ["//projects/monolith/chart:__pkg__"],
 )
+
+filegroup(
+    name = "recovery_support_manifests",
+    srcs = [
+        "recovery-network-policy.yaml",
+        "recovery-secrets.yaml",
+        "values-recovery-gke.yaml",
+    ],
+    visibility = ["//projects/monolith:__pkg__"],
+)

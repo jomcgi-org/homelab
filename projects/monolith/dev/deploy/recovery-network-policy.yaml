@@ -1,0 +1,461 @@
+# Inactive GKE Dataplane V2 profile for the two fixed recovery namespaces.
+# Apply before recovery workloads, only under the reviewed activation plan.
+# API endpoint and DNS service are live-cluster facts to revalidate first.
+# Public TCP 443 is deliberately broad, not an FQDN allowlist. See
+# recovery-network.md for the flow matrix, host-network limits and live checks.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: recovery-default-deny
+  namespace: monolith-dev
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress: []
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: recovery-default-deny
+  namespace: embervm-dev
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress: []
+  egress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: recovery-backend
+  namespace: monolith-dev
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: monolith
+      app.kubernetes.io/instance: monolith-dev
+      app.kubernetes.io/component: app
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: embervm-dev
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: embervm-noded
+          app.kubernetes.io/instance: embervm-dev
+          app.kubernetes.io/component: noded-brick
+    ports:
+    - protocol: TCP
+      port: 8000
+    - protocol: TCP
+      port: 8091
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    - ipBlock:
+        cidr: 10.10.16.10/32
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 0.0.0.0/8
+        - 10.0.0.0/8
+        - 100.64.0.0/10
+        - 127.0.0.0/8
+        - 169.254.0.0/16
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 224.0.0.0/4
+        - 240.0.0.0/4
+    ports:
+    - protocol: TCP
+      port: 443
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monolith-dev
+      podSelector:
+        matchLabels:
+          cnpg.io/cluster: monolith-dev-pg
+    ports:
+    - protocol: TCP
+      port: 5432
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: embervm-dev
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: embervm
+          app.kubernetes.io/instance: embervm-dev
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: embervm-dev
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: embervm-tokenbroker
+          app.kubernetes.io/instance: embervm-dev
+          app.kubernetes.io/component: tokenbroker
+    ports:
+    - protocol: TCP
+      port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: recovery-control-plane
+  namespace: embervm-dev
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: embervm
+      app.kubernetes.io/instance: embervm-dev
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monolith-dev
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: monolith
+          app.kubernetes.io/instance: monolith-dev
+          app.kubernetes.io/component: app
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: embervm-dev
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: embervm-noded
+          app.kubernetes.io/instance: embervm-dev
+          app.kubernetes.io/component: noded-brick
+    ports:
+    - protocol: TCP
+      port: 8080
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    - ipBlock:
+        cidr: 10.10.16.10/32
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - ipBlock:
+        cidr: 10.10.0.2/32
+    ports:
+    - protocol: TCP
+      port: 443
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 0.0.0.0/8
+        - 10.0.0.0/8
+        - 100.64.0.0/10
+        - 127.0.0.0/8
+        - 169.254.0.0/16
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 224.0.0.0/4
+        - 240.0.0.0/4
+    ports:
+    - protocol: TCP
+      port: 443
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: embervm-dev
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: embervm-noded
+          app.kubernetes.io/instance: embervm-dev
+          app.kubernetes.io/component: noded-brick
+    ports:
+    - protocol: TCP
+      port: 9090
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monolith-dev
+      podSelector:
+        matchLabels:
+          cnpg.io/cluster: monolith-dev-pg
+    ports:
+    - protocol: TCP
+      port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: recovery-tokenbroker
+  namespace: embervm-dev
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: embervm-tokenbroker
+      app.kubernetes.io/instance: embervm-dev
+      app.kubernetes.io/component: tokenbroker
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monolith-dev
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: monolith
+          app.kubernetes.io/instance: monolith-dev
+          app.kubernetes.io/component: app
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: embervm-dev
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: embervm-noded
+          app.kubernetes.io/instance: embervm-dev
+          app.kubernetes.io/component: noded-brick
+    ports:
+    - protocol: TCP
+      port: 8080
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    - ipBlock:
+        cidr: 10.10.16.10/32
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - ipBlock:
+        cidr: 10.10.0.2/32
+    ports:
+    - protocol: TCP
+      port: 443
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 0.0.0.0/8
+        - 10.0.0.0/8
+        - 100.64.0.0/10
+        - 127.0.0.0/8
+        - 169.254.0.0/16
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 224.0.0.0/4
+        - 240.0.0.0/4
+    ports:
+    - protocol: TCP
+      port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: recovery-noded
+  namespace: embervm-dev
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: embervm-noded
+      app.kubernetes.io/instance: embervm-dev
+      app.kubernetes.io/component: noded-brick
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: embervm-dev
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: embervm
+          app.kubernetes.io/instance: embervm-dev
+    ports:
+    - protocol: TCP
+      port: 9090
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    - ipBlock:
+        cidr: 10.10.16.10/32
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 0.0.0.0/8
+        - 10.0.0.0/8
+        - 100.64.0.0/10
+        - 127.0.0.0/8
+        - 169.254.0.0/16
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 224.0.0.0/4
+        - 240.0.0.0/4
+    ports:
+    - protocol: TCP
+      port: 443
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: embervm-dev
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: embervm
+          app.kubernetes.io/instance: embervm-dev
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: embervm-dev
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: embervm-tokenbroker
+          app.kubernetes.io/instance: embervm-dev
+          app.kubernetes.io/component: tokenbroker
+    ports:
+    - protocol: TCP
+      port: 8080
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monolith-dev
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: monolith
+          app.kubernetes.io/instance: monolith-dev
+          app.kubernetes.io/component: app
+    ports:
+    - protocol: TCP
+      port: 8000
+    - protocol: TCP
+      port: 8091
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: recovery-postgres
+  namespace: monolith-dev
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: monolith-dev-pg
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monolith-dev
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: monolith
+          app.kubernetes.io/instance: monolith-dev
+          app.kubernetes.io/component: app
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: embervm-dev
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: embervm
+          app.kubernetes.io/instance: embervm-dev
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monolith-dev
+      podSelector:
+        matchLabels:
+          cnpg.io/cluster: monolith-dev-pg
+    ports:
+    - protocol: TCP
+      port: 5432
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: cnpg-system
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: cloudnative-pg
+          app.kubernetes.io/instance: cnpg
+    ports:
+    - protocol: TCP
+      port: 5432
+    - protocol: TCP
+      port: 8000
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    - ipBlock:
+        cidr: 10.10.16.10/32
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - ipBlock:
+        cidr: 10.10.0.2/32
+    ports:
+    - protocol: TCP
+      port: 443
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monolith-dev
+      podSelector:
+        matchLabels:
+          cnpg.io/cluster: monolith-dev-pg
+    ports:
+    - protocol: TCP
+      port: 5432
