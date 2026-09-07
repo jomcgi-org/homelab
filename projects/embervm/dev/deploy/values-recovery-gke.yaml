@@ -23,6 +23,14 @@
 rbac:
   scope: namespace
   secretNames: []
+# Do not inherit the shared registry credential from chart defaults. The
+# isolated item must carry a registry-read-only .dockerconfigjson field.
+imagePullSecret:
+  enabled: true
+  create: true
+  name: embervm-recovery-imagepull-secret
+  onepassword:
+    itemPath: vaults/k8s-homelab/items/embervm-recovery-ghcr-read
 opLog:
   postgres:
     enabled: true

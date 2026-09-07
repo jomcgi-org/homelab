@@ -41,7 +41,9 @@ Prepare these facts before creating either deployment:
   the selected node has the existing scratch mount; use only its disjoint
   `/var/lib/embervm/scratch/recovery` subtree.
 - Provision the planned recovery-only object-store bucket, scoped GCS HMAC
-  identity, KEK and noded bearer secret through dedicated 1Password items.
+  identity, KEK, noded bearer and registry-read-only pull credential through
+  dedicated 1Password items. The registry item supplies `.dockerconfigjson` to
+  `embervm-recovery-imagepull-secret`; do not inherit the shared pull item.
   Names in the preset are planned identities, not evidence they exist. Do not
   reuse production credentials or grant the recovery identity access to the
   production base bucket.

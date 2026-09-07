@@ -1666,6 +1666,7 @@ def test_recovery_lane_isolation(recovery_render) -> None:
         d["spec"]["itemPath"] for d in documents if d.get("kind") == "OnePasswordItem"
     ]
     assert set(items) == {
+        "vaults/k8s-homelab/items/embervm-recovery-ghcr-read",
         "vaults/k8s-homelab/items/embervm-recovery-oplog-db",
         "vaults/k8s-homelab/items/embervm-recovery-noded-token",
         "vaults/k8s-homelab/items/embervm-recovery-store",
@@ -1677,6 +1678,9 @@ def test_recovery_lane_isolation(recovery_render) -> None:
         )
         pod = document["spec"]["template"]["spec"]
         assert pod["nodeSelector"] == {"homelab.io/firecracker": "true"}
+        assert pod["imagePullSecrets"] == [
+            {"name": "embervm-recovery-imagepull-secret"}
+        ]
         assert {c["name"] for c in pod["initContainers"]} == {
             "build-runtime-claude-rootfs",
             "build-sandbox-python-rootfs",
