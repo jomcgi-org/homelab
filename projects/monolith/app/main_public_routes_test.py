@@ -57,6 +57,7 @@ def _paths() -> set[str]:
 # ---------------------------------------------------------------------------
 
 REQUIRED_PATHS = [
+    "/api/agents/public/activity",
     "/api/knowledge/public/graph",
     "/api/knowledge/public/entities",
     "/api/knowledge/public/notes/{note_id}",
@@ -128,6 +129,7 @@ ALLOWED_PREFIXES = (
     # SSR-only Scotland WC2026 qualification summary (kept off the public
     # HTTPRoute; reached only via the in-pod SSR fetch, never directly).
     "/api/wc2026",
+    "/api/agents/public",
     "/api/knowledge/public",
     "/api/home/observability",
     "/api/agents/public",
@@ -226,6 +228,26 @@ def test_no_schedule_chat_scheduler_agent_paths():
                 assert p.startswith("/api/agents/public"), (
                     f"private path {p!r} under {prefix!r} leaked"
                 )
+
+
+def test_public_agent_activity_accepts_get_only():
+    def iter_routes(routes):
+        for route in routes:
+            yield route
+            sub = getattr(route, "routes", None)
+            if sub is None:
+                original = getattr(route, "original_router", None)
+                sub = getattr(original, "routes", None) if original else None
+            if sub:
+                yield from iter_routes(sub)
+
+    activity_routes = [
+        route
+        for route in iter_routes(app.routes)
+        if getattr(route, "path", None) == "/api/agents/public/activity"
+    ]
+    assert len(activity_routes) == 1
+    assert activity_routes[0].methods == {"GET"}
 
 
 def test_specific_private_knowledge_paths_absent():

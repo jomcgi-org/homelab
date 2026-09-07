@@ -2020,6 +2020,9 @@ py_library(
     name = "monolith_public_backend",
     srcs = glob(
         [
+            "agent_sessions/__init__.py",
+            "agent_sessions/public_module.py",
+            "agent_sessions/public_router.py",
             "app/**/*.py",
             "core/**/*.py",
             "framework/**/*.py",
@@ -2099,6 +2102,9 @@ py_venv_binary(
     name = "main_public",
     srcs = glob(
         [
+            "agent_sessions/__init__.py",
+            "agent_sessions/public_module.py",
+            "agent_sessions/public_router.py",
             "app/**/*.py",
             "core/**/*.py",
             "framework/**/*.py",
@@ -7494,6 +7500,13 @@ bdd_test(
     srcs = ["public_knowledge_views_test.py"],
 )
 
+# Real-Postgres test: agent activity views expose aggregate columns only,
+# tolerate empty usage payloads, and grant public_reader only the views.
+bdd_test(
+    name = "public_agent_activity_views_test",
+    srcs = ["agent_sessions/public_agent_activity_views_test.py"],
+)
+
 # Real-Postgres test: the public_writer role can DML only the chat_public schema,
 # is denied other schemas, and public_reader can never write chat_public
 # (ADR 005). Uses the bdd_test harness for the pg fixture + applied migrations.
@@ -8139,6 +8152,21 @@ py_test(
         "@pip//httpx",
         "@pip//pytest",
         "@pip//sqlmodel",
+    ],
+)
+
+# Hand-registered (agent_sessions is gazelle-excluded): aggregate response
+# shaping, view-only queries, cache headers, conditional ETags, and failures.
+py_test(
+    name = "agent_sessions_public_agent_activity_router_test",
+    srcs = ["agent_sessions/public_agent_activity_router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_public_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
     ],
 )
 

@@ -150,6 +150,10 @@ export const TRIPS_CACHE_CONTROL =
 export const CAMPSITES_SNAPSHOT_CACHE_CONTROL =
   "public, max-age=0, s-maxage=60, stale-while-revalidate=3600, stale-if-error=86400";
 
+// /slop/factory/activity: public aggregate agent activity, refreshed every 5 min.
+// Mirrors _ACTIVITY_CACHE_CONTROL in agent_sessions/public_router.py.
+export const AGENT_ACTIVITY_CACHE_CONTROL = "public, max-age=300, s-maxage=300";
+
 // /app/grimoire read API (the api/[...path] catch-all JSON + binary image proxy
 // and the book/read pagination proxy). The corpus is a read-only, near-static
 // D&D book library, so it takes an aggressive 1 h edge cache: this is the CDN
