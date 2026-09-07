@@ -9,7 +9,7 @@ from typing import Any
 from .models import Block, Session, Turn
 from .redact import Redactor
 
-FORMAT_VERSION = "claude-v1"
+FORMAT_VERSION = "claude-v2"
 IGNORED_USER_PREFIXES = (
     "<command-name>",
     "<local-command-stdout>",
@@ -17,6 +17,16 @@ IGNORED_USER_PREFIXES = (
 )
 TASK_NOTIFICATION = "<task-notification>"
 BASH_STDOUT = "<bash-stdout>"
+USAGE_FIELDS = (
+    ("input_tokens", "input_tokens"),
+    ("output_tokens", "output_tokens"),
+    ("cache_read_input_tokens", "cache_read_tokens"),
+    ("cache_creation_input_tokens", "cache_write_tokens"),
+)
+
+
+def _token_count(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _texts(content: object) -> list[str]:
@@ -68,6 +78,36 @@ def parse(path: Path) -> Session:
     cwd = ""
     branch: str | None = None
     model: str | None = None
+    models: set[str] = set()
+    usage_totals = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+    }
+    usage_messages = 0
+    seen_message_ids: set[str] = set()
+
+    for record in records:
+        if record.get("type") != "assistant":
+            continue
+        message = record.get("message")
+        if not isinstance(message, dict):
+            continue
+        if isinstance(message.get("model"), str):
+            models.add(message["model"])
+        message_usage = message.get("usage")
+        if not isinstance(message_usage, dict):
+            continue
+        message_id = message.get("id")
+        if isinstance(message_id, str):
+            if message_id in seen_message_ids:
+                continue
+            seen_message_ids.add(message_id)
+        usage_messages += 1
+        for source, target in USAGE_FIELDS:
+            usage_totals[target] += _token_count(message_usage.get(source))
 
     for record in records:
         if record.get("isSidechain") is True or record.get("isMeta") is True:
@@ -148,4 +188,10 @@ def parse(path: Path) -> Session:
         records_kept=kept,
         collector_version=FORMAT_VERSION,
         turns=turns,
+        usage={
+            **usage_totals,
+            "messages": usage_messages,
+            "shape": "claude",
+        },
+        models=sorted(models),
     )

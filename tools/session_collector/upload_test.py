@@ -9,7 +9,9 @@ import httpx
 import pytest
 
 from tools.cli.auth import read_cached_cf_token
-from tools.session_collector.collector import run_collection
+from tools.session_collector.collector import _payload, run_collection
+from tools.session_collector.models import Session
+from tools.session_collector.render import render
 from tools.session_collector.scope import discover_repo
 from tools.session_collector.state import load
 
@@ -42,8 +44,15 @@ def _session(claude_dir: Path, name: str, cwd: str) -> Path:
             "cwd": cwd,
             "timestamp": "2026-01-01T00:01:00Z",
             "message": {
+                "id": f"{name}-assistant",
                 "role": "assistant",
                 "model": "test-model",
+                "usage": {
+                    "input_tokens": 100,
+                    "cache_read_input_tokens": 30,
+                    "cache_creation_input_tokens": 40,
+                    "output_tokens": 20,
+                },
                 "content": [{"type": "text", "text": "done"}],
             },
         },
@@ -92,6 +101,38 @@ def test_201_created_values_are_uploaded(tmp_path, created):
     payload = json.loads(requests[0].content)
     assert payload["source"] == "claude-session"
     assert payload["extra"]["bytes_original"] == transcript.stat().st_size
+    assert payload["extra"]["usage"] == {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "cache_read_tokens": 30,
+        "cache_write_tokens": 40,
+        "reasoning_tokens": 0,
+        "messages": 1,
+        "shape": "claude",
+    }
+    assert payload["extra"]["models"] == ["test-model"]
+
+
+def test_payload_caps_models_at_twenty():
+    session = Session(
+        provider="claude",
+        session_id="id",
+        cwd="/tmp/homelab",
+        git_branch=None,
+        model=None,
+        started_at="start",
+        ended_at="end",
+        title="title",
+        records_total=0,
+        records_kept=0,
+        collector_version="claude-v2",
+        turns=[],
+        usage=None,
+        models=[f"model-{index:02d}" for index in range(25)],
+    )
+    rendered = render(session, "jomcgi-org/homelab", "repo:jomcgi-org/homelab")
+    payload = _payload(session, rendered, 0)
+    assert payload["extra"]["models"] == session.models[:20]
 
 
 def test_302_stops_without_further_uploads(tmp_path):

@@ -16,6 +16,11 @@ headers, URL basic authentication, secret key-value pairs, Cloudflare cookies,
 1Password service tokens, and environment dumps. Redaction happens locally.
 Transcript content and secret values are never logged.
 
+The upload metadata includes an `extra.usage` field with input, output, cache,
+reasoning, and message counts. Claude transcript usage is deduplicated by
+`message.id`, and the resulting values reflect cumulative token usage for the
+whole session.
+
 Inspect a redacted transcript before enabling uploads:
 
 ```sh

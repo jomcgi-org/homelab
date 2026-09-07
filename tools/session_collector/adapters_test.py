@@ -12,6 +12,17 @@ def test_claude_fixture_turns_and_drops_records():
     session = claude_v1.parse(FIXTURES / "claude.jsonl")
     output = render(session, "jomcgi-org/homelab", "repo:jomcgi-org/homelab")
     assert session.title == "Sanitized fixture"
+    assert session.collector_version == "claude-v2"
+    assert session.usage == {
+        "input_tokens": 107,
+        "output_tokens": 25,
+        "cache_read_tokens": 32,
+        "cache_write_tokens": 43,
+        "reasoning_tokens": 0,
+        "messages": 2,
+        "shape": "claude",
+    }
+    assert session.models == ["claude-sidechain", "claude-test", "test"]
     assert "## Turn 1" in output.markdown
     assert "## Turn 2" in output.markdown
     assert "`tool: Bash` input" in output.markdown
@@ -48,6 +59,16 @@ def test_codex_fixture_turns_and_drops_records():
     session = codex_v1.parse(FIXTURES / "codex.jsonl")
     output = render(session, "jomcgi-org/homelab", "repo:jomcgi-org/homelab")
     assert session.session_id == "codex-fixture"
+    assert session.collector_version == "codex-v2"
+    assert session.usage == {
+        "input_tokens": 250,
+        "output_tokens": 45,
+        "cache_read_tokens": 30,
+        "cache_write_tokens": 6,
+        "reasoning_tokens": 11,
+        "messages": 2,
+        "shape": "codex",
+    }
     assert "## Turn 1" in output.markdown
     assert "`tool: exec_command` input" in output.markdown
     assert "`result:`" in output.markdown
@@ -102,6 +123,15 @@ def test_codex_uses_transcript_git_and_event_title(tmp_path):
     assert session.git_branch == "feat/transcript"
     assert session.git_origin == "git@github.com:owner/transcript.git"
     assert session.title == "Actual request"
+    assert session.usage == {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+        "messages": 0,
+        "shape": "codex",
+    }
     assert planted not in output.markdown
 
 
