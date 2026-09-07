@@ -19,6 +19,7 @@ import (
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
 	"github.com/jomcgi/homelab/projects/embervm/noded/config"
+	"github.com/jomcgi/homelab/projects/embervm/noded/serving"
 	"github.com/jomcgi/homelab/projects/embervm/noded/volume"
 )
 
@@ -311,7 +312,9 @@ func TestActivatorLiveVMSplicesWhileSilenced(t *testing.T) {
 	}))
 	s, _, driver := newServingTestServer(t)
 	enableActivatorWorkload(s, "wl-serve", port)
-	s.servingVMs.add(&servingEntry{vmID: "already-live", workload: "wl-serve", ip: net.ParseIP("127.0.0.1"), port: port})
+	probe := serving.StartProbe(serving.NewProber(time.Hour, 1), net.ParseIP("127.0.0.1"), port, defaultReadyPath)
+	t.Cleanup(probe.Stop)
+	s.servingVMs.add(&servingEntry{vmID: "already-live", workload: "wl-serve", ip: net.ParseIP("127.0.0.1"), port: port, probe: probe})
 	armSilence(s)
 	agedContact(s)
 
@@ -324,6 +327,41 @@ func TestActivatorLiveVMSplicesWhileSilenced(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("guest calls = %d, want 1", calls)
+	}
+}
+
+func TestActivatorSilencePreservesStaleVM(t *testing.T) {
+	port, _ := activatorGuest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("live"))
+	}))
+	s, _, driver := newServingTestServer(t)
+	enableActivatorWorkload(s, "wl-serve", port)
+	probe := serving.StartProbe(serving.NewProber(time.Millisecond, 1), net.ParseIP("127.0.0.1"), port, defaultReadyPath)
+	t.Cleanup(func() {
+		probe.Stop()
+		<-probe.Done()
+	})
+	entry := &servingEntry{vmID: "stale", workload: "wl-serve", ip: net.ParseIP("127.0.0.1"), port: port, probe: probe}
+	s.servingVMs.add(entry)
+	time.Sleep(20 * time.Millisecond)
+	probe.Stop()
+	<-probe.Done()
+	time.Sleep(20 * time.Millisecond)
+	armSilence(s)
+	agedContact(s)
+
+	rec := activatorRequest(t, s.ActivatorHandler(), "wl-serve", "/invoke", "request")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("silenced stale response = %d, want 503", rec.Code)
+	}
+	if driver.claims != 0 {
+		t.Errorf("ClaimServing calls while silenced = %d, want 0", driver.claims)
+	}
+	s.servingVMs.mu.Lock()
+	_, stillRegistered := s.servingVMs.vms[entry.vmID]
+	s.servingVMs.mu.Unlock()
+	if !stillRegistered {
+		t.Fatal("silenced activator withdrew stale VM")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"sync"
+	"time"
 
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
 
@@ -217,6 +218,24 @@ type servingEntry struct {
 	inFlight bool
 }
 
+func (e *servingEntry) healthyAndFresh(now time.Time) bool {
+	if e.probe == nil {
+		return false
+	}
+	result := e.probe.Result()
+	if !result.Healthy || result.LastProbeUnixMs <= 0 {
+		return false
+	}
+	maxAge := e.probe.Freshness()
+	return maxAge > 0 && now.Sub(time.UnixMilli(result.LastProbeUnixMs)) <= maxAge
+}
+
+func (e *servingEntry) isBanking() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.inFlight
+}
+
 // servingRegistry is the daemon's inventory of LIVE serving microVMs, keyed by the
 // opaque vm_id the control plane holds. It is kept DISTINCT from the task and session
 // registries so a serving VM is never reported in primed_vm_ids and never adopted into
@@ -240,7 +259,6 @@ func (r *servingRegistry) add(e *servingEntry) {
 
 // firstByWorkload returns any live serving VM for workload. The activator uses
 // this to serve Envoy stragglers that arrive after another path made the VM live.
-// TODO(#5537): filter unhealthy entries before using this serving-path straggler.
 func (r *servingRegistry) firstByWorkload(workload string) (*servingEntry, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -252,6 +270,59 @@ func (r *servingRegistry) firstByWorkload(workload string) (*servingEntry, bool)
 	return nil, false
 }
 
+// snapshotByWorkload returns a fixed candidate set for an activator request.
+// The activator must not rescan entries registered by a replacement wake in the
+// same request.
+func (r *servingRegistry) snapshotByWorkload(workload string) []*servingEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entries := make([]*servingEntry, 0)
+	for _, e := range r.vms {
+		if e.workload == workload {
+			entries = append(entries, e)
+		}
+	}
+	return entries
+}
+
+// withHealthyFreshSplice reserves the entry against a concurrent bank for the
+// duration of fn. The registry lock is released before fn runs, while the
+// entry's bank guard remains held, so status and unrelated registry operations
+// are not blocked by proxying.
+func (r *servingRegistry) withHealthyFreshSplice(entry *servingEntry, now time.Time, fn func()) bool {
+	r.mu.Lock()
+	if r.vms[entry.vmID] != entry {
+		r.mu.Unlock()
+		return false
+	}
+	entry.mu.Lock()
+	r.mu.Unlock()
+	defer entry.mu.Unlock()
+	if entry.inFlight || !entry.healthyAndFresh(now) {
+		return false
+	}
+	fn()
+	return true
+}
+
+// withdrawIfIdle removes entry only while holding the registry and bank guards
+// in the same order as beginBank. A bank that already owns the entry is left
+// untouched for its snapshot operation.
+func (r *servingRegistry) withdrawIfIdle(entry *servingEntry) (*servingEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.vms[entry.vmID] != entry {
+		return nil, false
+	}
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if entry.inFlight {
+		return nil, false
+	}
+	delete(r.vms, entry.vmID)
+	return entry, true
+}
+
 // beginBank marks a serving VM busy for a StopServing(BANK). It returns (entry, true)
 // only when the id names a known serving VM with no bank already in flight; a
 // concurrent bank on the same vm_id gets (nil, false), which the caller maps to
@@ -259,8 +330,8 @@ func (r *servingRegistry) firstByWorkload(workload string) (*servingEntry, bool)
 // also returns (nil, false).
 func (r *servingRegistry) beginBank(id string) (*servingEntry, bool) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	e, ok := r.vms[id]
-	r.mu.Unlock()
 	if !ok {
 		return nil, false
 	}
