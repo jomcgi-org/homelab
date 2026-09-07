@@ -26,6 +26,7 @@ from swarm.models import SwarmConductorCall, SwarmPlanVersion, SwarmTask
 logger = logging.getLogger(__name__)
 ACTOR = "factory:reconciler"
 TICK_SECONDS = 15
+DECISION_EVIDENCE_LIMIT = 20
 _KEY = r"^[a-z][a-z0-9_]{0,63}$"
 
 RESULT_SCHEMA = {
@@ -165,7 +166,7 @@ def _decision_processed(task_id: str, cause: str) -> bool:
         decisions = db.exec(
             select(FactoryAudit.detail_json).where(
                 FactoryAudit.task_id == task_id,
-                FactoryAudit.action == "conductor_pause",
+                FactoryAudit.action.in_(["conductor_pause", "conductor_rejected"]),
             )
         ).all()
         if any(json.loads(raw).get("cause") == cause for raw in decisions):
@@ -185,6 +186,85 @@ def _decision_processed(task_id: str, cause: str) -> bool:
             )
         ).all()
         return any(json.loads(raw).get("cause_ref") == cause for raw in calls)
+
+
+def _reject_decision(
+    task_id: str, cause: str, action: str, code: str, reason: str
+) -> None:
+    """Persist one rejection per decision; GitHub reads never hold this lock."""
+    from swarm.factory_controls import _audit, _locked_session
+    from swarm.factory_models import FactoryAudit
+
+    with _locked_session() as (db, _control):
+        previous = db.exec(
+            select(FactoryAudit.detail_json).where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == "conductor_rejected",
+            )
+        ).all()
+        if any(json.loads(raw).get("cause") == cause for raw in previous):
+            return
+        _audit(
+            db,
+            ACTOR,
+            "conductor_rejected",
+            task_id=task_id,
+            cause=cause,
+            decision_action=action,
+            refusal_code=code,
+            reason=reason[:1000],
+        )
+
+
+def _decision_evidence(task_id: str) -> list[dict]:
+    """Project recent rejection reasons, including already committed graph refusals."""
+    from swarm.factory_models import FactoryAudit
+
+    with Session(get_engine()) as db:
+        audit_rows = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == "conductor_rejected",
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(DECISION_EVIDENCE_LIMIT)
+        ).all()
+        evidence = [
+            (row.created_at, row.id, json.loads(row.detail_json)) for row in audit_rows
+        ]
+        known_causes = {item[2]["cause"] for item in evidence}
+        # Graph refusals commit in their own transaction. If the process died
+        # before our audit write, their cause and refusal still reach the planner.
+        calls = db.exec(
+            select(SwarmConductorCall)
+            .where(
+                SwarmConductorCall.task_id == task_id,
+                SwarmConductorCall.outcome == "refused",
+                SwarmConductorCall.tool.in_(["add_node", "discard_node"]),
+            )
+            .order_by(SwarmConductorCall.id.desc())
+            .limit(DECISION_EVIDENCE_LIMIT)
+        ).all()
+        for call in calls:
+            args = json.loads(call.args_json)
+            cause = args.get("cause_ref")
+            if cause not in known_causes:
+                evidence.append(
+                    (
+                        call.created_at,
+                        call.id,
+                        {
+                            "cause": cause,
+                            "decision_action": call.tool,
+                            "refusal_code": call.refusal_code,
+                            "reason": f"graph operation refused: {call.refusal_code}",
+                        },
+                    )
+                )
+                known_causes.add(cause)
+        evidence.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [item[2] for item in evidence[:DECISION_EVIDENCE_LIMIT]]
 
 
 def _schema(node_key: str) -> dict:
@@ -241,7 +321,14 @@ def _add(
 
 
 def planner_prompt(task: dict, nodes: list[dict], runs: list[dict]) -> str:
-    context = {"task": task["task_text"], "graph": nodes, "runs": runs}
+    # Keep bounded feedback before the potentially large issue and run payloads,
+    # so truncating the context cannot remove the reason a decision failed.
+    context = {
+        "decision_feedback": _decision_evidence(task["id"]),
+        "task": task["task_text"],
+        "graph": nodes,
+        "runs": runs,
+    }
     return (
         "You are the task conductor, running in an Ember guest. Choose one next "
         "graph edit from the typed schema. Investigate, implement, independently "
@@ -256,7 +343,9 @@ def planner_prompt(task: dict, nodes: list[dict], runs: list[dict]) -> str:
         "policy. Complete only when the requested outcome has a PR with passing "
         "required checks and an independent approving review at the same head. "
         "A failed or uncertain attempt is evidence, never permission to retry "
-        "uncertain external effects. Explain each edit and delivered-versus-requested "
+        "uncertain external effects. Use decision_feedback to repair rejected "
+        "decisions within the existing task, turn, time and budget limits. "
+        "Explain each edit and delivered-versus-requested "
         "judgment. Pause if scope, authority or evidence cannot support progress.\n"
         + json.dumps(context, default=str)[:100000]
     )
@@ -313,12 +402,38 @@ def verify_delivery(task: dict, number: int, runs: list[dict]) -> dict:
 
 
 def apply_decision(task: dict, policy: dict, run: dict, runs: list[dict]) -> None:
-    from swarm.factory_controls import finish_task, set_control
-
     decision = _artifact(run)
     cause = f"factory-decision:{run['node_key']}:{run['attempt']}"
     if _decision_processed(task["id"], cause):
         return
+    try:
+        _apply_decision(task, policy, decision, cause, runs)
+    except ValueError as exc:
+        _reject_decision(
+            task["id"], cause, decision["action"], "validation_failed", str(exc)
+        )
+    except httpx.HTTPError as exc:
+        # These operations only read GitHub. Preserve failure as evidence, without
+        # copying response bodies, URLs or credential-bearing exception strings.
+        code = (
+            f"github_http_{exc.response.status_code}"
+            if isinstance(exc, httpx.HTTPStatusError)
+            else "github_read_failed"
+        )
+        _reject_decision(
+            task["id"],
+            cause,
+            decision["action"],
+            code,
+            "GitHub evidence could not be read",
+        )
+
+
+def _apply_decision(
+    task: dict, policy: dict, decision: dict, cause: str, runs: list[dict]
+) -> None:
+    from swarm.factory_controls import finish_task, set_control
+
     action = decision["action"]
     if action == "add_node":
         key = decision["node_key"]
@@ -343,9 +458,24 @@ def apply_decision(task: dict, policy: dict, run: dict, runs: list[dict]) -> Non
             review=role == "review",
         )
         if not result.ok:
-            logger.info("factory graph edit refused: %s", result.refusal_code)
+            _reject_decision(
+                task["id"],
+                cause,
+                action,
+                result.refusal_code,
+                result.detail or "graph operation refused",
+            )
     elif action == "discard_node":
-        graph.discard_node(
+        try:
+            observed_head = github_get(
+                task["repo"], f"git/ref/heads/{quote('factory/' + task['id'], safe='')}"
+            )["object"]["sha"]
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
+            # A missing task branch is absent evidence, not the base branch SHA.
+            observed_head = None
+        result = graph.discard_node(
             task["id"],
             node_key=decision["node_key"],
             expected_version=graph.current_version(task["id"]),
@@ -354,14 +484,28 @@ def apply_decision(task: dict, policy: dict, run: dict, runs: list[dict]) -> Non
             cause_kind="factory_conductor",
             cause_ref=cause,
             stated_reason=decision["reason"],
-            observed_branch_head=github_get(
-                task["repo"], f"git/ref/heads/{quote('factory/' + task['id'], safe='')}"
-            )["object"]["sha"],
+            observed_branch_head=observed_head,
             activities_claim_write=False,
         )
+        if not result.ok:
+            _reject_decision(
+                task["id"],
+                cause,
+                action,
+                result.refusal_code,
+                result.detail or "graph operation refused",
+            )
     elif action == "finish":
         evidence = verify_delivery(task, decision["pr_number"], runs)
-        finish_task(task["id"], "succeeded", ACTOR, evidence=evidence)
+        result = finish_task(task["id"], "succeeded", ACTOR, evidence=evidence)
+        if not result["ok"]:
+            _reject_decision(
+                task["id"],
+                cause,
+                action,
+                result["reason"],
+                "factory task settlement refused",
+            )
     else:
         from swarm.factory_controls import _audit, _locked_session
 
