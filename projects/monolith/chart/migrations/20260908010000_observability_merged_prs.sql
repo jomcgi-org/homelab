@@ -10,10 +10,7 @@ CREATE TABLE observability.merged_prs (
     type            TEXT NOT NULL,
     scope           TEXT,
     agent_authored  BOOLEAN NOT NULL,
-    snapshotted_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT merged_prs_type_check CHECK (
-        type IN ('feat', 'fix', 'docs', 'chore', 'test', 'refactor', 'other')
-    )
+    snapshotted_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX merged_prs_merged_at_idx

@@ -64,6 +64,7 @@ FORBIDDEN_MODULES = [
     "knowledge.service",
     "knowledge.layout",
     # Observability writer path and private home paths.
+    "observability.merged_prs_writer",
     "home.observability.slo",
     "home.observability.rollup",
     "home.observability.stats",

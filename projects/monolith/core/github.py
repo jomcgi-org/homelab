@@ -5,13 +5,16 @@ The repository moved from ``jomcgi/homelab`` to ``jomcgi-org/homelab`` on
 follow redirects by default.
 """
 
+import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
 GITHUB_API = "https://api.github.com"
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "jomcgi-org/homelab")
+
+logger = logging.getLogger(__name__)
 
 _MAX_PULL_PAGES = 100
 _MERGED_PULL_QUERY = """
@@ -65,21 +68,29 @@ def _parse_github_datetime(value: str | None) -> datetime | None:
 
 
 def fetch_merged_pull_requests(
-    since: datetime,
+    cutoff: datetime,
     *,
+    watermark: datetime | None = None,
     repo: str | None = None,
     client: httpx.Client | None = None,
 ) -> list[dict]:
-    """Fetch merged pull requests whose merge time is at or after ``since``.
+    """Fetch merged pull requests whose merge time is at or after ``cutoff``.
 
     A GraphQL page includes the aggregate diff statistics that the REST list
-    omits. Pulls are ordered by ``updatedAt`` and cursor pagination stops once a
-    complete page is older than the requested window.
+    omits. Pulls are ordered by ``updatedAt``. Initial snapshots page through
+    the requested window, while refreshes stop after crossing the prior
+    snapshot watermark with a one-day overlap.
     """
-    if since.tzinfo is None:
-        since = since.replace(tzinfo=timezone.utc)
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=timezone.utc)
     else:
-        since = since.astimezone(timezone.utc)
+        cutoff = cutoff.astimezone(timezone.utc)
+    if watermark is None:
+        pagination_cutoff = cutoff
+    elif watermark.tzinfo is None:
+        pagination_cutoff = watermark.replace(tzinfo=timezone.utc) - timedelta(days=1)
+    else:
+        pagination_cutoff = watermark.astimezone(timezone.utc) - timedelta(days=1)
 
     repository = repo or GITHUB_REPO
     try:
@@ -93,7 +104,7 @@ def fetch_merged_pull_requests(
     merged: list[dict] = []
     try:
         cursor = None
-        for _page in range(1, _MAX_PULL_PAGES + 1):
+        for page in range(1, _MAX_PULL_PAGES + 1):
             response = client.post(
                 f"{GITHUB_API}/graphql",
                 headers=_github_headers(),
@@ -123,16 +134,16 @@ def fetch_merged_pull_requests(
             if not batch:
                 break
 
-            page_is_older = True
+            updated_times = []
             for pull in batch:
                 if not isinstance(pull, dict):
                     continue
                 updated_at = _parse_github_datetime(pull.get("updatedAt"))
-                if updated_at is None or updated_at >= since:
-                    page_is_older = False
+                if updated_at is not None:
+                    updated_times.append(updated_at)
 
                 merged_at = _parse_github_datetime(pull.get("mergedAt"))
-                if merged_at is None or merged_at < since:
+                if merged_at is None or merged_at < cutoff:
                     continue
 
                 merged.append(
@@ -147,7 +158,18 @@ def fetch_merged_pull_requests(
                     }
                 )
 
-            if page_is_older or not page_info.get("hasNextPage"):
+            oldest_updated_at = min(updated_times, default=None)
+            crossed_pagination_cutoff = (
+                oldest_updated_at is not None and oldest_updated_at < pagination_cutoff
+            )
+            has_next_page = bool(page_info.get("hasNextPage"))
+            if crossed_pagination_cutoff or not has_next_page:
+                break
+            if page == _MAX_PULL_PAGES:
+                logger.warning(
+                    "GitHub merged pull request pagination hit the %d-page cap",
+                    _MAX_PULL_PAGES,
+                )
                 break
             cursor = page_info.get("endCursor")
             if not cursor:

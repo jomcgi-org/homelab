@@ -6,11 +6,12 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from observability.merged_prs import (
+    MERGE_TYPES,
     MergedPR,
     is_agent_authored,
     parse_title,
-    upsert_and_prune,
 )
+from observability.merged_prs_writer import upsert_and_prune
 
 _NOW = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
 
@@ -24,13 +25,37 @@ _NOW = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
         ("chore(deps)!: update lock", ("chore", "deps")),
         ("test: cover parser", ("test", None)),
         ("refactor(api): simplify query", ("refactor", "api")),
+        ("ci: update workflow", ("ci", None)),
+        ("build(image): publish container", ("build", "image")),
+        ("perf: reduce query count", ("perf", None)),
+        ("style: format files", ("style", None)),
+        ("revert: restore behavior", ("revert", None)),
+        ("wip(factory): checkpoint", ("wip", "factory")),
+        ("[qwen] feat(factory): drain queue", ("feat", "factory")),
+        ("[qwen] update documentation", ("other", None)),
         ("Fix: wrong case", ("other", None)),
         ("release version 1", ("other", None)),
-        ("perf: unsupported type", ("other", None)),
     ],
 )
 def test_parse_title(title, expected):
     assert parse_title(title) == expected
+
+
+def test_merge_types_lists_every_supported_title_type():
+    assert MERGE_TYPES == (
+        "feat",
+        "fix",
+        "docs",
+        "chore",
+        "test",
+        "refactor",
+        "ci",
+        "build",
+        "perf",
+        "style",
+        "revert",
+        "wip",
+    )
 
 
 @pytest.mark.parametrize(
@@ -39,7 +64,7 @@ def test_parse_title(title, expected):
         "Generated with [Claude Code]",
         "generated WITH [claude code] in a footer",
         "https://claude.ai/code/session/123",
-        "Implemented by CODEX",
+        "Generated with OpenAI Codex",
     ],
 )
 def test_is_agent_authored_detects_markers_case_insensitively(body):
@@ -48,6 +73,12 @@ def test_is_agent_authored_detects_markers_case_insensitively(body):
 
 def test_is_agent_authored_rejects_unmarked_body():
     assert not is_agent_authored("Written and reviewed by a person")
+
+
+def test_is_agent_authored_rejects_false_positives():
+    body = "The shared Claude/Codex/Pi shim sends progress to the control plane."
+
+    assert not is_agent_authored(body)
 
 
 @pytest.fixture(name="engine")
@@ -120,3 +151,18 @@ def test_ninety_day_boundary_is_inclusive(engine):
         )
 
         assert [row.number for row in session.exec(select(MergedPR)).all()] == [1]
+
+
+def test_upsert_processes_every_two_hundred_row_chunk(engine):
+    cutoff = _NOW - timedelta(days=90)
+    pulls = [_pull(number, _NOW) for number in range(1, 402)]
+
+    with Session(engine) as session:
+        snapshotted, deleted = upsert_and_prune(
+            session, pulls, cutoff, snapshotted_at=_NOW
+        )
+        numbers = list(session.exec(select(MergedPR.number)).all())
+
+        assert snapshotted == 401
+        assert deleted == 0
+        assert len(numbers) == 401

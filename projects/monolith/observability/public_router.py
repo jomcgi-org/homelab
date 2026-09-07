@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime, time, timedelta, timezone
 from email.utils import format_datetime
 
@@ -9,13 +10,14 @@ from fastapi import APIRouter, Depends, Request, Response
 from sqlmodel import Session, select
 
 from core.db import get_session
-from knowledge.http_cache import _GRAPH_CACHE_CONTROL
-from observability.merged_prs import MergedPR
+from observability.merged_prs import MERGE_TYPES, MergedPR
 
 router = APIRouter(prefix="/api/agents/public", tags=["observability"])
 
-_TYPES = ("feat", "fix", "docs", "chore", "test", "refactor", "other")
-_CACHE_CONTROL = _GRAPH_CACHE_CONTROL
+_TYPES = MERGE_TYPES
+# This endpoint contains only public repository metadata, so shared caches may
+# serve it directly. Private-tier cache policy must not enter this image.
+_CACHE_CONTROL = "public, max-age=1800, stale-while-revalidate=86400"
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -51,7 +53,9 @@ def _payload(session: Session, now: datetime) -> tuple[dict, datetime | None]:
     )
 
     daily_by_date = {
-        first_day + timedelta(days=offset): {type_: 0 for type_ in _TYPES}
+        first_day + timedelta(days=offset): defaultdict(
+            int, {type_: 0 for type_ in (*_TYPES, "other")}
+        )
         for offset in range(30)
     }
     for row in rows:
@@ -103,7 +107,13 @@ def get_public_merges(
     now = _now_utc()
     payload, snapshotted_at = _payload(session, now)
     stamp = _iso(snapshotted_at) or "null"
-    etag = f'"merges-v1-{now.date().isoformat()}-{stamp}-{payload["totals"]["n_30d"]}"'
+    cutoff_7d_hour = _iso(
+        (now - timedelta(days=7)).replace(minute=0, second=0, microsecond=0)
+    )
+    etag = (
+        f'"merges-v1-{now.date().isoformat()}-{cutoff_7d_hour}-'
+        f'{stamp}-{payload["totals"]["n_30d"]}"'
+    )
     headers = {"Cache-Control": _CACHE_CONTROL, "ETag": etag}
     if snapshotted_at is not None:
         headers["Last-Modified"] = format_datetime(snapshotted_at, usegmt=True)

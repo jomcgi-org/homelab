@@ -1,4 +1,4 @@
-"""Merged pull request snapshot model, title parser, and database writer."""
+"""Merged pull request snapshot model and classification helpers."""
 
 from __future__ import annotations
 
@@ -6,13 +6,28 @@ import re
 from datetime import datetime, timezone
 
 from sqlalchemy import DateTime
-from sqlmodel import Field, SQLModel, Session, delete
+from sqlmodel import Field, SQLModel
 
-_TITLE_RE = re.compile(r"^(feat|fix|docs|chore|test|refactor)(?:\(([^)]+)\))?!?:\s+.+$")
-_AGENT_MARKERS = (
-    "generated with [claude code]",
-    "claude.ai/code",
-    "codex",
+MERGE_TYPES = (
+    "feat",
+    "fix",
+    "docs",
+    "chore",
+    "test",
+    "refactor",
+    "ci",
+    "build",
+    "perf",
+    "style",
+    "revert",
+    "wip",
+)
+_TITLE_PREFIX_RE = re.compile(r"^\[[^]]+\]\s+")
+_TITLE_RE = re.compile(rf"^({'|'.join(MERGE_TYPES)})(?:\(([^)]+)\))?!?:\s+.+$")
+_CLAUDE_CODE_MARKER_RE = re.compile(r"generated with \[claude code\]", re.IGNORECASE)
+_CLAUDE_CODE_LINK_RE = re.compile(r"claude\.ai/code", re.IGNORECASE)
+_CODEX_FOOTER_RE = re.compile(
+    r"^generated with[^\r\n]*codex", re.IGNORECASE | re.MULTILINE
 )
 
 
@@ -41,56 +56,17 @@ class MergedPR(SQLModel, table=True):
 
 def parse_title(title: str) -> tuple[str, str | None]:
     """Return the supported Conventional Commit type and optional scope."""
-    match = _TITLE_RE.fullmatch(title)
+    unprefixed = _TITLE_PREFIX_RE.sub("", title, count=1)
+    match = _TITLE_RE.fullmatch(unprefixed)
     if match is None:
         return ("other", None)
     return (match.group(1), match.group(2))
 
 
 def is_agent_authored(body: str) -> bool:
-    """Return whether a pull request body contains a known agent marker."""
-    folded = body.casefold()
-    return any(marker in folded for marker in _AGENT_MARKERS)
-
-
-def upsert_and_prune(
-    session: Session,
-    pulls: list[dict],
-    cutoff: datetime,
-    *,
-    snapshotted_at: datetime | None = None,
-) -> tuple[int, int]:
-    """Upsert fetched pulls and delete snapshots older than ``cutoff``."""
-    snapshot_time = snapshotted_at or _utc_now()
-    for pull in pulls:
-        merged_at = pull["merged_at"]
-        if isinstance(merged_at, str):
-            merged_at = datetime.fromisoformat(merged_at.replace("Z", "+00:00"))
-        type_, scope = parse_title(str(pull["title"]))
-        session.merge(
-            MergedPR(
-                number=int(pull["number"]),
-                title=str(pull["title"]),
-                merged_at=merged_at,
-                additions=int(pull["additions"]),
-                deletions=int(pull["deletions"]),
-                changed_files=int(pull["changed_files"]),
-                type=type_,
-                scope=scope,
-                agent_authored=is_agent_authored(str(pull.get("body") or "")),
-                snapshotted_at=snapshot_time,
-            )
-        )
-
-    result = session.exec(delete(MergedPR).where(MergedPR.merged_at < cutoff))
-    deleted = result.rowcount or 0
-    session.commit()
-    return (len(pulls), deleted)
-
-
-def write_snapshot(pulls: list[dict], cutoff: datetime) -> tuple[int, int]:
-    """Open a fresh session, then persist and prune one snapshot batch."""
-    from core.db import get_engine
-
-    with Session(get_engine()) as session:
-        return upsert_and_prune(session, pulls, cutoff)
+    """Return whether a pull request body contains a known agent footer."""
+    return bool(
+        _CLAUDE_CODE_MARKER_RE.search(body)
+        or _CLAUDE_CODE_LINK_RE.search(body)
+        or _CODEX_FOOTER_RE.search(body)
+    )
