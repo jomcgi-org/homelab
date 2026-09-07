@@ -6757,6 +6757,23 @@ py_test(
 )
 
 py_test(
+    name = "knowledge_interventions_test",
+    srcs = ["knowledge/interventions_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_cyclegroup",
+        ":pkg_knowledge",
+        ":pkg_swarm",
+        "@pip//fastapi",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "knowledge_gap_api_test",
     srcs = ["knowledge/gap_api_test.py"],
     imports = ["."],

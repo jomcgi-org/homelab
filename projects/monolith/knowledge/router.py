@@ -45,9 +45,8 @@ from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.http_cache import _as_utc, _graph_etag, _GRAPH_CACHE_CONTROL
 from knowledge.indexing import reindex_note_with_edits
 from knowledge.ingest_queue import IngestQueueItem, ingest_raw
-from knowledge.models import AtomRawProvenance, Intervention, RawInput
 from knowledge.interventions import decision_reference
-from knowledge.redact import redact_text
+from knowledge.models import AtomRawProvenance, Intervention, RawInput
 from knowledge.notes import (
     _note_to_review_dict,
     delete_note,
@@ -58,6 +57,7 @@ from knowledge.notes import (
     undelete_note,
     verify_note_visibility,
 )
+from knowledge.redact import redact_text
 from knowledge.store import KnowledgeStore
 from shared.embedding import EmbeddingClient
 
@@ -173,7 +173,6 @@ def acknowledge_intervention(
 
 
 @router.post("/interventions/{raw_id}/decision")
-@router.post("/interventions/{raw_id}/associate-decision")
 def associate_intervention_decision(
     raw_id: str,
     data: InterventionDecisionRequest,
@@ -181,10 +180,10 @@ def associate_intervention_decision(
     _principal: Principal = Depends(_operator),
 ) -> dict:
     row = _get_intervention(session, raw_id)
-    if row.decision_id == data.decision_id:
-        return _intervention_dict(row)
     if row.revision != data.revision or row.state == "resolved":
         raise HTTPException(status_code=409, detail="intervention changed")
+    if row.decision_id == data.decision_id:
+        return _intervention_dict(row)
     reference = decision_reference(session, data.decision_id)
     if reference is None:
         raise HTTPException(status_code=404, detail="decision not found")
@@ -234,7 +233,6 @@ def resolve_intervention(
 
 
 @router.post("/interventions/{raw_id}/evidence")
-@router.post("/interventions/{raw_id}/submit-evidence")
 def submit_intervention_evidence(
     raw_id: str,
     data: InterventionEvidenceRequest,
