@@ -49,6 +49,9 @@ from bench.verifiers import get_verifier, verifier_source_hash
 
 logger = logging.getLogger(__name__)
 
+FLOOR_MISS_TOLERANCE = 1
+FLOOR_TIERS = {"easy", "standard"}
+
 
 # Raw result cells (one JSON per (task, model) run) are the expensive, billed output
 # of a calibration run. They MUST NOT live inside the git worktree: they are gitignored,
@@ -583,6 +586,77 @@ async def _run(args) -> None:
         await client.aclose()
 
 
+def _aggregate_agentic_group(group: list[ResultCell], tier_of: dict[str, str]) -> dict:
+    """Aggregate graded agentic cells while accounting for harness errors."""
+    from statistics import mean
+
+    graded = [cell for cell in group if not cell.is_harness_error]
+    errored = [cell for cell in group if cell.is_harness_error]
+    errored_tasks = sorted(cell.task_id for cell in errored)
+    if not graded:
+        return {
+            "n": 0,
+            "pass_rate": 0.0,
+            "floor_n": 0,
+            "floor_pass": 0,
+            "floor_failed": [],
+            "qualified": False,
+            "hard_n": 0,
+            "hard_pass": 0,
+            "mean_tokens": 0.0,
+            "mean_turns": 0.0,
+            "mean_latency_ms": 0.0,
+            "cost": 0.0,
+            "cost_per_solve": None,
+            "tool_ok_rate": 0.0,
+            "errored": len(errored),
+            "errored_tasks": errored_tasks,
+        }
+
+    n = len(graded)
+    pass_rate = sum(1 for cell in graded if cell.first_attempt_passed) / n
+    cost = sum(cell.cost_usd for cell in graded) / n
+    floor = [cell for cell in graded if tier_of.get(cell.task_id) in FLOOR_TIERS]
+    hard = [cell for cell in graded if tier_of.get(cell.task_id) == "hard"]
+    floor_failed = sorted(
+        cell.task_id for cell in floor if not cell.first_attempt_passed
+    )
+    return {
+        "n": n,
+        "pass_rate": pass_rate,
+        # Gate metrics.
+        "floor_n": len(floor),
+        "floor_pass": sum(1 for cell in floor if cell.first_attempt_passed),
+        "floor_failed": floor_failed,
+        # Qualified iff it ran floor tasks and missed at most the tolerance. An errored
+        # floor cell is neither a pass nor a miss, so a provider failure cannot
+        # disqualify a model that was never actually graded on that task.
+        "qualified": bool(floor) and len(floor_failed) <= FLOOR_MISS_TOLERANCE,
+        "hard_n": len(hard),
+        "hard_pass": sum(1 for cell in hard if cell.first_attempt_passed),
+        # Mean (not median) per task: the tasks vary ~5x in size, and a model can
+        # blow up on one hard task (e.g. a greenfield build) while looking tidy on
+        # the median. The mean keeps that tail visible, and it matches how `cost`
+        # below is already aggregated, so all the efficiency columns tell one story.
+        "mean_tokens": float(mean([cell.total_tokens for cell in graded])),
+        "mean_turns": float(mean([cell.turns or 0 for cell in graded])),
+        # Mean end-to-end wall-time per task (ms). This is the CLOUD lens: what a
+        # request to this model actually costs in time via OpenRouter. It does NOT
+        # transfer to self-hosted 4090 throughput (different HW/quant/batching), but
+        # with cost it is the real value signal for offloading work off a paid tier.
+        "mean_latency_ms": float(mean([cell.total_latency_ms for cell in graded])),
+        "cost": cost,
+        # Cost per SOLVED task, so a cheap-but-flaky model does not look like a
+        # bargain. Infinite when nothing passes (rendered as a sentinel).
+        "cost_per_solve": (cost / pass_rate) if pass_rate > 0 else None,
+        "tool_ok_rate": sum(1 for cell in graded if cell.tool_use_ok) / n,
+        # Excluded, not hidden: a model with errored cells is under-measured rather
+        # than bad, and the leaderboard says so rather than scoring it as a failure.
+        "errored": len(errored),
+        "errored_tasks": errored_tasks,
+    }
+
+
 def _report(args) -> None:
     """Generate the leaderboard markdown from cached result JSON files."""
     tasks = load_tasks(Path(args.tasks))
@@ -721,10 +795,6 @@ def _report(args) -> None:
     # otherwise-strong model while a model that fails several basics is still gated out.
     # hard tasks (real-tree navigation / net-new building) differentiate the qualified;
     # perf/efficiency is the value axis among them.
-    from statistics import mean
-
-    FLOOR_MISS_TOLERANCE = 1
-
     # Only count cells for tasks that are still in the current task set. Cells for a
     # task that was later removed or renamed linger in the durable results cache; the
     # harness-version filter above does not catch them (same version, dropped task),
@@ -733,7 +803,6 @@ def _report(args) -> None:
     # per-model breakdowns below, which are already scoped to current tasks.
     current_agentic_ids = {t.id for t in tasks if t.mode == "agentic"}
     tier_of = {t.id: t.tier for t in tasks}
-    FLOOR_TIERS = {"easy", "standard"}
     # Retired models are excluded from the leaderboard even if their cells linger in the
     # durable cache, so `bench drop` alone removes a model without needing a cell prune.
     retired_ids = {m.id for m in reg if m.status == "retired"}
@@ -747,40 +816,7 @@ def _report(args) -> None:
             agentic_groups.setdefault(cell.model_id, []).append(cell)
     agentic: dict[str, dict] = {}
     for model_id, group in agentic_groups.items():
-        n = len(group)
-        pass_rate = sum(1 for c in group if c.first_attempt_passed) / n
-        cost = sum(c.cost_usd for c in group) / n
-        floor = [c for c in group if tier_of.get(c.task_id) in FLOOR_TIERS]
-        hard = [c for c in group if tier_of.get(c.task_id) == "hard"]
-        floor_failed = sorted(c.task_id for c in floor if not c.first_attempt_passed)
-        agentic[model_id] = {
-            "n": n,
-            "pass_rate": pass_rate,
-            # Gate metrics.
-            "floor_n": len(floor),
-            "floor_pass": sum(1 for c in floor if c.first_attempt_passed),
-            "floor_failed": floor_failed,
-            # Qualified iff it ran floor tasks and missed at most the tolerance.
-            "qualified": bool(floor) and len(floor_failed) <= FLOOR_MISS_TOLERANCE,
-            "hard_n": len(hard),
-            "hard_pass": sum(1 for c in hard if c.first_attempt_passed),
-            # Mean (not median) per task: the tasks vary ~5x in size, and a model can
-            # blow up on one hard task (e.g. a greenfield build) while looking tidy on
-            # the median. The mean keeps that tail visible, and it matches how `cost`
-            # below is already aggregated, so all the efficiency columns tell one story.
-            "mean_tokens": float(mean([c.total_tokens for c in group])),
-            "mean_turns": float(mean([c.turns or 0 for c in group])),
-            # Mean end-to-end wall-time per task (ms). This is the CLOUD lens: what a
-            # request to this model actually costs in time via OpenRouter. It does NOT
-            # transfer to self-hosted 4090 throughput (different HW/quant/batching), but
-            # with cost it is the real value signal for offloading work off a paid tier.
-            "mean_latency_ms": float(mean([c.total_latency_ms for c in group])),
-            "cost": cost,
-            # Cost per SOLVED task, so a cheap-but-flaky model does not look like a
-            # bargain. Infinite when nothing passes (rendered as a sentinel).
-            "cost_per_solve": (cost / pass_rate) if pass_rate > 0 else None,
-            "tool_ok_rate": sum(1 for c in group if c.tool_use_ok) / n,
-        }
+        agentic[model_id] = _aggregate_agentic_group(group, tier_of)
 
     md = render_leaderboard(
         per_class=per_class,
@@ -901,6 +937,8 @@ def _write_leaderboard_json(
             "name": names.get(mid) or _short_name(mid),
             "role": "anchor" if mid in anchor_ids else "candidate",
             "n": s["n"],
+            "errored": s["errored"],
+            "errored_tasks": s["errored_tasks"],
             "pass_rate": round(s["pass_rate"], 4),
             # Gate model: qualified iff every floor (easy/standard) task passed.
             "qualified": s["qualified"],

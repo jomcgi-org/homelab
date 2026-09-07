@@ -72,7 +72,7 @@ def aggregate_by_class(
     Args:
         cells: sequence of ResultCell (or duck-typed equivalent) with attributes
                task_id, model_id, first_attempt_passed, outcome, cost_usd,
-               total_latency_ms.
+               total_latency_ms, is_harness_error.
         task_class_of: mapping from task_id to task class string.
 
     Returns:
@@ -85,6 +85,8 @@ def aggregate_by_class(
     """
     groups: dict[tuple[str, str], list] = defaultdict(list)
     for cell in cells:
+        if cell.is_harness_error:
+            continue
         cls = task_class_of.get(cell.task_id)
         if cls is None:
             continue

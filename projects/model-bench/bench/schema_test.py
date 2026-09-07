@@ -129,3 +129,56 @@ def test_resultcell_records_both_attempts_and_provenance():
     assert cell.total_latency_ms == 30
     assert cell.total_tokens == 24
     assert cell.first_attempt_passed is False
+
+
+@pytest.mark.parametrize(
+    "feedback",
+    [
+        "[harness error] HTTPStatusError: request failed",
+        "[malformed tool-call arguments] [harness error] HTTPStatusError: request failed",
+    ],
+)
+def test_resultcell_detects_harness_error_anywhere_in_feedback(feedback):
+    cell = ResultCell(
+        task_id="t",
+        task_version="v1",
+        model_id="m",
+        content_hash="h",
+        outcome="fail",
+        attempts=[
+            Attempt(
+                passed=False,
+                feedback=feedback,
+                latency_ms=0,
+                prompt_tokens=0,
+                completion_tokens=0,
+            )
+        ],
+        cost_usd=0.0,
+        harness_version="0.1.0",
+        prompt_template_hash="x",
+    )
+    assert cell.is_harness_error is True
+
+
+def test_resultcell_without_harness_error_is_not_classified_as_one():
+    cell = ResultCell(
+        task_id="t",
+        task_version="v1",
+        model_id="m",
+        content_hash="h",
+        outcome="fail",
+        attempts=[
+            Attempt(
+                passed=False,
+                feedback="ordinary grader failure",
+                latency_ms=1,
+                prompt_tokens=1,
+                completion_tokens=1,
+            )
+        ],
+        cost_usd=0.0,
+        harness_version="0.1.0",
+        prompt_template_hash="x",
+    )
+    assert cell.is_harness_error is False

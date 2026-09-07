@@ -17,9 +17,10 @@ def render_leaderboard(
         anchors: model_id -> task_class -> dict with keys pass1, cost.
         frontier: task_class -> list of non-dominated model ids.
         retired: list of dicts with keys id, reason, date, pass1, cost.
-        agentic: model_id -> dict with keys n, pass_rate, mean_tokens, mean_turns,
-                 cost, tool_ok_rate. The agentic tool-calling leaderboard: the
-                 primary contract of this benchmark. Optional/back-compatible.
+        agentic: model_id -> dict with keys n, errored, errored_tasks, pass_rate,
+                 mean_tokens, mean_turns, cost, tool_ok_rate. The agentic tool-calling
+                 leaderboard: the primary contract of this benchmark.
+                 Optional/back-compatible.
         agentic_anchor_ids: set of model_ids in `agentic` that are anchors. They are
                  pulled out of the cost-ranked candidate tables and shown in the frontier
                  CEILING section (the capability + cost/wall ceiling to match and beat),
@@ -70,15 +71,16 @@ def render_leaderboard(
         )
         lines.append(
             "| Model | hard | mean tokens | mean turns | wall-time (s) "
-            "| cost ($) | $/solve | tool-use ok |"
+            "| cost ($) | $/solve | tool-use ok | errored |"
         )
-        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
         for r in qualified:
             lines.append(
                 f"| {r['model']} | {r.get('hard_pass', 0)}/{r.get('hard_n', 0)} "
                 f"| {r.get('mean_tokens', 0):.0f} | {r.get('mean_turns', 0):.1f} "
                 f"| {r.get('mean_latency_ms', 0) / 1000:.1f} "
-                f"| {r.get('cost', 0.0):.4f} | {_cps(r)} | {r.get('tool_ok_rate', 0.0):.2f} |"
+                f"| {r.get('cost', 0.0):.4f} | {_cps(r)} "
+                f"| {r.get('tool_ok_rate', 0.0):.2f} | {r.get('errored', 0)} |"
             )
     else:
         lines.append("No qualified models yet.")
@@ -92,16 +94,38 @@ def render_leaderboard(
     lines.append("")
     if disqualified:
         disqualified.sort(key=lambda r: -r.get("floor_pass", 0))
-        lines.append("| Model | floor | failed floor tasks | tool-use ok |")
-        lines.append("| --- | --- | --- | --- |")
+        lines.append("| Model | floor | failed floor tasks | tool-use ok | errored |")
+        lines.append("| --- | --- | --- | --- | --- |")
         for r in disqualified:
             failed = ", ".join(r.get("floor_failed", [])) or "(none run)"
             lines.append(
                 f"| {r['model']} | {r.get('floor_pass', 0)}/{r.get('floor_n', 0)} "
-                f"| {failed} | {r.get('tool_ok_rate', 0.0):.2f} |"
+                f"| {failed} | {r.get('tool_ok_rate', 0.0):.2f} "
+                f"| {r.get('errored', 0)} |"
             )
     else:
         lines.append("No disqualified models.")
+    lines.append("")
+
+    lines.append("## Excluded: harness errors")
+    lines.append("")
+    lines.append(
+        "These cells are excluded from rates because they failed before grading "
+        "due to a provider error, context overflow, or harness bug."
+    )
+    lines.append("")
+    errored_rows = sorted(
+        (model_id, task_id)
+        for model_id, stats in (agentic or {}).items()
+        for task_id in stats.get("errored_tasks", [])
+    )
+    if errored_rows:
+        lines.append("| Model | task_id |")
+        lines.append("| --- | --- |")
+        for model_id, task_id in errored_rows:
+            lines.append(f"| {model_id} | {task_id} |")
+    else:
+        lines.append("None.")
     lines.append("")
 
     # Frontier ceiling: anchors (Claude via Claude Code) run the same agentic tasks under
