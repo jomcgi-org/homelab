@@ -167,6 +167,7 @@ apko_image(
 py_test(
     name = "shim_test",
     srcs = ["shim_test.py"],
+    data = ["muse_usage_two_turns.json"],
     imports = ["."],
     deps = [
         ":shim_lib",

@@ -7602,6 +7602,77 @@ def test_muse_usage_conflicting_replay_does_not_export_totals():
     assert "input_tokens" not in usage
 
 
+def test_muse_usage_early_exit_broken_pipe_stays_fail_soft(tmp_path, monkeypatch):
+    manager = _muse_manager(tmp_path, monkeypatch)
+    manager.session_id = "sess-1"
+
+    class _BrokenStdin:
+        def close(self):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    class _QuietStdout:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    class _EarlyExitProcess:
+        pid = 424242
+
+        def __init__(self):
+            self.stdin = _BrokenStdin()
+            self.stdout = _QuietStdout()
+
+        def poll(self):
+            return 1
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            raise AssertionError("exited child must not be killed")
+
+    fake_process = _EarlyExitProcess()
+
+    class _BrokenReader:
+        def __init__(self, process):
+            self.process = process
+
+        def request(self, method, params, notification=False):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(shim.subprocess, "Popen", lambda *args, **kwargs: fake_process)
+    monkeypatch.setattr(shim, "_MuseUsageReader", _BrokenReader)
+    before = set(shim._managed_child_pids)
+    usage = manager._collect_usage("cmd-1", 1)
+    assert usage["muse"]["status"] == "unavailable"
+    assert usage["muse"]["reason"] == "collection_failed"
+    assert "input_tokens" not in usage
+    assert fake_process.pid not in shim._managed_child_pids
+    assert set(shim._managed_child_pids) == before
+
+
+def test_muse_turn_survives_usage_collector_exception(tmp_path, monkeypatch):
+    manager = _muse_manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(shim, "_reap_orphans", lambda: None)
+
+    def _boom(command_id, completions):
+        raise RuntimeError("usage collector boom")
+
+    monkeypatch.setattr(manager, "_collect_usage", _boom)
+    record = manager.turn("ping", model="spark")
+    assert record["result"] == "pong"
+    assert record["terminal_reason"] == "completed"
+    assert record["model"] == "muse-spark-1.3-contributor"
+    assert record["session_id"] == manager.session_id
+    assert record["usage"]["muse"]["status"] == "unavailable"
+    assert record["usage"]["muse"]["reason"] == "collection_failed"
+    assert "input_tokens" not in record["usage"]
+
+
 def test_muse_usage_command_mapping_ignores_other_turn_and_session():
     events = copy.deepcopy(_MUSE_USAGE_RECORDED_EVENTS)
     for event in events:
@@ -7741,3 +7812,45 @@ _MUSE_USAGE_RECORDED_EVENTS = [
         },
     },
 ]
+
+
+@pytest.mark.parametrize(
+    ("turn_index", "completion_count", "input_tokens", "output_tokens"),
+    [(0, 4, 98547, 582), (1, 17, 620234, 6695)],
+)
+def test_muse_usage_native_two_turn_capture_keeps_exact_exec_boundary(
+    turn_index, completion_count, input_tokens, output_tokens
+):
+    # Paired native exec lifecycle and retained MSP metadata, not constructed
+    # model-completion events. Both turns share one CLI session; cumulative
+    # counters continue across the second turn while exported usage must not.
+    with open(
+        os.path.join(os.path.dirname(__file__), "muse_usage_two_turns.json")
+    ) as f:
+        capture = json.load(f)
+    turn = capture["exec_turns"][turn_index]
+    attempts = {
+        (event["task_id"], event["facet"]["attempt"])
+        for event in turn["successful_model_attempts"]
+        if event["phase"] == "stream_succeeded"
+        and event["facet"]["kind"] == "external_attempt"
+        and event["facet"]["operation"] == "model.response"
+    }
+    assert len(attempts) == completion_count
+    starts = [
+        event["params"]
+        for event in capture["events"]
+        if event["method"] == "turn/started"
+        and event["params"]["commandId"] == turn["command_id"]
+    ]
+    assert len(starts) == 1
+    assert starts[0]["sessionId"] == turn["session_id"]
+    usage = shim._muse_usage_projection(
+        capture["events"], turn["session_id"], turn["command_id"], len(attempts)
+    )
+    assert usage["muse"]["status"] == "complete"
+    assert usage["muse"]["reported_usage_completions"] == completion_count
+    assert usage["input_tokens"] == usage["prompt_tokens"] == input_tokens
+    assert usage["output_tokens"] == output_tokens
+    assert usage["total_tokens"] == input_tokens + output_tokens
+    assert "total_cost_usd" not in usage
