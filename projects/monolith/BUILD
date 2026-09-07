@@ -909,6 +909,7 @@ py_library(
         ":pkg_framework",
         ":pkg_scheduler",
         ":pkg_shared",
+        ":swarm_factory_controls",
         "@pip//boto3",
         "@pip//certifi",
         "@pip//fastapi",
@@ -6788,6 +6789,25 @@ py_test(
         ":pkg_cyclegroup",
         ":pkg_knowledge",
         "@pip//fastmcp",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "knowledge_interventions_test",
+    srcs = ["knowledge/interventions_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_core",
+        ":pkg_cyclegroup",
+        ":pkg_knowledge",
+        ":swarm_factory_controls",
+        "@pip//fastapi",
+        "@pip//httpx",
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlalchemy",
