@@ -445,7 +445,7 @@ def test_real_quarantine_holds_before_reaper_cancels(monkeypatch, tmp_path):
         SimpleNamespace(workflow_id="wf", updated_at=0)
     ]
     monkeypatch.setattr(drainer_router.asyncio, "run", lambda coro: coro.close())
-    assert drainer_router._reap_stale_drain_cycles(dbos) == 1
+    assert drainer_router._reap_stale_drain_cycles(dbos) == (1, False)
     assert events and events[0].last_status == routine_jobs.UNKNOWN_INVOCATION
 
 
@@ -491,6 +491,121 @@ def test_real_quarantine_fails_closed_without_admission(monkeypatch, tmp_path):
             text("SELECT last_status, locked_by FROM routine_jobs")
         ).one()
     assert (untouched.last_status, untouched.locked_by) == (None, "luna-drainer")
+
+
+def test_endpoint_blocks_admission_when_quarantine_and_live_lookup_fail(
+    monkeypatch, tmp_path
+):
+    engine = create_engine(f"sqlite:///{tmp_path / 'endpoint-blocked.db'}")
+    with Session(engine) as session:
+        session.execute(
+            text(
+                "CREATE TABLE routine_jobs ("
+                "name TEXT PRIMARY KEY, routine_kind TEXT, interval_secs INTEGER, "
+                "next_run_at TEXT, last_run_at TEXT, last_status TEXT, "
+                "last_summary TEXT, locked_by TEXT, locked_at TEXT, ttl_secs INTEGER, "
+                "payload TEXT, created_by TEXT, created_at TEXT)"
+            )
+        )
+        session.execute(
+            text(
+                "INSERT INTO routine_jobs "
+                "(name, routine_kind, next_run_at, locked_by, locked_at, payload) "
+                "VALUES ('kg:blocked', 'kg-drain', CURRENT_TIMESTAMP, "
+                "'luna-drainer', '2026-09-07 00:00:00', '{\"prompt\": \"keep\"}')"
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
+    monkeypatch.setattr(drainer_router, "get_engine", lambda: engine)
+    unknown = SimpleNamespace(
+        id=1, node_key="node", local_session_id="blocked-wf:node:kg:blocked"
+    )
+    monkeypatch.setattr(
+        drainer_router.agent_session_store,
+        "sessions_for_workflow",
+        lambda _session, _workflow: [unknown],
+    )
+    monkeypatch.setattr(
+        drainer_router.agent_session_store,
+        "has_unknown_outcome",
+        lambda _session, _session_id: True,
+    )
+    cancelled = []
+    reaped_sessions = []
+    queue_resolutions = []
+    enqueued = []
+
+    class FakeDBOS:
+        def list_workflows(self, status=None, **_kwargs):
+            if status == "PENDING":
+                return [_FakeWorkflow("blocked-wf", 0)]
+            raise RuntimeError("status lookup failed")
+
+        def list_workflow_steps(self, _workflow_id, load_output=False):
+            if load_output:
+                return [
+                    {
+                        "function_name": "claim_drainer_job",
+                        "output": None,
+                    }
+                ]
+            return []
+
+        def cancel_workflow(self, workflow_id, cancel_children=False):
+            cancelled.append((workflow_id, cancel_children))
+
+    class FakeQueue:
+        def enqueue(self, workflow):
+            enqueued.append(workflow)
+
+    async def reap_sessions(workflow_id):
+        reaped_sessions.append(workflow_id)
+
+    import agent_sessions.api as agent_sessions_api
+
+    monkeypatch.setattr(agent_sessions_api, "reap_sessions_for_workflow", reap_sessions)
+    monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "init_dbos", lambda: FakeDBOS())
+
+    live_lookup_calls = []
+
+    def live_lookup_raises(_dbos):
+        live_lookup_calls.append(True)
+        raise RuntimeError("status lookup failed")
+
+    monkeypatch.setattr(drainer_router, "_has_live_drain_cycle", live_lookup_raises)
+
+    def resolve_queue():
+        queue_resolutions.append(True)
+        return FakeQueue()
+
+    monkeypatch.setattr(drainer_router, "drainer_queue", resolve_queue)
+    monkeypatch.setattr(drainer_router.time, "time", lambda: 5000)
+
+    response = _client().post("/internal/agent/drain")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "quarantine_blocked"}
+    assert cancelled == []
+    assert reaped_sessions == []
+    assert enqueued == []
+    assert queue_resolutions == [True]
+    assert live_lookup_calls == [], (
+        "blocked reconciliation returns before fail-open lookup"
+    )
+    with Session(engine) as session:
+        untouched = session.execute(
+            text("SELECT last_status, locked_by, locked_at, payload FROM routine_jobs")
+        ).one()
+    assert (untouched.last_status, untouched.locked_by, untouched.locked_at) == (
+        None,
+        "luna-drainer",
+        "2026-09-07 00:00:00",
+    )
+    assert untouched.payload == '{"prompt": "keep"}'
 
 
 def test_fresh_pending_not_reaped_returns_already_queued(monkeypatch):
