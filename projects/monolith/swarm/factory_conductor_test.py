@@ -894,3 +894,44 @@ def test_planner_keeps_unknown_execution_and_missing_cost_distinct(monkeypatch):
     assert run["status"] == "uncertain" and run["session_id"] is None
     assert run["cost_usd"] is None and run["accounted_cost_usd"] == 5
     assert run["reason"] == "observer lost; execution may continue"
+
+
+@pytest.mark.parametrize("text", ["\U0001f600" * 1000, '"\\\n' * 1000])
+def test_planner_bounds_encoded_protected_text_without_losing_review(monkeypatch, text):
+    import json
+
+    task, runs = delivery(monkeypatch)
+    task["task_text"] = "Fix and review this issue."
+    for run in runs:
+        outcome = json.loads(run["outcome_json"])
+        outcome["value"]["summary"] = text
+        run["outcome_json"] = json.dumps(outcome)
+    monkeypatch.setattr(
+        conductor,
+        "_decision_evidence",
+        lambda _task: [
+            {
+                "cause": "factory-decision:conductor_3:1",
+                "refusal_code": "validation_failed",
+                "reason": text,
+            }
+        ],
+    )
+    prompt = conductor.planner_prompt(task, [], runs)
+    context = planner_context(prompt)
+    review = context["delivery_evidence"]["latest_review"]
+    assert len(prompt.split("\n", 1)[1].encode()) <= conductor.PLANNER_CONTEXT_CHARS
+    assert review["session_id"] == 11 and review["model"] == "opus"
+    assert review["head_sha"] == review["artifact"]["head_sha"] == "a" * 40
+    assert review["artifact"]["verdict"] == "approve"
+    assert review["artifact"]["pr_number"] == 3
+    assert context["decision_feedback"][0]["refusal_code"] == "validation_failed"
+    assert context["omitted"]["task_characters"] == 0
+    assert context["omitted"]["run_records"] == 0
+    assert context["task"] == task["task_text"]
+    for value in (
+        review["artifact"]["summary"],
+        context["decision_feedback"][0]["reason"],
+    ):
+        assert value.endswith(" [text omitted]")
+        assert len(json.dumps(value)) <= conductor.PLANNER_TEXT_CHARS

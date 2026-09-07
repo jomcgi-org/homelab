@@ -325,13 +325,27 @@ def _add(
     )
 
 
+def _bounded_planner_text(value: str, limit: int, marker: str = "") -> str:
+    """Bound encoded JSON size, including escapes and supplementary Unicode."""
+    if len(json.dumps(value)) <= limit:
+        return value
+    low, high = 0, min(len(value), limit)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(json.dumps(value[:middle] + marker)) <= limit:
+            low = middle
+        else:
+            high = middle - 1
+    return value[:low] + marker
+
+
 def _planner_fields(source: dict, fields: tuple[str, ...]) -> dict:
     """Select scalar evidence only, never traverse prior prompts or raw payloads."""
     result = {}
     for key in fields:
         value = source.get(key)
-        if isinstance(value, str) and len(value) > PLANNER_TEXT_CHARS:
-            value = value[:PLANNER_TEXT_CHARS] + " [text omitted]"
+        if isinstance(value, str):
+            value = _bounded_planner_text(value, PLANNER_TEXT_CHARS, " [text omitted]")
         elif isinstance(value, float) and not math.isfinite(value):
             value = "invalid nonfinite value"
         elif isinstance(value, (dict, list, tuple)):
@@ -421,7 +435,7 @@ def _planner_context(task: dict, nodes: list[dict], runs: list[dict]) -> str:
         item["attempts_used"] = len(attempts)
         item["latest_status"] = attempts[-1]["status"] if attempts else "not_dispatched"
         projected_nodes.append(item)
-    task_text = task["task_text"][:PLANNER_TASK_CHARS]
+    task_text = _bounded_planner_text(task["task_text"], PLANNER_TASK_CHARS)
     feedback = [
         _planner_fields(item, ("cause", "decision_action", "refusal_code", "reason"))
         for item in _decision_evidence(task["id"])
