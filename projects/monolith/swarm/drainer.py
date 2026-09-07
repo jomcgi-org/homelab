@@ -799,8 +799,10 @@ def _retry_or_dead_letter_kg(
         finish_drainer_job(name, "error", error, not recurring, **ownership)
 
 
-def _completed_output(turn: dict) -> str:
-    if turn.get("stop_reason") == UNKNOWN_INVOCATION:
+def _completed_output(turn: dict, session_id: int | None = None) -> str:
+    if turn.get("stop_reason") == UNKNOWN_INVOCATION or _turn_has_unknown_outcome(
+        turn, session_id
+    ):
         raise InvocationOutcomeUnknown(UNKNOWN_INVOCATION_MESSAGE)
     output = _summary(turn.get("result_text"))
     terminal_reason = turn.get("terminal_reason")
@@ -811,6 +813,19 @@ def _completed_output(turn: dict) -> str:
             output or f"turn ended with {terminal_reason or 'no terminal reason'}"
         )
     return output
+
+
+def _turn_has_unknown_outcome(turn: dict, session_id: int | None = None) -> bool:
+    if session_id is None or turn.get("seq") is None:
+        return False
+    from agent_sessions import store
+    from core.db import get_engine
+    from sqlmodel import Session
+
+    with Session(get_engine()) as session:
+        return store.has_unknown_outcome_for_turn(
+            session, session_id, int(turn["seq"])
+        )
 
 
 @DBOS.step(retries_allowed=True, max_attempts=3, backoff_rate=2.0)
@@ -971,7 +986,7 @@ def drain_cycle() -> dict:
                             "turn timed out after "
                             f"{settings['turn_timeout_seconds']} seconds"
                         )
-                    output = _completed_output(turn)
+                    output = _completed_output(turn, session_id)
                     if job_kind == KG_JOB_KIND:
                         result_text = str(turn.get("result_text") or "")
                         applied = apply_kg_extraction(
@@ -1003,7 +1018,7 @@ def drain_cycle() -> dict:
                                         "correction turn timed out after "
                                         f"{settings['turn_timeout_seconds']} seconds"
                                     )
-                                _completed_output(correction_turn)
+                                _completed_output(correction_turn, session_id)
                                 correction_result = apply_kg_extraction(
                                     name,
                                     job_payload,
