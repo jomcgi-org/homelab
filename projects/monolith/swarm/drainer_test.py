@@ -1201,13 +1201,27 @@ def test_disabled_cycle_still_emits_a_cycle_span(monkeypatch):
 def test_claim_step_span_lives_inside_the_step_body(monkeypatch):
     import agent.routine_jobs as routine_jobs
 
+    claims = []
+
+    def claim(**kwargs):
+        claims.append(kwargs)
+        return {"name": "job-1", "payload": {"prompt": "work"}}
+
     monkeypatch.setattr(
         routine_jobs,
         "claim_job",
-        lambda **_kwargs: {"name": "job-1", "payload": {"prompt": "work"}},
+        claim,
     )
 
     drainer.claim_drainer_job.__wrapped__(60, ["qwen-drain", "kg-drain"])
+    assert claims == [
+        {
+            "holder": drainer.CLAIM_HOLDER,
+            "ttl_secs": 60,
+            "kinds": ["qwen-drain", "kg-drain"],
+            "prefer_repo_freshness": True,
+        }
+    ]
 
     spans = _spans_named("drain.claim_job")
     assert len(spans) == 1
@@ -1217,6 +1231,103 @@ def test_claim_step_span_lives_inside_the_step_body(monkeypatch):
     _EXPORTER.clear()
     # A replayed step emits nothing because its body does not execute again.
     assert _spans_named("drain.claim_job") == []
+
+
+def test_repo_scout_and_actual_derived_raw_get_bounded_validated_service(
+    monkeypatch, tmp_path
+):
+    from sqlmodel import SQLModel, select
+    from agent import routine_jobs
+    from knowledge.extraction import ExtractionOutputInvalid
+    from knowledge.models import AtomRawProvenance, RawInput
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'freshness-roundtrip.db'}")
+    schemas = {table.name: table.schema for table in SQLModel.metadata.tables.values()}
+    for table in SQLModel.metadata.tables.values():
+        table.schema = None
+    try:
+        SQLModel.metadata.create_all(engine)
+        monkeypatch.setattr("core.db.get_engine", lambda: engine)
+        monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
+        monkeypatch.setattr("knowledge.ingest_queue.upload_raw", lambda *_args: None)
+        with Session(engine) as session:
+            session.execute(
+                text("""
+                CREATE TABLE routine_jobs (
+                    name TEXT PRIMARY KEY, routine_kind TEXT, interval_secs INTEGER,
+                    next_run_at TEXT, last_run_at TEXT, last_status TEXT,
+                    last_summary TEXT, locked_by TEXT, locked_at TEXT,
+                    ttl_secs INTEGER, payload TEXT, created_by TEXT, created_at TEXT
+                )
+            """)
+            )
+            session.execute(
+                text("""
+                INSERT INTO routine_jobs (name, routine_kind, interval_secs, next_run_at, payload)
+                VALUES
+                    ('old-a', 'kg-drain', NULL, '2026-01-01', '{}'),
+                    ('old-b', 'kg-drain', NULL, '2026-01-01', '{}'),
+                    ('kg-repo-diff', 'kg-drain', 3600, '2026-01-02', '{"mode":"repo-diff"}')
+            """)
+            )
+            session.commit()
+
+        def claim():
+            return drainer.claim_drainer_job.__wrapped__(60, ["kg-drain"])
+
+        assert claim()["name"] == "kg-repo-diff"
+        scout = drainer.apply_kg_extraction.__wrapped__(
+            "kg-repo-diff",
+            {"mode": "repo-diff"},
+            "```json\n"
+            + json.dumps(
+                {
+                    "head_sha": "b" * 40,
+                    "base_sha": "a" * 40,
+                    "diff_stat": " file.py | 1 +",
+                    "diff": "diff --git a/file.py b/file.py\n+x = 1",
+                }
+            )
+            + "\n```",
+        )
+        assert routine_jobs.complete_job("kg-repo-diff", "ok")
+        assert claim()["name"] == "old-a"
+        assert routine_jobs.complete_job("old-a", "ok")
+        with Session(engine) as session:
+            raw = session.exec(select(RawInput)).one()
+            assert raw.raw_id == scout["raw_id"] and raw.source == "repo-diff"
+            payload = session.execute(
+                text("SELECT payload FROM routine_jobs WHERE name = 'kg-repo-diff'")
+            ).scalar_one()
+            assert json.loads(payload)["last_sha"] == "b" * 40
+            session.execute(
+                text("""
+                UPDATE routine_jobs SET last_run_at = datetime(CURRENT_TIMESTAMP, '-301 seconds')
+                 WHERE name = 'kg-repo-diff'
+            """)
+            )
+            session.commit()
+        derived = claim()
+        assert derived["name"] == f"kg:{scout['raw_id']}"
+        payload = json.loads(derived["payload"])
+        with pytest.raises(ExtractionOutputInvalid):
+            drainer.apply_kg_extraction.__wrapped__(derived["name"], payload, "invalid")
+        applied = drainer.apply_kg_extraction.__wrapped__(
+            derived["name"], payload, '```json\n{"assertions": []}\n```'
+        )
+        assert not applied["failed"] and not applied["replayed"]
+        assert routine_jobs.complete_job(derived["name"], "ok")
+        with Session(engine) as session:
+            raw = session.exec(select(RawInput)).one()
+            assert raw.extra["extraction_passes"] == 1
+            assert (
+                session.exec(select(AtomRawProvenance)).one().derived_note_id
+                == "no-new-notes"
+            )
+        assert claim()["name"] == "old-b"
+    finally:
+        for table in SQLModel.metadata.tables.values():
+            table.schema = schemas.get(table.name)
 
 
 def test_finish_step_span_marks_error_status(monkeypatch):

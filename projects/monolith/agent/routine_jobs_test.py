@@ -5,10 +5,171 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+import pytest
 from sqlalchemy import text
 from sqlmodel import Session, create_engine
 
 from agent import routine_jobs
+
+
+@pytest.fixture
+def freshness_engine(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite:///{tmp_path / 'freshness.db'}")
+    with Session(engine) as session:
+        session.execute(
+            text("""
+            CREATE TABLE routine_jobs (
+                name TEXT PRIMARY KEY, routine_kind TEXT, interval_secs INTEGER,
+                next_run_at TEXT, last_run_at TEXT, last_status TEXT,
+                last_summary TEXT, locked_by TEXT, locked_at TEXT,
+                ttl_secs INTEGER, payload TEXT, created_by TEXT, created_at TEXT
+            )
+        """)
+        )
+        session.execute(
+            text("""
+            CREATE TABLE raw_inputs (raw_id TEXT PRIMARY KEY, source TEXT)
+        """)
+        )
+        session.commit()
+    monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
+    return engine
+
+
+def _queue_freshness_job(engine, name, *, source=None, **overrides):
+    values = {
+        "name": name,
+        "kind": "kg-drain",
+        "due": "2026-01-01 00:00:00",
+        "status": None,
+        "locked_by": None,
+        "locked_at": None,
+        "payload": json.dumps({"raw_id": name}),
+    } | overrides
+    with Session(engine) as session:
+        session.execute(
+            text("""
+            INSERT INTO routine_jobs
+                (name, routine_kind, next_run_at, last_status,
+                 locked_by, locked_at, ttl_secs, payload)
+            VALUES (:name, :kind, :due, :status, :locked_by, :locked_at, 60, :payload)
+        """),
+            values,
+        )
+        if source:
+            session.execute(
+                text("INSERT INTO raw_inputs VALUES (:name, :source)"),
+                {"name": name, "source": source},
+            )
+        session.commit()
+
+
+def _freshness_claim():
+    return routine_jobs.claim_job(
+        "luna-drainer",
+        60,
+        kinds=["kg-drain", "qwen-drain"],
+        prefer_repo_freshness=True,
+    )
+
+
+def test_freshness_prefers_due_scout_then_preserves_fifo_work(freshness_engine):
+    _queue_freshness_job(freshness_engine, "old-a")
+    _queue_freshness_job(freshness_engine, "old-b", kind="qwen-drain")
+    _queue_freshness_job(freshness_engine, "kg-repo-diff", due="2026-01-02 00:00:00")
+    assert _freshness_claim()["name"] == "kg-repo-diff"
+    assert routine_jobs.complete_job("kg-repo-diff", "ok")
+    _queue_freshness_job(
+        freshness_engine, "new-diff", source="repo-diff", due="2026-01-03 00:00:00"
+    )
+    assert _freshness_claim()["name"] == "old-a"
+    assert routine_jobs.complete_job("old-a", "ok")
+    assert _freshness_claim()["name"] == "old-b"
+
+
+def test_freshness_cooldown_persists_after_connection_restart(
+    freshness_engine, monkeypatch
+):
+    _queue_freshness_job(freshness_engine, "kg-repo-diff")
+    assert _freshness_claim()["name"] == "kg-repo-diff"
+    assert routine_jobs.complete_job("kg-repo-diff", "ok")
+    _queue_freshness_job(freshness_engine, "old")
+    _queue_freshness_job(freshness_engine, "derived", source="repo-diff")
+    url = freshness_engine.url
+    freshness_engine.dispose()
+    restarted = create_engine(url)
+    monkeypatch.setattr(routine_jobs, "get_engine", lambda: restarted)
+    with Session(restarted) as session:
+        session.execute(
+            text("""
+            UPDATE routine_jobs SET last_run_at = datetime(CURRENT_TIMESTAMP, '-299 seconds')
+             WHERE name = 'kg-repo-diff'
+        """)
+        )
+        session.commit()
+    assert _freshness_claim()["name"] == "old"
+    assert routine_jobs.complete_job("old", "ok")
+    _queue_freshness_job(restarted, "another-old")
+    with Session(restarted) as session:
+        session.execute(
+            text("""
+            UPDATE routine_jobs SET last_run_at = datetime(CURRENT_TIMESTAMP, '-301 seconds')
+             WHERE name = 'kg-repo-diff'
+        """)
+        )
+        session.commit()
+    assert _freshness_claim()["name"] == "derived"
+    assert routine_jobs.complete_job("derived", "ok")
+    _queue_freshness_job(restarted, "newer-diff", source="repo-diff")
+    assert _freshness_claim()["name"] == "another-old"
+
+
+@pytest.mark.parametrize("blocked", ["future", "locked", "unknown", "wrong-kind"])
+def test_freshness_never_bypasses_eligibility(freshness_engine, blocked):
+    with Session(freshness_engine) as session:
+        now = session.execute(text("SELECT CURRENT_TIMESTAMP")).scalar_one()
+    overrides = {
+        "future": {"due": "2999-01-01 00:00:00"},
+        "locked": {"locked_by": "other", "locked_at": now},
+        "unknown": {"status": routine_jobs.UNKNOWN_INVOCATION},
+        "wrong-kind": {"kind": "different-lane"},
+    }[blocked]
+    _queue_freshness_job(freshness_engine, "kg-repo-diff", **overrides)
+    _queue_freshness_job(freshness_engine, "ordinary")
+    assert _freshness_claim()["name"] == "ordinary"
+    assert _freshness_claim() is None
+
+
+def test_freshness_classification_uses_persisted_raw_source(freshness_engine):
+    _queue_freshness_job(freshness_engine, "old", source="agent-report")
+    _queue_freshness_job(
+        freshness_engine,
+        "spoofed",
+        source="agent-report",
+        payload=json.dumps({"raw_id": "spoofed", "source": "repo-diff"}),
+    )
+    _queue_freshness_job(
+        freshness_engine, "real-diff", source="repo-diff", due="2026-01-02 00:00:00"
+    )
+    assert _freshness_claim()["name"] == "real-diff"
+    assert routine_jobs.complete_job("real-diff", "ok")
+    assert _freshness_claim()["name"] == "old"
+
+
+def test_freshness_uses_idle_slots_without_duplicate_claims(freshness_engine):
+    _queue_freshness_job(freshness_engine, "diff-a", source="repo-diff")
+    _queue_freshness_job(freshness_engine, "diff-b", source="repo-diff")
+    assert _freshness_claim()["name"] == "diff-a"
+    # The first lease is still live. A second claimant can take the other row,
+    # even during cooldown, because no ordinary job needs the slot.
+    assert _freshness_claim()["name"] == "diff-b"
+    assert _freshness_claim() is None
+
+
+def test_default_claim_stays_fifo_without_freshness_opt_in(freshness_engine):
+    _queue_freshness_job(freshness_engine, "old")
+    _queue_freshness_job(freshness_engine, "kg-repo-diff", due="2026-01-02 00:00:00")
+    assert routine_jobs.claim_job("other", 60)["name"] == "old"
 
 
 def _guarded_engine(tmp_path, name, *, locked_at, status=None, next_run_at=None):

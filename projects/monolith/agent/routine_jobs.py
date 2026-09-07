@@ -36,6 +36,29 @@ _ROW_COLUMNS = (
     "created_at",
 )
 
+# While ordinary work is due, admit at most one preferred repository freshness
+# job per five minutes. Completion/claim timestamps persist through DBOS cycle
+# continuation and restart, so a new workflow cannot reset the fairness window.
+REPO_FRESHNESS_COOLDOWN_SECONDS = 300
+
+
+def _repo_freshness_sql(alias: str, *, sqlite: bool) -> str:
+    raw_table = "raw_inputs" if sqlite else "knowledge.raw_inputs"
+    raw_id = (
+        f"json_extract(CASE WHEN json_valid({alias}.payload) "
+        f"THEN {alias}.payload ELSE '{{}}' END, '$.raw_id')"
+        if sqlite
+        else f"{alias}.payload ->> 'raw_id'"
+    )
+    return f"""(
+        {alias}.routine_kind = 'kg-drain' AND (
+            {alias}.name = 'kg-repo-diff' OR EXISTS (
+                SELECT 1 FROM {raw_table} AS raw
+                 WHERE raw.raw_id = {raw_id} AND raw.source = 'repo-diff'
+            )
+        )
+    )"""
+
 
 def _row_to_dict(row: Any) -> dict:
     return {col: getattr(row, col) for col in _ROW_COLUMNS}
@@ -93,6 +116,7 @@ def claim_job(
     kind: str | None = None,
     kinds: tuple[str, ...] | list[str] | None = None,
     name: str | None = None,
+    prefer_repo_freshness: bool = False,
 ) -> dict | None:
     """Claim a routine_jobs row, including its JSONB payload.
 
@@ -100,6 +124,12 @@ def claim_job(
     held with a still-live lock. If ``name`` is None, claim the next due
     unclaimed row, optionally filtered by ``kind``. Uses ``SELECT FOR UPDATE
     SKIP LOCKED`` so concurrent claimers never block each other.
+
+    The serial drainer opts into repository freshness preference. When both
+    classes are due, an oldest-due scout or persisted repo-diff raw gets the
+    next claim after the cooldown. Ordinary FIFO work takes precedence during
+    the cooldown. Either class can use an otherwise idle slot. This changes
+    ordering only, never due, lease, kind or unknown-outcome eligibility.
     """
     engine = get_engine()
     sqlite = engine.dialect.name == "sqlite"
@@ -127,10 +157,27 @@ def claim_job(
             kinds_filter = "routine_kind = ANY(:kinds)"
         else:
             kinds_filter = "TRUE"
+        order = "next_run_at ASC, name"
+        if prefer_repo_freshness:
+            cutoff = (
+                "datetime(CURRENT_TIMESTAMP, '-' || :freshness_cooldown || ' seconds')"
+                if sqlite
+                else "now() - (:freshness_cooldown || ' seconds')::interval"
+            )
+            recent_freshness = f"""EXISTS (
+                SELECT 1 FROM {table} AS recent
+                 WHERE {_repo_freshness_sql("recent", sqlite=sqlite)}
+                   AND (recent.last_run_at >= {cutoff}
+                        OR recent.locked_at >= {cutoff})
+            )"""
+            order = (
+                f"CASE WHEN {_repo_freshness_sql('candidate', sqlite=sqlite)} "
+                f"= (NOT {recent_freshness}) THEN 0 ELSE 1 END, " + order
+            )
         select_sql = text(
             f"""
             SELECT name, locked_by, locked_at, ttl_secs
-              FROM {table}
+              FROM {table} AS candidate
              WHERE next_run_at IS NOT NULL
                AND (last_status IS NULL OR last_status != :unknown_outcome)
                AND next_run_at <= {now_expr}
@@ -142,7 +189,7 @@ def claim_job(
                AND ("""
             + kinds_filter
             + f""")
-             ORDER BY next_run_at ASC
+             ORDER BY {order}
              LIMIT 1
              {"" if sqlite else "FOR UPDATE SKIP LOCKED"}
             """
@@ -176,6 +223,7 @@ def claim_job(
                     "kind": kind,
                     "kinds": list(kinds or []),
                     "unknown_outcome": UNKNOWN_INVOCATION,
+                    "freshness_cooldown": REPO_FRESHNESS_COOLDOWN_SECONDS,
                 },
             ).first()
 
