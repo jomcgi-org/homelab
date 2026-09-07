@@ -8,6 +8,11 @@ backend:
   autoscaling:
     enabled: false
 
+swarm:
+  # Make the bounded reconciler available on the existing GKE stack. Durable
+  # operator policy separately controls issue admission and starts disabled.
+  factoryEnabled: true
+
 postgres:
   storage:
     storageClass: standard-rwo
