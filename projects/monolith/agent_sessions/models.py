@@ -163,7 +163,7 @@ class AgentTurn(SQLModel, table=True):
     artifact_outcome: str | None = Field(default=None)
     usage_json: str | None = Field(default=None)
     cost_usd: float | None = Field(default=None)
-    cost_source: str | None = Field(default=None)
+    list_cost_usd: float | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

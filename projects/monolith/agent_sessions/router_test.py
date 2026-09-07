@@ -577,6 +577,7 @@ def test_list_sessions_aggregates(client, session):
                 prompt="two",
                 result_text="done",
                 cost_usd=0.04,
+                list_cost_usd=0.07,
             ),
             PendingMessage(session_id=row.id, seq=3, message_text="three"),
         ]
@@ -587,6 +588,7 @@ def test_list_sessions_aggregates(client, session):
     assert item["turn_count"] == 2
     assert item["pending_count"] == 1
     assert item["total_cost_usd"] == pytest.approx(0.1)
+    assert item["total_list_cost_usd"] == pytest.approx(0.07)
     assert item["title"] == "one"
 
 
@@ -902,6 +904,7 @@ def test_get_session_detail(client, session):
                 prompt="two",
                 result_text="result",
                 usage_json='{"activities": ["shell"]}',
+                list_cost_usd=0.05,
             ),
             AgentTurn(session_id=row.id, seq=1, prompt="one", result_text="result"),
             PendingMessage(
@@ -928,9 +931,12 @@ def test_get_session_detail(client, session):
     assert body["session"]["turn_count"] == 2
     assert body["session"]["pending_count"] == 1
     assert body["session"]["total_cost_usd"] == 0
+    assert body["session"]["total_list_cost_usd"] == pytest.approx(0.05)
     assert body["session"]["title"] == "one"
     assert [turn["seq"] for turn in body["turns"]] == [1, 2]
     assert body["turns"][1]["usage"] == {"activities": ["shell"]}
+    assert body["turns"][1]["cost_usd"] is None
+    assert body["turns"][1]["list_cost_usd"] == pytest.approx(0.05)
     assert "workspace_recovery" not in body["turns"][1]
     assert "repo_had_uncommitted_files" not in body["turns"][1]
     assert body["session"]["recovery_workspace_loss"] is None
