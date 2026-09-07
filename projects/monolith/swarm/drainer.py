@@ -121,7 +121,12 @@ def claim_drainer_job(ttl_secs: int, kinds: tuple[str, ...] | list[str]) -> dict
     from agent.routine_jobs import claim_job
 
     with tracer.start_as_current_span("drain.claim_job") as span:
-        job = claim_job(holder=CLAIM_HOLDER, ttl_secs=ttl_secs, kinds=kinds)
+        job = claim_job(
+            holder=CLAIM_HOLDER,
+            ttl_secs=ttl_secs,
+            kinds=kinds,
+            prefer_repo_freshness=True,
+        )
         set_attributes(
             span,
             {
