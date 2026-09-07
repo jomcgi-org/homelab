@@ -47,6 +47,13 @@ class FakeDBOS:
 @pytest.fixture(autouse=True)
 def _clear_spans(monkeypatch):
     _EXPORTER.clear()
+    monkeypatch.setattr(drainer, "IDLE_POLL_LIMIT", 0)
+
+    def require_explicit_database():
+        raise AssertionError("hermetic test requires an explicit local database")
+
+    monkeypatch.setattr("core.db.get_engine", require_explicit_database)
+    monkeypatch.setattr(drainer, "cancel_drainer_reservation", lambda *_: True)
     monkeypatch.setattr(drainer, "sweep_kg_raws", lambda: 0)
     monkeypatch.setattr(drainer, "kg_effective_cap", lambda base_cap: base_cap)
     monkeypatch.setattr(
@@ -82,14 +89,14 @@ def _run(
     )
     monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
 
-    def claim(ttl_secs, kinds):
+    def claim(ttl_secs, kinds, _workflow_id, _base_cap, _index):
         claims.append((ttl_secs, kinds))
         return next(queued)
 
-    def start(*args):
+    def start(*args, **kwargs):
         starts.append(args)
         if start_session is not None:
-            return start_session(*args)
+            return start_session(*args, **kwargs)
         return 100 + len(starts)
 
     monkeypatch.setattr(drainer, "claim_drainer_job", claim)
@@ -687,11 +694,11 @@ def test_kg_cap_defers_once_then_drains_qwen_jobs(monkeypatch):
     completions = []
     starts = []
 
-    def claim(_ttl, kinds):
+    def claim(_ttl, kinds, _workflow_id, _base_cap, _index):
         claims.append(tuple(kinds))
         return next((job for job in queue if job["routine_kind"] in kinds), None)
 
-    def remove_claimed(*args):
+    def remove_claimed(*args, **kwargs):
         starts.append(args)
         name = args[0].split(":qwen-drain:", 1)[1]
         queue[:] = [job for job in queue if job["name"] != name]
@@ -753,7 +760,7 @@ def _run_transient_kg_failure(monkeypatch, attempts):
     monkeypatch.setattr(drainer, "claim_drainer_job", lambda *_args: next(queue))
     monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
     monkeypatch.setattr(drainer, "build_kg_prompt", lambda _raw_id: "kg prompt")
-    monkeypatch.setattr(drainer, "start_agent_session", lambda *_args: 101)
+    monkeypatch.setattr(drainer, "start_agent_session", lambda *_args, **_kwargs: 101)
     monkeypatch.setattr(
         drainer,
         "_await_turn",
@@ -861,7 +868,7 @@ def test_failure_logs_without_notification_when_notifications_disabled(
 def test_start_failure_cleans_up_by_stable_session_key(monkeypatch):
     job = {"name": "start-fails", "payload": {"prompt": "run"}}
 
-    def fail_start(*_args):
+    def fail_start(*_args, **_kwargs):
         raise RuntimeError("start failed")
 
     result, _, _, completions, notifications, destroys = _run(
@@ -1198,14 +1205,18 @@ def test_disabled_cycle_still_emits_a_cycle_span(monkeypatch):
     assert spans[0].attributes["drain.outcome"] == "disabled"
 
 
-def test_claim_step_span_lives_inside_the_step_body(monkeypatch):
+def test_claim_step_span_lives_inside_the_step_body(monkeypatch, admission_database):
     import agent.routine_jobs as routine_jobs
 
     claims = []
 
     def claim(**kwargs):
         claims.append(kwargs)
-        return {"name": "job-1", "payload": {"prompt": "work"}}
+        return {
+            "name": "job-1",
+            "routine_kind": "qwen-drain",
+            "payload": {"prompt": "work"},
+        }
 
     monkeypatch.setattr(
         routine_jobs,
@@ -1213,15 +1224,13 @@ def test_claim_step_span_lives_inside_the_step_body(monkeypatch):
         claim,
     )
 
-    drainer.claim_drainer_job.__wrapped__(60, ["qwen-drain", "kg-drain"])
-    assert claims == [
-        {
-            "holder": drainer.CLAIM_HOLDER,
-            "ttl_secs": 60,
-            "kinds": ["qwen-drain", "kg-drain"],
-            "prefer_repo_freshness": True,
-        }
-    ]
+    drainer.claim_drainer_job.__wrapped__(60, ["qwen-drain", "kg-drain"], "wf", 40, 0)
+    assert len(claims) == 1
+    assert claims[0]["holder"] == "luna-drainer:wf:0"
+    assert claims[0]["prefer_repo_freshness"] is True
+    assert claims[0]["recover_holder"] is True
+    assert claims[0]["exclude_names"] == set()
+    assert isinstance(claims[0]["session"], Session)
 
     spans = _spans_named("drain.claim_job")
     assert len(spans) == 1
@@ -1274,7 +1283,12 @@ def test_repo_scout_and_actual_derived_raw_get_bounded_validated_service(
             session.commit()
 
         def claim():
-            return drainer.claim_drainer_job.__wrapped__(60, ["kg-drain"])
+            return routine_jobs.claim_job(
+                holder="fairness",
+                ttl_secs=60,
+                kinds=["kg-drain"],
+                prefer_repo_freshness=True,
+            )
 
         assert claim()["name"] == "kg-repo-diff"
         scout = drainer.apply_kg_extraction.__wrapped__(
@@ -1517,3 +1531,370 @@ def test_late_drainer_completion_cannot_deregister_held_job(monkeypatch):
     )
     assert drainer.finish_drainer_job.__wrapped__("held", "ok", "late", True) is False
     assert deleted == []
+
+
+@pytest.fixture
+def admission_database(tmp_path, monkeypatch):
+    from sqlmodel import SQLModel
+    from agent import routine_jobs
+    from agent_sessions import admission
+    from agent_sessions.models import (
+        AgentCapacityPool,
+        AgentCapacityReservation,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from knowledge import burst
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'drainer-admission.db'}",
+        connect_args={"check_same_thread": False, "timeout": 10},
+        execution_options={"schema_translate_map": {"agent_sessions": None}},
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            m.__table__
+            for m in (
+                AgentCapacityPool,
+                AgentCapacityReservation,
+                AgentSession,
+                AgentTurn,
+                PendingMessage,
+            )
+        ],
+    )
+    with Session(engine) as db:
+        db.execute(
+            text("""CREATE TABLE routine_jobs (
+            name TEXT PRIMARY KEY, routine_kind TEXT, interval_secs INTEGER,
+            next_run_at TEXT, last_run_at TEXT, last_status TEXT,
+            last_summary TEXT, locked_by TEXT, locked_at TEXT,
+            ttl_secs INTEGER, payload TEXT, created_by TEXT, created_at TEXT)""")
+        )
+        db.execute(
+            text("CREATE TABLE raw_inputs (raw_id TEXT PRIMARY KEY, source TEXT)")
+        )
+        db.commit()
+    monkeypatch.setattr("core.db.get_engine", lambda: engine)
+    monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
+    monkeypatch.setattr(admission, "get_engine", lambda: engine)
+    monkeypatch.setattr(burst, "kg_burst_state", lambda *_args: burst.KGBurstState())
+    yield engine
+    engine.dispose()
+
+
+def _queued_job(engine, name, kind="kg-drain", *, freshness=False):
+    with Session(engine) as db:
+        db.execute(
+            text("""INSERT INTO routine_jobs
+            (name,routine_kind,next_run_at,payload)
+            VALUES (:name,:kind,'2026-01-01',:payload)"""),
+            {"name": name, "kind": kind, "payload": json.dumps({"raw_id": name})},
+        )
+        if freshness:
+            db.execute(
+                text("INSERT INTO raw_inputs VALUES (:name,'repo-diff')"),
+                {"name": name},
+            )
+        db.commit()
+
+
+def _admitted_claim(workflow_id, *, cap=400, index=0):
+    return drainer.claim_drainer_job.__wrapped__(
+        2100,
+        ("kg-drain", "qwen-drain"),
+        workflow_id,
+        cap,
+        index,
+    )
+
+
+@pytest.mark.parametrize("burst_remaining", [None, 1])
+def test_parallel_kg_claims_cannot_spend_last_daily_or_grant_job(
+    admission_database,
+    monkeypatch,
+    burst_remaining,
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from sqlmodel import select
+    from agent_sessions.models import AgentCapacityReservation
+    from knowledge import burst
+
+    for name in ("a", "b"):
+        _queued_job(admission_database, name)
+    if burst_remaining is not None:
+        monkeypatch.setattr(
+            burst,
+            "kg_burst_state",
+            lambda *_: burst.KGBurstState(
+                active=True,
+                extra_jobs=10,
+                remaining_jobs=burst_remaining,
+            ),
+        )
+    with ThreadPoolExecutor(2) as workers:
+        results = list(
+            workers.map(lambda wid: _admitted_claim(wid, cap=1), ("wf-a", "wf-b"))
+        )
+    assert sum(result is not None for result in results) == 1
+    with Session(admission_database) as db:
+        assert len(db.exec(select(AgentCapacityReservation)).all()) == 1
+        jobs = db.execute(
+            text("SELECT locked_by FROM routine_jobs ORDER BY name")
+        ).all()
+        assert sum(row.locked_by is not None for row in jobs) == 1
+
+
+def test_two_kg_claims_leave_project_capacity_and_rejected_lease_untouched(
+    admission_database,
+):
+    from sqlmodel import select
+    from agent_sessions.models import AgentCapacityReservation
+
+    for name in ("kg-a", "kg-b", "kg-c"):
+        _queued_job(admission_database, name)
+    _queued_job(admission_database, "project", "qwen-drain")
+    assert _admitted_claim("one")["name"] == "kg-a"
+    assert _admitted_claim("two")["name"] == "kg-b"
+    assert _admitted_claim("three")["name"] == "project"
+    assert _admitted_claim("four") is None
+    with Session(admission_database) as db:
+        reservations = db.exec(select(AgentCapacityReservation)).all()
+        assert sorted(row.tier for row in reservations) == ["kg", "kg", "project"]
+        assert {row.routine_job_name for row in reservations} == {
+            "kg-a",
+            "kg-b",
+            "project",
+        }
+        refused = db.execute(
+            text("SELECT locked_by, locked_at FROM routine_jobs WHERE name='kg-c'")
+        ).one()
+        assert refused.locked_by is None and refused.locked_at is None
+
+
+def test_claim_checkpoint_loss_reuses_identity_and_expired_lease_cannot_redispatch(
+    admission_database,
+):
+    from sqlmodel import select
+    from agent_sessions.models import AgentCapacityReservation
+
+    _queued_job(admission_database, "only")
+    first = _admitted_claim("original")
+    assert _admitted_claim("original") == first
+    with Session(admission_database) as db:
+        db.execute(
+            text("UPDATE routine_jobs SET locked_at='2000-01-01' WHERE name='only'")
+        )
+        db.commit()
+    assert _admitted_claim("replacement") is None
+    replay = _admitted_claim("original")
+    assert replay["name"] == first["name"] and replay["locked_by"] == first["locked_by"]
+    with Session(admission_database) as db:
+        rows = db.exec(select(AgentCapacityReservation)).all()
+        assert len(rows) == 1
+        assert rows[0].local_session_id == "original:kg-drain:only"
+        assert rows[0].state == "reserved"
+
+
+def test_parallel_claims_share_persisted_freshness_cooldown(admission_database):
+    from concurrent.futures import ThreadPoolExecutor
+
+    _queued_job(admission_database, "fresh-a", freshness=True)
+    _queued_job(admission_database, "fresh-b", freshness=True)
+    _queued_job(admission_database, "ordinary")
+    with ThreadPoolExecutor(2) as workers:
+        results = list(workers.map(_admitted_claim, ("one", "two")))
+    assert {row["name"] for row in results} == {"fresh-a", "ordinary"}
+
+
+def test_chain_enqueues_recorded_ids_outside_preparation_step(monkeypatch):
+    from swarm import queues
+
+    events = []
+    queue = object()
+    monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
+    monkeypatch.setattr(
+        drainer,
+        "prepare_next_cycle",
+        lambda wid: events.append(("prepare", wid)) or ["fixed-successor"],
+    )
+    monkeypatch.setattr(queues, "drainer_queue", lambda: queue)
+    monkeypatch.setattr(
+        queues,
+        "enqueue_drainer_workers",
+        lambda dbos, ids, **kw: events.append(("enqueue", ids, kw)),
+    )
+    drainer.chain_next_cycle()
+    assert events == [
+        ("prepare", "workflow-1"),
+        ("enqueue", ["fixed-successor"], {"queue": queue}),
+    ]
+
+
+@pytest.mark.parametrize("kind,tier", [("qwen-drain", "project"), ("kg-drain", "kg")])
+def test_drainer_start_sets_server_owned_admission_tier(monkeypatch, kind, tier):
+    seen = []
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _: "extract")
+    monkeypatch.setattr(
+        drainer,
+        "apply_kg_extraction",
+        lambda *_args, **_kwargs: {
+            "atoms": [1, 2, 3],
+            "rejected": [],
+            "dispute": None,
+            "doc_drift": 0,
+            "docfix_jobs": 0,
+        },
+    )
+    _run(
+        monkeypatch,
+        [
+            {
+                "name": "job",
+                "routine_kind": kind,
+                "payload": {"prompt": "work", "raw_id": "raw"},
+            }
+        ],
+        start_session=lambda *_args, **kwargs: seen.append(kwargs) or 101,
+    )
+    assert seen == [{"admission_tier": tier}]
+
+
+def test_invalid_local_prompt_cancels_only_never_started_reservation(monkeypatch):
+    cancelled = []
+    monkeypatch.setattr(
+        drainer, "cancel_drainer_reservation", lambda key: cancelled.append(key) or True
+    )
+    result, _, starts, _, _, destroys = _run(
+        monkeypatch, [{"name": "bad", "payload": None}]
+    )
+    assert result["processed"] == 1
+    assert starts == [] and destroys == []
+    assert cancelled == ["workflow-1:qwen-drain:bad"]
+
+
+@pytest.mark.parametrize("initial", ["full", "empty"])
+def test_idle_worker_claims_after_capacity_release_or_arrival_without_cron(
+    admission_database,
+    monkeypatch,
+    initial,
+):
+    from agent_sessions import admission
+
+    if initial == "full":
+        _queued_job(admission_database, "waiting")
+        with Session(admission_database) as db:
+            for key in ("busy-a", "busy-b"):
+                assert admission.reserve_start(db, key, tier="kg", model="luna")
+            db.commit()
+    sleeps = []
+
+    def wake(seconds):
+        sleeps.append(seconds)
+        if initial == "full":
+            with Session(admission_database) as db:
+                assert admission.cancel_unbound(db, "busy-a")
+                db.commit()
+        else:
+            _queued_job(admission_database, "waiting")
+
+    monkeypatch.setattr(drainer, "IDLE_POLL_LIMIT", 2)
+    monkeypatch.setattr(drainer, "drainer_wait_enabled", lambda: True)
+    monkeypatch.setattr(
+        drainer, "DBOS", type("DBOS", (), {"sleep": staticmethod(wake)})
+    )
+    job, rotate = drainer._claim_with_idle_wait(
+        2100,
+        ("kg-drain",),
+        "same-worker",
+        400,
+        0,
+        wait_allowed=True,
+    )
+    assert job["name"] == "waiting" and not rotate
+    assert job["locked_by"] == "luna-drainer:same-worker:0"
+    assert sleeps == [5]
+
+
+def test_idle_rotation_is_bounded_and_live_pause_prevents_next_claim(monkeypatch):
+    from types import SimpleNamespace
+
+    calls, sleeps = [], []
+    enabled = [True]
+    monkeypatch.setattr(drainer, "IDLE_POLL_LIMIT", 2)
+    monkeypatch.setattr(drainer, "claim_drainer_job", lambda *args: calls.append(args))
+    monkeypatch.setattr(
+        drainer.agent_config,
+        "load_drainer_settings",
+        lambda: SimpleNamespace(
+            enabled=enabled[0],
+            max_jobs_per_cycle=3,
+        ),
+    )
+    monkeypatch.setattr(
+        drainer, "drainer_wait_enabled", drainer.drainer_wait_enabled.__wrapped__
+    )
+    monkeypatch.setattr(
+        drainer, "DBOS", type("DBOS", (), {"sleep": staticmethod(sleeps.append)})
+    )
+    args = (2100, ("kg-drain",), "idle", 400, 0)
+    assert drainer._claim_with_idle_wait(*args, wait_allowed=True) == (None, True)
+    assert len(calls) == 3 and sleeps == [5, 5]
+    calls.clear()
+    sleeps.clear()
+
+    def pause(seconds):
+        sleeps.append(seconds)
+        enabled[0] = False
+
+    monkeypatch.setattr(
+        drainer, "DBOS", type("DBOS", (), {"sleep": staticmethod(pause)})
+    )
+    assert drainer._claim_with_idle_wait(*args, wait_allowed=True) == (None, False)
+    assert len(calls) == 1 and sleeps == [5]
+
+
+def test_failed_batch_does_not_wait_or_rotate(monkeypatch):
+    monkeypatch.setattr(drainer, "IDLE_POLL_LIMIT", 180)
+    monkeypatch.setattr(drainer, "claim_drainer_job", lambda *_: None)
+    monkeypatch.setattr(
+        drainer,
+        "drainer_wait_enabled",
+        lambda: pytest.fail("failure backoff must not poll"),
+    )
+    assert drainer._claim_with_idle_wait(
+        2100, ("kg-drain",), "failed", 400, 0, wait_allowed=False
+    ) == (None, False)
+
+
+@pytest.mark.parametrize("attempted", [False, True])
+def test_cleanup_refunds_only_never_dispatched_pending(
+    admission_database, monkeypatch, attempted
+):
+    from sqlmodel import select
+    from agent_sessions import admission, store
+    from agent_sessions.models import AgentCapacityReservation, PendingMessage
+
+    monkeypatch.setattr("agent_sessions.mcp.get_engine", lambda: admission_database)
+    with Session(admission_database) as db:
+        assert admission.reserve_start(
+            db, "cleanup", tier="kg", model="luna", routine_job_name="job"
+        )
+        row = store.create_session(
+            db, "cleanup", "<guest>", "main", "luna", admission_tier="kg"
+        )
+        sid = row.id
+        pending = PendingMessage(
+            session_id=sid, seq=1, message_text="work", dispatch_count=int(attempted)
+        )
+        db.add(pending)
+        db.commit()
+    assert not drainer.destroy_drainer_session.__wrapped__(sid, "cleanup")
+    with Session(admission_database) as db:
+        assert db.exec(select(PendingMessage)).all() == []
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        assert permit.state == ("reserved" if attempted else "settled")
+        assert permit.outcome == (None if attempted else "cancelled_before_dispatch")

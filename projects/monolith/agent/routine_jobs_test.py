@@ -394,3 +394,125 @@ def test_unknown_job_hold_survives_reclaim_and_preserves_recurring_payload(
         session.commit()
     assert routine_jobs.claim_job("replacement", 60, kinds=["kg-drain"]) is None
     assert routine_jobs.claim_job("replacement", 60, name="recurring") is None
+
+
+def test_supplied_claim_session_rolls_back_lease_without_committing_other_work(
+    freshness_engine,
+):
+    _queue_freshness_job(freshness_engine, "job")
+    with Session(freshness_engine) as db:
+        claimed = routine_jobs.claim_job("holder", 60, session=db)
+        assert claimed["name"] == "job"
+        db.rollback()
+    assert _freshness_claim()["name"] == "job"
+
+
+@pytest.fixture
+def worker_database(freshness_engine, monkeypatch):
+    from agent_sessions import admission
+
+    def lock(db):
+        db.execute(
+            text(
+                "UPDATE routine_jobs SET name=name WHERE routine_kind='_drainer-worker'"
+            )
+        )
+
+    monkeypatch.setattr(admission, "lock_pool", lock)
+    return freshness_engine
+
+
+def test_parallel_worker_refill_reserves_exactly_two_intents(worker_database):
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(2) as workers:
+        results = list(
+            workers.map(
+                lambda _: routine_jobs.reserve_drainer_workers({}, {}, set()), range(2)
+            )
+        )
+    assert sorted(map(len, results)) == [0, 2]
+    intents = routine_jobs.drainer_worker_intents()
+    assert {row["workflow_id"] for row in intents.values()} == {
+        "_drainer-worker:0:1",
+        "_drainer-worker:1:1",
+    }
+    assert _freshness_claim() is None
+    assert not routine_jobs.trigger_job("_drainer-worker:0")
+    assert not routine_jobs.deregister_job("_drainer-worker:0")
+    assert routine_jobs.drainer_worker_intents() == intents
+
+
+def test_lost_enqueue_response_retries_same_ids_and_completion_refills_only_one(
+    worker_database,
+):
+    first = routine_jobs.reserve_drainer_workers({}, {}, set())
+    intents = routine_jobs.drainer_worker_intents()
+    assert (
+        routine_jobs.reserve_drainer_workers(intents, dict.fromkeys(first), set())
+        == first
+    )
+    statuses = {first[0]: "SUCCESS", first[1]: "PENDING"}
+    next_ids = routine_jobs.reserve_drainer_workers(intents, statuses, {first[1]})
+    assert next_ids == ["_drainer-worker:0:2"]
+    # A competing observer with the old snapshot cannot enqueue another successor.
+    assert routine_jobs.reserve_drainer_workers(intents, statuses, {first[1]}) == []
+    assert (
+        routine_jobs.drainer_worker_intents()["_drainer-worker:1"]
+        == intents["_drainer-worker:1"]
+    )
+
+
+def test_completing_worker_refills_without_waiting_for_other_worker(worker_database):
+    ids = routine_jobs.reserve_drainer_workers({}, {}, set())
+    intents = routine_jobs.drainer_worker_intents()
+    assert routine_jobs.reserve_drainer_workers(
+        intents,
+        dict.fromkeys(ids, "PENDING"),
+        set(ids),
+        completing_workflow_id=ids[0],
+    ) == ["_drainer-worker:0:2"]
+
+
+@pytest.mark.parametrize(
+    "statuses",
+    [{}, {"_drainer-worker:0:1": "UNKNOWN", "_drainer-worker:1:1": "PENDING"}],
+)
+def test_unknown_worker_inventory_cannot_allocate(worker_database, statuses):
+    routine_jobs.reserve_drainer_workers({}, {}, set())
+    before = routine_jobs.drainer_worker_intents()
+    with pytest.raises(ValueError):
+        routine_jobs.reserve_drainer_workers(before, statuses, set())
+    assert routine_jobs.drainer_worker_intents() == before
+
+
+@pytest.mark.parametrize("legacy_count,expected", [(1, 1), (2, 0), (3, 0)])
+def test_legacy_workflows_count_toward_same_worker_limit(
+    worker_database, legacy_count, expected
+):
+    assert (
+        len(
+            routine_jobs.reserve_drainer_workers(
+                {}, {}, {f"old-{i}" for i in range(legacy_count)}
+            )
+        )
+        == expected
+    )
+
+
+def test_malformed_internal_worker_identity_fails_closed(worker_database):
+    routine_jobs.reserve_drainer_workers({}, {}, set())
+    with Session(worker_database) as db:
+        db.execute(
+            text(
+                "UPDATE routine_jobs SET payload=:payload WHERE name='_drainer-worker:0'"
+            ),
+            {
+                "payload": json.dumps(
+                    {"generation": 1, "workflow_id": "unrelated-workflow"}
+                )
+            },
+        )
+        db.commit()
+    with pytest.raises(ValueError, match="invalid drainer worker intent"):
+        routine_jobs.drainer_worker_intents()
