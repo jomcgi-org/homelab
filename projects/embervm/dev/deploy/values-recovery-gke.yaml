@@ -1,0 +1,315 @@
+# Inactive recovery preset, loaded ONLY over chart defaults. Fixed release
+# and namespace: embervm-dev. No Application or kustomization references it.
+# Activation requirements: projects/monolith/dev/deploy/recovery-gke.md.
+# All recovery bucket, principal and 1Password identities below are planned;
+# their existence, permissions and credential delivery require verification.
+#
+# The shared scratch mount must already exist. Only its recovery subtree is
+# used; this release must not create a second scratch-prep daemon.
+#
+# claude-runtime is Monolith's session API contract, scoped to embervm-dev by
+# the control-plane watcher. Its dedicated epoch, bucket and scratch path
+# isolate the base. The hypervisor epoch includes the current default; update
+# this value when the vendored hypervisor epoch changes.
+#
+# Guest callbacks are encoded from dev URLs into kernelBootArgs because guest
+# process environment is captured at base build. initEnv only changes identity.
+#
+# Namespace runtime RBAC needs no Secret API reads for these workloads. The
+# kubelet supplies op-log credentials. Only TokenReview stays cluster-scoped.
+#
+# One full guest and one later small task, serially admitted. These are limits
+# for the isolated proof, not a benchmark or a production concurrency change.
+rbac:
+  scope: namespace
+  secretNames: []
+opLog:
+  postgres:
+    enabled: true
+    user: embervm
+    host: monolith-dev-pg-rw.monolith-dev
+    port: 5432
+    database: embervm_oplog
+    secretName: monolith-dev-pg-embervm-oplog
+    secretKey: password
+    onepassword:
+      itemPath: vaults/k8s-homelab/items/embervm-recovery-oplog-db
+  persistentVolume: false
+  storageClass: standard-rwo
+  size: 1Gi
+bricks:
+  enabled: true
+  desiredReplicas:
+    1gi: 0
+    2gi: 0
+    4gi: 0
+    8gi: 1
+    16gi: 0
+  autoscale:
+    mode: observe
+    minReplicas:
+      1gi: 0
+      2gi: 0
+      4gi: 0
+      8gi: 1
+      16gi: 0
+    maxReplicas:
+      1gi: 0
+      2gi: 0
+      4gi: 0
+      8gi: 1
+      16gi: 0
+  nodeFloors: []
+noded:
+  enabled: false
+  maxLiveVMs: 1
+  admissionModel: observed
+  networkPolicy:
+    enabled: false
+  bearerTokenSecret:
+    enabled: true
+    onepassword:
+      itemPath: vaults/k8s-homelab/items/embervm-recovery-noded-token
+  requireRestoreCapability: true
+  warmthHeartbeat:
+    intervalSeconds: 30
+    staleAfterSeconds: 600
+    reapUnclaimed: false
+  silenceTimeoutSeconds: ''
+  warmRestoreWithVolumeClasses:
+  - 8gi
+  firecracker:
+    nvmeRoot: /var/lib/embervm/scratch/recovery
+    nvmeRootHostPathType: DirectoryOrCreate
+    kernelBootArgs: console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro ember.env.EMBER_PROGRESS_URL=aHR0cDovL21vbm9saXRoLWRldi5tb25vbGl0aC1kZXY6ODA5MS9pbmdlc3QvcHJvZ3Jlc3M ember.env.EMBER_AGENT_MCP_URL=aHR0cDovL21vbm9saXRoLWRldi5tb25vbGl0aC1kZXY6ODAwMC9tY3A
+  store:
+    endpoint: https://storage.googleapis.com
+    bucket: h0melab-ember-recovery
+    compress: true
+    encrypt: true
+    credentials:
+      enabled: true
+      secretName: ''
+      onepassword:
+        itemPath: vaults/k8s-homelab/items/embervm-recovery-store
+  drain:
+    preemptionNoticeEnabled: true
+  priorityClassName: homelab-preemptible
+scratchPrep:
+  enabled: false
+workloads:
+  sandboxPython:
+    rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/sandbox-python/rootfs.ext4
+  sandboxGo:
+    rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/sandbox-go/rootfs.ext4
+  sandboxRust:
+    rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/sandbox-rust/rootfs.ext4
+  sandboxElixir:
+    rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/sandbox-elixir/rootfs.ext4
+  sandboxOcaml:
+    rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/sandbox-ocaml/rootfs.ext4
+  sandboxJavascript:
+    rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/sandbox-javascript/rootfs.ext4
+  semgrep:
+    rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/semgrep/rootfs.ext4
+  runtimePython:
+    rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/runtime-python/rootfs.ext4
+  runtimeClaude:
+    rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/runtime-claude/rootfs.ext4
+  runtimePi:
+    rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/runtime-pi/rootfs.ext4
+  scratchPostgres:
+    rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/scratch-postgres/rootfs.ext4
+  bazelQuery:
+    rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/bazel-query/rootfs.ext4
+  shotter:
+    rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/shotter/rootfs.ext4
+  pingWorkload:
+    rootfsPath: /var/lib/embervm/scratch/recovery/embervm-noded/ping/rootfs.ext4
+claudeRuntimeWorkload:
+  enabled: true
+  name: claude-runtime
+  initEnv:
+    EMBER_RECOVERY_EPOCH: recovery-1
+  persistenceEnabled: true
+  cap: 1
+  session:
+    maxSessions: 1
+    invokeQueueCap: 1
+sandboxWorkloads:
+  sandboxPython:
+    enabled: true
+    name: sandbox-dev-python
+    cap: 1
+  sandboxGo:
+    enabled: false
+  sandboxRust:
+    enabled: false
+  sandboxElixir:
+    enabled: false
+  sandboxOcaml:
+    enabled: false
+  sandboxJavascript:
+    enabled: false
+sandboxSessionWorkload:
+  enabled: false
+semgrepWorkload:
+  enabled: false
+bazelQueryWorkload:
+  enabled: false
+shotterWorkload:
+  enabled: false
+piRuntimeWorkload:
+  enabled: false
+pingWorkload:
+  enabled: false
+  guestImage:
+    repository: ''
+scratchPostgres:
+  enabled: false
+  guestImage:
+    repository: ''
+demoPostgres:
+  enabled: false
+semgrep:
+  guestImage:
+    repository: ''
+runtimePython:
+  guestImage:
+    repository: ''
+runtimePi:
+  guestImage:
+    repository: ''
+bazelQuery:
+  guestImage:
+    repository: ''
+shotter:
+  guestImage:
+    repository: ''
+sandboxGo:
+  guestImage:
+    repository: ''
+sandboxRust:
+  guestImage:
+    repository: ''
+sandboxElixir:
+  guestImage:
+    repository: ''
+sandboxOcaml:
+  guestImage:
+    repository: ''
+sandboxJavascript:
+  guestImage:
+    repository: ''
+artifactEncryption:
+  enabled: true
+kekRoot:
+  enabled: true
+  onepassword:
+    itemPath: vaults/k8s-homelab/items/embervm-recovery-kek-root
+tokenBroker:
+  enabled: true
+  networkPolicy:
+    enabled: false
+  authentik:
+    enabled: true
+    tokenEndpoint: https://auth.jomcgi.dev/application/o/token/
+    clientID: mcp-recovery
+    scope: openid profile email
+    username: kg-agent-recovery-sa
+    appPasswordRef:
+      name: embervm-authentik-recovery-agent
+      key: app-password
+  grants:
+  - name: codex-cluster
+    provider: codex-chatgpt
+    fqdn: auth.openai.com
+  - name: recovery-agent-mcp
+    provider: authentik
+    fqdn: auth.jomcgi.dev
+egress:
+  enabled: true
+  external: allow
+  internal:
+    default: deny
+    allowlist:
+    - monolith-dev.monolith-dev:8091
+    - monolith-dev.monolith-dev:8000
+    cidrs: []
+  secrets:
+  - header: Authorization
+    valuePrefix: 'Bearer '
+    egressTo:
+    - chatgpt.com
+    brokerGrant: codex-cluster
+    claimHeader: chatgpt-account-id
+    claimPath: https://api.openai.com/auth.chatgpt_account_id
+    injectAlwaysPaths:
+    - /backend-api/ps/mcp
+    quotaProvider: codex
+  - header: Authorization
+    valuePrefix: 'Bearer '
+    brokerGrant: recovery-agent-mcp
+    egressTo:
+    - monolith-dev.monolith-dev
+    injectAlwaysPaths:
+    - /mcp
+    - /mcp/
+    plaintextUpstream: true
+  onepassword:
+    name: ''
+    itemPath: ''
+  metaSpark:
+    name: ''
+    itemPath: ''
+  ca:
+    enabled: true
+auth:
+  allowedServiceAccounts:
+  - system:serviceaccount:embervm-dev:embervm-dev-embervm
+  - system:serviceaccount:monolith-dev:monolith-dev
+usageAdmins:
+- system:serviceaccount:embervm-dev:embervm-dev-embervm
+conformance:
+  enabled: false
+servingEnvoy:
+  enabled: false
+baseRetention:
+  sweepEnabled: ''
+  diskDrivenEnabled: ''
+  remoteSweepEnabled: ''
+warmthRetention:
+  sweepEnabled: ''
+warmthS3Gc:
+  enabled: ''
+  allowEmptyKinds: ''
+  maxPrefixes: ''
+  maxBytes: ''
+  statefulTtlMs: ''
+  sessionTtlMs: ''
+  servingTtlMs: ''
+  sessionWorkspaceTtlMs: ''
+  groupSetTtlMs: ''
+  intervalMs: ''
+durabilityHealth:
+  enabled: ''
+  expectedNodes: []
+rootfsReclaim:
+  enabled: ''
+envelopeRewrap:
+  enabled: false
+grpcConnectionSweeper:
+  enabled: ''
+  sweepIntervalMs: ''
+statefulSweeper:
+  pressureBanking:
+    enabled: false
+tracing:
+  endpoint: ''
+  serviceName: embervm-recovery-control
+hypervisorEpoch: fc-v1.16.1-r2-recovery-gke-1
+
+# Retain the verified node-confirmed ordering and serialize create workers.
+nodeConfirmedDestroy: true
+controlPlane:
+  createConcurrency: 1

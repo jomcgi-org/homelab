@@ -1,0 +1,173 @@
+# Inactive recovery preset. Load ONLY over chart defaults with release and
+# namespace monolith-dev. Do not layer production or historical dev values.
+# No Application references this file. See recovery-gke.md before activation.
+backend:
+  replicas: 2
+  autoscaling:
+    enabled: false
+  leaderSingletons: true
+  primeObservabilitySnapshots: false
+  otelEndpoint: ""
+  dcgmExporterUrl: ""
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "1Gi"
+    limits:
+      memory: "1Gi"
+
+# PostgreSQL leader election and DBOS need no Kubernetes control privileges.
+rbac:
+  clusterAccess:
+    enabled: false
+  schedulerWorkflows:
+    enabled: false
+  faas:
+    enabled: false
+
+postgres:
+  instances: 1
+  storage:
+    size: "10Gi"
+    storageClass: standard-rwo
+  bootstrap:
+    recovery: null
+  externalClusters: []
+  backup:
+    enabled: false
+    destinationPath: ""
+    credentialsSecret: ""
+    onepassword:
+      itemPath: ""
+  devRefresh:
+    enabled: false
+  spire:
+    enabled: false
+  clientRoles:
+    publicReader:
+      login: false
+      passwordSecret: ""
+    agentsWriter:
+      login: false
+      passwordSecret: ""
+    publicWriter:
+      login: false
+      passwordSecret: ""
+  embervmOpLog:
+    enabled: true
+    database: embervm_oplog
+    role: embervm
+    passwordSecret: monolith-dev-pg-embervm-oplog
+
+jobs:
+  # Preserve the defaults' replaces list and its ARGO_JOBS suppression.
+  # This overrides the image injected into the published chart, so no
+  # CronWorkflow is created and no periodic drain can admit unrelated work.
+  image: ""
+  workflowNamespace: monolith-dev
+  dbSecretName: monolith-dev-pg-app
+
+agents:
+  models: "luna"
+  sessions:
+    channelNotify: "none"
+  drainer:
+    # Launch the real DBOS lifecycle, with only the manually seeded routine
+    # kind eligible. A fresh database and no scheduled trigger are required.
+    enabled: true
+    jobKinds: [qwen-drain]
+    maxJobsPerCycle: 1
+    notifyFailures: false
+    docFixEnabled: false
+    docFixAutoMerge: false
+    kgMaxJobsPerDay: 0
+    repo: jomcgi-org/homelab
+    branch: main
+swarm:
+  enabled: false
+
+semgrep:
+  # This legacy values key configures the shared Ember client for sessions.
+  embervmUrl: "http://embervm-dev-embervm.embervm-dev:8080"
+  shadowProject: ""
+  onepassword:
+    itemPath: ""
+tokenBroker:
+  url: "http://embervm-dev-embervm-tokenbroker.embervm-dev:8080"
+sandbox:
+  workloadPrefix: "sandbox-dev-"
+emberSynthetic:
+  baseUrl: ""
+emberDurability:
+  url: ""
+
+# Planned dedicated Authentik provider identity. It must be provisioned and
+# joined to the dev broker's principal before activation. No public ingress
+# is claimed by this audience string, and production tokens are not accepted.
+auth:
+  authentik:
+    jwksUrl: "https://auth.jomcgi.dev/application/o/mcp-recovery/jwks/"
+    issuer: "https://auth.jomcgi.dev/application/o/mcp-recovery/"
+    audience: "https://factory-recovery.jomcgi.dev"
+    agentJwksUrl: "https://auth.jomcgi.dev/application/o/mcp-recovery/jwks/"
+    agentIssuer: "https://auth.jomcgi.dev/application/o/mcp-recovery/"
+    agentAudience: "https://factory-recovery.jomcgi.dev"
+
+cdHealth:
+  probeEnabled: false
+chat:
+  enabled: false
+  onepassword:
+    itemPath: ""
+whatsapp:
+  enabled: false
+  agentEnabled: false
+marine:
+  enabled: false
+  onepassword:
+    itemPath: ""
+knowledge:
+  enabled: false
+orchestrator:
+  enabled: false
+goosecracker:
+  enabled: false
+grimoire:
+  enabled: false
+scratchPostgres:
+  enabled: false
+  demoListenPort: ""
+sharedS3:
+  enabled: false
+stars:
+  onepassword:
+    itemPath: ""
+faas:
+  s3ReadBase: ""
+  s3Bucket: ""
+onepassword:
+  enabled: false
+imgproxySigning:
+  enabled: false
+
+frontend:
+  otelCollectorUrl: ""
+  qwenFlashApiBase: "http://inference.inference:8080/v1"
+tailnet:
+  enabled: false
+cfIngress:
+  shipsRedirect:
+    enabled: false
+  private:
+    enabled: false
+    githubWebhook:
+      enabled: false
+  public:
+    enabled: false
+  friends:
+    enabled: false
+ciliumPolicy:
+  tokenReplayDeny:
+    enabled: false
+  ingress:
+    enabled: false

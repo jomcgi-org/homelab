@@ -1471,3 +1471,284 @@ def test_namespace_rbac_rejects_invalid_inputs(tmp_path, rbac, message):
     override.write_text(yaml.safe_dump({"rbac": rbac}))
     with pytest.raises(RuntimeError, match=re.escape(message)):
         _render("recovery", [override])
+
+
+# The INACTIVE GKE recovery preset (values-recovery-gke.yaml) renders over
+# CHART DEFAULTS only, never production or historical dev values. These checks
+# load the actual values file through RECOVERY_VALUES, not a hand copy.
+_RECOVERY_CP = "embervm-dev-embervm"
+_RECOVERY_NS = "embervm-dev"
+_RECOVERY_PROGRESS_URL = "http://monolith-dev.monolith-dev:8091/ingest/progress"
+_RECOVERY_AGENT_MCP_URL = "http://monolith-dev.monolith-dev:8000/mcp"
+_RECOVERY_ENV = {
+    "EMBER_PROGRESS_URL": _RECOVERY_PROGRESS_URL,
+    "EMBER_AGENT_MCP_URL": _RECOVERY_AGENT_MCP_URL,
+}
+_RECOVERY_WORKLOADS = {"claude-runtime", "sandbox-dev-python"}
+_RECOVERY_CLASSES = ["1gi", "2gi", "4gi", "8gi", "16gi"]
+
+
+def _recovery_values() -> Path:
+    return Path(os.environ["RECOVERY_VALUES"])
+
+
+@pytest.fixture(scope="module")
+def recovery_render() -> str:
+    return _render(_RECOVERY_NS, [_chart_dir() / "values.yaml", _recovery_values()])
+
+
+def test_recovery_guest_kernel_env_values_file() -> None:
+    default_args = _kernel_boot_args(_chart_dir() / "values.yaml")
+    boot_args, env = _decode_kernel_env(
+        yaml.safe_load(_recovery_values().read_text())["noded"]["firecracker"][
+            "kernelBootArgs"
+        ]
+    )
+    assert boot_args == default_args
+    assert env == _RECOVERY_ENV
+
+
+def test_recovery_guest_kernel_env_rendered_on_every_noded(recovery_render) -> None:
+    rendered = recovery_render
+    noded_args = []
+    for document in yaml.safe_load_all(rendered):
+        if not isinstance(document, dict):
+            continue
+        pod_spec = document.get("spec", {}).get("template", {}).get("spec", {})
+        for container in pod_spec.get("containers", []):
+            if container.get("name") == "noded":
+                env = {entry["name"]: entry for entry in container.get("env", [])}
+                noded_args.append(env["EMBERVM_NODED_KERNEL_BOOT_ARGS"]["value"])
+    assert noded_args, "expected at least one rendered noded container"
+    default_args = _kernel_boot_args(_chart_dir() / "values.yaml")
+    for args in noded_args:
+        boot_args, env = _decode_kernel_env(args)
+        assert boot_args == default_args
+        assert env == _RECOVERY_ENV
+
+
+def test_recovery_namespace_rbac_matches_contract(recovery_render) -> None:
+    documents = [
+        doc for doc in yaml.safe_load_all(recovery_render) if isinstance(doc, dict)
+    ]
+    objects = _rbac_objects(documents)
+    assert objects, "recovery render produced no RBAC objects; this test is inert"
+    assert {kind for kind, _, _ in objects} <= {
+        "ClusterRole",
+        "ClusterRoleBinding",
+        "Role",
+        "RoleBinding",
+    }
+    cluster = {key: value for key, value in objects.items() if key[1] is None}
+    assert set(cluster) == {
+        ("ClusterRole", None, _RECOVERY_CP),
+        ("ClusterRoleBinding", None, _RECOVERY_CP),
+    }
+    deployments = [f"{_RECOVERY_CP}-noded-brick-{c}" for c in _RECOVERY_CLASSES]
+    runtime_rules = list(_WORKLOAD_RULES)
+    runtime_rules.extend(
+        [
+            {
+                "apiGroups": ["apps"],
+                "resources": ["deployments"],
+                "resourceNames": deployments,
+                "verbs": ["get"],
+            },
+            {
+                "apiGroups": ["apps"],
+                "resources": ["deployments/scale"],
+                "resourceNames": deployments,
+                "verbs": ["get", "patch"],
+            },
+        ]
+    )
+    expected = _role_pair(
+        "ClusterRole",
+        _RECOVERY_CP,
+        None,
+        [_TOKEN_REVIEW_RULE],
+        _RECOVERY_CP,
+        _RECOVERY_NS,
+    )
+    expected.update(
+        _role_pair(
+            "Role",
+            f"{_RECOVERY_CP}-runtime",
+            _RECOVERY_NS,
+            runtime_rules,
+            _RECOVERY_CP,
+            _RECOVERY_NS,
+        )
+    )
+    expected.update(
+        _role_pair(
+            "Role",
+            f"{_RECOVERY_CP}-tokenbroker",
+            _RECOVERY_NS,
+            _broker_rules(["codex-cluster", "recovery-agent-mcp"]),
+            f"{_RECOVERY_CP}-tokenbroker",
+            _RECOVERY_NS,
+        )
+    )
+    assert objects == expected
+    assert _effective_grants(objects, _RECOVERY_CP, _RECOVERY_NS) == sorted(
+        [(None, _TOKEN_REVIEW_RULE)] + [(_RECOVERY_NS, rule) for rule in runtime_rules],
+        key=repr,
+    )
+    service_accounts = {
+        doc["metadata"]["name"]
+        for doc in documents
+        if doc.get("kind") == "ServiceAccount"
+    }
+    assert f"{_RECOVERY_CP}-noded" in service_accounts
+    assert _effective_grants(objects, f"{_RECOVERY_CP}-noded", _RECOVERY_NS) == []
+
+
+def test_recovery_lane_isolation(recovery_render) -> None:
+    rendered = recovery_render
+    assert rendered.count("kind:") > 5, "recovery render looks inert"
+    assert "namespace: embervm\n" not in rendered
+    assert not [name for kind, name, _ in _docs(rendered) if kind == "DaemonSet"], (
+        "recovery must render no DaemonSet (no wildcard noded, no scratch-prep)"
+    )
+    assert "kind: CiliumNetworkPolicy" not in rendered
+    assert "kubernetes.io/hostname" not in rendered
+    bricks = {
+        doc["metadata"]["name"]: doc
+        for doc in yaml.safe_load_all(rendered)
+        if isinstance(doc, dict)
+        and doc.get("kind") == "Deployment"
+        and "-noded-brick-" in doc.get("metadata", {}).get("name", "")
+    }
+    assert bricks, "recovery rendered no brick Deployment; this test is inert"
+    live = [
+        name
+        for name, doc in bricks.items()
+        if doc.get("spec", {}).get("replicas", 0) == 1
+    ]
+    assert live == [f"{_RECOVERY_CP}-noded-brick-8gi"], (
+        f"expected exactly one live brick (8gi), got {sorted(live)}"
+    )
+    names = {name for kind, name, _ in _docs(rendered) if kind == "Workload"}
+    assert names == _RECOVERY_WORKLOADS, (
+        f"recovery renders Workloads {sorted(names)}, want "
+        f"{sorted(_RECOVERY_WORKLOADS)}"
+    )
+    assert "build-sandbox-python-rootfs" in rendered
+    assert "build-runtime-claude-rootfs" in rendered
+    for retired in (
+        "build-sandbox-go-rootfs",
+        "build-sandbox-rust-rootfs",
+        "build-semgrep-rootfs",
+        "build-runtime-pi-rootfs",
+        "build-shotter-rootfs",
+        "build-bazel-query-rootfs",
+    ):
+        assert retired not in rendered, (
+            f"recovery still bakes retired builder {retired}"
+        )
+    for path in _HOSTPATH.findall(rendered):
+        if path.startswith("/dev/"):
+            continue
+        assert path == "/var/lib/embervm/scratch/recovery" or path.startswith(
+            "/var/lib/embervm/scratch/recovery/"
+        ), f"recovery hostPath {path} escapes the disjoint recovery subtree"
+    for rootfs in _ROOTFS_PATH.findall(rendered):
+        assert rootfs.startswith("/var/lib/embervm/scratch/recovery/"), (
+            f"recovery BASE_ROOTFS_PATH {rootfs} escapes the recovery subtree"
+        )
+    documents = [d for d in yaml.safe_load_all(rendered) if isinstance(d, dict)]
+    items = [
+        d["spec"]["itemPath"] for d in documents if d.get("kind") == "OnePasswordItem"
+    ]
+    assert set(items) == {
+        "vaults/k8s-homelab/items/embervm-recovery-oplog-db",
+        "vaults/k8s-homelab/items/embervm-recovery-noded-token",
+        "vaults/k8s-homelab/items/embervm-recovery-store",
+        "vaults/k8s-homelab/items/embervm-recovery-kek-root",
+    }
+    for document in bricks.values():
+        assert document["spec"]["replicas"] == (
+            1 if document["metadata"]["name"].endswith("-8gi") else 0
+        )
+        pod = document["spec"]["template"]["spec"]
+        assert pod["nodeSelector"] == {"homelab.io/firecracker": "true"}
+        assert {c["name"] for c in pod["initContainers"]} == {
+            "build-runtime-claude-rootfs",
+            "build-sandbox-python-rootfs",
+        }
+    workloads = {
+        d["metadata"]["name"]: d["spec"]
+        for d in documents
+        if d.get("kind") == "Workload"
+    }
+    session = workloads["claude-runtime"]
+    assert session["concurrency"] == {"floor": 0, "cap": 1}
+    assert session["session"]["maxSessions"] == 1
+    assert session["persistence"]["filesystem"]["enabled"] is True
+    defaults = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
+    for workload in workloads.values():
+        assert workload["source"]["image"]["initEnv"]["EMBER_HYPERVISOR_EPOCH"] == (
+            defaults["hypervisorEpoch"] + "-recovery-gke-1"
+        )
+
+
+def test_recovery_rendered_credentials_and_capacity(recovery_render) -> None:
+    documents = [d for d in yaml.safe_load_all(recovery_render) if isinstance(d, dict)]
+    deployments = {
+        d["metadata"]["name"]: d for d in documents if d.get("kind") == "Deployment"
+    }
+
+    def container_env(deployment, container_name):
+        containers = deployment["spec"]["template"]["spec"]["containers"]
+        container = next(c for c in containers if c["name"] == container_name)
+        return {e["name"]: e for e in container["env"]}
+
+    for name, deployment in deployments.items():
+        if "-noded-brick-" not in name:
+            continue
+        env = container_env(deployment, "noded")
+        assert env["EMBERVM_NODED_MAX_LIVE_VMS"]["value"] == "1"
+        assert env["EMBERVM_NODED_STORE_BUCKET"]["value"] == "h0melab-ember-recovery"
+        assert env["EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY"]["value"] == "true"
+        if name.endswith("-8gi"):
+            assert env["EMBERVM_NODED_WARM_RESTORE_WITH_VOLUME"]["value"] == "true"
+        else:
+            assert "EMBERVM_NODED_WARM_RESTORE_WITH_VOLUME" not in env
+        sidecar = container_env(deployment, "egress-proxy")
+        catalog = json.loads(sidecar["EGRESS_SECRETS"]["value"])
+        assert {e["brokerGrant"] for e in catalog} == {
+            "codex-cluster",
+            "recovery-agent-mcp",
+        }
+        mcp = next(e for e in catalog if e["brokerGrant"] == "recovery-agent-mcp")
+        assert mcp["egressTo"] == ["monolith-dev.monolith-dev"]
+        assert mcp["injectAlwaysPaths"] == ["/mcp", "/mcp/"]
+        assert mcp["plaintextUpstream"] is True
+    assert any(d.get("kind") == "Certificate" for d in documents)
+
+
+def test_recovery_disarms_destructive_defaults() -> None:
+    values = yaml.safe_load(_recovery_values().read_text())
+    assert values["noded"]["enabled"] is False
+    assert values["scratchPrep"]["enabled"] is False
+    assert values["bricks"]["autoscale"]["mode"] == "observe"
+    assert values["bricks"]["nodeFloors"] == []
+    assert values["conformance"]["enabled"] is False
+    assert values["servingEnvoy"]["enabled"] is False
+    assert values["noded"]["networkPolicy"]["enabled"] is False
+    assert values["tokenBroker"]["networkPolicy"]["enabled"] is False
+    assert values["baseRetention"]["sweepEnabled"] == ""
+    assert values["baseRetention"]["remoteSweepEnabled"] == ""
+    assert values["warmthRetention"]["sweepEnabled"] == ""
+    assert values["warmthS3Gc"]["enabled"] == ""
+    assert values["rootfsReclaim"]["enabled"] == ""
+    assert values["statefulSweeper"]["pressureBanking"]["enabled"] is False
+    assert values["noded"]["store"]["encrypt"] is True
+    assert values["noded"]["requireRestoreCapability"] is True
+    assert values["artifactEncryption"]["enabled"] is True
+    assert values["tokenBroker"]["authentik"]["username"] == "kg-agent-recovery-sa"
+    assert values["noded"]["store"]["bucket"] == "h0melab-ember-recovery"
+    assert values["opLog"]["postgres"]["secretName"] == (
+        "monolith-dev-pg-embervm-oplog"
+    )
