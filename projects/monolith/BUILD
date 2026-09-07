@@ -1301,6 +1301,7 @@ py_library(
     deps = [
         ":pkg_core",
         ":pkg_shared",
+        ":swarm_factory_controls",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
