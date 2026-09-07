@@ -173,6 +173,25 @@ jobs:
   # DATABASE_URL to job pods via secretKeyRef.
   dbSecretName: monolith-pg-app
   dbSecretKey: uri
+  # Public data writer. Production opts into its recurring schedule; keeping
+  # the chart default suspended makes a standalone render inert.
+  snapshotMergedPrs:
+    name: snapshot-merged-prs
+    args: ["snapshot-merged-prs"]
+    schedule: "*/30 * * * *"
+    concurrencyPolicy: Forbid
+    activeDeadlineSeconds: 180
+    suspend: true
+    secretEnv:
+      GITHUB_API_TOKEN:
+        secretName: monolith-chat-secrets
+        key: GITHUB_TOKEN
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 512Mi
   cronWorkflows:
     # This job only asks the leader API pod to start a drain cycle, then exits.
     # It stays active while the drainer is disabled because the endpoint no-ops.

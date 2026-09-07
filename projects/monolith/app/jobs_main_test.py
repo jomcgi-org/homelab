@@ -88,6 +88,26 @@ def test_cluster_snapshot_refresh_dispatches_to_refresh():
     refresh.assert_awaited_once()
 
 
+def test_snapshot_merged_prs_fetches_and_writes_with_same_cutoff():
+    pulls = [{"number": 1}]
+    with (
+        mock.patch(
+            "core.github.fetch_merged_pull_requests", return_value=pulls
+        ) as fetch,
+        mock.patch(
+            "observability.merged_prs.write_snapshot", return_value=(1, 2)
+        ) as write,
+        mock.patch.object(jobs_main, "configure_logging"),
+        mock.patch.object(jobs_main.logger, "info") as log,
+    ):
+        result = runner.invoke(jobs_main.app, ["snapshot-merged-prs"])
+
+    assert result.exit_code == 0, result.output
+    cutoff = fetch.call_args.args[0]
+    write.assert_called_once_with(pulls, cutoff)
+    log.assert_called_once_with("Snapshots %d PRs, deleted %d old rows", 1, 2)
+
+
 def test_faas_reconcile_dispatches_and_prints_json():
     report = ReconcileReport(
         scanned=2,

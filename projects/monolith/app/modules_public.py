@@ -21,6 +21,7 @@ import grimoire_chat.module
 import hikes.module
 import home.module
 import knowledge.module
+import observability.module
 import ships.module
 import stars.module
 import trips.module
@@ -36,6 +37,7 @@ PUBLIC_MODULES: tuple[Module, ...] = (
     campsites.module.MODULE,
     worldcup.module.MODULE,
     knowledge.module.MODULE,
+    observability.module.MODULE,
     home.module.MODULE,
     chat_public.module.MODULE,
     artifact.module.MODULE,
