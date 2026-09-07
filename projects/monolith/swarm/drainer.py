@@ -86,10 +86,26 @@ class InvocationOutcomeUnknown(RuntimeError):
 
 
 @DBOS.step()
-def hold_drainer_job(name: str, session_id: int) -> bool:
+def hold_drainer_job(
+    name: str,
+    session_id: int,
+    *,
+    expected_holder: str | None = None,
+    expected_locked_at=None,
+) -> bool:
     from agent.routine_jobs import hold_job_for_unknown_outcome
 
-    if not hold_job_for_unknown_outcome(name, session_id, UNKNOWN_INVOCATION_MESSAGE):
+    guard = {}
+    if expected_holder is not None:
+        if expected_locked_at is None:
+            raise RuntimeError("routine hold lacks original lock timestamp")
+        guard = {
+            "expected_locked_by": expected_holder,
+            "expected_locked_at": expected_locked_at,
+        }
+    if not hold_job_for_unknown_outcome(
+        name, session_id, UNKNOWN_INVOCATION_MESSAGE, **guard
+    ):
         raise RuntimeError(
             f"Could not hold routine job {name} for session {session_id}"
         )
@@ -233,7 +249,7 @@ def claim_drainer_job(
 
 @DBOS.step()
 def drainer_wait_enabled() -> bool:
-    """An idle workflow must see current pause settings rather than its old pin."""
+    """Every routine claim must see current pause settings rather than its old pin."""
     settings = agent_config.load_drainer_settings()
     return settings.enabled and settings.max_jobs_per_cycle > 0
 
@@ -242,7 +258,7 @@ def _claim_with_idle_wait(
     ttl_secs, kinds, workflow_id, base_kg_cap, claim_index, *, wait_allowed
 ):
     for poll in range(IDLE_POLL_LIMIT + 1):
-        if poll and not drainer_wait_enabled():
+        if not drainer_wait_enabled():
             return None, False
         job = claim_drainer_job(ttl_secs, kinds, workflow_id, base_kg_cap, claim_index)
         if job is not None:
@@ -336,22 +352,35 @@ def schedule_docfix_review_for_completion(result_text: str) -> bool:
 
 
 @DBOS.step()
-def defer_drainer_job(name: str, seconds: int) -> bool:
+def defer_drainer_job(
+    name: str, seconds: int, *, expected_holder: str | None = None
+) -> bool:
     from agent.routine_jobs import defer_job
 
-    return defer_job(name, seconds)
+    return defer_job(
+        name,
+        seconds,
+        **({"expected_holder": expected_holder} if expected_holder is not None else {}),
+    )
 
 
 @DBOS.step()
-def update_drainer_job_payload(name: str, payload: dict) -> bool:
+def update_drainer_job_payload(
+    name: str, payload: dict, *, expected_holder: str | None = None
+) -> bool:
     from agent.routine_jobs import update_job_payload
 
-    return update_job_payload(name, payload)
+    return update_job_payload(
+        name,
+        payload,
+        **({"expected_holder": expected_holder} if expected_holder is not None else {}),
+    )
 
 
 @DBOS.step()
-def increment_kg_job_attempt(name: str) -> int:
+def increment_kg_job_attempt(name: str, *, expected_holder: str | None = None) -> int:
     """Increment attempts on the current persisted payload and return the count."""
+    from agent.routine_jobs import lock_claim
     from core.db import get_engine
     from sqlalchemy import text
     from sqlmodel import Session
@@ -361,6 +390,8 @@ def increment_kg_job_attempt(name: str) -> int:
     table = "routine_jobs" if sqlite else "claude_agent.routine_jobs"
     payload_expr = ":payload" if sqlite else "CAST(:payload AS JSONB)"
     with Session(engine) as session:
+        if not lock_claim(session, name, expected_holder):
+            raise RuntimeError("routine job claim ownership changed")
         row = session.execute(
             text(f"SELECT payload FROM {table} WHERE name = :name"), {"name": name}
         ).first()
@@ -401,12 +432,17 @@ def apply_kg_extraction(
     payload: dict,
     result_text: str,
     correction: bool = False,
+    *,
+    expected_holder: str | None = None,
 ) -> dict:
+    from agent.routine_jobs import lock_claim
     from core.db import get_engine
     from knowledge.api import apply_extraction, apply_repo_diff
     from sqlmodel import Session
 
     with Session(get_engine()) as session:
+        if not lock_claim(session, name, expected_holder):
+            raise RuntimeError("routine job claim ownership changed")
         if payload.get("mode") == "repo-diff":
             return apply_repo_diff(session, name, result_text)
         raw_id = _kg_raw_id(payload)
@@ -426,26 +462,57 @@ def build_kg_correction_prompt(rejected: list[dict]) -> str:
 
 
 @DBOS.step()
-def record_kg_failure(raw_id: str, error: str, attempt: int) -> None:
+def record_kg_failure(
+    raw_id: str,
+    error: str,
+    attempt: int,
+    *,
+    name: str | None = None,
+    expected_holder: str | None = None,
+) -> None:
+    from agent.routine_jobs import lock_claim
     from core.db import get_engine
     from knowledge.api import record_extraction_failure
     from sqlmodel import Session
 
     with Session(get_engine()) as session:
+        if expected_holder is not None and (
+            name is None or not lock_claim(session, name, expected_holder)
+        ):
+            raise RuntimeError("routine job claim ownership changed")
         record_extraction_failure(session, raw_id, error, attempt)
 
 
 @DBOS.step()
 def finish_drainer_job(
-    name: str, status: str, summary: str, deregister: bool = False
+    name: str,
+    status: str,
+    summary: str,
+    deregister: bool = False,
+    *,
+    expected_holder: str | None = None,
+    defer_seconds: int | None = None,
 ) -> bool:
     from agent.routine_jobs import complete_job, deregister_job
 
     # This span is the countable per-job outcome event. The outcome belongs on
     # finish_job, not on the replayable job span.
     with tracer.start_as_current_span("drain.finish_job") as span:
-        completed = complete_job(name, status=status, summary=summary)
-        if deregister and completed:
+        if expected_holder is not None:
+            completed = complete_job(
+                name,
+                status=status,
+                summary=summary,
+                expected_holder=expected_holder,
+                deregister=deregister,
+                preserve_repo_freshness=True,
+                defer_seconds=defer_seconds,
+            )
+            if not completed:
+                raise RuntimeError("routine job claim ownership changed")
+        else:
+            completed = complete_job(name, status=status, summary=summary)
+        if deregister and completed and expected_holder is None:
             # Keep the completed freshness row's cooldown through one-shot
             # cleanup, including final failure before extraction provenance.
             deregister_job(name, preserve_repo_freshness=True)
@@ -709,14 +776,23 @@ def _retry_or_dead_letter_kg(
     error: str,
     *,
     recurring: bool,
+    expected_holder: str | None = None,
 ) -> None:
-    attempt = increment_kg_job_attempt(name)
+    ownership = (
+        {"expected_holder": expected_holder} if expected_holder is not None else {}
+    )
+    attempt = increment_kg_job_attempt(name, **ownership)
     if attempt < MAX_GARDENER_RETRIES:
-        defer_drainer_job(name, 900 * attempt)
+        defer_drainer_job(name, 900 * attempt, **ownership)
     else:
         if raw_id is not None:
-            record_kg_failure(raw_id, error, attempt)
-        finish_drainer_job(name, "error", error, not recurring)
+            record_kg_failure(
+                raw_id,
+                error,
+                attempt,
+                **({"name": name, **ownership} if ownership else {}),
+            )
+        finish_drainer_job(name, "error", error, not recurring, **ownership)
 
 
 def _completed_output(turn: dict) -> str:
@@ -733,7 +809,7 @@ def _completed_output(turn: dict) -> str:
     return output
 
 
-@DBOS.step()
+@DBOS.step(retries_allowed=True, max_attempts=3, backoff_rate=2.0)
 def prepare_next_cycle(workflow_id: str) -> list[str]:
     from swarm.queues import prepare_drainer_workers
 
@@ -800,6 +876,11 @@ def drain_cycle() -> dict:
             with tracer.start_as_current_span("drain.job") as job_span:
                 name = job["name"]
                 job_kind = job["routine_kind"]
+                ownership = (
+                    {"expected_holder": job["locked_by"]}
+                    if job.get("locked_by")
+                    else {}
+                )
                 set_attributes(
                     job_span, {"drain.job_name": name, "drain.job_kind": job_kind}
                 )
@@ -811,8 +892,17 @@ def drain_cycle() -> dict:
                     cancel_drainer_reservation(
                         _session_key(workflow_id, name, KG_NODE_KEY)
                     )
-                    finish_drainer_job(name, "deferred", "kg daily cap reached")
-                    defer_drainer_job(name, 3600)
+                    if ownership:
+                        finish_drainer_job(
+                            name,
+                            "deferred",
+                            "kg daily cap reached",
+                            defer_seconds=3600,
+                            **ownership,
+                        )
+                    else:
+                        finish_drainer_job(name, "deferred", "kg daily cap reached")
+                        defer_drainer_job(name, 3600)
                     claim_kinds = [kind for kind in claim_kinds if kind != KG_JOB_KIND]
                     continue
 
@@ -880,7 +970,9 @@ def drain_cycle() -> dict:
                     output = _completed_output(turn)
                     if job_kind == KG_JOB_KIND:
                         result_text = str(turn.get("result_text") or "")
-                        applied = apply_kg_extraction(name, job_payload, result_text)
+                        applied = apply_kg_extraction(
+                            name, job_payload, result_text, **ownership
+                        )
                         if _is_repo_diff(job_payload):
                             summary = applied["summary"]
                         else:
@@ -913,6 +1005,7 @@ def drain_cycle() -> dict:
                                     job_payload,
                                     str(correction_turn.get("result_text") or ""),
                                     correction=True,
+                                    **ownership,
                                 )
                                 corrected = len(correction_result["atoms"])
                                 applied["atoms"].extend(correction_result["atoms"])
@@ -941,9 +1034,11 @@ def drain_cycle() -> dict:
                             else output
                         )
                     if job_kind == KG_JOB_KIND:
-                        finish_drainer_job(name, "ok", summary, not recurring)
+                        finish_drainer_job(
+                            name, "ok", summary, not recurring, **ownership
+                        )
                     else:
-                        completed = finish_drainer_job(name, "ok", summary)
+                        completed = finish_drainer_job(name, "ok", summary, **ownership)
                         if completed and name.startswith("docfix:"):
                             try:
                                 schedule_docfix_review_for_completion(result_text)
@@ -957,12 +1052,22 @@ def drain_cycle() -> dict:
                 except MalformedPayload as exc:
                     error = _summary(exc)
                     if job_kind == KG_JOB_KIND:
-                        finish_drainer_job(name, "error", error, not recurring)
+                        finish_drainer_job(
+                            name, "error", error, not recurring, **ownership
+                        )
                     else:
-                        finish_drainer_job(name, "error", error)
+                        finish_drainer_job(name, "error", error, **ownership)
                 except InvocationOutcomeUnknown as exc:
                     outcome_unknown = True
-                    hold_drainer_job(name, session_id)
+                    hold_drainer_job(
+                        name,
+                        session_id,
+                        **(
+                            {**ownership, "expected_locked_at": job["locked_at"]}
+                            if ownership
+                            else {}
+                        ),
+                    )
                     _report_drainer_failure(settings, name, _summary(exc))
                 except ExtractionOutputInvalid as exc:
                     error = _summary(exc)
@@ -971,6 +1076,7 @@ def drain_cycle() -> dict:
                         raw_id,
                         error,
                         recurring=recurring,
+                        **ownership,
                     )
                     _report_drainer_failure(settings, name, error)
                 except Exception as exc:  # noqa: BLE001 - one job must not stop the cycle
@@ -981,9 +1087,10 @@ def drain_cycle() -> dict:
                             raw_id,
                             error,
                             recurring=recurring,
+                            **ownership,
                         )
                     else:
-                        finish_drainer_job(name, "error", error)
+                        finish_drainer_job(name, "error", error, **ownership)
                     _report_drainer_failure(settings, name, error)
                 finally:
                     if not start_attempted:
