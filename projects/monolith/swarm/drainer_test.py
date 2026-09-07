@@ -2036,3 +2036,115 @@ def test_stale_drainer_owner_cannot_apply_or_finalize(admission_database, operat
             )
             == before
         )
+
+
+@pytest.mark.parametrize("correction", [False, True])
+@pytest.mark.parametrize("public_mutation", ["replace", "delete", None])
+def test_extraction_rechecks_claim_after_preparation_rollback(
+    tmp_path, monkeypatch, correction, public_mutation
+):
+    from sqlmodel import SQLModel, select
+    from agent import routine_jobs
+    from knowledge import extraction
+    from knowledge.models import AtomRawProvenance, RawInput
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'extraction-owner.db'}",
+        execution_options={
+            "schema_translate_map": {
+                table.schema: None
+                for table in SQLModel.metadata.tables.values()
+                if table.schema is not None
+            }
+        },
+    )
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr("core.db.get_engine", lambda: engine)
+    monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
+    # Empty assertions require no embeddings. Any accidental network call fails.
+    monkeypatch.setattr(extraction, "EmbeddingClient", object)
+    with Session(engine) as db:
+        db.execute(
+            text("""CREATE TABLE routine_jobs (
+                name TEXT PRIMARY KEY, routine_kind TEXT, interval_secs INTEGER,
+                next_run_at TEXT, last_run_at TEXT, last_status TEXT,
+                last_summary TEXT, locked_by TEXT, locked_at TEXT,
+                ttl_secs INTEGER, payload TEXT, created_by TEXT, created_at TEXT)""")
+        )
+        db.execute(
+            text("""INSERT INTO routine_jobs
+                (name,routine_kind,next_run_at,locked_by,locked_at,ttl_secs,payload)
+                VALUES ('kg:raw-owner','kg-drain',CURRENT_TIMESTAMP,
+                'luna-drainer:old:0',CURRENT_TIMESTAMP,2100,
+                '{"raw_id":"raw-owner"}')""")
+        )
+        raw = RawInput(
+            raw_id="raw-owner",
+            path="raw-owner.md",
+            source="agent-report",
+            content_hash="raw-owner-hash",
+            extra={"extraction_passes": 1} if correction else {},
+        )
+        db.add(raw)
+        db.flush()
+        if correction:
+            db.add(
+                AtomRawProvenance(
+                    raw_fk=raw.id,
+                    derived_note_id="original-provenance",
+                    gardener_version=extraction.EXTRACTION_VERSION,
+                )
+            )
+        db.commit()
+        raw_before = db.exec(select(RawInput)).one().model_dump()
+        provenance_before = [
+            row.model_dump() for row in db.exec(select(AtomRawProvenance)).all()
+        ]
+
+    original_parse = extraction._parse_result
+    replacement_row = []
+
+    def mutate_after_rollback(output):
+        # These existing public MCP domain calls commit on another connection.
+        # They can run here only because preparation released the early lock.
+        if public_mutation == "replace":
+            assert routine_jobs.complete_job("kg:raw-owner", "ok", "other caller")
+            replacement = routine_jobs.claim_job(
+                "luna-drainer:new:0", 2100, name="kg:raw-owner"
+            )
+            assert replacement["locked_by"] == "luna-drainer:new:0"
+        elif public_mutation == "delete":
+            assert routine_jobs.deregister_job("kg:raw-owner")
+        with Session(engine) as db:
+            replacement_row[:] = db.execute(text("SELECT * FROM routine_jobs")).all()
+        return original_parse(output)
+
+    monkeypatch.setattr(extraction, "_parse_result", mutate_after_rollback)
+
+    def apply():
+        return drainer.apply_kg_extraction.__wrapped__(
+            "kg:raw-owner",
+            {"raw_id": "raw-owner"},
+            '```json\n{"assertions":[],"notes":"old worker output"}\n```',
+            correction=correction,
+            expected_holder="luna-drainer:old:0",
+        )
+
+    if public_mutation is not None:
+        with pytest.raises(RuntimeError, match="claim ownership changed"):
+            apply()
+    else:
+        assert apply()["failed"] is False
+
+    with Session(engine) as db:
+        assert db.execute(text("SELECT * FROM routine_jobs")).all() == replacement_row
+        raw = db.exec(select(RawInput)).one()
+        provenance = db.exec(select(AtomRawProvenance)).all()
+        if public_mutation is not None:
+            assert raw.model_dump() == raw_before
+            assert [row.model_dump() for row in provenance] == provenance_before
+        else:
+            assert raw.extra["extraction_passes"] == (2 if correction else 1)
+            assert raw.extra["extraction_notes"] == "old worker output"
+            assert len(provenance) == len(provenance_before) + 1
+    engine.dispose()

@@ -9,6 +9,7 @@ keeps tracking them under their ``knowledge.*`` names.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from knowledge.extraction import (
@@ -122,10 +123,17 @@ def apply_extraction(
     result_text: str,
     *,
     correction: bool = False,
+    transaction_guard: Callable[[Session], None] | None = None,
 ) -> dict:
     from knowledge.extraction import apply_extraction as _apply_extraction
 
-    return _apply_extraction(session, raw_id, result_text, correction=correction)
+    return _apply_extraction(
+        session,
+        raw_id,
+        result_text,
+        correction=correction,
+        transaction_guard=transaction_guard,
+    )
 
 
 def render_correction_prompt(rejected: list[dict]) -> str:
