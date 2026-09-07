@@ -117,7 +117,8 @@ def test_read_branch_head_raises_on_server_error(monkeypatch):
         steps.read_branch_head.__wrapped__("jomcgi/homelab", "swarm/wf-1")
 
 
-def test_start_agent_session_forwards_workflow_fields(monkeypatch):
+@pytest.mark.parametrize("tier", ["project", "kg"])
+def test_start_agent_session_forwards_workflow_fields(monkeypatch, tier):
     import agent_sessions.api as api
 
     calls = []
@@ -137,6 +138,7 @@ def test_start_agent_session_forwards_workflow_fields(monkeypatch):
         workflow_id="wf-abc",
         node_key="qwen-drain",
         reasoning=True,
+        admission_tier=tier,
     )
 
     assert result == 101
@@ -148,6 +150,7 @@ def test_start_agent_session_forwards_workflow_fields(monkeypatch):
                 "node_key": "qwen-drain",
                 "node_attempt": None,
                 "reasoning": True,
+                "admission_tier": tier,
             },
         )
     ]

@@ -261,6 +261,7 @@ def _persist_session(
     triggered_by: str | None = None,
     node_key: str | None = None,
     node_attempt: int | None = None,
+    admission_tier: str = "interactive",
 ) -> AgentSession:
     system_prompt = attach_recall(system_prompt, prompt, node_key=node_key)
     with Session(get_engine()) as db_session:
@@ -278,6 +279,7 @@ def _persist_session(
             triggered_by=triggered_by,
             node_key=node_key,
             node_attempt=node_attempt,
+            admission_tier=admission_tier,
         )
 
 
@@ -435,9 +437,20 @@ def _delete_pending_message_sync(session_id: int, turn_seq: int) -> None:
 
 
 def _mark_turn_error_sync(
-    session_id: int, turn_seq: int, error_msg: str, claim_owner: str | None = None
+    session_id: int,
+    turn_seq: int,
+    error_msg: str,
+    claim_owner: str | None = None,
+    *,
+    cessation_confirmed: bool = False,
 ) -> None:
-    store.mark_turn_error_sync(session_id, turn_seq, error_msg, claim_owner)
+    store.mark_turn_error_sync(
+        session_id,
+        turn_seq,
+        error_msg,
+        claim_owner,
+        cessation_confirmed=cessation_confirmed,
+    )
 
 
 def _mark_turn_interrupted_sync(
@@ -739,17 +752,22 @@ async def _execute_pending_message(session_id: int) -> None:
             if session_row.reasoning:
                 deliver_kwargs["reasoning"] = True
             effective_model = normalize_model(row.model)
-            if (getattr(session_row, "local_session_id", "") or "").startswith(
-                "factory:"
-            ):
 
-                async def factory_admission_check() -> None:
-                    if not await asyncio.to_thread(
-                        factory_session_allowed, session_row.local_session_id
-                    ):
-                        raise EmberVMTransportError("Factory admission is fenced")
+            async def shared_admission_check() -> None:
+                if not await asyncio.to_thread(
+                    factory_session_allowed, session_row.local_session_id
+                ):
+                    raise EmberVMTransportError("Factory admission is fenced")
+                if not await asyncio.to_thread(
+                    store.admission.recheck,
+                    session_id,
+                    claimed_seq,
+                    claim_owner,
+                    _transport._workload_for(effective_model),
+                ):
+                    raise EmberVMTransportError("Shared execution admission is fenced")
 
-                deliver_kwargs["admission_check"] = factory_admission_check
+            deliver_kwargs["admission_check"] = shared_admission_check
             if not await asyncio.to_thread(
                 factory_session_allowed, getattr(session_row, "local_session_id", None)
             ):
@@ -808,7 +826,12 @@ async def _execute_pending_message(session_id: int) -> None:
             if not fresh_binding_persisted:
                 await asyncio.to_thread(_clear_ember_session_sync, session_id)
             await asyncio.to_thread(
-                _mark_turn_error_sync, session_id, claimed_seq, str(exc), claim_owner
+                _mark_turn_error_sync,
+                session_id,
+                claimed_seq,
+                str(exc),
+                claim_owner,
+                cessation_confirmed=True,
             )
             _clear_negative_oracle_verdict(session_id)
             return

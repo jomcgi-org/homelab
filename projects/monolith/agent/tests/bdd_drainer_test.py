@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -293,33 +294,43 @@ def test_errored_one_shot_finishes_once_and_stays_not_due(
         payload={"prompt": "fail this turn"},
         next_run_at=datetime.now(timezone.utc),
     )
-    settings = {
-        "enabled": True,
-        "max_jobs_per_cycle": 3,
-        "turn_timeout_seconds": 1800,
-        "job_kinds": ("qwen-drain", "kg-drain"),
-        "kg_max_jobs_per_day": 40,
-        "repo": "jomcgi-org/homelab",
-        "branch": "main",
-        "reasoning": True,
-    }
+    live_settings = _drainer_settings(job_kinds=("qwen-drain",))
     completions = []
+    starts = []
     complete_job = drainer.finish_drainer_job.__wrapped__
 
-    def finish(name: str, status: str, summary: str) -> bool:
+    def finish(name: str, status: str, summary: str, *, expected_holder: str) -> bool:
+        assert expected_holder == f"luna-drainer:{FakeDBOS.workflow_id}:0"
         completions.append((name, status, summary))
-        return complete_job(name, status, summary)
+        return complete_job(name, status, summary, expected_holder=expected_holder)
+
+    def start(*args, admission_tier):
+        assert admission_tier == "project"
+        starts.append(args)
+        return 17
 
     def fail_turn(*_args):
         raise RuntimeError("turn failed")
 
+    def no_refill():
+        raise AssertionError("a failed or empty cycle must not refill")
+
     monkeypatch.setattr(drainer, "DBOS", FakeDBOS)
-    monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: settings)
+    monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: asdict(live_settings))
+    monkeypatch.setenv("DRAINER_ENABLED", "true")
+    monkeypatch.setenv("DRAINER_MAX_JOBS_PER_CYCLE", "3")
+    monkeypatch.setattr(
+        drainer, "drainer_wait_enabled", drainer.drainer_wait_enabled.__wrapped__
+    )
+    # Keep this finite error-path test out of the durable idle-worker loop.
+    monkeypatch.setattr(drainer, "IDLE_POLL_LIMIT", 0)
+    monkeypatch.setattr(drainer, "chain_next_cycle", no_refill)
+    monkeypatch.setattr(drainer, "_quota_span_attributes", lambda: {})
     monkeypatch.setattr(
         drainer, "claim_drainer_job", drainer.claim_drainer_job.__wrapped__
     )
     monkeypatch.setattr(drainer, "finish_drainer_job", finish)
-    monkeypatch.setattr(drainer, "start_agent_session", lambda *_args: 17)
+    monkeypatch.setattr(drainer, "start_agent_session", start)
     monkeypatch.setattr(drainer, "_await_turn", fail_turn)
     monkeypatch.setattr(drainer, "notify_drainer_failure", lambda *_args: None)
     monkeypatch.setattr(drainer, "destroy_drainer_session", lambda *_args: True)
@@ -328,7 +339,23 @@ def test_errored_one_shot_finishes_once_and_stays_not_due(
         "status": "complete",
         "processed": 1,
     }
+    assert len(starts) == 1
+    assert starts[0][0] == (f"{FakeDBOS.workflow_id}:qwen-drain:drainer-one-shot-error")
+    # A distinct later cycle still cannot claim the completed one-shot.
+    monkeypatch.setattr(FakeDBOS, "workflow_id", "drainer-bdd-next-workflow")
+    assert drainer.drain_cycle.__wrapped__() == {
+        "status": "complete",
+        "processed": 0,
+    }
+    assert len(starts) == 1
     assert completions == [("drainer-one-shot-error", "error", "turn failed")]
+    row = agent_db.execute(
+        text(
+            "SELECT last_status, last_summary, next_run_at, locked_by, locked_at "
+            "FROM claude_agent.routine_jobs WHERE name='drainer-one-shot-error'"
+        )
+    ).one()
+    assert tuple(row) == ("error", "turn failed", None, None, None)
     assert not any(
         row["name"] == "drainer-one-shot-error"
         for row in routine_jobs.list_jobs(due_only=True)

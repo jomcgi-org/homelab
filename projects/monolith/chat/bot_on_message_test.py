@@ -13,7 +13,7 @@ from pydantic_ai import (
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from agent_sessions import api as agent_session_api
+from agent_sessions import execution_api as agent_session_api
 from agent_sessions import mcp as agent_session_mcp
 from agent_sessions import store as agent_session_store
 from agent_sessions.models import AgentSession, PendingMessage
