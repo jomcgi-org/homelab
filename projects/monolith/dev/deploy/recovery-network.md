@@ -18,7 +18,16 @@ then permits these pod connections using namespace and pod labels together:
 | Recovery noded and its guest proxy | Recovery control plane and broker | 8080 | Registration, control callbacks and token exchange |
 | Recovery noded and its guest proxy | Recovery backend | 8000, 8091 | Authenticated MCP and progress ingestion |
 | CNPG operator | Recovery PostgreSQL | 8000, 5432 | Instance management and database access |
+| Atlas operator in `argocd` | Recovery PostgreSQL and its Atlas dev database | 5432 | Initialize the migration schema and prepare migrations |
 | Recovery PostgreSQL | Other instances of the same recovery cluster | 5432 | CNPG instance lifecycle |
+
+The existing Atlas 0.7.28 controller creates a
+`monolith-dev-atlas-dev-db` helper Deployment for the rendered `AtlasMigration`.
+Its labels come from the controller, so it is absent from a Helm-only pod
+inventory. The helper has no outbound grant and accepts PostgreSQL only from
+the named Atlas controller. Include its temporary resource usage in the
+capacity reservation. The Ember Certificate uses a self-signed Issuer and
+needs no ACME solver pod.
 
 DNS is permitted on UDP/TCP 53 to the observed resolver `10.10.16.10` and
 `kube-system` pods labelled `k8s-app: kube-dns`. Only the Ember control plane,
@@ -78,7 +87,8 @@ an existing Secret's type. This profile creates fresh state.
 ## Activation checks
 
 Revalidate Dataplane V2, IPv4 address ranges, the API Endpoints backend, pod
-resolver, DNS pod labels and CNPG operator labels on the actual cluster. Render
+resolver, DNS pod labels, CNPG and Atlas operator labels, and the generated
+Atlas helper identity on the actual cluster. Render
 the exact published recovery charts and check every selector against their
 pod templates and the CNPG-generated pod labels. Both namespaces must be unused
 and have no other policies granting broader access: NetworkPolicy allows are
@@ -96,5 +106,6 @@ the reviewed rules. Static checks do not establish dataplane enforcement.
 Source contracts: [GKE NetworkPolicy](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/network-policy),
 [Kubernetes NetworkPolicy](https://kubernetes.io/docs/concepts/services-networking/network-policies/),
 [CNPG 1.30 networking](https://github.com/cloudnative-pg/cloudnative-pg/blob/v1.30.0/docs/src/networking.md),
+[Atlas 0.7.28 helper generation](https://github.com/ariga/atlas-operator/blob/v0.7.28/internal/controller/devdb.go),
 [1Password Operator 1.9.1 controller](https://github.com/1Password/onepassword-operator/blob/v1.9.1/internal/controller/onepassworditem_controller.go),
 and [Secret construction](https://github.com/1Password/onepassword-operator/blob/v1.9.1/pkg/kubernetessecrets/kubernetes_secrets_builder.go).
