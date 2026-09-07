@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_ACTIVITY_CACHE_CONTROL,
   CAMPSITES_SNAPSHOT_CACHE_CONTROL,
   cloudflareCacheHeaders,
   DOCS_CACHE_CONTROL,
@@ -18,6 +19,7 @@ import {
 } from "./cache-headers.js";
 
 const SHARED_POLICIES = [
+  [AGENT_ACTIVITY_CACHE_CONTROL, 300],
   [PAGE_CACHE_CONTROL, 60],
   [NOTES_PAGE_CACHE_CONTROL, 3_600],
   [DOCS_CACHE_CONTROL, 3_600],

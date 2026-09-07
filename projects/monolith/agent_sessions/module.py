@@ -6,9 +6,11 @@ from agent_sessions.provider_quota import provider_quota_health
 
 def register(app) -> None:
     """Register the agent_sessions HTTP router with the app."""
+    from agent_sessions.public_router import router as public_router
     from agent_sessions.router import router
 
     app.include_router(router)
+    app.include_router(public_router)
 
 
 def _register_mcp() -> None:

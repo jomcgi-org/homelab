@@ -11,6 +11,7 @@ app/main_public.py exactly (route matching precedence).
 from __future__ import annotations
 
 import artifact.module
+import agent_sessions.public_module
 import campsites.module
 import chat_public.module
 import dr_jobs.module
@@ -29,6 +30,7 @@ import worldcup.module
 from framework import Module
 
 PUBLIC_MODULES: tuple[Module, ...] = (
+    agent_sessions.public_module.MODULE,
     ships.module.MODULE,
     stars.module.MODULE,
     trips.module.MODULE,
