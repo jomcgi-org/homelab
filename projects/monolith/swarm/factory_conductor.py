@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 from urllib.parse import quote
@@ -27,6 +28,10 @@ logger = logging.getLogger(__name__)
 ACTOR = "factory:reconciler"
 TICK_SECONDS = 15
 DECISION_EVIDENCE_LIMIT = 20
+PLANNER_CONTEXT_CHARS = 48_000
+PLANNER_RECORD_LIMIT = 32
+PLANNER_TEXT_CHARS = 1_000
+PLANNER_TASK_CHARS = 12_000
 _KEY = r"^[a-z][a-z0-9_]{0,63}$"
 
 RESULT_SCHEMA = {
@@ -320,15 +325,149 @@ def _add(
     )
 
 
-def planner_prompt(task: dict, nodes: list[dict], runs: list[dict]) -> str:
-    # Keep bounded feedback before the potentially large issue and run payloads,
-    # so truncating the context cannot remove the reason a decision failed.
+def _planner_fields(source: dict, fields: tuple[str, ...]) -> dict:
+    """Select scalar evidence only, never traverse prior prompts or raw payloads."""
+    result = {}
+    for key in fields:
+        value = source.get(key)
+        if isinstance(value, str) and len(value) > PLANNER_TEXT_CHARS:
+            value = value[:PLANNER_TEXT_CHARS] + " [text omitted]"
+        elif isinstance(value, float) and not math.isfinite(value):
+            value = "invalid nonfinite value"
+        elif isinstance(value, (dict, list, tuple)):
+            continue
+        result[key] = value
+    return result
+
+
+def _planner_run(run: dict) -> dict:
+    result = _planner_fields(
+        run,
+        (
+            "id",
+            "node_key",
+            "attempt",
+            "status",
+            "session_id",
+            "base_sha",
+            "head_sha",
+            "cost_usd",
+            "reserved_cost_usd",
+            "accounted_cost_usd",
+            "accounting_basis",
+            "created_at",
+            "finished_at",
+        ),
+    )
+    result.update(_planner_fields(run.get("pin") or {}, ("model", "workflow_id")))
+    outcome = _outcome(run)
+    result["reason"] = _planner_fields(outcome, ("reason",))["reason"]
+    # Planner artifacts contain another node prompt. Copy only the decision and
+    # result fields the next planner needs, even when value and artifact overlap.
+    artifact = _artifact(run)
+    result["artifact"] = _planner_fields(
+        artifact,
+        (
+            "action",
+            "node_key",
+            "role",
+            "status",
+            "reason",
+            "summary",
+            "pr_number",
+            "head_sha",
+            "verdict",
+        ),
+    )
+    if "deps" in artifact:
+        result["artifact"]["deps"] = list(artifact["deps"])
+    return result
+
+
+def _planner_context(task: dict, nodes: list[dict], runs: list[dict]) -> str:
+    ordered_runs = sorted(runs, key=lambda run: run["id"])
+    projected_runs = [_planner_run(run) for run in ordered_runs]
+    # These records survive collection limits, including a later negative review.
+    # They are evidence, not an alternate implementation of verify_delivery.
+    delivery = {}
+    for role in ("implement", "review"):
+        completed = [
+            run
+            for run in projected_runs
+            if run["node_key"].startswith(role + "_") and run["status"] == "succeeded"
+        ]
+        delivery["latest_" + role] = completed[-1] if completed else None
+    projected_nodes = []
+    for node in nodes:
+        item = _planner_fields(
+            node,
+            (
+                "node_key",
+                "kind",
+                "model",
+                "max_cost_usd",
+                "max_attempts",
+                "turn_timeout_seconds",
+                "side_effects",
+                "armed_at",
+                "base_artifact_sha",
+                "created_in_version",
+            ),
+        )
+        item["deps"] = list(node["deps"])
+        attempts = [
+            run for run in projected_runs if run["node_key"] == node["node_key"]
+        ]
+        item["attempts_used"] = len(attempts)
+        item["latest_status"] = attempts[-1]["status"] if attempts else "not_dispatched"
+        projected_nodes.append(item)
+    task_text = task["task_text"][:PLANNER_TASK_CHARS]
+    feedback = [
+        _planner_fields(item, ("cause", "decision_action", "refusal_code", "reason"))
+        for item in _decision_evidence(task["id"])
+    ]
     context = {
-        "decision_feedback": _decision_evidence(task["id"]),
-        "task": task["task_text"],
-        "graph": nodes,
-        "runs": runs,
+        "delivery_evidence": delivery,
+        "decision_feedback": feedback,
+        "task": task_text,
+        "task_identity": _planner_fields(
+            task, ("id", "repo", "base_branch", "conductor_model", "budget_usd")
+        ),
+        "graph": projected_nodes[-PLANNER_RECORD_LIMIT:],
+        "runs": projected_runs[-PLANNER_RECORD_LIMIT:],
+        "omitted": {
+            "task_characters": len(task["task_text"]) - len(task_text),
+            "graph_records": max(0, len(nodes) - PLANNER_RECORD_LIMIT),
+            "run_records": max(0, len(runs) - PLANNER_RECORD_LIMIT),
+            "decision_feedback_records": 0,
+        },
     }
+    # Bound complete JSON objects, not the serialized text. Always retain the
+    # latest completed work/review, newest attempt and newest rejection evidence.
+    while True:
+        encoded = json.dumps(
+            context, default=str, separators=(",", ":"), allow_nan=False
+        )
+        if len(encoded) <= PLANNER_CONTEXT_CHARS:
+            return encoded
+        for key, omitted_key, index in (
+            ("runs", "run_records", 0),
+            ("graph", "graph_records", 0),
+            ("decision_feedback", "decision_feedback_records", -1),
+        ):
+            if len(context[key]) > 1:
+                context[key].pop(index)
+                context["omitted"][omitted_key] += 1
+                break
+        else:
+            removed = len(context["task"]) // 2
+            if removed == 0:
+                raise ValueError("factory planner evidence exceeds context limit")
+            context["task"] = context["task"][:-removed]
+            context["omitted"]["task_characters"] += removed
+
+
+def planner_prompt(task: dict, nodes: list[dict], runs: list[dict]) -> str:
     return (
         "You are the task conductor, running in an Ember guest. Choose one next "
         "graph edit from the typed schema. Investigate, implement, independently "
@@ -345,9 +484,14 @@ def planner_prompt(task: dict, nodes: list[dict], runs: list[dict]) -> str:
         "A failed or uncertain attempt is evidence, never permission to retry "
         "uncertain external effects. Use decision_feedback to repair rejected "
         "decisions within the existing task, turn, time and budget limits. "
+        "delivery_evidence retains the latest completed implementation and review; "
+        "check recorded verdict, PR, heads, model and session before requesting "
+        "another review. Evidence does not replace the server's delivery checks. "
+        "Omission counts and text markers mean context is incomplete, not that "
+        "work is absent or accepted; inspect the task branch or pause if needed. "
         "Explain each edit and delivered-versus-requested "
         "judgment. Pause if scope, authority or evidence cannot support progress.\n"
-        + json.dumps(context, default=str)[:100000]
+        + _planner_context(task, nodes, runs)
     )
 
 

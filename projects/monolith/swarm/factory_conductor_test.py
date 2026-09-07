@@ -680,3 +680,217 @@ def test_new_graph_refusal_is_not_hidden_by_older_audit_feedback(feedback_db):
         evidence[0]["cause"] == "new-refusal"
         and evidence[0]["refusal_code"] == "unknown_dep"
     )
+
+
+def planner_context(prompt):
+    import json
+
+    return json.loads(prompt.split("\n", 1)[1])
+
+
+def test_planner_keeps_completed_review_after_recursive_historical_prompts(monkeypatch):
+    import copy
+    import json
+
+    task, delivery_runs = delivery(monkeypatch)
+    task["task_text"] = "Fix the reported cap and independently review the exact PR."
+    nested = "historical-prompt-must-not-return" * 100
+    runs = []
+    nodes = []
+    for ordinal, key in enumerate(
+        ("conductor_1", "implement_fix", "conductor_2", "review_fix", "conductor_3"),
+        1,
+    ):
+        value = {"action": "add_node", "prompt": nested, "reason": "next bounded step"}
+        run = {
+            "id": ordinal,
+            "node_key": key,
+            "attempt": 1,
+            "status": "succeeded",
+            "session_id": 2797 + ordinal,
+            "cost_usd": 0.25,
+            "reserved_cost_usd": 5,
+            "accounted_cost_usd": 0.25,
+            "accounting_basis": "observed",
+            "head_sha": None,
+        }
+        if key in ("implement_fix", "review_fix"):
+            original = delivery_runs[0 if key == "implement_fix" else 1]
+            value = json.loads(original["outcome_json"])["value"]
+            value["summary"] = "Fix checked against the task's acceptance criteria."
+            run["head_sha"] = "a" * 40
+        run["pin"] = {
+            "prompt": nested,
+            "artifact_schema": {"description": nested},
+            "retry_context": nested,
+            "model": "opus" if key != "implement_fix" else "luna",
+            "workflow_id": f"factory-node:t-1:{key}:1",
+        }
+        run["outcome_json"] = json.dumps(
+            {"value": value, "artifact": value, "raw_detail": nested}
+        )
+        runs.append(run)
+        nodes.append(
+            {
+                "node_key": key,
+                "prompt": nested,
+                "kind": "work",
+                "deps": ["implement_fix"] if key == "review_fix" else [],
+                "max_attempts": 2,
+                "max_cost_usd": 5,
+                "turn_timeout_seconds": 900,
+            }
+        )
+        nested = json.dumps({"graph": nodes, "runs": runs})[:200_000]
+    before = copy.deepcopy((task, nodes, runs))
+    monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
+    prompt = conductor.planner_prompt(task, nodes, runs)
+    context = planner_context(prompt)
+    review = context["delivery_evidence"]["latest_review"]
+    assert review["id"] == 4 and review["session_id"] == 2801
+    assert review["model"] == "opus" and review["status"] == "succeeded"
+    assert review["head_sha"] == review["artifact"]["head_sha"] == "a" * 40
+    assert review["artifact"]["verdict"] == "approve"
+    assert review["artifact"]["pr_number"] == 3
+    assert context["delivery_evidence"]["latest_implement"]["model"] == "luna"
+    assert context["graph"][3]["deps"] == ["implement_fix"]
+    assert context["graph"][3]["max_attempts"] == 2
+    assert context["graph"][3]["latest_status"] == "succeeded"
+    assert context["runs"][1]["accounted_cost_usd"] == 0.25
+    for excluded in (
+        "historical-prompt-must-not-return",
+        '"pin"',
+        '"prompt"',
+        '"artifact_schema"',
+        '"outcome_json"',
+        '"raw_detail"',
+    ):
+        assert excluded not in prompt
+    assert len(prompt.split("\n", 1)[1]) <= conductor.PLANNER_CONTEXT_CHARS
+    assert len(prompt) < 16_000
+    assert (task, nodes, runs) == before
+
+
+def test_planner_limits_complete_json_without_losing_older_delivery_evidence(
+    monkeypatch,
+):
+    import copy
+    import json
+
+    task, runs = delivery(monkeypatch)
+    task["task_text"] = '"\\\n\u2603' * 20_000
+    long_text = '"\\\n\u2603' * 1000
+    for run in runs:
+        outcome = json.loads(run["outcome_json"])
+        outcome["value"]["summary"] = long_text
+        run["outcome_json"] = json.dumps(outcome)
+    # Completed review is older than the recent-run window. Its exact evidence
+    # must survive even when later planner history forces collection trimming.
+    for ordinal in range(3, 100):
+        runs.append(
+            {
+                "id": ordinal,
+                "node_key": f"conductor_{ordinal}",
+                "attempt": 1,
+                "status": "failed",
+                "session_id": 100 + ordinal,
+                "pin": {"model": "opus", "prompt": long_text},
+                "outcome_json": json.dumps({"reason": long_text}),
+            }
+        )
+    nodes = [
+        {
+            "node_key": f"conductor_{i}",
+            "deps": [f"dependency_{n}" for n in range(20)],
+            "prompt": long_text,
+            "max_attempts": 2,
+            "max_cost_usd": 5,
+        }
+        for i in range(100)
+    ]
+    feedback = [
+        {
+            "cause": f"decision:{i}",
+            "refusal_code": "validation_failed",
+            "reason": long_text,
+        }
+        for i in range(20)
+    ]
+    before = copy.deepcopy((task, nodes, runs, feedback))
+    monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: feedback)
+    prompt = conductor.planner_prompt(task, nodes, runs)
+    context = planner_context(prompt)
+    assert len(prompt.split("\n", 1)[1].encode()) <= conductor.PLANNER_CONTEXT_CHARS
+    assert (
+        context["delivery_evidence"]["latest_review"]["artifact"]["verdict"]
+        == "approve"
+    )
+    assert context["delivery_evidence"]["latest_review"]["session_id"] == 11
+    assert (
+        context["delivery_evidence"]["latest_implement"]["artifact"]["pr_number"] == 3
+    )
+    assert context["runs"][-1]["id"] == 99
+    assert context["decision_feedback"][0]["cause"] == "decision:0"
+    assert context["omitted"]["task_characters"] > 0
+    assert context["omitted"]["run_records"] == len(runs) - len(context["runs"])
+    assert context["omitted"]["graph_records"] == len(nodes) - len(context["graph"])
+    assert (
+        "[text omitted]"
+        in context["delivery_evidence"]["latest_review"]["artifact"]["summary"]
+    )
+    assert (task, nodes, runs, feedback) == before
+
+
+def test_planner_preserves_later_review_rejection_and_recorded_head_mismatch(
+    monkeypatch,
+):
+    import copy
+    import json
+
+    task, runs = delivery(monkeypatch)
+    task["task_text"] = "Deliver a reviewed correction."
+    later = copy.deepcopy(runs[-1])
+    later["id"] = 3
+    later["session_id"] = 12
+    outcome = json.loads(later["outcome_json"])
+    outcome["value"].update(verdict="changes_requested", head_sha="b" * 40)
+    later["outcome_json"] = json.dumps(outcome)
+    runs.append(later)
+    monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
+    review = planner_context(conductor.planner_prompt(task, [], runs))[
+        "delivery_evidence"
+    ]["latest_review"]
+    assert review["id"] == 3 and review["session_id"] == 12
+    assert review["artifact"]["verdict"] == "changes_requested"
+    assert review["artifact"]["head_sha"] == "b" * 40
+    assert review["head_sha"] == "a" * 40
+
+
+def test_planner_keeps_unknown_execution_and_missing_cost_distinct(monkeypatch):
+    import json
+
+    task = {"id": "t-1", "task_text": "Complete the task."}
+    runs = [
+        {
+            "id": 1,
+            "node_key": "implement_fix",
+            "attempt": 1,
+            "status": "uncertain",
+            "session_id": None,
+            "cost_usd": None,
+            "reserved_cost_usd": 5,
+            "accounted_cost_usd": 5,
+            "accounting_basis": "reserved",
+            "pin": {"model": "luna"},
+            "outcome_json": json.dumps(
+                {"reason": "observer lost; execution may continue"}
+            ),
+        }
+    ]
+    monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
+    context = planner_context(conductor.planner_prompt(task, [], runs))
+    run = context["runs"][0]
+    assert context["delivery_evidence"]["latest_implement"] is None
+    assert run["status"] == "uncertain" and run["session_id"] is None
+    assert run["cost_usd"] is None and run["accounted_cost_usd"] == 5
+    assert run["reason"] == "observer lost; execution may continue"
