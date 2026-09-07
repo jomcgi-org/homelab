@@ -1669,8 +1669,6 @@ def test_recovery_lane_isolation(recovery_render) -> None:
         "vaults/k8s-homelab/items/embervm-recovery-ghcr-read",
         "vaults/k8s-homelab/items/embervm-recovery-oplog-db",
         "vaults/k8s-homelab/items/embervm-recovery-noded-token",
-        "vaults/k8s-homelab/items/embervm-recovery-store",
-        "vaults/k8s-homelab/items/embervm-recovery-kek-root",
     }
     for document in bricks.values():
         assert document["spec"]["replicas"] == (
@@ -1713,6 +1711,9 @@ def test_recovery_rendered_credentials_and_capacity(recovery_render) -> None:
         return {e["name"]: e for e in container["env"]}
 
     control_env = container_env(deployments[_RECOVERY_CP], "control-plane")
+    assert control_env["EMBERVM_STORE_ENDPOINT"]["value"] == ""
+    assert control_env["EMBERVM_ARTIFACT_ENCRYPTION"]["value"] == "0"
+    assert "EMBERVM_KEK_ROOT" not in control_env
     assert (
         not {
             "EMBERVM_BASE_RETENTION_SWEEP",
@@ -1729,7 +1730,8 @@ def test_recovery_rendered_credentials_and_capacity(recovery_render) -> None:
             continue
         env = container_env(deployment, "noded")
         assert env["EMBERVM_NODED_MAX_LIVE_VMS"]["value"] == "1"
-        assert env["EMBERVM_NODED_STORE_BUCKET"]["value"] == "h0melab-ember-recovery"
+        assert env["EMBERVM_NODED_STORE_ENDPOINT"]["value"] == ""
+        assert env["EMBERVM_NODED_STORE_BUCKET"]["value"] == ""
         assert env["EMBERVM_NODED_REQUIRE_RESTORE_CAPABILITY"]["value"] == "true"
         if name.endswith("-8gi"):
             assert env["EMBERVM_NODED_WARM_RESTORE_WITH_VOLUME"]["value"] == "true"
@@ -1746,6 +1748,24 @@ def test_recovery_rendered_credentials_and_capacity(recovery_render) -> None:
         assert mcp["injectAlwaysPaths"] == ["/mcp", "/mcp/"]
         assert mcp["plaintextUpstream"] is True
     assert any(d.get("kind") == "Certificate" for d in documents)
+
+    # Inspect every pod container, including rootfs builders: disabling the
+    # item alone must not leave a reference that prevents startup.
+    forbidden_env = {
+        "EMBERVM_STORE_ACCESS_KEY_ID",
+        "EMBERVM_STORE_SECRET_ACCESS_KEY",
+        "EMBERVM_NODED_STORE_ACCESS_KEY_ID",
+        "EMBERVM_NODED_STORE_SECRET_ACCESS_KEY",
+        "EMBERVM_KEK_ROOT",
+        "EMBERVM_KEK_ROOT_PREVIOUS",
+    }
+    for deployment in deployments.values():
+        pod = deployment["spec"]["template"]["spec"]
+        for container in pod.get("containers", []) + pod.get("initContainers", []):
+            env = {e["name"]: e for e in container.get("env", [])}
+            assert forbidden_env.isdisjoint(env)
+            if container["name"].startswith("build-"):
+                assert "EMBERVM_NODED_STORE_ENDPOINT" not in env
 
 
 def test_recovery_disarms_destructive_defaults() -> None:
@@ -1766,9 +1786,12 @@ def test_recovery_disarms_destructive_defaults() -> None:
     assert values["statefulSweeper"]["pressureBanking"]["enabled"] is False
     assert values["noded"]["store"]["encrypt"] is True
     assert values["noded"]["requireRestoreCapability"] is True
-    assert values["artifactEncryption"]["enabled"] is True
+    assert values["artifactEncryption"]["enabled"] is False
+    assert values["kekRoot"]["enabled"] is False
+    assert values["noded"]["store"]["credentials"]["enabled"] is False
     assert values["tokenBroker"]["authentik"]["username"] == "kg-agent-recovery-sa"
-    assert values["noded"]["store"]["bucket"] == "h0melab-ember-recovery"
+    assert values["noded"]["store"]["endpoint"] == ""
+    assert values["noded"]["store"]["bucket"] == ""
     assert values["opLog"]["postgres"]["secretName"] == (
         "monolith-dev-pg-embervm-oplog"
     )
