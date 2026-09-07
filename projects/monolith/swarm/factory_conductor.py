@@ -381,8 +381,12 @@ def apply_decision(task: dict, policy: dict, run: dict, runs: list[dict]) -> Non
 
 def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
     from dbos import SetWorkflowID
-    from swarm.factory_controls import authorize_start, record_start_outcome
-    from swarm.node_workflows import execute_node
+    from swarm.factory_controls import (
+        _locked_session,
+        authorize_start,
+        record_start_outcome,
+    )
+    from swarm.node_workflows import execute_node, reconcile_completed_node
 
     pin = run["pin"]
     key = pin["workflow_id"]
@@ -409,32 +413,53 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
             "cost_usd": None,
             "session_id": run.get("session_id"),
         }
-    status = result["status"]
-    if result.get("session_id") and run["status"] == "admitted":
-        graph.record_dispatch(
-            task["id"],
-            run["node_key"],
-            run["attempt"],
-            result["session_id"],
-            result.get("base_sha"),
+    if result["status"] == "uncertain":
+        confirmed = reconcile_completed_node(
+            pin, result.get("session_id") or run.get("session_id")
         )
-    graph.record_outcome(
-        task["id"],
-        run["node_key"],
-        run["attempt"],
-        status,
-        result.get("cost_usd"),
-        result.get("head_sha"),
-        json.dumps(result),
-    )
-    record_start_outcome(
-        task["id"],
-        key,
-        status,
-        ACTOR,
-        cost_usd=result.get("cost_usd"),
-        session_id=result.get("session_id"),
-    )
+        if confirmed is not None:
+            result = confirmed
+    status = result["status"]
+    with Session(get_engine()) as db:
+        with _locked_session(db):
+            if result.get("session_id") and not run.get("session_id"):
+                binding = graph.record_dispatch(
+                    task["id"],
+                    run["node_key"],
+                    run["attempt"],
+                    result["session_id"],
+                    result.get("base_sha"),
+                    session=db,
+                )
+                if not binding.ok:
+                    raise ValueError(
+                        f"node session binding refused: {binding.refusal_code}"
+                    )
+            settled = graph.record_outcome(
+                task["id"],
+                run["node_key"],
+                run["attempt"],
+                status,
+                result.get("cost_usd"),
+                result.get("head_sha"),
+                json.dumps(result),
+                session=db,
+            )
+            if not settled.ok:
+                raise ValueError(f"node outcome refused: {settled.refusal_code}")
+            charged = record_start_outcome(
+                task["id"],
+                key,
+                status,
+                ACTOR,
+                cost_usd=result.get("cost_usd"),
+                session_id=result.get("session_id"),
+                reconciled=True,
+                session=db,
+            )
+            if not charged["ok"]:
+                raise ValueError(f"factory outcome refused: {charged['reason']}")
+        db.commit()
 
 
 def reconcile_task(task_id: str, policy: dict, dbos) -> None:
@@ -582,7 +607,7 @@ def cancel_owned(task_id: str, dbos) -> None:
     held until the node outcome is reconciled; unreachable descendants remain
     visibly unconfirmed. The intent is committed before either external call.
     """
-    from swarm.factory_controls import _audit, _locked_session
+    from swarm.factory_controls import _audit, _locked_session, finish_task
     from swarm.factory_models import FactoryAudit
     from agent_sessions.api import reap_sessions_for_workflow
 
@@ -590,6 +615,16 @@ def cancel_owned(task_id: str, dbos) -> None:
         if run["status"] not in ("admitted", "dispatched", "uncertain"):
             continue
         key = run["pin"]["workflow_id"]
+        state = dbos.get_workflow_status(key)
+        if state is not None and state.status not in ("PENDING", "ENQUEUED"):
+            _submit_or_reconcile(_task(task_id), run, dbos)
+            current = next(
+                r
+                for r in graph.node_runs(task_id)
+                if r["node_key"] == run["node_key"] and r["attempt"] == run["attempt"]
+            )
+            if current["status"] in ("succeeded", "failed", "cancelled"):
+                continue
         with _locked_session() as (db, _control):
             previous = db.exec(
                 select(FactoryAudit.detail_json).where(
@@ -613,6 +648,11 @@ def cancel_owned(task_id: str, dbos) -> None:
                 cessation_confirmed=False,
             )
         return
+    if all(
+        r["status"] in ("succeeded", "failed", "cancelled")
+        for r in graph.node_runs(task_id)
+    ):
+        finish_task(task_id, "cancelled", ACTOR)
 
 
 async def run_loop() -> None:

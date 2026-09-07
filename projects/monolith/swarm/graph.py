@@ -826,12 +826,13 @@ def record_dispatch(
                 return _refuse(
                     db, task, "record_dispatch", args, version, "dispatch_conflict"
                 )
-        elif run.status != "admitted":
+        elif run.status not in ("admitted", "uncertain"):
             return _refuse(
                 db, task, "record_dispatch", args, version, "dispatch_conflict"
             )
         else:
-            run.status = "dispatched"
+            if run.status == "admitted":
+                run.status = "dispatched"
             run.session_id = session_id
             run.base_sha = base_sha
             db.add(run)
