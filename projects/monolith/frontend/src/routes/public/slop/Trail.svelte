@@ -1,9 +1,6 @@
 <script>
-  // Slop section trail: site, section, page, and draft badge. Separate
-  // component from blog/Trail.svelte because the draft cell needs special
-  // styling (accent ink on a transparent background); factoring a generic
-  // version would complicate both sites and risk desync. One component per
-  // section is clearer.
+  // Slop has a fixed draft cell and section URL, unlike the blog trail.
+  // Keeping it separate avoids adding slop-only structure to the blog.
   let { page = "" } = $props();
 </script>
 
@@ -13,13 +10,11 @@
     <a class="crumb" href="/slop" aria-current={page ? undefined : "page"}
       >slop</a
     >
-  </div>
-  {#if page}
-    <div class="trail-row">
+    {#if page}
       <span class="crumb current" aria-current="page">{page}</span>
-      <span class="crumb draft">draft</span>
-    </div>
-  {/if}
+    {/if}
+    <span class="crumb draft">draft</span>
+  </div>
 </nav>
 
 <style>
@@ -54,13 +49,11 @@
   }
 
   .crumb.current {
-    border-top: 1px solid var(--stroke);
     color: var(--ink);
     white-space: normal;
   }
 
   .crumb.draft {
-    border-top: 1px solid var(--stroke);
     color: var(--accent-ink);
   }
 

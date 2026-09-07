@@ -44,12 +44,6 @@
     font-size: 1rem;
   }
 
-  .slop-page a:focus-visible,
-  .slop-page summary:focus-visible {
-    outline: 2px solid var(--accent-ink);
-    outline-offset: 3px;
-  }
-
   .frame {
     position: relative;
     max-width: 75em;
