@@ -7535,6 +7535,19 @@ py_test(
 )
 
 py_test(
+    name = "agent_routine_reconciliation_test",
+    srcs = ["agent/routine_reconciliation_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_cyclegroup",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "agent_routine_jobs_test",
     srcs = ["agent/routine_jobs_test.py"],
     imports = ["."],
