@@ -78,3 +78,9 @@ semgrep_test(
     srcs = ["blueprint_tags_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
+
+semgrep_test(
+    name = "operator_membership_test_semgrep_test",
+    srcs = ["operator_membership_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
