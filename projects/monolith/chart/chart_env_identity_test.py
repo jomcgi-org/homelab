@@ -1203,8 +1203,16 @@ def _probe_renders(tmp_path):
 
 def test_shared_s3_probe_jobs_positive_then_omission(tmp_path):
     true_docs, false_docs = _probe_renders(tmp_path)
-    assert set(true_docs) == {"probe-s3-job", "probe-grimoire-job"}
-    assert set(false_docs) == {"probe-s3-job", "probe-grimoire-job"}
+    assert set(true_docs) == {
+        "probe-s3-job",
+        "probe-grimoire-job",
+        "snapshot-merged-prs",
+    }
+    assert set(false_docs) == {
+        "probe-s3-job",
+        "probe-grimoire-job",
+        "snapshot-merged-prs",
+    }
     s3_env = _env_by_name(
         true_docs["probe-s3-job"]["spec"]["workflowSpec"]["templates"][0]["container"][
             "env"

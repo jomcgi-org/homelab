@@ -34,6 +34,7 @@
 # gazelle:exclude grimoire_chat
 # gazelle:exclude faas
 # gazelle:exclude updates
+# gazelle:exclude observability
 # The frontend is pnpm/rules_js with hand-written BUILD files, so gazelle must
 # not walk it. frontend/BUILD already carries a `# gazelle:ignore`, but that
 # directive applies ONLY to the directory it appears in and does NOT recurse:
@@ -114,6 +115,7 @@ _BACKEND_SRCS = glob(
         "ember_public/**/*.py",
         "goosecracker/**/*.py",
         "knowledge/**/*.py",
+        "observability/**/*.py",
         "home/**/*.py",
         "sandbox/**/*.py",
         "shotter/**/*.py",
@@ -1541,6 +1543,7 @@ py_library(
             "ember_public/**/*.py",
             "goosecracker/**/*.py",
             "knowledge/**/*.py",
+            "observability/**/*.py",
             "home/**/*.py",
             "sandbox/**/*.py",
             "shotter/**/*.py",
@@ -2009,6 +2012,7 @@ py_library(
             "framework/**/*.py",
             "artifact/**/*.py",
             "knowledge/**/*.py",
+            "observability/**/*.py",
             "home/**/*.py",
             "shared/**/*.py",
             "ships/**/*.py",
@@ -2087,6 +2091,7 @@ py_venv_binary(
             "framework/**/*.py",
             "artifact/**/*.py",
             "knowledge/**/*.py",
+            "observability/**/*.py",
             "home/**/*.py",
             "shared/**/*.py",
             "ships/**/*.py",
@@ -2455,7 +2460,32 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_core",
+        "@pip//httpx",
         "@pip//pytest",
+    ],
+)
+
+py_test(
+    name = "observability_merged_prs_test",
+    srcs = ["observability/merged_prs_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_backend",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "observability_public_router_test",
+    srcs = ["observability/public_router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_public_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
     ],
 )
 

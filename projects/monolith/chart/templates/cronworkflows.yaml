@@ -22,7 +22,8 @@ image guard elsewhere.
 {{- fail "sharedS3.enabled must be a boolean" }}
 {{- end }}
 {{- if .Values.jobs.image }}
-{{- range .Values.jobs.cronWorkflows }}
+{{- $cronWorkflows := append .Values.jobs.cronWorkflows .Values.jobs.snapshotMergedPrs }}
+{{- range $cronWorkflows }}
 {{- if and .grimoire (not $.Values.grimoire.enabled) }}
 {{- /* grimoire jobs are private-tier only: skip them entirely unless the
        grimoire module is enabled, so an unrelated (public) deploy never

@@ -61,6 +61,10 @@ auth:
 frontend:
   otelCollectorUrl: ""
 
+jobs:
+  snapshotMergedPrs:
+    suspend: false
+
 postgres:
   # Nightly logical refresh of monolith-dev-pg, dumped from the production
   # PRIMARY (monolith-pg-rw), not the -ro replica: standby recovery conflicts

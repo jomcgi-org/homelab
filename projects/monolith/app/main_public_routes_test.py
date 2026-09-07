@@ -60,6 +60,7 @@ REQUIRED_PATHS = [
     "/api/knowledge/public/graph",
     "/api/knowledge/public/notes/{note_id}",
     "/api/home/observability/stats",
+    "/api/agents/public/merges",
     "/api/ember/postgres/status",
 ]
 
@@ -128,6 +129,7 @@ ALLOWED_PREFIXES = (
     "/api/wc2026",
     "/api/knowledge/public",
     "/api/home/observability",
+    "/api/agents/public",
     # Grimoire public tier (public-readonly design):
     # no campaign/grant params, whole corpus is a single global read view.
     "/api/grimoire",
@@ -218,7 +220,11 @@ def test_no_schedule_chat_scheduler_agent_paths():
         "/api/knowledge/tasks",
     ]
     for prefix in forbidden_prefixes:
-        leaked = [p for p in paths if p.startswith(prefix)]
+        leaked = [
+            p
+            for p in paths
+            if p.startswith(prefix) and p != "/api/agents/public/merges"
+        ]
         assert not leaked, f"private paths under {prefix!r} leaked: {leaked}"
 
 

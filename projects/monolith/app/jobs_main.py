@@ -26,6 +26,7 @@ import logging
 import os
 import time
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 
 import typer
 
@@ -379,6 +380,19 @@ def home_cluster_snapshot_refresh() -> None:
     logger.info("home-cluster-snapshot-refresh: starting")
     asyncio.run(refresh_cluster_snapshot())
     logger.info("home-cluster-snapshot-refresh: done")
+
+
+@app.command("snapshot-merged-prs")
+def snapshot_merged_prs() -> None:
+    """Snapshot the last 90 days of merged GitHub pull requests."""
+    from core.github import fetch_merged_pull_requests
+    from observability.merged_prs import write_snapshot
+
+    configure_logging()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+    pulls = fetch_merged_pull_requests(cutoff)
+    snapshotted, deleted = write_snapshot(pulls, cutoff)
+    logger.info("Snapshots %d PRs, deleted %d old rows", snapshotted, deleted)
 
 
 @app.command("hikes-scrape-walks")
