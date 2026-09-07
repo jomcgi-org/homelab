@@ -14,6 +14,7 @@ from unittest import mock
 
 import httpx
 import pytest
+import typer
 from sqlmodel import Session, SQLModel, create_engine, select
 from typer.testing import CliRunner
 
@@ -113,6 +114,89 @@ def test_snapshot_merged_prs_fetches_and_writes_with_same_cutoff():
     fetch.assert_called_once_with(cutoff, watermark=watermark)
     write.assert_called_once_with(pulls, cutoff)
     log.assert_called_once_with("Snapshots %d PRs, deleted %d old rows", 1, 2)
+
+
+def test_publish_facts_command():
+    from knowledge.publish import PublishReport
+
+    report = PublishReport(
+        published=2,
+        unpublished=1,
+        skipped_redaction=0,
+        skipped_dispute=1,
+    )
+    session = mock.MagicMock()
+    active_session = session.__enter__.return_value
+    with (
+        mock.patch("core.db.get_engine", return_value=object()),
+        mock.patch("sqlmodel.Session", return_value=session),
+        mock.patch("knowledge.publish.apply", return_value=report) as apply,
+        mock.patch.object(jobs_main, "configure_logging"),
+        mock.patch.object(jobs_main.logger, "info") as log,
+    ):
+        result = runner.invoke(jobs_main.app, ["publish-facts"])
+
+    assert result.exit_code == 0, result.output
+    apply.assert_called_once_with(active_session, dry_run=False)
+    log.assert_called_once_with("Publish facts: %s", report)
+
+
+def test_seed_entities_command():
+    from knowledge.entities import SeedReport
+
+    report = SeedReport(created=2, updated=1, unchanged=3)
+    session = mock.MagicMock()
+    active_session = session.__enter__.return_value
+    with (
+        mock.patch("core.db.get_engine", return_value=object()),
+        mock.patch("sqlmodel.Session", return_value=session),
+        mock.patch("knowledge.entities.seed_entities", return_value=report) as seed,
+        mock.patch("knowledge.entities.link_issue_entities", return_value=4) as link,
+        mock.patch.object(jobs_main, "configure_logging"),
+        mock.patch.object(jobs_main.logger, "info") as log,
+    ):
+        result = runner.invoke(jobs_main.app, ["seed-entities"])
+
+    assert result.exit_code == 0, result.output
+    seed.assert_called_once_with(active_session)
+    link.assert_called_once_with(active_session)
+    log.assert_any_call("seed-entities: done")
+
+
+def test_backfill_entities_command():
+    from knowledge.entities import BackfillReport
+
+    invalid = runner.invoke(
+        jobs_main.app,
+        ["backfill-entities"],
+        standalone_mode=False,
+    )
+    assert isinstance(invalid.exception, typer.BadParameter)
+    assert str(invalid.exception) == "choose exactly one of --dry-run or --apply"
+
+    session = mock.MagicMock()
+    active_session = session.__enter__.return_value
+
+    def report(_session, *, dry_run):
+        return BackfillReport(scanned=3, linked=2, unresolved=1, dry_run=dry_run)
+
+    with (
+        mock.patch("core.db.get_engine", return_value=object()),
+        mock.patch("sqlmodel.Session", return_value=session),
+        mock.patch("knowledge.entities.backfill_links", side_effect=report) as backfill,
+        mock.patch.object(jobs_main, "configure_logging"),
+        mock.patch.object(jobs_main.logger, "info") as log,
+    ):
+        dry_run = runner.invoke(jobs_main.app, ["backfill-entities", "--dry-run"])
+        applied = runner.invoke(jobs_main.app, ["backfill-entities", "--apply"])
+
+    assert dry_run.exit_code == 0, dry_run.output
+    assert applied.exit_code == 0, applied.output
+    assert backfill.call_args_list == [
+        mock.call(active_session, dry_run=True),
+        mock.call(active_session, dry_run=False),
+    ]
+    assert log.call_args_list.count(mock.call("backfill-entities: done")) == 2
 
 
 def test_faas_reconcile_dispatches_and_prints_json():

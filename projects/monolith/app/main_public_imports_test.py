@@ -59,6 +59,7 @@ FORBIDDEN_MODULES = [
     "knowledge.gaps",
     "knowledge.ingest_queue",
     "knowledge.mcp",
+    "knowledge.publish",
     # Heavy knowledge write/maintenance internals this refactor removed from
     # the public closure.
     "knowledge.service",

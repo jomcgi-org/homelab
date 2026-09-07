@@ -404,6 +404,17 @@ visibility flip for verified/unverified agent facts).
 (see: /projects/monolith/chart/migrations/20260903000000_knowledge_scoped_assertions.sql)
 (see: /projects/monolith/deploy/values.yaml)
 
+Facts are anchored to entities seeded from a committed manifest
+(`projects/monolith/entities.yaml`); `note_entities` edges link facts to subjects
+(projects, orgs, environments) with role constraints, and extraction uses the
+closed subject vocabulary and scope grammar to derive facts about the repository
+rather than hallucinations.
+
+**Why.** Facts needed a subject so the public record and the extraction lens
+could speak about tangible entities (projects, organizations) rather than
+hypothetical ones, and a committed manifest keeps the extraction anchors derived
+from the repository rather than from model inference.
+
 **Why.** Facts publish automatically so the public tier reflects what agents
 record without a human gate on every row, while the audit queue and human holds
 keep the human in the loop for review and override.

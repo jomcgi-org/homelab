@@ -99,6 +99,7 @@ FORBIDDEN_MODULES = [
     "knowledge.gaps",
     "knowledge.ingest_queue",
     "knowledge.layout",
+    "knowledge.publish",
     "knowledge.router",
     "knowledge.service",
     "knowledge.tasks_router",

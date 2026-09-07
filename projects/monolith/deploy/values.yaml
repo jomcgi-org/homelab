@@ -154,6 +154,10 @@ cfIngress:
 
 knowledge:
   enabled: true
+  # Publication lane that automatically flips visibility for verified/unverified
+  # facts meeting the policy. Ships suspended because it changes public visibility;
+  # first run is `argo submit --from cronworkflow/publish-facts -n monolith-workflows -p args=--dry-run`
+  # and unsuspending requires a PR.
   publishFacts:
     enabled: true
     suspend: true

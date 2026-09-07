@@ -68,7 +68,7 @@ Provenance of each allowlist entry:
     third-party executor that processes untrusted registry and dependency
     metadata while holding a GitHub token, which makes it a more plausible
     forger than anything this policy was originally aimed at. There are
-    34 + 2 = 36 CronWorkflows total in that namespace: 34 belong to this release
+    38 + 2 = 40 CronWorkflows total in that namespace: 38 belong to this release
     and the two that do not are renovate's.
 
     So the rule also matches app.kubernetes.io/part-of: <release>-jobs, which
