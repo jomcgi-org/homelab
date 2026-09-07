@@ -54,7 +54,11 @@ spec:
   schedules:
     - {{ .schedule | quote }}
   concurrencyPolicy: {{ .concurrencyPolicy | default "Forbid" }}
+  {{- if .knowledgePublishFacts }}
+  suspend: {{ $.Values.knowledge.publishFacts.suspend }}
+  {{- else }}
   suspend: {{ .suspend | default false }}
+  {{- end }}
   startingDeadlineSeconds: {{ .startingDeadlineSeconds | default 30 }}
   successfulJobsHistoryLimit: {{ .successfulJobsHistoryLimit | default 3 }}
   failedJobsHistoryLimit: {{ .failedJobsHistoryLimit | default 5 }}

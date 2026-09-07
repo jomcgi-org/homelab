@@ -1806,6 +1806,8 @@ _PUBLIC_PRUNE_EXCLUDE = [
     # worldcup/jobs.py and campsites/jobs.py.
     "ember_public/synthetic_probe.py",
     "ember_public/synthetic_router.py",
+    # Visibility write path must not ship in public or agents images.
+    "knowledge/publish.py",
     # Private knowledge routers / write paths / heavy maintenance internals.
     "knowledge/router.py",
     "knowledge/tasks_router.py",
@@ -1902,6 +1904,8 @@ _AGENTS_PRUNE_EXCLUDE = [
     # The shared private monolith MCP server. agents_main owns a dedicated
     # four-tool FastMCP instance instead.
     "core/mcp_app.py",
+    # Visibility write path must not ship in public or agents images.
+    "knowledge/publish.py",
     # Private knowledge routers and write or maintenance paths.
     "knowledge/router.py",
     "knowledge/tasks_router.py",

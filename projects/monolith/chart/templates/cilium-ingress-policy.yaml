@@ -67,9 +67,9 @@ Provenance of each allowlist entry:
     namespace (projects/platform/renovate/application.yaml), and it is a large
     third-party executor that processes untrusted registry and dependency
     metadata while holding a GitHub token, which makes it a more plausible
-    forger than anything this policy was originally aimed at. Of the 35
-    CronWorkflows in that namespace, 34 belong to this release and the only two
-    that do not are renovate's.
+    forger than anything this policy was originally aimed at. There are
+    34 + 2 = 36 CronWorkflows total in that namespace: 34 belong to this release
+    and the two that do not are renovate's.
 
     So the rule also matches app.kubernetes.io/part-of: <release>-jobs, which
     cronworkflows.yaml stamps onto the job pods via workflowSpec.podMetadata.

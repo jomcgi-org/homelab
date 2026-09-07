@@ -266,6 +266,7 @@ class KnowledgeStore:
             existing_valid_from: datetime | None = None
             existing_valid_until: datetime | None = None
             existing_observed_at: datetime | None = None
+            existing_published_at: datetime | None = None
             if existing_note is not None:
                 existing_scope = existing_note.scope
                 existing_verification_state = existing_note.verification_state
@@ -273,6 +274,7 @@ class KnowledgeStore:
                 existing_valid_from = existing_note.valid_from
                 existing_valid_until = existing_note.valid_until
                 existing_observed_at = existing_note.observed_at
+                existing_published_at = existing_note.published_at
                 existing = existing_note.id
                 self.session.execute(delete(Chunk).where(Chunk.note_fk == existing))
                 self.session.execute(
@@ -334,6 +336,12 @@ class KnowledgeStore:
             )
             self.session.add(note)
             self.session.flush()
+
+            # Preserve published_at across upsert so automatic republication is
+            # not lost.
+            if existing_published_at is not None:
+                note.published_at = existing_published_at
+                self.session.flush()
 
             for chunk, vector in zip(chunks, vectors, strict=True):
                 self.session.add(

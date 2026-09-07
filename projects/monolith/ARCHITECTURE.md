@@ -396,12 +396,17 @@ read-only repository diff scout, and the intentional reports
 source-specific lens, Luna returns candidate assertions, and the monolith
 parses them and writes atoms and provenance server-side through
 precision-first gates. Guests never write the graph. The account-hosted
-routines and the in-process gardener that preceded this are retired, and no
-knowledge CronWorkflow remains.
+routines and the in-process gardener that preceded this are retired. No
+knowledge CronWorkflow remains today except the publication lane (15-minute
+visibility flip for verified/unverified agent facts).
 (see: /projects/monolith/knowledge/extraction.py)
 (see: /projects/monolith/agent_sessions/kg_feed.py)
 (see: /projects/monolith/chart/migrations/20260903000000_knowledge_scoped_assertions.sql)
 (see: /projects/monolith/deploy/values.yaml)
+
+**Why.** Facts publish automatically so the public tier reflects what agents
+record without a human gate on every row, while the audit queue and human holds
+keep the human in the loop for review and override.
 
 Derived facts carry `scope`, `verification_state`, `confidence`, and a validity
 window as columns. A dispute opens a `knowledge.disputes` row keyed by the

@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import exists, func, or_, update
+from sqlalchemy import and_, exists, func, or_, update
 from sqlmodel import Session, select
 
 from knowledge.models import Dispute, Note, NoteId
@@ -28,7 +28,6 @@ PUBLISHABLE_TYPE = "fact"
 """The only note type eligible for automatic publication."""
 
 _UPDATE_CHUNK_SIZE = 500
-_SKIPPED_REDACTION_INFO_KEY = "knowledge.publish.skipped_redaction"
 
 
 @dataclass(frozen=True)
@@ -57,58 +56,82 @@ def _publishable_base_predicates() -> tuple[Any, ...]:
         Note.verification_state.in_(PUBLISHABLE_VERIFICATION_STATES),
         Note.scope.in_(PUBLISHABLE_SCOPES),
         Note.type == PUBLISHABLE_TYPE,
-        Note.visibility == "private",
+        # Human holds (visibility='private', visibility_verified=True) are never
+        # auto-published.
+        or_(
+            Note.visibility.is_(None),
+            and_(
+                Note.visibility == "private",
+                Note.visibility_verified.is_not(True),
+            ),
+        ),
     )
 
 
-def select_publishable(session: Session) -> list[NoteId]:
-    """Return private facts that satisfy policy and contain no secrets."""
-    rows = session.execute(
-        select(Note.note_id, Note.title, Note.content).where(
-            *_publishable_base_predicates(),
-            ~_has_open_dispute(),
-        )
-    ).all()
+def select_publishable(session: Session) -> tuple[list[NoteId], int]:
+    """Return eligible, redaction-safe facts and the redaction skip count."""
+    candidate_ids = [
+        NoteId(note_id)
+        for note_id in session.exec(
+            select(Note.note_id).where(
+                *_publishable_base_predicates(),
+                ~_has_open_dispute(),
+            )
+        ).all()
+    ]
 
     publishable: list[NoteId] = []
     skipped_redaction = 0
-    for row in rows:
-        title_hit = redact_text(row.title)[1] > 0
-        content_hit = redact_text(row.content or "")[1] > 0
-        if title_hit or content_hit:
-            skipped_redaction += 1
-            fields = ",".join(
-                field
-                for field, hit in (("title", title_hit), ("content", content_hit))
-                if hit
+    for candidate_chunk in _chunks(candidate_ids):
+        rows = session.execute(
+            select(Note.note_id, Note.title, Note.content).where(
+                Note.note_id.in_(candidate_chunk)
             )
-            logger.warning(
-                "knowledge.publish.skipped note_id=%s reason=redaction_hit fields=%s",
-                row.note_id,
-                fields,
-            )
-            continue
-        publishable.append(NoteId(row.note_id))
+        ).all()
+        for row in rows:
+            title_hit = redact_text(row.title)[1] > 0
+            content_hit = redact_text(row.content or "")[1] > 0
+            if title_hit or content_hit:
+                skipped_redaction += 1
+                fields = ",".join(
+                    field
+                    for field, hit in (
+                        ("title", title_hit),
+                        ("content", content_hit),
+                    )
+                    if hit
+                )
+                logger.warning(
+                    "knowledge.publish.skipped note_id=%s "
+                    "reason=redaction_hit fields=%s",
+                    row.note_id,
+                    fields,
+                )
+                continue
+            publishable.append(NoteId(row.note_id))
 
-    session.info[_SKIPPED_REDACTION_INFO_KEY] = skipped_redaction
-    return publishable
+    return publishable, skipped_redaction
+
+
+def _unpublishable_predicates() -> tuple[Any, ...]:
+    return (
+        Note.visibility == "public",
+        Note.visibility_verified.is_not(True),
+        Note.published_at.is_not(None),
+        Note.verification_state != "legacy",
+        or_(
+            Note.deleted_at.is_not(None),
+            Note.verification_state.not_in(PUBLISHABLE_VERIFICATION_STATES),
+            Note.scope.is_(None),
+            Note.scope.not_in(PUBLISHABLE_SCOPES),
+            _has_open_dispute(),
+        ),
+    )
 
 
 def select_unpublishable(session: Session) -> list[NoteId]:
-    """Return public non-legacy notes whose publication policy stopped holding."""
-    rows = session.exec(
-        select(Note.note_id).where(
-            Note.visibility == "public",
-            Note.verification_state != "legacy",
-            or_(
-                Note.deleted_at.is_not(None),
-                Note.verification_state.not_in(PUBLISHABLE_VERIFICATION_STATES),
-                Note.scope.is_(None),
-                Note.scope.not_in(PUBLISHABLE_SCOPES),
-                _has_open_dispute(),
-            ),
-        )
-    ).all()
+    """Return job-published notes whose publication policy stopped holding."""
+    rows = session.exec(select(Note.note_id).where(*_unpublishable_predicates())).all()
     return [NoteId(note_id) for note_id in rows]
 
 
@@ -117,7 +140,10 @@ def _count_skipped_disputes(session: Session) -> int:
         session.exec(
             select(func.count())
             .select_from(Note)
-            .where(*_publishable_base_predicates(), _has_open_dispute())
+            .where(
+                *_publishable_base_predicates(),
+                _has_open_dispute(),
+            )
         ).one()
     )
 
@@ -131,38 +157,49 @@ def _chunks(note_ids: list[NoteId]) -> list[list[NoteId]]:
 
 def apply(session: Session, dry_run: bool) -> PublishReport:
     """Apply the publication policy, committing each update batch separately."""
-    publishable = select_publishable(session)
-    skipped_redaction = int(session.info.pop(_SKIPPED_REDACTION_INFO_KEY, 0))
+    publishable, skipped_redaction = select_publishable(session)
     unpublishable = select_unpublishable(session)
     skipped_dispute = _count_skipped_disputes(session)
 
-    report = PublishReport(
-        published=len(publishable),
-        unpublished=len(unpublishable),
-        skipped_redaction=skipped_redaction,
-        skipped_dispute=skipped_dispute,
-    )
     if dry_run:
-        return report
+        return PublishReport(
+            published=len(publishable),
+            unpublished=len(unpublishable),
+            skipped_redaction=skipped_redaction,
+            skipped_dispute=skipped_dispute,
+        )
 
+    published = 0
     for chunk in _chunks(publishable):
-        session.execute(
+        result = session.execute(
             update(Note)
-            .where(Note.note_id.in_(chunk))
+            .where(
+                Note.note_id.in_(chunk),
+                *_publishable_base_predicates(),
+                ~_has_open_dispute(),
+            )
             .values(
                 visibility="public",
-                visibility_verified=True,
+                visibility_verified=False,
                 published_at=func.now(),
             )
         )
+        published += result.rowcount
         session.commit()
 
+    unpublished = 0
     for chunk in _chunks(unpublishable):
-        session.execute(
+        result = session.execute(
             update(Note)
-            .where(Note.note_id.in_(chunk))
+            .where(Note.note_id.in_(chunk), *_unpublishable_predicates())
             .values(visibility="private", published_at=None)
         )
+        unpublished += result.rowcount
         session.commit()
 
-    return report
+    return PublishReport(
+        published=published,
+        unpublished=unpublished,
+        skipped_redaction=skipped_redaction,
+        skipped_dispute=skipped_dispute,
+    )

@@ -135,8 +135,8 @@ def test_build_model_messages_injects_delimited_retrieved_context():
     assert "not instructions" in body.lower()
     assert "alpha grounding text" in body
     assert "beta grounding text" in body
-    assert "[note: Note A state=legacy disputed=false]" in body
-    assert "[note: Note B state=legacy disputed=false]" in body
+    assert "[note state=legacy disputed=false: Note A]" in body
+    assert "[note state=legacy disputed=false: Note B]" in body
 
     # The actual user turn is still present as the final user message.
     assert messages[-1] == {"role": "user", "content": "what is alpha?"}

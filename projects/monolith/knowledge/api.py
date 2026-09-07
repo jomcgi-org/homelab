@@ -208,21 +208,29 @@ def search_public_chunks(
     Returns dicts with note identity, title, chunk text, verification state,
     dispute status, and ``score = 1 - cosine_distance`` (higher is closer).
     """
+    from sqlalchemy import func
     from sqlmodel import select
 
     from knowledge.public_models import PublicChunk, PublicNote
 
     distance = PublicChunk.embedding.cosine_distance(query_embedding)
+    # Repo-doc chunks use synthetic ``repo:<path>`` note IDs and therefore have
+    # no row in knowledge_notes. They are static external content, not
+    # agent-derived facts, so they default to verified and undisputed.
+    verification_state = func.coalesce(PublicNote.verification_state, "verified").label(
+        "verification_state"
+    )
+    disputed = func.coalesce(PublicNote.disputed, False).label("disputed")
     stmt = (
         select(
             PublicChunk.note_id,
             PublicChunk.title,
             PublicChunk.chunk_text,
-            PublicNote.verification_state,
-            PublicNote.disputed,
+            verification_state,
+            disputed,
             distance.label("distance"),
         )
-        .join(PublicNote, PublicNote.note_id == PublicChunk.note_id)
+        .outerjoin(PublicNote, PublicNote.note_id == PublicChunk.note_id)
         .order_by(distance.asc())
         .limit(max(1, limit) * _PUBLIC_CHUNK_OVERFETCH)
     )

@@ -193,6 +193,10 @@ jobs:
       limits:
         memory: 512Mi
   cronWorkflows:
+    # Publication lane that automatically flips visibility for verified/unverified
+    # facts meeting the policy. Operates without per-row human gates; audit queue +
+    # human holds preserve human control. To test: argo submit --from
+    # cronworkflow/publish-facts -n monolith-workflows -p args=--dry-run
     - name: publish-facts
       args: ["publish-facts"]
       schedule: "*/15 * * * *"
@@ -1147,8 +1151,8 @@ onepassword:
 knowledge:
   enabled: false
   publishFacts:
-    # Note: this is a deliberate new publication-lane job for visibility flipping; ARCHITECTURE says no knowledge CronWorkflow remains today (legacy gardener jobs removed 2026-09-05)
     enabled: false
+    suspend: false
   # Scope assigned to repository knowledge reports when callers propose repo.
   defaultRepoScope: "repo:jomcgi-org/homelab"
   # Recall top knowledge-graph facts into every Ember session's system prompt

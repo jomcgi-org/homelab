@@ -120,12 +120,12 @@ def test_public_note_context_renders_verification_and_dispute_state():
             )
         ]
     )
-    assert "state=unverified disputed=true" in rendered
+    assert "[note state=unverified disputed=true: A public fact]" in rendered
     assert "<public_notes>" in rendered
 
 
-def test_system_prompt_requires_unverified_facts_to_be_named():
-    assert "Unverified facts must be named as such in the answer." in (
+def test_system_prompt_requires_uncertain_facts_to_be_qualified():
+    assert "Unverified facts and disputed notes must be qualified" in (
         router_module._DEFAULT_SYSTEM_PROMPT
     )
 
@@ -339,7 +339,7 @@ def test_budget_knobs_defined_only_in_limits():
     pkg_dir = Path(importlib.import_module("chat_public").__file__).resolve().parent
     offenders = []
     for py_file in sorted(pkg_dir.glob("*.py")):
-        if py_file.name == "limits.py" or py_file.name.endswith("_test.py"):
+        if py_file.name in ("limits.py", "router_test.py"):
             continue
         text = py_file.read_text()
         # No sibling re-reads the budget env vars (that would be a second source
