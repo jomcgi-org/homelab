@@ -663,6 +663,7 @@ class TestEntityLinks:
             metadata=_meta(
                 title="Verified",
                 type="fact",
+                visibility="public",
                 verification_state="verified",
             ),
         )
@@ -674,9 +675,25 @@ class TestEntityLinks:
             metadata=_meta(
                 title="Unverified",
                 type="fact",
+                visibility="private",
                 verification_state="unverified",
             ),
         )
+        _upsert(
+            store,
+            note_id="deleted-fact",
+            path="deleted.md",
+            title="Deleted",
+            metadata=_meta(
+                title="Deleted",
+                type="fact",
+                verification_state="verified",
+            ),
+        )
+        deleted_note = session.exec(
+            select(Note).where(Note.note_id == "deleted-fact")
+        ).one()
+        deleted_note.deleted_at = datetime.now(timezone.utc)
         session.add_all(
             [
                 NoteEntity(
@@ -691,11 +708,18 @@ class TestEntityLinks:
                     role="mentions",
                     source="backfill",
                 ),
+                NoteEntity(
+                    note_id="deleted-fact",
+                    entity_id=entity.id,
+                    role="subject",
+                    source="backfill",
+                ),
             ]
         )
         session.commit()
 
         rows = store.notes_for_entity(entity.id, states=["verified"], limit=10)
+        public_rows = store.notes_for_entity(entity.id, public_only=True, limit=10)
 
         assert rows == [
             {
@@ -707,6 +731,7 @@ class TestEntityLinks:
                 "role": "subject",
             }
         ]
+        assert [row["note_id"] for row in public_rows] == ["verified-fact"]
 
 
 class TestGetNoteLinks:

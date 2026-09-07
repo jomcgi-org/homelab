@@ -22,7 +22,7 @@ from sqlmodel import Session, select
 from core.github import GITHUB_REPO
 from knowledge import raw_store
 from knowledge.gardener import MAX_GARDENER_RETRIES
-from knowledge.models import AtomRawProvenance, Dispute, Note, RawInput
+from knowledge.models import AtomRawProvenance, Dispute, Note, RawInput, SCOPE_PATTERN
 from knowledge.recall import _get_repo_scope, render_related_notes
 from shared.embedding import EmbeddingClient
 
@@ -116,7 +116,6 @@ CODEX_FAILURE_MODES = (
 )
 
 
-_SCOPE_PATTERN = r"^(personal|org|repo|environment|session):.+$"
 _FENCED_BLOCK_RE = re.compile(
     r"^```(?:[A-Za-z0-9_-]+)?[ \t]*\r?\n(.*?)^```[ \t]*$",
     re.DOTALL | re.MULTILINE,
@@ -181,13 +180,18 @@ class _Edges(BaseModel):
     related: list[str] = Field(default_factory=list)
     subjects: list[str] = Field(default_factory=list)
 
+    @field_validator("subjects")
+    @classmethod
+    def _cap_subjects(cls, value: list[str]) -> list[str]:
+        return value[:20]
+
 
 class _Assertion(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     title: str
     body: str
-    scope: str = Field(pattern=_SCOPE_PATTERN)
+    scope: str = Field(pattern=SCOPE_PATTERN)
     verification_state: Literal["verified", "unverified"]
     confidence: float
     valid_from: str | None = None
@@ -209,6 +213,13 @@ class _Assertion(BaseModel):
     @classmethod
     def _cap_body(cls, value: str) -> str:
         return value[:20_000]
+
+    @field_validator("unresolved_subject")
+    @classmethod
+    def _cap_unresolved_subject(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value[:200]
 
     @field_validator("confidence", mode="before")
     @classmethod

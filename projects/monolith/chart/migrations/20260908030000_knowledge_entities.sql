@@ -28,11 +28,11 @@ CREATE TABLE knowledge.note_entities (
 CREATE INDEX note_entities_note_id_idx ON knowledge.note_entities (note_id);
 CREATE INDEX note_entities_entity_id_idx ON knowledge.note_entities (entity_id);
 
--- Repair the four known malformed production scopes before enforcing the shape.
+-- Repair the three known malformed production scopes before enforcing the shape.
 UPDATE knowledge.notes
-SET scope = regexp_replace(scope, '[^[:print:]]', '', 'g')
+SET scope = regexp_replace(scope, E'[​‌‍﻿]', '', 'g')
 WHERE scope IS NOT NULL
-  AND scope !~ '^[[:print:]]*$';
+  AND scope ~ E'[​‌‍﻿]';
 
 UPDATE knowledge.notes
 SET scope = 'session:codex-session'
@@ -40,8 +40,10 @@ WHERE scope = 'environment:codex-session';
 
 ALTER TABLE knowledge.notes
     ADD CONSTRAINT notes_scope_shape_chk CHECK (
-        scope IS NULL OR scope ~ '^(personal|org|repo|environment|session):[[:print:]]+$'
-    );
+        scope IS NULL OR scope ~ '^(personal|org|repo|environment|session):.+$'
+    ) NOT VALID;
+
+ALTER TABLE knowledge.notes VALIDATE CONSTRAINT notes_scope_shape_chk;
 
 CREATE VIEW public_api.knowledge_entities AS
     SELECT

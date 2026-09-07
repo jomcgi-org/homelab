@@ -6,6 +6,7 @@ import pytest
 from datetime import datetime, timezone
 from sqlmodel import Session, SQLModel, create_engine, select
 
+import knowledge.entities as entities_module
 from knowledge.entities import (
     Entity,
     NoteEntity,
@@ -64,6 +65,8 @@ def test_manifest_loads_with_unique_kind_slug_keys():
     assert len(keys) == len(set(keys))
     assert {spec.slug for spec in specs if spec.kind == "project"} >= {
         "embervm",
+        "design-system",
+        "firecracker-site",
         "monolith",
         "tooling",
     }
@@ -72,7 +75,28 @@ def test_manifest_loads_with_unique_kind_slug_keys():
     )
 
 
+def test_manifest_rejects_project_alias_or_slug_collisions(tmp_path, monkeypatch):
+    manifest = tmp_path / "entities.yaml"
+    manifest.write_text(
+        """entities:
+  - kind: project
+    slug: alpha
+    title: Alpha
+    aliases: [shared]
+  - kind: project
+    slug: shared
+    title: Beta
+    aliases: []
+"""
+    )
+    monkeypatch.setattr(entities_module, "_MANIFEST_PATH", manifest)
+
+    with pytest.raises(ValueError, match="appears under both project/alpha"):
+        load_manifest()
+
+
 def test_seed_is_idempotent_and_merges_aliases(session):
+    manifest_count = len(load_manifest())
     session.add(
         Entity(
             kind="project",
@@ -90,11 +114,11 @@ def test_seed_is_idempotent_and_merges_aliases(session):
     monolith = session.exec(
         select(Entity).where(Entity.kind == "project", Entity.slug == "monolith")
     ).one()
-    assert first.created == 22
+    assert first.created == manifest_count - 1
     assert first.updated == 1
     assert second.created == 0
     assert second.updated == 0
-    assert second.unchanged == 23
+    assert second.unchanged == manifest_count
     assert "local-alias" in monolith.aliases
     assert monolith.aliases == sorted(monolith.aliases)
     assert monolith.source == "manifest"
@@ -105,8 +129,11 @@ def test_backfill_matches_tags_and_title_and_is_idempotent(session):
     session.add_all(
         [
             _fact("tag-match", "A generic fact", tags=["KG"]),
-            _fact("title-match", "Qwen requests fail when capacity is full"),
-            _fact("no-match", "A fact with no catalog vocabulary"),
+            _fact("title-match", "vLLM requests fail when capacity is full"),
+            _fact(
+                "no-match",
+                "Knowledge chat CI snapshot stateful warmth",
+            ),
             _fact("legacy", "Qwen legacy fact", state="legacy"),
             _fact("deleted", "Qwen deleted fact", deleted=True),
         ]
@@ -128,6 +155,35 @@ def test_backfill_matches_tags_and_title_and_is_idempotent(session):
         ("tag-match", "subject", "backfill"),
         ("title-match", "mentions", "backfill"),
     ]
+
+
+def test_backfill_monolith_tag_has_exactly_one_subject(session):
+    seed_entities(session)
+    session.add(_fact("monolith-tag", "A generic fact", tags=["monolith"]))
+    session.commit()
+
+    backfill_links(session, dry_run=False)
+
+    links = session.exec(
+        select(NoteEntity).where(
+            NoteEntity.note_id == "monolith-tag",
+            NoteEntity.role == "subject",
+        )
+    ).all()
+    assert len(links) == 1
+    entity = session.get(Entity, links[0].entity_id)
+    assert entity is not None
+    assert (entity.kind, entity.slug) == ("project", "monolith")
+    mentions = session.exec(
+        select(NoteEntity).where(
+            NoteEntity.note_id == "monolith-tag",
+            NoteEntity.role == "mentions",
+        )
+    ).all()
+    assert len(mentions) == 1
+    mentioned = session.get(Entity, mentions[0].entity_id)
+    assert mentioned is not None
+    assert (mentioned.kind, mentioned.slug) == ("service", "monolith")
 
 
 def test_issue_linking_finds_title_and_content_references(session):

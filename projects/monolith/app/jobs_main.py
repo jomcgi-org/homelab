@@ -266,6 +266,10 @@ def publish_facts(
             logger.info("(dry-run, no changes made)")
 
 
+# Entity spine rollout is manual after deployment. The supported path is the
+# suspended seed-entities CronWorkflow, followed by backfill-entities. Submit
+# each with `argo submit --from cronworkflow/<name> -n monolith-workflows`.
+# Do not exec these commands inside an API or jobs pod.
 @app.command("seed-entities")
 def seed_knowledge_entities() -> None:
     """Upsert the knowledge entity manifest and link referenced issue numbers."""
@@ -288,6 +292,8 @@ def seed_knowledge_entities() -> None:
     logger.info("seed-entities: done")
 
 
+# Keep this adjacent to seed-entities because operators submit both suspended
+# CronWorkflows in that order after the release is healthy.
 @app.command("backfill-entities")
 def backfill_knowledge_entities(
     dry_run: bool = typer.Option(False, "--dry-run", help="Report without writing"),

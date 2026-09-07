@@ -36,7 +36,7 @@ _MANIFEST_PATH = Path(__file__).with_name("entities.yaml")
 _BACKFILL_CHUNK = 500
 
 
-class Entity(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+class Entity(SQLModel, table=True):
     """A closed-vocabulary subject that knowledge facts can reference."""
 
     __tablename__ = "entities"
@@ -128,7 +128,9 @@ class EntitySpec:
     slug: str
     title: str
     aliases: tuple[str, ...]
+    title_aliases: tuple[str, ...]
     scope: str | None = None
+    path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -155,6 +157,7 @@ def load_manifest() -> list[EntitySpec]:
 
     specs: list[EntitySpec] = []
     seen: set[tuple[str, str]] = set()
+    project_terms: dict[str, str] = {}
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError("every entity manifest entry must be a mapping")
@@ -163,29 +166,60 @@ def load_manifest() -> list[EntitySpec]:
         title = row.get("title")
         aliases = row.get("aliases")
         scope = row.get("scope")
+        path = row.get("path")
         if kind not in _ENTITY_KINDS:
             raise ValueError(f"invalid entity kind: {kind!r}")
         if not isinstance(slug, str) or not slug.strip():
             raise ValueError("entity slug must be a non-empty string")
         if not isinstance(title, str) or not title.strip():
             raise ValueError(f"entity {slug!r} must have a non-empty title")
-        if not isinstance(aliases, list) or not all(
-            isinstance(alias, str) and alias.strip() for alias in aliases
-        ):
-            raise ValueError(f"entity {slug!r} aliases must be non-empty strings")
+        if not isinstance(aliases, list):
+            raise ValueError(f"entity {slug!r} aliases must be a list")
+        alias_names: list[str] = []
+        title_aliases: list[str] = []
+        for alias in aliases:
+            if isinstance(alias, str) and alias.strip():
+                alias_names.append(alias)
+                continue
+            if not isinstance(alias, dict):
+                raise ValueError(f"entity {slug!r} aliases must be strings or mappings")
+            name = alias.get("name")
+            title_match = alias.get("title", False)
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(f"entity {slug!r} alias name must be non-empty")
+            if not isinstance(title_match, bool):
+                raise ValueError(f"entity {slug!r} alias title must be boolean")
+            alias_names.append(name)
+            if title_match:
+                title_aliases.append(name)
         if scope is not None and not isinstance(scope, str):
             raise ValueError(f"entity {slug!r} scope must be a string or null")
+        if path is not None and (not isinstance(path, str) or not path.strip()):
+            raise ValueError(f"entity {slug!r} path must be a non-empty string or null")
         key = (kind, slug)
         if key in seen:
             raise ValueError(f"duplicate entity key: {kind}/{slug}")
         seen.add(key)
+        if kind == "project":
+            project_key = f"{kind}/{slug}"
+            for term in {slug, *alias_names}:
+                folded = term.casefold()
+                owner = project_terms.get(folded)
+                if owner is not None and owner != project_key:
+                    raise ValueError(
+                        f"project entity term {term!r} appears under both "
+                        f"{owner} and {project_key}"
+                    )
+                project_terms[folded] = project_key
         specs.append(
             EntitySpec(
                 kind=kind,
                 slug=slug,
                 title=title,
-                aliases=tuple(aliases),
+                aliases=tuple(alias_names),
+                title_aliases=tuple(title_aliases),
                 scope=scope,
+                path=path,
             )
         )
     return specs
@@ -360,15 +394,24 @@ def _title_mentions(title: str, alias: str) -> bool:
 def backfill_links(session: Session, dry_run: bool) -> BackfillReport:
     """Deterministically link live, non-legacy facts in 500-note chunks."""
     entities = session.exec(select(Entity).order_by(Entity.kind, Entity.slug)).all()
-    tag_lookup: dict[str, set[int]] = {}
+    project_tag_lookup: dict[str, int] = {}
+    exact_mention_lookup: dict[str, set[int]] = {}
     title_aliases: list[tuple[str, int]] = []
+    manifest = {(spec.kind, spec.slug): spec for spec in load_manifest()}
     for entity in entities:
         if entity.id is None:
             continue
-        tag_terms = {entity.slug, *(entity.aliases or [])}
-        for term in tag_terms:
-            tag_lookup.setdefault(term.casefold(), set()).add(entity.id)
-        title_aliases.extend((alias, entity.id) for alias in entity.aliases or [])
+        if entity.kind == "project":
+            tag_terms = {entity.slug, *(entity.aliases or [])}
+            for term in tag_terms:
+                project_tag_lookup[term.casefold()] = entity.id
+            spec = manifest.get((entity.kind, entity.slug))
+            if spec is not None:
+                title_aliases.extend((alias, entity.id) for alias in spec.title_aliases)
+        elif entity.kind in {"service", "environment"}:
+            exact_mention_lookup.setdefault(entity.slug.casefold(), set()).add(
+                entity.id
+            )
 
     scanned = 0
     linked = 0
@@ -394,13 +437,21 @@ def backfill_links(session: Session, dry_run: bool) -> BackfillReport:
         candidate_rows: list[dict] = []
         for note in notes:
             subject_ids: set[int] = set()
+            explicit_mention_ids: set[int] = set()
             for tag in note.tags or []:
-                subject_ids.update(tag_lookup.get(tag.strip().casefold(), set()))
-            mention_ids = {
-                entity_id
-                for alias, entity_id in title_aliases
-                if _title_mentions(note.title, alias)
-            } - subject_ids
+                term = tag.strip().casefold()
+                project_id = project_tag_lookup.get(term)
+                if project_id is not None:
+                    subject_ids.add(project_id)
+                explicit_mention_ids.update(exact_mention_lookup.get(term, set()))
+            mention_ids = (
+                explicit_mention_ids
+                | {
+                    entity_id
+                    for alias, entity_id in title_aliases
+                    if _title_mentions(note.title, alias)
+                }
+            ) - subject_ids
             if not subject_ids and not mention_ids:
                 unresolved += 1
             candidate_rows.extend(

@@ -11,6 +11,8 @@ from typing import Any
 
 import yaml
 
+from knowledge.models import SCOPE_PATTERN
+
 logger = logging.getLogger("monolith.knowledge.frontmatter")
 
 
@@ -169,6 +171,8 @@ def _build(data: dict[str, Any]) -> ParsedFrontmatter:
         meta.visibility = None
     meta.source = _str_or_none(data.get("source"))
     meta.scope = _str_or_none(data.get("scope"))
+    if meta.scope is not None and re.fullmatch(SCOPE_PATTERN, meta.scope) is None:
+        raise FrontmatterError(f"invalid frontmatter scope: {meta.scope!r}")
     raw_verification_state = _str_or_none(data.get("verification_state"))
     if raw_verification_state in VERIFICATION_STATES:
         meta.verification_state = raw_verification_state

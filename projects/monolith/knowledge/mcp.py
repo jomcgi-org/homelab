@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -28,7 +29,7 @@ from knowledge.atoms import index_atom
 from knowledge.burst import create_kg_burst_grant, validate_kg_burst_grant
 from knowledge.indexing import index_note_from_raw
 from knowledge.interventions import create_intervention
-from knowledge.models import Dispute
+from knowledge.models import Dispute, SCOPE_PATTERN
 from knowledge.notes import resolve_note_body
 from knowledge.redact import redact_text
 from knowledge.store import KnowledgeStore
@@ -272,6 +273,8 @@ def _report_knowledge_sync(
         }
 
     scope = _resolved_scope(proposed_scope, reporter["reporter_subject"])
+    if re.fullmatch(SCOPE_PATTERN, scope) is None:
+        return {"error": f"resolved scope has invalid shape: {scope!r}"}
     content = _markdown_raw(
         {
             "title": assertion[:80],
