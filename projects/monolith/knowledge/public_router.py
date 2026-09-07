@@ -7,6 +7,8 @@ module (``knowledge.router``):
 - ``GET /api/knowledge/public/graph``: public-only graph (public nodes,
   doubly-public edges).
 - ``GET /api/knowledge/public/entities``: entity catalog with public fact counts.
+- ``GET /api/knowledge/public/entities/{kind}/{slug}/notes``: one entity chapter.
+- ``GET /api/knowledge/public/search``: bounded grep or semantic fact search.
 - ``GET /api/knowledge/public/notes/{note_id}``: a single note iff its
   effective visibility is ``public``.
 
@@ -16,14 +18,17 @@ so ``/api/knowledge/public/*`` behaves identically there.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from email.utils import format_datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy import func
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from sqlalchemy import case, func, or_
 from sqlmodel import Session, select
 
 from core.db import get_session
+from knowledge.api import search_public_chunks
 from knowledge.gardener import _slugify
 from knowledge.http_cache import _as_utc, _graph_etag, _GRAPH_CACHE_CONTROL
 from knowledge.notes import resolve_note_body
@@ -35,6 +40,7 @@ from knowledge.public_models import (
 )
 from knowledge.store import GRAPH_NOTE_TYPES
 from knowledge.visibility import strip_private_wikilinks
+from shared.embedding import EmbeddingClient
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +53,75 @@ _VERIFICATION_STATES = (
     "disputed",
     "invalidated",
 )
+_RECORD_STATES = frozenset(_VERIFICATION_STATES[1:])
+
+
+def _record_etag(scope: str, payload: object) -> str:
+    encoded = json.dumps(
+        {"scope": scope, "payload": payload},
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    digest = hashlib.sha256(encoded.encode()).hexdigest()
+    return f'"record-v1-{digest}"'
+
+
+def _cache_response(
+    request: Request,
+    response: Response,
+    *,
+    etag: str,
+    last_modified=None,
+) -> Response | None:
+    headers = {"Cache-Control": _GRAPH_CACHE_CONTROL, "ETag": etag}
+    latest = _as_utc(last_modified)
+    if latest is not None:
+        headers["Last-Modified"] = format_datetime(latest, usegmt=True)
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    for key, value in headers.items():
+        response.headers[key] = value
+    return None
+
+
+def _parse_states(value: str) -> tuple[str, ...]:
+    states = tuple(
+        dict.fromkeys(part.strip() for part in value.split(",") if part.strip())
+    )
+    if not states or any(state not in _RECORD_STATES for state in states):
+        raise HTTPException(status_code=422, detail="invalid verification state")
+    return states
+
+
+def _snippet(content: str | None, limit: int = 220) -> str:
+    text = " ".join((content or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _note_entities(session: Session, note_ids: list[str]) -> dict[str, list[dict]]:
+    if not note_ids:
+        return {}
+    rows = session.execute(
+        select(
+            PublicNoteEntity.note_id,
+            PublicEntity.kind,
+            PublicEntity.slug,
+            PublicEntity.title,
+        )
+        .join(PublicEntity, PublicEntity.id == PublicNoteEntity.entity_id)
+        .where(PublicNoteEntity.note_id.in_(note_ids))
+        .order_by(PublicNoteEntity.note_id, PublicEntity.kind, PublicEntity.slug)
+    ).all()
+    out: dict[str, list[dict]] = {}
+    for row in rows:
+        item = {"kind": row.kind, "slug": row.slug, "title": row.title}
+        values = out.setdefault(row.note_id, [])
+        if item not in values:
+            values.append(item)
+    return out
 
 
 @router.get("/public/entities")
@@ -228,6 +303,193 @@ def get_public_graph(
         # the public page showed no "indexed" stamp while the private one did.
         "indexed_at": indexed_at.isoformat() if indexed_at is not None else None,
     }
+
+
+@router.get("/public/entities/{kind}/{slug}/notes")
+def get_public_entity_notes(
+    kind: str,
+    slug: str,
+    request: Request,
+    response: Response,
+    state: str = Query(default="verified,unverified", max_length=120),
+    limit: int = Query(default=60, ge=1, le=60),
+    session: Session = Depends(get_session),
+):
+    """Return the newest public notes and contradictions for one entity."""
+    entity = session.exec(
+        select(PublicEntity).where(
+            PublicEntity.kind == kind,
+            PublicEntity.slug == slug,
+        )
+    ).one_or_none()
+    if entity is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    states = _parse_states(state)
+    rows = session.execute(
+        select(PublicNoteEntity.role, PublicNote)
+        .join(PublicNote, PublicNote.note_id == PublicNoteEntity.note_id)
+        .where(
+            PublicNoteEntity.entity_id == entity.id,
+            PublicNote.verification_state.in_(states),
+        )
+        .order_by(
+            case((PublicNoteEntity.role == "subject", 0), else_=1),
+            PublicNote.observed_at.desc().nulls_last(),
+            PublicNote.indexed_at.desc(),
+        )
+        .limit(limit * 2)
+    ).all()
+
+    notes: list[dict] = []
+    note_rows: dict[str, PublicNote] = {}
+    for _role, note in rows:
+        if note.note_id in note_rows:
+            continue
+        note_rows[note.note_id] = note
+        observed_at = _as_utc(note.observed_at)
+        notes.append(
+            {
+                "note_id": note.note_id,
+                "title": note.title,
+                "verification_state": note.verification_state,
+                "confidence": note.confidence,
+                "observed_at": (
+                    observed_at.isoformat() if observed_at is not None else None
+                ),
+                "scope": note.scope,
+                "disputed": note.disputed,
+                "snippet": _snippet(note.content),
+            }
+        )
+        if len(notes) >= limit:
+            break
+
+    selected_ids = set(note_rows)
+    selected_slugs = {_slugify(note_id): note_id for note_id in selected_ids}
+    contradictions: list[dict] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    if selected_ids:
+        link_rows = session.execute(
+            select(PublicNoteLink).where(
+                PublicNoteLink.edge_type == "contradicts",
+                PublicNoteLink.source.in_(selected_ids),
+            )
+        ).scalars()
+        for link in link_rows:
+            target = (
+                link.target
+                if link.target in selected_ids
+                else selected_slugs.get(_slugify(link.target))
+            )
+            if target is None:
+                continue
+            pair = tuple(sorted((link.source, target)))
+            if pair in seen_pairs or pair[0] == pair[1]:
+                continue
+            seen_pairs.add(pair)
+            a = note_rows[pair[0]]
+            b = note_rows[pair[1]]
+            contradictions.append(
+                {
+                    "a": {
+                        "note_id": a.note_id,
+                        "title": a.title,
+                        "verification_state": a.verification_state,
+                    },
+                    "b": {
+                        "note_id": b.note_id,
+                        "title": b.title,
+                        "verification_state": b.verification_state,
+                    },
+                }
+            )
+
+    payload = {
+        "entity": {"kind": entity.kind, "slug": entity.slug, "title": entity.title},
+        "notes": notes,
+        "contradictions": contradictions,
+    }
+    latest = max(
+        (_as_utc(note.indexed_at) for note in note_rows.values()), default=None
+    )
+    etag = _record_etag(f"entity-{kind}-{slug}-{','.join(states)}-{limit}", payload)
+    cached = _cache_response(request, response, etag=etag, last_modified=latest)
+    if cached is not None:
+        return cached
+    return payload
+
+
+@router.get("/public/search")
+async def search_public_record(
+    request: Request,
+    response: Response,
+    q: str = Query(default="", max_length=200),
+    mode: str = Query(default="grep", pattern="^(grep|semantic)$"),
+    limit: int = Query(default=30, ge=1, le=50),
+    session: Session = Depends(get_session),
+):
+    """Search public, governed knowledge notes by text or embedding."""
+    query = q.strip()
+    result_rows: list[dict] = []
+    indexed_by_id: dict[str, object] = {}
+    if query and mode == "grep":
+        pattern = f"%{query}%"
+        rows = session.exec(
+            select(PublicNote)
+            .where(
+                PublicNote.verification_state.in_(_RECORD_STATES),
+                or_(
+                    PublicNote.title.ilike(pattern),
+                    PublicNote.content.ilike(pattern),
+                ),
+            )
+            .order_by(
+                PublicNote.observed_at.desc().nulls_last(),
+                PublicNote.indexed_at.desc(),
+            )
+            .limit(limit)
+        ).all()
+        for note in rows:
+            indexed_by_id[note.note_id] = note.indexed_at
+            result_rows.append(
+                {
+                    "note_id": note.note_id,
+                    "title": note.title,
+                    "verification_state": note.verification_state,
+                    "disputed": note.disputed,
+                }
+            )
+    elif query:
+        client = EmbeddingClient()
+        if client.base_url:
+            try:
+                vector = await client.embed(query)
+                semantic_rows = search_public_chunks(session, vector, limit=limit)
+            except Exception:  # noqa: BLE001 - search degrades to no matches
+                logger.exception("public.record.semantic_search_failed")
+                semantic_rows = []
+            for row in semantic_rows:
+                result_rows.append(
+                    {
+                        "note_id": row["note_id"],
+                        "title": row["title"],
+                        "verification_state": row["verification_state"],
+                        "disputed": row["disputed"],
+                    }
+                )
+
+    entities_by_note = _note_entities(session, [row["note_id"] for row in result_rows])
+    payload = [
+        {**row, "entities": entities_by_note.get(row["note_id"], [])}
+        for row in result_rows
+    ]
+    latest = max((_as_utc(value) for value in indexed_by_id.values()), default=None)
+    etag = _record_etag(f"search-{mode}-{query}-{limit}", payload)
+    cached = _cache_response(request, response, etag=etag, last_modified=latest)
+    if cached is not None:
+        return cached
+    return payload
 
 
 @router.get("/public/notes/{note_id}")
