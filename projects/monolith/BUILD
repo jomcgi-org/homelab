@@ -1312,6 +1312,7 @@ py_library(
         ":pkg_framework",
         ":pkg_knowledge",
         ":pkg_shared",
+        ":swarm_factory_controls",
         "@pip//certifi",
         "@pip//fastapi",
         "@pip//httpx",
@@ -1340,6 +1341,26 @@ py_library(
     deps = [":agent_sessions_rationale"],
 )
 
+# Shared admission fence must also ship in the pruned session executor binary.
+# Keep it below the full swarm package to avoid a dependency cycle.
+py_library(
+    name = "swarm_factory_controls",
+    srcs = [
+        "swarm/__init__.py",
+        "swarm/api.py",
+        "swarm/factory_controls.py",
+        "swarm/factory_models.py",
+        "swarm/models.py",
+    ],
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_core",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
 py_library(
     name = "pkg_swarm",
     srcs = glob(
@@ -1348,6 +1369,11 @@ py_library(
             "**/*_test.py",
             "**/test_*.py",
             "*/tests/**/*.py",
+            "swarm/__init__.py",
+            "swarm/api.py",
+            "swarm/factory_controls.py",
+            "swarm/factory_models.py",
+            "swarm/models.py",
             "swarm/rationale.py",
         ],
     ),
@@ -1360,6 +1386,7 @@ py_library(
         ":pkg_cyclegroup",
         ":pkg_framework",
         ":pkg_knowledge",
+        ":swarm_factory_controls",
         "@pip//certifi",
         "@pip//dbos",
         "@pip//fastapi",
