@@ -62,7 +62,9 @@ def _quarantine_unknown_outcome_jobs(dbos, workflow_id: str) -> bool:
         with Session(get_engine()) as session:
             rows = agent_session_store.sessions_for_workflow(session, workflow_id)
             unknown_rows = [
-                row for row in rows if agent_session_store.has_unknown_outcome(session, row.id)
+                row
+                for row in rows
+                if agent_session_store.has_unknown_outcome(session, row.id)
             ]
         if not unknown_rows:
             return True
@@ -80,9 +82,8 @@ def _quarantine_unknown_outcome_jobs(dbos, workflow_id: str) -> bool:
                 if isinstance(step, Mapping)
                 else getattr(step, "output", None)
             )
-            if (
-                not function_name.endswith("claim_drainer_job")
-                or not isinstance(output, Mapping)
+            if not function_name.endswith("claim_drainer_job") or not isinstance(
+                output, Mapping
             ):
                 continue
             claimed_name = output.get("name")
@@ -103,13 +104,9 @@ def _quarantine_unknown_outcome_jobs(dbos, workflow_id: str) -> bool:
                 raise RuntimeError(
                     "session local id does not match its workflow node prefix"
                 )
-            job_name = row.local_session_id[len(prefix):]
+            job_name = row.local_session_id[len(prefix) :]
             job_name_for_log = job_name
-            if (
-                not job_name
-                or job_name not in evidence
-                or len(evidence[job_name]) != 1
-            ):
+            if not job_name or job_name not in evidence or len(evidence[job_name]) != 1:
                 raise RuntimeError("missing or ambiguous claim evidence")
             locked_by, locked_at = next(iter(evidence[job_name]))
             if locked_by is None or locked_at is None:

@@ -92,7 +92,10 @@ def test_guarded_unknown_hold_idempotency_is_unlocked(monkeypatch, tmp_path):
         )
         session.commit()
     assert routine_jobs.hold_job_for_unknown_outcome(
-        "kg:idempotent", 2797, "replacement", expected_locked_by="luna-drainer",
+        "kg:idempotent",
+        2797,
+        "replacement",
+        expected_locked_by="luna-drainer",
         expected_locked_at="2026-09-07T00:00:01+00:00",
     )
     with Session(engine) as session:
@@ -112,13 +115,19 @@ def test_guarded_unknown_hold_does_not_touch_successor(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
     assert not routine_jobs.hold_job_for_unknown_outcome(
-        "kg:successor", 2797, "stale", expected_locked_by="luna-drainer",
+        "kg:successor",
+        2797,
+        "stale",
+        expected_locked_by="luna-drainer",
         expected_locked_at="2026-09-07T00:00:00+00:00",
     )
     with Session(engine) as session:
         row = session.execute(text("SELECT * FROM routine_jobs")).one()
     assert (row.locked_by, row.locked_at, row.last_status, row.next_run_at) == (
-        "luna-drainer", "2026-09-07 00:00:02", "running", "2026-09-07 00:01:00"
+        "luna-drainer",
+        "2026-09-07 00:00:02",
+        "running",
+        "2026-09-07 00:01:00",
     )
 
 
