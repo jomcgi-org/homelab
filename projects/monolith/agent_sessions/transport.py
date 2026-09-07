@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+from contextvars import ContextVar
 import json
 import logging
 import os
@@ -34,6 +35,21 @@ from shared.k8s_auth import auth_headers
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+
+# One delivery may wait through long capacity and relight retry ladders. Keep
+# its admission check local to the asyncio context, including recursive create
+# calls, so a stopped factory cannot start work when capacity becomes free.
+# A check does not cancel a request that is already in flight.
+_delivery_admission_check: ContextVar[Callable[[], Awaitable[None]] | None] = (
+    ContextVar("agent_sessions.delivery_admission_check", default=None)
+)
+
+
+async def _check_delivery_admission() -> None:
+    check = _delivery_admission_check.get()
+    if check is not None:
+        await check()
+
 
 # Session listing is an in-memory control-plane read serving the console's
 # VM-state poll; it must never inherit the turn-sized read timeout.
@@ -438,6 +454,7 @@ class ShimTransport(Protocol):
         artifact_path: str | None = None,
         agent_session_id: int | None = None,
         dispatch_count: int = 0,
+        admission_check: Callable[[], Awaitable[None]] | None = None,
     ) -> tuple[Turn, EmberSession]: ...
 
 
@@ -545,6 +562,7 @@ class EmberVmShimTransport:
 
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
+                await _check_delivery_admission()
                 response = await client.post(url, **post_kwargs)
                 response.raise_for_status()
                 data = response.json()
@@ -745,6 +763,7 @@ class EmberVmShimTransport:
                 # Do not raise for status. A woken guest returns the expected
                 # 404 because /shim/healthz is GET-only, and prewarm has already
                 # accomplished its only job by the time that response arrives.
+                await _check_delivery_admission()
                 await client.post(url, content=b"", headers=headers)
         except httpx.TimeoutException as exc:
             raise EmberVMTimeout(str(exc)) from exc
@@ -767,24 +786,32 @@ class EmberVmShimTransport:
         artifact_path: str | None = None,
         agent_session_id: int | None = None,
         dispatch_count: int = 0,
+        admission_check: Callable[[], Awaitable[None]] | None = None,
     ) -> tuple[Turn, EmberSession]:
-        with tracer.start_as_current_span("agent_sessions.deliver"):
-            return await self._deliver(
-                ember,
-                cli_session_id,
-                message,
-                model=model,
-                restore_from=restore_from,
-                on_create=on_create,
-                repo=repo,
-                branch=branch,
-                progress_token=progress_token,
-                system_prompt=system_prompt,
-                reasoning=reasoning,
-                artifact_path=artifact_path,
-                agent_session_id=agent_session_id,
-                dispatch_count=dispatch_count,
-            )
+        # Set None explicitly for unrelated deliveries, including a nested
+        # delivery started in a factory callback. Always restore the caller's
+        # context on success, denial, transport failure, or cancellation.
+        token = _delivery_admission_check.set(admission_check)
+        try:
+            with tracer.start_as_current_span("agent_sessions.deliver"):
+                return await self._deliver(
+                    ember,
+                    cli_session_id,
+                    message,
+                    model=model,
+                    restore_from=restore_from,
+                    on_create=on_create,
+                    repo=repo,
+                    branch=branch,
+                    progress_token=progress_token,
+                    system_prompt=system_prompt,
+                    reasoning=reasoning,
+                    artifact_path=artifact_path,
+                    agent_session_id=agent_session_id,
+                    dispatch_count=dispatch_count,
+                )
+        finally:
+            _delivery_admission_check.reset(token)
 
     async def _deliver(
         self,
@@ -912,6 +939,7 @@ class EmberVmShimTransport:
             }
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
+                    await _check_delivery_admission()
                     response = await client.post(
                         url, content=body.encode(), headers=headers
                     )
