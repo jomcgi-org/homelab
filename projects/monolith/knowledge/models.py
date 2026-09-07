@@ -340,6 +340,48 @@ class Dispute(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-fac
     )
 
 
+class Intervention(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
+    """Human lifecycle for a retained distress raw."""
+
+    __tablename__ = "interventions"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('open', 'acknowledged', 'resolved')",
+            name="interventions_state_chk",
+        ),
+        CheckConstraint(
+            "disposition IS NULL OR disposition IN ('resolved', 'no_action')",
+            name="interventions_disposition_chk",
+        ),
+        {"schema": "knowledge", "extend_existing": True},
+    )
+
+    raw_id: str = Field(primary_key=True, foreign_key="knowledge.raw_inputs.raw_id")
+    state: str = Field(
+        default="open",
+        sa_column=Column(String, nullable=False, server_default="open"),
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(
+            DateTime(timezone=True), nullable=False, server_default="now()"
+        ),
+    )
+    responder_subject: str | None = None
+    acknowledged_by_subject: str | None = None
+    acknowledged_at: datetime | None = None
+    decision_id: int | None = None
+    workflow_id: str | None = None
+    node_key: str | None = None
+    disposition: str | None = None
+    resolution: str | None = None
+    resolved_at: datetime | None = None
+    revision: int = Field(
+        default=1, sa_column=Column(Integer, nullable=False, server_default="1")
+    )
+    evidence_raw_id: str | None = None
+
+
 class Gap(SQLModel, table=True):  # nosemgrep: sqlmodel-datetime-without-factory
     """A knowledge gap: an unresolved [[wikilink]] promoted to a trackable work item.
 

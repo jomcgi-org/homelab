@@ -13,3 +13,18 @@ def factory_session_allowed(local_session_id: str | None) -> bool:
     from swarm.factory_controls import can_start
 
     return can_start(fields[1])["ok"]
+
+
+def get_decision_reference(session, decision_id: int) -> dict | None:
+    """Read one exact decision for knowledge association."""
+    from swarm.models import SwarmDecision
+
+    row = session.get(SwarmDecision, decision_id)
+    if row is None:
+        return None
+    return {
+        "decision_id": row.id,
+        "workflow_id": row.workflow_id,
+        "node_key": row.node_key,
+        "state": "open" if row.decided_at is None else "decided",
+    }

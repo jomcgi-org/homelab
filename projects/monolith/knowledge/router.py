@@ -16,15 +16,17 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from email.utils import format_datetime
 from typing import Any, Literal
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlmodel import Session, select
 
+from auth.api import Authority, Principal, PrincipalKind, get_principal
 from core.db import get_session
 from knowledge.api import enqueue_extraction, ingest_raw_with_status
 from knowledge.extraction import EXTRACTABLE_SOURCES
@@ -43,7 +45,9 @@ from knowledge.gardener import MAX_GARDENER_RETRIES
 from knowledge.http_cache import _as_utc, _graph_etag, _GRAPH_CACHE_CONTROL
 from knowledge.indexing import reindex_note_with_edits
 from knowledge.ingest_queue import IngestQueueItem, ingest_raw
-from knowledge.models import AtomRawProvenance, RawInput
+from knowledge.models import AtomRawProvenance, Intervention, RawInput
+from knowledge.interventions import decision_reference
+from knowledge.redact import redact_text
 from knowledge.notes import (
     _note_to_review_dict,
     delete_note,
@@ -60,6 +64,209 @@ from shared.embedding import EmbeddingClient
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
+
+
+def _operator(principal: Principal = Depends(get_principal)) -> Principal:
+    # Deliberately mirrors swarm/factory_router.py:14-21. Knowledge must not
+    # import swarm because the intervention creator ships in the agents tier.
+    if (
+        principal.authority is not Authority.STANDING
+        or principal.kind is not PrincipalKind.HUMAN
+        or not principal.has_group("operators")
+    ):
+        raise HTTPException(status_code=403, detail="operator access required")
+    return principal
+
+
+class InterventionDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision_id: int
+    revision: int
+
+
+class InterventionAcknowledgeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: int = Field(ge=1)
+
+
+class InterventionResolveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    revision: int = Field(ge=1)
+    disposition: Literal["resolved", "no_action"]
+    resolution: str = Field(min_length=1, max_length=8000)
+
+
+class InterventionEvidenceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    evidence: str = Field(min_length=1, max_length=8000)
+
+
+def _intervention_dict(row: Intervention) -> dict:
+    return {
+        "raw_id": row.raw_id,
+        "state": row.state,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "responder_subject": row.responder_subject,
+        "acknowledged_by_subject": row.acknowledged_by_subject,
+        "acknowledged_at": (
+            row.acknowledged_at.isoformat() if row.acknowledged_at else None
+        ),
+        "decision_id": row.decision_id,
+        "workflow_id": row.workflow_id,
+        "node_key": row.node_key,
+        "disposition": row.disposition,
+        "resolution": row.resolution,
+        "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
+        "revision": row.revision,
+        "evidence_raw_id": row.evidence_raw_id,
+    }
+
+
+def _get_intervention(session: Session, raw_id: str) -> Intervention:
+    row = session.get(Intervention, raw_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="intervention not found")
+    return row
+
+
+@router.get("/interventions")
+def list_interventions(
+    limit: int = Query(default=50, ge=1, le=200),
+    session: Session = Depends(get_session),
+    _principal: Principal = Depends(_operator),
+) -> dict:
+    rows = session.exec(
+        select(Intervention).order_by(Intervention.created_at).limit(limit)
+    ).all()
+    return {"interventions": [_intervention_dict(row) for row in rows]}
+
+
+@router.get("/interventions/{raw_id}")
+def get_intervention(
+    raw_id: str,
+    session: Session = Depends(get_session),
+    _principal: Principal = Depends(_operator),
+) -> dict:
+    return _intervention_dict(_get_intervention(session, raw_id))
+
+
+@router.post("/interventions/{raw_id}/acknowledge")
+def acknowledge_intervention(
+    raw_id: str,
+    data: InterventionAcknowledgeRequest,
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(_operator),
+) -> dict:
+    row = _get_intervention(session, raw_id)
+    if row.state == "acknowledged" and row.responder_subject == principal.subject:
+        return _intervention_dict(row)
+    if row.state != "open" or row.revision != data.revision:
+        raise HTTPException(status_code=409, detail="intervention changed")
+    row.state = "acknowledged"
+    row.responder_subject = principal.subject
+    row.acknowledged_by_subject = principal.subject
+    row.acknowledged_at = datetime.now(timezone.utc)
+    row.revision += 1
+    session.commit()
+    session.refresh(row)
+    return _intervention_dict(row)
+
+
+@router.post("/interventions/{raw_id}/decision")
+@router.post("/interventions/{raw_id}/associate-decision")
+def associate_intervention_decision(
+    raw_id: str,
+    data: InterventionDecisionRequest,
+    session: Session = Depends(get_session),
+    _principal: Principal = Depends(_operator),
+) -> dict:
+    row = _get_intervention(session, raw_id)
+    if row.decision_id == data.decision_id:
+        return _intervention_dict(row)
+    if row.revision != data.revision or row.state == "resolved":
+        raise HTTPException(status_code=409, detail="intervention changed")
+    reference = decision_reference(session, data.decision_id)
+    if reference is None:
+        raise HTTPException(status_code=404, detail="decision not found")
+    if row.decision_id is not None:
+        raise HTTPException(status_code=409, detail="decision already associated")
+    row.decision_id = data.decision_id
+    row.workflow_id = reference["workflow_id"]
+    row.node_key = reference["node_key"]
+    row.revision += 1
+    session.commit()
+    return _intervention_dict(row)
+
+
+@router.post("/interventions/{raw_id}/resolve")
+def resolve_intervention(
+    raw_id: str,
+    data: InterventionResolveRequest,
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(_operator),
+) -> dict:
+    row = _get_intervention(session, raw_id)
+    resolution, _ = redact_text(data.resolution)
+    if row.state == "resolved":
+        if (
+            row.responder_subject == principal.subject
+            and row.disposition == data.disposition
+            and row.resolution == resolution
+        ):
+            return _intervention_dict(row)
+        raise HTTPException(status_code=409, detail="terminal resolution is immutable")
+    if (
+        row.state != "acknowledged"
+        or row.responder_subject != principal.subject
+        or row.revision != data.revision
+    ):
+        raise HTTPException(
+            status_code=409, detail="intervention ownership or revision conflict"
+        )
+    row.state = "resolved"
+    row.disposition = data.disposition
+    row.resolution = resolution
+    row.resolved_at = datetime.now(timezone.utc)
+    row.revision += 1
+    session.commit()
+    session.refresh(row)
+    return _intervention_dict(row)
+
+
+@router.post("/interventions/{raw_id}/evidence")
+@router.post("/interventions/{raw_id}/submit-evidence")
+def submit_intervention_evidence(
+    raw_id: str,
+    data: InterventionEvidenceRequest,
+    session: Session = Depends(get_session),
+    _principal: Principal = Depends(_operator),
+) -> dict:
+    row = _get_intervention(session, raw_id)
+    if row.state != "resolved" or row.resolution is None:
+        raise HTTPException(status_code=409, detail="intervention is not resolved")
+    evidence, _ = redact_text(data.evidence)
+    content = (
+        f"## Intervention {raw_id}\n\n"
+        f"## Resolution ({row.disposition})\n\n{row.resolution}\n\n"
+        f"## Evidence\n\n{evidence}\n"
+    )
+    raw, _created = ingest_raw_with_status(
+        session,
+        content=content,
+        source="agent-report",
+        extra={"intervention_id": raw_id, "verification_state": "unverified"},
+        commit=False,
+    )
+    if row.evidence_raw_id is not None and row.evidence_raw_id != raw.raw_id:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="evidence payload conflicts")
+    row.evidence_raw_id = raw.raw_id
+    session.commit()
+    return {
+        "raw_id": raw.raw_id,
+        "intervention_id": raw_id,
+        "verification_state": "unverified",
+    }
 
 
 def get_embedding_client() -> EmbeddingClient:

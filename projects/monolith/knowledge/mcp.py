@@ -27,6 +27,7 @@ from knowledge.api import ingest_raw_with_status
 from knowledge.atoms import index_atom
 from knowledge.burst import create_kg_burst_grant, validate_kg_burst_grant
 from knowledge.indexing import index_note_from_raw
+from knowledge.interventions import create_intervention
 from knowledge.models import Dispute
 from knowledge.notes import resolve_note_body
 from knowledge.redact import redact_text
@@ -452,18 +453,20 @@ def _report_distress_sync(
     details: str,
     requested_intervention: str,
     reporter: dict[str, str],
-) -> tuple[dict, str | None, str | None]:
+) -> tuple[dict, str | None, str | None, bool]:
     if severity not in {"blocked", "degraded", "urgent"}:
         return (
             {"error": "severity must be one of blocked, degraded, urgent"},
             None,
             None,
+            False,
         )
     if len(details) > _DETAILS_CAP:
         return (
             {"error": f"details must not exceed {_DETAILS_CAP} characters"},
             None,
             None,
+            False,
         )
 
     content = _markdown_raw(
@@ -481,7 +484,7 @@ def _report_distress_sync(
         ),
     )
     with Session(get_engine()) as session:
-        raw, _ = ingest_raw_with_status(
+        raw, _created = ingest_raw_with_status(
             session,
             content=content,
             source="distress",
@@ -491,8 +494,13 @@ def _report_distress_sync(
                 "requested_intervention": requested_intervention,
                 **reporter,
             },
+            commit=False,
         )
         raw_id = raw.raw_id
+        # A legacy exact repeat may repair a missing inbox row once. The
+        # creator remains the sole authority for whether notification is due.
+        won = create_intervention(session, raw_id)
+        session.commit()
 
     notify_summary, _ = redact_text(summary)
     notify_summary = notify_summary[:_NOTIFY_SUMMARY_CAP]
@@ -506,7 +514,7 @@ def _report_distress_sync(
     message, _ = redact_text(message)
     message = message[:_NOTIFY_MESSAGE_CAP]
     level = "error" if severity == "urgent" else "warn"
-    return ({"intervention_id": raw_id}, message, level)
+    return ({"intervention_id": raw_id}, message, level, won)
 
 
 @_knowledge_tool
@@ -528,7 +536,7 @@ async def report_distress(
         requested_intervention: Optional action requested from the responder.
     """
     reporter = _reporter_extra(current_principal())
-    result, message, level = await asyncio.to_thread(
+    result, message, level, won = await asyncio.to_thread(
         _report_distress_sync,
         summary,
         severity,
@@ -539,6 +547,10 @@ async def report_distress(
     if message is None or level is None:
         return result
     raw_id = result["intervention_id"]
+    if not won:
+        return {"intervention_id": raw_id, "status": "recorded"}
+    # A crash after this commit and before notification can leave a durable,
+    # unnotified inbox item. Delivery is deliberately not exactly once.
     try:
         await _notify(message, level)
     except Exception:
