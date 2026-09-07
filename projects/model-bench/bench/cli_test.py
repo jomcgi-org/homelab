@@ -5,6 +5,7 @@ import pytest  # noqa: F401
 
 from bench.cache import HARNESS_VERSION
 from bench.cli import (
+    _aggregate_agentic_group,
     _parse_headers,
     _prune_stale,
     _resolve_snapshot_preset,
@@ -125,7 +126,18 @@ def test_load_tasks_reads_pack(tmp_path):
     assert tasks[0].id == "t1" and tasks[0].task_class == "config-plumbing"
 
 
-def _agentic_cell(task_id, model_id, passed, turns, tokens, tool_ok):
+def _agentic_cell(
+    task_id,
+    model_id,
+    passed,
+    turns,
+    tokens,
+    tool_ok,
+    *,
+    feedback="",
+    cost=0.01,
+    latency_ms=1,
+):
     return ResultCell(
         task_id=task_id,
         task_version="v1",
@@ -135,13 +147,13 @@ def _agentic_cell(task_id, model_id, passed, turns, tokens, tool_ok):
         attempts=[
             Attempt(
                 passed=passed,
-                feedback="",
-                latency_ms=1,
+                feedback=feedback,
+                latency_ms=latency_ms,
                 prompt_tokens=tokens,
                 completion_tokens=0,
             )
         ],
-        cost_usd=0.01,
+        cost_usd=cost,
         harness_version=HARNESS_VERSION,
         prompt_template_hash="agent",
         turns=turns,
@@ -170,6 +182,8 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
         "qualified": True,
         "hard_n": 0,
         "hard_pass": 0,
+        "errored": 0,
+        "errored_tasks": [],
     }
     agentic = {
         "cheap/win": {
@@ -214,6 +228,8 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
     # Value fields surfaced: wall-time and cost-per-solve.
     assert data["models"][0]["mean_latency_ms"] == 8000
     assert data["models"][0]["cost_per_solve_usd"] == 0.001
+    assert data["models"][0]["errored"] == 0
+    assert data["models"][0]["errored_tasks"] == []
     # Per-task breakdown is embedded for the deep-dive: one entry per graded task,
     # carrying pass/fail plus the per-task tokens and turns.
     (mt,) = data["models"][0]["tasks"]
@@ -226,3 +242,74 @@ def test_write_leaderboard_json_shape_and_ranking(tmp_path):
     assert t["id"] == "worldcup-fixtures-guard-01"
     assert t["real_test"] is True and t["passed"] == 2 and t["n"] == 2
     assert t["blurb"] and "Second sentence." not in t["blurb"]
+
+
+def test_aggregate_agentic_group_excludes_harness_errors_from_all_metrics():
+    cells = [
+        _agentic_cell("floor-pass", "m", True, 2, 100, True, cost=0.01),
+        _agentic_cell("hard-fail", "m", False, 4, 300, False, cost=0.03),
+        _agentic_cell(
+            "floor-error",
+            "m",
+            False,
+            99,
+            999,
+            False,
+            feedback="prefix [harness error] HTTPStatusError",
+            cost=9.0,
+            latency_ms=999,
+        ),
+    ]
+
+    stats = _aggregate_agentic_group(
+        cells,
+        {"floor-pass": "easy", "floor-error": "standard", "hard-fail": "hard"},
+    )
+
+    assert stats["n"] == 2
+    assert stats["errored"] == 1
+    assert stats["errored_tasks"] == ["floor-error"]
+    assert stats["pass_rate"] == 0.5
+    assert stats["floor_pass"] == 1 and stats["floor_n"] == 1
+    assert stats["floor_failed"] == [] and stats["qualified"] is True
+    assert stats["hard_pass"] == 0 and stats["hard_n"] == 1
+    assert stats["mean_tokens"] == 200.0
+    assert stats["mean_turns"] == 3.0
+    assert stats["mean_latency_ms"] == 1.0
+    assert stats["cost"] == pytest.approx(0.02)
+    assert stats["cost_per_solve"] == pytest.approx(0.04)
+    assert stats["tool_ok_rate"] == 0.5
+
+
+def test_aggregate_agentic_group_all_errored_is_zeroed_and_disqualified():
+    cell = _agentic_cell(
+        "floor-error",
+        "m",
+        False,
+        5,
+        500,
+        False,
+        feedback="[harness error] context overflow",
+        cost=2.0,
+    )
+
+    stats = _aggregate_agentic_group([cell], {"floor-error": "easy"})
+
+    assert stats == {
+        "n": 0,
+        "pass_rate": 0.0,
+        "floor_n": 0,
+        "floor_pass": 0,
+        "floor_failed": [],
+        "qualified": False,
+        "hard_n": 0,
+        "hard_pass": 0,
+        "mean_tokens": 0.0,
+        "mean_turns": 0.0,
+        "mean_latency_ms": 0.0,
+        "cost": 0.0,
+        "cost_per_solve": None,
+        "tool_ok_rate": 0.0,
+        "errored": 1,
+        "errored_tasks": ["floor-error"],
+    }

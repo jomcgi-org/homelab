@@ -41,6 +41,19 @@ _TRANSIENT = (
 )
 
 
+def _raise_for_status_with_body(response: httpx.Response) -> None:
+    """Raise an HTTP status error that includes a bounded response body."""
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        body = response.text[:500]
+        raise httpx.HTTPStatusError(
+            f"{exc} Response body: {body}",
+            request=exc.request,
+            response=exc.response,
+        ) from exc
+
+
 def _merge_payload(required: dict, extra_body: dict | None) -> dict:
     """Merge extra_body under required fields so model/messages/tools cannot be overwritten."""
     payload = dict(extra_body or {})
@@ -89,9 +102,9 @@ class OpenRouterClient:
                 if attempt < 4:
                     await asyncio.sleep(min(2**attempt, 8))
                     continue
-                resp.raise_for_status()
+                _raise_for_status_with_body(resp)
             elif resp.status_code >= 400:
-                resp.raise_for_status()
+                _raise_for_status_with_body(resp)
             return resp
         if resp is not None:
             return resp

@@ -115,3 +115,7 @@ class ResultCell(BaseModel):
     @property
     def first_attempt_passed(self) -> bool:
         return self.attempts[0].passed
+
+    @property
+    def is_harness_error(self) -> bool:
+        return any("[harness error]" in attempt.feedback for attempt in self.attempts)

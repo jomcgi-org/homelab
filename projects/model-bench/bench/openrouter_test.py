@@ -138,3 +138,20 @@ def test_extra_headers_reach_the_wire():
     assert seen["cf-access-client-secret"] == "s3cret"
     # Authorization survives alongside them rather than being replaced.
     assert seen["authorization"] == "Bearer unused"
+
+
+def test_http_status_error_includes_truncated_response_body():
+    body = "context overflow: " + ("x" * 600)
+
+    def handler(request):
+        return httpx.Response(400, text=body)
+
+    client = OpenRouterClient(api_key="test", transport=httpx.MockTransport(handler))
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        asyncio.run(client._post_completions({"model": "x/y", "messages": []}))
+    asyncio.run(client.aclose())
+
+    message = str(exc_info.value)
+    assert "Response body: context overflow:" in message
+    assert body[:500] in message
+    assert body[:501] not in message

@@ -52,6 +52,8 @@ def _agentic_stats(**over):
         "cost": 0.0009,
         "cost_per_solve": 0.0009,
         "tool_ok_rate": 1.0,
+        "errored": 0,
+        "errored_tasks": [],
     }
     base.update(over)
     return base
@@ -67,7 +69,11 @@ def test_agentic_gate_splits_qualified_and_disqualified():
             "cheap/strong": _agentic_stats(hard_pass=2, cost=0.0009),
             "cheap/weakhard": _agentic_stats(hard_pass=0, cost=0.0005),
             "flunker": _agentic_stats(
-                qualified=False, floor_pass=3, floor_failed=["slo-budget-breach-01"]
+                qualified=False,
+                floor_pass=3,
+                floor_failed=["slo-budget-breach-01"],
+                errored=1,
+                errored_tasks=["context-overflow-01"],
             ),
         },
     )
@@ -78,6 +84,11 @@ def test_agentic_gate_splits_qualified_and_disqualified():
     # The flunker sits in the disqualified section with its failed floor task.
     assert md.index("flunker") > dq
     assert "slo-budget-breach-01" in md
+    assert "| cost ($) | $/solve | tool-use ok | errored |" in md
+    assert "| Model | floor | failed floor tasks | tool-use ok | errored |" in md
+    assert "## Excluded: harness errors" in md
+    assert "provider error, context overflow, or harness bug" in md
+    assert "| flunker | context-overflow-01 |" in md
     # Among the qualified, more hard passes rank first even at higher cost.
     assert q < md.index("cheap/strong") < dq
     assert md.index("cheap/strong") < md.index("cheap/weakhard") < dq
@@ -90,6 +101,8 @@ def test_agentic_section_present_when_empty():
     # The ceiling section header is fixed and emitted even with no anchors.
     assert "## Frontier ceiling (agentic)" in md
     assert "No anchor ceiling results yet." in md
+    assert "## Excluded: harness errors" in md
+    assert "None." in md
 
 
 def test_anchors_go_to_ceiling_not_candidate_tables():
