@@ -74,6 +74,7 @@ type Prober struct {
 	client    *http.Client
 	interval  time.Duration
 	threshold int
+	timeout   time.Duration
 }
 
 // NewProber builds a Prober with the given interval and unhealthy threshold, applying
@@ -94,7 +95,15 @@ func NewProber(interval time.Duration, threshold int) *Prober {
 		client:    &http.Client{Timeout: timeout},
 		interval:  interval,
 		threshold: threshold,
+		timeout:   timeout,
 	}
+}
+
+// Freshness returns the maximum age for a probe fact before a caller should
+// require a new observation. It covers one normal cadence plus the bounded
+// request timeout, so a healthy VM is not expired between scheduled probes.
+func (p *Prober) Freshness() time.Duration {
+	return p.interval + p.timeout
 }
 
 // Start runs the probe loop until ctx is cancelled (StopServing/Destroy cancels it).
@@ -153,6 +162,8 @@ func probeURL(ip net.IP, port uint32, healthPath string) string {
 // health without racing the goroutine. It is safe for concurrent use.
 type ProbeHandle struct {
 	cancel context.CancelFunc
+	done   chan struct{}
+	fresh  time.Duration
 
 	mu     sync.Mutex
 	result ProbeResult
@@ -163,8 +174,16 @@ type ProbeHandle struct {
 // first NodeStatus after StartServing reports healthy without waiting a full interval.
 func StartProbe(prober *Prober, ip net.IP, port uint32, healthPath string) *ProbeHandle {
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &ProbeHandle{cancel: cancel, result: ProbeResult{Healthy: true, LastProbeUnixMs: time.Now().UnixMilli()}}
-	go prober.Start(ctx, ip, port, healthPath, h.set)
+	h := &ProbeHandle{
+		cancel: cancel,
+		done:   make(chan struct{}),
+		fresh:  prober.Freshness(),
+		result: ProbeResult{Healthy: true, LastProbeUnixMs: time.Now().UnixMilli()},
+	}
+	go func() {
+		defer close(h.done)
+		prober.Start(ctx, ip, port, healthPath, h.set)
+	}()
 	return h
 }
 
@@ -180,6 +199,23 @@ func (h *ProbeHandle) Result() ProbeResult {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.result
+}
+
+// Freshness returns the configured age bound for the probe facts in this
+// handle.
+func (h *ProbeHandle) Freshness() time.Duration {
+	if h == nil {
+		return 0
+	}
+	return h.fresh
+}
+
+// Done returns a channel that closes after the probe loop has stopped.
+func (h *ProbeHandle) Done() <-chan struct{} {
+	if h == nil {
+		return nil
+	}
+	return h.done
 }
 
 // Stop cancels the probe goroutine (idempotent).
