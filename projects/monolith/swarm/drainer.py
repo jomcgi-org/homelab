@@ -440,9 +440,12 @@ def apply_kg_extraction(
     from knowledge.api import apply_extraction, apply_repo_diff
     from sqlmodel import Session
 
-    with Session(get_engine()) as session:
+    def check_claim(session: Session) -> None:
         if not lock_claim(session, name, expected_holder):
             raise RuntimeError("routine job claim ownership changed")
+
+    with Session(get_engine()) as session:
+        check_claim(session)
         if payload.get("mode") == "repo-diff":
             return apply_repo_diff(session, name, result_text)
         raw_id = _kg_raw_id(payload)
@@ -451,6 +454,7 @@ def apply_kg_extraction(
             raw_id,
             result_text,
             correction=correction,
+            transaction_guard=check_claim if expected_holder is not None else None,
         )
 
 
