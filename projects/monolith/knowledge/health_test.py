@@ -83,6 +83,7 @@ def test_kg_health_marks_failures_without_atoms_or_stale_queue_unhealthy(
 
     assert result["ok"] is expected_ok
     assert result["last_success_at"] == "2026-09-03T12:00:00+00:00"
+    assert result["effective_cap"] == 40
 
 
 def test_kg_health_filters_lane_version_and_counts_null_success_rows():
@@ -140,7 +141,7 @@ def test_kg_health_reports_stale_open_disputes_and_last_sweep():
     assert result["repo_diff_last_run_at"] == "2026-09-03T13:00:00+00:00"
 
 
-def test_kg_health_reports_active_burst_and_remaining_allowance():
+def test_kg_health_reports_active_burst_cap_and_remaining_allowance():
     now = datetime.now(timezone.utc)
     session = _Session(
         SimpleNamespace(queued=0, oldest_seconds=None),
@@ -156,7 +157,49 @@ def test_kg_health_reports_active_burst_and_remaining_allowance():
 
     result = _kg_health_core(session, 150)
 
-    assert result["effective_cap"] == 1_025
+    assert result["effective_cap"] == 1_150
     assert result["burst"]["active"] is True
     assert result["burst"]["remaining_jobs"] == 875
     assert result["burst"]["expires_at"] is not None
+
+
+def test_kg_health_reports_base_cap_for_exhausted_burst():
+    now = datetime.now(timezone.utc)
+    session = _Session(
+        SimpleNamespace(queued=0, oldest_seconds=None),
+        SimpleNamespace(failed_24h=0, atoms_24h=0, last_success_at=None),
+        burst=SimpleNamespace(
+            extra_jobs=1_000,
+            used_jobs=1_000,
+            created_at=now - timedelta(hours=1),
+            expires_at=now + timedelta(hours=2),
+            created_by="standing:operator@example.com",
+        ),
+    )
+
+    result = _kg_health_core(session, 275)
+
+    assert result["effective_cap"] == 275
+    assert result["burst"]["active"] is False
+    assert result["burst"]["remaining_jobs"] == 0
+
+
+def test_kg_health_reports_base_cap_for_expired_burst():
+    now = datetime.now(timezone.utc)
+    session = _Session(
+        SimpleNamespace(queued=0, oldest_seconds=None),
+        SimpleNamespace(failed_24h=0, atoms_24h=0, last_success_at=None),
+        burst=SimpleNamespace(
+            extra_jobs=1_000,
+            used_jobs=125,
+            created_at=now - timedelta(hours=3),
+            expires_at=now - timedelta(hours=1),
+            created_by="standing:operator@example.com",
+        ),
+    )
+
+    result = _kg_health_core(session, 325)
+
+    assert result["effective_cap"] == 325
+    assert result["burst"]["active"] is False
+    assert result["burst"]["remaining_jobs"] == 0

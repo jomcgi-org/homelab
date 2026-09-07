@@ -145,7 +145,9 @@ def _kg_health_core(session: Session, cap: int) -> dict:
         "last_success_at": _iso(provenance.last_success_at),
         "jobs_today": int(jobs_today),
         "cap": cap,
-        "effective_cap": cap + burst.remaining_jobs,
+        # Mirror admission's full active grant size in kg_effective_cap (#5778).
+        # The remaining allowance is reported separately under burst.remaining_jobs.
+        "effective_cap": cap + (burst.extra_jobs if burst.active else 0),
         "burst": {
             "active": burst.active,
             "extra_jobs": burst.extra_jobs,
