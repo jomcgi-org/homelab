@@ -176,6 +176,7 @@ def session(monkeypatch, tmp_path):
         SQLModel.metadata.create_all(engine)
         monkeypatch.setattr(mcp, "get_engine", lambda: engine)
         monkeypatch.setattr(store, "get_engine", lambda: engine)
+        monkeypatch.setattr(store.admission, "get_engine", lambda: engine)
         with Session(engine) as db_session:
             yield db_session
     finally:
@@ -2357,7 +2358,7 @@ def test_synthetic_cancellation_retains_guest_and_unknown_record(monkeypatch, se
     async def destroy(guest_id):
         destroyed.append(guest_id)
 
-    monkeypatch.setattr(api, "_persist_session", lambda *args: row)
+    monkeypatch.setattr(api, "_persist_session", lambda *args, **kwargs: row)
     monkeypatch.setattr(api._transport, "deliver", deliver)
     monkeypatch.setattr(api._transport, "destroy_session", destroy)
     with pytest.raises(asyncio.CancelledError):
@@ -2368,3 +2369,30 @@ def test_synthetic_cancellation_retains_guest_and_unknown_record(monkeypatch, se
     assert (
         store.get_turn(session, session_id, 1).stop_reason == store.UNKNOWN_INVOCATION
     )
+
+
+def test_executor_checks_shared_permit_before_delivery_and_settles(
+    monkeypatch, session
+):
+    from agent_sessions.models import AgentCapacityReservation
+
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _sid: None)
+    observed = []
+
+    async def deliver(_ember, _cli, message, *_args, **kwargs):
+        await kwargs["admission_check"]()
+        with Session(session.bind) as db:
+            permit = db.exec(select(AgentCapacityReservation)).one()
+            observed.append((permit.state, permit.tier))
+        return _completed_delivery(message)
+
+    async def notify(*_args, **_kwargs):
+        pass
+
+    monkeypatch.setattr(mcp._transport, "deliver", deliver)
+    monkeypatch.setattr(mcp.agent_api, "notify", notify)
+    started = asyncio.run(mcp.monolith_agent_session_start("hello", model="luna"))
+    asyncio.run(mcp._execute_pending_message(started["session_id"]))
+    assert observed == [("running", "interactive")]
+    session.expire_all()
+    assert session.exec(select(AgentCapacityReservation)).one().state == "settled"

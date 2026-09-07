@@ -738,7 +738,11 @@ class EmberVmShimTransport:
             raise EmberVMTransportError(str(exc)) from exc
 
     async def prewarm_session(
-        self, ember_session_id: str, ember_session_token: str
+        self,
+        ember_session_id: str,
+        ember_session_token: str,
+        *,
+        admission_check: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """Start a session relight without invoking a model turn.
 
@@ -764,6 +768,8 @@ class EmberVmShimTransport:
                 # 404 because /shim/healthz is GET-only, and prewarm has already
                 # accomplished its only job by the time that response arrives.
                 await _check_delivery_admission()
+                if admission_check is not None:
+                    await admission_check()
                 await client.post(url, content=b"", headers=headers)
         except httpx.TimeoutException as exc:
             raise EmberVMTimeout(str(exc)) from exc

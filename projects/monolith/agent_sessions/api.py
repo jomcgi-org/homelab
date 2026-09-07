@@ -33,6 +33,7 @@ from agent_sessions.mcp import (
     recover_zombie_session_if_needed,
 )
 from agent_sessions.transport import EmberSessionGone
+from faas.embervm_client import EmberVMTransportError
 from core.db import get_engine
 from goosecracker.api import REPO_CATALOG
 
@@ -59,6 +60,7 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
         "main",
         model,
         None,
+        admission_tier="probe",
         # No prompt on purpose: the synthetic probes assert an exact reply and
         # report lane latency, so they must not carry a recall block.
     )
@@ -139,6 +141,17 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
         # whose reply kept arriving on a severed pipe while interactive turns
         # (which always carry one) came back fine.
         progress_token = secrets.token_urlsafe(32)
+
+        async def shared_admission_check() -> None:
+            if not await asyncio.to_thread(
+                store.admission.recheck,
+                row.id,
+                turn_seq,
+                claim_owner,
+                _transport._workload_for(model),
+            ):
+                raise EmberVMTransportError("Shared execution admission is fenced")
+
         turn, _returned_ember = await _transport.deliver(
             None,
             None,
@@ -146,6 +159,7 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
             model,
             on_create=persist_callback,
             progress_token=progress_token,
+            admission_check=shared_admission_check,
         )
         ember = _returned_ember
         result_received = True
@@ -219,6 +233,7 @@ def start_session_for_swarm(
     node_key: str | None = None,
     node_attempt: int | None = None,
     reasoning: bool = False,
+    admission_tier: str = "project",
 ) -> int:
     """Create and schedule a swarm-owned session through the normal session path.
 
@@ -252,6 +267,7 @@ def start_session_for_swarm(
         workflow_id=workflow_id,
         node_key=node_key,
         node_attempt=node_attempt,
+        admission_tier=admission_tier,
     )
     assert row.id is not None
     _persist_pending_message(row.id, prompt, model)
