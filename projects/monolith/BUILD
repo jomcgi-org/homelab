@@ -4695,6 +4695,8 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",
+        ":pkg_cyclegroup",
+        ":pkg_knowledge",
         ":pkg_swarm",
         "@pip//opentelemetry_sdk",
         "@pip//pytest",
