@@ -232,23 +232,57 @@ class _FakeDBOS:
     workflow_id = "workflow-docfix"
 
 
-def test_drainer_schedules_review_after_docfix_pr_url(monkeypatch):
+@pytest.mark.parametrize("completed", [True, False])
+def test_drainer_schedules_review_after_docfix_pr_url(monkeypatch, completed):
+    holder = f"luna-drainer:{_FakeDBOS.workflow_id}:0"
     jobs = iter(
         [
             {
                 "name": "docfix:abc",
                 "routine_kind": "qwen-drain",
                 "payload": {"prompt": "fix docs"},
+                "locked_by": holder,
             },
             None,
         ]
     )
     scheduled = []
-    monkeypatch.setattr(drainer, "pin_drainer_settings", _drainer_settings)
+    claims = []
+    starts = []
+    completions = []
+
+    def claim(ttl_secs, kinds, workflow_id, base_kg_cap, claim_index):
+        claims.append((ttl_secs, tuple(kinds), workflow_id, base_kg_cap, claim_index))
+        return next(jobs)
+
+    def start(*args, admission_tier):
+        assert admission_tier == "project"
+        starts.append(args)
+        return 1
+
+    def finish(name, status, summary, *, expected_holder):
+        assert expected_holder == holder
+        completions.append((name, status, summary))
+        return completed
+
+    def no_refill():
+        raise AssertionError("an empty finite test queue must not refill")
+
+    settings = _drainer_settings()
+    monkeypatch.setattr(drainer, "pin_drainer_settings", lambda: settings)
+    monkeypatch.setenv("DRAINER_ENABLED", "true")
+    monkeypatch.setenv("DRAINER_MAX_JOBS_PER_CYCLE", "3")
+    monkeypatch.setattr(
+        drainer, "drainer_wait_enabled", drainer.drainer_wait_enabled.__wrapped__
+    )
+    # Idle rotation is covered by drainer tests; this test ends after its empty claim.
+    monkeypatch.setattr(drainer, "IDLE_POLL_LIMIT", 0)
+    monkeypatch.setattr(drainer, "chain_next_cycle", no_refill)
+    monkeypatch.setattr(drainer, "_quota_span_attributes", lambda: {})
     monkeypatch.setattr(drainer, "DBOS", _FakeDBOS)
     monkeypatch.setattr(drainer, "sweep_kg_raws", lambda: 0)
-    monkeypatch.setattr(drainer, "claim_drainer_job", lambda *_args: next(jobs))
-    monkeypatch.setattr(drainer, "start_agent_session", lambda *_args: 1)
+    monkeypatch.setattr(drainer, "claim_drainer_job", claim)
+    monkeypatch.setattr(drainer, "start_agent_session", start)
     monkeypatch.setattr(
         drainer,
         "_await_turn",
@@ -257,7 +291,7 @@ def test_drainer_schedules_review_after_docfix_pr_url(monkeypatch):
             "terminal_reason": "stop",
         },
     )
-    monkeypatch.setattr(drainer, "finish_drainer_job", lambda *_args: True)
+    monkeypatch.setattr(drainer, "finish_drainer_job", finish)
     monkeypatch.setattr(
         drainer,
         "schedule_docfix_review_for_completion",
@@ -266,7 +300,15 @@ def test_drainer_schedules_review_after_docfix_pr_url(monkeypatch):
     monkeypatch.setattr(drainer, "destroy_drainer_session", lambda *_args: True)
 
     assert drainer.drain_cycle.__wrapped__()["processed"] == 1
-    assert scheduled == ["https://github.com/jomcgi-org/homelab/pull/812"]
+    assert claims == [
+        (2100, ("qwen-drain", "kg-drain"), _FakeDBOS.workflow_id, 40, index)
+        for index in (0, 1)
+    ]
+    assert len(starts) == 1
+    assert starts[0][0] == f"{_FakeDBOS.workflow_id}:qwen-drain:docfix:abc"
+    result = "https://github.com/jomcgi-org/homelab/pull/812"
+    assert completions == [("docfix:abc", "ok", result)]
+    assert scheduled == ([result] if completed else [])
 
 
 def test_completion_trigger_extracts_pr_and_uses_ten_minute_delay(session, monkeypatch):

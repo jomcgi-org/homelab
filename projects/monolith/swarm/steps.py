@@ -199,6 +199,7 @@ def start_agent_session(
     node_key: str | None = None,
     node_attempt: int | None = None,
     reasoning: bool = False,
+    admission_tier: str = "project",
 ) -> int:
     """Start (or re-attach to) one agent session.
 
@@ -236,6 +237,7 @@ def start_agent_session(
             node_key=node_key,
             node_attempt=node_attempt,
             reasoning=reasoning,
+            admission_tier=admission_tier,
         )
         set_attributes(span, {"swarm.session_id": session_id})
         return session_id

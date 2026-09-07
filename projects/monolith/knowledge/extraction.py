@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from fnmatch import fnmatchcase
 import hashlib
 import json
@@ -953,8 +954,14 @@ def apply_extraction(
     result_text: str,
     *,
     correction: bool = False,
+    transaction_guard: Callable[[Session], None] | None = None,
 ) -> dict:
-    """Validate worker output and atomically apply its knowledge changes."""
+    """Validate output, then guard and atomically apply its knowledge changes.
+
+    The optional caller guard must raise on lost ownership and retain its lock
+    in this session. It runs after preparation releases the original transaction,
+    before the authoritative reread and all writes.
+    """
     raw = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
     if raw is None:
         raise ExtractionInputMissing(f"raw not found: {raw_id}")
@@ -1020,6 +1027,8 @@ def apply_extraction(
         prepared.append((assertion, body, dedupe_vector, index_vectors))
 
     try:
+        if transaction_guard is not None:
+            transaction_guard(session)
         raw = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
         if raw is None:
             raise ExtractionInputMissing(f"raw not found: {raw_id}")

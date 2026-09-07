@@ -103,6 +103,28 @@ def test_denied_resume_does_not_invoke_existing_guest(monkeypatch):
     assert requests == []
 
 
+def test_denied_shared_prewarm_permit_does_not_wake_guest(monkeypatch):
+    requests = []
+
+    async def check():
+        raise EmberVMTransportError("Shared execution admission is fenced")
+
+    async def handler(request):
+        requests.append(request)
+        return completed(request)
+
+    install_client(monkeypatch, handler)
+    with pytest.raises(EmberVMTransportError, match="Shared execution admission"):
+        asyncio.run(
+            transport.EmberVmShimTransport().prewarm_session(
+                "existing",
+                "test-token",
+                admission_check=check,
+            )
+        )
+    assert requests == []
+
+
 def test_stop_during_invoke_backoff_prevents_retry_post(monkeypatch):
     requests = []
     allowed = True

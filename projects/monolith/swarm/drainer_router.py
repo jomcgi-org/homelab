@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from datetime import datetime, timedelta, timezone
 import logging
 import time
 
@@ -10,14 +9,14 @@ from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import text
 from sqlmodel import Session
 
-from agent.config import drainer_enabled, load_drainer_settings
+from agent.config import drainer_enabled
 from agent.routine_jobs import hold_job_for_unknown_outcome
 from agent_sessions import store as agent_session_store
 from agent_sessions.constants import UNKNOWN_INVOCATION, UNKNOWN_INVOCATION_MESSAGE
 from core.db import get_engine
 from swarm import runtime
-from swarm.drainer import drain_cycle
-from swarm.queues import drainer_queue
+from swarm.drainer import drain_cycle as drain_cycle
+from swarm.queues import drainer_queue, refill_drainer_workers
 
 router = APIRouter(prefix="/internal/agent", tags=["agent-internal"])
 logger = logging.getLogger(__name__)
@@ -350,12 +349,7 @@ def _reap_version_stranded_cycles(dbos) -> int:
 
 
 def _has_live_drain_cycle(dbos) -> bool:
-    """Check if a PENDING or ENQUEUED drain_cycle exists.
-
-    Returns False on database errors to fail open: a spurious duplicate enqueue
-    is cheap and self-corrects (concurrency is 1), while a false positive stalls
-    the drainer permanently.
-    """
+    """Check worker activity. An unavailable inventory remains occupied."""
     try:
         workflows = dbos.list_workflows(
             name="drain_cycle",
@@ -371,10 +365,7 @@ def _has_live_drain_cycle(dbos) -> bool:
             "Luna drainer status check failed",
             exc_info=True,
         )
-        # On error, assume there is NOT a live cycle to be conservative and allow
-        # the drainer to at least attempt to enqueue. A false negative (enqueueing
-        # a duplicate) is self-correcting; a false positive (permanent stall) is not.
-        return False
+        return True
 
 
 @router.post("/drain", status_code=202)
@@ -421,36 +412,16 @@ def trigger_drain(response: Response) -> dict:
         response.status_code = 200
         return {"status": "quarantine_blocked"}
 
-    # Make enqueue idempotent: do not stack another cycle if one is already live.
-    # The CronWorkflow fires every 15 minutes regardless of whether the previous
-    # cycle finished, so without this guard every tick during a slow-but-healthy
-    # cycle would stack another workflow that contends for the single concurrency
-    # slot, creating the 52-deep pileup that blocked draining for hours.
-    if _has_live_drain_cycle(submitter):
+    try:
+        enqueued = refill_drainer_workers(submitter, queue=queue if launched else None)
+    except Exception as error:  # noqa: BLE001 - unknown inventory cannot mint workers
+        logger.warning("drainer worker refill failed closed", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail="DBOS or admission is temporarily unavailable",
+            headers={"Retry-After": "2"},
+        ) from error
+    if not enqueued:
         response.status_code = 200
         return {"status": "already_queued"}
-
-    if launched:
-        queue.enqueue(drain_cycle)
-    else:
-        try:
-            # DBOSClient 2.29.0 accepts workflow metadata rather than the
-            # decorated function object accepted by Queue.enqueue().
-            latest_version = submitter.get_latest_application_version()["version_name"]
-            if not latest_version:
-                raise RuntimeError("DBOS has no latest application version")
-            submitter.enqueue(
-                {
-                    "workflow_name": "drain_cycle",
-                    "queue_name": _DRAINER_QUEUE_NAME,
-                    "app_version": latest_version,
-                }
-            )
-        except Exception as error:  # noqa: BLE001
-            logger.warning("follower failed to enqueue a drain cycle", exc_info=True)
-            raise HTTPException(
-                status_code=503,
-                detail="DBOS is temporarily unavailable",
-                headers={"Retry-After": "2"},
-            ) from error
     return {"status": "started"}

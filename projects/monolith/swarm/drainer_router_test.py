@@ -1,4 +1,6 @@
 import time
+
+import pytest
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -8,6 +10,33 @@ from sqlmodel import Session, create_engine
 
 import swarm.drainer_router as drainer_router
 from agent import routine_jobs
+
+
+@pytest.fixture(autouse=True)
+def _worker_metadata(tmp_path, monkeypatch):
+    from agent_sessions import admission
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'worker-intents.db'}")
+    with Session(engine) as db:
+        db.execute(
+            text("""CREATE TABLE routine_jobs (
+            name TEXT PRIMARY KEY, routine_kind TEXT, payload TEXT,
+            created_by TEXT, next_run_at TEXT)""")
+        )
+        db.commit()
+    monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
+
+    def lock(db):
+        # SQLite's first write serializes both empty and populated slot tables.
+        db.execute(
+            text(
+                "UPDATE routine_jobs SET name = name WHERE routine_kind = '_drainer-worker'"
+            )
+        )
+
+    monkeypatch.setattr(admission, "lock_pool", lock)
+    yield engine
+    engine.dispose()
 
 
 def _client() -> TestClient:
@@ -101,7 +130,7 @@ def test_launched_enqueues_workflow_on_drainer_queue(monkeypatch):
 
     assert response.status_code == 202
     assert response.json() == {"status": "started"}
-    assert enqueued == [drainer_router.drain_cycle]
+    assert enqueued == [drainer_router.drain_cycle] * 2
 
 
 def test_follower_enqueues_workflow_through_dbos_client(monkeypatch):
@@ -151,7 +180,6 @@ def test_follower_enqueues_workflow_through_dbos_client(monkeypatch):
             "name": "drain_cycle",
             "queue_name": "drainer",
             "status": ["PENDING", "ENQUEUED"],
-            "limit": 1,
             "load_input": False,
             "load_output": False,
         },
@@ -161,7 +189,9 @@ def test_follower_enqueues_workflow_through_dbos_client(monkeypatch):
             "workflow_name": "drain_cycle",
             "queue_name": "drainer",
             "app_version": "v-current",
+            "workflow_id": f"_drainer-worker:{i}:1",
         }
+        for i in range(2)
     ]
 
 
@@ -170,7 +200,9 @@ def test_follower_returns_already_queued_for_live_cycle(monkeypatch):
         def list_workflows(self, status=None, **_kwargs):
             if status == "PENDING":
                 return []
-            return [_FakeWorkflow("live-wf", int(time.time() * 1000))]
+            return [
+                _FakeWorkflow(f"live-wf-{i}", int(time.time() * 1000)) for i in range(2)
+            ]
 
         def enqueue(self, _options):
             raise AssertionError("a live cycle must prevent a second enqueue")
@@ -297,7 +329,9 @@ def test_follower_reaps_stale_pending_cycle(monkeypatch):
             "workflow_name": "drain_cycle",
             "queue_name": "drainer",
             "app_version": "v-current",
+            "workflow_id": f"_drainer-worker:{i}:1",
         }
+        for i in range(2)
     ]
 
 
@@ -355,7 +389,7 @@ def test_stale_pending_reaper_then_enqueue(monkeypatch):
     assert response.status_code == 202
     assert response.json() == {"status": "started"}
     assert "stale-wf-1" in cancelled
-    assert enqueued == [drainer_router.drain_cycle]
+    assert enqueued == [drainer_router.drain_cycle] * 2
 
 
 def test_real_quarantine_holds_before_reaper_cancels(monkeypatch, tmp_path):
@@ -572,11 +606,11 @@ def test_endpoint_blocks_admission_when_quarantine_and_live_lookup_fail(
 
     live_lookup_calls = []
 
-    def live_lookup_raises(_dbos):
+    def live_lookup_raises(_dbos, **_kwargs):
         live_lookup_calls.append(True)
         raise RuntimeError("status lookup failed")
 
-    monkeypatch.setattr(drainer_router, "_has_live_drain_cycle", live_lookup_raises)
+    monkeypatch.setattr(drainer_router, "refill_drainer_workers", live_lookup_raises)
 
     def resolve_queue():
         queue_resolutions.append(True)
@@ -594,7 +628,7 @@ def test_endpoint_blocks_admission_when_quarantine_and_live_lookup_fail(
     assert enqueued == []
     assert queue_resolutions == [True]
     assert live_lookup_calls == [], (
-        "blocked reconciliation returns before fail-open lookup"
+        "blocked reconciliation returns before worker inventory or enqueue"
     )
     with Session(engine) as session:
         untouched = session.execute(
@@ -627,7 +661,7 @@ def test_fresh_pending_not_reaped_returns_already_queued(monkeypatch):
                 # No stale workflows
                 return []
             # Live workflows check (status is a list): return one live PENDING
-            return [_FakeWorkflow("live-wf-1", int(1000 * 1000))]
+            return [_FakeWorkflow(f"live-wf-{i}", int(1000 * 1000)) for i in range(2)]
 
         def list_workflow_steps(self, workflow_id, load_output=False):
             return []
@@ -681,7 +715,7 @@ def test_enqueued_row_prevents_second_enqueue(monkeypatch):
                 # No stale workflows
                 return []
             # Live workflows check (status is a list): return one ENQUEUED
-            return [_FakeWorkflow("live-wf-1", int(1000 * 1000))]
+            return [_FakeWorkflow(f"live-wf-{i}", int(1000 * 1000)) for i in range(2)]
 
         def list_workflow_steps(self, workflow_id, load_output=False):
             return []
@@ -735,7 +769,7 @@ def test_nothing_live_means_normal_enqueue(monkeypatch):
 
     assert response.status_code == 202
     assert response.json() == {"status": "started"}
-    assert enqueued == [drainer_router.drain_cycle]
+    assert enqueued == [drainer_router.drain_cycle] * 2
 
 
 def test_drainer_disabled_still_short_circuits(monkeypatch):
@@ -834,7 +868,7 @@ def test_old_updated_at_with_recent_step_not_reaped(monkeypatch):
     # A new cycle should be enqueued
     assert response.status_code == 202
     assert response.json() == {"status": "started"}
-    assert enqueued == [drainer_router.drain_cycle]
+    assert enqueued == [drainer_router.drain_cycle] * 2
 
 
 def test_step_read_failure_does_not_reap(monkeypatch):
@@ -886,7 +920,7 @@ def test_step_read_failure_does_not_reap(monkeypatch):
 
     assert cancelled == [], "a step-read failure must not cancel the workflow"
     assert response.status_code == 202
-    assert enqueued == [drainer_router.drain_cycle]
+    assert enqueued == [drainer_router.drain_cycle] * 2
 
 
 def test_queue_is_resolved_even_when_a_cycle_is_already_live(monkeypatch):
@@ -905,7 +939,9 @@ def test_queue_is_resolved_even_when_a_cycle_is_already_live(monkeypatch):
     class FakeDBOS:
         def list_workflows(self, **_kwargs):
             # A live cycle exists, so trigger_drain takes the early return.
-            return [_FakeWorkflow("live-wf", int(time.time() * 1000))]
+            return [
+                _FakeWorkflow(f"live-wf-{i}", int(time.time() * 1000)) for i in range(2)
+            ]
 
         def list_workflow_steps(self, _workflow_id, load_output=False):
             return []
@@ -1016,3 +1052,57 @@ def test_unresolvable_app_version_cancels_nothing(monkeypatch):
     _client().post("/internal/agent/drain")
 
     assert cancelled == []
+
+
+def test_status_read_failure_cannot_create_worker_intents(monkeypatch):
+    class BrokenInventory:
+        def list_workflows(self, **_kwargs):
+            raise RuntimeError("inventory unavailable")
+
+    monkeypatch.setattr(drainer_router, "drainer_enabled", lambda: True)
+    monkeypatch.setattr(drainer_router.runtime, "is_launched", lambda: False)
+    monkeypatch.setattr(
+        drainer_router.runtime, "read_client", lambda: BrokenInventory()
+    )
+    monkeypatch.setattr(drainer_router, "_current_app_version", lambda: "")
+    response = _client().post("/internal/agent/drain")
+    assert response.status_code == 503
+    assert routine_jobs.drainer_worker_intents() == {}
+
+
+def test_lost_follower_enqueue_response_preserves_one_identity_per_slot(monkeypatch):
+    from swarm.queues import refill_drainer_workers
+
+    class Client:
+        def __init__(self):
+            self.rows = {}
+            self.calls = []
+            self.fail_once = True
+
+        def list_workflows(self, workflow_ids=None, **_kwargs):
+            return [
+                row
+                for wid, row in self.rows.items()
+                if workflow_ids is None or wid in workflow_ids
+            ]
+
+        def get_latest_application_version(self):
+            return {"version_name": "current"}
+
+        def enqueue(self, options):
+            wid = options["workflow_id"]
+            self.calls.append(wid)
+            self.rows[wid] = SimpleNamespace(workflow_id=wid, status="ENQUEUED")
+            if self.fail_once:
+                self.fail_once = False
+                raise RuntimeError("reply lost after durable enqueue")
+
+    client = Client()
+    with pytest.raises(RuntimeError):
+        refill_drainer_workers(client)
+    before = routine_jobs.drainer_worker_intents()
+    assert refill_drainer_workers(client) == 1
+    assert set(client.rows) == {"_drainer-worker:0:1", "_drainer-worker:1:1"}
+    assert len(client.calls) == 2
+    assert routine_jobs.drainer_worker_intents() == before
+    assert refill_drainer_workers(client) == 0

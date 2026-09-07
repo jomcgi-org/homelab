@@ -43,6 +43,8 @@ class AgentSession(SQLModel, table=True):
     # unbound sessions are unaffected.
     discord_thread: str | None = Field(default=None, unique=True, index=True)
     model: str | None = Field(default=None)
+    # Set only by the server entry point, never from the submitted prompt.
+    admission_tier: str = Field(default="interactive")
     reasoning: bool = Field(default=False)
     cli_session_id: str | None = Field(
         default=None
@@ -94,6 +96,43 @@ class AgentSession(SQLModel, table=True):
     recovery_completed_at: datetime | None = Field(
         default=None, sa_type=DateTime(timezone=True)
     )
+
+
+class AgentCapacityPool(SQLModel, table=True):
+    __tablename__ = "capacity_pool"
+    __table_args__ = (CheckConstraint("id = 1"), {"schema": "agent_sessions"})
+
+    id: int = Field(default=1, primary_key=True)
+
+
+class AgentCapacityReservation(SQLModel, table=True):
+    __tablename__ = "capacity_reservations"
+    __table_args__ = (
+        UniqueConstraint("local_session_id", "pending_seq"),
+        UniqueConstraint("session_id", "pending_seq"),
+        CheckConstraint("pending_seq > 0"),
+        CheckConstraint("state IN ('reserved', 'running', 'uncertain', 'settled')"),
+        CheckConstraint("tier IN ('interactive', 'project', 'kg', 'probe')"),
+        {"schema": "agent_sessions"},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    local_session_id: str
+    pending_seq: int
+    session_id: int | None = Field(default=None, index=True)
+    tier: str
+    model: str | None = None
+    workload: str | None = None
+    owner: str | None = None
+    state: str = Field(default="reserved", index=True)
+    daily_key: str | None = None
+    routine_job_name: str | None = Field(default=None, index=True)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_type=DateTime(timezone=True),
+    )
+    settled_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    outcome: str | None = None
 
 
 class AgentTurn(SQLModel, table=True):
