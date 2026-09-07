@@ -315,7 +315,9 @@ def finish_drainer_job(
     with tracer.start_as_current_span("drain.finish_job") as span:
         completed = complete_job(name, status=status, summary=summary)
         if deregister and completed:
-            deregister_job(name)
+            # Keep the completed freshness row's cooldown through one-shot
+            # cleanup, including final failure before extraction provenance.
+            deregister_job(name, preserve_repo_freshness=True)
         summary_lines = summary.splitlines()
         first_line = summary_lines[0] if summary_lines else ""
         set_attributes(
