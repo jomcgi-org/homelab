@@ -1814,6 +1814,9 @@ _PUBLIC_PRUNE_EXCLUDE = [
     "knowledge/mcp.py",
     "knowledge/service.py",
     "knowledge/layout.py",
+    # The public observability router needs the model and parser, never the
+    # snapshot writer or its PostgreSQL mutation path.
+    "observability/merged_prs_writer.py",
     # Private home scheduling + observability writer paths.
     "home/schedule.py",
     "home/schedule_router.py",

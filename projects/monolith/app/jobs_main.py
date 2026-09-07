@@ -385,12 +385,19 @@ def home_cluster_snapshot_refresh() -> None:
 @app.command("snapshot-merged-prs")
 def snapshot_merged_prs() -> None:
     """Snapshot the last 90 days of merged GitHub pull requests."""
+    from sqlalchemy import func
+    from sqlmodel import Session, select
+
+    from core.db import get_engine
     from core.github import fetch_merged_pull_requests
-    from observability.merged_prs import write_snapshot
+    from observability.merged_prs import MergedPR
+    from observability.merged_prs_writer import write_snapshot
 
     configure_logging()
     cutoff = datetime.now(timezone.utc) - timedelta(days=90)
-    pulls = fetch_merged_pull_requests(cutoff)
+    with Session(get_engine()) as session:
+        watermark = session.exec(select(func.max(MergedPR.snapshotted_at))).one()
+    pulls = fetch_merged_pull_requests(cutoff, watermark=watermark)
     snapshotted, deleted = write_snapshot(pulls, cutoff)
     logger.info("Snapshots %d PRs, deleted %d old rows", snapshotted, deleted)
 

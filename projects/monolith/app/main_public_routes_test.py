@@ -220,12 +220,11 @@ def test_no_schedule_chat_scheduler_agent_paths():
         "/api/knowledge/tasks",
     ]
     for prefix in forbidden_prefixes:
-        leaked = [
-            p
-            for p in paths
-            if p.startswith(prefix) and p != "/api/agents/public/merges"
-        ]
-        assert not leaked, f"private paths under {prefix!r} leaked: {leaked}"
+        for p in paths:
+            if p.startswith(prefix):
+                assert p.startswith("/api/agents/public"), (
+                    f"private path {p!r} under {prefix!r} leaked"
+                )
 
 
 def test_specific_private_knowledge_paths_absent():

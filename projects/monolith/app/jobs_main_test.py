@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from unittest import mock
 
 import httpx
@@ -90,12 +91,17 @@ def test_cluster_snapshot_refresh_dispatches_to_refresh():
 
 def test_snapshot_merged_prs_fetches_and_writes_with_same_cutoff():
     pulls = [{"number": 1}]
+    watermark = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
+    session = mock.MagicMock()
+    session.__enter__.return_value.exec.return_value.one.return_value = watermark
     with (
+        mock.patch("core.db.get_engine", return_value=object()),
+        mock.patch("sqlmodel.Session", return_value=session),
         mock.patch(
             "core.github.fetch_merged_pull_requests", return_value=pulls
         ) as fetch,
         mock.patch(
-            "observability.merged_prs.write_snapshot", return_value=(1, 2)
+            "observability.merged_prs_writer.write_snapshot", return_value=(1, 2)
         ) as write,
         mock.patch.object(jobs_main, "configure_logging"),
         mock.patch.object(jobs_main.logger, "info") as log,
@@ -104,6 +110,7 @@ def test_snapshot_merged_prs_fetches_and_writes_with_same_cutoff():
 
     assert result.exit_code == 0, result.output
     cutoff = fetch.call_args.args[0]
+    fetch.assert_called_once_with(cutoff, watermark=watermark)
     write.assert_called_once_with(pulls, cutoff)
     log.assert_called_once_with("Snapshots %d PRs, deleted %d old rows", 1, 2)
 

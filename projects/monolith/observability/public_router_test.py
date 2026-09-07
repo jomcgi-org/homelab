@@ -86,6 +86,12 @@ def test_public_merges_returns_daily_week_and_totals(client, session):
         "chore": 0,
         "test": 0,
         "refactor": 0,
+        "ci": 0,
+        "build": 0,
+        "perf": 0,
+        "style": 0,
+        "revert": 0,
+        "wip": 0,
         "other": 0,
     }
     assert [row["number"] for row in body["week"]] == [123]
@@ -110,3 +116,24 @@ def test_public_merges_supports_conditional_get(client):
 
     assert second.status_code == 304
     assert second.headers["ETag"] == first.headers["ETag"]
+
+
+def test_public_merges_counts_unknown_types_without_failing(client, session):
+    session.add(_row(123, timedelta(hours=1), type="future-type"))
+    session.commit()
+
+    response = client.get("/api/agents/public/merges")
+
+    assert response.status_code == 200
+    assert response.json()["daily"][-1]["future-type"] == 1
+
+
+def test_public_merges_etag_changes_when_seven_day_cutoff_hour_changes(
+    client, monkeypatch
+):
+    first = client.get("/api/agents/public/merges")
+    monkeypatch.setattr(public_router, "_now_utc", lambda: _NOW + timedelta(hours=1))
+
+    second = client.get("/api/agents/public/merges")
+
+    assert second.headers["ETag"] != first.headers["ETag"]

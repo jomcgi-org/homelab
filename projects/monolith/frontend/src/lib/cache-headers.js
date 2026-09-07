@@ -65,6 +65,11 @@ export const HEALTH_CACHE_CONTROL = "public, max-age=0, s-maxage=60";
 // _GRAPH_CACHE_CONTROL in projects/monolith/knowledge/router.py — keep in sync.
 export const NOTES_PAGE_CACHE_CONTROL = `public, s-maxage=${ONE_HOUR}, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
 
+// /slop/factory/merges: the snapshot refreshes periodically, so keep browsers
+// revalidating while Cloudflare serves a 30-minute fresh response and one day
+// of stale data during background refreshes.
+export const MERGES_CACHE_CONTROL = `public, max-age=0, s-maxage=1800, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
+
 // /docs pages: the manifest is baked into the build, so doc content changes only
 // on deploy. The build-versioned page ETag busts revalidation on every deploy,
 // so a long edge cache is safe: 1h fresh, 1d background refresh, 1y serve-stale
