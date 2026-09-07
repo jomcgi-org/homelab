@@ -28,6 +28,14 @@ brick classes and automatic scaling disabled. The small Python task workload
 supports the separate fresh-admission check. No second scratch preparation
 daemon is installed. Runtime RBAC stays in `embervm-dev`, apart from the
 cluster-wide TokenReview permission required to authenticate submitters.
+`noded.enabled: false` disables only the legacy DaemonSet. The separate
+`bricks.enabled: true` gate renders the class Deployments, each using the
+shared noded pod template and its configured guest runtime.
+
+The manually triggered DBOS drainer calls `start_agent_session` directly;
+Ember creates and invokes the guest. It does not submit an Argo Workflow.
+Keeping `ARGO_JOBS` populated suppresses the inherited scheduler registry
+entries while `jobs.image: ""` prevents their CronWorkflows from rendering.
 
 Prepare these facts before creating either deployment:
 
@@ -63,7 +71,11 @@ Prepare these facts before creating either deployment:
   interfere with rotation and is not part of this plan.
 - Prepare GKE-native network policies and verify effective permissions with
   the actual service accounts. Cilium policies are disabled because the hub
-  has no Cilium CRDs. A disabled Cilium template is not network isolation.
+  has no Cilium CRDs. Both `noded.networkPolicy` and
+  `tokenBroker.networkPolicy` gate `cilium.io/v2` resources. A disabled Cilium
+  template is not network isolation. `egress.internal` governs the guest
+  proxy, not the control-plane pod's PostgreSQL connection; the native policy
+  must separately allow the dev op-log connection to port 5432.
   Allow only the required dev control/progress/MCP/database paths, DNS and
   selected provider/store/authentication egress.
 - Build and attest a fresh dev base on the correctly configured brick. The
@@ -78,6 +90,10 @@ The activation review must name the exact manifests, credentials' identities
 selected backend UID, stop conditions and cleanup scope. Root executes and
 verifies a prepared operation under the existing delegated Opus/Fable review
 policy. This configuration PR does not substitute for that review.
+Record the executor node and brick UID too. Preemption, eviction, brick
+restart, storage failure or any other competing infrastructure fault
+invalidates the selected-backend-loss result. Stop that attempt and preserve
+its evidence; do not silently retry or attribute a second fault to Monolith.
 
 For the first recovery proof, admit one routine through the existing drainer
 and wait for its real DBOS claim, Ember session/VM identity and persisted
@@ -97,6 +113,11 @@ prerequisite for this selected Monolith proof. Automatic conformance and
 destructive GC remain disabled in the preset. Cleanup requires exact dev
 session, workload, storage and resource identities, preserved evidence, and a
 fresh check that production was not affected.
+The string sweep gates use `""` to omit their opt-in environment variables;
+the control-plane parsers treat absent/empty values as disabled. Rootfs reclaim
+receives an empty value and the builder requires exactly `"1"` to delete.
+These are the existing chart/runtime contracts, not inheritance from the
+production values files.
 
 The existing chart identity targets validate the actual preset files on Linux:
 `//projects/monolith/chart:chart_env_identity_test` and

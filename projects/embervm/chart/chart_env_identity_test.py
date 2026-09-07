@@ -1712,6 +1712,18 @@ def test_recovery_rendered_credentials_and_capacity(recovery_render) -> None:
         container = next(c for c in containers if c["name"] == container_name)
         return {e["name"]: e for e in container["env"]}
 
+    control_env = container_env(deployments[_RECOVERY_CP], "control-plane")
+    assert (
+        not {
+            "EMBERVM_BASE_RETENTION_SWEEP",
+            "EMBERVM_BASE_RETENTION_DISK_DRIVEN",
+            "EMBERVM_BASE_REMOTE_RETENTION_SWEEP",
+            "EMBERVM_WARMTH_RETENTION_SWEEP",
+            "EMBERVM_WARMTH_S3_GC",
+            "EMBERVM_GRPC_CONNECTION_SWEEP_ENABLED",
+        }
+        & control_env.keys()
+    )
     for name, deployment in deployments.items():
         if "-noded-brick-" not in name:
             continue
