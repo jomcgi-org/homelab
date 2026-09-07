@@ -130,15 +130,6 @@ class TestInterventions:
             json={"decision_id": 1, "revision": 1},
         ).status_code in (403, 404, 422)
 
-    @covers_route(
-        "/api/knowledge/interventions/{raw_id}/associate-decision", method="POST"
-    )
-    def test_associate_decision_explicit_route(self, live_server_with_fake_embedding):
-        assert httpx.post(
-            f"{live_server_with_fake_embedding}/api/knowledge/interventions/missing/associate-decision",
-            json={"decision_id": 1, "revision": 1},
-        ).status_code in (403, 404, 422)
-
     @covers_route("/api/knowledge/interventions/{raw_id}/resolve", method="POST")
     def test_resolve_intervention(self, live_server_with_fake_embedding):
         assert httpx.post(
@@ -150,14 +141,5 @@ class TestInterventions:
     def test_submit_evidence(self, live_server_with_fake_embedding):
         assert httpx.post(
             f"{live_server_with_fake_embedding}/api/knowledge/interventions/missing/evidence",
-            json={"evidence": "done"},
-        ).status_code in (403, 404, 409, 422)
-
-    @covers_route(
-        "/api/knowledge/interventions/{raw_id}/submit-evidence", method="POST"
-    )
-    def test_submit_evidence_explicit_route(self, live_server_with_fake_embedding):
-        assert httpx.post(
-            f"{live_server_with_fake_embedding}/api/knowledge/interventions/missing/submit-evidence",
             json={"evidence": "done"},
         ).status_code in (403, 404, 409, 422)
