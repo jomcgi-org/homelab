@@ -4,6 +4,7 @@ import {
   DOCS_CACHE_CONTROL,
 } from "$lib/cache-headers.js";
 
+// Restate the default so this lane is not prerendered if a parent enables it.
 export const prerender = false;
 
 export function load({ setHeaders }) {

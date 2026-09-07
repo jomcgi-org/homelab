@@ -6,10 +6,10 @@ import { PUBLIC_BASE } from "$lib/public/seo.js";
 //
 // Policy: allow everything (training and retrieval bots alike). The public CV
 // content is published intentionally; the goal is maximum discoverability for
-// AI-assisted candidate research. Except /slop/ which is unlisted draft content.
+// AI-assisted candidate research. Except /slop which is unlisted draft content.
 const BODY = `User-agent: *
 Allow: /
-Disallow: /slop/
+Disallow: /slop
 
 Sitemap: ${PUBLIC_BASE}/sitemap.xml
 `;
