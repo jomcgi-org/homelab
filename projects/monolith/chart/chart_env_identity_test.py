@@ -1521,3 +1521,135 @@ def test_deployed_startup_controls_remain_enabled(renders, tier):
     assert env["CD_PROBE_ENABLED"]["value"] == "true"
     assert env["HOME_OBSERVABILITY_PRIME_ENABLED"]["value"] == "true"
     assert env["MONOLITH_LEADER_SINGLETONS"]["value"] == "true"
+
+
+@pytest.fixture(scope="module")
+def recovery_gke_render():
+    # Do not inherit production's restored DB or historical dev's leader mute.
+    return _render("monolith-dev", [Path(os.environ["RECOVERY_GKE_VALUES"])])
+
+
+def test_recovery_gke_has_no_shared_control_or_external_owners(recovery_gke_render):
+    forbidden = CLUSTER_SCOPED | {
+        "Role",
+        "RoleBinding",
+        "CronWorkflow",
+        "CronJob",
+        "ScheduledBackup",
+        "HTTPRoute",
+        "SecurityPolicy",
+        "OnePasswordItem",
+        "CiliumNetworkPolicy",
+        "HorizontalPodAutoscaler",
+    }
+    for kind, name, document in _docs(recovery_gke_render):
+        assert kind not in forbidden, (kind, name)
+        assert _pinned_namespace(document) in {None, "monolith-dev"}, (kind, name)
+    assert _r2_producers(recovery_gke_render) == []
+
+
+def test_recovery_gke_uses_fresh_database_and_local_consumers(recovery_gke_render):
+    documents = [
+        d for d in yaml.safe_load_all(recovery_gke_render) if isinstance(d, dict)
+    ]
+    cluster = _cnpg_cluster(documents)
+    assert cluster["metadata"]["name"] == "monolith-dev-pg"
+    spec = cluster["spec"]
+    assert spec["instances"] == 1
+    assert spec["storage"] == {"size": "10Gi", "storageClass": "standard-rwo"}
+    assert spec["bootstrap"] == {
+        "initdb": {
+            "database": "monolith",
+            "owner": "app",
+            "postInitSQL": ["CREATE EXTENSION IF NOT EXISTS vector"],
+        }
+    }
+    assert "externalClusters" not in spec
+    assert "backup" not in spec
+    roles = {r["name"]: r for r in spec["managed"]["roles"]}
+    assert set(roles) == {"public_reader", "agents_writer", "public_writer", "embervm"}
+    for name in ("public_reader", "agents_writer", "public_writer"):
+        assert roles[name]["login"] is False
+        assert "passwordSecret" not in roles[name]
+    assert roles["embervm"]["passwordSecret"] == {
+        "name": "monolith-dev-pg-embervm-oplog"
+    }
+    database = next(d for d in documents if d.get("kind") == "Database")
+    assert database["spec"] == {
+        "cluster": {"name": "monolith-dev-pg"},
+        "name": "embervm_oplog",
+        "owner": "embervm",
+        "ensure": "present",
+        "databaseReclaimPolicy": "retain",
+    }
+    deployment = next(d for d in documents if d.get("kind") == "Deployment")
+    expected_ref = {"name": "monolith-dev-pg-app", "key": "uri"}
+    containers = deployment["spec"]["template"]["spec"]["containers"]
+    for container in containers:
+        if container["name"] in {"backend", "progress-ingest"}:
+            env = _env_by_name(container["env"])
+            assert env["DATABASE_URL"]["valueFrom"]["secretKeyRef"] == expected_ref
+    migrations = [d for d in documents if d.get("kind") == "AtlasMigration"]
+    assert len(migrations) == 1
+    assert migrations[0]["spec"]["urlFrom"] == {"secretKeyRef": expected_ref}
+
+
+def test_recovery_gke_keeps_real_failover_and_bounded_drainer(recovery_gke_render):
+    documents = [
+        d for d in yaml.safe_load_all(recovery_gke_render) if isinstance(d, dict)
+    ]
+    deployments = [d for d in documents if d.get("kind") == "Deployment"]
+    assert len(deployments) == 1
+    deployment = deployments[0]
+    assert deployment["metadata"]["name"] == "monolith-dev"
+    assert deployment["spec"]["replicas"] == 2
+    assert (
+        deployment["spec"]["template"]["spec"]["serviceAccountName"] == "monolith-dev"
+    )
+    env = _env_by_name(_deployment_backend_env(recovery_gke_render))
+    expected = {
+        "MONOLITH_LEADER_SINGLETONS": "true",
+        "HOME_OBSERVABILITY_PRIME_ENABLED": "false",
+        "CD_PROBE_ENABLED": "false",
+        "DRAINER_ENABLED": "true",
+        "DRAINER_JOB_KINDS": "qwen-drain",
+        "DRAINER_MAX_JOBS_PER_CYCLE": "1",
+        "DRAINER_NOTIFY_FAILURES": "false",
+        "DRAINER_DOCFIX_ENABLED": "false",
+        "DRAINER_DOCFIX_AUTO_MERGE": "false",
+        "AGENT_SESSIONS_CHANNEL_NOTIFY": "none",
+        "AGENT_MODELS": "luna",
+        "SCHEDULER_WORKFLOW_NAMESPACE": "monolith-dev",
+    }
+    for name, value in expected.items():
+        assert env[name]["value"] == value, name
+    assert "SWARM_ENABLED" not in env
+    default_jobs = yaml.safe_load((_chart_dir() / "values.yaml").read_text())["jobs"]
+    replaced = {
+        j["replaces"] for j in default_jobs["cronWorkflows"] if j.get("replaces")
+    }
+    assert replaced
+    assert set(filter(None, env["ARGO_JOBS"]["value"].split(","))) == replaced
+
+
+def test_recovery_gke_session_dependencies_use_dev_identities(recovery_gke_render):
+    env = _env_by_name(_deployment_backend_env(recovery_gke_render))
+    expected = {
+        "EMBERVM_URL": "http://embervm-dev-embervm.embervm-dev:8080",
+        "EMBER_TOKENBROKER_URL": "http://embervm-dev-embervm-tokenbroker.embervm-dev:8080",
+        "SANDBOX_WORKLOAD_PREFIX": "sandbox-dev-",
+        "AUTH_AUTHENTIK_JWKS_URL": "https://auth.jomcgi.dev/application/o/mcp-recovery/jwks/",
+        "AUTH_AUTHENTIK_ISSUER": "https://auth.jomcgi.dev/application/o/mcp-recovery/",
+        "AUTH_AUTHENTIK_AUDIENCE": "https://factory-recovery.jomcgi.dev",
+        "AUTH_AUTHENTIK_AGENT_JWKS_URL": "https://auth.jomcgi.dev/application/o/mcp-recovery/jwks/",
+        "AUTH_AUTHENTIK_AGENT_ISSUER": "https://auth.jomcgi.dev/application/o/mcp-recovery/",
+        "AUTH_AUTHENTIK_AGENT_AUDIENCE": "https://factory-recovery.jomcgi.dev",
+    }
+    for name, value in expected.items():
+        assert env[name]["value"] == value, name
+    assert not (
+        {"DISCORD_BOT_TOKEN", "OWNER_DISCORD_USER_ID", "AISSTREAM_API_KEY"} & env.keys()
+    )
+    assert not (set(_BACKEND_SHARED_ENV) & env.keys())
+    assert not (_SHARED_CREDENTIAL_KEYS & _secret_keys(list(env.values())))
+    assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in env
