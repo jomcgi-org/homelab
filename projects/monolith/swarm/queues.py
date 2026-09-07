@@ -35,7 +35,9 @@ def drainer_queue():
 # exist in code, so this example stops at review.
 
 
-def prepare_drainer_workers(submitter, *, completing_workflow_id=None) -> list[str]:
+def _prepare_drainer_workers_once(
+    submitter, *, completing_workflow_id=None
+) -> list[str] | None:
     """Reserve a bounded deficit, failing closed on any DBOS inventory read error."""
     from agent.routine_jobs import drainer_worker_intents, reserve_drainer_workers
 
@@ -64,6 +66,17 @@ def prepare_drainer_workers(submitter, *, completing_workflow_id=None) -> list[s
         {row.workflow_id for row in live},
         completing_workflow_id=completing_workflow_id,
     )
+
+
+def prepare_drainer_workers(submitter, *, completing_workflow_id=None) -> list[str]:
+    for _ in range(3):
+        result = _prepare_drainer_workers_once(
+            submitter,
+            completing_workflow_id=completing_workflow_id,
+        )
+        if result is not None:
+            return result
+    raise RuntimeError("drainer worker inventory changed during three refill attempts")
 
 
 def enqueue_drainer_workers(submitter, work_ids: list[str], *, queue=None) -> int:

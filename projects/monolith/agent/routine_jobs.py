@@ -195,7 +195,7 @@ def claim_job(
                {"AND name NOT IN :excluded_names" if exclude_names else ""}
                AND (
                     locked_by IS NULL
-                    OR {expired_expr}
+                    OR ({expired_expr} AND locked_by NOT LIKE 'luna-drainer:%')
                )
                AND (CAST(:kind AS text) IS NULL OR routine_kind = CAST(:kind AS text))
                AND ("""
@@ -241,7 +241,14 @@ def claim_job(
             if len(prior) > 1:
                 raise ValueError("ambiguous routine claim identity")
             if prior:
-                return _row_to_dict(prior[0])
+                recovered = prior[0]
+                if (
+                    (kind is not None and recovered.routine_kind != kind)
+                    or (kinds is not None and recovered.routine_kind not in kinds)
+                    or (name is not None and recovered.name != name)
+                ):
+                    return None
+                return _row_to_dict(recovered)
         if name is not None:
             row = session.execute(
                 select_sql, {"name": name, "unknown_outcome": UNKNOWN_INVOCATION}
@@ -263,7 +270,12 @@ def claim_job(
                 session.rollback()
             return None
 
-        # If the row exists but is still locked (live TTL), refuse.
+        # Deterministic drainer claims remain owned through postprocessing,
+        # even after turn settlement and TTL expiry. Only their holder may
+        # replay; abandonment needs explicit terminal-owner reconciliation.
+        if row.locked_by and row.locked_by.startswith("luna-drainer:"):
+            return None
+        # Legacy leases retain their original TTL behavior.
         if (
             row.locked_by is not None
             and row.locked_at is not None
@@ -392,7 +404,35 @@ def hold_job_for_unknown_outcome(
         return result.rowcount > 0
 
 
-def complete_job(name: str, status: str, summary: str | None = None) -> bool:
+def lock_claim(session: Session, name: str, expected_holder: str | None) -> bool:
+    """Compare and lock an exact claim owner for its whole mutation transaction."""
+    if expected_holder is None:
+        return True
+    table = (
+        "routine_jobs"
+        if session.get_bind().dialect.name == "sqlite"
+        else "claude_agent.routine_jobs"
+    )
+    result = session.execute(
+        text(
+            f"UPDATE {table} SET locked_by=locked_by WHERE name=:name "
+            "AND locked_by=:holder AND routine_kind != '_drainer-worker'"
+        ),
+        {"name": name, "holder": expected_holder},
+    )
+    return result.rowcount == 1
+
+
+def complete_job(
+    name: str,
+    status: str,
+    summary: str | None = None,
+    *,
+    expected_holder: str | None = None,
+    deregister: bool = False,
+    preserve_repo_freshness: bool = False,
+    defer_seconds: int | None = None,
+) -> bool:
     """Mark a job complete.
 
     Sets ``last_run_at = now()``, ``last_status``, and (if provided)
@@ -428,6 +468,8 @@ def complete_job(name: str, status: str, summary: str | None = None) -> bool:
         """
     )
     with Session(get_engine()) as session:
+        if not lock_claim(session, name, expected_holder):
+            return False
         result = session.execute(
             sql,
             {
@@ -437,6 +479,26 @@ def complete_job(name: str, status: str, summary: str | None = None) -> bool:
                 "unknown_outcome": UNKNOWN_INVOCATION,
             },
         )
+        if result.rowcount and defer_seconds is not None:
+            deferred = (
+                "datetime(CURRENT_TIMESTAMP, '+' || :seconds || ' seconds')"
+                if sqlite
+                else "now() + (:seconds || ' seconds')::interval"
+            )
+            session.execute(
+                text(f"UPDATE {table} SET next_run_at={deferred} WHERE name=:name"),
+                {"name": name, "seconds": defer_seconds},
+            )
+        if result.rowcount and deregister:
+            retention = (
+                f"AND NOT {_repo_freshness_sql('candidate', sqlite=sqlite)}"
+                if preserve_repo_freshness
+                else ""
+            )
+            session.execute(
+                text(f"DELETE FROM {table} AS candidate WHERE name=:name {retention}"),
+                {"name": name},
+            )
         session.commit()
     return result.rowcount > 0
 
@@ -478,7 +540,12 @@ def register_job(
     return True
 
 
-def deregister_job(name: str, *, preserve_repo_freshness: bool = False) -> bool:
+def deregister_job(
+    name: str,
+    *,
+    preserve_repo_freshness: bool = False,
+    expected_holder: str | None = None,
+) -> bool:
     """Remove a job unless it retains an unresolved invocation outcome.
 
     The drainer retains completed repository freshness rows as cooldown
@@ -499,6 +566,8 @@ def deregister_job(name: str, *, preserve_repo_freshness: bool = False) -> bool:
           {retention}
     """)
     with Session(engine) as session:
+        if not lock_claim(session, name, expected_holder):
+            return False
         result = session.execute(
             sql, {"name": name, "unknown_outcome": UNKNOWN_INVOCATION}
         )
@@ -524,7 +593,7 @@ def trigger_job(name: str) -> bool:
     return result.rowcount > 0
 
 
-def defer_job(name: str, seconds: int) -> bool:
+def defer_job(name: str, seconds: int, *, expected_holder: str | None = None) -> bool:
     """Re-arm a job after ``seconds`` while clearing any active claim."""
     engine = get_engine()
     if engine.dialect.name == "sqlite":
@@ -544,6 +613,8 @@ def defer_job(name: str, seconds: int) -> bool:
         """
     )
     with Session(get_engine()) as session:
+        if not lock_claim(session, name, expected_holder):
+            return False
         result = session.execute(
             sql,
             {"name": name, "seconds": seconds, "unknown_outcome": UNKNOWN_INVOCATION},
@@ -552,7 +623,9 @@ def defer_job(name: str, seconds: int) -> bool:
     return result.rowcount > 0
 
 
-def update_job_payload(name: str, payload: dict) -> bool:
+def update_job_payload(
+    name: str, payload: dict, *, expected_holder: str | None = None
+) -> bool:
     """Replace a job payload, preserving the rest of its claim state."""
     engine = get_engine()
     sqlite = engine.dialect.name == "sqlite"
@@ -562,6 +635,8 @@ def update_job_payload(name: str, payload: dict) -> bool:
         f"UPDATE {table} SET payload = {payload_expr} WHERE name = :name AND routine_kind != '_drainer-worker'"
     )
     with Session(engine) as session:
+        if not lock_claim(session, name, expected_holder):
+            return False
         result = session.execute(sql, {"name": name, "payload": json.dumps(payload)})
         session.commit()
     return result.rowcount > 0
@@ -613,9 +688,11 @@ def reserve_drainer_workers(
     live_workflow_ids: set[str],
     *,
     completing_workflow_id: str | None = None,
-) -> list[str]:
+) -> list[str] | None:
     """Persist a bounded deficit before enqueue, using exact observed identities.
 
+    None means the observed snapshot changed and the caller must reread it,
+    not checkpoint a successful empty handoff.
     An absent DBOS row reuses its original intent, never a fresh workflow id.
     Unknown statuses and stale observations cannot retire an intent. Only a
     confirmed terminal workflow, or this workflow's own completed job loop,
@@ -631,7 +708,7 @@ def reserve_drainer_workers(
         lock_pool(session)
         current = drainer_worker_intents(session=session)
         if current != expected:
-            return []
+            return None
         ids = {value["workflow_id"] for value in current.values()}
         if any(wid in live_workflow_ids and statuses.get(wid) is None for wid in ids):
             raise ValueError("inconsistent drainer workflow inventory")
@@ -644,7 +721,25 @@ def reserve_drainer_workers(
             raise ValueError("unknown drainer workflow status")
         # Old untracked cycles also occupy the same two-worker fleet during a
         # rollout. Their actual terminal state must be observed before refill.
-        legacy_live = live_workflow_ids - ids - {completing_workflow_id}
+        retired = set()
+        for wid in live_workflow_ids:
+            slot, _, generation_text = wid.rpartition(":")
+            lineage = current.get(slot)
+            if lineage is None:
+                continue
+            try:
+                generation = int(generation_text)
+            except ValueError:
+                continue
+            if (
+                generation_text == str(generation)
+                and 0 < generation < lineage["generation"]
+            ):
+                # This exact slot advanced past the old generation only after
+                # terminal proof or its own finished job loop. A finishing
+                # predecessor and its queued successor occupy one worker slot.
+                retired.add(wid)
+        legacy_live = live_workflow_ids - ids - retired - {completing_workflow_id}
         occupied = len(legacy_live)
         available = []
         retry = []

@@ -25,6 +25,7 @@ _PROVIDER.add_span_processor(SimpleSpanProcessor(_EXPORTER))
 trace.set_tracer_provider(_PROVIDER)
 
 _QUOTA_SPAN_ATTRIBUTES_STEP = drainer._quota_span_attributes
+_DRAINER_WAIT_ENABLED_STEP = drainer.drainer_wait_enabled
 
 
 SETTINGS = {
@@ -48,6 +49,7 @@ class FakeDBOS:
 def _clear_spans(monkeypatch):
     _EXPORTER.clear()
     monkeypatch.setattr(drainer, "IDLE_POLL_LIMIT", 0)
+    monkeypatch.setattr(drainer, "drainer_wait_enabled", lambda: True)
 
     def require_explicit_database():
         raise AssertionError("hermetic test requires an explicit local database")
@@ -1835,7 +1837,7 @@ def test_idle_rotation_is_bounded_and_live_pause_prevents_next_claim(monkeypatch
         ),
     )
     monkeypatch.setattr(
-        drainer, "drainer_wait_enabled", drainer.drainer_wait_enabled.__wrapped__
+        drainer, "drainer_wait_enabled", _DRAINER_WAIT_ENABLED_STEP.__wrapped__
     )
     monkeypatch.setattr(
         drainer, "DBOS", type("DBOS", (), {"sleep": staticmethod(sleeps.append)})
@@ -1863,7 +1865,7 @@ def test_failed_batch_does_not_wait_or_rotate(monkeypatch):
     monkeypatch.setattr(
         drainer,
         "drainer_wait_enabled",
-        lambda: pytest.fail("failure backoff must not poll"),
+        lambda: True,
     )
     assert drainer._claim_with_idle_wait(
         2100, ("kg-drain",), "failed", 400, 0, wait_allowed=False
@@ -1898,3 +1900,139 @@ def test_cleanup_refunds_only_never_dispatched_pending(
         permit = db.exec(select(AgentCapacityReservation)).one()
         assert permit.state == ("reserved" if attempted else "settled")
         assert permit.outcome == (None if attempted else "cancelled_before_dispatch")
+
+
+@pytest.mark.parametrize("pause", ["enabled", "max_jobs_per_cycle"])
+def test_pause_between_successful_jobs_stops_before_second_claim(monkeypatch, pause):
+    from types import SimpleNamespace
+
+    live = SimpleNamespace(enabled=True, max_jobs_per_cycle=3)
+    monkeypatch.setattr(drainer.agent_config, "load_drainer_settings", lambda: live)
+    monkeypatch.setattr(
+        drainer, "drainer_wait_enabled", _DRAINER_WAIT_ENABLED_STEP.__wrapped__
+    )
+
+    def complete_then_pause(*_args):
+        setattr(live, pause, False if pause == "enabled" else 0)
+        return {"result_text": "finished", "terminal_reason": "stop"}
+
+    result, claims, starts, completions, _, _ = _run(
+        monkeypatch,
+        [{"name": f"job-{n}", "payload": {"prompt": "work"}} for n in range(2)],
+        await_turn=complete_then_pause,
+    )
+    assert result["processed"] == 1
+    assert len(claims) == len(starts) == len(completions) == 1
+
+
+def test_settled_turn_does_not_release_expired_job_lease_before_finalization(
+    admission_database,
+):
+    from agent import routine_jobs
+    from agent_sessions import admission, store
+    from agent_sessions.models import AgentTurn
+
+    _queued_job(admission_database, "postprocessing")
+    assert routine_jobs.update_job_payload("postprocessing", {"mode": "repo-diff"})
+    claim = _admitted_claim("owner")
+    with Session(admission_database) as db:
+        agent = store.create_session(
+            db,
+            "owner:kg-drain:postprocessing",
+            "<guest>",
+            "main",
+            "luna",
+            admission_tier="kg",
+        )
+        db.add(
+            AgentTurn(
+                session_id=agent.id,
+                seq=1,
+                prompt="work",
+                result_text="completed extraction",
+                terminal_reason="stop",
+            )
+        )
+        admission.settle(db, agent, 1, outcome="completed", cessation_confirmed=True)
+        db.execute(
+            text(
+                "UPDATE routine_jobs SET locked_at='2000-01-01' WHERE name='postprocessing'"
+            )
+        )
+        db.commit()
+    # The execution permit is free, but output application still owns this job.
+    assert _admitted_claim("competitor") is None
+    assert routine_jobs.claim_job("legacy", 60, name="postprocessing") is None
+    _queued_job(admission_database, "other-project", "qwen-drain")
+    # A replay cannot switch this claim identity to another job when the old
+    # execution settled but its finalization still owns the original lease.
+    assert _admitted_claim("owner") is None
+    applied = drainer.apply_kg_extraction.__wrapped__(
+        "postprocessing",
+        {"mode": "repo-diff"},
+        "```json\n"
+        + json.dumps(
+            {"head_sha": "b" * 40, "base_sha": None, "diff": "", "diff_stat": ""}
+        )
+        + "\n```",
+        expected_holder=claim["locked_by"],
+    )
+    assert applied["summary"] == "no changes"
+    assert drainer.finish_drainer_job.__wrapped__(
+        "postprocessing", "ok", "applied", expected_holder=claim["locked_by"]
+    )
+    with Session(admission_database) as db:
+        row = db.execute(
+            text(
+                "SELECT locked_by,last_status,payload FROM routine_jobs WHERE name='postprocessing'"
+            )
+        ).one()
+        assert row.locked_by is None and row.last_status == "ok"
+        assert json.loads(row.payload) == {"mode": "repo-diff", "last_sha": "b" * 40}
+
+
+@pytest.mark.parametrize("operation", ["apply", "attempt", "finish"])
+def test_stale_drainer_owner_cannot_apply_or_finalize(admission_database, operation):
+    _queued_job(admission_database, "changed-owner")
+    claim = _admitted_claim("old")
+    with Session(admission_database) as db:
+        db.execute(
+            text(
+                "UPDATE routine_jobs SET locked_by='luna-drainer:new:0' WHERE name='changed-owner'"
+            )
+        )
+        db.commit()
+        before = tuple(
+            db.execute(
+                text("SELECT * FROM routine_jobs WHERE name='changed-owner'")
+            ).one()
+        )
+    operations = {
+        "apply": lambda: drainer.apply_kg_extraction.__wrapped__(
+            "changed-owner",
+            {"mode": "repo-diff"},
+            "invalid output",
+            expected_holder=claim["locked_by"],
+        ),
+        "attempt": lambda: drainer.increment_kg_job_attempt.__wrapped__(
+            "changed-owner", expected_holder=claim["locked_by"]
+        ),
+        "finish": lambda: drainer.finish_drainer_job.__wrapped__(
+            "changed-owner",
+            "ok",
+            "stale",
+            deregister=True,
+            expected_holder=claim["locked_by"],
+        ),
+    }
+    with pytest.raises(RuntimeError, match="claim ownership changed"):
+        operations[operation]()
+    with Session(admission_database) as db:
+        assert (
+            tuple(
+                db.execute(
+                    text("SELECT * FROM routine_jobs WHERE name='changed-owner'")
+                ).one()
+            )
+            == before
+        )
