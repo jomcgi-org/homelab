@@ -32,3 +32,5 @@ class Session:
     collector_version: str
     turns: list[Turn]
     git_origin: str | None = None
+    usage: dict | None = None
+    models: list[str] = field(default_factory=list)

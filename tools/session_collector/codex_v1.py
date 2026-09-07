@@ -9,7 +9,7 @@ from typing import Any
 from .models import Block, Session, Turn
 from .redact import Redactor
 
-FORMAT_VERSION = "codex-v1"
+FORMAT_VERSION = "codex-v2"
 IGNORED_USER_PREFIXES = (
     "<environment_context>",
     "<recommended_plugins>",
@@ -17,6 +17,17 @@ IGNORED_USER_PREFIXES = (
     "<turn_aborted>",
     "# AGENTS.md",
 )
+USAGE_FIELDS = (
+    ("input_tokens", "input_tokens"),
+    ("output_tokens", "output_tokens"),
+    ("cached_input_tokens", "cache_read_tokens"),
+    ("cache_write_input_tokens", "cache_write_tokens"),
+    ("reasoning_output_tokens", "reasoning_tokens"),
+)
+
+
+def _token_count(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def parse(path: Path) -> Session:
@@ -43,11 +54,31 @@ def parse(path: Path) -> Session:
     event_user = ""
     branch: str | None = None
     origin: str | None = None
+    usage_totals = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+    }
+    usage_messages = 0
 
     for record in records:
         record_type = record.get("type")
         payload = record.get("payload")
         if not isinstance(payload, dict):
+            continue
+        if record_type == "event_msg" and payload.get("type") == "token_count":
+            usage_messages += 1
+            total_usage = payload.get("info")
+            if isinstance(total_usage, dict):
+                total_usage = total_usage.get("total_token_usage")
+            if not isinstance(total_usage, dict):
+                total_usage = {}
+            usage_totals = {
+                target: _token_count(total_usage.get(source))
+                for source, target in USAGE_FIELDS
+            }
             continue
         if record_type == "session_meta":
             kept += 1
@@ -143,4 +174,9 @@ def parse(path: Path) -> Session:
         collector_version=FORMAT_VERSION,
         turns=turns,
         git_origin=origin,
+        usage={
+            **usage_totals,
+            "messages": usage_messages,
+            "shape": "codex",
+        },
     )

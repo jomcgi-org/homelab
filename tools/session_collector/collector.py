@@ -95,6 +95,8 @@ def _payload(
             "bytes_original": file_size,
             "truncated": rendered.truncated,
             "collector_version": metadata["collector_version"],
+            "usage": session.usage,
+            "models": session.models[:20],
         },
     }
 
