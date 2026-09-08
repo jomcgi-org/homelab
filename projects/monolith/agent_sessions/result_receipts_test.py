@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 import httpx
 import pytest
@@ -11,6 +12,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from agent_sessions import result_receipts as receipts
 from agent_sessions import admission, store, transport
+from agent_sessions import result_receipts_router
 from agent_sessions.models import (
     AgentCapacityPool,
     AgentCapacityReservation,
@@ -505,3 +507,85 @@ def test_receipt_capture_is_disabled_by_default(monkeypatch):
     assert not receipts.enabled()
     monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     assert receipts.enabled()
+
+
+def test_receiver_authenticates_before_reading_body(database):
+    receipt = prepare()
+
+    class Request:
+        async def stream(self):
+            pytest.fail("unauthenticated body must not be read")
+            yield b""
+
+    async def run():
+        with pytest.raises(HTTPException) as caught:
+            await result_receipts_router.ingest_result(
+                receipt["id"], Request(), "Bearer " + "z" * 43
+            )
+        assert caught.value.status_code == 401
+
+    asyncio.run(run())
+
+
+def test_receiver_bounds_concurrent_uploads_and_releases_slot(database):
+    receipt = prepare()
+
+    async def run():
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        class SlowRequest:
+            async def stream(self):
+                started.set()
+                await finish.wait()
+                yield b'{"result":"complete"}'
+
+        class UnreadRequest:
+            async def stream(self):
+                pytest.fail("excess upload must not be read")
+                yield b""
+
+        first = asyncio.create_task(
+            result_receipts_router.ingest_result(
+                receipt["id"], SlowRequest(), "Bearer " + receipt["token"]
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=2)
+        try:
+            with pytest.raises(HTTPException) as caught:
+                await result_receipts_router.ingest_result(
+                    receipt["id"], UnreadRequest(), "Bearer " + receipt["token"]
+                )
+            assert caught.value.status_code == 503
+            assert caught.value.detail == "receipt_receiver_busy"
+        finally:
+            finish.set()
+            ack = await first
+        assert ack["receipt_id"] == receipt["id"]
+        assert result_receipts_router._capture_slots.acquire(blocking=False)
+        result_receipts_router._capture_slots.release()
+
+    asyncio.run(run())
+
+
+def test_slow_body_expires_without_capture_and_releases_slot(database, monkeypatch):
+    receipt = prepare()
+    monkeypatch.setattr(result_receipts_router, "BODY_TIMEOUT_SECONDS", 0.01)
+
+    class Request:
+        async def stream(self):
+            await asyncio.Event().wait()
+            yield b""
+
+    async def run():
+        with pytest.raises(HTTPException) as caught:
+            await result_receipts_router.ingest_result(
+                receipt["id"], Request(), "Bearer " + receipt["token"]
+            )
+        assert caught.value.status_code == 408
+        assert result_receipts_router._capture_slots.acquire(blocking=False)
+        result_receipts_router._capture_slots.release()
+
+    asyncio.run(run())
+    with Session(database) as db:
+        assert db.get(AgentResultReceipt, receipt["id"]).result_body is None
