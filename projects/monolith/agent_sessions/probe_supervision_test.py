@@ -348,3 +348,20 @@ def test_enabled_leader_task_is_cancellable(monkeypatch):
             await tasks[0]
 
     asyncio.run(check())
+
+
+def test_reimporting_maintenance_keeps_one_model_registration():
+    import importlib
+
+    original = ProbeObservation.__table__
+    importlib.reload(supervision)
+    assert supervision.ProbeObservation.__table__ is original
+
+
+def test_nonsettling_reasons_are_visible_without_secret_payloads(database, caplog):
+    pid = seed(database)
+    with caplog.at_level("INFO", logger=supervision.__name__):
+        sweep(proof(state="running", unexpected="never-log-this"))
+    assert f"Probe supervision permit {pid}: awaiting_eviction" in caplog.text
+    assert "never-log-this" not in caplog.text
+    assert "never-export-this-token" not in caplog.text
