@@ -799,6 +799,9 @@ def _retry_or_dead_letter_kg(
         finish_drainer_job(name, "error", error, not recurring, **ownership)
 
 
+_turn_has_unknown_outcome_lookup = None
+
+
 def _completed_output(turn: dict, session_id: int | None = None) -> str:
     if turn.get("stop_reason") == UNKNOWN_INVOCATION or _turn_has_unknown_outcome(
         turn, session_id
@@ -818,6 +821,8 @@ def _completed_output(turn: dict, session_id: int | None = None) -> str:
 def _turn_has_unknown_outcome(turn: dict, session_id: int | None = None) -> bool:
     if session_id is None or turn.get("seq") is None:
         return False
+    if _turn_has_unknown_outcome_lookup is not None:
+        return bool(_turn_has_unknown_outcome_lookup(session_id, int(turn["seq"])))
     from agent_sessions import store
     from core.db import get_engine
     from sqlmodel import Session

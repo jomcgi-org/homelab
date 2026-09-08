@@ -11,6 +11,7 @@ from sqlmodel import Session
 
 from knowledge.burst import kg_burst_state
 from knowledge.extraction import EXTRACTION_VERSION, KG_JOB_KIND, KG_NODE_KEY
+from shared.invocation_outcomes import UNKNOWN_INVOCATION
 
 _STALE_SECONDS = 6 * 60 * 60
 _DISPUTE_STALE_SECONDS = 48 * 60 * 60
@@ -37,26 +38,31 @@ def _kg_health_core(session: Session, cap: int) -> dict:
             WITH held AS (
                 SELECT name
                   FROM claude_agent.routine_jobs
-                 WHERE last_status = 'unknown_invocation'
+                 WHERE last_status = :unknown_outcome
                 UNION
                 SELECT routine_job_name
                   FROM agent_sessions.capacity_reservations
-                 WHERE state != 'settled' AND routine_job_name IS NOT NULL
+                 WHERE state != 'settled'
+                   AND routine_job_name IS NOT NULL
             )
-            SELECT count(*) FILTER (
-                       WHERE next_run_at IS NOT NULL
-                         AND name NOT IN (SELECT name FROM held)
+            SELECT (
+                       SELECT count(*)
+                         FROM claude_agent.routine_jobs
+                        WHERE routine_kind = :kind
+                          AND next_run_at IS NOT NULL
+                          AND name NOT IN (SELECT name FROM held)
                    ) AS queued,
-                   count(*) FILTER (WHERE name IN (SELECT name FROM held)) AS held,
-                   EXTRACT(EPOCH FROM (now() - MIN(next_run_at) FILTER (
-                       WHERE next_run_at IS NOT NULL
-                         AND name NOT IN (SELECT name FROM held)
+                   (SELECT count(*) FROM held) AS held,
+                   EXTRACT(EPOCH FROM (now() - (
+                       SELECT MIN(next_run_at)
+                         FROM claude_agent.routine_jobs
+                        WHERE routine_kind = :kind
+                          AND next_run_at IS NOT NULL
+                          AND name NOT IN (SELECT name FROM held)
                    ))) AS oldest_seconds
-              FROM claude_agent.routine_jobs
-             WHERE routine_kind = :kind
             """
         ),
-        {"kind": KG_JOB_KIND},
+        {"kind": KG_JOB_KIND, "unknown_outcome": UNKNOWN_INVOCATION},
     ).one()
     provenance = session.execute(
         text(

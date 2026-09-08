@@ -98,18 +98,6 @@ def test_kg_health_reports_held_jobs_separately_from_queue():
     assert result["held"] == 3
 
 
-def test_kg_health_reports_held_jobs_separately_from_queue():
-    session = _Session(
-        SimpleNamespace(queued=2, held=3, oldest_seconds=0),
-        SimpleNamespace(failed_24h=0, atoms_24h=0, last_success_at=None),
-    )
-
-    result = _kg_health_core(session, 40)
-
-    assert result["queued"] == 2
-    assert result["held"] == 3
-
-
 def test_kg_health_filters_lane_version_and_counts_null_success_rows():
     session = _Session(
         SimpleNamespace(queued=0, oldest_seconds=None),

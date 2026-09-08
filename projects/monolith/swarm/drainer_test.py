@@ -55,6 +55,9 @@ def _clear_spans(monkeypatch):
         raise AssertionError("hermetic test requires an explicit local database")
 
     monkeypatch.setattr("core.db.get_engine", require_explicit_database)
+    monkeypatch.setattr(
+        drainer, "_turn_has_unknown_outcome_lookup", lambda _session_id, _seq: False
+    )
     monkeypatch.setattr(drainer, "cancel_drainer_reservation", lambda *_: True)
     monkeypatch.setattr(drainer, "sweep_kg_raws", lambda: 0)
     monkeypatch.setattr(drainer, "kg_effective_cap", lambda base_cap: base_cap)
@@ -1463,6 +1466,45 @@ def test_unknown_turn_holds_job_without_retry_apply_or_cleanup(monkeypatch, stag
     assert completed == []
     assert destroys == []
     assert len(applied) == (1 if stage == "kg_correction" else 0)
+
+
+def test_delivery_error_turn_holds_job_without_retry_apply_or_cleanup(monkeypatch):
+    held, applied, deferred = [], [], []
+    monkeypatch.setattr(
+        drainer, "hold_drainer_job", lambda *args: held.append(args) or True
+    )
+    monkeypatch.setattr(
+        drainer, "defer_drainer_job", lambda *args: deferred.append(args)
+    )
+    monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(
+        drainer, "apply_kg_extraction", lambda *args: applied.append(args)
+    )
+    monkeypatch.setattr(
+        drainer, "_turn_has_unknown_outcome_lookup", lambda _session_id, seq: seq == 1
+    )
+    job = {
+        "name": "job-delivery-error",
+        "routine_kind": "kg-drain",
+        "payload": {"raw_id": "raw-retain"},
+    }
+    turn = {
+        "terminal_reason": "error",
+        "stop_reason": None,
+        "result_text": "partial extraction",
+        "seq": 1,
+    }
+
+    _, _, starts, completed, _, destroys = _run(
+        monkeypatch, [job], await_turn=lambda *_: turn
+    )
+
+    assert len(starts) == 1
+    assert held == [("job-delivery-error", 101)]
+    assert deferred == []
+    assert completed == []
+    assert applied == []
+    assert destroys == []
 
 
 def test_cleanup_preserves_unknown_session_pending_and_guest(monkeypatch, tmp_path):
