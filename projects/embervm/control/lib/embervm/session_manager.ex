@@ -3942,7 +3942,7 @@ defmodule Embervm.SessionManager do
     |> NodeCapacity.all()
     |> Enum.any?(fn fact ->
       fact_dial_id(fact) == dial_key and
-        is_integer(Map.get(fact, :updated_at)) and fact.updated_at > session.updated_at and
+        is_integer(Map.get(fact, :observed_at_unix_ms)) and fact.observed_at_unix_ms > session.updated_at and
         is_list(Map.get(fact, :session_vms)) and
         not Enum.any?(fact.session_vms, fn vm ->
           vm.vm_id == vm_id or vm.session_id == session.session_id

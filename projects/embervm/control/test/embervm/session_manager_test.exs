@@ -3896,8 +3896,13 @@ defmodule Embervm.SessionManagerTest do
 
       report_empty_node(ctx)
       {:ok, fact} = NodeCapacity.fetch(ctx.cap_table, "node-4")
+      # Capacity freshness uses a separate Unix receipt stamp. Its monotonic
+      # updated_at value must not be compared to the durable lifecycle intent.
+      assert :ok = SessionManager.reconcile(ctx.mgr)
+      assert {:ok, %{state: unquote(pending)}} = SessionStore.get(ctx.store, created.session_id)
+      fact = Map.merge(fact, %{updated_at: -900_000, observed_at_unix_ms: 5_000_000})
       for timestamp <- [3_000_000, 4_000_000] do
-        NodeCapacity.put(ctx.cap_table, "node-4", %{fact | updated_at: timestamp})
+        NodeCapacity.put(ctx.cap_table, "node-4", %{fact | observed_at_unix_ms: timestamp})
         assert :ok = SessionManager.reconcile(ctx.mgr)
         assert {:ok, %{state: unquote(pending)}} = SessionStore.get(ctx.store, created.session_id)
       end
@@ -3913,6 +3918,25 @@ defmodule Embervm.SessionManagerTest do
       assert :ok = SessionManager.reconcile(ctx.mgr)
       assert {:ok, %{state: unquote(completed)}} = SessionStore.get(ctx.store, created.session_id)
     end
+  end
+
+  test "real node projection orders absence against durable wall time without changing its monotonic clock" do
+    ctx = start_stack(node_confirmed_destroy: true, store_clock: fn -> System.system_time(:millisecond) - 1_000 end)
+    put_session_workload(ctx, "wl-clock-domains")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-clock-domains", "p1")
+    {:ok, _} = SessionStore.transition(ctx.store, created.session_id, :begin_destroy, :session_destroying, %{}, %{})
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+
+    reg = start_supervised!({Embervm.NodeRegistry,
+      name: nil, table: ctx.cap_table, nodes: [%{id: "node-4", address: "node-4.test:9090"}],
+      watch_startup: false, registry_resync_ms: 0, clock: fn -> -900_000 end,
+      session_sweep_fun: fn _node, _pod -> :ok end})
+    assert :ok = Embervm.NodeRegistry.inject_status(reg, "node-4", %Embervm.Node.V1.NodeStatus{node_id: "node-4"})
+    assert [fact] = NodeCapacity.all(ctx.cap_table)
+    assert fact.updated_at == -900_000
+    assert fact.observed_at_unix_ms > 1_000_000_000_000
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    assert {:ok, %{state: :destroyed}} = SessionStore.get(ctx.store, created.session_id)
   end
 
   test "restart rebinds a destroying VM and waits for the real teardown response" do
