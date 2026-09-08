@@ -81,7 +81,7 @@ defmodule Embervm.SessionBankRelightTest do
     session_opts = [
       channel_fun: fn _node -> {:ok, :ch} end,
       assign_fun: assign_fun,
-      destroy_fun: fn _ch, vm -> send(test_pid, {:destroyed, vm}) && {:ok, %{}} end,
+      destroy_fun: fn _ch, vm -> send(test_pid, {:destroyed, vm}) && {:ok, %{teardown_confirmed: true}} end,
       invalidate_fun: Keyword.get(opts, :invalidate_fun, fn _node, _ch -> :ok end)
     ]
 
@@ -589,6 +589,7 @@ defmodule Embervm.SessionBankRelightTest do
     {:ok, created} = SessionManager.create(ctx.mgr, "wl", "p1")
     {:ok, _} = SessionManager.destroy(ctx.mgr, created.session_id)
     assert_receive {:destroyed, _vm_id}
+    wait_until(fn -> match?({:ok, %{state: :destroyed}}, SessionStore.get(ctx.store, created.session_id)) end)
 
     # The node still reports a snapshot for the destroyed session: it must be evicted.
     NodeCapacity.put(ctx.cap_table, "node-4", node_fact("wl", session_snapshots: [snap_fact(created.session_id)]))
