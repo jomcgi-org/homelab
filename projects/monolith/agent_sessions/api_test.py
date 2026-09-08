@@ -1,15 +1,15 @@
 import asyncio
 
 import pytest
+from faas.embervm_client import EmberVMTransportError
+from knowledge import recall
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, create_engine
 
 import agent_sessions.execution_api as api
-import agent_sessions.mcp as mcp
+from agent_sessions import mcp
 from agent_sessions.models import AgentSession
 from agent_sessions.transport import EmberSessionGone, Turn
-from faas.embervm_client import EmberVMTransportError
-import knowledge.recall as recall
 
 
 def _completed_synthetic_turn() -> Turn:
@@ -29,7 +29,14 @@ def _completed_synthetic_turn() -> Turn:
     )
 
 
-def test_run_synthetic_session_claims_pending_before_deliver(monkeypatch):
+@pytest.fixture
+def synthetic_claim(monkeypatch):
+    monkeypatch.setattr(api, "_synthetic_dispatch_count_sync", lambda *_args: 3)
+
+
+def test_run_synthetic_session_claims_pending_before_deliver(
+    monkeypatch, synthetic_claim
+):
     row = AgentSession(
         id=41,
         local_session_id="codex-synthetic-test",
@@ -60,7 +67,7 @@ def test_run_synthetic_session_claims_pending_before_deliver(monkeypatch):
     monkeypatch.setattr(
         api,
         "_release_pending_message_claim_sync",
-        lambda session_id, turn_seq, claim_owner, cause="observer_released": (
+        lambda session_id, turn_seq, claim_owner, cause="observer_released", **_kwargs: (
             released.append((session_id, turn_seq))
         ),
     )
@@ -70,11 +77,15 @@ def test_run_synthetic_session_claims_pending_before_deliver(monkeypatch):
     assert result is turn
     assert len(delivered) == 1
     assert callable(delivered[0][1]["admission_check"])
+    assert delivered[0][1]["agent_session_id"] == 41
+    assert delivered[0][1]["dispatch_count"] == 3
     assert deleted == [(41, 1)]
     assert released == [(41, 1)]
 
 
-def test_run_synthetic_session_persists_actual_guest_model(monkeypatch):
+def test_run_synthetic_session_persists_actual_guest_model(
+    monkeypatch, synthetic_claim
+):
     row = AgentSession(
         id=46,
         local_session_id="codex-synthetic-test",
@@ -99,12 +110,15 @@ def test_run_synthetic_session_persists_actual_guest_model(monkeypatch):
         lambda *args: persisted.append(args),
     )
     monkeypatch.setattr(api, "_delete_pending_message_sync", lambda *args: None)
-    monkeypatch.setattr(api, "_release_pending_message_claim_sync", lambda *args: None)
+    monkeypatch.setattr(
+        api, "_release_pending_message_claim_sync", lambda *args, **kwargs: None
+    )
 
     result = asyncio.run(api.run_synthetic_session("probe", model="luna"))
 
     assert result is turn
-    assert persisted[0][-2] == "terra"
+    assert persisted[0][7] == "terra"
+    assert persisted[0][-1] == 3
 
 
 def test_run_synthetic_session_does_not_deliver_when_claim_lost(monkeypatch):
@@ -140,7 +154,9 @@ def test_run_synthetic_session_does_not_deliver_when_claim_lost(monkeypatch):
     assert deleted == []
 
 
-def test_run_synthetic_session_aborts_when_claim_stolen_mid_deliver(monkeypatch):
+def test_run_synthetic_session_aborts_when_claim_stolen_mid_deliver(
+    monkeypatch, synthetic_claim
+):
     row = AgentSession(
         id=45,
         local_session_id="codex-synthetic-test",
@@ -194,7 +210,9 @@ def test_run_synthetic_session_aborts_when_claim_stolen_mid_deliver(monkeypatch)
     monkeypatch.setattr(
         api,
         "_release_pending_message_claim_sync",
-        lambda session_id, turn_seq, claim_owner, cause="observer_released": None,
+        lambda session_id, turn_seq, claim_owner, cause="observer_released", **_kwargs: (
+            None
+        ),
     )
 
     result = asyncio.run(api.run_synthetic_session("probe"))
@@ -208,6 +226,7 @@ def test_run_synthetic_session_aborts_when_claim_stolen_mid_deliver(monkeypatch)
 
 def test_run_synthetic_session_does_not_assume_integrity_error_means_duplicate(
     monkeypatch,
+    synthetic_claim,
 ):
     row = AgentSession(
         id=43,
@@ -240,7 +259,7 @@ def test_run_synthetic_session_does_not_assume_integrity_error_means_duplicate(
     monkeypatch.setattr(
         api,
         "_release_pending_message_claim_sync",
-        lambda session_id, turn_seq, claim_owner, cause="observer_released": (
+        lambda session_id, turn_seq, claim_owner, cause="observer_released", **_kwargs: (
             released.append((session_id, turn_seq))
         ),
     )
@@ -254,6 +273,7 @@ def test_run_synthetic_session_does_not_assume_integrity_error_means_duplicate(
 
 def test_run_synthetic_session_refreshes_claim_and_delivers_once_when_lease_would_expire(
     monkeypatch,
+    synthetic_claim,
 ):
     row = AgentSession(
         id=44,
@@ -307,7 +327,9 @@ def test_run_synthetic_session_refreshes_claim_and_delivers_once_when_lease_woul
     monkeypatch.setattr(
         api,
         "_release_pending_message_claim_sync",
-        lambda session_id, turn_seq, claim_owner, cause="observer_released": None,
+        lambda session_id, turn_seq, claim_owner, cause="observer_released", **_kwargs: (
+            None
+        ),
     )
 
     result = asyncio.run(api.run_synthetic_session("probe"))
@@ -803,6 +825,7 @@ async def test_reap_http_202_retains_binding_until_later_authoritative_absence(
     monkeypatch,
 ):
     import httpx
+
     from agent_sessions import transport
 
     row = _reap_row()
@@ -826,7 +849,7 @@ async def test_reap_http_202_retains_binding_until_later_authoritative_absence(
     real_client = httpx.AsyncClient
     mock_transport = httpx.MockTransport(handler)
     monkeypatch.setattr(transport, "EMBERVM_URL", "https://ember.test")
-    monkeypatch.setattr(transport, "auth_headers", lambda: {})
+    monkeypatch.setattr(transport, "auth_headers", dict)
     monkeypatch.setattr(
         transport.httpx,
         "AsyncClient",
@@ -888,6 +911,7 @@ for name in (
 """
     result = subprocess.run(
         [sys.executable, "-c", script],
+        check=False,
         env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)},
         capture_output=True,
         text=True,

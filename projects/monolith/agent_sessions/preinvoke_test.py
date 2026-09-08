@@ -13,11 +13,19 @@ from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine, select
 from swarm import drainer
 
-from agent_sessions import admission, mcp, store, transport
+from agent_sessions import (
+    admission,
+    execution_api,
+    mcp,
+    result_receipts,
+    store,
+    transport,
+)
 from agent_sessions.constants import KG_NODE_KEY, UNKNOWN_INVOCATION
 from agent_sessions.models import (
     AgentCapacityPool,
     AgentCapacityReservation,
+    AgentResultReceipt,
     AgentSession,
     AgentTurn,
     PendingMessage,
@@ -38,6 +46,7 @@ def database(tmp_path, monkeypatch):
             for model in (
                 AgentCapacityPool,
                 AgentCapacityReservation,
+                AgentResultReceipt,
                 AgentSession,
                 AgentTurn,
                 PendingMessage,
@@ -58,7 +67,15 @@ def database(tmp_path, monkeypatch):
         db.execute(
             text("CREATE TABLE raw_inputs (raw_id TEXT PRIMARY KEY, source TEXT)")
         )
-    for module in (admission, store, mcp, core_db, routine_jobs):
+    for module in (
+        admission,
+        store,
+        mcp,
+        core_db,
+        routine_jobs,
+        execution_api,
+        result_receipts,
+    ):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
     # This fixture has no operator burst grant. Eligibility and admission still
     # execute against the real database, including the rolling daily count.
@@ -129,14 +146,290 @@ def _http(monkeypatch, handler):
         async def post(self, url, **kwargs):
             return await handler(httpx.Request("POST", url, **kwargs))
 
+        async def delete(self, url, **kwargs):
+            return await handler(httpx.Request("DELETE", url, **kwargs))
+
     monkeypatch.setattr(transport.httpx, "AsyncClient", Client)
     monkeypatch.setattr(transport, "EMBERVM_URL", "https://ember.test")
     monkeypatch.setattr(transport, "auth_headers", dict)
-    monkeypatch.setattr(mcp, "_transport", transport.EmberVmShimTransport())
+    client = transport.EmberVmShimTransport()
+    monkeypatch.setattr(mcp, "_transport", client)
+    monkeypatch.setattr(execution_api, "_transport", client)
 
 
 def _claim_scout(workflow, *, cap=40):
     return drainer.claim_drainer_job.__wrapped__(2100, ["kg-drain"], workflow, cap, 0)
+
+
+def _synthetic_id(engine):
+    with Session(engine) as db:
+        agent = db.exec(select(AgentSession)).one()
+        assert agent.local_session_id.startswith("synthetic:")
+        assert agent.admission_tier == "probe"
+        return agent.id
+
+
+def _probe_response(request):
+    if request.url.path == "/v1/workloads/claude-runtime/sessions":
+        return httpx.Response(
+            201,
+            json={"session_id": "probe-guest", "session_token": "probe-token"},
+            request=request,
+        )
+    if request.method == "DELETE":
+        return httpx.Response(200, json={"state": "destroyed"}, request=request)
+    assert request.url.path == "/v1/sessions/probe-guest/invoke"
+    assert request.headers["X-Ember-Guest-Path"] == "/shim/turn"
+    return httpx.Response(
+        200,
+        json={
+            "result": "synthetic ok",
+            "terminal_reason": "completed",
+            "session_id": "probe-cli",
+            "total_cost_usd": 0.01,
+        },
+        request=request,
+    )
+
+
+@pytest.mark.parametrize("failure", ["create", "callback", "admission"])
+def test_synthetic_preinvoke_failure_settles_without_guest_cleanup(
+    database, monkeypatch, failure
+):
+    requests = []
+
+    async def handler(request):
+        requests.append((request.method, request.url.path))
+        assert request.url.path == "/v1/workloads/claude-runtime/sessions"
+        if failure == "create":
+            return httpx.Response(
+                503,
+                json={"error": "create refused", "retryable": False},
+                request=request,
+            )
+        if failure == "admission":
+            # Change the real permit's workload fence after VM creation. The
+            # next real admission recheck must refuse the model POST.
+            with Session(database) as db, db.begin():
+                permit = db.exec(select(AgentCapacityReservation)).one()
+                permit.workload = "another-runtime"
+                db.add(permit)
+        return _probe_response(request)
+
+    if failure == "callback":
+
+        def failed_database_write(*_args):
+            raise OSError("binding storage unavailable")
+
+        monkeypatch.setattr(
+            execution_api, "_persist_synthetic_binding_sync", failed_database_write
+        )
+    _http(monkeypatch, handler)
+    with pytest.raises(transport.EmberTurnNotInvoked):
+        asyncio.run(execution_api.run_synthetic_session("probe"))
+    state = _snapshot(database, _synthetic_id(database))
+    assert requests == [("POST", "/v1/workloads/claude-runtime/sessions")]
+    assert state["pending"] == []
+    assert state["permit"]["state"] == "settled"
+    assert state["permit"]["outcome"] == "not_invoked"
+    turn = state["turns"][0]
+    assert turn["terminal_reason"] == "error"
+    assert turn["cost_usd"] is None
+    recovery = json.loads(turn["usage_json"])["recovery"]
+    assert recovery["invocation_phase"] == "not_invoked"
+    assert recovery["dispatch_count"] == 1
+    assert recovery["claim_owner"] == state["permit"]["owner"]
+    assert state["session"]["ember_session_id"] == (
+        "probe-guest" if failure == "admission" else None
+    )
+
+
+@pytest.mark.parametrize("stage", ["create", "model_response", "create_failure"])
+@pytest.mark.parametrize("changed", ["owner", "count"])
+def test_synthetic_stale_attempt_never_overwrites_binding_result_or_cleanup(
+    database, monkeypatch, stage, changed
+):
+    before = None
+    requests = []
+
+    async def handler(request):
+        nonlocal before
+        requests.append((request.method, request.url.path))
+        assert request.method != "DELETE"
+        creating = request.url.path.endswith("/sessions")
+        if creating == (stage != "model_response"):
+            sid = _synthetic_id(database)
+            with Session(database) as db, db.begin():
+                pending = store.get_pending_message(db, sid, 1)
+                permit = db.exec(select(AgentCapacityReservation)).one()
+                agent = db.get(AgentSession, sid)
+                if changed == "owner":
+                    pending.claimed_by_replica = "replacement-executor"
+                    permit.owner = "replacement-executor"
+                else:
+                    pending.dispatch_count += 1
+                agent.ember_session_id = "replacement-guest"
+                agent.ember_session_token = "replacement-token"
+                db.add_all([pending, permit, agent])
+            before = _snapshot(database, sid)
+            if stage == "create_failure":
+                return httpx.Response(
+                    503,
+                    json={"error": "create refused", "retryable": False},
+                    request=request,
+                )
+        return _probe_response(request)
+
+    _http(monkeypatch, handler)
+    if stage == "create_failure":
+        with pytest.raises(transport.EmberTurnNotInvoked):
+            asyncio.run(execution_api.run_synthetic_session("probe"))
+    else:
+        assert asyncio.run(execution_api.run_synthetic_session("probe")) is None
+    assert before is not None
+    assert _snapshot(database, _synthetic_id(database)) == before
+    assert len(requests) == (2 if stage == "model_response" else 1)
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_synthetic_post_start_failure_retains_binding_and_uncertain_permit(
+    database, monkeypatch, cancel
+):
+    requests = []
+
+    async def handler(request):
+        requests.append(request.method)
+        assert request.method != "DELETE"
+        if request.url.path.endswith("/invoke"):
+            if cancel:
+                raise asyncio.CancelledError()
+            raise httpx.ReadError("model response lost", request=request)
+        return _probe_response(request)
+
+    _http(monkeypatch, handler)
+    expected = asyncio.CancelledError if cancel else transport.EmberVMTransportError
+    with pytest.raises(expected) as raised:
+        asyncio.run(execution_api.run_synthetic_session("probe"))
+    assert not isinstance(raised.value, transport.EmberTurnNotInvoked)
+    state = _snapshot(database, _synthetic_id(database))
+    assert requests == ["POST", "POST"]
+    assert state["permit"]["state"] == "uncertain"
+    assert state["session"]["ember_session_id"] == "probe-guest"
+    assert state["pending"] == []
+    assert state["turns"][0]["cost_usd"] is None
+    if cancel:
+        assert state["turns"][0]["stop_reason"] == UNKNOWN_INVOCATION
+
+
+def test_synthetic_cancelled_creation_retains_unknown_hold(database, monkeypatch):
+    async def handler(request):
+        assert request.url.path == "/v1/workloads/claude-runtime/sessions"
+        raise asyncio.CancelledError()
+
+    _http(monkeypatch, handler)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(execution_api.run_synthetic_session("probe"))
+    state = _snapshot(database, _synthetic_id(database))
+    assert state["permit"]["state"] == "uncertain"
+    assert state["turns"][0]["stop_reason"] == UNKNOWN_INVOCATION
+    assert state["session"]["ember_session_id"] is None
+
+
+@pytest.mark.parametrize("error_type", [OSError, transport.EmberTurnNotInvoked])
+def test_synthetic_failed_result_persistence_does_not_destroy_guest(
+    database, monkeypatch, error_type
+):
+    requests = []
+
+    async def handler(request):
+        requests.append(request.method)
+        assert request.method != "DELETE"
+        return _probe_response(request)
+
+    def failed_database_write(*_args):
+        raise error_type("result storage unavailable")
+
+    _http(monkeypatch, handler)
+    monkeypatch.setattr(
+        execution_api, "_persist_turn_from_pending_sync", failed_database_write
+    )
+    with pytest.raises(error_type, match="result storage unavailable"):
+        asyncio.run(execution_api.run_synthetic_session("probe"))
+    state = _snapshot(database, _synthetic_id(database))
+    assert requests == ["POST", "POST"]
+    assert state["permit"]["state"] == "uncertain"
+    assert state["session"]["ember_session_id"] == "probe-guest"
+    assert state["turns"][0]["stop_reason"] == UNKNOWN_INVOCATION
+    assert json.loads(state["turns"][0]["usage_json"])["recovery"]["cause"] == (
+        "result_persistence_failed"
+    )
+
+
+@pytest.mark.parametrize("capture", [False, True])
+def test_synthetic_success_persists_before_normal_cleanup_and_pins_receipt(
+    database, monkeypatch, capture
+):
+    requests = []
+    receipt = None
+    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", str(capture).lower())
+
+    async def handler(request):
+        nonlocal receipt
+        requests.append(request.method)
+        if request.url.path.endswith("/invoke"):
+            payload = json.loads(request.content)
+            if capture:
+                receipt = payload["result_receipt"]
+            else:
+                assert "result_receipt" not in payload
+        if request.method == "DELETE":
+            state = _snapshot(database, _synthetic_id(database))
+            assert state["pending"] == []
+            assert state["permit"]["state"] == "settled"
+            assert state["turns"][0]["result_text"] == "synthetic ok"
+        return _probe_response(request)
+
+    _http(monkeypatch, handler)
+    turn = asyncio.run(execution_api.run_synthetic_session("probe"))
+    assert turn.result == "synthetic ok"
+    state = _snapshot(database, _synthetic_id(database))
+    assert requests == ["POST", "POST", "DELETE"]
+    assert state["session"]["ember_session_id"] is None
+    assert state["turns"][0]["cost_usd"] == 0.01
+    with Session(database) as db:
+        rows = db.exec(select(AgentResultReceipt)).all()
+        assert len(rows) == int(capture)
+        if capture:
+            assert rows[0].id == receipt["id"]
+            assert rows[0].session_id == state["session"]["id"]
+            assert rows[0].seq == rows[0].dispatch_count == 1
+            assert rows[0].claim_owner == state["permit"]["owner"]
+            assert rows[0].guest_id == "probe-guest"
+
+
+def test_synthetic_receipt_mint_failure_before_model_post_is_not_invoked(
+    database, monkeypatch
+):
+    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
+    requests = []
+
+    async def handler(request):
+        requests.append(request.method)
+        assert request.url.path.endswith("/sessions")
+        with Session(database) as db, db.begin():
+            pending = db.exec(select(PendingMessage)).one()
+            pending.claimed_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+            db.add(pending)
+        return _probe_response(request)
+
+    _http(monkeypatch, handler)
+    with pytest.raises(transport.EmberTurnNotInvoked):
+        asyncio.run(execution_api.run_synthetic_session("probe"))
+    state = _snapshot(database, _synthetic_id(database))
+    assert requests == ["POST"]
+    assert state["permit"]["outcome"] == "not_invoked"
+    assert state["permit"]["state"] == "settled"
+    assert state["session"]["ember_session_id"] == "probe-guest"
 
 
 def test_real_create_failure_settles_exact_scout_and_preserves_interval(

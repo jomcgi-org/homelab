@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-import secrets
 import logging
+import secrets
 from uuid import uuid4
 
+from core.db import get_engine
+from faas.embervm_client import EmberVMTransportError
+from goosecracker.api import REPO_CATALOG
 from sqlmodel import Session
 
 from agent_sessions import model_family, normalize_model, store
 from agent_sessions.codex_login import codex_login_gate, watch_for_login
 from agent_sessions.constants import SYNTHETIC_SESSION_PREFIX
 from agent_sessions.mcp import (
+    _REPLICA_ID,
     _activate_session_after_enqueue,
     _append_rationale_trailer,
     _claim_pending_message_sync,
@@ -20,11 +24,9 @@ from agent_sessions.mcp import (
     _delete_pending_message_sync,
     _load_session_row,
     _mark_turn_error_sync,
-    _persist_ember_session,
     _persist_pending_message,
     _persist_session,
     _persist_turn_from_pending_sync,
-    _REPLICA_ID,
     _refresh_claim_sync,
     _release_pending_message_claim_sync,
     _schedule_next_message,
@@ -32,10 +34,7 @@ from agent_sessions.mcp import (
     _transport,
     recover_zombie_session_if_needed,
 )
-from agent_sessions.transport import EmberSessionGone
-from faas.embervm_client import EmberVMTransportError
-from core.db import get_engine
-from goosecracker.api import REPO_CATALOG
+from agent_sessions.transport import EmberSessionGone, EmberTurnNotInvoked
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +45,56 @@ logger = logging.getLogger(__name__)
 # GET can report (creating, running, banking, parking, banked, parked,
 # relighting, destroying) is live or transitional and must retain the binding.
 _REAP_TERMINAL_STATES = frozenset({"destroyed", "expired", "evicted", "failed"})
+
+
+def _synthetic_dispatch_count_sync(
+    session_id: int, turn_seq: int, claim_owner: str
+) -> int:
+    """Read the attempt identity actually claimed by this direct executor."""
+    pending = store.get_pending_message_sync(session_id, turn_seq)
+    if (
+        pending is None
+        or pending.claimed_by_replica != claim_owner
+        or pending.dispatch_count < 1
+    ):
+        raise store.PendingClaimLost("Synthetic probe no longer owns its dispatch")
+    return pending.dispatch_count
+
+
+def _persist_synthetic_binding_sync(
+    session_id: int, turn_seq: int, claim_owner: str, dispatch_count: int, ember
+) -> None:
+    """Check ownership and write the binding under the same pool/session locks."""
+    with Session(get_engine()) as db:
+        agent = store._lock_session(db, session_id)
+        pending = store.get_pending_message(db, session_id, turn_seq)
+        if (
+            agent is None
+            or pending is None
+            or pending.claimed_by_replica != claim_owner
+            or pending.dispatch_count != dispatch_count
+        ):
+            raise store.PendingClaimLost(
+                "Synthetic binding no longer owns its dispatch"
+            )
+        store._assert_sendable(db, session_id)
+        permit = store.admission.reservation(db, agent.local_session_id, turn_seq)
+        if (
+            permit is None
+            or permit.session_id != session_id
+            or permit.owner != claim_owner
+            or permit.state not in {"reserved", "running"}
+        ):
+            raise store.PendingClaimLost("Synthetic binding no longer owns its permit")
+        store.set_ember_session(
+            db,
+            session_id,
+            ember.session_id,
+            ember.session_token,
+            ember.expires_at,
+            ember.lineage_id,
+            is_restored=ember.restored,
+        )
 
 
 async def run_synthetic_session(prompt: str, model: str = "luna"):
@@ -124,14 +173,27 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
     refresh_task = asyncio.create_task(_refresh_heartbeat())
     ember = None
     result_received = False
+    result_persisted = False
+    dispatch_count = None
     release_cause = "observer_released"
 
     async def persist_callback(created_ember, _cli_session_id):
-        nonlocal ember
-        # Capture the created session before the persistence hop so a failed
-        # invoke or callback still reaches the cleanup block below.
+        nonlocal ember, claim_stolen
+        # Remember the exact created guest, but a failed or stolen binding does
+        # not authorize destroying it. Cleanup requires our persisted result.
         ember = created_ember
-        await asyncio.to_thread(_persist_ember_session, row.id, created_ember)
+        try:
+            await asyncio.to_thread(
+                _persist_synthetic_binding_sync,
+                row.id,
+                claimed_seq,
+                claim_owner,
+                dispatch_count,
+                created_ember,
+            )
+        except (store.PendingClaimLost, store.SessionOutcomeUnknown):
+            claim_stolen = True
+            raise
 
     try:
         if claim_stolen:
@@ -144,6 +206,11 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
                 row.id,
             )
             return None
+        if claimed_seq != turn_seq:
+            raise store.PendingClaimLost("Synthetic probe claimed a different turn")
+        dispatch_count = await asyncio.to_thread(
+            _synthetic_dispatch_count_sync, row.id, claimed_seq, claim_owner
+        )
         # Match the executor's deliver shape (#5607): the synthetic previously
         # omitted progress_token, and its progress-quiet connection was the one
         # whose reply kept arriving on a severed pipe while interactive turns
@@ -160,6 +227,11 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
             ):
                 raise EmberVMTransportError("Shared execution admission is fenced")
 
+        from agent_sessions import result_receipts
+
+        receipt_kwargs = (
+            {"receipt_claim_owner": claim_owner} if result_receipts.enabled() else {}
+        )
         turn, _returned_ember = await _transport.deliver(
             None,
             None,
@@ -168,6 +240,9 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
             on_create=persist_callback,
             progress_token=progress_token,
             admission_check=shared_admission_check,
+            agent_session_id=row.id,
+            dispatch_count=dispatch_count,
+            **receipt_kwargs,
         )
         ember = _returned_ember
         result_received = True
@@ -193,7 +268,9 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
             turn.session_id,
             turn.model or model,
             claim_owner,
+            dispatch_count,
         )
+        result_persisted = True
         await asyncio.to_thread(_delete_pending_message_sync, row.id, turn_seq)
         return turn
     except asyncio.CancelledError:
@@ -202,6 +279,22 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
     except (store.PendingClaimLost, store.SessionOutcomeUnknown):
         claim_stolen = True
         return None
+    except EmberTurnNotInvoked as exc:
+        if result_received:
+            release_cause = "result_persistence_failed"
+            raise
+        if claim_stolen:
+            return None
+        await asyncio.to_thread(
+            _mark_turn_error_sync,
+            row.id,
+            claimed_seq,
+            str(exc),
+            claim_owner,
+            invocation_not_attempted=True,
+            dispatch_count=dispatch_count,
+        )
+        raise
     except Exception as exc:
         # Transport errors already contain _status_error_detail when the
         # control plane supplied a response body. Persist that same detail on
@@ -210,19 +303,36 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
             release_cause = "result_persistence_failed"
         else:
             await asyncio.to_thread(
-                _mark_turn_error_sync, row.id, turn_seq, str(exc), claim_owner
+                _mark_turn_error_sync,
+                row.id,
+                turn_seq,
+                str(exc),
+                claim_owner,
+                dispatch_count=dispatch_count,
             )
         raise
     finally:
         refresh_task.cancel()
-        outcome_unknown = await asyncio.to_thread(
-            _release_pending_message_claim_sync,
-            row.id,
-            claimed_seq,
-            claim_owner,
-            release_cause,
-        )
-        if ember is not None and not outcome_unknown and not claim_stolen:
+        try:
+            await refresh_task
+        except asyncio.CancelledError:
+            pass
+        outcome_unknown = True
+        if not claim_stolen:
+            outcome_unknown = await asyncio.to_thread(
+                _release_pending_message_claim_sync,
+                row.id,
+                claimed_seq,
+                claim_owner,
+                release_cause,
+                dispatch_count=dispatch_count,
+            )
+        if (
+            result_persisted
+            and ember is not None
+            and not outcome_unknown
+            and not claim_stolen
+        ):
             try:
                 await _transport.destroy_session(ember.session_id)
             except EmberSessionGone:
@@ -471,7 +581,7 @@ async def send_to_thread_session(thread_id: str, message: str) -> dict | None:
     # Every follow-up turn must stay inside the family the session pinned.
     try:
         await recover_zombie_session_if_needed(session_id)
-    except Exception:  # noqa: BLE001 - recovery cannot reject or lose a send
+    except Exception:
         logger.exception("Recovery check failed for session %s", session_id)
     try:
         turn = await asyncio.to_thread(
@@ -479,7 +589,7 @@ async def send_to_thread_session(thread_id: str, message: str) -> dict | None:
         )
     except store.SessionOutcomeUnknown as exc:
         return {"accepted": False, "error": str(exc), "session_id": session_id}
-    except Exception:  # noqa: BLE001 - send gates return structured failures
+    except Exception:
         logger.exception("Could not persist message for session %s", session_id)
         return {
             "accepted": False,
@@ -488,7 +598,7 @@ async def send_to_thread_session(thread_id: str, message: str) -> dict | None:
         }
     try:
         activated = await asyncio.to_thread(_activate_session_after_enqueue, session_id)
-    except Exception:  # noqa: BLE001 - the durable queue remains the backstop
+    except Exception:
         logger.exception("Could not activate queued session %s", session_id)
         activated = False
     if not activated:

@@ -401,9 +401,15 @@ def _release_pending_message_claim_sync(
     turn_seq: int,
     claim_owner: str | None = None,
     cause: str = "observer_released",
+    *,
+    dispatch_count: int | None = None,
 ) -> bool:
     return store.release_pending_message_claim_sync(
-        session_id, turn_seq, claim_owner or _REPLICA_ID, cause
+        session_id,
+        turn_seq,
+        claim_owner or _REPLICA_ID,
+        cause,
+        dispatch_count=dispatch_count,
     )
 
 
