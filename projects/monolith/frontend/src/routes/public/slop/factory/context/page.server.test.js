@@ -6,6 +6,18 @@ const entities = [
     kind: "project",
     slug: "embervm",
     title: "EmberVM",
+    note_counts: { verified: 10, unverified: 6 },
+  },
+  {
+    kind: "project",
+    slug: "threshold",
+    title: "Threshold",
+    note_counts: { verified: 10, unverified: 5 },
+  },
+  {
+    kind: "project",
+    slug: "small-project",
+    title: "Small project",
     note_counts: { verified: 4, unverified: 2 },
   },
   {
@@ -39,7 +51,7 @@ function response(path, failedPath = "") {
 }
 
 describe("factory context loader", () => {
-  it("loads and sorts the project spine", async () => {
+  it("includes 16-atom projects and excludes 15-atom projects", async () => {
     const fetch = vi.fn(response);
     const result = await load({
       fetch,
@@ -52,9 +64,9 @@ describe("factory context loader", () => {
     expect(result.facts).toEqual(facts);
   });
 
-  it("loads a selected entity chapter through its proxy", async () => {
+  it("loads a below-threshold entity chapter through its direct URL", async () => {
     const chapter = {
-      entity: { slug: "embervm" },
+      entity: { slug: "small-project" },
       notes: [],
       contradictions: [],
     };
@@ -72,16 +84,22 @@ describe("factory context loader", () => {
     const result = await load({
       fetch,
       setHeaders: vi.fn(),
-      url: new URL("https://jomcgi.dev/slop/factory/context?entity=embervm"),
+      url: new URL(
+        "https://jomcgi.dev/slop/factory/context?entity=small-project",
+      ),
     });
 
     expect(fetch.mock.calls.map(([path]) => path)).toContain(
-      "/slop/factory/entities/project/embervm/notes?state=verified%2Cunverified&limit=60",
+      "/slop/factory/entities/project/small-project/notes?state=verified%2Cunverified&limit=60",
     );
+    expect(result.projects.map((project) => project.slug)).not.toContain(
+      "small-project",
+    );
+    expect(result.entity).toBe("small-project");
     expect(result.chapter).toEqual(chapter);
   });
 
-  it("loads search with the selected mode and caps the query", async () => {
+  it("caps grep searches and does not forward the removed page mode", async () => {
     const fetch = vi.fn(response);
     const result = await load({
       fetch,
@@ -92,10 +110,8 @@ describe("factory context loader", () => {
     });
 
     expect(result.q).toHaveLength(200);
-    expect(result.mode).toBe("semantic");
-    expect(fetch.mock.calls.map(([path]) => path).join(" ")).toContain(
-      "mode=semantic",
-    );
+    expect(result.mode).toBeUndefined();
+    expect(fetch.mock.calls[2][0]).not.toContain("mode=");
   });
 
   it.each([

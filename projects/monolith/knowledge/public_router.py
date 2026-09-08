@@ -9,6 +9,7 @@ module (``knowledge.router``):
 - ``GET /api/knowledge/public/entities``: entity catalog with public fact counts.
 - ``GET /api/knowledge/public/entities/{kind}/{slug}/notes``: one entity chapter.
 - ``GET /api/knowledge/public/search``: bounded grep or semantic fact search.
+- ``GET /api/knowledge/public/search-index``: compact whole-corpus title index.
 - ``GET /api/knowledge/public/facts/daily``: daily and all-time fact figures.
 - ``GET /api/knowledge/public/notes/{note_id}``: a single note iff its
   effective visibility is ``public``.
@@ -58,6 +59,11 @@ _VERIFICATION_STATES = (
     "invalidated",
 )
 _RECORD_STATES = frozenset(("verified", "unverified"))
+_SEARCH_INDEX_STATES = ("verified", "unverified", "disputed", "invalidated")
+_SEARCH_INDEX_NOTE_LIMIT = 20_000
+_SEARCH_INDEX_CACHE_CONTROL = (
+    "public, max-age=300, s-maxage=300, stale-while-revalidate=86400"
+)
 
 
 def _client_key(request: Request) -> str:
@@ -84,8 +90,9 @@ def _cache_response(
     *,
     etag: str,
     last_modified=None,
+    cache_control: str = _GRAPH_CACHE_CONTROL,
 ) -> Response | None:
-    headers = {"Cache-Control": _GRAPH_CACHE_CONTROL, "ETag": etag}
+    headers = {"Cache-Control": cache_control, "ETag": etag}
     latest = _as_utc(last_modified)
     if latest is not None:
         headers["Last-Modified"] = format_datetime(latest, usegmt=True)
@@ -441,6 +448,96 @@ def get_public_entity_notes(
     cached = _cache_response(request, response, etag=etag, last_modified=latest)
     if cached is not None:
         return cached
+    return payload
+
+
+@router.get("/public/search-index")
+def get_public_search_index(
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+):
+    """Return a compact, cacheable title index for the public record."""
+    rows = session.exec(
+        select(PublicNote)
+        .where(PublicNote.verification_state.in_(_RECORD_STATES))
+        .order_by(
+            PublicNote.observed_at.desc().nulls_last(),
+            PublicNote.indexed_at.desc(),
+            PublicNote.note_id,
+        )
+        .limit(_SEARCH_INDEX_NOTE_LIMIT + 1)
+    ).all()
+    if len(rows) > _SEARCH_INDEX_NOTE_LIMIT:
+        logger.warning(
+            "public.search_index.truncated limit=%d", _SEARCH_INDEX_NOTE_LIMIT
+        )
+        rows = rows[:_SEARCH_INDEX_NOTE_LIMIT]
+
+    note_ids = [note.note_id for note in rows]
+    project_by_note: dict[str, str] = {}
+    if note_ids:
+        entity_rows = session.execute(
+            select(
+                PublicNoteEntity.note_id,
+                PublicEntity.slug,
+            )
+            .join(PublicEntity, PublicEntity.id == PublicNoteEntity.entity_id)
+            .where(
+                PublicNoteEntity.note_id.in_(note_ids),
+                PublicEntity.kind == "project",
+            )
+            .order_by(
+                PublicNoteEntity.note_id,
+                case((PublicNoteEntity.role == "subject", 0), else_=1),
+                PublicEntity.slug,
+            )
+        ).all()
+        for entity_row in entity_rows:
+            project_by_note.setdefault(entity_row.note_id, entity_row.slug)
+
+    state_indexes = {state: index for index, state in enumerate(_SEARCH_INDEX_STATES)}
+    entities: list[str] = []
+    entity_indexes: dict[str, int] = {}
+    notes: list[list[str | int]] = []
+    for note in rows:
+        entity_slug = project_by_note.get(note.note_id)
+        entity_index = -1
+        if entity_slug is not None:
+            entity_index = entity_indexes.setdefault(entity_slug, len(entities))
+            if entity_index == len(entities):
+                entities.append(entity_slug)
+        notes.append(
+            [
+                note.note_id,
+                note.title,
+                state_indexes[note.verification_state],
+                entity_index,
+            ]
+        )
+
+    latest = max((_as_utc(note.indexed_at) for note in rows), default=None)
+    payload = {
+        "generated_at": (
+            latest.isoformat().replace("+00:00", "Z")
+            if latest is not None
+            else "1970-01-01T00:00:00Z"
+        ),
+        "states": list(_SEARCH_INDEX_STATES),
+        "entities": entities,
+        "notes": notes,
+    }
+    etag = _record_etag("search-index", payload)
+    cached = _cache_response(
+        request,
+        response,
+        etag=etag,
+        last_modified=latest,
+        cache_control=_SEARCH_INDEX_CACHE_CONTROL,
+    )
+    if cached is not None:
+        return cached
+    logger.info("public.search_index.served notes=%d", len(notes))
     return payload
 
 
