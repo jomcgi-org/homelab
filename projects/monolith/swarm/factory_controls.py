@@ -86,10 +86,10 @@ def normalize_repo(repo: str) -> str:
 
 
 def validate_policy(policy: dict) -> dict:
-    if not isinstance(policy, dict) or set(policy) not in {
+    if not isinstance(policy, dict) or set(policy) not in (
         _POLICY_KEYS,
         _POLICY_KEYS - {"reviewer_model"},
-    }:
+    ):
         raise ValueError("policy must contain exactly the supported operator fields")
     result = dict(policy)
     if "reviewer_model" not in result:
