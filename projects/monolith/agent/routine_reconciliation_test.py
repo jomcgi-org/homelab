@@ -848,3 +848,82 @@ def test_caller_identity_map_cannot_restore_stale_lineage(database):
             caller.get(AgentSession, request["session_id"]).prior_ember_lineage_id
             == "current-lineage"
         )
+
+
+def _add_cleanup_claim(database, request, **changes):
+    with Session(database) as db:
+        agent = db.get(AgentSession, request["session_id"])
+        fields = {
+            "guest_cleanup_id": "b" * 32,
+            "guest_cleanup_guest_id": agent.ember_session_id,
+            "guest_cleanup_workflow_id": agent.workflow_id,
+            "guest_cleanup_dispatch_json": "[]",
+            "guest_cleanup_started_at": datetime.now(timezone.utc),
+            **changes,
+        }
+        for field, value in fields.items():
+            setattr(agent, field, value)
+        db.add(agent)
+        db.commit()
+        state = reconciliation.read_reconciliation_state(
+            db, request["job_name"], request["session_id"]
+        )
+    request["expected_state_sha256"] = state["state_sha256"]
+    return state, fields
+
+
+def test_positive_kg_reconciliation_retires_matching_cleanup_atomically(database):
+    request, _ = held(database, scout=True, delivery_error=True)
+    before, claim = _add_cleanup_claim(database, request)
+    with Session(database) as db:
+        reconciliation.reconcile_held_job(**request, session=db)
+        agent = db.get(AgentSession, request["session_id"])
+        assert all(getattr(agent, field) is None for field in claim)
+        db.rollback()
+    with Session(database) as db:
+        agent = db.get(AgentSession, request["session_id"])
+        assert agent.guest_cleanup_id == claim["guest_cleanup_id"]
+        assert agent.ember_session_id == "guest"
+        assert db.exec(select(AgentCapacityReservation)).one().state == "uncertain"
+        assert db.exec(select(RoutineReconciliation)).first() is None
+    result = reconciliation.reconcile_held_job(**request)
+    assert reconciliation.reconcile_held_job(**request) == result
+    with Session(database) as db:
+        agent = db.get(AgentSession, request["session_id"])
+        assert all(getattr(agent, field) is None for field in claim)
+        assert agent.ember_session_id is None
+        assert agent.prior_ember_lineage_id == "lineage"
+        after = reconciliation.read_reconciliation_state(
+            db, request["job_name"], request["session_id"]
+        )
+        assert after["turns_sha256"] == before["turns_sha256"]
+        assert after["cursor_sha"] == before["cursor_sha"]
+        assert db.exec(select(AgentTurn)).one().cost_usd is None
+        assert db.exec(select(AgentCapacityReservation)).one().state == "settled"
+        assert len(db.exec(select(RoutineReconciliation)).all()) == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"guest_cleanup_guest_id": "other-guest"},
+        {"guest_cleanup_workflow_id": "other-workflow"},
+        {"guest_cleanup_id": None},
+        {"guest_cleanup_dispatch_json": None},
+        {"guest_cleanup_dispatch_json": "{}"},
+    ],
+)
+def test_kg_reconciliation_refuses_mismatched_cleanup_claim(database, change):
+    request, _ = held(database, delivery_error=True)
+    before, _ = _add_cleanup_claim(database, request, **change)
+    with pytest.raises(ValueError, match="cleanup claim ownership conflict"):
+        reconciliation.reconcile_held_job(**request)
+    with Session(database) as db:
+        assert (
+            reconciliation.read_reconciliation_state(
+                db, request["job_name"], request["session_id"]
+            )
+            == before
+        )
+        assert db.exec(select(AgentCapacityReservation)).one().state == "uncertain"
+        assert db.exec(select(RoutineReconciliation)).first() is None
