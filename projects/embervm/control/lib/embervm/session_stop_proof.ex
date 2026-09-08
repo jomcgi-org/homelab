@@ -66,7 +66,7 @@ defmodule Embervm.SessionStopProof do
   def valid_intent?(intent) when is_map(intent) do
     precondition?(precondition(intent)) and
       is_binary(intent["operation_id"]) and intent["operation_id"] != "" and
-      is_integer(intent["requested_at_unix_ms"]) and intent["requested_at_unix_ms"] >= 0
+      is_integer(intent["requested_at_unix_ms"]) and intent["requested_at_unix_ms"] > 0
   end
 
   def valid_intent?(_), do: false
@@ -77,9 +77,12 @@ defmodule Embervm.SessionStopProof do
       session_id: "session_id", node: "node_id", pod_uid: "pod_uid"]
     completed_at = Map.get(completion, :completed_at_unix_ms)
 
+    # The persisted operation is the causal link. These two wall clocks come
+    # from different hosts, so their relative values cannot establish ordering.
+
     if valid_intent?(intent) and
          Enum.all?(pairs, fn {field, key} -> Map.get(completion, field) == intent[key] end) and
-         is_integer(completed_at) and completed_at >= intent["requested_at_unix_ms"] do
+         is_integer(completed_at) and completed_at > 0 do
       {:ok, Map.put(intent, "completed_at_unix_ms", completed_at)}
     else
       {:error, :invalid_stop_completion}
@@ -95,7 +98,7 @@ defmodule Embervm.SessionStopProof do
     if session.state == :destroyed and valid_intent?(intent) and is_map(completion) and
          Map.delete(completion, "completed_at_unix_ms") == intent and
          is_integer(completion["completed_at_unix_ms"]) and
-         completion["completed_at_unix_ms"] >= intent["requested_at_unix_ms"] and
+         completion["completed_at_unix_ms"] > 0 and
          session.session_id == intent["session_id"] and
          session.generation == intent["generation"] and
          session.invoke_started_at == intent["invoke_started_at"], do: completion
