@@ -87,7 +87,13 @@ def has_unknown_outcome(session: Session, session_id: int) -> bool:
     return session.exec(select(_unknown_outcome_exists(session_id))).one()
 
 
-def _assert_guest_reusable(row: AgentSession) -> None:
+def _assert_guest_reusable(
+    session: Session, row: AgentSession, guest_id: str | None = None
+) -> None:
+    if admission.cleanup_pending(session, row) or admission.guest_has_cleanup_claim(
+        session, guest_id
+    ):
+        raise PendingClaimLost("Workflow cleanup owns the guest")
     if row.result_receipt_fence_id is not None:
         raise PendingClaimLost(
             "The previous native result still owns its transport observer"
@@ -127,6 +133,170 @@ def guest_cleanup_hold(session: Session, session_id: int, guest_id: str) -> str 
     if row[1] is not None or row[3]:
         return "observer_pending"
     return None
+
+
+def _guest_cleanup_dispatches(session: Session, guest_id: str) -> list[dict]:
+    return [
+        {
+            "session_id": item.session_id,
+            "seq": item.seq,
+            "dispatch_count": item.dispatch_count,
+            "claim_owner": item.claimed_by_replica,
+        }
+        for item in session.exec(
+            select(PendingMessage)
+            .join(AgentSession, AgentSession.id == PendingMessage.session_id)
+            .where(AgentSession.ember_session_id == guest_id)
+            .order_by(PendingMessage.session_id, PendingMessage.seq)
+            .execution_options(populate_existing=True)
+        ).all()
+        if _attempted(item)
+    ]
+
+
+def _cleanup_dispatches_unchanged(row: AgentSession, dispatches: list[dict]) -> bool:
+    try:
+        issued = json.loads(row.guest_cleanup_dispatch_json or "null")
+    except (TypeError, ValueError):
+        return False
+    # Completion/cancellation may delete the original pending row. A different
+    # owner or dispatch cannot inherit its already-issued cleanup intent.
+    return isinstance(issued, list) and all(item in issued for item in dispatches)
+
+
+def begin_guest_cleanup(
+    session: Session, session_id: int, guest_id: str, workflow_id: str
+) -> dict:
+    """Commit exact cleanup ownership before the workflow performs a DELETE.
+
+    The pool lock serializes dispatch, receipt minting and all guest bindings.
+    A retry resumes the same claim without extending or replacing its identity.
+    There is deliberately no timeout-based release of uncertain remote work.
+    """
+    from agent_sessions import result_receipts
+
+    row = _lock_session(session, session_id)
+    if (
+        row is None
+        or row.workflow_id != workflow_id
+        or row.ember_session_id != guest_id
+        or not guest_id
+        or not workflow_id
+    ):
+        return {"hold": "binding_changed"}
+    resuming = row.guest_cleanup_id is not None
+    if resuming:
+        if (
+            row.guest_cleanup_guest_id != guest_id
+            or row.guest_cleanup_workflow_id != workflow_id
+        ):
+            return {"hold": "cleanup_owner_changed"}
+    elif admission.guest_has_cleanup_claim(session, guest_id):
+        return {"hold": "cleanup_pending"}
+
+    dispatches = _guest_cleanup_dispatches(session, guest_id)
+    if resuming and not _cleanup_dispatches_unchanged(row, dispatches):
+        return {"hold": "invocation_changed"}
+    # Aliases are documented legacy state. Never stop another row's invocation
+    # merely because this workflow's own row is idle. New aliases cannot bind
+    # after the claim: their writers take the same pool lock and check it.
+    aliases = session.exec(
+        select(AgentSession)
+        .where(AgentSession.ember_session_id == guest_id)
+        .execution_options(populate_existing=True)
+    ).all()
+    capture_enabled = result_receipts.enabled()
+    for alias in aliases:
+        if alias.result_receipt_fence_id is not None:
+            return {"hold": "observer_pending"}
+        hold = guest_cleanup_hold(session, alias.id, guest_id)
+        # An issued stop retains its original authority if cancellation later
+        # records UNKNOWN. This does not authorize a new stop for an old hold.
+        if hold is not None and not (
+            resuming and alias.id == session_id and hold == "unknown"
+        ):
+            return {"hold": hold}
+        if not resuming and (capture_enabled or alias.id != session_id):
+            if any(item["session_id"] == alias.id for item in dispatches):
+                return {"hold": "invocation_pending"}
+
+    if not resuming:
+        row.guest_cleanup_id = secrets.token_hex(16)
+        row.guest_cleanup_guest_id = guest_id
+        row.guest_cleanup_workflow_id = workflow_id
+        row.guest_cleanup_dispatch_json = json.dumps(dispatches, sort_keys=True)
+        row.guest_cleanup_started_at = datetime.now(timezone.utc)
+        session.add(row)
+    claim = {"claim_id": row.guest_cleanup_id, "guest_id": guest_id}
+    session.commit()
+    return claim
+
+
+def finish_guest_cleanup(
+    session: Session,
+    session_id: int,
+    guest_id: str,
+    workflow_id: str,
+    claim_id: str,
+) -> bool:
+    """Release exact cleanup ownership after the reaper confirms terminal state.
+
+    This is binding cleanup, not a capacity or UNKNOWN reconciliation adapter.
+    If UNKNOWN appeared during DELETE, retain its binding for the existing
+    domain reconciliation owner and release only the completed cleanup fence.
+    A stale or duplicate confirmation cannot erase another guest or claim.
+    """
+    row = _lock_session(session, session_id)
+    if (
+        row is None
+        or not claim_id
+        or row.guest_cleanup_id != claim_id
+        or row.guest_cleanup_guest_id != guest_id
+        or row.guest_cleanup_workflow_id != workflow_id
+        or row.workflow_id != workflow_id
+        or row.ember_session_id != guest_id
+        or row.result_receipt_fence_id is not None
+        or not _cleanup_dispatches_unchanged(
+            row, _guest_cleanup_dispatches(session, guest_id)
+        )
+    ):
+        return False
+    unknown = has_unknown_outcome(session, session_id)
+    if not unknown:
+        if row.ember_lineage_id:
+            row.prior_ember_lineage_id = row.ember_lineage_id
+        if row.cli_session_id:
+            row.prior_cli_session_id = row.cli_session_id
+        row.ember_session_id = None
+        row.ember_session_token = None
+        row.ember_session_expires_at = None
+        row.ember_lineage_id = None
+        row.cli_session_id = None
+    row.guest_cleanup_id = None
+    row.guest_cleanup_guest_id = None
+    row.guest_cleanup_workflow_id = None
+    row.guest_cleanup_dispatch_json = None
+    row.guest_cleanup_started_at = None
+    session.add(row)
+    session.commit()
+    disposition = "reconciliation_required" if unknown else "binding_cleared"
+    logger.info(
+        "guest_cleanup_retired claim_id=%s session_id=%s guest_id=%s "
+        "workflow_id=%s disposition=%s",
+        claim_id,
+        session_id,
+        guest_id,
+        workflow_id,
+        disposition,
+        extra={
+            "cleanup_claim_id": claim_id,
+            "cleanup_session_id": session_id,
+            "cleanup_guest_id": guest_id,
+            "cleanup_workflow_id": workflow_id,
+            "cleanup_disposition": disposition,
+        },
+    )
+    return not unknown
 
 
 def has_unknown_outcome_for_turn(
@@ -513,7 +683,7 @@ def set_ember_session(
     _assert_sendable(session, session_id)
     if row is None:
         raise ValueError(f"Unknown agent session {session_id}")
-    _assert_guest_reusable(row)
+    _assert_guest_reusable(session, row, ember_id)
     row.ember_session_id = ember_id
     row.ember_session_token = ember_token
     row.ember_session_expires_at = ember_expires_at
@@ -548,7 +718,7 @@ def replace_ember_session_after_preemption(
     _assert_sendable(session, session_id)
     if row is None:
         raise ValueError(f"Unknown agent session {session_id}")
-    _assert_guest_reusable(row)
+    _assert_guest_reusable(session, row, ember_id)
     if row.ember_lineage_id:
         row.prior_ember_lineage_id = row.ember_lineage_id
     if row.cli_session_id:
@@ -584,7 +754,7 @@ def clear_ember_session(session: Session, session_id: int) -> AgentSession:
     row = _lock_session(session, session_id)
     if row is None:
         raise ValueError(f"Unknown agent session {session_id}")
-    _assert_guest_reusable(row)
+    _assert_guest_reusable(session, row)
     if row.ember_lineage_id:
         row.prior_ember_lineage_id = row.ember_lineage_id
     if row.cli_session_id:
@@ -629,7 +799,9 @@ def clear_ember_bindings_by_ember_id(session: Session, ember_id: str) -> list[in
     for row in rows:
         # A stale cleanup observation must not erase the identity needed by
         # the original POST to clear its committed receipt fence.
-        if row.result_receipt_fence_id is not None:
+        if row.result_receipt_fence_id is not None or admission.cleanup_pending(
+            session, row
+        ):
             continue
         if row.ember_lineage_id:
             row.prior_ember_lineage_id = row.ember_lineage_id
@@ -1224,6 +1396,7 @@ def claim_pending_message_for_session_sync(
             row is None
             or row.status in {"awaiting_login", "failed"}
             or row.result_receipt_fence_id is not None
+            or admission.cleanup_pending(session, row)
         ):
             return None
         try:

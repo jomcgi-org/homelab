@@ -429,6 +429,20 @@ def _session_cleanup_hold(session_id: int, guest_id: str) -> str | None:
         return store.guest_cleanup_hold(db_session, session_id, guest_id)
 
 
+def _begin_guest_cleanup(session_id: int, guest_id: str, workflow_id: str) -> dict:
+    with Session(get_engine()) as db_session:
+        return store.begin_guest_cleanup(db_session, session_id, guest_id, workflow_id)
+
+
+def _finish_guest_cleanup(
+    session_id: int, guest_id: str, workflow_id: str, claim_id: str
+) -> bool:
+    with Session(get_engine()) as db_session:
+        return store.finish_guest_cleanup(
+            db_session, session_id, guest_id, workflow_id, claim_id
+        )
+
+
 async def reap_sessions_for_workflow(workflow_id: str) -> dict:
     """Destroy and unbind every guest session owned by a swarm workflow.
 
@@ -451,6 +465,10 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
     terminal confirmation goes to reaped, a readable but unconfirmed state
     goes to pending, and a failed confirmation goes to failed.
 
+    Cleanup ownership is committed before DELETE and blocks new dispatch,
+    receipt minting and guest rebinding until terminal confirmation. Interrupted
+    or failed requests retain their exact claim for a later workflow reap.
+
     This observes control-plane lifecycle state; it does not settle capacity
     or establish exact-attempt cessation for factory restart. That remains
     the factory reconciliation owner's responsibility.
@@ -471,9 +489,10 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
             summary["pending"].append(row.id)
             continue
         try:
-            hold = await asyncio.to_thread(
-                _session_cleanup_hold, row.id, ember_session_id
+            claim = await asyncio.to_thread(
+                _begin_guest_cleanup, row.id, ember_session_id, workflow_id
             )
+            hold = claim.get("hold")
             if hold is not None:
                 summary["skipped" if hold == "unknown" else "pending"].append(row.id)
                 continue
@@ -500,9 +519,13 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
                     summary["pending"].append(row.id)
                     continue
             cleared = await asyncio.to_thread(
-                _clear_ember_bindings_for, ember_session_id
+                _finish_guest_cleanup,
+                row.id,
+                ember_session_id,
+                workflow_id,
+                claim["claim_id"],
             )
-            summary["reaped" if row.id in cleared else "pending"].append(row.id)
+            summary["reaped" if cleared else "pending"].append(row.id)
         except Exception as exc:  # noqa: BLE001 - one bad session must not stop the rest
             # Logged as well as returned: a caller that drops the response would
             # otherwise leave a permanently leaked capacity slot with no trace.

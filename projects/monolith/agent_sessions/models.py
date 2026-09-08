@@ -55,6 +55,15 @@ class AgentSession(SQLModel, table=True):
     # this fence even if retention deletes the receipt; only the matching
     # observer may clear it. This is deliberately not a cascading foreign key.
     result_receipt_fence_id: str | None = Field(default=None)
+    # Durable workflow cleanup owns this exact guest until terminal confirmation.
+    # No lease expiry: an interrupted DELETE may still be in flight remotely.
+    guest_cleanup_id: str | None = Field(default=None)
+    guest_cleanup_guest_id: str | None = Field(default=None)
+    guest_cleanup_workflow_id: str | None = Field(default=None)
+    guest_cleanup_dispatch_json: str | None = Field(default=None)
+    guest_cleanup_started_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
     # The durable workspace handle (#4306 slice 4): a restored session's
     # ember_session_id is a fresh per-generation id, not a valid restore key
     # for the NEXT generation (session_id == lineage_id only for a gen-0
