@@ -160,7 +160,16 @@ def _validate_pin(pin: dict) -> dict:
             f"pin['artifact_schema'] is not a valid JSON Schema: {exc}"
         ) from exc
 
+    task_deadline = pin.get("task_deadline_at")
+    if "task_deadline_at" in pin:
+        if not isinstance(task_deadline, str):
+            raise ValueError("pin['task_deadline_at'] must be an aware timestamp")
+        parsed = datetime.fromisoformat(task_deadline.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("pin['task_deadline_at'] must be an aware timestamp")
+
     return {
+        **({"task_deadline_at": task_deadline} if task_deadline is not None else {}),
         "task_id": task_id,
         "node_key": node_key,
         "attempt": attempt,
@@ -515,6 +524,49 @@ def _await_node_turn(session_id: int, deadline: datetime, timeout: int) -> dict 
     return None
 
 
+@DBOS.step()
+def _read_node_dispatch(pin: dict, session_id: int) -> dict:
+    from agent_sessions.api import read_factory_dispatch
+    from core.db import get_engine
+    from sqlmodel import Session
+
+    with Session(get_engine()) as db:
+        return read_factory_dispatch(db, pin, session_id)
+
+
+def _await_dispatched_node_turn(pin: dict, session_id: int, deadline: datetime):
+    """Queue wait uses the task deadline; persisted dispatch starts the turn clock.
+
+    The first observed dispatch fixes the execution deadline across subsequent
+    claims and DBOS replay. No clock reset can extend the absolute task bound.
+    The policy caps tasks at one day; a fixed poll count also bounds bad clocks.
+    """
+    max_iterations = 2 * math.ceil(86400 / POLL_INTERVAL_SECONDS) + 1
+    execution_deadline = None
+    for iteration in range(max_iterations):
+        turn = poll_turn(session_id, 0)
+        if (
+            turn is not None
+            and turn.get("terminal_reason") not in INTERRUPTED_TERMINAL_REASONS
+        ):
+            return turn
+        dispatch = _read_node_dispatch(pin, session_id)
+        if dispatch["state"] == "unconfirmed":
+            return None
+        if dispatch["started_at"] is not None:
+            candidate = _timestamp(dispatch["started_at"]) + timedelta(
+                seconds=pin["turn_timeout_seconds"]
+            )
+            execution_deadline = min(execution_deadline or candidate, candidate)
+        bound = min(deadline, execution_deadline or deadline)
+        remaining = (bound - _timestamp(observe_clock())).total_seconds()
+        if remaining <= 0:
+            return None
+        if iteration + 1 < max_iterations:
+            DBOS.sleep(min(POLL_INTERVAL_SECONDS, remaining))
+    return None
+
+
 def _reconciled_identity(key: str) -> tuple[int | None, str]:
     try:
         return _reconcile_session(key), ""
@@ -540,8 +592,11 @@ def execute_node(pin: dict) -> dict:
     head_sha = None
     phase = "clock"
     try:
-        deadline = _timestamp(observe_clock()) + timedelta(
-            seconds=pin["turn_timeout_seconds"]
+        observed = _timestamp(observe_clock())
+        deadline = (
+            _timestamp(pin["task_deadline_at"])
+            if "task_deadline_at" in pin
+            else observed + timedelta(seconds=pin["turn_timeout_seconds"])
         )
         phase = "start"
         started = _start_node_session(
@@ -572,7 +627,12 @@ def execute_node(pin: dict) -> dict:
             )
         session_id = started["session_id"]
         phase = "wait"
-        turn = _await_node_turn(session_id, deadline, pin["turn_timeout_seconds"])
+        # Old pins retain their exact durable step sequence across replay.
+        turn = (
+            _await_dispatched_node_turn(pin, session_id, deadline)
+            if "task_deadline_at" in pin
+            else _await_node_turn(session_id, deadline, pin["turn_timeout_seconds"])
+        )
         if turn is None:
             return _result(
                 "uncertain",
