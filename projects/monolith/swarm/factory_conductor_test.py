@@ -1621,6 +1621,144 @@ def _uncertain_snapshot(s):
         }
 
 
+def test_attempt_stop_preview_survives_original_observer_loss(
+    queued_factory, monkeypatch
+):
+    from sqlmodel import Session, select
+    from agent_sessions import admission, store
+    from agent_sessions.constants import UNKNOWN_INVOCATION
+    from agent_sessions.models import AgentCapacityReservation, AgentSession, AgentTurn
+    from swarm import factory_attempt_stop as stop
+    from swarm import factory_controls as controls
+    from swarm import factory_supervision as supervisor
+
+    s = queued_factory
+    for module in (controls, admission, store):
+        monkeypatch.setattr(module, "get_engine", lambda: s.engine)
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
+    owner = "original-executor"
+    assert store.claim_pending_message_for_session_sync(s.sid, owner) == 1
+    assert admission.recheck(s.sid, 1, owner)
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        agent.ember_session_id = "s-original"
+        agent.ember_lineage_id = "lineage-original"
+        pending = store.get_pending_message(db, s.sid, 1)
+        pending.partial_text = "Preserved partial implementation"
+        db.add_all([agent, pending])
+        db.commit()
+    before = stop.read_attempt_stop(s.task["id"], s.run["node_key"], 1, s.sid)
+    assert store.release_pending_message_claim_sync(
+        s.sid, 1, owner, "replica_lost", dispatch_count=1
+    )
+    assert stop.read_attempt_stop(s.task["id"], s.run["node_key"], 1, s.sid) == before
+    original = _uncertain_snapshot(s)
+    precondition = {
+        "session_id": "s-original",
+        "generation": 0,
+        "invoke_started_at": 100,
+        "vm_id": "vm-original",
+        "node_id": "node-original",
+        "instance_id": "node-original/pod-original",
+        "pod_uid": "pod-original",
+        "boot_id": "boot-original",
+    }
+    calls = []
+
+    def http(guest):
+        calls.append(guest)
+        return {
+            "session_id": guest,
+            "state": "running",
+            "generation": 0,
+            "invoke_started_at": 100,
+            "stop_precondition": precondition,
+            "stop_intent": None,
+            "stop_completion": None,
+        }
+
+    monkeypatch.setattr(supervisor, "_http", http)
+    args = {
+        "task_id": s.task["id"],
+        "node_key": s.run["node_key"],
+        "attempt": 1,
+        "session_id": s.sid,
+        "request_key": "request-original",
+        "expected_identity_sha256": before["identity_sha256"],
+        "reason": "Original observer disappeared",
+        "actor": "operator:test",
+    }
+    requested = stop.request_attempt_stop(**args)
+    assert requested["state"] == "requested"
+    assert stop.request_attempt_stop(**args) == requested
+    assert calls == ["s-original"]
+    assert stop.read_attempt_stop(s.task["id"], s.run["node_key"], 1, s.sid) == before
+    after = _uncertain_snapshot(s)
+    events = after["factory"].pop("stop_events")
+    original["factory"].pop("stop_events")
+    assert after == original
+    assert any(event["action"] == "attempt_stop_requested" for event in events)
+    assert stop.executor_stop_requested(s.sid, 1, owner, 1)
+    assert not stop.executor_stop_requested(s.sid, 1, owner, 2)
+    assert not stop.executor_stop_requested(s.sid, 1, "new-owner", 1)
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
+    assert stop.executor_stop_requested(s.sid, 1, owner, 1)
+    with Session(s.engine) as db:
+        turn = db.exec(select(AgentTurn)).one()
+        assert turn.stop_reason == UNKNOWN_INVOCATION
+        assert turn.result_text == "Preserved partial implementation"
+        assert turn.cost_usd is None
+        assert db.exec(select(AgentCapacityReservation)).one().state == "uncertain"
+        assert db.get(AgentSession, s.sid).ember_lineage_id == "lineage-original"
+
+
+@pytest.mark.parametrize("workflow_status", [None, "PENDING"])
+def test_attempt_stop_missing_or_unresponsive_workflow_is_bounded_and_visible(
+    uncertain_factory, workflow_status
+):
+    import json
+    from sqlmodel import Session, select
+    from swarm import factory_attempt_stop as stop
+    from swarm.factory_models import FactoryAudit
+
+    s = uncertain_factory
+    before = stop.read_attempt_stop(s.task["id"], s.run["node_key"], 1, s.sid)
+    stop.request_attempt_stop(
+        task_id=s.task["id"],
+        node_key=s.run["node_key"],
+        attempt=1,
+        session_id=s.sid,
+        request_key="request-original",
+        expected_identity_sha256=before["identity_sha256"],
+        reason="Original observer disappeared",
+        actor="operator:test",
+    )
+    calls = []
+    dbos = SimpleNamespace(
+        get_workflow_status=lambda _: (
+            SimpleNamespace(status=workflow_status) if workflow_status else None
+        ),
+        cancel_workflow=lambda workflow, **kwargs: calls.append((workflow, kwargs)),
+    )
+    for _ in range(4):
+        assert stop.process_attempt_stop(s.run["pin"], s.sid, dbos) == (True, s.sid)
+    assert len(calls) == (2 if workflow_status else 0)
+    assert all(kwargs == {"cancel_children": False} for _, kwargs in calls)
+    with Session(s.engine) as db:
+        observations = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "stop_observation")
+        ).all()
+        assert len(observations) == 1
+        detail = json.loads(observations[0].detail_json)
+        assert detail["reason"] == (
+            "stop_cancel_bound_reached"
+            if workflow_status
+            else "stop_workflow_unavailable"
+        )
+        assert detail["intervention_required"]
+        assert not detail["cessation_confirmed"]
+
+
 def test_durable_stop_reconciles_production_factory_owner_without_replay(
     uncertain_factory,
 ):

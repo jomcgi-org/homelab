@@ -26,6 +26,12 @@ class ControlRequest(BaseModel):
     action: str
     task_id: str | None = None
     policy: dict | None = None
+    node_key: str | None = None
+    attempt: int | None = Field(default=None, ge=1, strict=True)
+    session_id: int | None = Field(default=None, gt=0, strict=True)
+    request_key: str | None = None
+    expected_identity_sha256: str | None = None
+    reason: str | None = None
 
 
 class ReceiptRequest(BaseModel):
@@ -48,12 +54,60 @@ def factory_status(principal: Principal = Depends(operator)) -> dict:
     return result
 
 
+@router.get("/attempt-stop")
+def attempt_stop_preview(
+    task_id: str,
+    node_key: str,
+    attempt: int,
+    session_id: int,
+    principal: Principal = Depends(operator),
+) -> dict:
+    from swarm.factory_attempt_stop import read_attempt_stop
+
+    try:
+        return read_attempt_stop(task_id, node_key, attempt, session_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @router.post("/control")
 def factory_control(
     body: ControlRequest, principal: Principal = Depends(operator)
 ) -> dict:
     from swarm.factory_controls import set_control
 
+    attempt_fields = (
+        body.node_key,
+        body.attempt,
+        body.session_id,
+        body.request_key,
+        body.expected_identity_sha256,
+        body.reason,
+    )
+    if body.action == "stop_attempt":
+        from swarm.factory_attempt_stop import request_attempt_stop
+
+        if (
+            body.task_id is None
+            or body.policy is not None
+            or any(value is None for value in attempt_fields)
+        ):
+            raise HTTPException(422, "exact attempt stop fields are required")
+        try:
+            return request_attempt_stop(
+                task_id=body.task_id,
+                node_key=body.node_key,
+                attempt=body.attempt,
+                session_id=body.session_id,
+                request_key=body.request_key,
+                expected_identity_sha256=body.expected_identity_sha256,
+                reason=body.reason,
+                actor=principal.subject,
+            )
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+    if any(value is not None for value in attempt_fields):
+        raise HTTPException(422, "attempt fields require stop_attempt")
     if body.policy is not None and body.policy.get("repo") not in REPO_CATALOG:
         raise HTTPException(422, "repository is not available to the executor")
     try:

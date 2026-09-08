@@ -614,6 +614,11 @@ async def _execute_pending_message(session_id: int) -> None:
     stolen_exit_logged = False
     refresh_task = None
     release_cause = "observer_released"
+    executor_task = asyncio.current_task()
+    claimed_dispatch_count = None
+    factory_owned = str(getattr(factory_row, "local_session_id", "")).startswith(
+        "factory:"
+    )
 
     def _abort_stolen_executor(stage: str) -> bool:
         nonlocal stolen_exit_logged
@@ -659,15 +664,30 @@ async def _execute_pending_message(session_id: int) -> None:
     async def _refresh_heartbeat() -> None:
         """Keep the claim alive while the turn runs."""
         nonlocal claim_stolen
-        while not claim_stolen:
+        # A factory observer can lose its lease before an operator requests an
+        # exact stop. Continue read-only observation until its delivery ends.
+        while not claim_stolen or factory_owned:
             try:
                 await asyncio.sleep(10)  # one third of the 30s lease
+                if factory_owned and claimed_dispatch_count is not None:
+                    from swarm.factory_attempt_stop import executor_stop_requested
+
+                    if await asyncio.to_thread(
+                        executor_stop_requested,
+                        session_id,
+                        claimed_seq,
+                        claim_owner,
+                        claimed_dispatch_count,
+                    ):
+                        executor_task.cancel()
+                        return
+                if claim_stolen:
+                    continue
                 still_held = await asyncio.to_thread(
                     _refresh_claim_sync, session_id, claimed_seq, claim_owner
                 )
                 if not still_held:
                     claim_stolen = True
-                    break
             except Exception:
                 # A transient refresh failure must not kill an otherwise healthy
                 # turn; the lease tolerates two missed beats.
@@ -678,7 +698,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 )
 
     async def _do_execute() -> None:
-        nonlocal release_cause
+        nonlocal release_cause, claimed_dispatch_count
         if _abort_stolen_executor("startup"):
             return
 
@@ -687,6 +707,7 @@ async def _execute_pending_message(session_id: int) -> None:
         )
         if not row:
             return
+        claimed_dispatch_count = row.dispatch_count
         # Load session to get workspace and stored session_id for resumption
         session_row, _ = await asyncio.to_thread(_load_session, session_id)
         if not session_row:
