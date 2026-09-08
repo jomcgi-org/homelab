@@ -414,7 +414,9 @@ def _add(
         prompt=boundary + prompt,
         model=model,
         deps=deps,
-        max_cost_usd=policy["turn_budget_usd"] if max_cost_usd is None else max_cost_usd,
+        max_cost_usd=policy["turn_budget_usd"]
+        if max_cost_usd is None
+        else max_cost_usd,
         side_effects=not review,
         max_attempts=policy["max_attempts"] if max_attempts is None else max_attempts,
         turn_timeout_seconds=(
@@ -836,7 +838,11 @@ def _apply_decision(
                 return
             if value > limits[name]:
                 _reject_decision(
-                    task["id"], cause, action, "bound_exceeds_policy", f"{name} exceeds policy"
+                    task["id"],
+                    cause,
+                    action,
+                    "bound_exceeds_policy",
+                    f"{name} exceeds policy",
                 )
                 return
         result = _add(
