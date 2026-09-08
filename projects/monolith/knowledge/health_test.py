@@ -72,7 +72,7 @@ def test_kg_health_marks_failures_without_atoms_or_stale_queue_unhealthy(
     oldest, failed, atoms, expected_ok
 ):
     session = _Session(
-        SimpleNamespace(queued=2, oldest_seconds=oldest),
+        SimpleNamespace(queued=2, held=0, oldest_seconds=oldest),
         SimpleNamespace(
             failed_24h=failed,
             atoms_24h=atoms,
@@ -101,7 +101,7 @@ def test_kg_health_reports_held_jobs_separately_from_queue():
 
 def test_kg_health_filters_lane_version_and_counts_null_success_rows():
     session = _Session(
-        SimpleNamespace(queued=0, oldest_seconds=None),
+        SimpleNamespace(queued=0, held=0, oldest_seconds=None),
         SimpleNamespace(failed_24h=0, atoms_24h=0, last_success_at=None),
     )
 
@@ -127,7 +127,7 @@ def test_kg_health_uses_shared_hold_marker_and_union():
 
 def test_kg_health_reports_rejected_and_corrected_counts():
     session = _Session(
-        SimpleNamespace(queued=0, oldest_seconds=None),
+        SimpleNamespace(queued=0, held=0, oldest_seconds=None),
         SimpleNamespace(failed_24h=0, atoms_24h=0, last_success_at=None),
         quality=SimpleNamespace(rejected_24h=7, corrected_24h=3),
     )
@@ -145,7 +145,7 @@ def test_kg_health_reports_rejected_and_corrected_counts():
 def test_kg_health_reports_stale_open_disputes_and_last_sweep():
     set_swept_last_cycle(7)
     session = _Session(
-        SimpleNamespace(queued=0, oldest_seconds=None),
+        SimpleNamespace(queued=0, held=0, oldest_seconds=None),
         SimpleNamespace(failed_24h=0, atoms_24h=0, last_success_at=None),
         SimpleNamespace(
             open_disputes=2,
@@ -170,7 +170,7 @@ def test_kg_health_reports_stale_open_disputes_and_last_sweep():
 def test_kg_health_reports_active_burst_cap_and_remaining_allowance():
     now = datetime.now(timezone.utc)
     session = _Session(
-        SimpleNamespace(queued=0, oldest_seconds=None),
+        SimpleNamespace(queued=0, held=0, oldest_seconds=None),
         SimpleNamespace(failed_24h=0, atoms_24h=0, last_success_at=None),
         burst=SimpleNamespace(
             extra_jobs=1_000,
@@ -192,7 +192,7 @@ def test_kg_health_reports_active_burst_cap_and_remaining_allowance():
 def test_kg_health_reports_base_cap_for_exhausted_burst():
     now = datetime.now(timezone.utc)
     session = _Session(
-        SimpleNamespace(queued=0, oldest_seconds=None),
+        SimpleNamespace(queued=0, held=0, oldest_seconds=None),
         SimpleNamespace(failed_24h=0, atoms_24h=0, last_success_at=None),
         burst=SimpleNamespace(
             extra_jobs=1_000,
@@ -213,7 +213,7 @@ def test_kg_health_reports_base_cap_for_exhausted_burst():
 def test_kg_health_reports_base_cap_for_expired_burst():
     now = datetime.now(timezone.utc)
     session = _Session(
-        SimpleNamespace(queued=0, oldest_seconds=None),
+        SimpleNamespace(queued=0, held=0, oldest_seconds=None),
         SimpleNamespace(failed_24h=0, atoms_24h=0, last_success_at=None),
         burst=SimpleNamespace(
             extra_jobs=1_000,

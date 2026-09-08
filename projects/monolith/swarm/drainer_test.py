@@ -1411,9 +1411,9 @@ def test_finish_step_span_marks_error_status(monkeypatch):
 
 
 @pytest.mark.parametrize("stage", ["ordinary", "kg", "kg_correction", "recurring"])
-@pytest.mark.parametrize("delivery_error", [False, True])
+@pytest.mark.parametrize("hold", ["unknown", "delivery_error", "lookup_error"])
 def test_unknown_turn_holds_job_without_retry_apply_or_cleanup(
-    monkeypatch, stage, delivery_error
+    monkeypatch, stage, hold
 ):
     held, applied, deferred = [], [], []
     monkeypatch.setattr(
@@ -1437,14 +1437,29 @@ def test_unknown_turn_holds_job_without_retry_apply_or_cleanup(
         }
 
     monkeypatch.setattr(drainer, "apply_kg_extraction", apply)
+
+    def lookup(session_id, seq):
+        assert session_id == 101
+        if seq != 2:
+            return False
+        if hold == "lookup_error":
+            raise RuntimeError("hold store unavailable")
+        return hold == "delivery_error"
+
+    monkeypatch.setattr(drainer, "_turn_has_unknown_outcome_lookup", lookup)
     monkeypatch.setattr(
         drainer,
-        "_turn_has_unknown_outcome_lookup",
-        lambda session_id, seq: delivery_error and session_id == 101 and seq == 2,
+        "increment_kg_job_attempt",
+        lambda *_args, **_kwargs: pytest.fail("must not consume another attempt"),
+    )
+    monkeypatch.setattr(
+        drainer,
+        "record_kg_failure",
+        lambda *_args, **_kwargs: pytest.fail("must not dead-letter partial output"),
     )
     unknown = {
         "terminal_reason": "error",
-        "stop_reason": None if delivery_error else "invocation_outcome_unknown",
+        "stop_reason": "invocation_outcome_unknown" if hold == "unknown" else None,
         "result_text": "partial extraction",
         "seq": 2,
     }

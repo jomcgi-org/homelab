@@ -43,6 +43,7 @@ def _kg_health_core(session: Session, cap: int) -> dict:
                 UNION
                 SELECT routine_job_name
                   FROM agent_sessions.capacity_reservations
+                 -- The admission tier survives removal of the referenced job.
                  WHERE state != 'settled'
                    AND tier = 'kg'
                    AND routine_job_name IS NOT NULL
@@ -161,7 +162,7 @@ def _kg_health_core(session: Session, cap: int) -> dict:
             and not (failed_24h > 0 and atoms_24h == 0)
         ),
         "queued": int(queue.queued),
-        "held": int(getattr(queue, "held", 0)),
+        "held": int(queue.held),
         "oldest_queued_seconds": oldest,
         "failed_24h": failed_24h,
         "atoms_24h": atoms_24h,

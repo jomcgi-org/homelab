@@ -821,14 +821,22 @@ def _completed_output(turn: dict, session_id: int | None = None) -> str:
 def _turn_has_unknown_outcome(turn: dict, session_id: int | None = None) -> bool:
     if session_id is None or turn.get("seq") is None:
         return False
-    if _turn_has_unknown_outcome_lookup is not None:
-        return bool(_turn_has_unknown_outcome_lookup(session_id, int(turn["seq"])))
-    from agent_sessions import store
-    from core.db import get_engine
-    from sqlmodel import Session
+    try:
+        seq = int(turn["seq"])
+        # Test seam; production always reads the exact durable admission owner.
+        if _turn_has_unknown_outcome_lookup is not None:
+            return bool(_turn_has_unknown_outcome_lookup(session_id, seq))
+        from agent_sessions import store
+        from core.db import get_engine
+        from sqlmodel import Session
 
-    with Session(get_engine()) as session:
-        return store.has_unknown_outcome_for_turn(session, session_id, int(turn["seq"]))
+        with Session(get_engine()) as session:
+            return store.has_unknown_outcome_for_turn(session, session_id, seq)
+    except Exception as exc:
+        # A failed observation cannot authorize retry, dead-letter or cleanup.
+        raise InvocationOutcomeUnknown(
+            "Could not verify the invocation outcome; retain this attempt"
+        ) from exc
 
 
 @DBOS.step(retries_allowed=True, max_attempts=3, backoff_rate=2.0)
