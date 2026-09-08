@@ -200,10 +200,6 @@ export function tileDerivations(activity, merges, facts, series, now) {
     },
     spend: {
       value: numeric(combined.spend_usd),
-      maxSession:
-        totals.max_session_cost_usd == null
-          ? null
-          : numeric(totals.max_session_cost_usd),
       spark: last14(series.spend, "spend_usd", now),
     },
     facts: {

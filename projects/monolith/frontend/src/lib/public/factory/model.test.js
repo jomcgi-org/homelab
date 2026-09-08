@@ -152,7 +152,6 @@ describe("fact and tile derivations", () => {
             output_tokens: 10,
             spend_usd: 1234.4,
           },
-          max_session_cost_usd: 41.2,
         },
       },
       { totals: {} },
@@ -171,14 +170,12 @@ describe("fact and tile derivations", () => {
     expect(dual.sessions).toMatchObject({ value: 5 });
     expect(dual.tokens).toMatchObject({ input: 30, output: 10 });
     expect(dual.spend.value).toBe(1234.4);
-    expect(dual.spend.maxSession).toBe(41.2);
     expect(dual.spend.spark.at(-2)).toBe(700);
     expect(dual.spend.spark.at(-1)).toBe(534.4);
     expect(formatSpend(dual.spend.value)).toBe("$1.2k");
     expect(formatSpend(12.75)).toBe("$13");
     expect(legacy.sessions.value).toBe(4);
     expect(legacy.tokens.input).toBe(7);
-    expect(legacy.spend.maxSession).toBeNull();
   });
 });
 

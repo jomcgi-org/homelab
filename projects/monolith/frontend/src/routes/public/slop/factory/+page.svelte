@@ -25,7 +25,11 @@
   let sort = $state("date");
   let direction = $state(-1);
   let prPage = $state(0);
-  const pageSize = 8;
+  // Measured from the space the list actually gets, because a fixed count
+  // cannot fit a box whose height depends on the viewport. Paginating and
+  // then scrolling inside the page would defeat the point of paginating.
+  let pageSize = $state(8);
+  let listEl = $state(null);
 
   const day = (value) => value?.slice(5, 10).replace("-", "·") ?? "";
   const today = new Date().toISOString().slice(0, 10);
@@ -76,7 +80,6 @@
     {
       key: "Merged, 7d",
       value: formatCount(tiles.merged.value),
-      subline: `${formatCount(tiles.merged.agent)} by agents · +${shortNumber(tiles.lines.additions)} −${shortNumber(tiles.lines.deletions)}`,
       spark: tiles.merged.spark,
     },
     {
@@ -88,9 +91,6 @@
     {
       key: "Spend, 7d",
       value: formatSpend(tiles.spend.value),
-      subline: tiles.spend.maxSession
-        ? `${formatSpend(tiles.spend.maxSession)} priciest session`
-        : "",
       spark: tiles.spend.spark,
     },
     {
@@ -111,6 +111,27 @@
     sortPullRequests(data.merges.week, sort, direction),
   );
   const prRows = $derived(paginate(sortedPrs, prPage, pageSize));
+
+  $effect(() => {
+    if (!listEl) return;
+    const fit = () => {
+      const head = listEl.querySelector("li.hd");
+      const row = listEl.querySelector("li:not(.hd)");
+      if (!row) return;
+      const rowHeight = row.getBoundingClientRect().height;
+      if (rowHeight <= 0) return;
+      const available =
+        listEl.clientHeight - (head?.getBoundingClientRect().height ?? 0);
+      // Rows are a uniform height in CSS, so this division is exact rather
+      // than an estimate that overflows when several long titles collide.
+      const next = Math.max(3, Math.floor(available / rowHeight));
+      if (next !== pageSize) pageSize = next;
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(listEl);
+    return () => observer.disconnect();
+  });
 
   function changeSort(next) {
     if (sort === next) direction *= -1;
@@ -272,7 +293,7 @@
               </div>
             {/each}
           </div>
-          <ol class="prs">
+          <ol class="prs" bind:this={listEl}>
             <li class="hd">
               {#each [["type", "type"], ["area", "title · area"], ["lines", "lines"], ["date", "day"]] as [key, label], index}
                 <button

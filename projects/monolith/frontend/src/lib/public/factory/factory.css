@@ -431,15 +431,23 @@
   min-height: 0;
   margin: 0;
   padding: 0;
-  overflow-y: auto;
+  /* hidden, not auto: the list is paginated, and a scrollbar inside a paginated
+     list means the page size is wrong. The row count is measured to fit. */
+  overflow: hidden;
   list-style: none;
 }
 
 .factory-page .prs > li {
   display: grid;
+  /* One line per row, always. A uniform height is what lets the page size be
+     computed by division instead of guessed, and flex: none stops the rows
+     being squeezed by their container before that measurement is taken. */
+  box-sizing: border-box;
+  flex: none;
   grid-template-columns: 3.2em minmax(0, 1fr) 5.5em 3.2em;
   gap: 0.6em;
   align-items: baseline;
+  overflow: hidden;
   padding: 0.32em 0;
   border-top: 1px solid var(--line);
   font-size: 0.88rem;
@@ -1146,8 +1154,10 @@
 }
 
 .factory-page figcaption {
+  /* No max-width: the caption is a one-line label now, and its rule is the
+     figure's bottom edge, so it has to span the whole figure rather than
+     stopping at a measure meant for a paragraph. */
   order: 1;
-  max-width: 70ch;
   padding: 0.7em 1rem 0.9em;
   border-top: 1px solid var(--stroke);
   color: var(--ink-2);
@@ -1249,18 +1259,6 @@
   margin: 0.15em 0 0 1.15em;
   color: var(--ink-2);
   line-height: 1.35;
-}
-
-/* The figure heading sits tight to the figure it names. */
-.factory-page .doc .figure-heading {
-  display: block;
-  margin: 1.4em 0 0.6em;
-  color: var(--ink-2);
-  font-family: var(--font-code);
-  font-size: 0.68rem;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 /* Wide content scrolls inside its own container; the page never scrolls
@@ -1407,4 +1405,13 @@
   .factory-page .stats > div:nth-last-child(-n + 2) {
     border-bottom: 0;
   }
+}
+
+/* The title is the only cell that can run long, so it truncates with an
+   ellipsis rather than wrapping. Wrapping made rows different heights, which
+   is what forced the list to scroll inside a box that was already paginated. */
+.factory-page .prs > li:not(.hd) > span:nth-child(2) {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
