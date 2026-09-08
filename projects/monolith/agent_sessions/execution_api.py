@@ -39,6 +39,14 @@ from goosecracker.api import REPO_CATALOG
 
 logger = logging.getLogger(__name__)
 
+# Terminal lifecycle states reported by the control plane, mirroring
+# Embervm.SessionState.terminal_states in
+# projects/embervm/control/lib/embervm/session_state.ex
+# (expired, evicted, destroyed, failed). Every other state the exact-session
+# GET can report (creating, running, banking, parking, banked, parked,
+# relighting, destroying) is live or transitional and must retain the binding.
+_REAP_TERMINAL_STATES = frozenset({"destroyed", "expired", "evicted", "failed"})
+
 
 async def run_synthetic_session(prompt: str, model: str = "luna"):
     """Run and persist one short synthetic session through the normal path.
@@ -320,9 +328,27 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
     raises off the STATUS CODE. Sniffing the message string instead would read
     a 500 whose URL or body merely contains "404" as success and leak the very
     slot this reap exists to reclaim.
+
+    A successful DELETE is not trusted on its own: Ember answers 202 with
+    state destroying before teardown completes. After a successful DELETE the
+    reaper reads the exact session state once (no sleep or poll loop) and
+    clears the binding only on an authoritative gone response or an
+    explicitly terminal state. Anything else (destroying, parked, running,
+    malformed or mismatched response, failed GET) retains the binding:
+    terminal confirmation goes to reaped, a readable but unconfirmed state
+    goes to pending, and a failed confirmation goes to failed.
+
+    This observes control-plane lifecycle state; it does not settle capacity
+    or establish exact-attempt cessation for factory restart. That remains
+    the factory reconciliation owner's responsibility.
     """
     rows = await asyncio.to_thread(_sessions_for_workflow, workflow_id)
-    summary: dict[str, list] = {"reaped": [], "failed": [], "skipped": []}
+    summary: dict[str, list] = {
+        "reaped": [],
+        "failed": [],
+        "skipped": [],
+        "pending": [],
+    }
     for row in rows:
         ember_session_id = row.ember_session_id
         if ember_session_id is None:
@@ -334,9 +360,19 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
                 continue
             try:
                 await _transport.destroy_session(ember_session_id)
+                observed = await _transport.get_session(ember_session_id)
             except EmberSessionGone:
-                # The goal state, not a failure: still clear the binding below.
+                # The control plane says this exact session no longer exists.
                 pass
+            else:
+                if (
+                    not isinstance(observed, dict)
+                    or observed.get("session_id") != ember_session_id
+                    or not isinstance(observed.get("state"), str)
+                    or observed["state"] not in _REAP_TERMINAL_STATES
+                ):
+                    summary["pending"].append(row.id)
+                    continue
             await asyncio.to_thread(_clear_ember_bindings_for, ember_session_id)
             summary["reaped"].append(row.id)
         except Exception as exc:  # noqa: BLE001 - one bad session must not stop the rest

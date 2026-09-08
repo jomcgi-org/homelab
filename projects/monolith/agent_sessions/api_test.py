@@ -478,11 +478,15 @@ async def test_reap_sessions_for_workflow_skips_reaps_and_continues_on_failure(
         destroyed.append(ember_id)
         if ember_id == "ember-bad":
             raise EmberVMTransportError("control plane unavailable")
-        return {}
+        return {"session_id": ember_id, "state": "destroying"}
+
+    async def get_session(ember_id):
+        return {"session_id": ember_id, "state": "destroyed"}
 
     monkeypatch.setattr(api, "_session_outcome_unknown", lambda _: False)
     monkeypatch.setattr(api, "_sessions_for_workflow", lambda _: rows)
     monkeypatch.setattr(api._transport, "destroy_session", destroy)
+    monkeypatch.setattr(api._transport, "get_session", get_session)
     monkeypatch.setattr(
         api, "_clear_ember_bindings_for", lambda ember_id: cleared.append(ember_id)
     )
@@ -491,6 +495,7 @@ async def test_reap_sessions_for_workflow_skips_reaps_and_continues_on_failure(
         "reaped": [2],
         "failed": [{"session_id": 3, "error": "control plane unavailable"}],
         "skipped": [1],
+        "pending": [],
     }
     assert destroyed == ["ember-good", "ember-bad"]
     assert cleared == ["ember-good"]
@@ -509,10 +514,14 @@ async def test_reap_sessions_for_workflow_treats_404_as_reaped(monkeypatch):
     async def destroy(_ember_id):
         raise EmberSessionGone("404 session not found")
 
+    async def get_session(_ember_id):
+        raise AssertionError("no confirmation read after DELETE Gone")
+
     cleared = []
     monkeypatch.setattr(api, "_session_outcome_unknown", lambda _: False)
     monkeypatch.setattr(api, "_sessions_for_workflow", lambda _: [row])
     monkeypatch.setattr(api._transport, "destroy_session", destroy)
+    monkeypatch.setattr(api._transport, "get_session", get_session)
     monkeypatch.setattr(
         api, "_clear_ember_bindings_for", lambda ember_id: cleared.append(ember_id)
     )
@@ -521,6 +530,7 @@ async def test_reap_sessions_for_workflow_treats_404_as_reaped(monkeypatch):
         "reaped": [1],
         "failed": [],
         "skipped": [],
+        "pending": [],
     }
     assert cleared == ["ember-gone"]
 
@@ -561,6 +571,7 @@ async def test_reap_does_not_treat_a_500_mentioning_404_as_gone(monkeypatch):
 
     assert result["reaped"] == []
     assert result["failed"][0]["session_id"] == 7
+    assert result["pending"] == []
     assert cleared == []
 
 
@@ -588,9 +599,259 @@ async def test_workflow_reap_retains_guest_with_unknown_outcome(monkeypatch):
         "reaped": [],
         "failed": [],
         "skipped": [2448],
+        "pending": [],
     }
     assert destroyed == []
     assert cleared == []
+
+
+def _reap_row(session_id=1, ember_id="ember-1"):
+    return AgentSession(
+        id=session_id,
+        local_session_id=f"local-{session_id}",
+        workspace="w",
+        branch="b",
+        ember_session_id=ember_id,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["destroying", "parked", "running"])
+async def test_reap_retains_binding_when_confirmation_state_is_unconfirmed(
+    monkeypatch, state
+):
+    row = _reap_row()
+    destroyed, cleared, reads = [], [], []
+
+    async def destroy(ember_id):
+        destroyed.append(ember_id)
+        return {"session_id": ember_id, "state": "destroying"}
+
+    async def get_session(ember_id):
+        reads.append(ember_id)
+        return {"session_id": ember_id, "state": state}
+
+    monkeypatch.setattr(api, "_session_outcome_unknown", lambda _: False)
+    monkeypatch.setattr(api, "_sessions_for_workflow", lambda _: [row])
+    monkeypatch.setattr(api._transport, "destroy_session", destroy)
+    monkeypatch.setattr(api._transport, "get_session", get_session)
+    monkeypatch.setattr(
+        api, "_clear_ember_bindings_for", lambda ember_id: cleared.append(ember_id)
+    )
+
+    assert await api.reap_sessions_for_workflow("wf-1") == {
+        "reaped": [],
+        "failed": [],
+        "skipped": [],
+        "pending": [1],
+    }
+    assert destroyed == ["ember-1"]
+    assert reads == ["ember-1"]
+    assert cleared == []
+
+
+@pytest.mark.asyncio
+async def test_reap_clears_binding_when_confirmation_read_is_gone(monkeypatch):
+    row = _reap_row()
+    cleared = []
+
+    async def destroy(_ember_id):
+        return {"session_id": "ember-1", "state": "destroying"}
+
+    async def get_session(_ember_id):
+        raise EmberSessionGone("404 session not found")
+
+    monkeypatch.setattr(api, "_session_outcome_unknown", lambda _: False)
+    monkeypatch.setattr(api, "_sessions_for_workflow", lambda _: [row])
+    monkeypatch.setattr(api._transport, "destroy_session", destroy)
+    monkeypatch.setattr(api._transport, "get_session", get_session)
+    monkeypatch.setattr(
+        api, "_clear_ember_bindings_for", lambda ember_id: cleared.append(ember_id)
+    )
+
+    assert await api.reap_sessions_for_workflow("wf-1") == {
+        "reaped": [1],
+        "failed": [],
+        "skipped": [],
+        "pending": [],
+    }
+    assert cleared == ["ember-1"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["destroyed", "expired", "evicted", "failed"])
+async def test_reap_clears_binding_when_confirmation_state_is_terminal(
+    monkeypatch, state
+):
+    row = _reap_row()
+    cleared = []
+
+    async def destroy(_ember_id):
+        return {"session_id": "ember-1", "state": "destroying"}
+
+    async def get_session(ember_id):
+        return {"session_id": ember_id, "state": state}
+
+    monkeypatch.setattr(api, "_session_outcome_unknown", lambda _: False)
+    monkeypatch.setattr(api, "_sessions_for_workflow", lambda _: [row])
+    monkeypatch.setattr(api._transport, "destroy_session", destroy)
+    monkeypatch.setattr(api._transport, "get_session", get_session)
+    monkeypatch.setattr(
+        api, "_clear_ember_bindings_for", lambda ember_id: cleared.append(ember_id)
+    )
+
+    assert await api.reap_sessions_for_workflow("wf-1") == {
+        "reaped": [1],
+        "failed": [],
+        "skipped": [],
+        "pending": [],
+    }
+    assert cleared == ["ember-1"]
+
+
+@pytest.mark.asyncio
+async def test_reap_retains_binding_on_mismatched_identity(monkeypatch):
+    row = _reap_row()
+    cleared = []
+
+    async def destroy(_ember_id):
+        return {"session_id": "ember-1", "state": "destroying"}
+
+    async def get_session(_ember_id):
+        return {"session_id": "ember-other", "state": "destroyed"}
+
+    monkeypatch.setattr(api, "_session_outcome_unknown", lambda _: False)
+    monkeypatch.setattr(api, "_sessions_for_workflow", lambda _: [row])
+    monkeypatch.setattr(api._transport, "destroy_session", destroy)
+    monkeypatch.setattr(api._transport, "get_session", get_session)
+    monkeypatch.setattr(
+        api, "_clear_ember_bindings_for", lambda ember_id: cleared.append(ember_id)
+    )
+
+    assert await api.reap_sessions_for_workflow("wf-1") == {
+        "reaped": [],
+        "failed": [],
+        "skipped": [],
+        "pending": [1],
+    }
+    assert cleared == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "observed",
+    [None, [], {"unexpected": "shape"}, {"session_id": "ember-1", "state": []}],
+)
+async def test_reap_retains_binding_on_malformed_confirmation(monkeypatch, observed):
+    row = _reap_row()
+    cleared = []
+
+    async def destroy(_ember_id):
+        return {"session_id": "ember-1", "state": "destroying"}
+
+    async def get_session(_ember_id):
+        return observed
+
+    monkeypatch.setattr(api, "_session_outcome_unknown", lambda _: False)
+    monkeypatch.setattr(api, "_sessions_for_workflow", lambda _: [row])
+    monkeypatch.setattr(api._transport, "destroy_session", destroy)
+    monkeypatch.setattr(api._transport, "get_session", get_session)
+    monkeypatch.setattr(
+        api, "_clear_ember_bindings_for", lambda ember_id: cleared.append(ember_id)
+    )
+
+    assert await api.reap_sessions_for_workflow("wf-1") == {
+        "reaped": [],
+        "failed": [],
+        "skipped": [],
+        "pending": [1],
+    }
+    assert cleared == []
+
+
+@pytest.mark.asyncio
+async def test_reap_does_not_clear_when_confirmation_read_fails(monkeypatch):
+    row = _reap_row()
+    cleared = []
+
+    async def destroy(_ember_id):
+        return {"session_id": "ember-1", "state": "destroying"}
+
+    async def get_session(_ember_id):
+        raise EmberVMTransportError("500 destroy read failed")
+
+    monkeypatch.setattr(api, "_session_outcome_unknown", lambda _: False)
+    monkeypatch.setattr(api, "_sessions_for_workflow", lambda _: [row])
+    monkeypatch.setattr(api._transport, "destroy_session", destroy)
+    monkeypatch.setattr(api._transport, "get_session", get_session)
+    monkeypatch.setattr(
+        api, "_clear_ember_bindings_for", lambda ember_id: cleared.append(ember_id)
+    )
+
+    result = await api.reap_sessions_for_workflow("wf-1")
+
+    assert result["reaped"] == []
+    assert result["pending"] == []
+    assert result["failed"][0]["session_id"] == 1
+    assert cleared == []
+
+
+@pytest.mark.asyncio
+async def test_reap_http_202_retains_binding_until_later_authoritative_absence(
+    monkeypatch,
+):
+    import httpx
+    from agent_sessions import transport
+
+    row = _reap_row()
+    cleared, requests = [], []
+    reads = 0
+
+    async def handler(request):
+        nonlocal reads
+        requests.append((request.method, request.url.path))
+        if request.method == "DELETE":
+            return httpx.Response(
+                202, json={"session_id": "ember-1", "state": "destroying"}
+            )
+        reads += 1
+        if reads == 1:
+            return httpx.Response(
+                200, json={"session_id": "ember-1", "state": "destroying"}
+            )
+        return httpx.Response(404, json={"error": "session not found"})
+
+    real_client = httpx.AsyncClient
+    mock_transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(transport, "EMBERVM_URL", "https://ember.test")
+    monkeypatch.setattr(transport, "auth_headers", lambda: {})
+    monkeypatch.setattr(
+        transport.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=mock_transport, **kwargs),
+    )
+    monkeypatch.setattr(api, "_session_outcome_unknown", lambda _: False)
+    monkeypatch.setattr(api, "_sessions_for_workflow", lambda _: [row])
+    monkeypatch.setattr(
+        api, "_clear_ember_bindings_for", lambda guest: cleared.append(guest)
+    )
+
+    first = await api.reap_sessions_for_workflow("wf-1")
+    assert first["pending"] == [1]
+    assert first["reaped"] == []
+    assert cleared == []
+
+    second = await api.reap_sessions_for_workflow("wf-1")
+    assert second == {"reaped": [1], "pending": [], "failed": [], "skipped": []}
+    assert cleared == ["ember-1"]
+    assert (
+        requests
+        == [
+            ("DELETE", "/v1/sessions/ember-1"),
+            ("GET", "/v1/sessions/ember-1"),
+        ]
+        * 2
+    )
 
 
 def test_public_capacity_facade_is_lightweight_and_execution_exports_are_identical():

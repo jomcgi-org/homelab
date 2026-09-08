@@ -2260,3 +2260,91 @@ def test_long_invoke_budget_does_not_expand_create_wait(monkeypatch, read_timeou
         [1800.0, 43500.0] if read_timeout is None else [7.0, 7.0]
     )
     assert all(t.connect == transport.SUBMIT_CONNECT_TIMEOUT for t in timeouts)
+
+
+def test_get_session_reads_exact_session_with_management_auth(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"session_id": "s-1", "state": "running"},
+            request=request,
+        )
+
+    _client(monkeypatch, handler)
+    result = asyncio.run(transport.EmberVmShimTransport().get_session("s-1"))
+
+    assert result == {"session_id": "s-1", "state": "running"}
+    assert str(requests[0].url) == "https://ember.test/v1/sessions/s-1"
+    assert requests[0].method == "GET"
+    assert requests[0].headers["Authorization"] == "management"
+
+
+def test_get_session_uses_short_status_timeout_not_invoke_budget(monkeypatch):
+    timeout_values = []
+    real_timeout = httpx.Timeout
+
+    async def handler(request):
+        return httpx.Response(
+            200,
+            json={"session_id": "s-1", "state": "destroyed"},
+            request=request,
+        )
+
+    def capture_timeout(value, **kwargs):
+        timeout_values.append(real_timeout(value, **kwargs))
+        return timeout_values[-1]
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.httpx, "Timeout", capture_timeout)
+    asyncio.run(
+        transport.EmberVmShimTransport(
+            read_timeout=transport.INVOKE_READ_TIMEOUT
+        ).get_session("s-1")
+    )
+
+    assert [t.read for t in timeout_values] == [transport.LIST_SESSIONS_READ_TIMEOUT]
+    assert all(t.connect == transport.SUBMIT_CONNECT_TIMEOUT for t in timeout_values)
+
+
+@pytest.mark.parametrize("status_code", [404, 410])
+def test_get_session_maps_gone_status_to_session_gone(monkeypatch, status_code):
+    async def handler(request):
+        return httpx.Response(
+            status_code,
+            json={"error": "session not found", "retryable": False},
+            request=request,
+        )
+
+    _client(monkeypatch, handler)
+    with pytest.raises(EmberSessionGone):
+        asyncio.run(transport.EmberVmShimTransport().get_session("s-missing"))
+
+
+@pytest.mark.parametrize("status_code", [403, 500])
+def test_get_session_keeps_forbidden_and_server_errors_as_failures(
+    monkeypatch, status_code
+):
+    async def handler(request):
+        return httpx.Response(
+            status_code,
+            json={"error": "not authorized to read session"},
+            request=request,
+        )
+
+    _client(monkeypatch, handler)
+    with pytest.raises(EmberVMTransportError) as caught:
+        asyncio.run(transport.EmberVmShimTransport().get_session("s-1"))
+    assert not isinstance(caught.value, EmberSessionGone)
+
+
+def test_get_session_timeout_is_a_failure_not_gone(monkeypatch):
+    async def handler(request):
+        raise httpx.TimeoutException("read timed out", request=request)
+
+    _client(monkeypatch, handler)
+    with pytest.raises(EmberVMTransportError) as caught:
+        asyncio.run(transport.EmberVmShimTransport().get_session("s-1"))
+    assert not isinstance(caught.value, EmberSessionGone)
