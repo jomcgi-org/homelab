@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from agent_sessions import store
+from agent_sessions.result_receipts import MAX_RESULT_BYTES
+from agent_sessions.result_receipts_router import router as results_router
 
 _token_last_write: dict[str, float] = {}
 _token_lock = Lock()
@@ -21,6 +23,7 @@ class ProgressRequest(BaseModel):
 
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+app.include_router(results_router)
 
 
 class ContentLengthCheckMiddleware(BaseHTTPMiddleware):
@@ -30,11 +33,16 @@ class ContentLengthCheckMiddleware(BaseHTTPMiddleware):
         if request.method in ("GET", "HEAD"):
             return await call_next(request)
         content_length = request.headers.get("content-length")
+        is_result = request.url.path.startswith("/ingest/results/")
         if content_length is None:
+            if is_result:
+                # The receipt route checks the actual streamed byte count.
+                return await call_next(request)
             return Response(status_code=411)
         try:
             length = int(content_length)
-            if length > 262144:
+            limit = MAX_RESULT_BYTES if is_result else 262144
+            if length < 0 or length > limit:
                 return Response(status_code=413)
         except ValueError:
             return Response(status_code=411)

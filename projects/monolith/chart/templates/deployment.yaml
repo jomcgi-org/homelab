@@ -172,6 +172,8 @@ spec:
               value: {{ .Values.agents.models | default "" | quote }}
             - name: AGENT_PROBE_SUPERVISION_ENABLED
               value: {{ .Values.agents.sessions.probeSupervisionEnabled | quote }}
+            - name: AGENT_RESULT_RECEIPTS_ENABLED
+              value: {{ .Values.agents.sessions.resultReceiptsEnabled | quote }}
             {{- with .Values.agents.drainer }}
             # Work-queue drainer. DRAINER_ENABLED is checked both by the
             # internal trigger and inside the DBOS workflow. Its job kind is a

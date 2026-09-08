@@ -114,6 +114,8 @@ agents:
   sessions:
     # Observe failed probes until exact eviction evidence releases their hold.
     probeSupervisionEnabled: false
+    # Capture exact completed results before the guest's synchronous response.
+    resultReceiptsEnabled: false
     # Thread-bound sessions always post into their Discord thread. For sessions
     # started elsewhere, post only turns that need a human by default.
     channelNotify: "needs-input"

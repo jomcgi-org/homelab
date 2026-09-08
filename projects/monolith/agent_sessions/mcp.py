@@ -744,6 +744,10 @@ async def _execute_pending_message(session_id: int) -> None:
                 "agent_session_id": session_id,
                 "dispatch_count": row.dispatch_count,
             }
+            from agent_sessions import result_receipts
+
+            if result_receipts.enabled():
+                deliver_kwargs["receipt_claim_owner"] = claim_owner
             if session_row.repo is not None:
                 deliver_kwargs["repo"] = session_row.repo
                 deliver_kwargs["branch"] = session_row.branch
