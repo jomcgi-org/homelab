@@ -12,6 +12,9 @@ swarm:
   # Make the bounded reconciler available on the existing GKE stack. Durable
   # operator policy separately controls issue admission and starts disabled.
   factoryEnabled: true
+  # Exact operator requests and original deadlines retain the existing task
+  # bounds. Capacity is released only after durable guest cessation proof.
+  factoryStopSupervisionEnabled: true
 
 agents:
   sessions:

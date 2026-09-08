@@ -4698,7 +4698,7 @@ py_test(
         ":pkg_agent_sessions",
         ":pkg_auth",
         ":pkg_core",
-        ":pkg_goosecracker",
+        ":pkg_cyclegroup",
         ":pkg_swarm",
         "@pip//fastapi",
         "@pip//httpx",
