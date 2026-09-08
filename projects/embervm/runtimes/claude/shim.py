@@ -3,6 +3,7 @@
 
 import base64
 import collections
+import hashlib
 import http.server
 import json
 import math
@@ -59,6 +60,11 @@ MAX_TURN_DIFF_REDUCED_FILE_BYTES = 64 * 1024
 # diff caps on purpose: the artifact channel exists precisely so a huge work
 # diff cannot cost the caller its small declared document.
 MAX_TURN_ARTIFACT_BYTES = 256 * 1024
+MAX_RESULT_RECEIPT_BYTES = 32 * 1024 * 1024
+MAX_RESULT_RECEIPT_ACK_BYTES = 4096
+RESULT_RECEIPT_ATTEMPTS = 3
+RESULT_RECEIPT_TIMEOUT_SECONDS = 2.0
+RESULT_RECEIPT_BACKOFF_SECONDS = 0.1
 
 
 def egress_proxy_env():
@@ -1773,6 +1779,143 @@ class VsockEgressForwarder:
                     upstream.close()
                 except OSError:
                     pass
+
+
+def _valid_result_receipt(receipt):
+    """Validate per-invocation metadata before any model work starts."""
+    return (
+        isinstance(receipt, dict)
+        and set(receipt) == {"id", "token"}
+        and isinstance(receipt["id"], str)
+        and re.fullmatch(r"[0-9a-f]{32}", receipt["id"]) is not None
+        and isinstance(receipt["token"], str)
+        and re.fullmatch(r"[A-Za-z0-9_-]{43,}", receipt["token"]) is not None
+    )
+
+
+class _ResultReceiptNoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # A receipt bearer is valid only at the configured callback origin.
+        return None
+
+
+def _emit_result_receipt_failure(reason):
+    """Only callers' fixed reason codes belong in this diagnostic."""
+    try:
+        sys.stderr.write(f"ember-claude-shim: result-receipt failed reason={reason}\n")
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001, S110 - diagnostics cannot fail the turn.
+        pass
+
+
+def _result_receipt_attempt(opener, url, data, receipt, digest):
+    response = None
+    try:
+        request = urllib.request.Request(
+            url,
+            data=data,
+            headers={
+                "Authorization": f"Bearer {receipt['token']}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        response = opener.open(request, timeout=RESULT_RECEIPT_TIMEOUT_SECONDS)
+        if response.status != 200:
+            return "http_status"
+        ack_data = response.read(MAX_RESULT_RECEIPT_ACK_BYTES + 1)
+        if len(ack_data) > MAX_RESULT_RECEIPT_ACK_BYTES:
+            return "ack_too_large"
+        ack = json.loads(ack_data)
+        if (
+            isinstance(ack, dict)
+            and ack.get("receipt_id") == receipt["id"]
+            and ack.get("result_sha256") == digest
+        ):
+            return "acknowledged"
+        return "ack_mismatch"
+    except urllib.error.HTTPError as exc:
+        # HTTPError owns the response stream too. Do not read or log it.
+        response = exc
+        return "http_status"
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return "ack_invalid"
+    except Exception:  # noqa: BLE001 - preserve the original synchronous response.
+        return "transport_error"
+    finally:
+        if response is not None:
+            try:
+                response.close()
+            except Exception:  # noqa: BLE001, S110 - cleanup is best effort.
+                pass
+
+
+def _publish_result_receipt(receipt, record):
+    """Capture the complete native record before attempting the vsock response.
+
+    This optional callback neither stops the guest nor makes a turn sendable.
+    Failure leaves the original response available. Without an acknowledged
+    callback, losing that response can still lose the completed native record.
+    """
+    try:
+        url = os.environ.get("EMBER_PROGRESS_URL", "").strip()
+        parsed = urllib.parse.urlsplit(url)
+        if not (
+            parsed.scheme in ("http", "https")
+            and parsed.hostname
+            and (parsed.port is None or parsed.port > 0)
+            and parsed.username is None
+            and parsed.password is None
+            and not any(character.isspace() for character in url)
+        ):
+            _emit_result_receipt_failure("endpoint_unavailable")
+            return False
+        url = urllib.parse.urlunsplit(
+            (parsed.scheme, parsed.netloc, "/ingest/results/" + receipt["id"], "", "")
+        )
+        data = json.dumps(record, separators=(",", ":")).encode("utf-8")
+        if len(data) > MAX_RESULT_RECEIPT_BYTES:
+            _emit_result_receipt_failure("body_too_large")
+            return False
+        digest = hashlib.sha256(data).hexdigest()
+        egress_port = int(os.environ.get(EGRESS_PORT_ENV, str(DEFAULT_EGRESS_PORT)))
+        if not 0 < egress_port <= 65535:
+            raise ValueError("invalid egress port")
+        proxy_url = f"http://{EGRESS_LOCALHOST}:{egress_port}"
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}),
+            _ResultReceiptNoRedirect(),
+        )
+    except Exception:  # noqa: BLE001 - preserve the original synchronous response.
+        _emit_result_receipt_failure("preparation_failed")
+        return False
+
+    for attempt in range(RESULT_RECEIPT_ATTEMPTS):
+        results = []
+
+        def send(results=results):
+            results.append(_result_receipt_attempt(opener, url, data, receipt, digest))
+
+        try:
+            worker = threading.Thread(target=send, daemon=True)
+            worker.start()
+            worker.join(timeout=RESULT_RECEIPT_TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001 - thread startup cannot fail the turn.
+            _emit_result_receipt_failure("worker_failed")
+            return False
+        if worker.is_alive():
+            # urllib's socket timeout does not bound DNS or trickled headers.
+            # Stop retrying after this wall deadline, leaving at most this one
+            # callback running. It may complete late; no cancellation is implied.
+            _emit_result_receipt_failure("deadline_exceeded")
+            return False
+        reason = results[0]
+        if reason == "acknowledged":
+            return True
+        if attempt + 1 < RESULT_RECEIPT_ATTEMPTS:
+            time.sleep(RESULT_RECEIPT_BACKOFF_SECONDS)
+    _emit_result_receipt_failure(reason)
+    return False
 
 
 class _ProgressPusher:
@@ -5405,6 +5548,10 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         ):
             self._send(400, {"error": "progress_token must be a non-empty string"})
             return
+        result_receipt = payload.get("result_receipt")
+        if "result_receipt" in payload and not _valid_result_receipt(result_receipt):
+            self._send(400, {"error": "invalid result_receipt metadata"})
+            return
         system_prompt = payload.get("system_prompt")
         if system_prompt is not None and (
             not isinstance(system_prompt, str) or not system_prompt.strip()
@@ -5469,6 +5616,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         except Exception as exc:
             self._send(422, {"error": str(exc)})
         else:
+            if result_receipt is not None:
+                _publish_result_receipt(result_receipt, record)
             self._send(200, record)
 
     def _set_clock(self, raw):

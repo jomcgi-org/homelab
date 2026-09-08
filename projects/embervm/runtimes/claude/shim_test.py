@@ -4,6 +4,7 @@ import ast
 import base64
 import copy
 import datetime
+import hashlib
 import io
 import json
 import os
@@ -4585,6 +4586,429 @@ def test_progress_pusher_collapses_rapid_events_to_latest(progress_endpoint):
     pusher.stop()
 
     assert pushed == ["second"]
+
+
+@pytest.fixture
+def result_receipt():
+    return {"id": "0123456789abcdef" * 2, "token": "receipt_token-" + "x" * 43}
+
+
+def _receipt_opener(monkeypatch, respond=None):
+    calls = []
+    handlers = []
+    responses = []
+
+    class Response(io.BytesIO):
+        status = 200
+
+        def read(self, size):
+            assert size == shim.MAX_RESULT_RECEIPT_ACK_BYTES + 1
+            return super().read(size)
+
+    class Opener:
+        def open(self, request, timeout):
+            calls.append((request, timeout))
+            if respond is None:
+                body = json.dumps(
+                    {
+                        "receipt_id": request.full_url.rsplit("/", 1)[-1],
+                        "result_sha256": hashlib.sha256(request.data).hexdigest(),
+                    }
+                ).encode()
+            else:
+                body = respond(request)
+            response = Response(body)
+            responses.append(response)
+            return response
+
+    def build_opener(*args):
+        handlers.extend(args)
+        return Opener()
+
+    monkeypatch.setattr(shim.urllib.request, "build_opener", build_opener)
+    return calls, handlers, responses
+
+
+def _receipt_handler(payload, record, events):
+    class Manager:
+        _hydration_status = "ok"
+
+        def __init__(self):
+            self.calls = []
+
+        def turn(self, *args, **kwargs):
+            events.append("turn")
+            self.calls.append((args, kwargs))
+            return record
+
+    handler = object.__new__(shim.RequestHandler)
+    raw = json.dumps(payload).encode()
+    handler.path = shim.TURN_PATH
+    handler.headers = {"Content-Length": str(len(raw))}
+    handler.rfile = io.BytesIO(raw)
+    handler.wfile = io.BytesIO()
+    handler.manager = Manager()
+    handler.send_response = lambda status: events.append(("status", status))
+    handler.send_header = lambda *_args: None
+    handler.end_headers = lambda: events.append("headers")
+    return handler
+
+
+@pytest.mark.parametrize("scheme", ["http", "https"])
+def test_result_receipt_uses_trusted_origin_proxy_and_exact_ack(
+    monkeypatch, result_receipt, scheme
+):
+    monkeypatch.setenv(
+        "EMBER_PROGRESS_URL",
+        scheme + "://progress.example.test:8091/old?ignored=yes#old",
+    )
+    monkeypatch.setenv(shim.EGRESS_PORT_ENV, "4321")
+    calls, handlers, responses = _receipt_opener(monkeypatch)
+    record = {"result": "native output", "usage": {"input_tokens": 21}}
+
+    assert shim._valid_result_receipt(result_receipt)
+    assert shim._publish_result_receipt(result_receipt, record) is True
+
+    assert len(calls) == 1
+    request, timeout = calls[0]
+    assert request.full_url == (
+        scheme + "://progress.example.test:8091/ingest/results/" + result_receipt["id"]
+    )
+    assert request.method == "POST"
+    assert request.get_header("Authorization") == "Bearer " + result_receipt["token"]
+    assert request.get_header("Content-type") == "application/json"
+    assert request.data == json.dumps(record, separators=(",", ":")).encode()
+    assert timeout == shim.RESULT_RECEIPT_TIMEOUT_SECONDS == 2
+    assert handlers[0].proxies == {
+        "http": "http://127.0.0.1:4321",
+        "https": "http://127.0.0.1:4321",
+    }
+    assert isinstance(handlers[1], shim._ResultReceiptNoRedirect)
+    assert (
+        handlers[1].redirect_request(
+            request, None, 302, "Found", {}, "https://other.example.test/"
+        )
+        is None
+    )
+    assert responses[0].closed
+
+
+def test_result_receipt_retries_identical_bytes_after_lost_ack(
+    monkeypatch, result_receipt, progress_endpoint
+):
+    attempts = []
+    backoffs = []
+
+    def respond(request):
+        attempts.append(request)
+        if len(attempts) < 3:
+            raise TimeoutError("ack lost after commit")
+        return json.dumps(
+            {
+                "receipt_id": result_receipt["id"],
+                "result_sha256": hashlib.sha256(request.data).hexdigest(),
+            }
+        ).encode()
+
+    calls, _, _ = _receipt_opener(monkeypatch, respond)
+    monkeypatch.setattr(shim.time, "sleep", backoffs.append)
+    assert shim._publish_result_receipt(result_receipt, {"result": "complete"}) is True
+    assert len(calls) == shim.RESULT_RECEIPT_ATTEMPTS == 3
+    assert all(request.data is attempts[0].data for request in attempts)
+    assert all(
+        request.get_header("Authorization") == "Bearer " + result_receipt["token"]
+        for request in attempts
+    )
+    assert backoffs == [0.1, 0.1]
+
+
+@pytest.mark.parametrize(
+    "ack, reason",
+    [
+        (b"{}", "ack_mismatch"),
+        (b"[]", "ack_mismatch"),
+        (b'{"receipt_id":"wrong","result_sha256":"wrong"}', "ack_mismatch"),
+        (b"not JSON", "ack_invalid"),
+        (b"\xff", "ack_invalid"),
+        (b" " * 4097, "ack_too_large"),
+    ],
+)
+def test_result_receipt_rejects_unproven_ack(
+    monkeypatch, result_receipt, progress_endpoint, capsys, ack, reason
+):
+    calls, _, responses = _receipt_opener(monkeypatch, lambda _request: ack)
+    monkeypatch.setattr(shim.time, "sleep", lambda _delay: None)
+    assert shim._publish_result_receipt(result_receipt, {"result": "private"}) is False
+    assert len(calls) == 3
+    assert all(response.closed for response in responses)
+    assert capsys.readouterr().err == (
+        "ember-claude-shim: result-receipt failed reason=" + reason + "\n"
+    )
+
+
+def test_result_receipt_failure_logs_no_native_body_or_token(
+    monkeypatch, result_receipt, progress_endpoint, capsys
+):
+    def respond(_request):
+        raise RuntimeError("private native record " + result_receipt["token"])
+
+    calls, _, _ = _receipt_opener(monkeypatch, respond)
+    monkeypatch.setattr(shim.time, "sleep", lambda _delay: None)
+    assert (
+        shim._publish_result_receipt(
+            result_receipt, {"result": "private native record"}
+        )
+        is False
+    )
+    assert len(calls) == 3
+    assert capsys.readouterr().err == (
+        "ember-claude-shim: result-receipt failed reason=transport_error\n"
+    )
+
+
+@pytest.mark.parametrize("oversize", [False, True])
+def test_result_receipt_caps_actual_encoded_body_without_truncation(
+    monkeypatch, result_receipt, progress_endpoint, oversize
+):
+    assert shim.MAX_RESULT_RECEIPT_BYTES == 32 * 1024 * 1024
+    record = {"result": "\u2603" * 8}
+    encoded = json.dumps(record, separators=(",", ":")).encode()
+    monkeypatch.setattr(shim, "MAX_RESULT_RECEIPT_BYTES", len(encoded) - int(oversize))
+    calls, _, _ = _receipt_opener(monkeypatch)
+    assert shim._publish_result_receipt(result_receipt, record) is (not oversize)
+    assert len(calls) == int(not oversize)
+    if calls:
+        assert calls[0][0].data == encoded
+
+
+@pytest.mark.parametrize("field", ["receipt_id", "result_sha256"])
+def test_result_receipt_requires_both_ack_identity_fields(
+    monkeypatch, result_receipt, progress_endpoint, field
+):
+    def respond(request):
+        ack = {
+            "receipt_id": result_receipt["id"],
+            "result_sha256": hashlib.sha256(request.data).hexdigest(),
+        }
+        ack[field] = "wrong"
+        return json.dumps(ack).encode()
+
+    calls, _, _ = _receipt_opener(monkeypatch, respond)
+    monkeypatch.setattr(shim.time, "sleep", lambda _delay: None)
+    assert shim._publish_result_receipt(result_receipt, {"result": "complete"}) is False
+    assert len(calls) == 3
+
+
+def test_result_receipt_http_error_preserves_sync_response(
+    monkeypatch, result_receipt, progress_endpoint, capsys
+):
+    error_bodies = []
+
+    def respond(request):
+        body = io.BytesIO(b"private endpoint error body")
+        error_bodies.append(body)
+        raise shim.urllib.error.HTTPError(
+            request.full_url, 409, "private response reason", {}, body
+        )
+
+    calls, _, _ = _receipt_opener(monkeypatch, respond)
+    monkeypatch.setattr(shim.time, "sleep", lambda _delay: None)
+    events = []
+    handler = _receipt_handler(
+        {"message": "hello", "result_receipt": result_receipt},
+        {"result": "complete"},
+        events,
+    )
+    handler.do_POST()
+    assert len(calls) == 3
+    assert all(body.closed for body in error_bodies)
+    assert events == ["turn", ("status", 200), "headers"]
+    assert json.loads(handler.wfile.getvalue()) == {"result": "complete"}
+    assert capsys.readouterr().err == (
+        "ember-claude-shim: result-receipt failed reason=http_status\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        None,
+        "",
+        "file:///tmp/receipt",
+        "https://progress.example.test:invalid/progress",
+        "https://progress.example.test:65536/progress",
+        "https://user:password@progress.example.test/progress",
+        "https://[invalid/progress",
+        "https://progress.example.test/invalid\npath",
+    ],
+)
+def test_result_receipt_unavailable_config_preserves_sync_response(
+    monkeypatch, result_receipt, url
+):
+    if url is None:
+        monkeypatch.delenv("EMBER_PROGRESS_URL", raising=False)
+    else:
+        monkeypatch.setenv("EMBER_PROGRESS_URL", url)
+    monkeypatch.setattr(
+        shim.urllib.request,
+        "build_opener",
+        lambda *_args: pytest.fail("invalid configuration must not create an opener"),
+    )
+    record = {"result": "complete"}
+    events = []
+    handler = _receipt_handler(
+        {"message": "hello", "result_receipt": result_receipt}, record, events
+    )
+    handler.do_POST()
+    assert events == ["turn", ("status", 200), "headers"]
+    assert json.loads(handler.wfile.getvalue()) == record
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        None,
+        [],
+        "metadata",
+        {},
+        {"id": "a" * 32},
+        {"id": "a" * 32, "token": "x" * 43, "url": "https://other.example.test"},
+        {"id": "A" * 32, "token": "x" * 43},
+        {"id": "a" * 31, "token": "x" * 43},
+        {"id": 123, "token": "x" * 43},
+        {"id": "a" * 32, "token": "x" * 42},
+        {"id": "a" * 32, "token": "x" * 43 + "\n"},
+        {"id": "a" * 32, "token": "x" * 43 + "/"},
+        {"id": "a" * 32, "token": 123},
+    ],
+)
+def test_result_receipt_malformed_metadata_never_invokes_manager(receipt):
+    events = []
+    handler = _receipt_handler(
+        {"message": "hello", "result_receipt": receipt}, {}, events
+    )
+    handler.do_POST()
+    assert not shim._valid_result_receipt(receipt)
+    assert handler.manager.calls == []
+    assert events == [("status", 400), "headers"]
+    assert json.loads(handler.wfile.getvalue()) == {
+        "error": "invalid result_receipt metadata"
+    }
+
+
+@pytest.mark.parametrize("is_error", [False, True])
+def test_result_receipt_captures_native_record_before_broken_sync_response(
+    monkeypatch, result_receipt, progress_endpoint, is_error
+):
+    events = []
+    record = {
+        "result": "native record",
+        "is_error": is_error,
+        "session_id": "native-cli-session",
+        "total_cost_usd": None,
+        "usage": {"input_tokens": 21},
+        "diff": {"encoding": "gzip+base64", "data": "native diff"},
+        "artifact": {"path": "plan.json", "content": "native artifact"},
+    }
+
+    def respond(request):
+        events.append("receipt")
+        assert json.loads(request.data) == record
+        assert record["workspace_hydration"] == "ok"
+        return json.dumps(
+            {
+                "receipt_id": result_receipt["id"],
+                "result_sha256": hashlib.sha256(request.data).hexdigest(),
+            }
+        ).encode()
+
+    _receipt_opener(monkeypatch, respond)
+    handler = _receipt_handler(
+        {
+            "message": "hello",
+            "repo": "org/repo",
+            "branch": "main",
+            "result_receipt": result_receipt,
+        },
+        record,
+        events,
+    )
+
+    def broken_headers():
+        events.append("broken_headers")
+        raise BrokenPipeError()
+
+    handler.end_headers = broken_headers
+    with pytest.raises(BrokenPipeError):
+        handler.do_POST()
+    assert events == ["turn", "receipt", ("status", 200), "broken_headers"]
+    assert handler.manager.calls == [
+        (("hello", None, None), {"repo": "org/repo", "branch": "main"})
+    ]
+
+
+def test_result_receipt_absent_metadata_keeps_existing_response(monkeypatch):
+    monkeypatch.setattr(
+        shim,
+        "_publish_result_receipt",
+        lambda *_args: pytest.fail("no receipt metadata must not publish"),
+    )
+    events = []
+    handler = _receipt_handler({"message": "hello"}, {"result": "complete"}, events)
+    handler.do_POST()
+    assert events == ["turn", ("status", 200), "headers"]
+    assert json.loads(handler.wfile.getvalue()) == {"result": "complete"}
+
+
+def test_result_receipt_stalled_attempt_returns_to_sync_response_without_retry(
+    monkeypatch, result_receipt, progress_endpoint, capsys
+):
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    workers = []
+
+    def respond(request):
+        workers.append(threading.current_thread())
+        started.set()
+        try:
+            assert release.wait(timeout=5)
+            return json.dumps(
+                {
+                    "receipt_id": result_receipt["id"],
+                    "result_sha256": hashlib.sha256(request.data).hexdigest(),
+                }
+            ).encode()
+        finally:
+            finished.set()
+
+    calls, _, _ = _receipt_opener(monkeypatch, respond)
+    monkeypatch.setattr(shim, "RESULT_RECEIPT_TIMEOUT_SECONDS", 0.05)
+    events = []
+    handler = _receipt_handler(
+        {"message": "hello", "result_receipt": result_receipt},
+        {"result": "complete"},
+        events,
+    )
+    try:
+        before = time.monotonic()
+        handler.do_POST()
+        elapsed = time.monotonic() - before
+        assert started.is_set()
+        assert not finished.is_set()
+        assert elapsed < 1
+        assert len(calls) == 1
+        assert events == ["turn", ("status", 200), "headers"]
+        assert json.loads(handler.wfile.getvalue()) == {"result": "complete"}
+        assert capsys.readouterr().err == (
+            "ember-claude-shim: result-receipt failed reason=deadline_exceeded\n"
+        )
+    finally:
+        release.set()
+        assert finished.wait(timeout=2)
+        for worker in workers:
+            worker.join(timeout=2)
+            assert not worker.is_alive()
 
 
 def test_compose_system_prompt():
