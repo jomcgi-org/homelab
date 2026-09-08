@@ -738,6 +738,64 @@ class EmberVmShimTransport:
             )
             raise EmberVMTransportError(str(exc)) from exc
 
+    async def get_session(self, ember_session_id: str) -> dict:
+        """Read one control plane session by its EmberVM session id (management auth).
+
+        This is the exact-session read behind the reaper confirmation step:
+        GET /v1/sessions/:id (see handle_get_session in
+        projects/embervm/control/lib/embervm/router.ex). Callers must
+        validate the returned ``session_id`` matches ``ember_session_id``
+        before trusting its ``state``.
+
+        Uses the short status/list timeout, never the turn-sized invoke
+        budget, and the same status-code mapping as destroy: 404/410 mean
+        the session is authoritatively gone (EmberSessionGone), while
+        403/500/timeouts remain plain failures.
+
+        Raises:
+            EmberSessionGone: If the control plane answers 404/410.
+            EmberVMTransportError: On any other failure, including timeouts.
+        """
+        if not EMBERVM_URL:
+            raise EmberVMTransportError("EMBERVM_URL is not configured")
+
+        url = f"{EMBERVM_URL}/v1/sessions/{ember_session_id}"
+        headers = auth_headers()
+        # Same short bound as list_sessions: a status read must fail fast,
+        # never inherit the twelve-hour invoke budget.
+        timeout = httpx.Timeout(
+            LIST_SESSIONS_READ_TIMEOUT, connect=SUBMIT_CONNECT_TIMEOUT
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                return response.json()
+        except httpx.TimeoutException as exc:
+            logger.warning(
+                "embervm session read timed out for session %s: %s",
+                ember_session_id,
+                exc,
+            )
+            raise EmberVMTimeout(str(exc)) from exc
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "embervm session read failed for session %s: %s",
+                ember_session_id,
+                exc,
+            )
+            if exc.response.status_code in (404, 410):
+                raise EmberSessionGone(_status_error_detail(exc)) from exc
+            raise EmberVMTransportError(_status_error_detail(exc)) from exc
+        except httpx.TransportError as exc:
+            logger.warning(
+                "embervm session read transport error for session %s: %s",
+                ember_session_id,
+                exc,
+            )
+            raise EmberVMTransportError(str(exc)) from exc
+
     async def prewarm_session(
         self,
         ember_session_id: str,
