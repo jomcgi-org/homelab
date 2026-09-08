@@ -1357,6 +1357,14 @@ def mark_turn_error_sync(
             return
         if dispatch_count is not None and row.dispatch_count != dispatch_count:
             return
+        permit = admission.reservation(session, sess.local_session_id, turn_seq)
+        if invocation_not_attempted and (
+            permit is None
+            or permit.session_id != session_id
+            or permit.owner != claim_owner
+            or permit.state not in {"reserved", "running"}
+        ):
+            return
         existing = get_turn(session, session_id, turn_seq)
         if (
             existing is not None
@@ -1391,7 +1399,6 @@ def mark_turn_error_sync(
         sess.status = "warn"
         sess.voice_summary = error_summary
         sess.last_turn_at = datetime.now(timezone.utc)
-        permit = admission.reservation(session, sess.local_session_id, turn_seq)
         admission.settle(
             session,
             sess,

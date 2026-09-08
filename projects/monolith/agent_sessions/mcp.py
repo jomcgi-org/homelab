@@ -444,6 +444,8 @@ def _mark_turn_error_sync(
     claim_owner: str | None = None,
     *,
     cessation_confirmed: bool = False,
+    invocation_not_attempted: bool = False,
+    dispatch_count: int | None = None,
 ) -> None:
     store.mark_turn_error_sync(
         session_id,
@@ -451,6 +453,8 @@ def _mark_turn_error_sync(
         error_msg,
         claim_owner,
         cessation_confirmed=cessation_confirmed,
+        invocation_not_attempted=invocation_not_attempted,
+        dispatch_count=dispatch_count,
     )
 
 
