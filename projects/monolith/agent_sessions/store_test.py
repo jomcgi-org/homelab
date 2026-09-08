@@ -53,6 +53,68 @@ def _restore_schemas(schemas):
             table.schema = schemas[table.name]
 
 
+def test_exact_turn_hold_distinguishes_other_turns_sessions_and_settlement(
+    monkeypatch, tmp_path
+):
+    from agent_sessions.constants import UNKNOWN_INVOCATION
+    from agent_sessions.models import AgentCapacityReservation
+
+    engine, schemas = _database(monkeypatch, tmp_path)
+    try:
+        with Session(engine) as session:
+            agent = store.create_session(session, "held", "guest", "main")
+            other = store.create_session(session, "other", "guest", "main")
+            session.add_all(
+                [
+                    AgentTurn(
+                        session_id=agent.id,
+                        seq=1,
+                        prompt="original",
+                        result_text="partial evidence",
+                        terminal_reason="error",
+                        stop_reason=UNKNOWN_INVOCATION,
+                    ),
+                    AgentTurn(
+                        session_id=agent.id,
+                        seq=2,
+                        prompt="later",
+                        result_text="delivery-error progress",
+                        terminal_reason="error",
+                        stop_reason=None,
+                    ),
+                    AgentCapacityReservation(
+                        local_session_id=agent.local_session_id,
+                        session_id=agent.id,
+                        pending_seq=2,
+                        tier="kg",
+                        state="uncertain",
+                        outcome="delivery_error",
+                    ),
+                ]
+            )
+            session.commit()
+
+            assert store.has_unknown_outcome_for_turn(session, agent.id, 1)
+            assert store.has_unknown_outcome_for_turn(session, agent.id, 2)
+            assert not store.has_unknown_outcome_for_turn(session, agent.id, 3)
+            assert not store.has_unknown_outcome_for_turn(session, other.id, 2)
+
+            permit = session.exec(select(AgentCapacityReservation)).one()
+            permit.state = "settled"
+            session.add(permit)
+            session.commit()
+
+            assert not store.has_unknown_outcome_for_turn(session, agent.id, 2)
+            assert store.has_unknown_outcome_for_turn(session, agent.id, 1)
+            turn = store.get_turn(session, agent.id, 2)
+            assert turn.terminal_reason == "error"
+            assert turn.stop_reason is None
+            assert turn.result_text == "delivery-error progress"
+    finally:
+        engine.dispose()
+        _restore_schemas(schemas)
+
+
 def test_write_progress_sync_updates_claimed_row(monkeypatch, tmp_path):
     engine, schemas = _database(monkeypatch, tmp_path)
     try:

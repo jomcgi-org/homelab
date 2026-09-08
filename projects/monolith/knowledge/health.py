@@ -39,10 +39,12 @@ def _kg_health_core(session: Session, cap: int) -> dict:
                 SELECT name
                   FROM claude_agent.routine_jobs
                  WHERE last_status = :unknown_outcome
+                   AND routine_kind = :kind
                 UNION
                 SELECT routine_job_name
                   FROM agent_sessions.capacity_reservations
                  WHERE state != 'settled'
+                   AND tier = 'kg'
                    AND routine_job_name IS NOT NULL
             )
             SELECT (

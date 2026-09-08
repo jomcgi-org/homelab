@@ -1411,7 +1411,10 @@ def test_finish_step_span_marks_error_status(monkeypatch):
 
 
 @pytest.mark.parametrize("stage", ["ordinary", "kg", "kg_correction", "recurring"])
-def test_unknown_turn_holds_job_without_retry_apply_or_cleanup(monkeypatch, stage):
+@pytest.mark.parametrize("delivery_error", [False, True])
+def test_unknown_turn_holds_job_without_retry_apply_or_cleanup(
+    monkeypatch, stage, delivery_error
+):
     held, applied, deferred = [], [], []
     monkeypatch.setattr(
         drainer, "hold_drainer_job", lambda *args: held.append(args) or True
@@ -1434,9 +1437,14 @@ def test_unknown_turn_holds_job_without_retry_apply_or_cleanup(monkeypatch, stag
         }
 
     monkeypatch.setattr(drainer, "apply_kg_extraction", apply)
+    monkeypatch.setattr(
+        drainer,
+        "_turn_has_unknown_outcome_lookup",
+        lambda session_id, seq: delivery_error and session_id == 101 and seq == 2,
+    )
     unknown = {
         "terminal_reason": "error",
-        "stop_reason": "invocation_outcome_unknown",
+        "stop_reason": None if delivery_error else "invocation_outcome_unknown",
         "result_text": "partial extraction",
         "seq": 2,
     }
@@ -1477,6 +1485,7 @@ def test_delivery_error_turn_holds_job_without_retry_apply_or_cleanup(monkeypatc
         drainer, "defer_drainer_job", lambda *args: deferred.append(args)
     )
     monkeypatch.setattr(drainer, "kg_jobs_today", lambda: 0)
+    monkeypatch.setattr(drainer, "build_kg_prompt", lambda _: "extract")
     monkeypatch.setattr(
         drainer, "apply_kg_extraction", lambda *args: applied.append(args)
     )
