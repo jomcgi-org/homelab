@@ -10,7 +10,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from agent_sessions import result_receipts as receipts
-from agent_sessions import store, transport
+from agent_sessions import admission, store, transport
 from agent_sessions.models import (
     AgentCapacityPool,
     AgentCapacityReservation,
@@ -45,6 +45,7 @@ def database(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(receipts, "get_engine", lambda: engine)
     monkeypatch.setattr(store, "get_engine", lambda: engine)
+    monkeypatch.setattr(admission, "get_engine", lambda: engine)
     with Session(engine) as db, db.begin():
         db.add(
             AgentSession(
@@ -55,6 +56,7 @@ def database(tmp_path, monkeypatch):
                 ember_session_id="guest-one",
                 ember_session_token="original-guest-token",
                 status="running",
+                admission_tier="project",
             )
         )
         db.add(
@@ -224,6 +226,107 @@ def test_mint_rejects_expired_claim_and_uncertain_permit(database):
         db.add_all([row, permit])
     with pytest.raises(receipts.ReceiptRejected, match="not_admitted"):
         prepare()
+
+
+def test_mint_preserves_interrupted_history_for_admitted_preemption_retry(database):
+    store.mark_turn_interrupted_sync(1, 1, "executor-one")
+    assert not store.release_pending_message_claim_sync(1, 1, "executor-one")
+    assert store.claim_pending_message_for_session_sync(1, "executor-two") == 1
+    assert admission.recheck(1, 1, "executor-two")
+
+    before = execution_state(database)
+    assert before["AgentSession"][0]["status"] == "recovering"
+    assert before["PendingMessage"][0]["dispatch_count"] == 2
+    interrupted = before["AgentTurn"][0]
+    assert interrupted["terminal_reason"] == "interrupted"
+    assert interrupted["stop_reason"] == "brick_preempted"
+    # Claiming consumes the one retry grant, but keeps the interrupted record
+    # until the existing result writer can replace it with the native result.
+    assert "retry_dispatch_count" not in json.loads(interrupted["usage_json"])
+
+    receipt = prepare(claim_owner="executor-two", dispatch_count=2)
+
+    assert execution_state(database) == before
+    with Session(database) as db:
+        row = db.get(AgentResultReceipt, receipt["id"])
+        assert row.session_id == 1
+        assert row.seq == 1
+        assert row.dispatch_count == 2
+        assert row.claim_owner == "executor-two"
+        assert row.guest_id == "guest-one"
+
+
+def test_mint_accepts_admitted_queued_turn_after_previous_turn_completes(database):
+    with Session(database) as db:
+        pending = store.create_pending_message(db, 1, "queued follow-up")
+        assert pending.seq == 2
+    store.persist_turn_from_pending_sync(
+        1,
+        1,
+        "implement task",
+        transport.Turn(
+            result="done",
+            terminal_reason="end_turn",
+            stop_reason="end_turn",
+            is_error=False,
+            permission_denials=[],
+            num_turns=1,
+            session_id="native-cli",
+            usage={},
+            total_cost_usd=None,
+            duration_ms=10,
+            activities=[],
+        ),
+        "done",
+        "completed",
+        claim_owner="executor-one",
+        dispatch_count=1,
+    )
+    assert store.claim_pending_message_for_session_sync(1, "executor-two") == 2
+    assert admission.recheck(1, 2, "executor-two")
+    before = execution_state(database)
+    assert before["AgentSession"][0]["status"] == "completed"
+
+    receipt = prepare(
+        claim_owner="executor-two", request_body=b'{"message":"queued follow-up"}'
+    )
+
+    assert execution_state(database) == before
+    with Session(database) as db:
+        row = db.get(AgentResultReceipt, receipt["id"])
+        assert row.seq == 2
+        assert row.dispatch_count == 1
+        assert row.claim_owner == "executor-two"
+
+
+@pytest.mark.parametrize("missing", ["grant", "claim", "admission"])
+def test_mint_rejects_preemption_retry_without_authority(database, missing):
+    store.mark_turn_interrupted_sync(1, 1, "executor-one")
+    if missing == "grant":
+        with Session(database) as db, db.begin():
+            interrupted = db.exec(select(AgentTurn)).one()
+            usage = json.loads(interrupted.usage_json)
+            usage.pop("retry_dispatch_count")
+            interrupted.usage_json = json.dumps(usage)
+            db.add(interrupted)
+    store.release_pending_message_claim_sync(1, 1, "executor-one")
+    if missing == "grant":
+        assert store.claim_pending_message_for_session_sync(1, "executor-two") is None
+    elif missing == "admission":
+        assert store.claim_pending_message_for_session_sync(1, "executor-two") == 1
+        with Session(database) as db, db.begin():
+            permit = db.exec(select(AgentCapacityReservation)).one()
+            permit.state = "uncertain"
+            db.add(permit)
+    assert not admission.recheck(1, 1, "executor-two")
+    before = execution_state(database)
+
+    with pytest.raises(receipts.ReceiptRejected):
+        prepare(claim_owner="executor-two", dispatch_count=2)
+
+    assert execution_state(database) == before
+    with Session(database) as db:
+        assert db.exec(select(AgentResultReceipt)).all() == []
 
 
 def test_each_physical_invoke_has_fresh_identity_and_preserves_late_evidence(database):
