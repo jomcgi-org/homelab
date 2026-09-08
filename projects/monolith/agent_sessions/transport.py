@@ -13,6 +13,7 @@ import asyncio
 import base64
 import binascii
 from contextvars import ContextVar
+from dataclasses import dataclass
 import json
 import logging
 import os
@@ -43,6 +44,26 @@ tracer = trace.get_tracer(__name__)
 _delivery_admission_check: ContextVar[Callable[[], Awaitable[None]] | None] = (
     ContextVar("agent_sessions.delivery_admission_check", default=None)
 )
+
+
+@dataclass
+class _DeliveryInvocation:
+    # Shared by child tasks in this delivery, but never by nested deliveries.
+    # This stays true after any model POST, including a failed physical attempt.
+    attempted: bool = False
+
+
+_delivery_invocation: ContextVar[_DeliveryInvocation | None] = ContextVar(
+    "agent_sessions.delivery_invocation", default=None
+)
+
+
+class EmberTurnNotInvoked(EmberVMTransportError):
+    """This delivery ended before sending a model turn to any guest.
+
+    A session create may still have allocated an idle VM. This is evidence
+    about model execution, not a claim that an external guest was destroyed.
+    """
 
 
 async def _check_delivery_admission() -> None:
@@ -861,6 +882,8 @@ class EmberVmShimTransport:
         # delivery started in a factory callback. Always restore the caller's
         # context on success, denial, transport failure, or cancellation.
         token = _delivery_admission_check.set(admission_check)
+        invocation = _DeliveryInvocation()
+        invocation_token = _delivery_invocation.set(invocation)
         try:
             with tracer.start_as_current_span("agent_sessions.deliver"):
                 return await self._deliver(
@@ -880,7 +903,16 @@ class EmberVmShimTransport:
                     dispatch_count=dispatch_count,
                     receipt_claim_owner=receipt_claim_owner,
                 )
+        except Exception as exc:
+            if not invocation.attempted:
+                raise EmberTurnNotInvoked(str(exc)) from exc
+            # A nested delivery can fail before its own POST after this caller
+            # already sent one. Its narrower evidence cannot settle this turn.
+            if isinstance(exc, EmberTurnNotInvoked):
+                raise EmberVMTransportError(str(exc)) from exc
+            raise
         finally:
+            _delivery_invocation.reset(invocation_token)
             _delivery_admission_check.reset(token)
 
     async def _deliver(
@@ -1025,6 +1057,11 @@ class EmberVmShimTransport:
                             body.encode(),
                         )
                         body = json.dumps(payload)
+                    # Mark before yielding to I/O. Even a connect/write/read
+                    # failure after this point retains the conservative hold.
+                    invocation = _delivery_invocation.get()
+                    if invocation is not None:
+                        invocation.attempted = True
                     response = await client.post(
                         url, content=body.encode(), headers=headers
                     )

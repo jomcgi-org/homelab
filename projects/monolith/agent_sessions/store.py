@@ -1342,14 +1342,20 @@ def mark_turn_error_sync(
     claim_owner: str | None = None,
     *,
     cessation_confirmed: bool = False,
+    invocation_not_attempted: bool = False,
+    dispatch_count: int | None = None,
 ) -> None:
-    """Retain progress on a terminal delivery error without allowing replay."""
+    """Retain error progress and settle only with exact execution evidence."""
+    if invocation_not_attempted and (not claim_owner or dispatch_count is None):
+        raise ValueError("Not-invoked evidence requires exact dispatch ownership")
     with Session(get_engine()) as session:
         sess = _lock_session(session, session_id)
         row = get_pending_message(session, session_id, turn_seq)
         if sess is None or row is None:
             return
         if claim_owner is not None and row.claimed_by_replica != claim_owner:
+            return
+        if dispatch_count is not None and row.dispatch_count != dispatch_count:
             return
         existing = get_turn(session, session_id, turn_seq)
         if (
@@ -1363,6 +1369,9 @@ def mark_turn_error_sync(
             session.delete(existing)
             session.flush()
         error_summary = "Error: " + error_msg[:100]
+        usage = _progress_usage(row, error_msg)
+        if invocation_not_attempted:
+            usage["recovery"]["invocation_phase"] = "not_invoked"
         create_turn(
             session,
             session_id,
@@ -1374,7 +1383,7 @@ def mark_turn_error_sync(
             stop_reason=None,
             permission_denials=[],
             commit_sha=None,
-            usage=_progress_usage(row, error_msg),
+            usage=usage,
             cost_usd=None,
             model=row.model,
             commit=False,
@@ -1387,8 +1396,9 @@ def mark_turn_error_sync(
             session,
             sess,
             turn_seq,
-            outcome="delivery_error",
-            cessation_confirmed=cessation_confirmed
+            outcome="not_invoked" if invocation_not_attempted else "delivery_error",
+            cessation_confirmed=invocation_not_attempted
+            or cessation_confirmed
             or (permit is not None and permit.state == "reserved"),
         )
         session.add(sess)
