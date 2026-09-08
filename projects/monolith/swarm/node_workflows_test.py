@@ -916,3 +916,282 @@ def test_reconcile_missing_id_without_matching_session_returns_none(reconciliati
         is None
     )
     assert state.reads == []
+
+
+@pytest.mark.parametrize("value", [None, 123, "bad", "2026-09-07T06:00:00"])
+def test_task_deadline_validation_precedes_start(harness, value):
+    with pytest.raises(ValueError):
+        nodes.execute_node.__wrapped__(pin(task_deadline_at=value))
+    assert harness.starts == []
+
+
+def test_new_pin_uses_task_deadline_without_changing_legacy_pin(harness, monkeypatch):
+    deadline = "2026-09-07T10:00:00+00:00"
+    calls = []
+    monkeypatch.setattr(
+        nodes,
+        "_await_dispatched_node_turn",
+        lambda p, sid, end: calls.append((p, sid, end)) or harness.turn,
+    )
+    result = nodes.execute_node.__wrapped__(pin(task_deadline_at=deadline))
+    assert result["status"] == "succeeded"
+    assert calls[0][2].isoformat() == deadline
+    assert "task_deadline_at" not in nodes._validate_pin(pin())
+    assert harness.waits == []
+
+
+def test_queue_wait_longer_than_turn_timeout_then_dispatch_completes(monkeypatch):
+    # More than a full execution timeout passes while capacity is saturated.
+    clocks = iter(
+        ["2026-09-07T06:00:00Z", "2026-09-07T06:20:00Z", "2026-09-07T06:20:05Z"]
+    )
+    dispatches = iter(
+        [
+            {"state": "queued", "started_at": None},
+            {"state": "queued", "started_at": None},
+            {"state": "dispatched", "started_at": "2026-09-07T06:20:01Z"},
+        ]
+    )
+    turns = iter([None, None, None, {"terminal_reason": "completed"}])
+    sleeps = []
+    monkeypatch.setattr(nodes, "poll_turn", lambda *_: next(turns))
+    monkeypatch.setattr(nodes, "observe_clock", lambda: next(clocks))
+    monkeypatch.setattr(nodes, "_read_node_dispatch", lambda *_: next(dispatches))
+    monkeypatch.setattr(nodes.DBOS, "sleep", sleeps.append)
+    result = nodes._await_dispatched_node_turn(
+        pin(), 7, nodes._timestamp("2026-09-07T10:00:00Z")
+    )
+    assert result == {"terminal_reason": "completed"}
+    assert sleeps == [5, 5, 5]
+
+
+@pytest.mark.parametrize(
+    "dispatch, now, deadline",
+    [
+        (
+            {"state": "queued", "started_at": None},
+            "2026-09-07T10:00:01Z",
+            "2026-09-07T10:00:00Z",
+        ),
+        (
+            {"state": "dispatched", "started_at": "2026-09-07T06:00:00Z"},
+            "2026-09-07T06:10:01Z",
+            "2026-09-07T10:00:00Z",
+        ),
+        (
+            {"state": "dispatched", "started_at": "2026-09-07T09:59:59Z"},
+            "2026-09-07T10:00:01Z",
+            "2026-09-07T10:00:00Z",
+        ),
+        (
+            {"state": "unconfirmed", "started_at": None},
+            "2026-09-07T06:00:00Z",
+            "2026-09-07T10:00:00Z",
+        ),
+    ],
+)
+def test_task_expiry_or_persisted_dispatch_expiry_never_restarts_clock(
+    monkeypatch, dispatch, now, deadline
+):
+    monkeypatch.setattr(nodes, "poll_turn", lambda *_: None)
+    monkeypatch.setattr(nodes, "observe_clock", lambda: now)
+    monkeypatch.setattr(nodes, "_read_node_dispatch", lambda *_: dispatch)
+    monkeypatch.setattr(
+        nodes.DBOS, "sleep", lambda _: pytest.fail("expired or unknown attempt waited")
+    )
+    for _ in range(2):
+        assert (
+            nodes._await_dispatched_node_turn(pin(), 7, nodes._timestamp(deadline))
+            is None
+        )
+
+
+@pytest.fixture
+def queued_attempt(reconciliation_db):
+    from agent_sessions.models import (
+        AgentCapacityPool,
+        AgentCapacityReservation,
+        PendingMessage,
+    )
+
+    state = reconciliation_db
+    SQLModel.metadata.create_all(
+        state.engine,
+        tables=[AgentCapacityPool.__table__, AgentCapacityReservation.__table__],
+    )
+    with Session(state.engine) as db:
+        owner = db.get(AgentSession, 7)
+        owner.admission_tier = "project"
+        db.add(owner)
+        db.add(
+            PendingMessage(
+                session_id=7, seq=1, message_text="exact queued prompt", model="luna"
+            )
+        )
+        db.commit()
+    return state
+
+
+def test_queued_cancellation_is_atomic_explicit_and_idempotent(queued_attempt):
+    from agent_sessions.api import cancel_queued_factory_attempt
+    from agent_sessions.models import PendingMessage
+    from sqlmodel import select
+
+    state = queued_attempt
+    with Session(state.engine) as db:
+        assert cancel_queued_factory_attempt(db, state.pin, 7) == 7
+        db.rollback()
+    with Session(state.engine) as db:
+        assert db.exec(select(PendingMessage)).one()
+        assert db.exec(select(AgentTurn)).first() is None
+        assert cancel_queued_factory_attempt(db, state.pin, 7) == 7
+        db.commit()
+    with Session(state.engine) as db:
+        assert db.exec(select(PendingMessage)).first() is None
+        turn = db.exec(select(AgentTurn)).one()
+        assert turn.prompt == "exact queued prompt"
+        assert turn.model is None and turn.cost_usd is None
+        assert turn.stop_reason == "cancelled_before_dispatch"
+        assert '"source": "factory_reconciliation"' in turn.usage_json
+        assert cancel_queued_factory_attempt(db, state.pin, 7) is None
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("dispatch_count", 1),
+        ("claimed_by_replica", "replica"),
+        ("claimed_at", datetime(2026, 9, 7, tzinfo=timezone.utc)),
+        ("last_dispatch_at", datetime(2026, 9, 7, tzinfo=timezone.utc)),
+        ("partial_text", "progress"),
+        ("partial_activities", "[]"),
+    ],
+)
+def test_queued_cancellation_refuses_attempted_or_partial_evidence(
+    queued_attempt, field, value
+):
+    from agent_sessions.api import cancel_queued_factory_attempt
+    from agent_sessions.models import PendingMessage
+    from sqlmodel import select
+
+    with Session(queued_attempt.engine) as db:
+        row = db.exec(select(PendingMessage)).one()
+        setattr(row, field, value)
+        db.add(row)
+        db.commit()
+        assert cancel_queued_factory_attempt(db, queued_attempt.pin, 7) is None
+        assert db.exec(select(AgentTurn)).first() is None
+        assert db.exec(select(PendingMessage)).one().id == row.id
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "guest",
+        "prior_guest",
+        "extra_pending",
+        "turn",
+        "permit_unknown",
+        "permit_owned",
+        "permit_other",
+        "timestamp",
+    ],
+)
+def test_queued_cancellation_refuses_inconsistent_history(queued_attempt, case):
+    from datetime import timedelta
+    from agent_sessions.api import cancel_queued_factory_attempt
+    from agent_sessions.models import PendingMessage, AgentCapacityReservation
+    from sqlmodel import select
+
+    with Session(queued_attempt.engine) as db:
+        owner = db.get(AgentSession, 7)
+        if case == "guest":
+            owner.ember_session_id = "guest"
+        elif case == "prior_guest":
+            owner.prior_ember_lineage_id = "previous"
+        elif case == "timestamp":
+            owner.last_turn_at = datetime.now(timezone.utc) + timedelta(days=1)
+        elif case == "extra_pending":
+            db.add(PendingMessage(session_id=7, seq=2, message_text="later"))
+        elif case == "turn":
+            db.add(
+                AgentTurn(
+                    session_id=7,
+                    seq=1,
+                    prompt="old",
+                    result_text="unknown",
+                    stop_reason=UNKNOWN_INVOCATION,
+                )
+            )
+        else:
+            db.add(
+                AgentCapacityReservation(
+                    local_session_id=owner.local_session_id,
+                    session_id=7,
+                    pending_seq=2 if case == "permit_other" else 1,
+                    tier="project",
+                    state="uncertain" if case == "permit_unknown" else "reserved",
+                    owner="worker" if case == "permit_owned" else None,
+                )
+            )
+        db.add(owner)
+        db.commit()
+        assert cancel_queued_factory_attempt(db, queued_attempt.pin, 7) is None
+        assert db.exec(select(PendingMessage)).first() is not None
+
+
+def test_completed_never_dispatched_recovery_marker_is_accepted(queued_attempt):
+    from datetime import timedelta
+    from agent_sessions.api import cancel_queued_factory_attempt
+
+    with Session(queued_attempt.engine) as db:
+        owner = db.get(AgentSession, 7)
+        owner.last_turn_at = datetime.now(timezone.utc) + timedelta(seconds=1)
+        owner.recovery_completed_at = owner.last_turn_at
+        db.add(owner)
+        db.commit()
+        assert cancel_queued_factory_attempt(db, queued_attempt.pin, 7) == 7
+
+
+def test_dispatch_read_uses_persisted_timestamp_and_rejects_second_claim(
+    queued_attempt,
+):
+    from agent_sessions.api import read_factory_dispatch
+    from agent_sessions.models import PendingMessage
+    from sqlmodel import select
+
+    with Session(queued_attempt.engine) as db:
+        assert read_factory_dispatch(db, queued_attempt.pin, 7)["state"] == "queued"
+        row = db.exec(select(PendingMessage)).one()
+        row.dispatch_count = 1
+        row.last_dispatch_at = nodes._timestamp(NOW)
+        db.add(row)
+        db.commit()
+        observed = read_factory_dispatch(db, queued_attempt.pin, 7)
+        assert nodes._timestamp(observed["started_at"]) == nodes._timestamp(NOW)
+        row.dispatch_count = 2
+        db.add(row)
+        db.commit()
+        assert (
+            read_factory_dispatch(db, queued_attempt.pin, 7)["state"] == "unconfirmed"
+        )
+
+
+def test_concurrent_queued_cancellation_creates_one_terminal_turn(queued_attempt):
+    from concurrent.futures import ThreadPoolExecutor
+    from agent_sessions.api import cancel_queued_factory_attempt
+    from sqlmodel import select
+
+    state = queued_attempt
+
+    def cancel():
+        with Session(state.engine) as db:
+            result = cancel_queued_factory_attempt(db, state.pin, 7)
+            db.commit()
+            return result
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: cancel(), range(2)))
+    assert sorted(results, key=lambda v: v or 0) == [None, 7]
+    with Session(state.engine) as db:
+        assert len(db.exec(select(AgentTurn)).all()) == 1

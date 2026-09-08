@@ -4604,6 +4604,7 @@ py_test(
     srcs = ["swarm/factory_conductor_test.py"],
     imports = ["."],
     deps = [
+        ":pkg_agent_sessions",
         ":pkg_auth",
         ":pkg_swarm",
         "@pip//fastapi",
@@ -4694,6 +4695,7 @@ py_test(
     srcs = ["swarm/node_workflows_test.py"],
     imports = ["."],
     deps = [
+        ":pkg_agent_sessions",
         ":pkg_auth",
         ":pkg_swarm",
         "@pip//fastapi",

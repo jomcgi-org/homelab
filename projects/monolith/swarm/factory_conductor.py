@@ -868,9 +868,27 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
         )
         if confirmed is not None:
             result = confirmed
-    status = result["status"]
     with Session(get_engine()) as db:
         with _locked_session(db):
+            # Only a completed timeout result can trigger this repair. Session,
+            # graph and factory settlement share the same transaction and locks.
+            if result["status"] == "uncertain" and str(
+                result.get("reason", "")
+            ).startswith("timeout:"):
+                from agent_sessions.api import cancel_queued_factory_attempt
+
+                cancelled = cancel_queued_factory_attempt(
+                    db, pin, result.get("session_id") or run.get("session_id")
+                )
+                if cancelled is not None:
+                    result = {
+                        **result,
+                        "status": "failed",
+                        "session_id": cancelled,
+                        "cost_usd": None,
+                        "reason": "cancelled_before_dispatch: factory timeout reconciliation",
+                    }
+            status = result["status"]
             if result.get("session_id") and not run.get("session_id"):
                 binding = graph.record_dispatch(
                     task["id"],
@@ -935,7 +953,20 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
         for run in active[:1]:
             _submit_or_reconcile(task, run, dbos)
         return
-    if not can_start(task_id)["ok"]:
+    permission = can_start(task_id)
+    if not permission["ok"]:
+        if permission["reason"] == "task_deadline":
+            from swarm.factory_controls import finish_task
+
+            finish_task(
+                task_id,
+                "failed",
+                ACTOR,
+                evidence={
+                    "state": "task_deadline",
+                    "reason": "Absolute task deadline elapsed; all admitted attempts are reconciled.",
+                },
+            )
         return
     nodes = graph.load_graph(task_id)
     planners = [
@@ -999,6 +1030,24 @@ def reserve_node(task_id: str, node_key: str, key: str, context: dict) -> bool:
 
     with Session(get_engine()) as db:
         with _locked_session(db):
+            from swarm.factory_controls import task_snapshot
+
+            # This immutable context is derived from the receipt under its lock.
+            existing = next(
+                (
+                    run
+                    for run in graph.node_runs(task_id, session=db)
+                    if run["dispatch_key"] == key
+                ),
+                None,
+            )
+            if existing is None or "task_deadline_at" in existing["pin"]:
+                context = {
+                    **context,
+                    "task_deadline_at": task_snapshot(task_id, session=db)[
+                        "deadline_at"
+                    ],
+                }
             admitted = graph.admit_dispatch(
                 task_id,
                 node_key,

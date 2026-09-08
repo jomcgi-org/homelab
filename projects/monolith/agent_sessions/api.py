@@ -7,6 +7,8 @@ Existing execution functions resolve lazily to their unchanged implementation.
 from agent_sessions import admission as _admission
 from agent_sessions.constants import KG_NODE_KEY as KG_NODE_KEY
 from agent_sessions.reconciliation import (
+    read_factory_dispatch as read_factory_dispatch,
+    cancel_queued_factory_attempt as cancel_queued_factory_attempt,
     confirm_reconciled_guest_cessation as confirm_reconciled_guest_cessation,
     lock_cessation_session as lock_cessation_session,
 )

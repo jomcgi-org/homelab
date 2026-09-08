@@ -1332,3 +1332,279 @@ def test_budget_projection_shares_admission_accounting_and_retry_ceiling(feedbac
         "never multiply the ceiling by the attempt count"
         in conductor.planner_prompt(task, [], [])
     )
+
+
+@pytest.fixture
+def queued_factory(feedback_db, monkeypatch):
+    from sqlmodel import Session, SQLModel
+    import core.db
+    from agent_sessions.models import (
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+        AgentCapacityPool,
+        AgentCapacityReservation,
+    )
+
+    engine = feedback_db.execution_options(
+        schema_translate_map={"swarm": None, "agent_sessions": None}
+    )
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            m.__table__
+            for m in (
+                AgentSession,
+                AgentTurn,
+                PendingMessage,
+                AgentCapacityPool,
+                AgentCapacityReservation,
+            )
+        ],
+    )
+    for module in (conductor, conductor.graph, core.db):
+        monkeypatch.setattr(module, "get_engine", lambda: engine)
+    task, policy = feedback_task()
+    key = "conductor_1"
+    workflow = f"factory-node:{task['id']}:{key}:1"
+    assert conductor._add(
+        task, policy, key, "plan", [], "opus", "test:queue", "queue test"
+    ).ok
+    context = {
+        "repo": task["repo"],
+        "branch": f"factory/{task['id']}",
+        "hydration_branch": "main",
+        "workflow_id": workflow,
+        "artifact_path": ".factory/plan.json",
+        "artifact_schema": conductor.DECISION_SCHEMA,
+    }
+    assert conductor.reserve_node(task["id"], key, workflow, context)
+    run = conductor.graph.node_runs(task["id"])[0]
+    with Session(engine) as db:
+        owner = AgentSession(
+            local_session_id=f"factory:{task['id']}:{key}:1",
+            workspace="guest",
+            branch="main",
+            repo=task["repo"],
+            model="opus",
+            workflow_id=workflow,
+            node_key=key,
+            node_attempt=1,
+            admission_tier="project",
+        )
+        db.add(owner)
+        db.flush()
+        sid = owner.id
+        db.add(
+            PendingMessage(
+                session_id=sid, seq=1, message_text="queued planner", model="opus"
+            )
+        )
+        db.commit()
+    return SimpleNamespace(
+        engine=engine, task=task, policy=policy, run=run, sid=sid, context=context
+    )
+
+
+def test_reservation_pins_original_task_deadline_and_replays(queued_factory):
+    from swarm.factory_controls import task_snapshot
+
+    s = queued_factory
+    original = s.run["pin"]
+    assert original["task_deadline_at"] == task_snapshot(s.task["id"])["deadline_at"]
+    assert conductor.reserve_node(
+        s.task["id"], s.run["node_key"], s.run["dispatch_key"], s.context
+    )
+    runs = conductor.graph.node_runs(s.task["id"])
+    assert len(runs) == 1 and runs[0]["pin"] == original
+
+
+def test_timeout_reconciliation_settles_both_ledgers_without_budget_credit(
+    queued_factory, monkeypatch
+):
+    import json
+    from sqlmodel import Session, select
+    from swarm import factory_controls as controls
+    from agent_sessions.models import AgentTurn, PendingMessage
+    import swarm.node_workflows as nodes
+
+    s = queued_factory
+    monkeypatch.setattr(nodes, "reconcile_completed_node", lambda *_: None)
+    result = {
+        "status": "uncertain",
+        "reason": "timeout: session cessation is unconfirmed; reconcile before retry",
+        "cost_usd": None,
+        "session_id": s.sid,
+    }
+    dbos = SimpleNamespace(
+        get_workflow_status=lambda _: SimpleNamespace(status="SUCCESS"),
+        retrieve_workflow=lambda _: SimpleNamespace(get_result=lambda: result),
+    )
+    original = controls.task_snapshot(s.task["id"])
+    conductor._submit_or_reconcile(s.task, s.run, dbos)
+    runs = conductor.graph.node_runs(s.task["id"])
+    assert len(runs) == 1 and runs[0]["status"] == "failed"
+    assert runs[0]["pin"] == s.run["pin"]
+    assert runs[0]["accounted_cost_usd"] == s.run["reserved_cost_usd"]
+    assert json.loads(runs[0]["outcome_json"])["cost_usd"] is None
+    current = controls.task_snapshot(s.task["id"])
+    assert current["starts"][0]["status"] == "failed"
+    assert current["turns_used"] == original["turns_used"] == 1
+    assert current["deadline_at"] == original["deadline_at"]
+    with Session(s.engine) as db:
+        assert db.exec(select(PendingMessage)).first() is None
+        assert db.exec(select(AgentTurn)).one().model is None
+
+
+def test_timeout_reconciliation_rollback_preserves_queue_and_ledgers(
+    queued_factory, monkeypatch
+):
+    from sqlmodel import Session, select
+    from agent_sessions.models import AgentTurn, PendingMessage
+    from swarm import factory_controls as controls
+    import swarm.node_workflows as nodes
+
+    s = queued_factory
+    monkeypatch.setattr(nodes, "reconcile_completed_node", lambda *_: None)
+    monkeypatch.setattr(
+        controls,
+        "record_start_outcome",
+        lambda *_args, **_kwargs: {"ok": False, "reason": "injected failure"},
+    )
+    result = {"status": "uncertain", "reason": "timeout: queued", "session_id": s.sid}
+    dbos = SimpleNamespace(
+        get_workflow_status=lambda _: SimpleNamespace(status="SUCCESS"),
+        retrieve_workflow=lambda _: SimpleNamespace(get_result=lambda: result),
+    )
+    with pytest.raises(ValueError, match="injected failure"):
+        conductor._submit_or_reconcile(s.task, s.run, dbos)
+    assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "admitted"
+    with Session(s.engine) as db:
+        assert db.exec(select(PendingMessage)).one().dispatch_count == 0
+        assert db.exec(select(AgentTurn)).first() is None
+
+
+@pytest.mark.parametrize("control_action", ["pause_task", "stop", "expired", None])
+def test_waiting_factory_priority_and_live_fence_after_capacity_release(
+    queued_factory, control_action, monkeypatch
+):
+    from datetime import timedelta
+    from sqlmodel import Session, select
+    from swarm import factory_controls as controls
+    from swarm.api import factory_session_allowed
+    from agent_sessions import admission
+    from agent_sessions.models import AgentSession, AgentCapacityReservation
+
+    s = queued_factory
+    with Session(s.engine) as db:
+        # Fully occupy background capacity before presenting queued project work.
+        for i in range(3):
+            db.add(
+                AgentCapacityReservation(
+                    local_session_id=f"occupied-{i}",
+                    pending_seq=1,
+                    tier="kg" if i < 2 else "probe",
+                    model="luna",
+                )
+            )
+        db.commit()
+        assert not admission.reserve_start(db, "fresh-kg", tier="kg", model="luna")
+        db.rollback()
+    if control_action == "expired":
+        deadline = controls.task_snapshot(s.task["id"])["deadline_at"]
+        from datetime import datetime
+
+        monkeypatch.setattr(
+            controls,
+            "_now",
+            lambda: datetime.fromisoformat(deadline) + timedelta(seconds=1),
+        )
+    elif control_action:
+        assert controls.set_control(
+            control_action,
+            "operator",
+            task_id=s.task["id"] if control_action == "pause_task" else None,
+        )["ok"]
+    with Session(s.engine) as db:
+        row = db.exec(
+            select(AgentCapacityReservation).where(
+                AgentCapacityReservation.local_session_id == "occupied-0"
+            )
+        ).one()
+        row.state = "settled"
+        db.add(row)
+        db.commit()
+        owner = db.get(AgentSession, s.sid)
+        assert factory_session_allowed(owner.local_session_id) is (
+            control_action is None
+        )
+        assert admission.reserve_start(db, "fresh-kg", tier="kg", model="luna") is (
+            control_action is not None
+        )
+        db.rollback()
+
+
+@pytest.mark.parametrize("cause", ["attempted", "not_timeout"])
+def test_conductor_keeps_unknown_execution_fenced(queued_factory, monkeypatch, cause):
+    from sqlmodel import Session, select
+    from agent_sessions.models import AgentTurn, PendingMessage
+    import swarm.node_workflows as nodes
+
+    s = queued_factory
+    monkeypatch.setattr(nodes, "reconcile_completed_node", lambda *_: None)
+    if cause == "attempted":
+        with Session(s.engine) as db:
+            pending = db.exec(select(PendingMessage)).one()
+            pending.dispatch_count = 1
+            db.add(pending)
+            db.commit()
+    result = {
+        "status": "uncertain",
+        "reason": "timeout: unknown"
+        if cause == "attempted"
+        else "start_failed: unknown",
+        "session_id": s.sid,
+    }
+    dbos = SimpleNamespace(
+        get_workflow_status=lambda _: SimpleNamespace(status="SUCCESS"),
+        retrieve_workflow=lambda _: SimpleNamespace(get_result=lambda: result),
+    )
+    conductor._submit_or_reconcile(s.task, s.run, dbos)
+    assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "uncertain"
+    with Session(s.engine) as db:
+        assert db.exec(select(PendingMessage)).one()
+        assert db.exec(select(AgentTurn)).first() is None
+
+
+def test_expired_task_finishes_only_after_queue_attempt_reconciles(
+    queued_factory, monkeypatch
+):
+    from datetime import datetime, timedelta
+    from swarm import factory_controls as controls
+    import swarm.node_workflows as nodes
+
+    s = queued_factory
+    deadline = controls.task_snapshot(s.task["id"])["deadline_at"]
+    monkeypatch.setattr(
+        controls,
+        "_now",
+        lambda: datetime.fromisoformat(deadline) + timedelta(seconds=1),
+    )
+    monkeypatch.setattr(nodes, "reconcile_completed_node", lambda *_: None)
+    result = {
+        "status": "uncertain",
+        "reason": "timeout: task expired",
+        "session_id": s.sid,
+    }
+    dbos = SimpleNamespace(
+        get_workflow_status=lambda _: SimpleNamespace(status="SUCCESS"),
+        retrieve_workflow=lambda _: SimpleNamespace(get_result=lambda: result),
+    )
+    conductor.reconcile_task(s.task["id"], s.policy, dbos)
+    assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "failed"
+    conductor.reconcile_task(s.task["id"], s.policy, dbos)
+    receipt = controls.task_snapshot(s.task["id"])
+    assert receipt["state"] == "failed"
+    assert receipt["deadline_at"] == deadline
+    assert receipt["turns_used"] == 1
+    assert receipt["evidence"]["state"] == "task_deadline"

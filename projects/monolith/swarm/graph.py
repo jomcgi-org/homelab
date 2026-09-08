@@ -45,6 +45,7 @@ _CONTEXT_FIELDS = frozenset(
         "artifact_schema",
         "hydration_branch",
         "retry_context",
+        "task_deadline_at",
     )
 )
 
