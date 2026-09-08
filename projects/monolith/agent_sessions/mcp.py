@@ -35,6 +35,7 @@ from agent_sessions.transport import (
     EmberBrickGone,
     EmberSession,
     EmberSessionGone,
+    EmberTurnNotInvoked,
     EmberVmShimTransport,
     Turn,
 )
@@ -836,6 +837,20 @@ async def _execute_pending_message(session_id: int) -> None:
                 str(exc),
                 claim_owner,
                 cessation_confirmed=True,
+            )
+            _clear_negative_oracle_verdict(session_id)
+            return
+        except EmberTurnNotInvoked as exc:
+            if await _abort_stolen_executor_confirmed("not-invoked delivery error"):
+                return
+            await asyncio.to_thread(
+                _mark_turn_error_sync,
+                session_id,
+                claimed_seq,
+                str(exc),
+                claim_owner,
+                invocation_not_attempted=True,
+                dispatch_count=row.dispatch_count,
             )
             _clear_negative_oracle_verdict(session_id)
             return
