@@ -6,10 +6,12 @@
     breakdown,
     cleanPullTitle,
     factSeries,
+    formatSpend,
     lineSeries,
     mergeSeries,
     paginate,
     sortPullRequests,
+    spendSeries,
     tileDerivations,
   } from "$lib/public/factory/model.js";
   import "$lib/public/factory/factory.css";
@@ -36,6 +38,7 @@
       ...(data.activity.local_daily ?? []),
     ]),
   );
+  const spend = $derived(spendSeries(data.activity.spend_daily ?? []));
   const merges = $derived(mergeSeries(data.merges.daily));
   const lines = $derived(lineSeries(data.merges.week));
   const facts = $derived(factSeries(data.facts, today));
@@ -44,7 +47,7 @@
       data.activity,
       data.merges,
       data.facts,
-      { sessions, merges, lines, facts },
+      { sessions, spend, merges, lines, facts },
       today,
     ),
   );
@@ -74,14 +77,10 @@
       spark: tiles.tokens.spark,
     },
     {
-      key: "Cost, 7d",
-      value: `$${tiles.cost.metered.toFixed(0)}`,
-      unit: "metered",
-      subline:
-        tiles.cost.list == null
-          ? "Codex on subscription"
-          : `$${Number(tiles.cost.list).toFixed(0)} list`,
-      spark: tiles.cost.spark,
+      key: "Spend, 7d",
+      value: formatSpend(tiles.spend.value),
+      subline: "at list price",
+      spark: tiles.spend.spark,
     },
     {
       key: "Facts",

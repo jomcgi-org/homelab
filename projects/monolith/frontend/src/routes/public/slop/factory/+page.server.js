@@ -23,7 +23,8 @@ export async function load({ fetch, setHeaders }) {
       now: {},
       daily: [],
       local_daily: [],
-      totals_7d: { ember: {}, local: {} },
+      spend_daily: [],
+      totals_7d: { ember: {}, local: {}, combined: {} },
     },
     { daily: [], week: [], totals: {} },
     {

@@ -6,7 +6,8 @@ const payloads = {
     now: {},
     daily: [],
     local_daily: [],
-    totals_7d: { ember: {}, local: {} },
+    spend_daily: [{ day: "2026-09-07", spend_usd: 12.75 }],
+    totals_7d: { ember: {}, local: {}, combined: { spend_usd: 12.75 } },
   },
   "/slop/factory/merges": { daily: [], week: [], totals: {} },
   "/slop/factory/facts": {
@@ -52,5 +53,11 @@ describe("factory overview loader", () => {
 
     expect(result.unavailable[section]).toBe(true);
     expect(result.title).toBe("Factory");
+    if (section === "activity") {
+      expect(result.activity).toMatchObject({
+        spend_daily: [],
+        totals_7d: { combined: {} },
+      });
+    }
   });
 });

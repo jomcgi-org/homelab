@@ -105,6 +105,14 @@ def _totals(rows: list[dict], fields: tuple[str, ...]) -> dict:
     return result
 
 
+def _spend(ember_rows: list[dict], local_rows: list[dict]) -> float:
+    ember_cost = sum(
+        (row["cost_usd"] or 0) + (row["list_cost_usd"] or 0) for row in ember_rows
+    )
+    local_cost = sum(row["list_cost_usd"] or 0 for row in local_rows)
+    return float(ember_cost + local_cost)
+
+
 def _shape_activity(
     now_row: Any,
     daily_rows: list[Any],
@@ -174,6 +182,21 @@ def _shape_activity(
     )
     ember_totals = _totals(ember_totals_rows, total_fields)
     local_totals = _totals(local_totals_rows, total_fields)
+    combined_totals = _totals([*ember_totals_rows, *local_totals_rows], total_fields)
+    combined_totals["spend_usd"] = _spend(ember_totals_rows, local_totals_rows)
+
+    spend_by_day = {}
+    for row in daily:
+        spend_by_day[row["day"]] = spend_by_day.get(row["day"], 0.0) + float(
+            (row["cost_usd"] or 0) + (row["list_cost_usd"] or 0)
+        )
+    for row in local_daily:
+        spend_by_day[row["day"]] = spend_by_day.get(row["day"], 0.0) + float(
+            row["list_cost_usd"] or 0
+        )
+    spend_daily = [
+        {"day": day, "spend_usd": spend_by_day[day]} for day in sorted(spend_by_day)
+    ]
 
     return {
         "now": {
@@ -184,10 +207,11 @@ def _shape_activity(
         },
         "daily": daily,
         "local_daily": local_daily,
+        "spend_daily": spend_daily,
         "totals_7d": {
             "ember": ember_totals,
             "local": local_totals,
-            "combined": _totals([*ember_totals_rows, *local_totals_rows], total_fields),
+            "combined": combined_totals,
         },
     }
 

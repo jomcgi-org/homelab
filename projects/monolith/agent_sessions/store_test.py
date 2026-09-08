@@ -181,7 +181,7 @@ def test_create_session_persists_optional_system_prompt(monkeypatch, tmp_path):
     [
         (0.0123, "luna", {"input_tokens": 1_000_000}, False),
         (None, "luna", {"input_tokens": 1_000_000}, True),
-        (None, "gpt-6-astra", {"input_tokens": 1_000}, False),
+        (None, "gpt-unknown", {"input_tokens": 1_000}, False),
     ],
 )
 def test_create_turn_keeps_reported_and_list_costs_separate(

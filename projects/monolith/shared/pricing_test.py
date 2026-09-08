@@ -99,8 +99,67 @@ def test_muse_cache_reads_add_no_separate_cost():
     assert with_cache == without_cache
 
 
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [("gpt-6-astra", 12.75), ("codex-auto-review", 3.4375)],
+)
+def test_fixed_openai_prices_use_cache_inclusive_arithmetic(model, expected):
+    priced = price_usage(
+        model,
+        {
+            "input_tokens": 1_000_000,
+            "cache_read_tokens": 250_000,
+            "output_tokens": 100_000,
+        },
+    )
+
+    assert priced is not None
+    assert priced.cost_usd == expected
+    assert priced.source == "list"
+    assert priced.model_ref == model
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [("gpt-6-astra", 12.75), ("codex-auto-review", 3.4375)],
+)
+@pytest.mark.parametrize(
+    ("shape", "input_tokens"), [("claude", 750_000), ("codex", 1_000_000)]
+)
+def test_fixed_openai_prices_accept_both_collector_shapes(
+    model, expected, shape, input_tokens
+):
+    priced = price_usage(
+        model,
+        {
+            "shape": shape,
+            "input_tokens": input_tokens,
+            "cache_read_tokens": 250_000,
+            "output_tokens": 100_000,
+        },
+    )
+
+    assert priced is not None
+    assert priced.cost_usd == expected
+
+
+@pytest.mark.parametrize("model", ["gpt-6-astra", "codex-auto-review"])
+def test_fixed_openai_prices_reject_cache_reads_above_input(model):
+    assert (
+        price_usage(
+            model,
+            {
+                "shape": "codex",
+                "input_tokens": 999,
+                "cache_read_tokens": 1_000,
+            },
+        )
+        is None
+    )
+
+
 def test_unknown_model_returns_none():
-    assert price_usage("gpt-6-astra", {"input_tokens": 1_000}) is None
+    assert price_usage("gpt-unknown", {"input_tokens": 1_000}) is None
 
 
 def test_empty_usage_returns_none():

@@ -287,7 +287,7 @@ def test_price_turns_backfill_prices_only_eligible_rows(tmp_path):
                         seq=2,
                         prompt="unknown",
                         result_text="done",
-                        model="gpt-6-astra",
+                        model="gpt-unknown",
                         usage_json=json.dumps({"input_tokens": 1_000}),
                     ),
                     AgentTurn(
@@ -366,7 +366,7 @@ def test_price_raws_backfill_merges_costs_in_chunks_and_is_idempotent(tmp_path):
                         source="codex-session",
                         content_hash="three",
                         extra={
-                            "model": "gpt-6-astra",
+                            "model": "gpt-unknown",
                             "usage": {"shape": "codex", "input_tokens": 1_000},
                         },
                     ),

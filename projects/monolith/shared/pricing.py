@@ -36,11 +36,26 @@ _MODEL_ALIASES = {
 # projects/embervm/runtimes/claude/shim.py:526-528. spark and qwen route to the
 # Muse adapter whose turn returns usage={} (shim.py:3424), so only pi-spark
 # reaches the table today.
-MUSE_PRICES = {
+FIXED_PRICES = {
     "muse-spark-1.3-contributor": {
         "input_per_million": 0.10,
         "output_per_million": 0.20,
-    }
+    },
+    "gpt-6-astra": {
+        "input_per_million": 10.00,
+        "cache_read_per_million": 1.00,
+        "output_per_million": 50.00,
+        "note": "OpenAI list price, September 2026",
+    },
+    "codex-auto-review": {
+        "input_per_million": 2.50,
+        "cache_read_per_million": 0.25,
+        "output_per_million": 15.00,
+        "note": (
+            "estimate: OpenAI publishes no price for the Codex auto reviewer "
+            "(openai/codex#20981); aggregator listing used"
+        ),
+    },
 }
 
 _CLAUDE_CACHE_KEYS = frozenset(
@@ -66,10 +81,12 @@ def _model_ref(model: str) -> tuple[str, str | None]:
         return _MODEL_ALIASES[model]
     if model.startswith("claude-"):
         return model, "anthropic"
+    if model in FIXED_PRICES:
+        if model.startswith("muse-"):
+            return model, "muse"
+        return model, "fixed"
     if model.startswith("gpt-"):
         return model, "openai"
-    if model in MUSE_PRICES:
-        return model, "muse"
     return model, None
 
 
@@ -137,12 +154,24 @@ def price_usage(
             return None
 
         if provider_id == "muse":
-            prices = MUSE_PRICES[model_ref]
+            prices = FIXED_PRICES[model_ref]
             # Muse prices input inclusively like OpenAI (cache_read_tokens are
             # counted in input_tokens); do not charge separately for cache.
             cost = (
                 counts[0] * prices["input_per_million"]
                 + counts[1] * prices["output_per_million"]
+            ) / 1_000_000
+            return PricedUsage(float(cost), "list", model_ref)
+
+        if provider_id == "fixed":
+            prices = FIXED_PRICES[model_ref]
+            input_tokens, output_tokens, cache_read_tokens, _ = counts
+            if cache_read_tokens > input_tokens:
+                raise ValueError("cache read tokens exceed input tokens")
+            cost = (
+                (input_tokens - cache_read_tokens) * prices["input_per_million"]
+                + cache_read_tokens * prices["cache_read_per_million"]
+                + output_tokens * prices["output_per_million"]
             ) / 1_000_000
             return PricedUsage(float(cost), "list", model_ref)
 

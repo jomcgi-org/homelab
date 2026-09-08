@@ -87,7 +87,7 @@ def test_activity_shape_windows_headers_and_stable_etag():
         _daily_row(today - timedelta(days=30), 16, model="terra"),
         _daily_row(today - timedelta(days=7), 4, cost=4.0, model="sol"),
         _daily_row(today - timedelta(days=6), 2, cost=1.25, model="terra"),
-        _daily_row(today, 1, list_cost=None, model="luna"),
+        _daily_row(today, 1, cost=0.5, list_cost=0.75, model="luna"),
         _daily_row(today - timedelta(days=29), 8, model="opus"),
     ]
     fake_session = _FakeSession(
@@ -116,7 +116,13 @@ def test_activity_shape_windows_headers_and_stable_etag():
             "running": 2,
             "last_turn_at": None,
         }
-        assert list(payload) == ["now", "daily", "local_daily", "totals_7d"]
+        assert list(payload) == [
+            "now",
+            "daily",
+            "local_daily",
+            "spend_daily",
+            "totals_7d",
+        ]
         assert len(payload["daily"]) == 4
         assert set(payload["daily"][0]) == {
             "day",
@@ -142,8 +148,8 @@ def test_activity_shape_windows_headers_and_stable_etag():
                 "input_tokens": 9,
                 "output_tokens": 12,
                 "cache_read_tokens": 15,
-                "cost_usd": 1.25,
-                "list_cost_usd": None,
+                "cost_usd": 1.75,
+                "list_cost_usd": 0.75,
             },
             "local": {
                 "sessions": 3,
@@ -160,10 +166,26 @@ def test_activity_shape_windows_headers_and_stable_etag():
                 "input_tokens": 30,
                 "output_tokens": 36,
                 "cache_read_tokens": 42,
-                "cost_usd": 1.25,
-                "list_cost_usd": 2.5,
+                "cost_usd": 1.75,
+                "list_cost_usd": 3.25,
+                "spend_usd": 5.0,
             },
         }
+        assert payload["spend_daily"] == [
+            {
+                "day": (today - timedelta(days=29)).isoformat(),
+                "spend_usd": 0.0,
+            },
+            {
+                "day": (today - timedelta(days=7)).isoformat(),
+                "spend_usd": 103.0,
+            },
+            {
+                "day": (today - timedelta(days=6)).isoformat(),
+                "spend_usd": 1.25,
+            },
+            {"day": today.isoformat(), "spend_usd": 3.75},
+        ]
         assert payload["local_daily"][0]["source"] == "codex-session"
         assert first.headers["cache-control"] == ("public, max-age=300, s-maxage=300")
         assert first.headers["etag"] == second.headers["etag"]
