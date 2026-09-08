@@ -44,7 +44,7 @@ type registration struct {
 	// Address is "<pod_ip>:<grpc_port>", the endpoint the control plane dials for
 	// WatchNode and the Prime/Assign hot path.
 	Address string `json:"address"`
-	// BootID is a per-process run identity minted once at loop start, so the
+	// BootID is a per-process run identity minted once by Server.New, so the
 	// control plane can tell a fresh pod (new boot_id) from a re-advertisement of
 	// the same one, and observe a restart-in-place even when node+pod_uid are
 	// unchanged.
@@ -76,7 +76,7 @@ func (s *Server) RunRegisterLoop(ctx context.Context) {
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	s.runRegisterLoop(ctx, client, newID("boot"), s.cfg.RegisterInterval)
+	s.runRegisterLoop(ctx, client, s.bootID, s.cfg.RegisterInterval)
 }
 
 // registerFastRetryBase is the delay before the FIRST re-attempt while the

@@ -681,6 +681,21 @@ message AssignResponse {
 message DestroyRequest {
   Trace trace = 1;
   string vm_id = 2;
+  // All three fields are required together for a strict session teardown.
+  // Completion is replayed only for the exact operation and original owner.
+  string operation_id = 3;
+  string expected_boot_id = 4;
+  string expected_session_id = 5;
+}
+
+message DestroyCompletion {
+  string operation_id = 1;
+  string vm_id = 2;
+  string boot_id = 3;
+  string session_id = 4;
+  int64 completed_at_unix_ms = 5;
+  string node = 6;
+  string pod_uid = 7;
 }
 
 message DestroyResponse {
@@ -691,6 +706,10 @@ message DestroyResponse {
   // (ADR embervm/014 decision 5). Old daemons leave this false, which the CP
   // reads as unconfirmed and keeps the instance in destroying until reconcile.
   bool teardown_confirmed = 1;
+  // Positive strict proof is persisted and fsynced before acknowledgement.
+  // Legacy unknown-ID success NEVER populates this field. A replay preserves
+  // the original boot and owner, including after the daemon process restarts.
+  DestroyCompletion completion = 2;
 }
 
 // ---- Session verbs (R2) ----------------------------------------------------
