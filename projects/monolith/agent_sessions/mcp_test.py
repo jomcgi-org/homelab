@@ -2346,6 +2346,7 @@ def test_lost_executor_holds_original_prompt_and_partial_evidence(
 def test_synthetic_cancellation_retains_guest_and_unknown_record(monkeypatch, session):
     from agent_sessions import execution_api as api
 
+    monkeypatch.setattr(api, "get_engine", lambda: session.bind)
     row = store.create_session(session, "synthetic-lost", "<guest>", "main")
     session_id = row.id
     guest = EmberSession("synthetic-retain", "guest-token", None, "lineage-retain")
