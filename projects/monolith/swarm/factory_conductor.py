@@ -484,7 +484,9 @@ def _planner_run(run: dict) -> dict:
     outcome = _outcome(run)
     provider_model = outcome.get("provider_model")
     result["provider_model"] = (
-        provider_model if isinstance(provider_model, str) and provider_model else "unavailable"
+        provider_model
+        if isinstance(provider_model, str) and provider_model
+        else "unavailable"
     )
     result["reason"] = _planner_fields(outcome, ("reason",)).get(
         "reason", "invalid structured reason"

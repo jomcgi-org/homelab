@@ -417,7 +417,9 @@ def test_discard_before_task_branch_exists_records_absent_head_and_advances(
         ).raise_for_status()
 
     monkeypatch.setattr(conductor, "github_get", missing)
-    conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
+    conductor.apply_decision(
+        task, policy, run, conductor.graph.node_runs(task["id"])
+    )
     feedback_db.dispose()
     conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
     assert len(reads) == 1
