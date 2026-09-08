@@ -99,7 +99,7 @@ def validate_policy(policy: dict) -> dict:
         ("generation", 0, 2**31 - 1),
         ("max_tasks", 1, 100),
         ("max_turns_per_task", 1, 100),
-        ("turn_timeout_seconds", 1, 3600),
+        ("turn_timeout_seconds", 1, 43200),
         ("max_attempts", 1, 10),
         ("task_timeout_seconds", 1, 86400),
     ):

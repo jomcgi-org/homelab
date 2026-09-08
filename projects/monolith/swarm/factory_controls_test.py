@@ -416,3 +416,22 @@ def test_supplied_session_cached_rows_cannot_bypass_new_pause_or_stop(db, policy
         assert controls.can_start(task, session=session)["reason"] == "task_paused"
         controls.set_control("stop", "operator")
         assert controls.can_start(task, session=session)["reason"] == "stopped"
+
+
+def test_hour_scale_turn_timeout_is_admitted_within_task_bound(db, policy):
+    policy["turn_timeout_seconds"] = 43200
+    policy["task_timeout_seconds"] = 86400
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    assert controls.status()["policy"]["turn_timeout_seconds"] == 43200
+    assert controls.status()["policy"]["task_timeout_seconds"] == 86400
+
+
+def test_hour_scale_turn_timeout_still_bounded_by_task_timeout(db, policy):
+    policy["task_timeout_seconds"] = 86400
+    policy["turn_timeout_seconds"] = 43201
+    with pytest.raises(ValueError):
+        controls.set_control("configure", "operator", policy=policy)
+    policy["turn_timeout_seconds"] = 43200
+    policy["task_timeout_seconds"] = 43199
+    with pytest.raises(ValueError):
+        controls.set_control("configure", "operator", policy=policy)

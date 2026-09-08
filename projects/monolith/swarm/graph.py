@@ -35,7 +35,7 @@ from swarm.models import (
 _NODE_KINDS = ("work", "gate", "merge", "fable_escalation")
 _TERMINAL_RUN_STATUSES = ("succeeded", "failed", "escalated", "cancelled")
 MAX_ATTEMPTS = 10
-MAX_TURN_TIMEOUT_SECONDS = 7200
+MAX_TURN_TIMEOUT_SECONDS = 43200
 _CONTEXT_FIELDS = frozenset(
     (
         "repo",
