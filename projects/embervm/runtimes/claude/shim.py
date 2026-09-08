@@ -640,8 +640,8 @@ PARK_GRACE_SECONDS_ENV = "EMBER_PARK_GRACE_SECONDS"
 # base snapshot captures it.
 DEFAULT_PARK_GRACE_SECONDS = 15.0
 # Initialization waits inside a turn, so this must stay below the CP per-invoke
-# budget (spec.invocation.timeoutSeconds, currently 900 for claude-runtime),
-# below TURN_READ_TIMEOUT's 600 second role, and generous enough for the cold
+# budget (spec.invocation.timeoutSeconds) and TURN_READ_TIMEOUT's backstop,
+# while remaining generous enough for the cold
 # first init of the 262MB Bun binary in a microVM. BuildBase also uses this
 # through /shim/ready and has its own generous budget.
 
@@ -671,16 +671,12 @@ def _read_park_grace_seconds():
 
 
 INIT_READ_TIMEOUT = _read_init_timeout()
-# Per-event inactivity timeout for the read loop in turn(). Resets on every
-# stream event, so a turn emitting steady output can run far longer than this.
-# Sized to span a single silent tool call: the CLI emits nothing while a Bash
-# tool executes, so this must exceed the slowest realistic in-guest command
-# (a build or test run), not the slowest turn. Its job is detecting a genuinely
-# wedged CLI. The total-duration bound is enforced separately by the caller
-# (read_timeout in projects/monolith/agent_sessions/transport.py), and this
-# value must stay comfortably BELOW that one so the inner watchdog fires first
-# and reports a specific error, rather than the caller timing out generically.
-TURN_READ_TIMEOUT = 600.0
+# Last-resort silence bound, not the task's progress policy. A CLI can stay
+# silent during a useful long tool call, so ten minutes without an event is
+# not evidence of a stuck task. DBOS/conductor supervision owns inspection and
+# earlier cancellation. Leave five minutes before Ember's twelve-hour total
+# invoke ceiling for interruption, result capture and response delivery.
+TURN_READ_TIMEOUT = 42900.0
 INTERRUPT_TIMEOUT = 30.0
 CLI_PROBE_TIMEOUT = 10.0
 # A ref read on a local checkout, so this only ever has to cover process spawn.
@@ -692,7 +688,7 @@ HYDRATION_ATTEMPT_CAP = 3
 # checkout on 2 vCPUs: the instrumented #4389 run finished deltas and most of
 # the checkout just past the old 300 second cap. Only the first turn per
 # session volume ever pays this (the rev-parse gate skips hydration after one
-# success), and the outer budgets (monolith 1800s wall clock, invocation 900s)
+# success), and the outer budgets (Monolith result wait and Ember invocation)
 # leave headroom.
 GIT_CLONE_TIMEOUT_SECONDS = 600
 PERMISSION_MODE_ENV = "EMBER_PERMISSION_MODE"
@@ -2744,7 +2740,7 @@ url = %s
             process.stdin.write(_json_line(value))
             process.stdin.flush()
 
-    def _request(self, method, params, timeout=TURN_READ_TIMEOUT):
+    def _request(self, method, params, timeout=INIT_READ_TIMEOUT):
         with self._write_lock:
             self._rpc_id += 1
             request_id = self._rpc_id
@@ -3482,7 +3478,7 @@ class MuseProcess:
         settings = {"schema_version": 1}
         # A successful probe is cached for the adapter lifetime. A failed probe
         # is retried next turn so a brief tier outage cannot disable knowledge
-        # tools for the session's full six-hour lifetime. This work is inside
+        # tools for the session's full lifetime. This work is inside
         # _spawn, so its latency is included in cli_ready. If a cached-positive
         # tier later goes away, required mode makes Muse abort loudly.
         if self._mcp_probe_cached:

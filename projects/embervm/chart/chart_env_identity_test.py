@@ -1795,3 +1795,32 @@ def test_recovery_disarms_destructive_defaults() -> None:
     assert values["opLog"]["postgres"]["secretName"] == (
         "monolith-dev-pg-embervm-oplog"
     )
+
+
+def test_agent_invokes_fit_runtime_schema_and_fresh_session_lifetime():
+    schema = yaml.safe_load((_chart_dir() / "crds/workload-crd.yaml").read_text())
+    properties = schema["spec"]["versions"][0]["schema"]["openAPIV3Schema"][
+        "properties"
+    ]
+    timeout = properties["spec"]["properties"]["invocation"]["properties"][
+        "timeoutSeconds"
+    ]
+    assert timeout["maximum"] == 43200
+    assert timeout["default"] == 90
+    rendered = _render_with_set(
+        "long-agents",
+        ["claudeRuntimeWorkload.enabled=true", "piRuntimeWorkload.enabled=true"],
+    )
+    workloads = [
+        doc
+        for doc in yaml.safe_load_all(rendered)
+        if isinstance(doc, dict)
+        and doc.get("kind") == "Workload"
+        and doc.get("spec", {}).get("class") == "session"
+    ]
+    assert len(workloads) == 2
+    for workload in workloads:
+        spec = workload["spec"]
+        assert spec["invocation"]["timeoutSeconds"] == timeout["maximum"]
+        assert spec["session"]["maxLifetimeSeconds"] > timeout["maximum"]
+        assert spec["session"]["bankedTtlSeconds"] == 3600

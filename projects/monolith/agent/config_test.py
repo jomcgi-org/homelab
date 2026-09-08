@@ -54,7 +54,7 @@ def test_drainer_defaults(monkeypatch):
 
     assert settings.enabled is False
     assert settings.max_jobs_per_cycle == 3
-    assert settings.turn_timeout_seconds == 1800
+    assert settings.turn_timeout_seconds == 43800
     assert settings.stall_threshold_seconds == 2700
     assert settings.job_kinds == ("qwen-drain", "kg-drain")
     assert settings.kg_max_jobs_per_day == 40
