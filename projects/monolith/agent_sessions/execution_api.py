@@ -332,6 +332,9 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
             and ember is not None
             and not outcome_unknown
             and not claim_stolen
+            # A receipt winner preserves the resident guest until the original
+            # POST resolves. Normal lifecycle cleanup can observe it later.
+            and turn.native_receipt is None
         ):
             try:
                 await _transport.destroy_session(ember.session_id)
@@ -421,9 +424,9 @@ def _sessions_for_workflow(workflow_id: str):
         return store.sessions_for_workflow(db_session, workflow_id)
 
 
-def _session_outcome_unknown(session_id: int) -> bool:
+def _session_cleanup_hold(session_id: int, guest_id: str) -> str | None:
     with Session(get_engine()) as db_session:
-        return store.has_unknown_outcome(db_session, session_id)
+        return store.guest_cleanup_hold(db_session, session_id, guest_id)
 
 
 async def reap_sessions_for_workflow(workflow_id: str) -> dict:
@@ -464,9 +467,15 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
         if ember_session_id is None:
             summary["skipped"].append(row.id)
             continue
+        if getattr(row, "result_receipt_fence_id", None) is not None:
+            summary["pending"].append(row.id)
+            continue
         try:
-            if await asyncio.to_thread(_session_outcome_unknown, row.id):
-                summary["skipped"].append(row.id)
+            hold = await asyncio.to_thread(
+                _session_cleanup_hold, row.id, ember_session_id
+            )
+            if hold is not None:
+                summary["skipped" if hold == "unknown" else "pending"].append(row.id)
                 continue
             try:
                 await _transport.destroy_session(ember_session_id)
@@ -490,8 +499,10 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
                     )
                     summary["pending"].append(row.id)
                     continue
-            await asyncio.to_thread(_clear_ember_bindings_for, ember_session_id)
-            summary["reaped"].append(row.id)
+            cleared = await asyncio.to_thread(
+                _clear_ember_bindings_for, ember_session_id
+            )
+            summary["reaped" if row.id in cleared else "pending"].append(row.id)
         except Exception as exc:  # noqa: BLE001 - one bad session must not stop the rest
             # Logged as well as returned: a caller that drops the response would
             # otherwise leave a permanently leaked capacity slot with no trace.

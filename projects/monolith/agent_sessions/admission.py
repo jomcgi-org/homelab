@@ -131,6 +131,7 @@ def _higher_priority_waiting(db: Session, tier: str) -> bool:
                 ]
             ),
             AgentSession.status.notin_(("failed", "awaiting_login", "recovering")),
+            AgentSession.result_receipt_fence_id.is_(None),
         )
         .order_by(PendingMessage.session_id, PendingMessage.seq)
     ).all()
@@ -254,6 +255,8 @@ def bind_session(db: Session, agent: AgentSession) -> None:
 def claim_pending(
     db: Session, agent: AgentSession, pending: PendingMessage, owner: str
 ) -> bool:
+    if agent.result_receipt_fence_id is not None:
+        return False
     existing = reservation(db, agent.local_session_id, pending.seq)
     initial = existing or reservation(db, agent.local_session_id)
     if not reserve_start(
@@ -305,6 +308,7 @@ def recheck(
             or pending.claimed_by_replica != owner
             or agent is None
             or agent.status in {"failed", "awaiting_login"}
+            or agent.result_receipt_fence_id is not None
             or unknown is not None
             or (workload is not None and row.workload not in (None, workload))
         ):

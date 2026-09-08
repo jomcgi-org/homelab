@@ -12,13 +12,16 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from dataclasses import dataclass
+import hashlib
 import json
 import logging
 import os
 import random
 import re
+import threading
 import zlib
 from typing import Awaitable, Callable, NamedTuple, Protocol
 
@@ -319,6 +322,213 @@ class Turn(NamedTuple):
     diff: dict | None = None
     artifact: dict | None = None
     model: str | None = None
+    # Set by the transport, never copied from guest JSON. The normal writer
+    # revalidates the receipt and native body in its completion transaction.
+    native_receipt: dict | None = None
+
+
+def parse_native_turn(
+    guest_data: dict,
+    guest_id: str,
+    cli_session_id: str | None = None,
+    artifact_path: str | None = None,
+) -> Turn:
+    """Use one native result parser for HTTP responses and committed receipts."""
+    if not isinstance(guest_data, dict):
+        raise EmberVMTransportError("Native turn result must be an object")
+    return Turn(
+        result=guest_data.get("result", ""),
+        terminal_reason=guest_data.get("terminal_reason"),
+        stop_reason=guest_data.get("stop_reason"),
+        is_error=bool(guest_data.get("is_error", False)),
+        permission_denials=guest_data.get("permission_denials", []),
+        num_turns=int(guest_data.get("num_turns", 0)),
+        session_id=guest_data.get("session_id") or cli_session_id,
+        usage=guest_data.get("usage", {}),
+        total_cost_usd=guest_data.get("total_cost_usd"),
+        duration_ms=guest_data.get("duration_ms"),
+        activities=guest_data.get("activities", []),
+        diff=_guest_diff(guest_data.get("diff"), guest_id),
+        artifact=_guest_artifact(guest_data.get("artifact"), artifact_path, guest_id),
+        model=guest_data.get("model"),
+    )
+
+
+# Receipt adoption can finish a logical turn while its original POST is still
+# being observed. Keep that observer alive to release the durable reuse fence
+# only on its own valid native response. Bound the retained requests per replica;
+# above this bound a new delivery simply awaits its synchronous response.
+MAX_RECEIPT_OBSERVERS = 16
+RECEIPT_POLL_SECONDS = 2.0
+_receipt_observers: set[asyncio.Task] = set()
+RECEIPT_DB_TIMEOUT_SECONDS = 5.0
+_receipt_db_slots = threading.BoundedSemaphore(2)
+_receipt_db_executor = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="native-receipt"
+)
+
+
+def receipt_adoption_enabled() -> bool:
+    return os.getenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "false").lower() == "true"
+
+
+async def _receipt_database_call(fn, *args, **kwargs):
+    """Bound optional observer work, including threads that outlive cancellation.
+
+    SQL lock/statement limits start after connection acquisition. At most two
+    actual futures can occupy the shared database pool, even if connecting
+    hangs or the async caller is cancelled. A timed-out running future keeps
+    its slot until its thread really finishes; no unbounded executor queue.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + RECEIPT_DB_TIMEOUT_SECONDS
+    while not _receipt_db_slots.acquire(blocking=False):
+        if loop.time() >= deadline:
+            raise TimeoutError("Receipt database observer is busy")
+        await asyncio.sleep(0.05)
+    try:
+        future = _receipt_db_executor.submit(fn, *args, **kwargs)
+    except BaseException:
+        _receipt_db_slots.release()
+        raise
+    future.add_done_callback(lambda _future: _receipt_db_slots.release())
+    return await asyncio.wait_for(
+        asyncio.wrap_future(future), max(0.0, deadline - loop.time())
+    )
+
+
+async def _cancel_observation(task: asyncio.Task) -> None:
+    task.cancel()
+    # return_exceptions consumes the child's cancellation while cancellation
+    # of this caller still propagates through the gather itself.
+    await asyncio.gather(task, return_exceptions=True)
+
+
+async def _observe_native_result(
+    post: Callable[[], Awaitable[Turn]],
+    identity: dict,
+    cli_session_id: str | None,
+    artifact_path: str | None,
+    timeout_seconds: float,
+) -> Turn:
+    """Race two observations of one POST, with one caller and result writer."""
+    from agent_sessions import result_receipts
+    from agent_sessions.constants import (
+        CLEAN_TERMINAL_REASONS,
+        INTERRUPTED_TERMINAL_REASONS,
+        UNKNOWN_INVOCATION,
+    )
+
+    def completed(turn: Turn) -> bool:
+        return (
+            turn.terminal_reason
+            in CLEAN_TERMINAL_REASONS | INTERRUPTED_TERMINAL_REASONS | {"error"}
+            and turn.stop_reason != UNKNOWN_INVOCATION
+        )
+
+    def captured_turn(captured: dict) -> Turn:
+        turn = parse_native_turn(
+            json.loads(captured["result_body"]),
+            identity["guest_id"],
+            cli_session_id,
+            artifact_path,
+        )
+        if not completed(turn):
+            raise EmberVMTransportError("Receipt has no native terminal outcome")
+        return turn._replace(
+            native_receipt={
+                **captured["provenance"],
+                "cli_session_id": cli_session_id,
+                "artifact_path": artifact_path,
+            }
+        )
+
+    async def receive() -> Turn:
+        while True:
+            try:
+                captured = await _receipt_database_call(
+                    result_receipts.read_active_result, **identity
+                )
+            except result_receipts.ReceiptRejected:
+                raise
+            except Exception as exc:
+                # A callback/database outage must not cancel a healthy POST.
+                # Exception messages may contain SQL-bound native result bytes.
+                logger.warning(
+                    "Receipt observation unavailable: %s", type(exc).__name__
+                )
+                captured = None
+            if captured is not None:
+                return captured_turn(captured)
+            await asyncio.sleep(RECEIPT_POLL_SECONDS)
+
+    async def original_post() -> Turn:
+        # httpx's read timeout is per I/O wait. Bound the retained observer's
+        # wall time too, without changing an admitted DAG's original deadline.
+        async with asyncio.timeout(timeout_seconds):
+            result = await post()
+        if not completed(result):
+            return result
+        for attempt in range(3):
+            try:
+                await _receipt_database_call(
+                    result_receipts.mark_response_observed,
+                    **{k: v for k, v in identity.items() if k != "request_sha256"},
+                )
+                break
+            except result_receipts.ReceiptRejected:
+                break
+            except Exception as exc:
+                # A response write is idempotent. Bound retries separately
+                # from the long POST: three 5s waits and two 1s gaps at most.
+                if attempt == 2:
+                    logger.warning(
+                        "Receipt response observation failed: %s", type(exc).__name__
+                    )
+                else:
+                    await asyncio.sleep(1)
+        return result
+
+    posted = asyncio.create_task(original_post())
+    received = asyncio.create_task(receive())
+    _receipt_observers.add(posted)
+
+    def finished(task):
+        _receipt_observers.discard(task)
+        if not task.cancelled():
+            # Retrieve a losing observer's exception, without interpreting its
+            # failure as permission to retry or destroy the completed guest.
+            task.exception()
+
+    posted.add_done_callback(finished)
+    receipt_won = False
+    try:
+        done, _ = await asyncio.wait(
+            (posted, received), return_when=asyncio.FIRST_COMPLETED
+        )
+        if posted in done:
+            if posted.cancelled():
+                raise asyncio.CancelledError()
+            if posted.exception() is None:
+                return posted.result()
+            # The callback commits before the guest writes its response. Read
+            # once more after an HTTP failure so a poll interval cannot hide an
+            # already committed result behind an automatic transport retry.
+            captured = await _receipt_database_call(
+                result_receipts.read_active_result, **identity
+            )
+            if captured is not None:
+                turn = captured_turn(captured)
+                receipt_won = True
+                return turn
+            return posted.result()
+        result = received.result()
+        receipt_won = True
+        return result
+    finally:
+        await _cancel_observation(received)
+        if not receipt_won:
+            await _cancel_observation(posted)
 
 
 def _reject_guest_diff(session_id, reason: str) -> None:
@@ -1041,60 +1251,70 @@ class EmberVmShimTransport:
                 "X-Ember-Guest-Path": "/shim/turn",
             }
             try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    await _check_delivery_admission()
-                    if receipt_claim_owner is not None:
-                        from agent_sessions import result_receipts
+                await _check_delivery_admission()
+                receipt = None
+                request_sha256 = hashlib.sha256(body.encode()).hexdigest()
+                if receipt_claim_owner is not None:
+                    from agent_sessions import result_receipts
 
-                        # Each physical POST gets a fresh identity, including
-                        # transport recovery within one pending dispatch count.
-                        payload["result_receipt"] = await asyncio.to_thread(
-                            result_receipts.prepare_receipt,
-                            agent_session_id,
-                            receipt_claim_owner,
-                            dispatch_count,
-                            current.session_id,
-                            body.encode(),
-                        )
-                        body = json.dumps(payload)
-                    # Mark before yielding to I/O. Even a connect/write/read
-                    # failure after this point retains the conservative hold.
-                    invocation = _delivery_invocation.get()
-                    if invocation is not None:
-                        invocation.attempted = True
-                    response = await client.post(
-                        url, content=body.encode(), headers=headers
+                    # Each physical POST gets a fresh identity, including
+                    # transport recovery within one pending dispatch count.
+                    receipt = await asyncio.to_thread(
+                        result_receipts.prepare_receipt,
+                        agent_session_id,
+                        receipt_claim_owner,
+                        dispatch_count,
+                        current.session_id,
+                        body.encode(),
                     )
-                    brick_gone = _brick_gone_from_response(response)
-                    if brick_gone is not None:
-                        logger.warning(
-                            "embervm invoke found preempted brick for session %s",
-                            current.session_id,
+                    payload["result_receipt"] = receipt
+                    body = json.dumps(payload)
+
+                async def post() -> Turn:
+                    async with httpx.AsyncClient(timeout=timeout) as client:
+                        # Mark before yielding to I/O. Even a connect/write/read
+                        # failure after this point retains the conservative hold.
+                        invocation = _delivery_invocation.get()
+                        if invocation is not None:
+                            invocation.attempted = True
+                        response = await client.post(
+                            url, content=body.encode(), headers=headers
                         )
-                        raise brick_gone
-                    response.raise_for_status()
-                    guest_data = response.json()
-                    return Turn(
-                        result=guest_data.get("result", ""),
-                        terminal_reason=guest_data.get("terminal_reason"),
-                        stop_reason=guest_data.get("stop_reason"),
-                        is_error=bool(guest_data.get("is_error", False)),
-                        permission_denials=guest_data.get("permission_denials", []),
-                        num_turns=int(guest_data.get("num_turns", 0)),
-                        session_id=guest_data.get("session_id")
-                        or current_cli_session_id,
-                        usage=guest_data.get("usage", {}),
-                        total_cost_usd=guest_data.get("total_cost_usd"),
-                        duration_ms=guest_data.get("duration_ms"),
-                        activities=guest_data.get("activities", []),
-                        diff=_guest_diff(guest_data.get("diff"), current.session_id),
-                        artifact=_guest_artifact(
-                            guest_data.get("artifact"),
+                        brick_gone = _brick_gone_from_response(response)
+                        if brick_gone is not None:
+                            logger.warning(
+                                "embervm invoke found preempted brick for session %s",
+                                current.session_id,
+                            )
+                            raise brick_gone
+                        response.raise_for_status()
+                        return parse_native_turn(
+                            response.json(),
+                            current.session_id,
+                            current_cli_session_id,
                             artifact_path,
-                            current.session_id,
-                        ),
-                        model=guest_data.get("model"),
+                        )
+
+                if (
+                    receipt is not None
+                    and receipt_adoption_enabled()
+                    and len(_receipt_observers) < MAX_RECEIPT_OBSERVERS
+                ):
+                    return await _observe_native_result(
+                        post,
+                        {
+                            "receipt_id": receipt["id"],
+                            "session_id": agent_session_id,
+                            "claim_owner": receipt_claim_owner,
+                            "dispatch_count": dispatch_count,
+                            "guest_id": current.session_id,
+                            "request_sha256": request_sha256,
+                        },
+                        current_cli_session_id,
+                        artifact_path,
+                        self.read_timeout,
                     )
+                return await post()
             except httpx.TimeoutException as exc:
                 logger.warning(
                     "embervm invoke timed out for session %s: %s",
