@@ -4082,12 +4082,17 @@ defmodule Embervm.SessionManagerTest do
 
   test "exact stop rejects newer invokes and changed residency without dispatch" do
     parent = self()
-    ctx = start_stack(destroy_exact_fun: fn _ch, request -> send(parent, {:unexpected_exact, request}); {:error, :bad} end)
+    ctx = start_stack(store_clock: fn -> 5_000_000 end, destroy_exact_fun: fn _ch, request -> send(parent, {:unexpected_exact, request}); {:error, :bad} end)
     {ctx, session, expected} = prepare_exact_stop(ctx, "wl-exact-stale")
     assert {:ok, _} = SessionStore.record_invoke_started(ctx.store, session.session_id)
     assert {:error, :stop_precondition_failed} = SessionManager.destroy(ctx.mgr, session.session_id, expected)
     assert {:error, :stop_precondition_failed} = SessionStore.begin_exact_destroy(ctx.store, session.session_id,
       Embervm.SessionStopProof.new_intent(expected, 5_000_000))
+    previous = SessionManager.stop_identity(ctx.mgr, session.session_id)
+    assert previous["invoke_started_at"] == 5_000_000
+    assert {:ok, later} = SessionStore.record_invoke_started(ctx.store, session.session_id)
+    assert later.invoke_started_at == 5_000_001
+    assert {:error, :stop_precondition_failed} = SessionManager.destroy(ctx.mgr, session.session_id, previous)
     fresh = SessionManager.stop_identity(ctx.mgr, session.session_id)
     assert :ok = SessionStore.adopt_residency(ctx.store, session.session_id, "node-4", "new-vm")
     assert {:error, :stop_precondition_failed} = SessionManager.destroy(ctx.mgr, session.session_id, fresh)
