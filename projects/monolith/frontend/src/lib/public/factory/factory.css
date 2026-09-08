@@ -5,8 +5,15 @@
     transparent 1px 4px
   );
   box-sizing: border-box;
-  min-height: 100vh;
-  padding: 1.5rem clamp(4rem, 5vw, 4.5em) 6em;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  padding: 1.5rem clamp(4rem, 5vw, 4.5em);
+  /* auto, not hidden: when the bands above genuinely cannot leave the lower
+     block a usable height, the page scrolls rather than clipping content off
+     the bottom. On a normal desktop height nothing overflows and no scrollbar
+     appears. */
+  overflow: auto;
   background: var(--sheet);
   color: var(--ink);
   font-family: var(--font-ui);
@@ -35,32 +42,60 @@
   outline-offset: 2px;
 }
 
+.factory-page .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 .factory-page .frame {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
   max-width: 72em;
   margin: 0 auto;
 }
 
+.factory-page.context-page {
+  height: auto;
+  min-height: 100vh;
+  overflow: visible;
+}
+
+.factory-page.context-page .frame {
+  flex: none;
+  min-height: auto;
+}
+
 .factory-page .masthead {
   display: flex;
+  flex: none;
   flex-wrap: wrap;
-  gap: 1.5rem;
-  align-items: flex-start;
-  justify-content: space-between;
-  margin-bottom: 1.4rem;
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 1rem;
 }
 
-.factory-page .masthead h1 {
-  margin: 0;
-  font-size: clamp(1.3rem, 2vw, 1.6rem);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.15;
+.factory-page .mast-actions {
+  display: flex;
+  gap: 0;
+  align-items: center;
+  min-width: 0;
+  margin-left: auto;
 }
 
-.factory-page .mast-trails {
-  display: grid;
-  gap: 0.35rem;
-  justify-items: end;
+.factory-page .mast-actions .scheme {
+  margin-left: -1px;
 }
 
 .factory-page .view-tabs {
@@ -147,12 +182,16 @@
 }
 
 .factory-page .home {
-  display: grid;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
   gap: 1.6rem;
+  min-height: 0;
 }
 
 .factory-page .stats {
   display: grid;
+  flex: none;
   grid-template-columns: repeat(6, minmax(0, 1fr));
   border: 1px solid var(--ink);
 }
@@ -237,7 +276,12 @@
 }
 
 .factory-page .charts {
+  /* charts.js draws a 600 wide viewBox with LEFT = 34 reserved for the
+     y-axis, so the plot area starts 34/600 in. The legend matches it. */
+  --plot-gutter: 5.6667%;
+
   display: grid;
+  flex: none;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 2rem;
 }
@@ -256,6 +300,7 @@
   flex-wrap: wrap;
   gap: 0.35em 1.2em;
   margin: 0.5em 0 0;
+  padding-left: var(--plot-gutter);
   color: var(--ink-2);
   font-family: var(--font-code);
   font-size: 0.68rem;
@@ -300,8 +345,13 @@
 
 .factory-page .lower {
   display: grid;
+  flex: 1;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   align-items: stretch;
+  /* A floor rather than 0: between the short-window breakpoint and a tall
+     desktop the fixed bands above can squeeze this to nothing, and an empty
+     frame is worse than a scrollbar. */
+  min-height: 16rem;
   border: 1px solid var(--stroke);
 }
 
@@ -309,6 +359,7 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   padding: 1rem 1.1rem 1.1rem;
 }
 
@@ -363,8 +414,10 @@
   display: flex;
   flex: 1;
   flex-direction: column;
+  min-height: 0;
   margin: 0;
   padding: 0;
+  overflow-y: auto;
   list-style: none;
 }
 
@@ -379,7 +432,7 @@
   line-height: 1.35;
 }
 
-.factory-page .prs > li:not(.hd):not(.pager):last-of-type {
+.factory-page .prs > li:not(.hd):last-of-type {
   border-bottom: 1px solid var(--line);
 }
 
@@ -456,8 +509,9 @@
   text-decoration: none;
 }
 
-.factory-page .prs .pager {
+.factory-page .pager {
   display: flex;
+  flex: none;
   justify-content: space-between;
   margin-top: auto;
   padding: 0.5em 0 0;
@@ -467,7 +521,7 @@
   font-size: 0.7rem;
 }
 
-.factory-page .prs .pager button {
+.factory-page .pager button {
   padding: 0.1em 0.5em;
   border: 1px solid var(--stroke);
   background: var(--sheet);
@@ -476,11 +530,11 @@
   font-size: 0.7rem;
 }
 
-.factory-page .prs .pager button + button {
+.factory-page .pager button + button {
   margin-left: 0.3em;
 }
 
-.factory-page .prs .pager button:disabled {
+.factory-page .pager button:disabled {
   cursor: default;
   opacity: 0.35;
 }
@@ -489,6 +543,10 @@
   display: flex;
   gap: 0.8em;
   align-items: baseline;
+}
+
+.factory-page .goals {
+  overflow-y: auto;
 }
 
 .factory-page .goals .win {
@@ -594,6 +652,35 @@
   color: var(--accent-ink);
 }
 
+@media (max-height: 720px), (max-width: 900px) {
+  .factory-page {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
+  .factory-page .frame,
+  .factory-page .home,
+  .factory-page .lower {
+    flex: none;
+    min-height: auto;
+  }
+
+  .factory-page .lower > * {
+    min-height: auto;
+  }
+
+  .factory-page .prs {
+    flex: none;
+    min-height: auto;
+    overflow-y: visible;
+  }
+
+  .factory-page .goals {
+    overflow-y: visible;
+  }
+}
+
 @media (max-width: 900px) {
   .factory-page .stats {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -623,8 +710,14 @@
     padding: 1rem 1em 4em;
   }
 
-  .factory-page .mast-trails > :first-child {
-    display: none;
+  .factory-page .masthead {
+    gap: 0.5rem;
+  }
+
+  .factory-page .mast-actions {
+    flex-basis: 100%;
+    justify-content: flex-end;
+    margin-left: 0;
   }
 }
 

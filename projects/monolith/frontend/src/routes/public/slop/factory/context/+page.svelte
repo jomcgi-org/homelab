@@ -1,5 +1,5 @@
 <script>
-  import { Seo } from "$lib/public/components";
+  import { SchemeToggle, Seo } from "$lib/public/components";
   import "$lib/public/factory/factory.css";
   import { markClass } from "$lib/public/factory/model.js";
   import Trail from "../../Trail.svelte";
@@ -117,17 +117,16 @@
 <main class="td factory-page context-page">
   <div class="frame">
     <header class="masthead">
-      <div>
-        <h1>Ember Software Factory</h1>
-      </div>
-      <div class="mast-trails">
-        <Trail page="factory" />
+      <h1 class="sr-only">Ember Software Factory</h1>
+      <Trail page="factory" />
+      <div class="mast-actions">
         <nav class="view-tabs" aria-label="Factory views">
           <a href="/slop/factory">overview</a>
           <a class="here" href="/slop/factory/context" aria-current="page"
             >context</a
           >
         </nav>
+        <SchemeToggle />
       </div>
     </header>
 
