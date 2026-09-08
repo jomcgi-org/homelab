@@ -268,6 +268,8 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
                         "stop_accepted",
                         "stop_observation",
                         "stop_settled",
+                        "attempt_stop_requested",
+                        "attempt_stop_cancel",
                     )
                 ),
             )
@@ -281,6 +283,8 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
             result["stop_events"].append(
                 {
                     "action": event.action,
+                    "actor": event.actor,
+                    "request_key": detail.get("request_key"),
                     "created_at": event.created_at.isoformat(),
                     "workflow_id": detail.get("workflow_id"),
                     "session_id": detail.get("session_id", identity.get("session_id")),

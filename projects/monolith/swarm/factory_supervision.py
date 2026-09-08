@@ -138,8 +138,12 @@ def _locked_attempt(db, control, pin, sid):
     )
     if "task_deadline_at" in pin:
         deadline = min(deadline, _timestamp(pin["task_deadline_at"]))
+    from swarm.factory_attempt_stop import matching_request
+
+    requested = matching_request(db, pin, identity)
     if control.state == "disabled" or (
-        control.state != "stopped"
+        requested is None
+        and control.state != "stopped"
         and not snapshot["cancellation_requested"]
         and _now() < deadline
     ):

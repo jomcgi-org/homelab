@@ -839,6 +839,15 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
 
     pin = run["pin"]
     key = pin["workflow_id"]
+    from swarm.factory_attempt_stop import process_attempt_stop
+
+    stop_waiting, stopped_session_id = process_attempt_stop(
+        pin, run.get("session_id"), dbos
+    )
+    if stop_waiting:
+        return
+    if stopped_session_id is not None:
+        run = {**run, "session_id": stopped_session_id}
     # retrieve_workflow and handle.get_status both raise for missing IDs in
     # DBOS 2.29. get_workflow_status is the supported nullable lookup.
     state = dbos.get_workflow_status(key)
