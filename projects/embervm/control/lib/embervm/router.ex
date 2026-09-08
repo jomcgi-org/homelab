@@ -1604,7 +1604,9 @@ defmodule Embervm.Router do
     case authorize_session_read(conn, session_id) do
       :ok ->
         case session_store().get(session_store_server(), session_id) do
-          {:ok, session} -> send_json(conn, 200, session_view(session, session_node_statuses([session])))
+          {:ok, session} ->
+            view = session_view(session, session_node_statuses([session]))
+            send_json(conn, 200, Map.put(view, :stop_precondition, session_stop_identity(session_id)))
           :error -> send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
         end
 
@@ -1615,12 +1617,47 @@ defmodule Embervm.Router do
 
   # DELETE /v1/sessions/:id (management auth): destroy.
   defp handle_destroy_session(conn, session_id) do
-    case session_manager().destroy(session_manager_server(), session_id) do
-      {:ok, :destroying} -> send_json(conn, 202, %{session_id: session_id, state: "destroying"})
-      {:ok, _} -> send_json(conn, 200, %{session_id: session_id, state: "destroyed"})
-      {:error, :not_found} -> send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
-      {:error, reason} -> send_json(conn, 500, %{error: "destroy failed", reason: inspect(reason), session_id: session_id, retryable: true})
+    with {:ok, body, conn} <- read_capped_body(conn),
+         {:ok, request} <- decode_stop_request(body) do
+      result =
+        case request do
+          :legacy -> session_manager().destroy(session_manager_server(), session_id)
+          expected -> session_manager().destroy(session_manager_server(), session_id, expected)
+        end
+
+      case result do
+        {:ok, :destroying} -> send_json(conn, 202, %{session_id: session_id, state: "destroying"})
+        {:ok, _} -> send_json(conn, 200, %{session_id: session_id, state: "destroyed"})
+        {:error, :not_found} -> send_json(conn, 404, %{error: "session not found", session_id: session_id, retryable: false})
+        {:error, :invalid_stop_precondition} -> send_json(conn, 400, %{error: "invalid stop precondition", retryable: false})
+        {:error, :stop_precondition_failed} -> send_json(conn, 409, %{error: "stop precondition failed", retryable: false})
+        {:error, reason} -> send_json(conn, 500, %{error: "destroy failed", reason: inspect(reason), session_id: session_id, retryable: true})
+      end
+    else
+      {:error, :too_large} -> send_json(conn, 413, %{error: "request too large", retryable: false})
+      _ -> send_json(conn, 400, %{error: "invalid stop precondition", retryable: false})
     end
+  end
+
+  defp decode_stop_request(""), do: {:ok, :legacy}
+  defp decode_stop_request(body) do
+    case :json.decode(body) do
+      %{"stop_precondition" => expected} = request when map_size(request) == 1 ->
+        expected = Embervm.SessionStopProof.from_json(expected)
+        if Embervm.SessionStopProof.precondition?(expected), do: {:ok, expected}, else: :error
+      request when request == %{} -> {:ok, :legacy}
+      _ -> :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  defp session_stop_identity(session_id) do
+    session_manager().stop_identity(session_manager_server(), session_id)
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
   end
 
   # Session read is allowed for a valid management token OR the session's own token.
@@ -2246,6 +2283,8 @@ defmodule Embervm.Router do
       expires_at: session.expires_at,
       updated_at: session.updated_at,
       terminal_reason: session.terminal_reason,
+      stop_intent: Map.get(session, :stop_intent),
+      stop_completion: Embervm.SessionStopProof.completion(session),
       node: session_node_view(session, node_statuses)
     }
   end

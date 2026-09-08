@@ -51,6 +51,20 @@ defmodule Embervm.OpLog.PostgresLiveTest do
     %{server: server}
   end
 
+  test "strict session stop intent and completion project with nullable invocation identity", %{server: server} do
+    expected = %{"session_id" => "s-proof", "generation" => 0, "invoke_started_at" => nil,
+      "vm_id" => "vm-original", "node_id" => "node-4", "instance_id" => "node-4/pod-1",
+      "pod_uid" => "pod-1", "boot_id" => "boot-original"}
+    intent = Embervm.SessionStopProof.new_intent(expected, 200)
+    completion = Map.put(intent, "completed_at_unix_ms", 201)
+    assert {:ok, _} = append(server, :session_created, 100, session_id: "s-proof",
+      tenant: "t1", principal: "p1", workload: "wl", payload: %{node_id: "node-4", token_sha256: "hash"})
+    assert {:ok, _} = append(server, :session_destroying, 200, session_id: "s-proof", payload: %{stop_intent: intent})
+    assert {:ok, [%{stop_intent: ^intent, stop_completion: nil}]} = Postgres.load_sessions(server)
+    assert {:ok, _} = append(server, :session_destroyed, 202, session_id: "s-proof", payload: %{stop_completion: completion})
+    assert {:ok, [%{stop_intent: ^intent, stop_completion: ^completion}]} = Postgres.load_sessions(server)
+  end
+
   test "append and read_from preserve monotonic ordering and read after a sequence", %{server: server} do
     seqs =
       for {kind, ts} <- [{:denied, 10}, {:drain, 20}, {:quota_enforced, 30}] do

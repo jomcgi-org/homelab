@@ -718,7 +718,7 @@ defmodule Embervm.Session do
       drain_queue(state, :failed)
       {:stop, :normal, %{state | queue: :queue.new()}}
     else
-      _ =
+      transition =
         Embervm.SessionStore.transition(
           state.session_store,
           state.session_id,
@@ -729,7 +729,11 @@ defmodule Embervm.Session do
         )
 
       GenServer.reply(from, {:error, reason})
-      _ = destroy_vm(state)
+      # A concurrent durable destroy owns this VM. Its exact stop operation must
+      # reach the node before any legacy cleanup can discard the native identity.
+      unless match?({:error, {:illegal_transition, :destroying, :fail}}, transition) do
+        _ = destroy_vm(state)
+      end
       drain_queue(state, :failed)
       {:stop, :normal, %{state | queue: :queue.new()}}
     end

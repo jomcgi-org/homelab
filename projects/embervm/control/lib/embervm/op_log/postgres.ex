@@ -218,6 +218,8 @@ defmodule Embervm.OpLog.Postgres do
       snapshot_size_bytes BIGINT,
       token_sha256 TEXT,
       created_at BIGINT NOT NULL,
+      stop_intent_json TEXT,
+      stop_completion_json TEXT,
       invoke_started_at BIGINT,
       last_invoke_at BIGINT,
       expires_at BIGINT,
@@ -242,6 +244,8 @@ defmodule Embervm.OpLog.Postgres do
     # AFTER the ALTER here so the column exists on upgraded DBs too.
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS idempotency_key TEXT",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS invoke_started_at BIGINT",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS stop_intent_json TEXT",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS stop_completion_json TEXT",
     "UPDATE sessions SET invoke_started_at=last_invoke_at WHERE invoke_started_at IS NULL AND last_invoke_at IS NOT NULL",
     """
     CREATE UNIQUE INDEX IF NOT EXISTS sessions_idem_idx
@@ -1165,8 +1169,9 @@ defmodule Embervm.OpLog.Postgres do
   # cascaded a crash through OpLog, SessionStore and SessionManager on every
   # destroy of a live session.
   defp project(conn, %Op{kind: :session_destroying} = op, _seq) do
-    exec(conn, "UPDATE sessions SET state='destroying', updated_at=$1 WHERE session_id=$2", [
+    exec(conn, "UPDATE sessions SET state='destroying', updated_at=$1, stop_intent_json=COALESCE(stop_intent_json, $2) WHERE session_id=$3", [
       op.ts,
+      Embervm.SessionStopProof.encode(Map.get(op.payload, :stop_intent)),
       op.session_id
     ])
   end
@@ -1689,10 +1694,11 @@ defmodule Embervm.OpLog.Postgres do
   defp terminate_session(conn, %Op{} = op, state) do
     reason = to_string(Map.get(op.payload, :reason, state))
 
-    exec(conn, "UPDATE sessions SET state=$1, terminal_reason=$2, updated_at=$3 WHERE session_id=$4", [
+    exec(conn, "UPDATE sessions SET state=$1, terminal_reason=$2, updated_at=$3, stop_completion_json=COALESCE(stop_completion_json, $4) WHERE session_id=$5", [
       state,
       reason,
       op.ts,
+      Embervm.SessionStopProof.encode(Map.get(op.payload, :stop_completion)),
       op.session_id
     ])
   end
@@ -2110,7 +2116,7 @@ defmodule Embervm.OpLog.Postgres do
     SELECT session_id, tenant, principal, workload, state, node_id, volume_node_id,
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
            token_sha256, created_at, invoke_started_at, last_invoke_at, expires_at, updated_at, terminal_reason,
-           COALESCE(lineage_id, session_id), idempotency_key
+           COALESCE(lineage_id, session_id), idempotency_key, stop_intent_json, stop_completion_json
     FROM sessions
     """
 
@@ -2141,7 +2147,9 @@ defmodule Embervm.OpLog.Postgres do
           updated_at,
           terminal_reason,
           lineage_id,
-          idempotency_key
+          idempotency_key,
+          stop_intent_json,
+          stop_completion_json
         ]) do
     %{
       session_id: session_id,
@@ -2164,7 +2172,9 @@ defmodule Embervm.OpLog.Postgres do
       updated_at: updated_at,
       terminal_reason: terminal_reason,
       lineage_id: lineage_id,
-      idempotency_key: idempotency_key
+      idempotency_key: idempotency_key,
+      stop_intent: Embervm.SessionStopProof.decode(stop_intent_json),
+      stop_completion: Embervm.SessionStopProof.decode(stop_completion_json)
     }
   end
 

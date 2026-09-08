@@ -63,6 +63,30 @@ defmodule Embervm.OpLog.SessionProjectionTest do
     Map.new(sessions, &{&1.session_id, &1})
   end
 
+  test "strict stop intent and completion persist unchanged across projection restart", %{path: path} do
+    server = start_server(path)
+    expected = %{"session_id" => "s-proof", "generation" => 0, "invoke_started_at" => nil,
+      "vm_id" => "vm-original", "node_id" => "node-4", "instance_id" => "node-4/pod-1",
+      "pod_uid" => "pod-1", "boot_id" => "boot-original"}
+    intent = Embervm.SessionStopProof.new_intent(expected, 200)
+    completion = Map.put(intent, "completed_at_unix_ms", 201)
+    {:ok, _} = SQLite.append(server, created_op("s-proof", "p1", 100))
+    {:ok, _} = SQLite.append(server, %Op{kind: :session_destroying, session_id: "s-proof",
+      tenant: "t1", ts: 200, payload: %{stop_intent: intent}})
+    assert session_by_id(server)["s-proof"].stop_intent == intent
+    assert is_nil(session_by_id(server)["s-proof"].stop_completion)
+    :ok = GenServer.stop(server)
+    server = start_server(path)
+    assert session_by_id(server)["s-proof"].stop_intent == intent
+    {:ok, _} = SQLite.append(server, %Op{kind: :session_destroyed, session_id: "s-proof",
+      tenant: "t1", ts: 202, payload: %{reason: :destroyed, stop_completion: completion}})
+    :ok = GenServer.stop(server)
+    server = start_server(path)
+    assert session_by_id(server)["s-proof"].stop_intent == intent
+    assert session_by_id(server)["s-proof"].stop_completion == completion
+    :ok = GenServer.stop(server)
+  end
+
   test "a scripted create -> invoke -> bank -> relight sequence projects exact state", %{path: path} do
     server = start_server(path)
 

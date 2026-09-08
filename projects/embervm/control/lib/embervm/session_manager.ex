@@ -321,6 +321,16 @@ defmodule Embervm.SessionManager do
     GenServer.call(server, {:destroy, session_id}, 30_000)
   end
 
+  @doc "Destroys only the exact current invocation and residency named by the caller."
+  def destroy(server, session_id, precondition) do
+    GenServer.call(server, {:destroy_exact, session_id, precondition}, 30_000)
+  end
+
+  @doc "Returns the current exact stop identity or the immutable pending stop identity."
+  def stop_identity(server, session_id) do
+    GenServer.call(server, {:stop_identity, session_id})
+  end
+
   @doc """
   Banks an idle session (called by its `Embervm.Session` process when its idle
   timer fires and it is quiescent). Enforces the per-node concurrent-bank cap and
@@ -782,6 +792,54 @@ defmodule Embervm.SessionManager do
 
       {:error, _reason} = error ->
         {:reply, error, state}
+    end
+  end
+
+  def handle_call({:stop_identity, session_id}, _from, state) do
+    identity =
+      case SessionStore.get(state.session_store, session_id) do
+        {:ok, session} ->
+          case Map.get(session, :stop_intent) do
+            nil -> Embervm.SessionStopProof.identity(session, NodeCapacity.all(state.capacity_table))
+            intent -> if Embervm.SessionStopProof.valid_intent?(intent), do: Embervm.SessionStopProof.precondition(intent)
+          end
+        :error -> nil
+      end
+
+    {:reply, identity, state}
+  end
+
+  def handle_call({:destroy_exact, session_id, expected}, _from, state) do
+    with true <- Embervm.SessionStopProof.precondition?(expected),
+         {:ok, session} <- SessionStore.get(state.session_store, session_id) do
+      case Map.get(session, :stop_intent) do
+        nil ->
+          current = Embervm.SessionStopProof.identity(session, NodeCapacity.all(state.capacity_table))
+
+          if current == expected and session.state == :running do
+            intent = Embervm.SessionStopProof.new_intent(expected, state.clock.())
+
+            case SessionStore.begin_exact_destroy(state.session_store, session_id, intent) do
+              {:ok, _} ->
+                {:reply, {:ok, :destroying}, state, {:continue, {:do_destroy_live, session_id}}}
+              {:error, _} = error -> {:reply, error, state}
+            end
+          else
+            {:reply, {:error, :stop_precondition_failed}, state}
+          end
+
+        intent ->
+          if Embervm.SessionStopProof.valid_intent?(intent) and
+               Embervm.SessionStopProof.precondition(intent) == expected and
+               session.state in [:destroying, :destroyed] do
+            {:reply, {:ok, session.state}, state}
+          else
+            {:reply, {:error, :stop_precondition_failed}, state}
+          end
+      end
+    else
+      false -> {:reply, {:error, :invalid_stop_precondition}, state}
+      :error -> {:reply, {:error, :not_found}, state}
     end
   end
 
@@ -3510,6 +3568,12 @@ defmodule Embervm.SessionManager do
       MapSet.member?(state.destroy_inflight, sid) ->
         state
 
+      # Exact stops always replay the original durable tuple. Missing inventory,
+      # a replacement VM or a new daemon boot cannot substitute a different target.
+      not is_nil(Map.get(session, :stop_intent)) ->
+        if Embervm.SessionStopProof.valid_intent?(session.stop_intent),
+          do: spawn_destroy_worker(state, session, true), else: state
+
       # Owner still reports the VM: retry the node-confirmed teardown. Terminate any
       # lingering process first (a same-CP retry after a failed RPC), then re-issue
       # the Destroy; a CP-crash re-drive has no process, so this is a no-op there.
@@ -4433,7 +4497,12 @@ defmodule Embervm.SessionManager do
         spawn_monitor(fn ->
           confirmed =
             try do
-              stop_session_process(state, session_id, session)
+              if is_map(Map.get(session, :stop_intent)) do
+                terminate_session_process(state, session_id)
+                destroy_exact_vm(state, session.stop_intent)
+              else
+                stop_session_process(state, session_id, session)
+              end
             rescue
               _ -> false
             catch
@@ -4497,6 +4566,32 @@ defmodule Embervm.SessionManager do
   end
 
   defp finish_parking_session(state, _session, false), do: state
+
+  defp finish_destroying_session(state, %{stop_intent: intent} = session, result, _resumed)
+       when is_map(intent) do
+    case result do
+      {:stop_completion, completion} ->
+        # Validate the persisted tuple again at the single writer. The worker
+        # result cannot attach proof to a newer invocation or another operation.
+        candidate = %{session | state: :destroyed, stop_completion: completion}
+
+        if Embervm.SessionStopProof.completion(candidate) do
+          case SessionStore.transition(state.session_store, session.session_id, :destroy, :session_destroyed,
+                 %{reason: :destroyed, stop_completion: completion}, %{stop_completion: completion}) do
+            {:ok, _} ->
+              :ok = Embervm.Dispatcher.drop_vm(state.dispatcher, intent["vm_id"])
+              retire_session_volume(state, session)
+              state
+              |> drain_relight_waiters(session.session_id, {:error, {:gone, "destroyed"}})
+              |> clear_session_tracking(session.session_id)
+            {:error, _} -> state
+          end
+        else
+          state
+        end
+      _ -> state
+    end
+  end
 
   defp finish_destroying_session(state, session, confirmed, resumed) do
     # The second arm preserves the legacy gate-off ordering for callers that start
@@ -4771,6 +4866,28 @@ defmodule Embervm.SessionManager do
   # unconfirmed). A dial failure, an RPC error, or a raised/thrown fault all read as
   # unconfirmed (false), keeping the session in destroying under the node-confirmed
   # gate; the legacy path discards this and proceeds as today.
+  defp destroy_exact_vm(state, intent) do
+    with true <- Embervm.SessionStopProof.valid_intent?(intent),
+         {:ok, channel} <- safe_channel(state.channel_fun, intent["instance_id"]) do
+      request = %Embervm.Node.V1.DestroyRequest{
+        vm_id: intent["vm_id"], operation_id: intent["operation_id"],
+        expected_boot_id: intent["boot_id"], expected_session_id: intent["session_id"]
+      }
+      destroy_fun = Keyword.get(state.session_opts, :destroy_exact_fun, fn ch, req ->
+        Embervm.Node.V1.NodeService.Stub.destroy(ch, req, timeout: @destroy_rpc_timeout_ms)
+      end)
+
+      with {:ok, response} <- destroy_fun.(channel, request),
+           {:ok, completion} <- Embervm.SessionStopProof.validate(intent, response) do
+        {:stop_completion, completion}
+      else
+        _ -> false
+      end
+    else
+      _ -> false
+    end
+  end
+
   defp destroy_vm(state, %{session_id: session_id, node_id: node_id, vm_id: vm_id})
        when is_binary(node_id) and is_binary(vm_id) do
     # Match the bank path: prefer current ownership, then the placed dial retained

@@ -764,6 +764,33 @@ defmodule Embervm.NodeRegistryTest do
     assert facts.node_id == "node-4"
     assert facts.pod_uid == "uid-1"
     assert facts.instance_id == "node-4/uid-1"
+    assert facts.boot_id == "boot-1"
+  end
+
+  test "a daemon boot change retracts old stream facts before publishing the new identity" do
+    parent = self()
+    watch = fn _ch, node_id, emit ->
+      send(parent, {:boot_watch, self()})
+      receive do
+        :publish -> emit.(node_status(node_id: node_id))
+      end
+      receive do: (:never -> {:ok, :closed})
+    end
+    {reg, table} = start_registry(register_seams(watch_fun: watch))
+    registration = %{"node" => "node-4", "pod_uid" => "uid-1",
+      "address" => "10.0.0.1:9090", "boot_id" => "boot-old"}
+    assert :ok = NodeRegistry.register(reg, registration)
+    assert_receive {:boot_watch, old_watch}, 1_000
+    send(old_watch, :publish)
+    await_initial_status(reg, "node-4/uid-1")
+    assert [%{boot_id: "boot-old"}] = NodeRegistry.capacity(table)
+    assert :ok = NodeRegistry.register(reg, %{registration | "boot_id" => "boot-new"})
+    assert_receive {:boot_watch, new_watch}, 1_000
+    eventually(fn -> not Process.alive?(old_watch) end, 200)
+    assert NodeRegistry.capacity(table) == []
+    send(new_watch, :publish)
+    await_initial_status(reg, "node-4/uid-1")
+    assert [%{boot_id: "boot-new"}] = NodeRegistry.capacity(table)
   end
 
   test "a new instance does not supersede a healthy sibling (two instances on ONE node coexist)" do
