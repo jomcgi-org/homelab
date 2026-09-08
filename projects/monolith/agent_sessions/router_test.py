@@ -2151,6 +2151,31 @@ def test_send_message_marks_message_ui_originated(client, session, monkeypatch):
     mcp._ui_originated.clear()
 
 
+def test_cleanup_ownership_is_visible_without_private_credentials(client, session):
+    started = datetime(2026, 9, 8, 14, 15, tzinfo=timezone.utc)
+    row = _session(
+        session,
+        "cleanup-detail",
+        ember_session_id="guest-cleanup",
+        ember_session_token="private-guest-token",
+        guest_cleanup_id="cleanup-claim",
+        guest_cleanup_guest_id="guest-cleanup",
+        guest_cleanup_workflow_id="workflow-cleanup",
+        guest_cleanup_started_at=started,
+    )
+    response = client.get(f"/api/agents/sessions/{row.id}")
+    assert response.status_code == 200
+    cleanup = response.json()["session"]["guest_cleanup"]
+    assert cleanup == {
+        "id": "cleanup-claim",
+        "guest_id": "guest-cleanup",
+        "workflow_id": "workflow-cleanup",
+        "started_at": started.isoformat(),
+        "reason": "awaiting_terminal_confirmation",
+    }
+    assert "private-guest-token" not in response.text
+
+
 def test_unknown_outcome_detail_retains_evidence_and_rejects_all_send_boundaries(
     client, session, monkeypatch
 ):

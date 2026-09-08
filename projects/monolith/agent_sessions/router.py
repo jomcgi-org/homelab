@@ -189,6 +189,17 @@ def _session_payload(
         ),
         "title": row.title or _fallback_title(first_turn_prompt, first_pending_prompt),
         "ember_session_id": row.ember_session_id,
+        "guest_cleanup": (
+            {
+                "id": row.guest_cleanup_id,
+                "guest_id": row.guest_cleanup_guest_id,
+                "workflow_id": row.guest_cleanup_workflow_id,
+                "started_at": _iso(row.guest_cleanup_started_at),
+                "reason": "awaiting_terminal_confirmation",
+            }
+            if row.guest_cleanup_id is not None
+            else None
+        ),
         "created_at": _iso(row.created_at),
         "last_turn_at": _iso(row.last_turn_at),
         "voice_summary": row.voice_summary,
