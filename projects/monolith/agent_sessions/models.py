@@ -51,6 +51,10 @@ class AgentSession(SQLModel, table=True):
     )  # Claude CLI session_id for resumption
     ember_session_id: str | None = Field(default=None)
     ember_session_token: str | None = Field(default=None)
+    # An exact native receipt completed before its synchronous observer. Keep
+    # this fence even if retention deletes the receipt; only the matching
+    # observer may clear it. This is deliberately not a cascading foreign key.
+    result_receipt_fence_id: str | None = Field(default=None)
     # The durable workspace handle (#4306 slice 4): a restored session's
     # ember_session_id is a fresh per-generation id, not a valid restore key
     # for the NEXT generation (session_id == lineage_id only for a gen-0
@@ -234,6 +238,9 @@ class AgentResultReceipt(SQLModel, table=True):
         default=None, sa_type=DateTime(timezone=True)
     )
     received_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    response_observed_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
     result_sha256: str | None = None
     result_body: bytes | None = Field(default=None, sa_type=LargeBinary)
 
