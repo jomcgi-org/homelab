@@ -110,6 +110,7 @@ def prepare_receipt(
             or agent.status in {"failed", "awaiting_login"}
             or agent.ember_session_id != guest_id
             or agent.result_receipt_fence_id is not None
+            or admission.cleanup_pending(db, agent)
             or pending is None
             or pending.claimed_by_replica != claim_owner
             or pending.dispatch_count != dispatch_count
