@@ -1,6 +1,7 @@
 <script>
   import { Seo } from "$lib/public/components";
   import "$lib/public/factory/factory.css";
+  import { markClass } from "$lib/public/factory/model.js";
   import Trail from "../../Trail.svelte";
 
   let { data } = $props();
@@ -41,12 +42,8 @@
   const number = (value) => Number(value ?? 0).toLocaleString();
   const day = (value) => value?.slice(5, 10).replace("-", "·") ?? "";
   const count = (entity, state) => Number(entity.note_counts?.[state] ?? 0);
-  const verifiedTotal = $derived(
-    data.entities.reduce((sum, entity) => sum + count(entity, "verified"), 0),
-  );
-  const unverifiedTotal = $derived(
-    data.entities.reduce((sum, entity) => sum + count(entity, "unverified"), 0),
-  );
+  const verifiedTotal = $derived(Number(data.facts.totals?.verified ?? 0));
+  const unverifiedTotal = $derived(Number(data.facts.totals?.unverified ?? 0));
   const selected = $derived(
     data.projects.find((project) => project.slug === data.entity),
   );
@@ -135,6 +132,9 @@
       </div>
     </header>
 
+    {#if Object.values(data.unavailable).some(Boolean)}
+      <p class="unavailable">Unavailable right now.</p>
+    {/if}
     <div class="journal">
       <aside class="spine">
         <div>
@@ -147,6 +147,7 @@
               placeholder="Find a fact"
               aria-label="Search the record"
             />
+            <button type="submit">Find</button>
             <input name="mode" type="hidden" value={data.mode} />
             <div class="modes">
               <a
@@ -197,6 +198,10 @@
                   )}</small
                 >
               </a>
+            {:else}
+              {#if data.unavailable.entities}
+                <span class="none">None recorded.</span>
+              {/if}
             {/each}
           </nav>
         </div>
@@ -213,28 +218,31 @@
             >
           </p>
           <section>
-            <ul class="results">
-              {#each visibleResults as result (result.note_id)}
-                <li>
-                  <i
-                    class:contradicts={result.disputed}
-                    class:verified={result.verification_state === "verified"}
-                    class:unverified={result.verification_state ===
-                      "unverified"}
-                    class="mark"
-                  ></i>
-                  <span
-                    >{#each markedTitle(result.title, data.mode === "grep" ? data.q : "") as part}{#if part.match}<mark
-                          >{part.text}</mark
-                        >{:else}{part.text}{/if}{/each}</span
-                  >
-                  <span class="proj">{projectNames(result)}</span>
-                </li>
-              {:else}
-                <li><span></span><span class="none">No fact matches.</span></li>
-              {/each}
-            </ul>
+            {#if data.unavailable.search}
+              <p class="none">Nothing passes the current filter.</p>
+            {:else}
+              <ul class="results">
+                {#each visibleResults as result (result.note_id)}
+                  <li>
+                    <i class={`mark ${markClass(result)}`}></i>
+                    <span
+                      >{#each markedTitle(result.title, data.mode === "grep" ? data.q : "") as part}{#if part.match}<mark
+                            >{part.text}</mark
+                          >{:else}{part.text}{/if}{/each}</span
+                    >
+                    <span class="proj">{projectNames(result)}</span>
+                  </li>
+                {:else}
+                  <li>
+                    <span></span><span class="none">No fact matches.</span>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
           </section>
+        {:else if data.entity && (!data.chapter || !selected)}
+          <h2>{selected?.title ?? data.entity}</h2>
+          <p class="none">None recorded.</p>
         {:else if data.chapter && selected}
           <h2>{data.chapter.entity.title}</h2>
           <p class="lede">
@@ -327,13 +335,15 @@
               <div class="pair">
                 <span class="n">{String(index + 1).padStart(2, "0")}</span>
                 <div class="side">
-                  <i class={`mark ${contradiction.a.verification_state}`}
-                  ></i><span>{contradiction.a.title}</span>
+                  <i class={`mark ${markClass(contradiction.a)}`}></i><span
+                    >{contradiction.a.title}</span
+                  >
                 </div>
                 <span class="vs">VS</span>
                 <div class="side">
-                  <i class={`mark ${contradiction.b.verification_state}`}
-                  ></i><span>{contradiction.b.title}</span>
+                  <i class={`mark ${markClass(contradiction.b)}`}></i><span
+                    >{contradiction.b.title}</span
+                  >
                 </div>
               </div>
             {:else}<p class="none">None recorded.</p>{/each}
@@ -481,6 +491,12 @@
                 >dispute: a new raw input, the fact stays</text
               >
             </svg>
+            <figcaption>
+              Fig. 1. A session becomes an immutable raw input; the drain
+              extracts and gates; the record keeps what survives; agents and
+              this page read the same rows. A dispute is a new raw input and
+              never deletes.
+            </figcaption>
             <div class="key">
               <div>
                 <span>1</span><span
@@ -507,12 +523,6 @@
                 >
               </div>
             </div>
-            <figcaption>
-              Fig. 1. A session becomes an immutable raw input; the drain
-              extracts and gates; the record keeps what survives; agents and
-              this page read the same rows. A dispute is a new raw input and
-              never deletes.
-            </figcaption>
           </figure>
           <section>
             <h3><span>1</span><span>What the marks mean</span></h3>
@@ -539,33 +549,13 @@
               <li>
                 <details>
                   <summary
-                    ><i class="mark contradicts"></i><span
+                    ><i class="mark disputed"></i><span
                       >Contradiction: a newer fact that cannot hold alongside an
                       older one. Both stay.</span
-                    ><time>·</time></summary
+                    ><time>{number(data.facts.contradictions)}</time></summary
                   >
                 </details>
               </li>
-            </ol>
-          </section>
-          <section>
-            <h3><span>2</span><span>Where facts come from</span></h3>
-            <ol>
-              {#each [...new Set(data.entities.map((entity) => entity.source))].filter(Boolean) as source}
-                <li>
-                  <details>
-                    <summary
-                      ><i class="mark verified invisible"></i><span
-                        >{source}</span
-                      ><time
-                        >{data.entities.filter(
-                          (entity) => entity.source === source,
-                        ).length}</time
-                      ></summary
-                    >
-                  </details>
-                </li>
-              {/each}
             </ol>
           </section>
         {/if}

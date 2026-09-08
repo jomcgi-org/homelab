@@ -9,6 +9,7 @@ module (``knowledge.router``):
 - ``GET /api/knowledge/public/entities``: entity catalog with public fact counts.
 - ``GET /api/knowledge/public/entities/{kind}/{slug}/notes``: one entity chapter.
 - ``GET /api/knowledge/public/search``: bounded grep or semantic fact search.
+- ``GET /api/knowledge/public/facts/daily``: daily and all-time fact figures.
 - ``GET /api/knowledge/public/notes/{note_id}``: a single note iff its
   effective visibility is ``public``.
 
@@ -21,6 +22,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import asyncio
+from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -32,6 +35,7 @@ from knowledge.api import search_public_chunks
 from knowledge.gardener import _slugify
 from knowledge.http_cache import _as_utc, _graph_etag, _GRAPH_CACHE_CONTROL
 from knowledge.notes import resolve_note_body
+from knowledge.public_limits import allow_semantic_search
 from knowledge.public_models import (
     PublicEntity,
     PublicNote,
@@ -53,7 +57,14 @@ _VERIFICATION_STATES = (
     "disputed",
     "invalidated",
 )
-_RECORD_STATES = frozenset(_VERIFICATION_STATES[1:])
+_RECORD_STATES = frozenset(("verified", "unverified"))
+
+
+def _client_key(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    if forwarded:
+        return forwarded
+    return request.client.host if request.client is not None else "unknown"
 
 
 def _record_etag(scope: str, payload: object) -> str:
@@ -365,7 +376,18 @@ def get_public_entity_notes(
         if len(notes) >= limit:
             break
 
-    selected_ids = set(note_rows)
+    contradiction_notes = session.exec(
+        select(PublicNote)
+        .join(PublicNoteEntity, PublicNoteEntity.note_id == PublicNote.note_id)
+        .where(
+            PublicNoteEntity.entity_id == entity.id,
+            PublicNote.verification_state.in_(
+                ("verified", "unverified", "disputed", "invalidated")
+            ),
+        )
+    ).all()
+    contradiction_rows = {note.note_id: note for note in contradiction_notes}
+    selected_ids = set(contradiction_rows)
     selected_slugs = {_slugify(note_id): note_id for note_id in selected_ids}
     contradictions: list[dict] = []
     seen_pairs: set[tuple[str, str]] = set()
@@ -388,19 +410,21 @@ def get_public_entity_notes(
             if pair in seen_pairs or pair[0] == pair[1]:
                 continue
             seen_pairs.add(pair)
-            a = note_rows[pair[0]]
-            b = note_rows[pair[1]]
+            a = contradiction_rows[pair[0]]
+            b = contradiction_rows[pair[1]]
             contradictions.append(
                 {
                     "a": {
                         "note_id": a.note_id,
                         "title": a.title,
                         "verification_state": a.verification_state,
+                        "disputed": a.disputed,
                     },
                     "b": {
                         "note_id": b.note_id,
                         "title": b.title,
                         "verification_state": b.verification_state,
+                        "disputed": b.disputed,
                     },
                 }
             )
@@ -411,7 +435,7 @@ def get_public_entity_notes(
         "contradictions": contradictions,
     }
     latest = max(
-        (_as_utc(note.indexed_at) for note in note_rows.values()), default=None
+        (_as_utc(note.indexed_at) for note in contradiction_rows.values()), default=None
     )
     etag = _record_etag(f"entity-{kind}-{slug}-{','.join(states)}-{limit}", payload)
     cached = _cache_response(request, response, etag=etag, last_modified=latest)
@@ -434,14 +458,15 @@ async def search_public_record(
     result_rows: list[dict] = []
     indexed_by_id: dict[str, object] = {}
     if query and mode == "grep":
-        pattern = f"%{query}%"
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
         rows = session.exec(
             select(PublicNote)
             .where(
                 PublicNote.verification_state.in_(_RECORD_STATES),
                 or_(
-                    PublicNote.title.ilike(pattern),
-                    PublicNote.content.ilike(pattern),
+                    PublicNote.title.ilike(pattern, escape="\\"),
+                    PublicNote.content.ilike(pattern, escape="\\"),
                 ),
             )
             .order_by(
@@ -461,21 +486,39 @@ async def search_public_record(
                 }
             )
     elif query:
+        if not allow_semantic_search(_client_key(request)):
+            raise HTTPException(
+                status_code=429,
+                detail="semantic search rate limit exceeded",
+                headers={"Retry-After": "60"},
+            )
         client = EmbeddingClient()
         if client.base_url:
             try:
-                vector = await client.embed(query)
+                vector = await asyncio.wait_for(client.embed(query), timeout=5.0)
                 semantic_rows = search_public_chunks(session, vector, limit=limit)
             except Exception:  # noqa: BLE001 - search degrades to no matches
                 logger.exception("public.record.semantic_search_failed")
                 semantic_rows = []
+            semantic_ids = list(dict.fromkeys(row["note_id"] for row in semantic_rows))
+            public_rows = session.exec(
+                select(PublicNote).where(
+                    PublicNote.note_id.in_(semantic_ids),
+                    PublicNote.verification_state.in_(_RECORD_STATES),
+                )
+            ).all()
+            public_by_id = {note.note_id: note for note in public_rows}
             for row in semantic_rows:
+                note = public_by_id.get(row["note_id"])
+                if note is None:
+                    continue
+                indexed_by_id[note.note_id] = note.indexed_at
                 result_rows.append(
                     {
-                        "note_id": row["note_id"],
-                        "title": row["title"],
-                        "verification_state": row["verification_state"],
-                        "disputed": row["disputed"],
+                        "note_id": note.note_id,
+                        "title": note.title,
+                        "verification_state": note.verification_state,
+                        "disputed": note.disputed,
                     }
                 )
 
@@ -486,6 +529,81 @@ async def search_public_record(
     ]
     latest = max((_as_utc(value) for value in indexed_by_id.values()), default=None)
     etag = _record_etag(f"search-{mode}-{query}-{limit}", payload)
+    cached = _cache_response(request, response, etag=etag, last_modified=latest)
+    if cached is not None:
+        return cached
+    return payload
+
+
+@router.get("/public/facts/daily")
+def get_public_facts_daily(
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+):
+    """Return the public fact history and all-time record totals."""
+    today = datetime.now(timezone.utc).date()
+    first_day = today - timedelta(days=29)
+    tomorrow = today + timedelta(days=1)
+    day = func.date(PublicNote.observed_at).label("d")
+    daily_rows = session.execute(
+        select(
+            day,
+            func.sum(
+                case((PublicNote.verification_state == "verified", 1), else_=0)
+            ).label("verified"),
+            func.sum(
+                case((PublicNote.verification_state == "unverified", 1), else_=0)
+            ).label("unverified"),
+        )
+        .where(
+            PublicNote.observed_at.is_not(None),
+            PublicNote.observed_at
+            >= datetime.combine(first_day, datetime.min.time(), tzinfo=timezone.utc),
+            PublicNote.observed_at
+            < datetime.combine(tomorrow, datetime.min.time(), tzinfo=timezone.utc),
+            PublicNote.verification_state.in_(_RECORD_STATES),
+        )
+        .group_by(day)
+        .order_by(day)
+    ).all()
+    total_row = session.execute(
+        select(
+            func.sum(
+                case((PublicNote.verification_state == "verified", 1), else_=0)
+            ).label("verified"),
+            func.sum(
+                case((PublicNote.verification_state == "unverified", 1), else_=0)
+            ).label("unverified"),
+            func.sum(case((PublicNote.disputed.is_(True), 1), else_=0)).label(
+                "disputed"
+            ),
+        )
+    ).one()
+    totals = {
+        "verified": int(total_row.verified or 0),
+        "unverified": int(total_row.unverified or 0),
+        "disputed": int(total_row.disputed or 0),
+    }
+    contradictions = session.exec(
+        select(func.count(PublicNoteLink.id)).where(
+            PublicNoteLink.edge_type == "contradicts"
+        )
+    ).one()
+    payload = {
+        "daily": [
+            {
+                "d": str(row.d),
+                "verified": int(row.verified or 0),
+                "unverified": int(row.unverified or 0),
+            }
+            for row in daily_rows
+        ],
+        "totals": totals,
+        "contradictions": int(contradictions or 0),
+    }
+    latest = session.exec(select(func.max(PublicNote.indexed_at))).one()
+    etag = _record_etag("facts-daily", payload)
     cached = _cache_response(request, response, etag=etag, last_modified=latest)
     if cached is not None:
         return cached

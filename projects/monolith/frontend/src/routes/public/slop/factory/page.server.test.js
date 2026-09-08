@@ -4,17 +4,18 @@ import { load } from "./+page.server.js";
 const payloads = {
   "/slop/factory/activity": { now: {}, daily: [], totals_7d: {} },
   "/slop/factory/merges": { daily: [], week: [], totals: {} },
-  "/slop/factory/entities": [{ kind: "project", slug: "embervm" }],
+  "/slop/factory/facts": {
+    daily: [],
+    totals: { verified: 1, unverified: 2, disputed: 0 },
+    contradictions: 0,
+  },
 };
 
 function response(path, ok = true) {
   return {
     ok,
     headers: { get: () => null },
-    json: async () =>
-      path.startsWith("/slop/factory/entities/project/")
-        ? { notes: [{ note_id: "fact" }] }
-        : payloads[path],
+    json: async () => payloads[path],
   };
 }
 
@@ -26,22 +27,25 @@ describe("factory overview loader", () => {
     expect(fetch.mock.calls.map(([path]) => path)).toEqual([
       "/slop/factory/activity",
       "/slop/factory/merges",
-      "/slop/factory/entities",
-      "/slop/factory/entities/project/embervm/notes?state=verified%2Cunverified&limit=60",
+      "/slop/factory/facts",
     ]);
     expect(result.activity).toEqual(payloads["/slop/factory/activity"]);
     expect(result.merges).toEqual(payloads["/slop/factory/merges"]);
-    expect(result.entities).toEqual(payloads["/slop/factory/entities"]);
-    expect(result.facts).toEqual([{ note_id: "fact" }]);
+    expect(result.facts).toEqual(payloads["/slop/factory/facts"]);
   });
 
-  it("fails closed when a required feed is unavailable", async () => {
+  it.each([
+    ["/slop/factory/activity", "activity"],
+    ["/slop/factory/merges", "merges"],
+    ["/slop/factory/facts", "facts"],
+  ])("keeps rendering when %s returns 503", async (failedPath, section) => {
     const fetch = vi.fn((path) =>
-      Promise.resolve(response(path, path !== "/slop/factory/merges")),
+      Promise.resolve(response(path, path !== failedPath)),
     );
 
-    await expect(load({ fetch, setHeaders: vi.fn() })).rejects.toMatchObject({
-      status: 503,
-    });
+    const result = await load({ fetch, setHeaders: vi.fn() });
+
+    expect(result.unavailable[section]).toBe(true);
+    expect(result.title).toBe("Factory");
   });
 });

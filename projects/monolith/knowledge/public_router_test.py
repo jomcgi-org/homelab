@@ -23,7 +23,7 @@ Coverage:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import FastAPI
@@ -38,6 +38,7 @@ from knowledge.public_models import (
     PublicNoteEntity,
     PublicNoteLink,
 )
+from knowledge.public_limits import reset_semantic_search_limits
 from knowledge.public_router import router
 
 _UTC = timezone.utc
@@ -74,11 +75,13 @@ def session_fixture():
 
 @pytest.fixture(name="client")
 def client_fixture(session):
+    reset_semantic_search_limits()
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_session] = lambda: session
     yield TestClient(app, raise_server_exceptions=False)
     app.dependency_overrides.clear()
+    reset_semantic_search_limits()
 
 
 # ---------------------------------------------------------------------------
@@ -519,6 +522,46 @@ class TestPublicEntityNotes:
             "fact-b",
         }
 
+    def test_contradictions_keep_disputed_and_invalidated_marks(self, client, session):
+        session.add(_make_entity())
+        session.add(_make_note("current", "Current"))
+        session.add(_make_note("disputed", "Disputed", verification_state="disputed"))
+        session.add(
+            _make_note("invalidated", "Invalidated", verification_state="invalidated")
+        )
+        session.add(_link_entity(1, "current"))
+        session.add(_link_entity(2, "disputed", state="disputed"))
+        session.add(_link_entity(3, "invalidated", state="invalidated"))
+        session.add(
+            PublicNoteLink(
+                id=1,
+                source="current",
+                target="disputed",
+                kind="edge",
+                edge_type="contradicts",
+            )
+        )
+        session.add(
+            PublicNoteLink(
+                id=2,
+                source="current",
+                target="invalidated",
+                kind="edge",
+                edge_type="contradicts",
+            )
+        )
+        session.commit()
+
+        body = client.get("/api/knowledge/public/entities/project/embervm/notes").json()
+
+        assert [note["note_id"] for note in body["notes"]] == ["current"]
+        states = {
+            side["verification_state"]
+            for pair in body["contradictions"]
+            for side in (pair["a"], pair["b"])
+        }
+        assert {"disputed", "invalidated"} <= states
+
     def test_sets_cache_headers_and_supports_304(self, client, session):
         session.add(_make_entity())
         session.add(_make_note("fact", "Fact"))
@@ -565,6 +608,43 @@ class TestPublicRecordSearch:
         assert body[0]["entities"] == [
             {"kind": "project", "slug": "embervm", "title": "EmberVM"}
         ]
+
+    def test_grep_excludes_disputed_and_invalidated_states(self, client, session):
+        session.add(_make_note("current", "Needle current"))
+        session.add(
+            _make_note("disputed", "Needle disputed", verification_state="disputed")
+        )
+        session.add(
+            _make_note(
+                "invalidated", "Needle invalidated", verification_state="invalidated"
+            )
+        )
+        session.commit()
+
+        body = client.get("/api/knowledge/public/search?q=needle").json()
+
+        assert [row["note_id"] for row in body] == ["current"]
+
+    @pytest.mark.parametrize(
+        ("query", "matching"),
+        [
+            ("%", "literal-percent"),
+            ("_", "literal-underscore"),
+            ("\\", "literal-slash"),
+        ],
+    )
+    def test_grep_treats_like_metacharacters_literally(
+        self, client, session, query, matching
+    ):
+        session.add(_make_note("literal-percent", "Contains 100% certainty"))
+        session.add(_make_note("literal-underscore", "Contains under_score"))
+        session.add(_make_note("literal-slash", r"Contains a back\\slash"))
+        session.add(_make_note("ordinary", "Ordinary title"))
+        session.commit()
+
+        body = client.get("/api/knowledge/public/search", params={"q": query}).json()
+
+        assert [row["note_id"] for row in body] == [matching]
 
     def test_blank_query_returns_no_rows(self, client, session):
         session.add(_make_note("fact", "Fact"))
@@ -621,6 +701,61 @@ class TestPublicRecordSearch:
         assert response.json()[0]["note_id"] == "semantic"
         assert response.json()[0]["entities"][0]["slug"] == "embervm"
 
+    def test_semantic_search_drops_repo_docs_and_non_record_states(
+        self, client, session, monkeypatch
+    ):
+        class FakeEmbeddingClient:
+            base_url = "http://embedding.test"
+
+            async def embed(self, _query):
+                return [0.1, 0.2]
+
+        session.add(_make_note("kept", "Kept"))
+        session.add(_make_note("disputed", "Disputed", verification_state="disputed"))
+        session.commit()
+        monkeypatch.setattr(
+            "knowledge.public_router.EmbeddingClient", FakeEmbeddingClient
+        )
+        monkeypatch.setattr(
+            "knowledge.public_router.search_public_chunks",
+            lambda _session, vector, limit: [
+                {"note_id": "repo:README.md"},
+                {"note_id": "disputed"},
+                {"note_id": "kept"},
+            ],
+        )
+
+        body = client.get("/api/knowledge/public/search?q=record&mode=semantic").json()
+
+        assert [row["note_id"] for row in body] == ["kept"]
+
+    def test_semantic_search_is_limited_to_ten_per_client(
+        self, client, session, monkeypatch
+    ):
+        class FakeEmbeddingClient:
+            base_url = "http://embedding.test"
+
+            async def embed(self, _query):
+                return [0.1, 0.2]
+
+        monkeypatch.setattr(
+            "knowledge.public_router.EmbeddingClient", FakeEmbeddingClient
+        )
+        monkeypatch.setattr(
+            "knowledge.public_router.search_public_chunks",
+            lambda _session, vector, limit: [],
+        )
+
+        for _ in range(10):
+            assert (
+                client.get("/api/knowledge/public/search?q=x&mode=semantic").status_code
+                == 200
+            )
+        limited = client.get("/api/knowledge/public/search?q=x&mode=semantic")
+
+        assert limited.status_code == 429
+        assert limited.headers["retry-after"] == "60"
+
     def test_search_supports_conditional_get(self, client, session):
         session.add(_make_note("fact", "Needle"))
         session.commit()
@@ -628,6 +763,60 @@ class TestPublicRecordSearch:
         first = client.get("/api/knowledge/public/search?q=needle")
         second = client.get(
             "/api/knowledge/public/search?q=needle",
+            headers={"If-None-Match": first.headers["etag"]},
+        )
+
+        assert second.status_code == 304
+
+
+# ---------------------------------------------------------------------------
+# GET /api/knowledge/public/facts/daily
+# ---------------------------------------------------------------------------
+
+
+class TestPublicFactsDaily:
+    def test_returns_daily_state_totals_and_contradictions(self, client, session):
+        now = datetime.now(_UTC)
+        verified = _make_note("verified", "Verified")
+        verified.observed_at = now - timedelta(days=1)
+        unverified = _make_note(
+            "unverified", "Unverified", verification_state="unverified"
+        )
+        unverified.observed_at = now
+        disputed = _make_note(
+            "disputed", "Disputed", verification_state="disputed", disputed=True
+        )
+        disputed.observed_at = now
+        old = _make_note("old", "Old")
+        old.observed_at = now - timedelta(days=31)
+        session.add(verified)
+        session.add(unverified)
+        session.add(disputed)
+        session.add(old)
+        session.add(
+            PublicNoteLink(
+                id=1,
+                source="verified",
+                target="unverified",
+                kind="edge",
+                edge_type="contradicts",
+            )
+        )
+        session.commit()
+
+        response = client.get("/api/knowledge/public/facts/daily")
+        body = response.json()
+
+        assert response.status_code == 200
+        assert body["totals"] == {"verified": 2, "unverified": 1, "disputed": 1}
+        assert body["contradictions"] == 1
+        assert sum(row["verified"] for row in body["daily"]) == 1
+        assert sum(row["unverified"] for row in body["daily"]) == 1
+
+    def test_supports_conditional_get(self, client, session):
+        first = client.get("/api/knowledge/public/facts/daily")
+        second = client.get(
+            "/api/knowledge/public/facts/daily",
             headers={"If-None-Match": first.headers["etag"]},
         )
 
