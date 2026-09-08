@@ -1187,6 +1187,8 @@ def release_pending_message_claim_sync(
     turn_seq: int,
     replica_id: str,
     cause: str = "observer_released",
+    *,
+    dispatch_count: int | None = None,
 ) -> bool:
     """Release only a known preemption; observer loss is an unknown outcome."""
     with Session(get_engine()) as session:
@@ -1194,7 +1196,11 @@ def release_pending_message_claim_sync(
         pending = get_pending_message(session, session_id, turn_seq)
         if row is None:
             return False
-        if pending is None or pending.claimed_by_replica != replica_id:
+        if (
+            pending is None
+            or pending.claimed_by_replica != replica_id
+            or (dispatch_count is not None and pending.dispatch_count != dispatch_count)
+        ):
             return session.exec(select(_unknown_outcome_exists(session_id))).one()
         previous = get_turn(session, session_id, turn_seq)
         if _retry_permission(previous, pending):
