@@ -135,6 +135,22 @@ class AgentCapacityReservation(SQLModel, table=True):
     outcome: str | None = None
 
 
+class ProbeObservation(SQLModel, table=True):
+    __tablename__ = "probe_observations"
+    __table_args__ = {"schema": "agent_sessions", "extend_existing": True}
+
+    permit_id: int = Field(primary_key=True, sa_type=BigInteger)
+    identity_sha256: str | None = None
+    guest_id: str | None = None
+    generation: int | None = Field(default=None, sa_type=BigInteger)
+    invoke_started_at: int | None = Field(default=None, sa_type=BigInteger)
+    cp_updated_at: int | None = Field(default=None, sa_type=BigInteger)
+    reason: str = "awaiting_observation"
+    evidence_json: str | None = None
+    checked_at: datetime = Field(sa_type=DateTime(timezone=True))
+    settled_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+
+
 class AgentTurn(SQLModel, table=True):
     __tablename__ = "agent_turns"
     __table_args__ = (

@@ -14,8 +14,8 @@ import json
 import logging
 import os
 
-from sqlalchemy import BigInteger, DateTime, or_
-from sqlmodel import Field, Session, SQLModel, select
+from sqlalchemy import or_
+from sqlmodel import Session, select
 
 from agent_sessions import admission
 from agent_sessions.constants import SYNTHETIC_SESSION_PREFIX, UNKNOWN_INVOCATION
@@ -24,6 +24,7 @@ from agent_sessions.models import (
     AgentSession,
     AgentTurn,
     PendingMessage,
+    ProbeObservation,
 )
 from core.db import get_engine
 
@@ -32,22 +33,6 @@ INTERVAL_SECONDS = 15
 BATCH_SIZE = 4
 GET_TIMEOUT_SECONDS = 5
 MAX_PROOF_AGE_SECONDS = 30
-
-
-class ProbeObservation(SQLModel, table=True):
-    __tablename__ = "probe_observations"
-    __table_args__ = {"schema": "agent_sessions"}
-
-    permit_id: int = Field(primary_key=True, sa_type=BigInteger)
-    identity_sha256: str | None = None
-    guest_id: str | None = None
-    generation: int | None = Field(default=None, sa_type=BigInteger)
-    invoke_started_at: int | None = Field(default=None, sa_type=BigInteger)
-    cp_updated_at: int | None = Field(default=None, sa_type=BigInteger)
-    reason: str = "awaiting_observation"
-    evidence_json: str | None = None
-    checked_at: datetime = Field(sa_type=DateTime(timezone=True))
-    settled_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
 
 
 def _now():
@@ -62,6 +47,12 @@ def _sha(value):
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, default=str).encode()
     ).hexdigest()
+
+
+def _reason(audit, reason):
+    if audit.reason != reason:
+        logger.info("Probe supervision permit %s: %s", audit.permit_id, reason)
+    audit.reason = reason
 
 
 def _identity(db, permit):
@@ -174,19 +165,18 @@ def _prepare(permit_id):
         db.add(audit)
         permit = db.get(AgentCapacityReservation, permit_id)
         if permit is None:
-            audit.reason = "permit_missing"
+            _reason(audit, "permit_missing")
             return None
         try:
             agent, _, identity = _identity(db, permit)
         except ValueError as exc:
-            audit.reason = str(exc)
+            _reason(audit, str(exc))
             return None
         if audit.identity_sha256 not in (None, identity):
-            audit.reason = "identity_changed"
+            _reason(audit, "identity_changed")
             return None
         audit.identity_sha256 = identity
         audit.guest_id = agent.ember_session_id
-        audit.reason = "awaiting_observation"
         return {
             "permit_id": permit_id,
             "identity": identity,
@@ -257,7 +247,7 @@ def _record(candidate, observed, observed_at):
             if updated < int(_aware(turn.created_at).timestamp() * 1000):
                 raise ValueError("cessation_precedes_turn")
         except ValueError as exc:
-            audit.reason = str(exc)
+            _reason(audit, str(exc))
             db.add(audit)
             return
         admission.confirm_guest_cessation(db, agent)
