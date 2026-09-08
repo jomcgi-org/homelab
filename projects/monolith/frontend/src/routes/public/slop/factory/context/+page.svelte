@@ -1,12 +1,49 @@
+<script module>
+  let cachedSearchIndex = null;
+  let searchIndexRequest = null;
+
+  function loadSearchIndex() {
+    if (cachedSearchIndex) return Promise.resolve(cachedSearchIndex);
+    if (!searchIndexRequest) {
+      searchIndexRequest = fetch("/slop/factory/search-index")
+        .then((response) => {
+          if (!response.ok) throw new Error("record search index unavailable");
+          return response.json();
+        })
+        .then((index) => {
+          cachedSearchIndex = index;
+          return index;
+        })
+        .catch((error) => {
+          searchIndexRequest = null;
+          throw error;
+        });
+    }
+    return searchIndexRequest;
+  }
+</script>
+
 <script>
   import { SchemeToggle, Seo } from "$lib/public/components";
   import "$lib/public/factory/factory.css";
   import { markClass } from "$lib/public/factory/model.js";
+  import {
+    decodeSearchIndex,
+    rankIndexMatches,
+  } from "$lib/public/factory/search-index.js";
   import Trail from "../../Trail.svelte";
 
   let { data } = $props();
   let showVerified = $state(true);
   let showUnverified = $state(true);
+  let query = $state(data.q);
+  let searchIndex = $state(null);
+  // Decoded once per index fetch, never per keystroke.
+  const indexNotes = $derived(
+    searchIndex ? decodeSearchIndex(searchIndex) : [],
+  );
+  let suggestionsDismissed = $state(false);
+  let activeSuggestion = $state(-1);
 
   const PROJECT_COPY = {
     embervm: {
@@ -45,7 +82,9 @@
   const verifiedTotal = $derived(Number(data.facts.totals?.verified ?? 0));
   const unverifiedTotal = $derived(Number(data.facts.totals?.unverified ?? 0));
   const selected = $derived(
-    data.projects.find((project) => project.slug === data.entity),
+    data.entities.find(
+      (entity) => entity.kind === "project" && entity.slug === data.entity,
+    ),
   );
   const verified = $derived(
     (data.chapter?.notes ?? []).filter(
@@ -66,6 +105,16 @@
           : false,
     ),
   );
+  const instantResults = $derived(
+    indexNotes.length && !suggestionsDismissed
+      ? rankIndexMatches(indexNotes, query, 20)
+      : [],
+  );
+  const activeDescendant = $derived(
+    activeSuggestion >= 0 && activeSuggestion < instantResults.length
+      ? `factory-search-option-${activeSuggestion}`
+      : undefined,
+  );
   const lastObserved = $derived(
     (data.chapter?.notes ?? [])
       .map((note) => note.observed_at)
@@ -73,6 +122,57 @@
       .sort()
       .at(-1),
   );
+
+  $effect(() => {
+    let active = true;
+    loadSearchIndex()
+      .then((index) => {
+        if (active) searchIndex = index;
+      })
+      .catch(() => {
+        // The form remains the search fallback when the index is unavailable.
+      });
+    return () => {
+      active = false;
+    };
+  });
+
+  $effect(() => {
+    query = data.q;
+    suggestionsDismissed = false;
+    activeSuggestion = -1;
+  });
+
+  function onSearchInput(event) {
+    query = event.currentTarget.value;
+    suggestionsDismissed = false;
+    activeSuggestion = -1;
+  }
+
+  function onSearchKeydown(event) {
+    if (event.key === "Escape") {
+      suggestionsDismissed = true;
+      activeSuggestion = -1;
+      return;
+    }
+    if (!instantResults.length) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      activeSuggestion = (activeSuggestion + 1) % instantResults.length;
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      activeSuggestion =
+        activeSuggestion <= 0
+          ? instantResults.length - 1
+          : activeSuggestion - 1;
+    } else if (event.key === "Enter" && activeSuggestion >= 0) {
+      event.preventDefault();
+      const note = instantResults[activeSuggestion];
+      window.location.assign(
+        `/app/notes?view=graph&focus=${encodeURIComponent(note.note_id)}`,
+      );
+    }
+  }
 
   function markedTitle(title, query) {
     if (!query) return [{ text: title, match: false }];
@@ -141,24 +241,46 @@
             <input
               name="q"
               type="search"
-              value={data.q}
+              value={query}
               placeholder="Find a fact"
               aria-label="Search the record"
+              autocomplete="off"
+              aria-controls="factory-search-suggestions"
+              aria-activedescendant={activeDescendant}
+              aria-expanded={Boolean(
+                searchIndex && query.trim() && !suggestionsDismissed,
+              )}
+              role="combobox"
+              oninput={onSearchInput}
+              onkeydown={onSearchKeydown}
             />
             <button type="submit">Find</button>
-            <input name="mode" type="hidden" value={data.mode} />
-            <div class="modes">
-              <a
-                class:on={data.mode === "grep"}
-                href={`/slop/factory/context?q=${encodeURIComponent(data.q)}&mode=grep`}
-                >grep</a
-              >
-              <a
-                class:on={data.mode === "semantic"}
-                href={`/slop/factory/context?q=${encodeURIComponent(data.q)}&mode=semantic`}
-                >semantic</a
-              >
-            </div>
+            {#if searchIndex && query.trim() && !suggestionsDismissed}
+              <div class="suggestions">
+                <p>
+                  <span>Results</span><code>titles · instant</code>
+                </p>
+                <ul id="factory-search-suggestions" role="listbox">
+                  {#each instantResults as result, index (result.note_id)}
+                    <li
+                      id={`factory-search-option-${index}`}
+                      role="option"
+                      aria-selected={activeSuggestion === index}
+                    >
+                      <a
+                        class:active={activeSuggestion === index}
+                        href={`/app/notes?view=graph&focus=${encodeURIComponent(result.note_id)}`}
+                      >
+                        <i class={`mark ${markClass(result)}`}></i>
+                        <span>{result.title}</span>
+                      </a>
+                    </li>
+                  {:else}
+                    <li class="none" role="presentation">No title matches.</li>
+                  {/each}
+                </ul>
+              </div>
+            {/if}
           </form>
         </div>
         <div>
@@ -207,13 +329,11 @@
 
       <article class="doc">
         {#if data.q}
-          <h2>Search</h2>
+          <h2>
+            Search <code class="search-kind">content + titles · Find</code>
+          </h2>
           <p class="meta">
-            <span
-              >{data.mode === "grep"
-                ? `grep · ${visibleResults.length} matching titles or bodies`
-                : "semantic · nearest by embedding"}</span
-            >
+            <span>{visibleResults.length} matching titles or bodies</span>
           </p>
           <section>
             {#if data.unavailable.search}
@@ -224,7 +344,7 @@
                   <li>
                     <i class={`mark ${markClass(result)}`}></i>
                     <span
-                      >{#each markedTitle(result.title, data.mode === "grep" ? data.q : "") as part}{#if part.match}<mark
+                      >{#each markedTitle(result.title, data.q) as part}{#if part.match}<mark
                             >{part.text}</mark
                           >{:else}{part.text}{/if}{/each}</span
                     >

@@ -65,6 +65,10 @@ export const HEALTH_CACHE_CONTROL = "public, max-age=0, s-maxage=60";
 // _GRAPH_CACHE_CONTROL in projects/monolith/knowledge/router.py — keep in sync.
 export const NOTES_PAGE_CACHE_CONTROL = `public, s-maxage=${ONE_HOUR}, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
 
+// /slop/factory/search-index: the browser keeps the compact title index, while
+// browsers and Cloudflare may refresh it every five minutes in the background.
+export const SEARCH_INDEX_CACHE_CONTROL = `public, max-age=300, s-maxage=300, stale-while-revalidate=${ONE_DAY}`;
+
 // /slop/factory/merges: the snapshot refreshes periodically, so keep browsers
 // revalidating while Cloudflare serves a 30-minute fresh response and one day
 // of stale data during background refreshes.

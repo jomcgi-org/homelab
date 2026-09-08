@@ -7,6 +7,8 @@ import {
 export const prerender = false;
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,79}$/;
+// Below this an entity has too few atoms to be worth a line in the index.
+const MIN_INDEX_ATOMS = 15;
 
 async function getJson(fetch, path, label) {
   const response = await fetch(path);
@@ -18,8 +20,6 @@ export async function load({ fetch, setHeaders, url }) {
   const requestedEntity = url.searchParams.get("entity") || "";
   const entity = SLUG.test(requestedEntity) ? requestedEntity : "";
   const q = (url.searchParams.get("q") || "").trim().slice(0, 200);
-  const mode =
-    url.searchParams.get("mode") === "semantic" ? "semantic" : "grep";
   const baseSections = await Promise.allSettled([
     getJson(fetch, "/slop/factory/entities", "record index"),
     getJson(fetch, "/slop/factory/facts", "fact history"),
@@ -35,7 +35,13 @@ export async function load({ fetch, setHeaders, url }) {
           contradictions: 0,
         };
   const projects = entities
-    .filter((item) => item.kind === "project")
+    .filter(
+      (item) =>
+        item.kind === "project" &&
+        (item.note_counts?.verified ?? 0) +
+          (item.note_counts?.unverified ?? 0) >
+          MIN_INDEX_ATOMS,
+    )
     .sort(
       (a, b) =>
         (b.note_counts?.verified ?? 0) +
@@ -46,7 +52,7 @@ export async function load({ fetch, setHeaders, url }) {
 
   let contentPromise = Promise.resolve(null);
   if (q) {
-    const params = new URLSearchParams({ q, mode, limit: "30" });
+    const params = new URLSearchParams({ q, limit: "30" });
     contentPromise = getJson(
       fetch,
       `/slop/factory/search?${params}`,
@@ -87,7 +93,6 @@ export async function load({ fetch, setHeaders, url }) {
     projects,
     entity,
     q,
-    mode,
     chapter,
     results,
     unavailable: {

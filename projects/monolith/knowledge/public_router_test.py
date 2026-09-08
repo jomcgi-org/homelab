@@ -580,6 +580,99 @@ class TestPublicEntityNotes:
 
 
 # ---------------------------------------------------------------------------
+# GET /api/knowledge/public/search-index
+# ---------------------------------------------------------------------------
+
+
+class TestPublicSearchIndex:
+    def test_returns_compact_parallel_array_shape(self, client, session):
+        session.add(_make_entity())
+        session.add(_make_note("fact", "Ember fact"))
+        session.add(_link_entity(1, "fact"))
+        session.commit()
+
+        body = client.get("/api/knowledge/public/search-index").json()
+
+        assert body == {
+            "generated_at": "2024-06-01T12:00:00Z",
+            "states": ["verified", "unverified", "disputed", "invalidated"],
+            "entities": ["embervm"],
+            "notes": [["fact", "Ember fact", 0, 0]],
+        }
+
+    def test_includes_only_record_states(self, client, session):
+        session.add(_make_note("verified", "Verified"))
+        session.add(
+            _make_note("unverified", "Unverified", verification_state="unverified")
+        )
+        session.add(_make_note("legacy", "Legacy", verification_state="legacy"))
+        session.add(_make_note("disputed", "Disputed", verification_state="disputed"))
+        session.add(
+            _make_note("invalidated", "Invalidated", verification_state="invalidated")
+        )
+        session.commit()
+
+        body = client.get("/api/knowledge/public/search-index").json()
+
+        assert {note[0] for note in body["notes"]} == {"verified", "unverified"}
+        assert {note[2] for note in body["notes"]} == {0, 1}
+
+    def test_orders_newest_observation_first_with_nulls_last(self, client, session):
+        oldest = _make_note(
+            "oldest", "Oldest", indexed_at=datetime(2024, 6, 3, tzinfo=_UTC)
+        )
+        oldest.observed_at = datetime(2024, 5, 1, tzinfo=_UTC)
+        newest = _make_note(
+            "newest", "Newest", indexed_at=datetime(2024, 6, 1, tzinfo=_UTC)
+        )
+        newest.observed_at = datetime(2024, 5, 2, tzinfo=_UTC)
+        no_observation = _make_note(
+            "unobserved",
+            "Unobserved",
+            indexed_at=datetime(2024, 6, 4, tzinfo=_UTC),
+        )
+        session.add_all([oldest, newest, no_observation])
+        session.commit()
+
+        body = client.get("/api/knowledge/public/search-index").json()
+
+        assert [note[0] for note in body["notes"]] == [
+            "newest",
+            "oldest",
+            "unobserved",
+        ]
+
+    def test_supports_conditional_get(self, client, session):
+        session.add(_make_note("fact", "Fact"))
+        session.commit()
+
+        first = client.get("/api/knowledge/public/search-index")
+        second = client.get(
+            "/api/knowledge/public/search-index",
+            headers={"If-None-Match": first.headers["etag"]},
+        )
+
+        assert first.headers["cache-control"] == (
+            "public, max-age=300, s-maxage=300, stale-while-revalidate=86400"
+        )
+        assert second.status_code == 304
+
+    def test_truncates_at_hard_ceiling(self, client, session, monkeypatch, caplog):
+        monkeypatch.setattr("knowledge.public_router._SEARCH_INDEX_NOTE_LIMIT", 2)
+        for index in range(3):
+            note = _make_note(f"fact-{index}", f"Fact {index}")
+            note.observed_at = _NOW + timedelta(minutes=index)
+            session.add(note)
+        session.commit()
+
+        with caplog.at_level("WARNING"):
+            body = client.get("/api/knowledge/public/search-index").json()
+
+        assert [note[0] for note in body["notes"]] == ["fact-2", "fact-1"]
+        assert "public.search_index.truncated limit=2" in caplog.text
+
+
+# ---------------------------------------------------------------------------
 # GET /api/knowledge/public/search
 # ---------------------------------------------------------------------------
 
