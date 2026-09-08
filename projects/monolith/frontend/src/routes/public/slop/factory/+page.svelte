@@ -1,5 +1,5 @@
 <script>
-  import { Seo } from "$lib/public/components";
+  import { SchemeToggle, Seo } from "$lib/public/components";
   import { barChartSvg, sparkSvg } from "$lib/public/factory/charts.js";
   import {
     activitySeries,
@@ -151,15 +151,14 @@
 <main class="td factory-page">
   <div class="frame">
     <header class="masthead">
-      <div>
-        <h1>Ember Software Factory</h1>
-      </div>
-      <div class="mast-trails">
-        <Trail page="factory" />
+      <h1 class="sr-only">Ember Software Factory</h1>
+      <Trail page="factory" />
+      <div class="mast-actions">
         <nav class="view-tabs" aria-label="Factory views">
           <a class="here" href="/slop/factory" aria-current="page">overview</a>
           <a href="/slop/factory/context">context</a>
         </nav>
+        <SchemeToggle />
       </div>
     </header>
 
@@ -307,23 +306,23 @@
                 <span class="dt">{day(pr.merged_at)}</span>
               </li>
             {/each}
-            <li class="pager">
-              <span
-                >{prRows.start}–{prRows.end} of {sortedPrs.length} this week</span
-              >
-              <span
-                ><button
-                  type="button"
-                  onclick={() => (prPage -= 1)}
-                  disabled={prPage === 0}>prev</button
-                ><button
-                  type="button"
-                  onclick={() => (prPage += 1)}
-                  disabled={prPage >= prRows.pageCount - 1}>next</button
-                ></span
-              >
-            </li>
           </ol>
+          <div class="pager">
+            <span
+              >{prRows.start}–{prRows.end} of {sortedPrs.length} this week</span
+            >
+            <span
+              ><button
+                type="button"
+                onclick={() => (prPage -= 1)}
+                disabled={prPage === 0}>prev</button
+              ><button
+                type="button"
+                onclick={() => (prPage += 1)}
+                disabled={prPage >= prRows.pageCount - 1}>next</button
+              ></span
+            >
+          </div>
           {#if data.unavailable.merges}
             <p class="none">None recorded.</p>
           {/if}
