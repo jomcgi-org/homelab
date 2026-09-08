@@ -293,7 +293,7 @@ def test_stop_denial_does_not_claim_existing_session_ceased(
         {"max_attempts": 11},
         {"max_attempts": float("inf")},
         {"turn_timeout_seconds": 0},
-        {"turn_timeout_seconds": 7201},
+        {"turn_timeout_seconds": 43201},
         {"turn_timeout_seconds": 1.5},
         {"max_cost_usd": float("nan")},
         {"max_cost_usd": -1},
@@ -1195,3 +1195,72 @@ def test_concurrent_queued_cancellation_creates_one_terminal_turn(queued_attempt
     assert sorted(results, key=lambda v: v or 0) == [None, 7]
     with Session(state.engine) as db:
         assert len(db.exec(select(AgentTurn)).all()) == 1
+
+
+def test_hour_scale_pin_timeout_is_accepted():
+    admitted = nodes._validate_pin(pin(turn_timeout_seconds=43200))
+    assert admitted["turn_timeout_seconds"] == 43200
+
+
+def test_hour_scale_wait_survives_seven_hours_on_fake_clock(monkeypatch):
+    clocks = iter(
+        [
+            "2026-09-07T06:00:00Z",
+            "2026-09-07T08:05:00Z",
+            "2026-09-07T13:00:00Z",
+        ]
+    )
+    turns = iter([None, None, None, {"terminal_reason": "completed"}])
+    sleeps = []
+    monkeypatch.setattr(nodes, "poll_turn", lambda *_: next(turns))
+    monkeypatch.setattr(nodes, "observe_clock", lambda: next(clocks))
+    monkeypatch.setattr(
+        nodes,
+        "_read_node_dispatch",
+        lambda *_: {"state": "dispatched", "started_at": "2026-09-07T06:00:00Z"},
+    )
+    monkeypatch.setattr(nodes.DBOS, "sleep", sleeps.append)
+    admitted = nodes._validate_pin(pin(turn_timeout_seconds=36000))
+    result = nodes._await_dispatched_node_turn(
+        admitted, 7, nodes._timestamp("2026-09-07T18:00:00Z")
+    )
+    assert result == {"terminal_reason": "completed"}
+    assert sleeps == [5, 5, 5]
+
+
+def test_long_turn_cannot_extend_absolute_task_deadline(monkeypatch):
+    monkeypatch.setattr(nodes, "poll_turn", lambda *_: None)
+    monkeypatch.setattr(nodes, "observe_clock", lambda: "2026-09-07T12:00:00Z")
+    monkeypatch.setattr(
+        nodes,
+        "_read_node_dispatch",
+        lambda *_: {"state": "dispatched", "started_at": "2026-09-07T06:00:00Z"},
+    )
+    monkeypatch.setattr(
+        nodes.DBOS, "sleep", lambda _: pytest.fail("expired task must stop waiting")
+    )
+    admitted = nodes._validate_pin(pin(turn_timeout_seconds=36000))
+    for _ in range(2):
+        assert (
+            nodes._await_dispatched_node_turn(
+                admitted, 7, nodes._timestamp("2026-09-07T12:00:00Z")
+            )
+            is None
+        )
+
+
+def test_hour_scale_attempt_retains_absolute_task_deadline(harness, monkeypatch):
+    deadline = "2026-09-07T18:00:00+00:00"
+    calls = []
+    monkeypatch.setattr(
+        nodes,
+        "_await_dispatched_node_turn",
+        lambda p, sid, end: calls.append((p, sid, end)) or harness.turn,
+    )
+    result = nodes.execute_node.__wrapped__(
+        pin(turn_timeout_seconds=36000, task_deadline_at=deadline)
+    )
+    assert result["status"] == "succeeded"
+    assert calls[0][0]["turn_timeout_seconds"] == 36000
+    assert calls[0][2].isoformat() == deadline
+    assert harness.waits == []

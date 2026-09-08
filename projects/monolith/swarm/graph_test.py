@@ -591,7 +591,7 @@ def test_supplied_session_rolls_back_admission_and_audit(db):
 
 
 @pytest.mark.parametrize(
-    "field,value", [("max_attempts", 11), ("turn_timeout_seconds", 7201)]
+    "field,value", [("max_attempts", 11), ("turn_timeout_seconds", 43201)]
 )
 def test_node_hard_limit_ceilings(db, field, value):
     task_id = make_task(db)
@@ -872,3 +872,16 @@ def test_invalid_context_cannot_override_pinned_node_fields(db, context):
         == "invalid_execution_context"
     )
     assert node_runs(task_id) == []
+
+
+def test_hour_scale_turn_timeout_is_admitted_and_pinned(db):
+    task_id = make_task(db)
+    result = add_work(task_id, "long", 0, turn_timeout_seconds=43200)
+    assert result.ok
+    assert load_graph(task_id)[0]["turn_timeout_seconds"] == 43200
+    admitted = admit_dispatch(task_id, "long", dispatch_key="long-1")
+    assert admitted.ok
+    assert admitted.pin["turn_timeout_seconds"] == 43200
+    replay = admit_dispatch(task_id, "long", dispatch_key="long-1")
+    assert replay.ok and replay.pin == admitted.pin
+    assert len(node_runs(task_id)) == 1

@@ -33,7 +33,7 @@ from swarm.unified_diff import parse_unified_diff
 logger = logging.getLogger(__name__)
 
 MAX_PIN_ATTEMPTS = 10
-MAX_PIN_TIMEOUT_SECONDS = 7200
+MAX_PIN_TIMEOUT_SECONDS = 43200
 MAX_RETRY_CONTEXT_CHARS = 16000
 # Guest apko and shim contract: EMBER_CLAUDE_WORKSPACE=/workspace.
 CAPTURE_CHECKOUT = "/workspace/src"
@@ -142,7 +142,9 @@ def _validate_pin(pin: dict) -> dict:
 
     timeout = pin["turn_timeout_seconds"]
     if not _is_int(timeout) or not 1 <= timeout <= MAX_PIN_TIMEOUT_SECONDS:
-        raise ValueError("pin['turn_timeout_seconds'] must be an int from 1 to 7200")
+        raise ValueError(
+            f"pin['turn_timeout_seconds'] must be an int from 1 to {MAX_PIN_TIMEOUT_SECONDS}"
+        )
 
     schema = pin["artifact_schema"]
     if not isinstance(schema, dict):
