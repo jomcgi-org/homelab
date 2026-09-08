@@ -180,7 +180,7 @@ jobs:
     args: ["snapshot-merged-prs"]
     schedule: "*/30 * * * *"
     concurrencyPolicy: Forbid
-    activeDeadlineSeconds: 180
+    activeDeadlineSeconds: 600
     suspend: true
     secretEnv:
       GITHUB_API_TOKEN:

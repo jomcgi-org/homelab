@@ -7,6 +7,7 @@ follow redirects by default.
 
 import logging
 import os
+import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -16,12 +17,15 @@ GITHUB_REPO = os.environ.get("GITHUB_REPO", "jomcgi-org/homelab")
 
 logger = logging.getLogger(__name__)
 
-_MAX_PULL_PAGES = 100
+_MAX_PULL_PAGES = 120
+_MAX_REQUEST_ATTEMPTS = 4
+_RETRY_BACKOFF_SECONDS = (2, 4, 8, 16)
+_RETRY_STATUS_CODES = frozenset({502, 503, 504})
 _MERGED_PULL_QUERY = """
 query MergedPullRequests($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(
-      first: 100
+      first: 40
       after: $cursor
       states: MERGED
       orderBy: {field: UPDATED_AT, direction: DESC}
@@ -105,19 +109,40 @@ def fetch_merged_pull_requests(
     try:
         cursor = None
         for page in range(1, _MAX_PULL_PAGES + 1):
-            response = client.post(
-                f"{GITHUB_API}/graphql",
-                headers=_github_headers(),
-                json={
-                    "query": _MERGED_PULL_QUERY,
-                    "variables": {
-                        "owner": owner,
-                        "name": name,
-                        "cursor": cursor,
-                    },
-                },
-            )
-            response.raise_for_status()
+            for attempt in range(1, _MAX_REQUEST_ATTEMPTS + 1):
+                try:
+                    response = client.post(
+                        f"{GITHUB_API}/graphql",
+                        headers=_github_headers(),
+                        json={
+                            "query": _MERGED_PULL_QUERY,
+                            "variables": {
+                                "owner": owner,
+                                "name": name,
+                                "cursor": cursor,
+                            },
+                        },
+                    )
+                    response.raise_for_status()
+                    break
+                except httpx.HTTPStatusError as exc:
+                    status: int | str = exc.response.status_code
+                    if (
+                        status not in _RETRY_STATUS_CODES
+                        or attempt == _MAX_REQUEST_ATTEMPTS
+                    ):
+                        raise
+                except httpx.TransportError as exc:
+                    status = type(exc).__name__
+                    if attempt == _MAX_REQUEST_ATTEMPTS:
+                        raise
+                logger.warning(
+                    "fetch_merged_pull_requests: retrying on %s after attempt %d/%d",
+                    status,
+                    attempt,
+                    _MAX_REQUEST_ATTEMPTS,
+                )
+                time.sleep(_RETRY_BACKOFF_SECONDS[attempt - 1])
             payload = response.json()
             if payload.get("errors"):
                 raise RuntimeError(f"GitHub GraphQL error: {payload['errors']}")

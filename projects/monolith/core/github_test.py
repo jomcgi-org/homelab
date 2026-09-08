@@ -39,7 +39,10 @@ def test_fetch_merged_pull_requests_pages_and_filters_old_merges():
         calls += 1
         assert request.method == "POST"
         assert request.url.path == "/graphql"
-        variables = json.loads(request.content)["variables"]
+        request_body = json.loads(request.content)
+        assert "first: 40" in request_body["query"]
+        assert "first: 100" not in request_body["query"]
+        variables = request_body["variables"]
         recent_page = variables["cursor"] is None
         return httpx.Response(
             200,
@@ -116,9 +119,60 @@ def test_fetch_merged_pull_requests_raises_for_graphql_errors():
         )
 
 
-def test_fetch_merged_pull_requests_raises_for_non_200_response():
+@pytest.mark.parametrize("status_code", [502, 503, 504])
+def test_fetch_merged_pull_requests_retries_server_errors(
+    monkeypatch, caplog, status_code
+):
+    calls = 0
+    sleeps = []
+    monkeypatch.setattr(github.time, "sleep", sleeps.append)
+
     def handler(_request):
-        return httpx.Response(503, text="unavailable")
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(status_code, text="unavailable")
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "repository": {
+                        "pullRequests": {
+                            "nodes": [],
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        }
+                    }
+                }
+            },
+        )
+
+    with (
+        caplog.at_level(logging.WARNING, logger="core.github"),
+        httpx.Client(transport=httpx.MockTransport(handler)) as client,
+    ):
+        pulls = fetch_merged_pull_requests(
+            datetime(2026, 6, 9, tzinfo=timezone.utc),
+            repo="example/repo",
+            client=client,
+        )
+
+    assert pulls == []
+    assert calls == 2
+    assert sleeps == [2]
+    assert caplog.messages == [
+        f"fetch_merged_pull_requests: retrying on {status_code} after attempt 1/4"
+    ]
+
+
+def test_fetch_merged_pull_requests_raises_after_four_server_errors(monkeypatch):
+    calls = 0
+    sleeps = []
+    monkeypatch.setattr(github.time, "sleep", sleeps.append)
+
+    def handler(_request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(502, text="unavailable")
 
     with (
         httpx.Client(transport=httpx.MockTransport(handler)) as client,
@@ -129,6 +183,69 @@ def test_fetch_merged_pull_requests_raises_for_non_200_response():
             repo="example/repo",
             client=client,
         )
+
+    assert calls == 4
+    assert sleeps == [2, 4, 8]
+
+
+def test_fetch_merged_pull_requests_does_not_retry_client_errors(monkeypatch):
+    calls = 0
+    sleeps = []
+    monkeypatch.setattr(github.time, "sleep", sleeps.append)
+
+    def handler(_request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(401, text="unauthorized")
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler)) as client,
+        pytest.raises(httpx.HTTPStatusError),
+    ):
+        fetch_merged_pull_requests(
+            datetime(2026, 6, 9, tzinfo=timezone.utc),
+            repo="example/repo",
+            client=client,
+        )
+
+    assert calls == 1
+    assert sleeps == []
+
+
+def test_fetch_merged_pull_requests_retries_transport_errors(monkeypatch):
+    calls = 0
+    sleeps = []
+    monkeypatch.setattr(github.time, "sleep", sleeps.append)
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ConnectError("connection failed", request=request)
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "repository": {
+                        "pullRequests": {
+                            "nodes": [],
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        }
+                    }
+                }
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        pulls = fetch_merged_pull_requests(
+            datetime(2026, 6, 9, tzinfo=timezone.utc),
+            repo="example/repo",
+            client=client,
+        )
+
+    assert pulls == []
+    assert calls == 2
+    assert sleeps == [2]
 
 
 def test_fetch_merged_pull_requests_raises_when_next_cursor_is_missing():
