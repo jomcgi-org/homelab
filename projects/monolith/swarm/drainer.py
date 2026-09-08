@@ -828,9 +828,7 @@ def _turn_has_unknown_outcome(turn: dict, session_id: int | None = None) -> bool
     from sqlmodel import Session
 
     with Session(get_engine()) as session:
-        return store.has_unknown_outcome_for_turn(
-            session, session_id, int(turn["seq"])
-        )
+        return store.has_unknown_outcome_for_turn(session, session_id, int(turn["seq"]))
 
 
 @DBOS.step(retries_allowed=True, max_attempts=3, backoff_rate=2.0)

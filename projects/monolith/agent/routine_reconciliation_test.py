@@ -230,9 +230,16 @@ def test_delivery_error_hold_reconciles_with_recorded_outcome(database):
         assert after["latest_stop_reason"] is None
 
 
-def test_existing_extraction_retained_without_false_correction_success(database):
-    request, before = held(database, applied=True)
-    assert reconciliation.reconcile_held_job(**request)["next_run_at"] is None
+@pytest.mark.parametrize("delivery_error", [False, True])
+def test_existing_extraction_retained_without_false_correction_success(
+    database, delivery_error
+):
+    request, before = held(database, applied=True, delivery_error=delivery_error)
+    result = reconciliation.reconcile_held_job(**request)
+    assert result["next_run_at"] is None
+    assert result["original_outcome"] == (
+        "delivery_error" if delivery_error else UNKNOWN_INVOCATION
+    )
     with Session(database) as db:
         after = reconciliation.read_reconciliation_state(
             db, request["job_name"], request["session_id"]
@@ -242,17 +249,23 @@ def test_existing_extraction_retained_without_false_correction_success(database)
             after["raw_sha256"] == before["raw_sha256"]
             and after["provenance_sha256"] == before["provenance_sha256"]
         )
-        assert (
-            after["latest_stop_reason"] == UNKNOWN_INVOCATION
-            and after["latest_terminal_reason"] == "error"
+        assert after["latest_stop_reason"] == (
+            None if delivery_error else UNKNOWN_INVOCATION
         )
+        assert after["latest_terminal_reason"] == "error"
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        assert permit.state == "settled"
 
 
+@pytest.mark.parametrize("delivery_error", [False, True])
 def test_same_request_replay_survives_job_deletion_and_stale_observation(
-    database, monkeypatch
+    database, monkeypatch, delivery_error
 ):
-    request, _ = held(database)
+    request, _ = held(database, delivery_error=delivery_error)
     result = reconciliation.reconcile_held_job(**request)
+    assert result["original_outcome"] == (
+        "delivery_error" if delivery_error else UNKNOWN_INVOCATION
+    )
     with Session(database) as db:
         db.execute(text("DELETE FROM routine_jobs"))
         db.commit()
@@ -262,6 +275,8 @@ def test_same_request_replay_survives_job_deletion_and_stale_observation(
         reconciliation.reconcile_held_job(**{**request, "actor": "different"})
     with Session(database) as db:
         assert len(db.exec(select(RoutineReconciliation)).all()) == 1
+        permits = db.exec(select(AgentCapacityReservation)).all()
+        assert len(permits) == 1 and permits[0].state == "settled"
 
 
 @pytest.mark.parametrize(
@@ -277,10 +292,11 @@ def test_same_request_replay_survives_job_deletion_and_stale_observation(
         "lease",
     ],
 )
+@pytest.mark.parametrize("delivery_error", [False, True])
 def test_changed_expected_state_refuses_without_audit_or_releasing_permits(
-    database, change
+    database, change, delivery_error
 ):
-    request, _ = held(database)
+    request, _ = held(database, delivery_error=delivery_error)
     with Session(database) as db:
         agent = db.get(AgentSession, request["session_id"])
         if change == "pending":
@@ -324,7 +340,13 @@ def test_changed_expected_state_refuses_without_audit_or_releasing_permits(
         reconciliation.reconcile_held_job(**request)
     with Session(database) as db:
         assert not db.exec(select(RoutineReconciliation)).all()
-        assert not db.exec(select(AgentCapacityReservation)).all()
+        permits = db.exec(select(AgentCapacityReservation)).all()
+        if delivery_error:
+            assert len(permits) == 1
+            assert permits[0].state == "uncertain"
+            assert permits[0].outcome == "delivery_error"
+        else:
+            assert permits == []
         assert (
             db.execute(text("SELECT last_status FROM routine_jobs")).scalar_one()
             == UNKNOWN_INVOCATION
@@ -341,21 +363,41 @@ def test_changed_expected_state_refuses_without_audit_or_releasing_permits(
         {"evidence_sha256": "unverified"},
     ],
 )
-def test_missing_or_unsafe_cessation_refuses(database, proof_change):
-    request, _ = held(database)
+@pytest.mark.parametrize("delivery_error", [False, True])
+def test_missing_or_unsafe_cessation_refuses(database, proof_change, delivery_error):
+    request, _ = held(database, delivery_error=delivery_error)
     request["cessation"] |= proof_change
     with pytest.raises(ValueError):
         reconciliation.reconcile_held_job(**request)
     with Session(database) as db:
         assert not db.exec(select(RoutineReconciliation)).all()
+        permits = db.exec(select(AgentCapacityReservation)).all()
+        if delivery_error:
+            assert len(permits) == 1
+            assert permits[0].state == "uncertain"
+            assert permits[0].outcome == "delivery_error"
+        else:
+            assert permits == []
 
 
 @pytest.mark.parametrize("applied", [False, True])
-def test_disposition_must_match_authoritative_provenance(database, applied):
-    request, _ = held(database, applied=applied)
+@pytest.mark.parametrize("delivery_error", [False, True])
+def test_disposition_must_match_authoritative_provenance(
+    database, applied, delivery_error
+):
+    request, _ = held(database, applied=applied, delivery_error=delivery_error)
     request["disposition"] = "rearm" if applied else "retain_applied"
     with pytest.raises(ValueError):
         reconciliation.reconcile_held_job(**request)
+    with Session(database) as db:
+        assert not db.exec(select(RoutineReconciliation)).all()
+        permits = db.exec(select(AgentCapacityReservation)).all()
+        if delivery_error:
+            assert len(permits) == 1
+            assert permits[0].state == "uncertain"
+            assert permits[0].outcome == "delivery_error"
+        else:
+            assert permits == []
 
 
 def test_new_reserved_owner_blocks_and_rolls_back_adoption(database):
@@ -377,8 +419,11 @@ def test_new_reserved_owner_blocks_and_rolls_back_adoption(database):
         assert db.get(AgentSession, request["session_id"]).ember_session_id == "guest"
 
 
-def test_caller_transaction_rollback_reverts_audit_binding_job_and_permit(database):
-    request, before = held(database)
+@pytest.mark.parametrize("delivery_error", [False, True])
+def test_caller_transaction_rollback_reverts_audit_binding_job_and_permit(
+    database, delivery_error
+):
+    request, before = held(database, delivery_error=delivery_error)
     with Session(database) as db:
         reconciliation.reconcile_held_job(**request, session=db)
         db.rollback()
@@ -390,28 +435,40 @@ def test_caller_transaction_rollback_reverts_audit_binding_job_and_permit(databa
             == before
         )
         assert not db.exec(select(RoutineReconciliation)).all()
-        assert not db.exec(select(AgentCapacityReservation)).all()
+        permits = db.exec(select(AgentCapacityReservation)).all()
+        if delivery_error:
+            assert len(permits) == 1
+            assert permits[0].state == "uncertain"
+            assert permits[0].outcome == "delivery_error"
+        else:
+            assert permits == []
 
 
-def test_concurrent_identical_operator_requests_record_once(database):
-    request, _ = held(database)
+@pytest.mark.parametrize("delivery_error", [False, True])
+def test_concurrent_identical_operator_requests_record_once(database, delivery_error):
+    request, _ = held(database, delivery_error=delivery_error)
     with ThreadPoolExecutor(2) as pool:
         results = list(
             pool.map(lambda _: reconciliation.reconcile_held_job(**request), range(2))
         )
     assert results[0] == results[1]
+    assert results[0]["original_outcome"] == (
+        "delivery_error" if delivery_error else UNKNOWN_INVOCATION
+    )
     with Session(database) as db:
         assert len(db.exec(select(RoutineReconciliation)).all()) == 1
-        assert len(db.exec(select(AgentCapacityReservation)).all()) == 1
+        permits = db.exec(select(AgentCapacityReservation)).all()
+        assert len(permits) == 1 and permits[0].state == "settled"
 
 
 @pytest.mark.parametrize(
     "unsafe", ["pending", "workflow", "kind", "shared_guest", "newer_session"]
 )
+@pytest.mark.parametrize("delivery_error", [False, True])
 def test_current_unsafe_state_cannot_be_authorized_by_refreshing_fingerprint(
-    database, unsafe
+    database, unsafe, delivery_error
 ):
-    request, _ = held(database)
+    request, _ = held(database, delivery_error=delivery_error)
     with Session(database) as db:
         if unsafe == "pending":
             db.add(
@@ -446,12 +503,20 @@ def test_current_unsafe_state_cannot_be_authorized_by_refreshing_fingerprint(
         reconciliation.reconcile_held_job(**request)
     with Session(database) as db:
         assert not db.exec(select(RoutineReconciliation)).all()
+        permits = db.exec(select(AgentCapacityReservation)).all()
+        if delivery_error:
+            assert len(permits) == 1
+            assert permits[0].state == "uncertain"
+            assert permits[0].outcome == "delivery_error"
+        else:
+            assert permits == []
 
 
+@pytest.mark.parametrize("delivery_error", [False, True])
 def test_failure_recording_audit_rolls_back_job_binding_and_settlement(
-    database, monkeypatch
+    database, monkeypatch, delivery_error
 ):
-    request, before = held(database)
+    request, before = held(database, delivery_error=delivery_error)
     add = Session.add
 
     def fail_audit(self, instance, *args, **kwargs):
@@ -469,14 +534,32 @@ def test_failure_recording_audit_rolls_back_job_binding_and_settlement(
             )
             == before
         )
-        assert not db.exec(select(AgentCapacityReservation)).all()
+        permits = db.exec(select(AgentCapacityReservation)).all()
+        if delivery_error:
+            assert len(permits) == 1
+            assert permits[0].state == "uncertain"
+            assert permits[0].outcome == "delivery_error"
+        else:
+            assert permits == []
 
 
-def test_old_park_stamp_cannot_prove_newer_unknown_attempt_ceased(database):
-    request, _ = held(database)
+@pytest.mark.parametrize("delivery_error", [False, True])
+def test_old_park_stamp_cannot_prove_newer_unknown_attempt_ceased(
+    database, delivery_error
+):
+    request, _ = held(database, delivery_error=delivery_error)
     request["cessation"]["updated_at"] = request["cessation"]["last_invoke_at"] = 0
     with pytest.raises(ValueError, match="must follow"):
         reconciliation.reconcile_held_job(**request)
+    with Session(database) as db:
+        assert not db.exec(select(RoutineReconciliation)).all()
+        permits = db.exec(select(AgentCapacityReservation)).all()
+        if delivery_error:
+            assert len(permits) == 1
+            assert permits[0].state == "uncertain"
+            assert permits[0].outcome == "delivery_error"
+        else:
+            assert permits == []
 
 
 def test_caller_identity_map_cannot_restore_stale_lineage(database):

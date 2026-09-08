@@ -234,8 +234,7 @@ def _reconcile(db, request):
         or state["locked_by"] is not None
         or state["locked_at"] is not None
         or not (
-            unknown_hold
-            or (delivery_error_hold and state["session_status"] == "warn")
+            unknown_hold or (delivery_error_hold and state["session_status"] == "warn")
         )
         or state["node_key"] != KG_NODE_KEY
         or state["pending"]
