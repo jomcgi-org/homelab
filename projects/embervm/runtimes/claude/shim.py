@@ -508,6 +508,7 @@ CODEX_MODELS = {
     "luna": ("gpt-5.6-luna", "medium"),
     "terra": ("gpt-5.6-terra", "high"),
     "sol": ("gpt-5.6-sol", "high"),
+    "astra": ("gpt-6-astra", "high"),
 }
 CLAUDE_MODELS = {
     "opus": "opus",

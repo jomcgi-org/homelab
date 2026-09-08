@@ -30,6 +30,10 @@ import pytest
 import shim
 
 
+def test_astra_codex_route_uses_native_model_and_effort():
+    assert shim.CODEX_MODELS["astra"] == ("gpt-6-astra", "high")
+
+
 @pytest.fixture
 def progress_endpoint(monkeypatch):
     url = "http://progress.example.test:8091/ingest/progress"

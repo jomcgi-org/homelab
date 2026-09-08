@@ -25,6 +25,17 @@ def test_conductor_contract_rejects_missing_action_fields_and_authority_changes(
         },
         conductor.DECISION_SCHEMA,
     )
+    assert not schema_errors(
+        {
+            "status": "escalate",
+            "reason": "needs conductor review",
+            "summary": "bounded escalation",
+            "pr_number": None,
+            "head_sha": None,
+            "requested_model": "opus",
+        },
+        conductor.RESULT_SCHEMA,
+    )
 
 
 def test_missing_delivery_branch_hydrates_base_without_hiding_outages(monkeypatch):
