@@ -4976,6 +4976,18 @@ py_test(
 )
 
 py_test(
+    name = "agent_sessions_probe_supervision_test",
+    srcs = ["agent_sessions/probe_supervision_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "agent_sessions_admission_test",
     srcs = ["agent_sessions/admission_test.py"],
     imports = ["."],
