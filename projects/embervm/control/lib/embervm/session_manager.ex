@@ -894,12 +894,15 @@ defmodule Embervm.SessionManager do
   def handle_info({:rejoin_assign_failed, session_id, reason}, state) do
     case SessionStore.get(state.session_store, session_id) do
       {:ok, %{state: :running} = session} ->
-        _ = SessionStore.transition(state.session_store, session_id, :park, :session_parking,
-          %{reason: "rejoin delivery failed", volume_node_id: session.volume_node_id}, %{})
-        _ = stop_session_process(state, session_id, session)
-        _ = SessionStore.transition(state.session_store, session_id, :park_complete, :session_parked,
-          %{reason: "rejoin delivery failed", volume_node_id: session.volume_node_id},
-          %{node_id: nil, vm_id: nil})
+        # Keep the residency until teardown is confirmed. A failed intent append
+        # must also leave the guest alone so a restart retains its owning state.
+        with {:ok, _} <- SessionStore.transition(state.session_store, session_id, :park, :session_parking,
+               %{reason: "rejoin delivery failed", volume_node_id: session.volume_node_id}, %{}),
+             true <- stop_session_process(state, session_id, session) do
+          _ = SessionStore.transition(state.session_store, session_id, :park_complete, :session_parked,
+            %{reason: "rejoin delivery failed", volume_node_id: session.volume_node_id},
+            %{node_id: nil, vm_id: nil})
+        end
         Logger.warning("embervm session rejoin delivery failed", session_id: session_id, reason: inspect(reason))
         {:noreply, state}
       _ -> {:noreply, state}
@@ -3511,20 +3514,23 @@ defmodule Embervm.SessionManager do
       # lingering process first (a same-CP retry after a failed RPC), then re-issue
       # the Destroy; a CP-crash re-drive has no process, so this is a no-op there.
       Map.has_key?(live_vms, sid) ->
-        dial_key = session_dial(state, sid, session.node_id, session.vm_id)
+        {node_id, vm_id, dial_key} = Map.fetch!(live_vms, sid)
 
         if node_reporting?(state, dial_key) do
+          # Residency is deliberately not rebuilt from the durable projection.
+          # Rebind the reported VM before the worker runs, otherwise a CP restart
+          # can turn a missing vm_id into a false teardown confirmation.
+          :ok = SessionStore.adopt_residency(state.session_store, sid, node_id, vm_id)
+          state = remember_session_dial(state, sid, node_id, dial_key)
           emit_redrive_intent.()
-          spawn_destroy_worker(state, session, true)
+          spawn_destroy_worker(state, get_session!(state, sid), true)
         else
-          state
-          |> maybe_warn_dead_destroy_instance(session, dial_key)
-          |> confirm_destroying_by_absence(session, emit_redrive_intent)
+          maybe_warn_dead_destroy_instance(state, session, dial_key)
         end
 
       # Owner no longer reports the VM but IS reporting (its absence is authoritative):
       # teardown completed, only the destroyed op was lost. Confirm by absence.
-      node_reporting?(state, session.node_id) ->
+      session_vm_absence_confirmed?(state, session) ->
         emit_redrive_intent.()
         record_session_destroyed(state, session, "absence")
 
@@ -3550,15 +3556,6 @@ defmodule Embervm.SessionManager do
         | destroying_dead_instance_warned:
             MapSet.put(state.destroying_dead_instance_warned, session.session_id)
       }
-    end
-  end
-
-  defp confirm_destroying_by_absence(state, session, emit_redrive_intent) do
-    if node_reporting?(state, session.node_id) do
-      emit_redrive_intent.()
-      record_session_destroyed(state, session, "absence")
-    else
-      state
     end
   end
 
@@ -3762,11 +3759,23 @@ defmodule Embervm.SessionManager do
       session.state == :parked ->
         state
 
-      session.state == :parking and not Map.has_key?(live_vms, sid) ->
-        _ = SessionStore.transition(state.session_store, sid, :park_complete, :session_parked,
-          %{reason: "idled", volume_node_id: session.volume_node_id},
-          %{node_id: nil, vm_id: nil, volume_node_id: session.volume_node_id})
+      session.state == :parking and MapSet.member?(state.destroy_inflight, sid) ->
         state
+
+      session.state == :parking ->
+        case Map.get(live_vms, sid) do
+          {node_id, vm_id, dial_id} ->
+            if node_reporting?(state, dial_id) do
+              :ok = SessionStore.adopt_residency(state.session_store, sid, node_id, vm_id)
+              state = remember_session_dial(state, sid, node_id, dial_id)
+              spawn_destroy_worker(state, get_session!(state, sid), true)
+            else
+              state
+            end
+
+          nil ->
+            finish_parking_session(state, session, session_vm_absence_confirmed?(state, session))
+        end
 
       # This manager has an in-flight bank/relight for the session: it owns the
       # transition, so a periodic reconcile must NOT touch it. During a bank the node
@@ -3921,6 +3930,27 @@ defmodule Embervm.SessionManager do
   end
 
   defp node_reporting?(_state, _node_id), do: false
+
+  # Absence is meaningful only in a complete report from the exact owner after
+  # the lifecycle intent. A healthy sibling on the same node, an omitted field,
+  # or a restart that lost the VM binding cannot establish cessation.
+  defp session_vm_absence_confirmed?(state, %{node_id: node_id, vm_id: vm_id} = session)
+       when is_binary(node_id) and is_binary(vm_id) do
+    dial_key = session_dial(state, session.session_id, node_id, vm_id)
+
+    state.capacity_table
+    |> NodeCapacity.all()
+    |> Enum.any?(fn fact ->
+      fact_dial_id(fact) == dial_key and
+        is_integer(Map.get(fact, :updated_at)) and fact.updated_at > session.updated_at and
+        is_list(Map.get(fact, :session_vms)) and
+        not Enum.any?(fact.session_vms, fn vm ->
+          vm.vm_id == vm_id or vm.session_id == session.session_id
+        end)
+    end)
+  end
+
+  defp session_vm_absence_confirmed?(_state, _session), do: false
 
   # Gate off: no grace (today's behaviour, immediate terminalization on an
   # owner-resolved dial). Gate on: the session's row must be older than orphan_grace_ms
@@ -4403,12 +4433,7 @@ defmodule Embervm.SessionManager do
         spawn_monitor(fn ->
           confirmed =
             try do
-              if is_binary(session.node_id) and is_binary(session.vm_id) do
-                stop_session_process(state, session_id, session)
-              else
-                _ = stop_session_process(state, session_id, session)
-                true
-              end
+              stop_session_process(state, session_id, session)
             rescue
               _ -> false
             catch
@@ -4425,7 +4450,7 @@ defmodule Embervm.SessionManager do
           destroy_inflight: MapSet.put(state.destroy_inflight, session_id)
       }
 
-      if state.node_confirmed_destroy do
+      if state.node_confirmed_destroy and session.state == :destroying do
         drain_relight_waiters(state, session_id, {:error, {:gone, "destroyed"}})
       else
         state
@@ -4455,11 +4480,23 @@ defmodule Embervm.SessionManager do
           {:ok, %{state: :destroying} = session} ->
             finish_destroying_session(state, session, confirmed, resumed)
 
+          {:ok, %{state: :parking} = session} ->
+            finish_parking_session(state, session, confirmed)
+
           _ ->
             state
         end
     end
   end
+
+  defp finish_parking_session(state, session, true) do
+    _ = SessionStore.transition(state.session_store, session.session_id, :park_complete, :session_parked,
+      %{reason: "idled", volume_node_id: session.volume_node_id},
+      %{node_id: nil, vm_id: nil, volume_node_id: session.volume_node_id})
+    state
+  end
+
+  defp finish_parking_session(state, _session, false), do: state
 
   defp finish_destroying_session(state, session, confirmed, resumed) do
     # The second arm preserves the legacy gate-off ordering for callers that start
@@ -4643,16 +4680,9 @@ defmodule Embervm.SessionManager do
     :destroying = session.state
     state = drain_relight_waiters(state, session.session_id, {:error, {:gone, "destroyed"}})
 
-    # 2. Terminate the process and issue the node-confirmed teardown RPC. A
-    #    session with no reachable VM (node_id/vm_id not both set) holds nothing
-    #    on a node, so its teardown is trivially confirmed.
-    confirmed =
-      if is_binary(session.node_id) and is_binary(session.vm_id) do
-        stop_session_process(state, session.session_id, session)
-      else
-        _ = stop_session_process(state, session.session_id, session)
-        true
-      end
+    # 2. Terminate the process and issue the node-confirmed teardown RPC.
+    #    Missing residency is missing evidence, including after a CP restart.
+    confirmed = stop_session_process(state, session.session_id, session)
 
     if confirmed do
       # 3a. Node confirmed teardown: reclaim the workspace before recording
