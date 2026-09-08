@@ -15,6 +15,7 @@ def test_health_includes_kg_component(live_server_with_fake_embedding):
     assert set(body["components"]["kg"]) == {
         "ok",
         "queued",
+        "held",
         "oldest_queued_seconds",
         "failed_24h",
         "atoms_24h",
