@@ -109,24 +109,23 @@
 </script>
 
 <Seo
-  title="Factory record · jomcgi.dev"
+  title="Factory context · jomcgi.dev"
   description="The published record behind the Ember Software Factory."
-  path="/slop/factory/record"
+  path="/slop/factory/context"
 />
 
-<main class="td factory-page record-page">
+<main class="td factory-page context-page">
   <div class="frame">
     <header class="masthead">
       <div>
         <h1>Ember Software Factory</h1>
-        <p>What the agents merged, what it cost, what they learned.</p>
       </div>
       <div class="mast-trails">
         <Trail page="factory" />
         <nav class="view-tabs" aria-label="Factory views">
           <a href="/slop/factory">overview</a>
-          <a class="here" href="/slop/factory/record" aria-current="page"
-            >record</a
+          <a class="here" href="/slop/factory/context" aria-current="page"
+            >context</a
           >
         </nav>
       </div>
@@ -139,7 +138,7 @@
       <aside class="spine">
         <div>
           <p class="sec-label">/ Search</p>
-          <form class="search" method="GET" action="/slop/factory/record">
+          <form class="search" method="GET" action="/slop/factory/context">
             <input
               name="q"
               type="search"
@@ -152,12 +151,12 @@
             <div class="modes">
               <a
                 class:on={data.mode === "grep"}
-                href={`/slop/factory/record?q=${encodeURIComponent(data.q)}&mode=grep`}
+                href={`/slop/factory/context?q=${encodeURIComponent(data.q)}&mode=grep`}
                 >grep</a
               >
               <a
                 class:on={data.mode === "semantic"}
-                href={`/slop/factory/record?q=${encodeURIComponent(data.q)}&mode=semantic`}
+                href={`/slop/factory/context?q=${encodeURIComponent(data.q)}&mode=semantic`}
                 >semantic</a
               >
             </div>
@@ -183,14 +182,14 @@
           <nav class="index" aria-label="Record index">
             <a
               class:active={!data.entity && !data.q}
-              href="/slop/factory/record"
-              >How the record is kept<small></small></a
+              href="/slop/factory/context"
+              >Where does the data come from?<small></small></a
             >
             {#each data.projects as project, index}
               <a
                 class:active={data.entity === project.slug && !data.q}
                 class:group={index === 0}
-                href={`/slop/factory/record?entity=${project.slug}`}
+                href={`/slop/factory/context?entity=${project.slug}`}
               >
                 {project.title}<small
                   >{number(
@@ -352,7 +351,7 @@
               Nothing passes the current filter.
             </p>{/if}
         {:else}
-          <h2>How the record is kept</h2>
+          <h2>Where does the data come from?</h2>
           <p class="lede">
             Agents do not write to this page. They produce evidence; a separate
             job decides what, if anything, becomes a fact.

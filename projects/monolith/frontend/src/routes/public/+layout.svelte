@@ -1,7 +1,15 @@
 <script>
+  import { page } from "$app/state";
   import "$lib/public/styles/design-system.css";
   import { personLdScript } from "$lib/public/seo.js";
   let { data, children } = $props();
+
+  // Slop drafts are their own surface, so the site-wide migration notice is
+  // not theirs to carry.
+  const showBanner = $derived(
+    Boolean(data.maintenanceBanner) &&
+      !/^\/(public\/)?slop(\/|$)/.test(page.url.pathname),
+  );
 </script>
 
 <svelte:head>
@@ -21,7 +29,7 @@
   />
 </svelte:head>
 
-{#if data.maintenanceBanner}
+{#if showBanner}
   <div class="maintenance-banner" role="status">
     {data.maintenanceBanner}
   </div>

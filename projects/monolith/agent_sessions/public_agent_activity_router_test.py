@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
@@ -25,10 +27,13 @@ class _Result:
 
 
 class _FakeSession:
-    def __init__(self, now_row, daily_rows, local_daily_rows=None):
+    def __init__(
+        self, now_row, daily_rows, local_daily_rows=None, max_session_cost=None
+    ):
         self.now_row = now_row
         self.daily_rows = daily_rows
         self.local_daily_rows = local_daily_rows or []
+        self.max_session_cost = max_session_cost
         self.statements: list[str] = []
 
     def execute(self, statement):
@@ -40,6 +45,8 @@ class _FakeSession:
             return _Result(rows=self.daily_rows)
         if "public_api.local_session_activity_daily" in sql:
             return _Result(rows=self.local_daily_rows)
+        if "public_api.agent_session_cost_7d" in sql:
+            return _Result(one={"max_session_cost_usd": self.max_session_cost})
         raise AssertionError(f"unexpected query: {sql}")
 
 
@@ -170,6 +177,7 @@ def test_activity_shape_windows_headers_and_stable_etag():
                 "list_cost_usd": 3.25,
                 "spend_usd": 5.0,
             },
+            "max_session_cost_usd": None,
         }
         assert payload["spend_daily"] == [
             {
@@ -200,8 +208,30 @@ def test_activity_shape_windows_headers_and_stable_etag():
 
     assert fake_session.statements
     assert all("public_api." in sql for sql in fake_session.statements)
-    assert all("activity_" in sql for sql in fake_session.statements)
     assert all("agent_sessions.agent_" not in sql for sql in fake_session.statements)
+
+
+@pytest.mark.parametrize(
+    ("max_session_cost", "expected"),
+    [(Decimal("41.20"), 41.2), (None, None)],
+)
+def test_activity_reports_max_session_cost(max_session_cost, expected):
+    fake_session = _FakeSession(
+        {
+            "active_last_hour": 0,
+            "sessions_today": 0,
+            "running": 0,
+            "last_turn_at": None,
+        },
+        [],
+        max_session_cost=max_session_cost,
+    )
+
+    with _client(fake_session) as client:
+        response = client.get("/api/agents/public/activity")
+
+    assert response.status_code == 200
+    assert response.json()["totals_7d"]["max_session_cost_usd"] == expected
 
 
 def test_activity_serializes_last_turn_at_as_utc():
@@ -232,3 +262,27 @@ def test_activity_returns_500_when_views_are_unavailable():
 
     assert response.status_code == 500
     assert response.json() == {"detail": "agent activity unavailable"}
+
+
+def test_activity_survives_a_missing_session_cost_view():
+    """A lagging session-cost migration degrades one subline, not the endpoint."""
+
+    class _NoCostViewSession(_FakeSession):
+        def execute(self, statement):
+            if "public_api.agent_session_cost_7d" in str(statement):
+                raise SQLAlchemyError("relation does not exist")
+            return super().execute(statement)
+
+    fake_session = _NoCostViewSession(
+        {
+            "active_last_hour": 1,
+            "sessions_today": 1,
+            "running": 0,
+            "last_turn_at": None,
+        },
+        [],
+    )
+    response = _client(fake_session).get("/api/agents/public/activity")
+
+    assert response.status_code == 200
+    assert response.json()["totals_7d"]["max_session_cost_usd"] is None

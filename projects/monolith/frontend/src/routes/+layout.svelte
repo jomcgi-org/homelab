@@ -25,6 +25,8 @@
   // /docs and /docs/* but not unrelated prefixes like /docstore.
   // Blog pages use their own technical drawing chrome, matching the docs
   // suppression for /blog and /blog/*.
+  // Slop pages carry technical drawing chrome (Trail + scheme switch), so the
+  // site nav would stack a second bar on top of it.
   //
   // Error pages (notably the brutalist 404 in src/routes/+error.svelte) also
   // suppress the nav: a not-found page renders its own "back home" affordance
@@ -50,6 +52,7 @@
       /^\/(public\/|private\/)?app\//.test($page.url.pathname) ||
       /^\/(public\/|private\/)?docs(\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?blog(\/|$)/.test($page.url.pathname) ||
+      /^\/(public\/|private\/)?slop(\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?artifact(\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?demos(\/|$)/.test($page.url.pathname) ||
       /^\/(public\/|private\/)?ember(\/|$)/.test($page.url.pathname) ||

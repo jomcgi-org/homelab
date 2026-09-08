@@ -81,7 +81,7 @@ export async function load({ fetch, setHeaders, url }) {
   setHeaders(headers);
 
   return {
-    title: "Factory record",
+    title: "Factory context",
     entities,
     facts,
     projects,

@@ -15,6 +15,19 @@ const TYPE_KEYS = ["feat", "fix", "docs", "chore", "test", "refactor", "other"];
 
 const numeric = (value) => Number(value ?? 0);
 
+export function shortNumber(value) {
+  const n = numeric(value);
+  if (n >= 1e12) return `${(n / 1e12).toFixed(1)}T`;
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(0)}k`;
+  return String(n);
+}
+
+export function formatCount(value) {
+  return numeric(value).toLocaleString();
+}
+
 export function formatSpend(value) {
   const rounded = Math.round(numeric(value));
   const abbreviated = (amount, suffix) =>
@@ -157,13 +170,7 @@ export function breakdown(rows, value, limit = 4) {
 export function tileDerivations(activity, merges, facts, series, now) {
   const add = numeric(merges.totals?.add_7d);
   const del = numeric(merges.totals?.del_7d);
-  const latestFactDay = (facts.daily ?? [])
-    .map((row) => row.d)
-    .sort()
-    .at(-1);
   const totals = activity.totals_7d ?? {};
-  const ember = totals.ember ?? totals;
-  const local = totals.local ?? {};
   const combined = totals.combined ?? totals;
   return {
     live: {
@@ -173,8 +180,6 @@ export function tileDerivations(activity, merges, facts, series, now) {
     },
     sessions: {
       value: numeric(combined.sessions),
-      ember: numeric(ember.sessions),
-      local: numeric(local.sessions),
       spark: last14(series.sessions, "sessions", now),
     },
     merged: {
@@ -195,13 +200,15 @@ export function tileDerivations(activity, merges, facts, series, now) {
     },
     spend: {
       value: numeric(combined.spend_usd),
+      maxSession:
+        totals.max_session_cost_usd == null
+          ? null
+          : numeric(totals.max_session_cost_usd),
       spark: last14(series.spend, "spend_usd", now),
     },
     facts: {
       value:
         numeric(facts.totals?.verified) + numeric(facts.totals?.unverified),
-      verified: numeric(facts.totals?.verified),
-      latestDay: latestFactDay,
       spark: last14(series.facts, "n", now),
     },
   };
@@ -216,4 +223,131 @@ export function markClass(note) {
 
 export function cleanPullTitle(title) {
   return title.replace(/^\w+(\(.*?\))?!?:\s*/, "");
+}
+
+export function goalSummary(week, now, { windowHours = 72, limit = 3 } = {}) {
+  const empty = { windowHours, total: 0, goals: [] };
+  if (!Array.isArray(week) || week.length === 0) return empty;
+
+  const nowMs = new Date(now).getTime();
+  if (!Number.isFinite(nowMs)) return empty;
+  const startMs = nowMs - windowHours * 60 * 60 * 1000;
+  const areas = new Map();
+  let total = 0;
+
+  for (const row of week) {
+    const mergedMs = new Date(row.merged_at).getTime();
+    if (!Number.isFinite(mergedMs) || mergedMs < startMs || mergedMs > nowMs)
+      continue;
+
+    const area =
+      typeof row.scope === "string" && row.scope.trim()
+        ? row.scope.trim()
+        : "unscoped";
+    const type =
+      typeof row.type === "string" && row.type.trim()
+        ? row.type.trim()
+        : "other";
+    const value = areas.get(area) ?? {
+      area,
+      merged: 0,
+      typeCounts: new Map(),
+      additions: 0,
+      deletions: 0,
+      recent: [],
+    };
+    value.merged += 1;
+    value.typeCounts.set(type, (value.typeCounts.get(type) ?? 0) + 1);
+    value.additions += numeric(row.additions);
+    value.deletions += numeric(row.deletions);
+    value.recent.push({
+      number: row.number,
+      title: cleanPullTitle(String(row.title ?? "")),
+      mergedMs,
+    });
+    areas.set(area, value);
+    total += 1;
+  }
+
+  const goals = [...areas.values()]
+    .sort((a, b) => b.merged - a.merged || a.area.localeCompare(b.area))
+    .slice(0, limit)
+    .map((area) => {
+      const types = [...area.typeCounts].sort(
+        (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+      );
+      const [dominantType, dominantCount] = types[0] ?? ["other", 0];
+      const dominantShare = dominantCount / area.merged;
+      const buildAndFixShare =
+        ((area.typeCounts.get("fix") ?? 0) +
+          (area.typeCounts.get("feat") ?? 0)) /
+        area.merged;
+      let focus = "mixed work";
+      if (dominantShare >= 0.6) {
+        focus =
+          {
+            fix: "hardening",
+            feat: "building",
+            docs: "documenting",
+          }[dominantType] ?? "maintaining";
+      } else if (buildAndFixShare >= 0.6) {
+        focus = "building and hardening";
+      }
+
+      return {
+        area: area.area,
+        merged: area.merged,
+        share: area.merged / total,
+        focus,
+        types,
+        additions: area.additions,
+        deletions: area.deletions,
+        recent: area.recent
+          .sort(
+            (a, b) =>
+              b.mergedMs - a.mergedMs || numeric(b.number) - numeric(a.number),
+          )
+          .slice(0, 2)
+          .map(({ number, title }) => ({ number, title })),
+      };
+    });
+
+  return { windowHours, total, goals };
+}
+
+export function snapshotFreshness(
+  snapshottedAt,
+  now,
+  { staleAfterMinutes = 90 } = {},
+) {
+  const iso = typeof snapshottedAt === "string" ? snapshottedAt : null;
+  const snapshot = iso ? new Date(iso) : null;
+  const snapshotMs = snapshot?.getTime();
+  const nowMs = new Date(now).getTime();
+  const clock = Number.isFinite(snapshotMs)
+    ? `${String(snapshot.getUTCHours()).padStart(2, "0")}:${String(
+        snapshot.getUTCMinutes(),
+      ).padStart(2, "0")}`
+    : null;
+  const minutes =
+    Number.isFinite(snapshotMs) && Number.isFinite(nowMs)
+      ? Math.max(0, Math.floor((nowMs - snapshotMs) / 60_000))
+      : null;
+
+  let label = "unknown";
+  if (minutes != null && minutes < 1) label = "just now";
+  else if (minutes != null && minutes < 60) label = `${minutes} min ago`;
+  else if (minutes != null) {
+    const hours = Math.floor(minutes / 60);
+    const remainder = String(minutes % 60).padStart(2, "0");
+    label = `${hours} h ${remainder} min ago`;
+  }
+
+  return {
+    iso,
+    clock,
+    minutes,
+    label,
+    stale: minutes == null || minutes > staleAfterMinutes,
+  };
 }

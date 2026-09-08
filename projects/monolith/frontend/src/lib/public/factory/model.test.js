@@ -2,10 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   activitySeries,
   factSeries,
+  formatCount,
   formatSpend,
+  goalSummary,
   markClass,
   modelLane,
   paginate,
+  shortNumber,
+  snapshotFreshness,
   sortPullRequests,
   spendSeries,
   tileDerivations,
@@ -110,7 +114,7 @@ describe("fact and tile derivations", () => {
 
     expect(factRows).toHaveLength(30);
     expect(factRows.at(-2)).toMatchObject({ v: 2, u: 1, n: 3 });
-    expect(tiles.facts).toMatchObject({ value: 10, verified: 7 });
+    expect(tiles.facts).toMatchObject({ value: 10 });
   });
 
   it("selects the invalidated hatch and disputed outline marks", () => {
@@ -148,6 +152,7 @@ describe("fact and tile derivations", () => {
             output_tokens: 10,
             spend_usd: 1234.4,
           },
+          max_session_cost_usd: 41.2,
         },
       },
       { totals: {} },
@@ -163,14 +168,166 @@ describe("fact and tile derivations", () => {
       "2026-09-07",
     );
 
-    expect(dual.sessions).toMatchObject({ value: 5, ember: 2, local: 3 });
+    expect(dual.sessions).toMatchObject({ value: 5 });
     expect(dual.tokens).toMatchObject({ input: 30, output: 10 });
     expect(dual.spend.value).toBe(1234.4);
+    expect(dual.spend.maxSession).toBe(41.2);
     expect(dual.spend.spark.at(-2)).toBe(700);
     expect(dual.spend.spark.at(-1)).toBe(534.4);
     expect(formatSpend(dual.spend.value)).toBe("$1.2k");
     expect(formatSpend(12.75)).toBe("$13");
     expect(legacy.sessions.value).toBe(4);
     expect(legacy.tokens.input).toBe(7);
+    expect(legacy.spend.maxSession).toBeNull();
+  });
+});
+
+describe("number formatting", () => {
+  it.each([
+    [0, "0"],
+    [999, "999"],
+    [1_000, "1k"],
+    [999_999, "1000k"],
+    [1_000_000, "1.0M"],
+    [1_000_000_000, "1.0B"],
+    [1_500_000_000, "1.5B"],
+    [1_000_000_000_000, "1.0T"],
+  ])("formats %s as %s", (value, expected) => {
+    expect(shortNumber(value)).toBe(expected);
+  });
+
+  it("formats a full count with locale separators", () => {
+    expect(formatCount(1_234)).toBe("1,234");
+    expect(formatCount(null)).toBe("0");
+  });
+});
+
+describe("goalSummary", () => {
+  const now = "2026-09-07T12:00:00Z";
+  const row = (
+    number,
+    scope,
+    type,
+    mergedAt,
+    additions = 1,
+    deletions = 1,
+  ) => ({
+    number,
+    scope,
+    type,
+    merged_at: mergedAt,
+    additions,
+    deletions,
+    title: `${type}: pull ${number}`,
+    agent_authored: true,
+  });
+
+  it("filters the window, orders areas, totals lines, and keeps recent titles", () => {
+    const summary = goalSummary(
+      [
+        row(1, "beta", "fix", "2026-09-07T08:00:00Z"),
+        row(2, "monolith", "feat", "2026-09-06T08:00:00Z", 10, 2),
+        row(3, "alpha", "docs", "2026-09-07T09:00:00Z"),
+        row(4, "monolith", "fix", "2026-09-07T10:00:00Z", 5, 3),
+        row(5, "old", "fix", "2026-09-04T11:59:59Z"),
+        row(6, "future", "feat", "2026-09-07T12:00:01Z"),
+      ],
+      now,
+    );
+
+    expect(summary).toMatchObject({ windowHours: 72, total: 4 });
+    expect(summary.goals.map((goal) => goal.area)).toEqual([
+      "monolith",
+      "alpha",
+      "beta",
+    ]);
+    expect(summary.goals[0]).toMatchObject({
+      merged: 2,
+      share: 0.5,
+      types: [
+        ["feat", 1],
+        ["fix", 1],
+      ],
+      additions: 15,
+      deletions: 5,
+      recent: [
+        { number: 4, title: "pull 4" },
+        { number: 2, title: "pull 2" },
+      ],
+    });
+  });
+
+  it.each([
+    ["hardening", ["fix", "fix", "fix", "feat"]],
+    ["building", ["feat", "feat", "feat", "docs"]],
+    ["documenting", ["docs", "docs", "docs", "fix"]],
+    ["maintaining", ["chore", "chore", "chore", "fix"]],
+    ["building and hardening", ["fix", "fix", "feat", "docs"]],
+    ["mixed work", ["docs", "feat", "chore", "test"]],
+  ])("classifies %s", (expected, types) => {
+    const summary = goalSummary(
+      types.map((type, index) =>
+        row(index + 1, "area", type, `2026-09-07T0${index}:00:00Z`),
+      ),
+      now,
+    );
+    expect(summary.goals[0].focus).toBe(expected);
+  });
+
+  it("normalizes an empty scope and respects custom limits", () => {
+    const summary = goalSummary(
+      [
+        row(1, "", "fix", "2026-09-07T10:00:00Z"),
+        row(2, "beta", "fix", "2026-09-07T10:00:00Z"),
+      ],
+      now,
+      { windowHours: 24, limit: 1 },
+    );
+    expect(summary.windowHours).toBe(24);
+    expect(summary.goals).toHaveLength(1);
+    expect(summary.goals[0].area).toBe("beta");
+  });
+
+  it("returns an empty summary for missing work", () => {
+    expect(goalSummary(undefined, now)).toEqual({
+      windowHours: 72,
+      total: 0,
+      goals: [],
+    });
+    expect(goalSummary([], now)).toEqual({
+      windowHours: 72,
+      total: 0,
+      goals: [],
+    });
+  });
+});
+
+describe("snapshotFreshness", () => {
+  const snapshot = "2026-09-07T14:32:45Z";
+
+  it.each([
+    ["2026-09-07T14:33:14Z", 0, "just now", false],
+    ["2026-09-07T14:44:45Z", 12, "12 min ago", false],
+    ["2026-09-07T15:36:45Z", 64, "1 h 04 min ago", false],
+    ["2026-09-07T16:02:45Z", 90, "1 h 30 min ago", false],
+    ["2026-09-07T16:03:45Z", 91, "1 h 31 min ago", true],
+  ])("formats freshness at %s", (now, minutes, label, stale) => {
+    expect(snapshotFreshness(snapshot, now)).toEqual({
+      iso: snapshot,
+      clock: "14:32",
+      minutes,
+      label,
+      stale,
+    });
+  });
+
+  it("marks a missing snapshot unknown and stale", () => {
+    expect(snapshotFreshness(null, "2026-09-07T16:00:00Z")).toEqual({
+      iso: null,
+      clock: null,
+      minutes: null,
+      label: "unknown",
+      stale: true,
+    });
   });
 });
