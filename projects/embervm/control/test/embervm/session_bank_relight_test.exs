@@ -417,8 +417,8 @@ defmodule Embervm.SessionBankRelightTest do
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert session.state == :failed
     assert session.terminal_reason == "snapshot_lost"
-    # The lost snapshot was evicted.
-    assert_received {:evicted, _ref}
+    # Snapshot eviction runs in a separate process after the lifecycle result.
+    assert_receive {:evicted, _ref}, 1_000
   end
 
   test "a server-returned gRPC status on invoke does NOT invalidate the shared node channel" do
@@ -595,7 +595,7 @@ defmodule Embervm.SessionBankRelightTest do
     NodeCapacity.put(ctx.cap_table, "node-4", node_fact("wl", session_snapshots: [snap_fact(created.session_id)]))
 
     :ok = SessionManager.reconcile(ctx.mgr)
-    assert_received {:evicted, _ref}
+    assert_receive {:evicted, _ref}, 1_000
   end
 
   # -- expiry, GC, eviction --------------------------------------------------
@@ -624,7 +624,7 @@ defmodule Embervm.SessionBankRelightTest do
 
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert session.state == :expired
-    assert_received {:evicted, _ref}
+    assert_receive {:evicted, _ref}, 1_000
   end
 
   test "invoke-time expiry 410s a session past its deadline without waiting for a sweep" do
@@ -671,8 +671,8 @@ defmodule Embervm.SessionBankRelightTest do
 
     # The local EvictSnapshot fired AND the remote store copy was dropped on the same
     # trigger (a SESSION artifact, remote=true).
-    assert_received {:evicted, _ref}
-    assert_received {:remote_evicted, true, :ARTIFACT_KIND_SESSION, ref}
+    assert_receive {:evicted, _ref}, 1_000
+    assert_receive {:remote_evicted, true, :ARTIFACT_KIND_SESSION, ref}, 1_000
     assert ref == "snap-#{created.session_id}"
   end
 
