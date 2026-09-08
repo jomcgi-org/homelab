@@ -772,6 +772,8 @@ class EmberVmShimTransport:
                 response = await client.get(url, headers=headers)
                 response.raise_for_status()
                 return response.json()
+        except ValueError as exc:
+            raise EmberVMTransportError("session read returned invalid JSON") from exc
         except httpx.TimeoutException as exc:
             logger.warning(
                 "embervm session read timed out for session %s: %s",

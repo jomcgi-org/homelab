@@ -488,7 +488,9 @@ def _cleanup_node(workflow_id: str) -> dict:
         result = asyncio.run(bounded_reap())
         # Skips may mean an absent binding or an unknown-outcome hold. Keep
         # them visible without claiming every guest has definitely ceased.
-        pending = bool(result.get("failed") or result.get("skipped"))
+        pending = bool(
+            result.get("failed") or result.get("skipped") or result.get("pending")
+        )
         return {"status": "pending" if pending else "completed", **result}
     except Exception as exc:
         return {"status": "pending", "reason": type(exc).__name__}

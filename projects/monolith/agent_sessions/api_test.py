@@ -616,7 +616,9 @@ def _reap_row(session_id=1, ember_id="ember-1"):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("state", ["destroying", "parked", "running"])
+@pytest.mark.parametrize(
+    "state", ["destroying", "parked", "running", "DESTROYED", " destroyed"]
+)
 async def test_reap_retains_binding_when_confirmation_state_is_unconfirmed(
     monkeypatch, state
 ):

@@ -371,6 +371,13 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
                     or not isinstance(observed.get("state"), str)
                     or observed["state"] not in _REAP_TERMINAL_STATES
                 ):
+                    logger.info(
+                        "swarm reap awaiting terminal state for session %s "
+                        "(ember %s) of workflow %s",
+                        row.id,
+                        ember_session_id,
+                        workflow_id,
+                    )
                     summary["pending"].append(row.id)
                     continue
             await asyncio.to_thread(_clear_ember_bindings_for, ember_session_id)
