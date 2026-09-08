@@ -23,6 +23,7 @@ from agent_sessions.constants import (
 from agent_sessions import admission
 from agent_sessions.models import (
     AgentCapacityReservation,
+    AgentResultReceipt,
     AgentSession,
     AgentTurn,
     PendingMessage,
@@ -105,7 +106,18 @@ def guest_cleanup_hold(session: Session, session_id: int, guest_id: str) -> str 
             AgentSession.ember_session_id,
             AgentSession.result_receipt_fence_id,
             _unknown_outcome_exists(session_id),
-            exists().where(PendingMessage.session_id == session_id),
+            # Only a dispatch with a minted receipt can hand off to a receipt
+            # fence. Preserve ordinary workflow-stop behavior when capture is
+            # off, while retaining existing fences after a flag is disabled.
+            exists().where(
+                PendingMessage.session_id == session_id,
+                AgentResultReceipt.session_id == session_id,
+                AgentResultReceipt.seq == PendingMessage.seq,
+                AgentResultReceipt.dispatch_count == PendingMessage.dispatch_count,
+                AgentResultReceipt.claim_owner == PendingMessage.claimed_by_replica,
+                AgentResultReceipt.guest_id == guest_id,
+                AgentResultReceipt.superseded_at.is_(None),
+            ),
         ).where(AgentSession.id == session_id)
     ).one_or_none()
     if row is None or row[0] != guest_id:

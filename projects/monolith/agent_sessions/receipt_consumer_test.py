@@ -94,6 +94,11 @@ def queue(engine, key="receipt-project"):
 def test_cleanup_rechecks_atomic_pending_to_receipt_handoff(database, monkeypatch):
     sid = queue(database)
     guest_id = f"guest-{sid}"
+    assert store.claim_pending_message_for_session_sync(sid, "original-owner") == 1
+    assert admission.recheck(sid, 1, "original-owner")
+    receipt = result_receipts.prepare_receipt(
+        sid, "original-owner", 1, guest_id, b'{"message":"original request"}'
+    )
     with Session(database) as db:
         old_view = db.get(AgentSession, sid)
         assert old_view.result_receipt_fence_id is None
@@ -102,7 +107,7 @@ def test_cleanup_rechecks_atomic_pending_to_receipt_handoff(database, monkeypatc
     with Session(database) as db, db.begin():
         agent = store._lock_session(db, sid)
         db.delete(store.get_pending_message(db, sid, 1))
-        agent.result_receipt_fence_id = "committed-receipt"
+        agent.result_receipt_fence_id = receipt["id"]
         db.add(agent)
     assert old_view.result_receipt_fence_id is None
     monkeypatch.setattr(execution_api, "_sessions_for_workflow", lambda _wf: [old_view])
@@ -123,7 +128,53 @@ def test_cleanup_rechecks_atomic_pending_to_receipt_handoff(database, monkeypatc
         db.rollback()
         assert store.clear_ember_bindings_by_ember_id(db, guest_id) == []
         assert db.get(AgentSession, sid).ember_session_id == guest_id
-        assert db.get(AgentSession, sid).result_receipt_fence_id == "committed-receipt"
+        assert db.get(AgentSession, sid).result_receipt_fence_id == receipt["id"]
+
+
+@pytest.mark.parametrize("claimed", [False, True])
+def test_flags_off_preserve_workflow_cleanup_without_a_receipt(
+    database, monkeypatch, claimed
+):
+    monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "false")
+    monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "false")
+    sid = queue(database)
+    if claimed:
+        assert (
+            store.claim_pending_message_for_session_sync(sid, "cancelled-workflow") == 1
+        )
+        assert admission.recheck(sid, 1, "cancelled-workflow")
+    before = snapshot(database, sid)
+    with Session(database) as db:
+        row = db.get(AgentSession, sid)
+        assert store.guest_cleanup_hold(db, sid, row.ember_session_id) is None
+        assert db.exec(select(AgentResultReceipt)).all() == []
+    destroyed = []
+
+    async def destroy(guest_id):
+        destroyed.append(guest_id)
+        return {"state": "destroying"}
+
+    async def observed(guest_id):
+        return {"session_id": guest_id, "state": "destroyed"}
+
+    monkeypatch.setattr(execution_api, "_sessions_for_workflow", lambda _wf: [row])
+    monkeypatch.setattr(execution_api._transport, "destroy_session", destroy)
+    monkeypatch.setattr(execution_api._transport, "get_session", observed)
+    assert asyncio.run(
+        execution_api.reap_sessions_for_workflow("cancelled-workflow")
+    ) == {
+        "reaped": [sid],
+        "pending": [],
+        "failed": [],
+        "skipped": [],
+    }
+    after = snapshot(database, sid)
+    assert destroyed == [f"guest-{sid}"]
+    assert after["session"]["ember_session_id"] is None
+    # Workflow cleanup has never settled model permits or rewritten history.
+    assert after["pending"] == before["pending"]
+    assert after["permits"] == before["permits"]
+    assert after["turns"] == before["turns"]
 
 
 def snapshot(engine, sid):
