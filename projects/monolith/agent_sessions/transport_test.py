@@ -8,6 +8,7 @@ import zlib
 
 import httpx
 import pytest
+from faas.embervm_client import EmberVMTransportError
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -15,8 +16,6 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from agent_sessions import store, transport
 from agent_sessions.transport import EmberSessionGone
-from faas.embervm_client import EmberVMTransportError
-
 
 _EXPORTER = InMemorySpanExporter()
 _PROVIDER = TracerProvider()
@@ -112,6 +111,203 @@ def _client(monkeypatch, handler):
     monkeypatch.setattr(
         transport, "auth_headers", lambda: {"Authorization": "management"}
     )
+
+
+def test_preinvoke_first_create_failure_is_explicitly_not_invoked(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        assert request.url.path == "/v1/workloads/claude-runtime/sessions"
+        return _error_response(request, 503, False)
+
+    _client(monkeypatch, handler)
+    with pytest.raises(EmberVMTransportError) as raised:
+        asyncio.run(transport.EmberVmShimTransport().deliver(None, None, "work"))
+
+    assert isinstance(raised.value, transport.EmberTurnNotInvoked)
+    assert len(requests) == 1
+
+
+def test_preinvoke_recovery_create_failure_keeps_model_post_uncertainty(monkeypatch):
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        if request.url.path.endswith("/invoke"):
+            assert request.headers["X-Ember-Guest-Path"] == "/shim/turn"
+            return _error_response(request, 410, False)
+        assert request.url.path == "/v1/workloads/claude-runtime/sessions"
+        return _error_response(request, 503, False)
+
+    _client(monkeypatch, handler)
+    with pytest.raises(EmberVMTransportError) as raised:
+        asyncio.run(
+            transport.EmberVmShimTransport().deliver(
+                transport.EmberSession("existing", "token", None), None, "work"
+            )
+        )
+
+    assert not isinstance(raised.value, transport.EmberTurnNotInvoked)
+    assert [request.url.path for request in requests] == [
+        "/v1/sessions/existing/invoke",
+        "/v1/workloads/claude-runtime/sessions",
+        "/v1/workloads/claude-runtime/sessions",
+    ]
+
+
+def test_preinvoke_health_probe_does_not_count_as_a_model_post(monkeypatch):
+    paths = []
+    client = transport.EmberVmShimTransport()
+
+    async def handler(request):
+        if request.url.path == "/v1/workloads/claude-runtime/sessions":
+            return httpx.Response(
+                201,
+                json={"session_id": "fresh", "session_token": "token"},
+                request=request,
+            )
+        paths.append(request.headers["X-Ember-Guest-Path"])
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    async def on_create(ember, _cli):
+        await client.prewarm_session(ember.session_id, ember.session_token)
+        raise RuntimeError("binding failed before model dispatch")
+
+    _client(monkeypatch, handler)
+    with pytest.raises(EmberVMTransportError) as raised:
+        asyncio.run(client.deliver(None, None, "work", on_create=on_create))
+
+    assert isinstance(raised.value, transport.EmberTurnNotInvoked)
+    assert paths == ["/shim/healthz"]
+
+
+def test_preinvoke_nested_completed_delivery_does_not_taint_parent(monkeypatch):
+    client = transport.EmberVmShimTransport()
+    posted = []
+
+    async def handler(request):
+        if request.url.path == "/v1/workloads/claude-runtime/sessions":
+            return httpx.Response(
+                201,
+                json={"session_id": "outer", "session_token": "token"},
+                request=request,
+            )
+        posted.append(request.url.path)
+        return _turn_response(request)
+
+    async def on_create(_ember, _cli):
+        turn, _ = await client.deliver(
+            transport.EmberSession("nested", "token", None), None, "nested work"
+        )
+        assert turn.result == "ok"
+        raise RuntimeError("outer binding failed before dispatch")
+
+    _client(monkeypatch, handler)
+    with pytest.raises(EmberVMTransportError) as raised:
+        asyncio.run(client.deliver(None, None, "outer work", on_create=on_create))
+
+    assert isinstance(raised.value, transport.EmberTurnNotInvoked)
+    assert posted == ["/v1/sessions/nested/invoke"]
+
+
+def test_preinvoke_nested_failure_cannot_clear_parent_post_evidence(monkeypatch):
+    client = transport.EmberVmShimTransport()
+    inside_nested = False
+    posted = []
+
+    async def handler(request):
+        nonlocal inside_nested
+        if request.url.path.endswith("/invoke"):
+            posted.append(request.url.path)
+            return _error_response(request, 410, False)
+        if inside_nested:
+            return _error_response(request, 503, False)
+        inside_nested = True
+        try:
+            # The nested public delivery supplies its own not-invoked proof.
+            # Propagating it must not relabel the outer delivery's model POST.
+            await client.deliver(None, None, "nested work")
+        finally:
+            inside_nested = False
+        pytest.fail("nested creation should fail")
+
+    _client(monkeypatch, handler)
+    with pytest.raises(EmberVMTransportError) as raised:
+        asyncio.run(
+            client.deliver(
+                transport.EmberSession("outer", "token", None), None, "outer work"
+            )
+        )
+
+    assert not isinstance(raised.value, transport.EmberTurnNotInvoked)
+    assert posted == ["/v1/sessions/outer/invoke"]
+
+
+def test_preinvoke_concurrent_deliveries_have_independent_post_evidence(monkeypatch):
+    async def scenario():
+        model_started = asyncio.Event()
+        release_model = asyncio.Event()
+
+        async def handler(request):
+            if request.url.path.endswith("/invoke"):
+                model_started.set()
+                await release_model.wait()
+                raise httpx.ReadError("response lost", request=request)
+            await model_started.wait()
+            return _error_response(request, 503, False)
+
+        _client(monkeypatch, handler)
+        client = transport.EmberVmShimTransport()
+
+        async def failing_create():
+            try:
+                await client.deliver(None, None, "unstarted")
+            finally:
+                release_model.set()
+
+        return await asyncio.gather(
+            client.deliver(
+                transport.EmberSession("started", "token", None), None, "started"
+            ),
+            failing_create(),
+            return_exceptions=True,
+        )
+
+    started, unstarted = asyncio.run(asyncio.wait_for(scenario(), 2))
+    assert isinstance(started, EmberVMTransportError)
+    assert not isinstance(started, transport.EmberTurnNotInvoked)
+    assert isinstance(unstarted, transport.EmberTurnNotInvoked)
+
+
+@pytest.mark.parametrize("model_post_started", [False, True])
+def test_preinvoke_cancellation_is_never_completion_evidence(
+    monkeypatch, model_post_started
+):
+    async def scenario():
+        cancelled = False
+
+        async def handler(request):
+            nonlocal cancelled
+            if not cancelled:
+                cancelled = True
+                raise asyncio.CancelledError()
+            return _error_response(request, 503, False)
+
+        _client(monkeypatch, handler)
+        client = transport.EmberVmShimTransport()
+        ember = (
+            transport.EmberSession("existing", "token", None)
+            if model_post_started
+            else None
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await client.deliver(ember, None, "cancelled")
+        with pytest.raises(EmberVMTransportError) as raised:
+            await client.deliver(None, None, "later independent delivery")
+        assert isinstance(raised.value, transport.EmberTurnNotInvoked)
+
+    asyncio.run(scenario())
 
 
 def test_create_session_parses_cp_session_identity(monkeypatch):
