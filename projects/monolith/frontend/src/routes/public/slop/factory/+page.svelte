@@ -50,6 +50,12 @@
   );
   const stats = $derived([
     {
+      key: "Live",
+      value: number(tiles.live.value),
+      subline: `${number(tiles.live.sessionsToday)} sessions today`,
+      spark: tiles.live.spark,
+    },
+    {
       key: "Sessions, 7d",
       value: number(tiles.sessions.value),
       subline: `${number(tiles.sessions.ember)} Ember · ${number(tiles.sessions.local)} Mac`,
@@ -58,15 +64,8 @@
     {
       key: "Merged, 7d",
       value: number(tiles.merged.value),
-      subline: `${number(tiles.merged.agent)} by agents`,
+      subline: `${number(tiles.merged.agent)} by agents · +${short(tiles.lines.additions)} −${short(tiles.lines.deletions)}`,
       spark: tiles.merged.spark,
-    },
-    {
-      key: "Lines, 7d",
-      additions: short(tiles.lines.additions),
-      deletions: short(tiles.lines.deletions),
-      subline: `net ${tiles.lines.net >= 0 ? "+" : "−"}${short(Math.abs(tiles.lines.net))}`,
-      spark: tiles.lines.spark,
     },
     {
       key: "Tokens, 7d",

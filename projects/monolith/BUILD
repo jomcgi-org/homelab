@@ -7507,6 +7507,7 @@ bdd_test(
 bdd_test(
     name = "public_agent_activity_views_test",
     srcs = ["agent_sessions/public_agent_activity_views_test.py"],
+    deps = ["@pip//typer"],
 )
 
 # Real-Postgres test: the public_writer role can DML only the chat_public schema,
@@ -7581,6 +7582,7 @@ bdd_test(
         "knowledge/tests/bdd_api_test.py",
         "knowledge/tests/bdd_health_kg_test.py",
         "knowledge/tests/bdd_raws_test.py",
+        "knowledge/tests/bdd_raws_usage_test.py",
         "knowledge/tests/bdd_reports_test.py",
         "knowledge/tests/conftest.py",
     ],

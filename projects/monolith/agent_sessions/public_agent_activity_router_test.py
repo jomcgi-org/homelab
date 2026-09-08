@@ -154,6 +154,15 @@ def test_activity_shape_windows_headers_and_stable_etag():
                 "cost_usd": None,
                 "list_cost_usd": 2.5,
             },
+            "combined": {
+                "sessions": 6,
+                "turns": 6,
+                "input_tokens": 30,
+                "output_tokens": 36,
+                "cache_read_tokens": 42,
+                "cost_usd": 1.25,
+                "list_cost_usd": 2.5,
+            },
         }
         assert payload["local_daily"][0]["source"] == "codex-session"
         assert first.headers["cache-control"] == ("public, max-age=300, s-maxage=300")

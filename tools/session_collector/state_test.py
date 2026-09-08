@@ -172,6 +172,8 @@ def test_backfill_usage_subcommand_dispatches_options(tmp_path):
                     "--auth",
                     "none",
                     "--force",
+                    "--limit",
+                    "7",
                 ]
             )
             == 0
@@ -182,6 +184,7 @@ def test_backfill_usage_subcommand_dispatches_options(tmp_path):
         base_url="http://monolith.example.ts.net",
         auth="none",
         force=True,
+        limit=7,
     )
 
 

@@ -21,6 +21,13 @@ DEFAULT_CLAUDE = Path("~/.claude/projects")
 DEFAULT_CODEX = Path("~/.codex/sessions")
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
 def _run_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("run", help="upload eligible sessions")
     parser.add_argument("--dry-run", action="store_true")
@@ -55,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
         "backfill-usage", help="attach usage to previously uploaded sessions"
     )
     backfill.add_argument("--force", action="store_true")
+    backfill.add_argument("--limit", type=_positive_int, default=200)
     backfill.add_argument("--base-url")
     backfill.add_argument(
         "--auth", choices=("auto", "cloudflare", "none"), default="auto"
@@ -131,6 +139,7 @@ def main(argv: list[str] | None = None) -> int:
             base_url=args.base_url or resolve_base_url(),
             auth=args.auth,
             force=args.force,
+            limit=args.limit,
         )
     parser.error("unknown command")
     return 2

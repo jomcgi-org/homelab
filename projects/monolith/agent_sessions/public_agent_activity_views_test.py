@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import date
+import json
 
 import pytest
 from sqlmodel import Session, create_engine, text
+
+from app import jobs_main
 
 
 def test_agent_activity_view_columns_and_types(session):
@@ -224,6 +226,7 @@ def test_public_reader_can_select_views_but_not_agent_tables(pg):
 
 
 def test_local_session_view_aggregates_collector_usage(session):
+    view_day = session.execute(text("SELECT CURRENT_DATE")).scalar_one()
     session.execute(
         text(
             """
@@ -231,17 +234,26 @@ def test_local_session_view_aggregates_collector_usage(session):
                 (raw_id, path, source, content_hash, created_at, extra)
             VALUES
                 ('local-claude-one', 'local-claude-one.md', 'claude-session',
-                 'local-hash-one', now(),
+                 'local-hash-one', CURRENT_DATE + TIME '01:00:00',
                  '{"started_at":"2026-09-07T01:00:00Z","model":"claude-opus-5","usage":{"input_tokens":"10","output_tokens":"5","cache_read_tokens":"3"},"usage_cost_usd":"0.25"}'::jsonb),
                 ('local-claude-two', 'local-claude-two.md', 'claude-session',
-                 'local-hash-two', now(),
+                 'local-hash-two', CURRENT_DATE + TIME '03:00:00',
                  '{"started_at":"2026-09-07T03:00:00Z","model":"claude-opus-5","usage":{"input_tokens":"2","output_tokens":"4","cache_read_tokens":"8"},"usage_cost_usd":"0.05"}'::jsonb),
                 ('local-codex', 'local-codex.md', 'codex-session',
-                 'local-hash-three', now(),
+                 'local-hash-three', CURRENT_DATE + TIME '05:00:00',
                  '{"started_at":"2026-09-07T05:00:00Z","usage":{"input_tokens":"7","output_tokens":"6","cache_read_tokens":"9"}}'::jsonb),
                 ('local-ignored', 'local-ignored.md', 'capture',
-                 'local-hash-four', now(),
-                 '{"started_at":"2026-09-07T05:00:00Z","model":"luna","usage":{"input_tokens":"99"}}'::jsonb)
+                 'local-hash-four', CURRENT_DATE + TIME '05:00:00',
+                 '{"started_at":"2026-09-07T05:00:00Z","model":"luna","usage":{"input_tokens":"99"}}'::jsonb),
+                ('local-empty-start', 'local-empty-start.md', 'codex-session',
+                 'local-hash-five', CURRENT_DATE + TIME '06:00:00',
+                 '{"started_at":"","model":"empty-start","usage":{"input_tokens":"3"}}'::jsonb),
+                ('local-bad-usage', 'local-bad-usage.md', 'codex-session',
+                 'local-hash-six', CURRENT_DATE + TIME '07:00:00',
+                 '{"model":"usage-string","usage":"none"}'::jsonb),
+                ('local-bad-token', 'local-bad-token.md', 'codex-session',
+                 'local-hash-seven', CURRENT_DATE + TIME '08:00:00',
+                 '{"model":"bad-input","usage":{"input_tokens":"abc","output_tokens":"2"},"usage_cost_usd":"not-a-price"}'::jsonb)
             """
         )
     )
@@ -252,16 +264,26 @@ def test_local_session_view_aggregates_collector_usage(session):
             SELECT day, model, source, sessions, input_tokens, output_tokens,
                    cache_read_tokens, list_cost_usd
             FROM public_api.local_session_activity_daily
-            WHERE day = DATE '2026-09-07'
+            WHERE day = CURRENT_DATE
             ORDER BY model
             """
         )
     ).all()
 
-    assert len(rows) == 2
-    claude, unknown = rows
+    assert len(rows) == 4
+    bad_input, claude, empty_start, unknown = rows
+    assert tuple(bad_input) == (
+        view_day,
+        "bad-input",
+        "codex-session",
+        1,
+        None,
+        2,
+        None,
+        None,
+    )
     assert tuple(claude[:7]) == (
-        date(2026, 9, 7),
+        view_day,
         "claude-opus-5",
         "claude-session",
         2,
@@ -271,7 +293,7 @@ def test_local_session_view_aggregates_collector_usage(session):
     )
     assert float(claude.list_cost_usd) == pytest.approx(0.30)
     assert tuple(unknown) == (
-        date(2026, 9, 7),
+        view_day,
         "unknown",
         "codex-session",
         1,
@@ -280,3 +302,138 @@ def test_local_session_view_aggregates_collector_usage(session):
         9,
         None,
     )
+    assert tuple(empty_start) == (
+        view_day,
+        "empty-start",
+        "codex-session",
+        1,
+        3,
+        None,
+        None,
+        None,
+    )
+
+
+def test_raw_pricing_backfill_recovers_after_failed_jsonb_merge(pg):
+    engine = create_engine(pg.url)
+    failed_id = "pricing-backfill-failed"
+    priced_id = "pricing-backfill-priced"
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "DROP TRIGGER IF EXISTS raw_pricing_backfill_reject_test "
+                    "ON knowledge.raw_inputs"
+                )
+            )
+            connection.execute(
+                text("DROP FUNCTION IF EXISTS raw_pricing_backfill_reject_test()")
+            )
+            connection.execute(
+                text(
+                    "DELETE FROM knowledge.raw_inputs "
+                    "WHERE raw_id IN (:failed_id, :priced_id)"
+                ),
+                {"failed_id": failed_id, "priced_id": priced_id},
+            )
+            connection.execute(
+                text(
+                    """
+                    CREATE FUNCTION raw_pricing_backfill_reject_test()
+                    RETURNS trigger AS $$
+                    BEGIN
+                      IF NEW.raw_id = 'pricing-backfill-failed' THEN
+                        RAISE EXCEPTION 'forced pricing update failure';
+                      END IF;
+                      RETURN NEW;
+                    END;
+                    $$ LANGUAGE plpgsql
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    CREATE TRIGGER raw_pricing_backfill_reject_test
+                    BEFORE UPDATE ON knowledge.raw_inputs
+                    FOR EACH ROW
+                    EXECUTE FUNCTION raw_pricing_backfill_reject_test()
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO knowledge.raw_inputs
+                        (raw_id, path, source, content_hash, created_at, extra)
+                    VALUES
+                        (:failed_id, 'pricing-backfill-failed.md',
+                         'codex-session', 'pricing-backfill-failed-hash', now(),
+                         CAST(:failed_extra AS jsonb)),
+                        (:priced_id, 'pricing-backfill-priced.md',
+                         'codex-session', 'pricing-backfill-priced-hash', now(),
+                         CAST(:priced_extra AS jsonb))
+                    """
+                ),
+                {
+                    "failed_id": failed_id,
+                    "priced_id": priced_id,
+                    "failed_extra": json.dumps(
+                        {
+                            "model": "luna",
+                            "usage": {"shape": "codex", "input_tokens": 1000},
+                        }
+                    ),
+                    "priced_extra": json.dumps(
+                        {
+                            "model": "luna",
+                            "usage": {"shape": "codex", "input_tokens": 1000},
+                            "extraction_status": "complete",
+                            "extraction_version": "v2",
+                            "collector_version": "codex-v1",
+                            "other": {"nested": True},
+                        }
+                    ),
+                },
+            )
+
+        report = jobs_main._price_raws_backfill_core(engine, chunk_size=2)
+
+        assert report.priced == 1
+        with Session(engine) as session:
+            rows = {
+                row.raw_id: row.extra
+                for row in session.execute(
+                    text(
+                        "SELECT raw_id, extra FROM knowledge.raw_inputs "
+                        "WHERE raw_id IN (:failed_id, :priced_id)"
+                    ),
+                    {"failed_id": failed_id, "priced_id": priced_id},
+                ).all()
+            }
+        assert "usage_cost_usd" not in rows[failed_id]
+        assert rows[priced_id]["usage_cost_usd"] > 0
+        assert rows[priced_id]["usage_cost_source"] == "list"
+        assert rows[priced_id]["extraction_status"] == "complete"
+        assert rows[priced_id]["extraction_version"] == "v2"
+        assert rows[priced_id]["collector_version"] == "codex-v1"
+        assert rows[priced_id]["other"] == {"nested": True}
+    finally:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "DROP TRIGGER IF EXISTS raw_pricing_backfill_reject_test "
+                    "ON knowledge.raw_inputs"
+                )
+            )
+            connection.execute(
+                text("DROP FUNCTION IF EXISTS raw_pricing_backfill_reject_test()")
+            )
+            connection.execute(
+                text(
+                    "DELETE FROM knowledge.raw_inputs "
+                    "WHERE raw_id IN (:failed_id, :priced_id)"
+                ),
+                {"failed_id": failed_id, "priced_id": priced_id},
+            )
+        engine.dispose()

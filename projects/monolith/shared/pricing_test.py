@@ -169,7 +169,27 @@ def test_collector_shapes_apply_provider_cache_semantics():
 
     assert claude is not None
     assert codex is not None
-    assert claude.cost_usd == pytest.approx(codex.cost_usd)
+    assert claude.model_ref == "claude-opus-5"
+    assert codex.model_ref == "claude-opus-5"
+    model_price = calc_price(
+        Usage(
+            input_tokens=10_000,
+            cache_read_tokens=9_000,
+            output_tokens=100,
+        ),
+        "claude-opus-5",
+        provider_id="anthropic",
+    ).model_price
+    expected = float(
+        (
+            1_000 * model_price.input_mtok
+            + 9_000 * model_price.cache_read_mtok
+            + 100 * model_price.output_mtok
+        )
+        / 1_000_000
+    )
+    assert claude.cost_usd == pytest.approx(expected)
+    assert codex.cost_usd == pytest.approx(expected)
 
 
 def test_dated_claude_model_retries_without_date_suffix():
