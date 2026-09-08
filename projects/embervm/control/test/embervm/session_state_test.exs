@@ -60,7 +60,7 @@ defmodule Embervm.SessionStateTest do
   }
 
   test "exhaustive transition table: every (state, event) pair matches the documented outcome" do
-    assert map_size(@legal) == 42
+    assert map_size(@legal) == 43
     assert length(SessionState.events()) == 18
     assert length(SessionState.states()) == 12
 

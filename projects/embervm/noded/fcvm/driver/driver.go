@@ -1714,7 +1714,12 @@ type snapshotTeardownError struct {
 	releaseErr error
 }
 
-func (e *snapshotTeardownError) Error() string           { return errors.Join(e.cause, e.releaseErr).Error() }
+func (e *snapshotTeardownError) Error() string {
+	if err := errors.Join(e.cause, e.releaseErr); err != nil {
+		return err.Error()
+	}
+	return "snapshot failed without an error"
+}
 func (e *snapshotTeardownError) Unwrap() []error         { return []error{e.cause, e.releaseErr} }
 func (e *snapshotTeardownError) TeardownConfirmed() bool { return e.releaseErr == nil }
 
