@@ -578,12 +578,12 @@ when the backend is unhealthy or unreachable.
 (see: /projects/monolith/frontend/src/routes/public/health/+server.js)
 
 Current fatal components are stars health plus the EmberVM synthetic latches
-for Bazel, Semgrep, pages, Postgres, and the Spark session. Continuous-delivery
+for Bazel, Semgrep, pages, Postgres, and the Codex session. Continuous-delivery
 health and the drainer's stall signal are advisory latches computed by a
-private leader and read by both tiers. The original four EmberVM synthetic
-probes run every five minutes; the Codex and Spark session probes each run
-their own hourly CronWorkflow, whole guest turns with a correspondingly longer
-staleness allowance.
+private leader and read by both tiers. The combined demo probes run one hourly
+CronWorkflow and the Codex lane probe runs its own hourly CronWorkflow, each
+with a 2.5x staleness allowance. Codex is the one automatically scheduled
+agent probe; the Spark session probe is manual-only with no health component.
 (see: /projects/monolith/ember_public/health.py)
 (see: /projects/monolith/core/platform_probe.py)
 (see: /projects/monolith/swarm/health.py)
