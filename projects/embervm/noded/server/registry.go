@@ -276,6 +276,15 @@ type vmTeardown struct {
 	mu       sync.Mutex
 	released bool
 	done     bool
+	// Set only by strict Destroy while holding mu. A proof write failure must
+	// retain this identity even if a later ordinary Destroy retries cleanup.
+	completion *nodev1.DestroyCompletion
+}
+
+func (r *sessionRegistry) get(id string) *sessionEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.vms[id]
 }
 
 func (r *vmRegistry) forTeardown(id string) *vmEntry {

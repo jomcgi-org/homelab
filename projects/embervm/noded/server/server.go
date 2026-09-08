@@ -156,6 +156,9 @@ type Server struct {
 	// nil disables BuildBase (used by tests that only exercise Prime/Assign).
 	newBuildDriver func(BuildDriverSpec) BuildDriver
 	logger         *slog.Logger
+	// One identity per Server process, shared by registration and strict Destroy.
+	bootID        string
+	destroyProofs *destroyCompletionStore
 
 	// budget is the cgroup v2 reader backing the four hooks below (ADR
 	// embervm/005 item 4): a brick's slot count and headroom are read from
@@ -439,6 +442,8 @@ func New(opts Options) *Server {
 		transport:        opts.Transport,
 		newBuildDriver:   opts.NewBuildDriver,
 		logger:           logger,
+		bootID:           newID("boot"),
+		destroyProofs:    newDestroyCompletionStore(opts.Config.SnapshotRoot),
 		vms:              newVMRegistry(),
 		bases:            newBaseRegistry(),
 		registry:         newWorkloadRegistry(opts.Config.RegistryCachePath),
@@ -1426,7 +1431,10 @@ func (s *Server) Assign(ctx context.Context, req *nodev1.AssignRequest) (*nodev1
 // failure returns an error, not a false confirm, so the control plane keeps the
 // instance in destroying rather than recording a destroyed transition that did
 // not happen (ADR embervm/014 decision 5).
-func (s *Server) Destroy(_ context.Context, req *nodev1.DestroyRequest) (*nodev1.DestroyResponse, error) {
+func (s *Server) Destroy(ctx context.Context, req *nodev1.DestroyRequest) (*nodev1.DestroyResponse, error) {
+	if req.GetOperationId() != "" || req.GetExpectedBootId() != "" || req.GetExpectedSessionId() != "" {
+		return s.destroyStrict(ctx, req)
+	}
 	vmID := req.GetVmId()
 	// Serialize selection with the task-to-session registry handoff, never with
 	// the slow reap itself. An adopted VM must not appear unknown between maps.
@@ -1498,9 +1506,32 @@ func (s *Server) reapTaskEntry(e *vmEntry) error {
 }
 
 func (s *Server) reapSessionEntry(e *sessionEntry) error {
+	return s.reapSessionEntryWithProof(e, nil, s.persistDestroyCompletion)
+}
+
+func (s *Server) reapSessionEntryWithProof(e *sessionEntry, completion *nodev1.DestroyCompletion, persist func(*nodev1.DestroyCompletion) error) error {
 	return e.teardown.run(func() error {
+		if completion != nil {
+			if e.teardown.completion != nil && !sameDestroyIdentity(e.teardown.completion, completion) {
+				return status.Error(codes.FailedPrecondition, "noded: conflicting destroy operation")
+			}
+			if e.teardown.completion == nil {
+				e.teardown.completion = completion
+			}
+			// Strict callers hold the node-shared store lock. Record at most one
+			// pending operation per retained VM, only after its identity matches.
+			s.destroyProofs.pending[completion.GetOperationId()] = e.teardown.completion
+		}
 		if err := s.reapTracked(e.handle, e.egressCancel, &e.teardown); err != nil {
 			return err
+		}
+		if proof := e.teardown.completion; proof != nil {
+			if proof.CompletedAtUnixMs == 0 {
+				proof.CompletedAtUnixMs = s.destroyProofs.now().UnixMilli()
+			}
+			if err := persist(proof); err != nil {
+				return err
+			}
 		}
 		if e.lineageID != "" {
 			s.volumes.DetachLineage(e.workload, e.lineageID)
