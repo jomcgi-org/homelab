@@ -1,4 +1,3 @@
-import { error } from "@sveltejs/kit";
 import {
   AGENT_ACTIVITY_CACHE_CONTROL,
   cloudflareCacheHeaders,
@@ -7,42 +6,35 @@ import {
 
 export const prerender = false;
 
-async function read(response, label) {
-  if (!response.ok) throw error(503, `${label} unavailable`);
-  return response.json();
+async function getJson(fetch, path) {
+  const response = await fetch(path);
+  if (!response.ok) throw new Error(`${path} unavailable`);
+  return { data: await response.json(), response };
 }
 
 export async function load({ fetch, setHeaders }) {
-  const responses = await Promise.all([
-    fetch("/slop/factory/activity"),
-    fetch("/slop/factory/merges"),
-    fetch("/slop/factory/entities"),
+  const sections = await Promise.allSettled([
+    getJson(fetch, "/slop/factory/activity"),
+    getJson(fetch, "/slop/factory/merges"),
+    getJson(fetch, "/slop/factory/facts"),
   ]);
-  const [activity, merges, entities] = await Promise.all([
-    read(responses[0], "agent activity"),
-    read(responses[1], "merge snapshot"),
-    read(responses[2], "record index"),
-  ]);
-  const projectResponses = await Promise.all(
-    entities
-      .filter((entity) => entity.kind === "project")
-      .map((entity) =>
-        fetch(
-          `/slop/factory/entities/project/${encodeURIComponent(entity.slug)}/notes?state=verified%2Cunverified&limit=60`,
-        ),
-      ),
+  const fallback = [
+    { now: {}, daily: [], totals_7d: {} },
+    { daily: [], week: [], totals: {} },
+    {
+      daily: [],
+      totals: { verified: 0, unverified: 0, disputed: 0 },
+      contradictions: 0,
+    },
+  ];
+  const values = sections.map((section, index) =>
+    section.status === "fulfilled" ? section.value.data : fallback[index],
   );
-  const chapters = await Promise.all(
-    projectResponses.map((response) => read(response, "record chapter")),
-  );
-  const factMap = new Map();
-  for (const chapter of chapters) {
-    for (const note of chapter.notes) factMap.set(note.note_id, note);
-  }
 
   const headers = cloudflareCacheHeaders(AGENT_ACTIVITY_CACHE_CONTROL);
-  const validators = [...responses, ...projectResponses]
-    .map((response) => response.headers?.get?.("etag"))
+  const validators = sections
+    .filter((section) => section.status === "fulfilled")
+    .map((section) => section.value.response.headers?.get?.("etag"))
     .filter(Boolean)
     .join("-");
   const etag = versionedEtag(validators);
@@ -51,9 +43,13 @@ export async function load({ fetch, setHeaders }) {
 
   return {
     title: "Factory",
-    activity,
-    merges,
-    entities,
-    facts: [...factMap.values()],
+    activity: values[0],
+    merges: values[1],
+    facts: values[2],
+    unavailable: {
+      activity: sections[0].status === "rejected",
+      merges: sections[1].status === "rejected",
+      facts: sections[2].status === "rejected",
+    },
   };
 }

@@ -1,4 +1,3 @@
-import { error } from "@sveltejs/kit";
 import {
   cloudflareCacheHeaders,
   NOTES_PAGE_CACHE_CONTROL,
@@ -11,8 +10,7 @@ const SLUG = /^[a-z0-9][a-z0-9-]{0,79}$/;
 
 async function getJson(fetch, path, label) {
   const response = await fetch(path);
-  if (!response.ok)
-    throw error(response.status === 404 ? 404 : 503, `${label} unavailable`);
+  if (!response.ok) throw new Error(`${label} unavailable`);
   return { data: await response.json(), response };
 }
 
@@ -22,12 +20,21 @@ export async function load({ fetch, setHeaders, url }) {
   const q = (url.searchParams.get("q") || "").trim().slice(0, 200);
   const mode =
     url.searchParams.get("mode") === "semantic" ? "semantic" : "grep";
-  const catalog = await getJson(
-    fetch,
-    "/slop/factory/entities",
-    "record index",
-  );
-  const projects = catalog.data
+  const baseSections = await Promise.allSettled([
+    getJson(fetch, "/slop/factory/entities", "record index"),
+    getJson(fetch, "/slop/factory/facts", "fact history"),
+  ]);
+  const entities =
+    baseSections[0].status === "fulfilled" ? baseSections[0].value.data : [];
+  const facts =
+    baseSections[1].status === "fulfilled"
+      ? baseSections[1].value.data
+      : {
+          daily: [],
+          totals: { verified: 0, unverified: 0, disputed: 0 },
+          contradictions: 0,
+        };
+  const projects = entities
     .filter((item) => item.kind === "project")
     .sort(
       (a, b) =>
@@ -37,33 +44,34 @@ export async function load({ fetch, setHeaders, url }) {
         a.title.localeCompare(b.title),
     );
 
-  let chapter = null;
-  let results = [];
-  let contentResponse = null;
+  let contentPromise = Promise.resolve(null);
   if (q) {
     const params = new URLSearchParams({ q, mode, limit: "30" });
-    const search = await getJson(
+    contentPromise = getJson(
       fetch,
       `/slop/factory/search?${params}`,
       "record search",
     );
-    results = search.data;
-    contentResponse = search.response;
   } else if (entity) {
-    if (!projects.some((project) => project.slug === entity)) {
-      throw error(404, "record chapter unavailable");
-    }
-    const notes = await getJson(
+    contentPromise = getJson(
       fetch,
       `/slop/factory/entities/project/${encodeURIComponent(entity)}/notes?state=verified%2Cunverified&limit=60`,
       "record chapter",
     );
-    chapter = notes.data;
-    contentResponse = notes.response;
   }
+  const [contentSection] = await Promise.allSettled([contentPromise]);
+  const content =
+    contentSection.status === "fulfilled" ? contentSection.value : null;
+  const chapter = entity && !q ? (content?.data ?? null) : null;
+  const results = q ? (content?.data ?? []) : [];
 
   const headers = cloudflareCacheHeaders(NOTES_PAGE_CACHE_CONTROL);
-  const validators = [catalog.response, contentResponse]
+  const validators = [
+    ...baseSections
+      .filter((section) => section.status === "fulfilled")
+      .map((section) => section.value.response),
+    content?.response,
+  ]
     .filter(Boolean)
     .map((response) => response.headers?.get?.("etag"))
     .filter(Boolean)
@@ -74,12 +82,19 @@ export async function load({ fetch, setHeaders, url }) {
 
   return {
     title: "Factory record",
-    entities: catalog.data,
+    entities,
+    facts,
     projects,
     entity,
     q,
     mode,
     chapter,
     results,
+    unavailable: {
+      entities: baseSections[0].status === "rejected",
+      facts: baseSections[1].status === "rejected",
+      chapter: Boolean(entity && !q && contentSection.status === "rejected"),
+      search: Boolean(q && contentSection.status === "rejected"),
+    },
   };
 }

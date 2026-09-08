@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { barChartSvg, chartScale, lastDays, sparkPaths } from "./charts.js";
+import {
+  barChartSvg,
+  chartScale,
+  last14,
+  sparkPaths,
+  window,
+} from "./charts.js";
 
 describe("chartScale", () => {
   it("chooses readable one, two, and five-family ticks", () => {
@@ -57,15 +63,29 @@ describe("barChartSvg", () => {
   });
 });
 
-describe("lastDays", () => {
-  it("aligns sparse data to a fixed trailing window", () => {
+describe("UTC windows", () => {
+  it("aligns the trailing 14 days to injected today", () => {
     expect(
-      lastDays(
+      last14(
         [{ day: "2026-09-06", sessions: 3 }],
         "sessions",
-        "2026-09-07",
-        3,
+        new Date("2026-09-07T23:59:59Z"),
       ),
-    ).toEqual([0, 3, 0]);
+    ).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0]);
+  });
+
+  it("anchors a dense 30-day window to injected today, not newest data", () => {
+    const rows = window(
+      [
+        { d: "2026-08-09", verified: 2 },
+        { d: "2026-09-01", verified: 1 },
+        { d: "2026-09-08", verified: 99 },
+      ],
+      "2026-09-07",
+    );
+
+    expect(rows).toHaveLength(30);
+    expect(rows[0]).toMatchObject({ d: "2026-08-09", verified: 2 });
+    expect(rows.at(-1)).toEqual({ d: "2026-09-07" });
   });
 });

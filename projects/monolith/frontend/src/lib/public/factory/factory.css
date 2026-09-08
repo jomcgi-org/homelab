@@ -130,6 +130,25 @@
   background: var(--tone-disk);
 }
 
+.factory-page .mark.invalidated {
+  background: var(--hatch);
+}
+
+.factory-page .mark.disputed {
+  border-color: var(--tone-disk);
+  background: transparent;
+}
+
+.factory-page .unavailable {
+  margin: 0;
+  padding: 0.45em 0.7em;
+  border: 1px solid var(--stroke);
+  background: var(--band);
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+}
+
 .factory-page .num {
   font-variant-numeric: tabular-nums;
 }
@@ -270,7 +289,11 @@
   background: var(--tone-hot);
 }
 
-.factory-page .legend .amber {
+.factory-page .legend .spark {
+  background: var(--ink-3);
+}
+
+.factory-page .legend .docs {
   background: var(--accent);
 }
 
@@ -526,6 +549,15 @@
   text-decoration: none;
 }
 
+.factory-page .example-note {
+  margin: 0;
+  padding: 0.55em 1rem;
+  border-top: 1px solid var(--stroke);
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.68rem;
+}
+
 .factory-page .ask-link span {
   padding-left: 1rem;
   border-left: 1px solid var(--stroke);
@@ -627,7 +659,7 @@
 
 .factory-page .search {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   border: 1px solid var(--ink);
 }
 
@@ -639,8 +671,23 @@
   font-size: 0.9rem;
 }
 
+.factory-page .search > button {
+  padding: 0.5em 0.7em;
+  border: 0;
+  border-left: 1px solid var(--stroke);
+  background: var(--sheet);
+  cursor: pointer;
+  font-family: var(--font-code);
+  font-size: 0.7rem;
+}
+
+.factory-page .search > button:hover {
+  color: var(--accent-ink);
+}
+
 .factory-page .search .modes {
   display: flex;
+  grid-column: 1 / -1;
   border-top: 1px solid var(--stroke);
 }
 

@@ -117,18 +117,30 @@ export function barChartSvg(id, rows, series, colors) {
   return `${svg}</svg>`;
 }
 
-export function lastDays(rows, key, today, count = 14) {
-  const byDay = Object.fromEntries(
-    rows.map((row) => [isoDay(row.d ?? row.day), finite(row[key])]),
-  );
-  const end = new Date(
-    `${isoDay(today) ?? new Date().toISOString().slice(0, 10)}T00:00:00Z`,
-  );
-  const values = [];
+function todayUtc(now) {
+  if (now instanceof Date && Number.isFinite(now.getTime())) {
+    return now.toISOString().slice(0, 10);
+  }
+  return isoDay(now) ?? new Date().toISOString().slice(0, 10);
+}
+
+export function window(rows, now, count = 30) {
+  const byDay = new Map();
+  for (const row of rows) {
+    const day = isoDay(row.d ?? row.day);
+    if (day) byDay.set(day, row);
+  }
+  const end = new Date(`${todayUtc(now)}T00:00:00Z`);
+  const days = [];
   for (let offset = count - 1; offset >= 0; offset -= 1) {
     const day = new Date(end);
     day.setUTCDate(day.getUTCDate() - offset);
-    values.push(byDay[day.toISOString().slice(0, 10)] ?? 0);
+    const d = day.toISOString().slice(0, 10);
+    days.push({ d, ...(byDay.get(d) ?? {}) });
   }
-  return values;
+  return days;
+}
+
+export function last14(rows, key, now) {
+  return window(rows, now, 14).map((row) => finite(row[key]));
 }
