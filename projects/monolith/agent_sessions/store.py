@@ -29,7 +29,7 @@ from agent_sessions.models import (
     VoiceUICompanion,
     VoiceUILedger,
 )
-from agent_sessions.transport import Turn
+from agent_sessions.transport import Turn, parse_native_turn
 from core.db import get_engine
 from shared.pricing import price_usage
 
@@ -84,6 +84,37 @@ def _assert_sendable(session: Session, session_id: int) -> None:
 def has_unknown_outcome(session: Session, session_id: int) -> bool:
     """Expose the durable hold to consumers before automatic cleanup or retry."""
     return session.exec(select(_unknown_outcome_exists(session_id))).one()
+
+
+def _assert_guest_reusable(row: AgentSession) -> None:
+    if row.result_receipt_fence_id is not None:
+        raise PendingClaimLost(
+            "The previous native result still owns its transport observer"
+        )
+
+
+def guest_cleanup_hold(session: Session, session_id: int, guest_id: str) -> str | None:
+    """Observe pending-to-receipt handoff in one database statement.
+
+    Separate reads could see the old missing fence and the new missing pending
+    row, incorrectly declaring the guest idle across an atomic completion.
+    This is a cleanup observation, not a claim that a guest was stopped.
+    """
+    row = session.exec(
+        select(
+            AgentSession.ember_session_id,
+            AgentSession.result_receipt_fence_id,
+            _unknown_outcome_exists(session_id),
+            exists().where(PendingMessage.session_id == session_id),
+        ).where(AgentSession.id == session_id)
+    ).one_or_none()
+    if row is None or row[0] != guest_id:
+        return "binding_changed"
+    if row[2]:
+        return "unknown"
+    if row[1] is not None or row[3]:
+        return "observer_pending"
+    return None
 
 
 def has_unknown_outcome_for_turn(
@@ -437,6 +468,7 @@ def set_ember_session(
     _assert_sendable(session, session_id)
     if row is None:
         raise ValueError(f"Unknown agent session {session_id}")
+    _assert_guest_reusable(row)
     row.ember_session_id = ember_id
     row.ember_session_token = ember_token
     row.ember_session_expires_at = ember_expires_at
@@ -471,6 +503,7 @@ def replace_ember_session_after_preemption(
     _assert_sendable(session, session_id)
     if row is None:
         raise ValueError(f"Unknown agent session {session_id}")
+    _assert_guest_reusable(row)
     if row.ember_lineage_id:
         row.prior_ember_lineage_id = row.ember_lineage_id
     if row.cli_session_id:
@@ -506,6 +539,7 @@ def clear_ember_session(session: Session, session_id: int) -> AgentSession:
     row = _lock_session(session, session_id)
     if row is None:
         raise ValueError(f"Unknown agent session {session_id}")
+    _assert_guest_reusable(row)
     if row.ember_lineage_id:
         row.prior_ember_lineage_id = row.ember_lineage_id
     if row.cli_session_id:
@@ -548,6 +582,10 @@ def clear_ember_bindings_by_ember_id(session: Session, ember_id: str) -> list[in
     ).all()
     ids: list[int] = []
     for row in rows:
+        # A stale cleanup observation must not erase the identity needed by
+        # the original POST to clear its committed receipt fence.
+        if row.result_receipt_fence_id is not None:
+            continue
         if row.ember_lineage_id:
             row.prior_ember_lineage_id = row.ember_lineage_id
         if row.cli_session_id:
@@ -1137,7 +1175,11 @@ def claim_pending_message_for_session_sync(
     """Claim the lane head once, or consume one exact preemption retry grant."""
     with Session(get_engine()) as session:
         row = _lock_session(session, session_id)
-        if row is None or row.status in {"awaiting_login", "failed"}:
+        if (
+            row is None
+            or row.status in {"awaiting_login", "failed"}
+            or row.result_receipt_fence_id is not None
+        ):
             return None
         try:
             _assert_sendable(session, session_id)
@@ -1238,7 +1280,49 @@ def persist_turn_from_pending_sync(
             or (dispatch_count is not None and pending.dispatch_count != dispatch_count)
         ):
             raise PendingClaimLost("Turn completion no longer owns its dispatch")
+        receipt_provenance = None
+        if turn.native_receipt is not None:
+            from agent_sessions import result_receipts
+
+            identity = turn.native_receipt
+            if claim_owner is None or dispatch_count is None:
+                raise PendingClaimLost(
+                    "Native receipt requires an exact dispatch owner"
+                )
+            captured = result_receipts.validate_active_result(
+                session,
+                receipt_id=identity["receipt_id"],
+                result_sha256=identity["result_sha256"],
+                session_id=session_id,
+                seq=turn_seq,
+                claim_owner=claim_owner,
+                dispatch_count=dispatch_count,
+                guest_id=sess_row.ember_session_id,
+            )
+            # Reparse the immutable body inside the same transaction as the
+            # permit and turn. A caller cannot attach a valid receipt ID to a
+            # different result, native cost, diff or declared artifact.
+            expected = parse_native_turn(
+                json.loads(captured["result_body"]),
+                sess_row.ember_session_id,
+                identity.get("cli_session_id"),
+                identity.get("artifact_path"),
+            )
+            if (
+                identity.get("cli_session_id") != sess_row.cli_session_id
+                or expected
+                != turn._replace(native_receipt=None, workspace_recovery=None)
+                or any(identity.get(k) != v for k, v in captured["provenance"].items())
+            ):
+                raise PendingClaimLost(
+                    "Native receipt does not match the completed turn"
+                )
+            receipt_provenance = captured["provenance"]
         usage = {**turn.usage, "activities": turn.activities}
+        # Guest usage is data, never authority to assert receipt adoption.
+        usage.pop("native_result_receipt", None)
+        if receipt_provenance is not None:
+            usage["native_result_receipt"] = receipt_provenance
         if turn.workspace_recovery is not None:
             usage["workspace_recovery"] = turn.workspace_recovery
         diff_blob = None

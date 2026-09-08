@@ -12,7 +12,14 @@ import httpx
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from agent_sessions import admission, mcp, result_receipts, store, transport
+from agent_sessions import (
+    admission,
+    execution_api,
+    mcp,
+    result_receipts,
+    store,
+    transport,
+)
 from agent_sessions.constants import UNKNOWN_INVOCATION
 from agent_sessions.models import (
     AgentCapacityPool,
@@ -46,7 +53,7 @@ def database(tmp_path, monkeypatch):
             )
         ],
     )
-    for module in (admission, store, mcp, result_receipts, core_db):
+    for module in (admission, store, mcp, execution_api, result_receipts, core_db):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
     monkeypatch.setenv("AGENT_RESULT_RECEIPTS_ENABLED", "true")
     monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "true")
@@ -82,6 +89,41 @@ def queue(engine, key="receipt-project"):
         store.set_ember_session(db, sid, f"guest-{sid}", "guest-token", None)
         store.create_pending_message(db, sid, "implement the bounded task", "luna")
         return sid
+
+
+def test_cleanup_rechecks_atomic_pending_to_receipt_handoff(database, monkeypatch):
+    sid = queue(database)
+    guest_id = f"guest-{sid}"
+    with Session(database) as db:
+        old_view = db.get(AgentSession, sid)
+        assert old_view.result_receipt_fence_id is None
+        assert store.guest_cleanup_hold(db, sid, guest_id) == "observer_pending"
+    # The reaper's detached list predates the receipt writer's atomic handoff.
+    with Session(database) as db, db.begin():
+        agent = store._lock_session(db, sid)
+        db.delete(store.get_pending_message(db, sid, 1))
+        agent.result_receipt_fence_id = "committed-receipt"
+        db.add(agent)
+    assert old_view.result_receipt_fence_id is None
+    monkeypatch.setattr(execution_api, "_sessions_for_workflow", lambda _wf: [old_view])
+
+    async def unexpected_destroy(_guest):
+        pytest.fail("a stale list cannot authorize destroying a receipt-owned guest")
+
+    monkeypatch.setattr(execution_api._transport, "destroy_session", unexpected_destroy)
+    assert asyncio.run(execution_api.reap_sessions_for_workflow("completed-node")) == {
+        "reaped": [],
+        "pending": [sid],
+        "failed": [],
+        "skipped": [],
+    }
+    with Session(database) as db:
+        with pytest.raises(store.PendingClaimLost, match="transport observer"):
+            store.clear_ember_session(db, sid)
+        db.rollback()
+        assert store.clear_ember_bindings_by_ember_id(db, guest_id) == []
+        assert db.get(AgentSession, sid).ember_session_id == guest_id
+        assert db.get(AgentSession, sid).result_receipt_fence_id == "committed-receipt"
 
 
 def snapshot(engine, sid):

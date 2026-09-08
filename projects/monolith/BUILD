@@ -5078,6 +5078,21 @@ py_test(
 )
 
 py_test(
+    name = "agent_sessions_receipt_consumer_test",
+    srcs = ["agent_sessions/receipt_consumer_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_core",
+        ":pkg_swarm",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "chat_router_backfill_exception_test",
     srcs = ["chat/router_backfill_exception_test.py"],
     imports = ["."],

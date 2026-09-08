@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import logging
+import threading
 import zlib
 
 import httpx
@@ -111,6 +112,95 @@ def _client(monkeypatch, handler):
     monkeypatch.setattr(
         transport, "auth_headers", lambda: {"Authorization": "management"}
     )
+
+
+def test_receipt_observer_limit_preserves_one_synchronous_post(monkeypatch):
+    from agent_sessions import result_receipts
+
+    requests = []
+
+    async def handler(request):
+        requests.append(request)
+        assert json.loads(request.content)["result_receipt"]["id"] == "a" * 32
+        return _turn_response(request)
+
+    async def unexpected_observer(*_args):
+        pytest.fail("a full observer pool must not create another observer")
+
+    _client(monkeypatch, handler)
+    monkeypatch.setenv("AGENT_RESULT_RECEIPT_ADOPTION_ENABLED", "true")
+    monkeypatch.setattr(transport, "MAX_RECEIPT_OBSERVERS", 0)
+    monkeypatch.setattr(transport, "_observe_native_result", unexpected_observer)
+    monkeypatch.setattr(
+        result_receipts,
+        "prepare_receipt",
+        lambda *_args: {
+            "id": "a" * 32,
+            "token": "test-token",
+        },
+    )
+    result, _ = asyncio.run(
+        transport.EmberVmShimTransport().deliver(
+            transport.EmberSession("guest-one", "guest-token", None),
+            None,
+            "one model operation",
+            agent_session_id=1,
+            dispatch_count=1,
+            receipt_claim_owner="original-owner",
+        )
+    )
+    assert result.result == "ok"
+    assert result.native_receipt is None
+    assert len(requests) == 1
+
+
+def test_receipt_database_cancellation_retains_actual_thread_slots(monkeypatch):
+    release = threading.Event()
+    both_started = threading.Event()
+    both_finished = threading.Event()
+    lock = threading.Lock()
+    counts = {"started": 0, "finished": 0}
+
+    def blocked_database():
+        with lock:
+            counts["started"] += 1
+            if counts["started"] == 2:
+                both_started.set()
+        try:
+            assert release.wait(3), "test must release both simulated database calls"
+            return "observed"
+        finally:
+            with lock:
+                counts["finished"] += 1
+                if counts["finished"] == 2:
+                    both_finished.set()
+
+    async def exercise():
+        running = [
+            asyncio.create_task(transport._receipt_database_call(blocked_database))
+            for _ in range(2)
+        ]
+        try:
+            assert await asyncio.to_thread(both_started.wait, 1)
+            for task in running:
+                task.cancel()
+            await asyncio.gather(*running, return_exceptions=True)
+            monkeypatch.setattr(transport, "RECEIPT_DB_TIMEOUT_SECONDS", 0.05)
+            with pytest.raises(TimeoutError, match="busy"):
+                await transport._receipt_database_call(
+                    lambda: pytest.fail("third database call")
+                )
+            assert counts["started"] == 2
+        finally:
+            release.set()
+            await asyncio.gather(*running, return_exceptions=True)
+        assert await asyncio.to_thread(both_finished.wait, 1)
+        monkeypatch.setattr(transport, "RECEIPT_DB_TIMEOUT_SECONDS", 1)
+        assert (
+            await transport._receipt_database_call(lambda: "available") == "available"
+        )
+
+    asyncio.run(exercise())
 
 
 def test_preinvoke_first_create_failure_is_explicitly_not_invoked(monkeypatch):
