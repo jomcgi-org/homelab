@@ -915,7 +915,9 @@ defmodule Embervm.SessionStore do
   defp do_record_invoke_started(state, session_id) do
     case fetch(state, session_id) do
       {:ok, %{state: :running} = session} ->
-        ts = max(state.clock.(), session.invoke_started_at || 0)
+        # The timestamp also fences an exact conditional stop. Even two invokes
+        # accepted within one clock tick must have distinct durable identities.
+        ts = max(state.clock.(), (session.invoke_started_at || -1) + 1)
 
         op = %Op{
           kind: :session_invoke_started,
