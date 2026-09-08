@@ -38,13 +38,13 @@ function response(path, failedPath = "") {
   );
 }
 
-describe("factory record loader", () => {
+describe("factory context loader", () => {
   it("loads and sorts the project spine", async () => {
     const fetch = vi.fn(response);
     const result = await load({
       fetch,
       setHeaders: vi.fn(),
-      url: new URL("https://jomcgi.dev/slop/factory/record"),
+      url: new URL("https://jomcgi.dev/slop/factory/context"),
     });
 
     expect(result.projects.map((item) => item.slug)).toEqual(["embervm"]);
@@ -72,7 +72,7 @@ describe("factory record loader", () => {
     const result = await load({
       fetch,
       setHeaders: vi.fn(),
-      url: new URL("https://jomcgi.dev/slop/factory/record?entity=embervm"),
+      url: new URL("https://jomcgi.dev/slop/factory/context?entity=embervm"),
     });
 
     expect(fetch.mock.calls.map(([path]) => path)).toContain(
@@ -87,7 +87,7 @@ describe("factory record loader", () => {
       fetch,
       setHeaders: vi.fn(),
       url: new URL(
-        `https://jomcgi.dev/slop/factory/record?q=${"x".repeat(220)}&mode=semantic`,
+        `https://jomcgi.dev/slop/factory/context?q=${"x".repeat(220)}&mode=semantic`,
       ),
     });
 
@@ -122,11 +122,11 @@ describe("factory record loader", () => {
       const result = await load({
         fetch,
         setHeaders: vi.fn(),
-        url: new URL(`https://jomcgi.dev/slop/factory/record${query}`),
+        url: new URL(`https://jomcgi.dev/slop/factory/context${query}`),
       });
 
       expect(result.unavailable[section]).toBe(true);
-      expect(result.title).toBe("Factory record");
+      expect(result.title).toBe("Factory context");
     },
   );
 });

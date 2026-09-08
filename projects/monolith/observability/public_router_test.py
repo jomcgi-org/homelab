@@ -103,6 +103,7 @@ def test_public_merges_returns_daily_week_and_totals(client, session):
         "del_7d": 12,
         "n_30d": 2,
     }
+    assert body["snapshotted_at"] == "2026-09-07T12:00:00Z"
     assert "public" in response.headers["Cache-Control"]
     assert response.headers["ETag"]
 
@@ -116,6 +117,13 @@ def test_public_merges_supports_conditional_get(client):
 
     assert second.status_code == 304
     assert second.headers["ETag"] == first.headers["ETag"]
+
+
+def test_public_merges_has_null_snapshot_when_there_are_no_rows(client):
+    response = client.get("/api/agents/public/merges")
+
+    assert response.status_code == 200
+    assert response.json()["snapshotted_at"] is None
 
 
 def test_public_merges_counts_unknown_types_without_failing(client, session):

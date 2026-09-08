@@ -26,7 +26,7 @@ export async function load({ fetch, setHeaders }) {
       spend_daily: [],
       totals_7d: { ember: {}, local: {}, combined: {} },
     },
-    { daily: [], week: [], totals: {} },
+    { daily: [], week: [], totals: {}, snapshotted_at: null },
     {
       daily: [],
       totals: { verified: 0, unverified: 0, disputed: 0 },

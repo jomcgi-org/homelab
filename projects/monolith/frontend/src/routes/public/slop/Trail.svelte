@@ -1,6 +1,6 @@
 <script>
-  // Slop has a fixed draft cell and section URL, unlike the blog trail.
-  // Keeping it separate avoids adding slop-only structure to the blog.
+  // Slop has its own section URL, unlike the blog trail. Keeping it separate
+  // avoids adding slop-only structure to the blog.
   let { page = "" } = $props();
 </script>
 
@@ -13,7 +13,6 @@
     {#if page}
       <span class="crumb current" aria-current="page">{page}</span>
     {/if}
-    <span class="crumb draft">draft</span>
   </div>
 </nav>
 
@@ -51,10 +50,6 @@
   .crumb.current {
     color: var(--ink);
     white-space: normal;
-  }
-
-  .crumb.draft {
-    color: var(--accent-ink);
   }
 
   a.crumb:hover {

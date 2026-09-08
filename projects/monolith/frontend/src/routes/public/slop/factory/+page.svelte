@@ -6,10 +6,14 @@
     breakdown,
     cleanPullTitle,
     factSeries,
+    formatCount,
     formatSpend,
+    goalSummary,
     lineSeries,
     mergeSeries,
     paginate,
+    shortNumber,
+    snapshotFreshness,
     sortPullRequests,
     spendSeries,
     tileDerivations,
@@ -23,15 +27,18 @@
   let prPage = $state(0);
   const pageSize = 8;
 
-  const number = (value) => Number(value ?? 0).toLocaleString();
-  const short = (value) => {
-    const n = Number(value ?? 0);
-    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
-    if (n >= 1e3) return `${(n / 1e3).toFixed(0)}k`;
-    return String(n);
-  };
   const day = (value) => value?.slice(5, 10).replace("-", "·") ?? "";
   const today = new Date().toISOString().slice(0, 10);
+  const initialFresh = snapshotFreshness(
+    data.merges.snapshotted_at,
+    data.merges.snapshotted_at,
+  );
+  let fresh = $state(initialFresh);
+  let freshLabel = $state(
+    initialFresh.clock
+      ? `snapshot ${initialFresh.clock} UTC`
+      : "snapshot unknown",
+  );
   const sessions = $derived(
     activitySeries([
       ...(data.activity.daily ?? []),
@@ -51,41 +58,44 @@
       today,
     ),
   );
+  const goalData = $derived(
+    goalSummary(data.merges.week, data.merges.snapshotted_at),
+  );
   const stats = $derived([
     {
       key: "Live",
-      value: number(tiles.live.value),
-      subline: `${number(tiles.live.sessionsToday)} sessions today`,
+      value: formatCount(tiles.live.value),
+      subline: `${formatCount(tiles.live.sessionsToday)} sessions today`,
       spark: tiles.live.spark,
     },
     {
       key: "Sessions, 7d",
-      value: number(tiles.sessions.value),
-      subline: `${number(tiles.sessions.ember)} Ember · ${number(tiles.sessions.local)} Mac`,
+      value: formatCount(tiles.sessions.value),
       spark: tiles.sessions.spark,
     },
     {
       key: "Merged, 7d",
-      value: number(tiles.merged.value),
-      subline: `${number(tiles.merged.agent)} by agents · +${short(tiles.lines.additions)} −${short(tiles.lines.deletions)}`,
+      value: formatCount(tiles.merged.value),
+      subline: `${formatCount(tiles.merged.agent)} by agents · +${shortNumber(tiles.lines.additions)} −${shortNumber(tiles.lines.deletions)}`,
       spark: tiles.merged.spark,
     },
     {
       key: "Tokens, 7d",
-      value: short(tiles.tokens.input),
-      subline: `${short(tiles.tokens.output)} out`,
+      value: shortNumber(tiles.tokens.input),
+      subline: `${shortNumber(tiles.tokens.output)} out`,
       spark: tiles.tokens.spark,
     },
     {
       key: "Spend, 7d",
       value: formatSpend(tiles.spend.value),
-      subline: "at list price",
+      subline: tiles.spend.maxSession
+        ? `${formatSpend(tiles.spend.maxSession)} priciest session`
+        : "",
       spark: tiles.spend.spark,
     },
     {
       key: "Facts",
-      value: number(tiles.facts.value),
-      subline: `${number(tiles.facts.verified)} verified${tiles.facts.latestDay ? ` · ${day(tiles.facts.latestDay)}` : ""}`,
+      value: formatCount(tiles.facts.value),
       spark: tiles.facts.spark,
     },
   ]);
@@ -110,6 +120,26 @@
     }
     prPage = 0;
   }
+
+  function goalMeta(goal) {
+    return [
+      ...goal.types.map(([type, count]) => `${count} ${type}`),
+      `+${shortNumber(goal.additions)} −${shortNumber(goal.deletions)}`,
+    ].join(" / ");
+  }
+
+  $effect(() => {
+    const refresh = () => {
+      const next = snapshotFreshness(data.merges.snapshotted_at, new Date());
+      fresh = next;
+      freshLabel = next.clock
+        ? `snapshot ${next.clock} UTC / ${next.label}`
+        : "snapshot unknown";
+    };
+    refresh();
+    const timer = setInterval(refresh, 60_000);
+    return () => clearInterval(timer);
+  });
 </script>
 
 <Seo
@@ -123,13 +153,12 @@
     <header class="masthead">
       <div>
         <h1>Ember Software Factory</h1>
-        <p>What the agents merged, what it cost, what they learned.</p>
       </div>
       <div class="mast-trails">
         <Trail page="factory" />
         <nav class="view-tabs" aria-label="Factory views">
           <a class="here" href="/slop/factory" aria-current="page">overview</a>
-          <a href="/slop/factory/record">record</a>
+          <a href="/slop/factory/context">context</a>
         </nav>
       </div>
     </header>
@@ -151,7 +180,7 @@
               {/if}
             </div>
             {@html sparkSvg(stat.spark)}
-            <div class="s">{stat.subline}</div>
+            {#if stat.subline}<div class="s">{stat.subline}</div>{/if}
           </div>
         {/each}
       </div>
@@ -272,8 +301,8 @@
                     <span class="sc">· {pr.scope}</span>{/if}</span
                 >
                 <span class="ch"
-                  ><b>+{short(pr.additions)}</b>
-                  <s>−{short(pr.deletions)}</s></span
+                  ><b>+{shortNumber(pr.additions)}</b>
+                  <s>−{shortNumber(pr.deletions)}</s></span
                 >
                 <span class="dt">{day(pr.merged_at)}</span>
               </li>
@@ -300,50 +329,48 @@
           {/if}
         </div>
 
-        <div class="ask">
-          <p class="sec-label">/ Ask the record · example</p>
-          <div class="sheet">
-            <div class="thread">
-              <div class="turn you">
-                <div class="who">You</div>
-                <p>What is blocking embervm right now?</p>
-              </div>
-              <div class="turn">
-                <div class="who">Record</div>
-                <p>
-                  An unresolved quarantine blocks the whole drain tick, not just
-                  one job. Whether it also permits stale-cycle replacement is
-                  contradicted and unsettled.
-                </p>
-                <ul class="grounds">
-                  <li>
-                    <i class="mark unverified"></i><span
-                      ><b>Unresolved quarantine blocks the entire drain tick</b> ·
-                      ember session · today</span
-                    >
-                  </li>
-                  <li>
-                    <i class="mark contradicts"></i><span
-                      ><b
-                        >Unresolved quarantine can still permit stale-cycle
-                        replacement</b
-                      > · contradicts a verified fact</span
-                    >
-                  </li>
-                </ul>
-              </div>
-            </div>
-            <p class="example-note">
-              Example exchange. The live answer comes from the record.
-            </p>
-            <a class="ask-link" href="/app/notes"
-              >Ask about a project, a deploy, a failure <span>Open chat</span
-              ></a
-            >
-          </div>
-          <p class="note">
-            Grounded on the record. No tools, no cluster access.
+        <div class="goals">
+          <p class="sec-label">
+            / Goal summary
+            <span class="win">last {goalData.windowHours}h</span>
+            <span class="fresh" class:stale={fresh.stale}>{freshLabel}</span>
           </p>
+          {#if goalData.goals.length}
+            <ol class="goal-list">
+              {#each goalData.goals as goal, index}
+                <li>
+                  <div class="goal-head">
+                    <span class="rank num"
+                      >{String(index + 1).padStart(2, "0")}</span
+                    >
+                    <span class="goal-name"
+                      ><strong>{goal.area}</strong><span>{goal.focus}</span
+                      ></span
+                    >
+                    <span class="bar" aria-hidden="true"
+                      ><i style={`width:${goal.share * 100}%`}></i></span
+                    >
+                    <span class="merge-count num">{goal.merged} merged</span>
+                  </div>
+                  <p class="goal-meta">{goalMeta(goal)}</p>
+                  <ul class="goal-recent">
+                    {#each goal.recent as pull}
+                      <li>
+                        <a
+                          href={`https://github.com/jomcgi/homelab/pull/${pull.number}`}
+                          >{pull.title}</a
+                        >
+                      </li>
+                    {/each}
+                  </ul>
+                </li>
+              {/each}
+            </ol>
+          {:else}
+            <p class="none">
+              Nothing merged in the last {goalData.windowHours} hours.
+            </p>
+          {/if}
         </div>
       </div>
     </div>

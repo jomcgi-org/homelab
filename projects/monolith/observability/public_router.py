@@ -94,7 +94,15 @@ def _payload(session: Session, now: datetime) -> tuple[dict, datetime | None]:
         "n_30d": len(rows),
     }
     snapshotted_at = _as_utc(max((row.snapshotted_at for row in rows), default=None))
-    return ({"daily": daily, "week": week, "totals": totals}, snapshotted_at)
+    return (
+        {
+            "daily": daily,
+            "week": week,
+            "totals": totals,
+            "snapshotted_at": _iso(snapshotted_at),
+        },
+        snapshotted_at,
+    )
 
 
 @router.get("/merges")
