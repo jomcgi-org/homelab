@@ -23,7 +23,7 @@ from typing import Any, Literal
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlmodel import Session, select
 
 from auth.api import Authority, Principal, PrincipalKind, get_principal
@@ -558,6 +558,22 @@ class CreateRawRequest(BaseModel):
         return value
 
 
+class RawUsageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    usage: dict[str, Any]
+    models: list[str]
+    model: str | None = None
+
+    @model_validator(mode="after")
+    def _request_is_bounded(self) -> RawUsageRequest:
+        candidate: dict[str, Any] = {"usage": self.usage, "models": self.models}
+        if self.model is not None:
+            candidate["model"] = self.model
+        CreateRawRequest._extra_is_bounded(candidate)
+        return self
+
+
 @router.post("/raws", status_code=201)
 def create_raw(
     data: CreateRawRequest,
@@ -597,6 +613,47 @@ def create_raw(
         status_code=201,
         content={"raw_id": raw.raw_id, "created": created},
     )
+
+
+@router.post("/raws/{raw_id}/usage")
+def backfill_raw_usage(
+    raw_id: str,
+    data: RawUsageRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Fill missing collector usage metadata without overwriting newer data."""
+    raw = session.exec(select(RawInput).where(RawInput.raw_id == raw_id)).first()
+    if raw is None:
+        raise HTTPException(status_code=404, detail="raw not found")
+
+    original_extra = dict(raw.extra or {})
+    extra = dict(original_extra)
+    extra.setdefault("usage", data.usage)
+    extra.setdefault("models", data.models)
+    if data.model is not None:
+        extra.setdefault("model", data.model)
+
+    if "usage_cost_usd" not in extra and "usage" in extra and "model" in extra:
+        try:
+            priced = price_usage(extra.get("model"), extra.get("usage"))
+            if priced is not None:
+                extra["usage_cost_usd"] = priced.cost_usd
+                extra["usage_cost_source"] = "list"
+        except Exception:
+            logger.warning("Failed to price backfilled raw usage", exc_info=True)
+
+    encoded = json.dumps(extra, ensure_ascii=False, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    if len(encoded) > _MAX_RAW_EXTRA_BYTES:
+        raise HTTPException(status_code=413, detail="extra exceeds the 64 KiB limit")
+
+    changed = extra != original_extra
+    if changed:
+        raw.extra = extra
+        session.add(raw)
+        session.commit()
+    return {"raw_id": raw.raw_id, "updated": changed}
 
 
 @router.post("/ingest", status_code=201)

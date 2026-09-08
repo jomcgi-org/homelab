@@ -61,6 +61,19 @@ describe("barChartSvg", () => {
     expect(svg).not.toContain("<script>");
     expect(svg).toContain('fill="currentColor"');
   });
+
+  it("stacks Ember and local lane values in one bar", () => {
+    const svg = barChartSvg(
+      "sessions",
+      [{ d: "2026-09-07", luna: 2, claude: 3 }],
+      ["luna", "claude"],
+      ["var(--tone-gpu)", "var(--tone-hot)"],
+    );
+
+    expect(svg.match(/<rect /g)).toHaveLength(2);
+    expect(svg).toContain('fill="var(--tone-gpu)"');
+    expect(svg).toContain('fill="var(--tone-hot)"');
+  });
 });
 
 describe("UTC windows", () => {

@@ -155,6 +155,93 @@ def test_create_raw_rechecks_extra_limit_after_pricing(client, session):
     assert session.exec(select(RawInput)).all() == []
 
 
+def test_backfill_raw_usage_prices_and_preserves_existing_metadata(client, session):
+    created = client.post(
+        "/api/knowledge/raws",
+        json={
+            "content": "old local session transcript",
+            "source": "claude-session",
+            "extra": {"model": "claude-opus-5", "collector_version": "claude-v1"},
+        },
+    ).json()
+
+    response = client.post(
+        f"/api/knowledge/raws/{created['raw_id']}/usage",
+        json={
+            "usage": {
+                "shape": "claude",
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "cache_read_tokens": 9_000,
+                "cache_write_tokens": 0,
+            },
+            "models": ["claude-opus-5"],
+            "model": "replacement-model",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["updated"] is True
+    raw = session.exec(
+        select(RawInput).where(RawInput.raw_id == created["raw_id"])
+    ).one()
+    assert raw.extra["model"] == "claude-opus-5"
+    assert raw.extra["models"] == ["claude-opus-5"]
+    assert raw.extra["usage_cost_usd"] > 0
+    assert raw.extra["usage_cost_source"] == "list"
+
+    repeated = client.post(
+        f"/api/knowledge/raws/{created['raw_id']}/usage",
+        json={
+            "usage": {"shape": "codex", "input_tokens": 999_999},
+            "models": ["different"],
+            "model": "different",
+        },
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["updated"] is False
+    session.refresh(raw)
+    assert raw.extra["usage"]["shape"] == "claude"
+
+
+def test_backfill_raw_usage_validation_and_not_found(client):
+    missing = client.post(
+        "/api/knowledge/raws/missing/usage",
+        json={"usage": {}, "models": []},
+    )
+    oversized = client.post(
+        "/api/knowledge/raws/missing/usage",
+        json={"usage": {"padding": "x" * (64 * 1024)}, "models": []},
+    )
+
+    assert missing.status_code == 404
+    assert oversized.status_code == 422
+
+
+def test_backfill_raw_usage_never_fails_on_pricing_error(client, session):
+    created = client.post(
+        "/api/knowledge/raws",
+        json={"content": "pricing failure", "source": "codex-session"},
+    ).json()
+
+    with patch("knowledge.router.price_usage", side_effect=RuntimeError("price down")):
+        response = client.post(
+            f"/api/knowledge/raws/{created['raw_id']}/usage",
+            json={
+                "usage": {"shape": "codex", "input_tokens": 100},
+                "models": ["gpt-5.6-luna"],
+                "model": "gpt-5.6-luna",
+            },
+        )
+
+    assert response.status_code == 200
+    raw = session.exec(
+        select(RawInput).where(RawInput.raw_id == created["raw_id"])
+    ).one()
+    assert raw.extra["usage"]["input_tokens"] == 100
+    assert "usage_cost_usd" not in raw.extra
+
+
 def test_create_extractable_raw_redacts_before_storage(client, session):
     token = "ghp_abcdefghijklmnopqrstuvwxyz123456"
     with patch("knowledge.ingest_queue.upload_raw") as upload:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from sqlmodel import Session, create_engine, text
 
@@ -47,6 +49,28 @@ def test_agent_activity_view_columns_and_types(session):
         ("sessions_today", "bigint"),
         ("last_turn_at", "timestamp with time zone"),
         ("running", "bigint"),
+    ]
+
+    local_columns = session.execute(
+        text(
+            """
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public_api'
+              AND table_name = 'local_session_activity_daily'
+            ORDER BY ordinal_position
+            """
+        )
+    ).all()
+    assert local_columns == [
+        ("day", "date"),
+        ("model", "text"),
+        ("source", "text"),
+        ("sessions", "bigint"),
+        ("input_tokens", "numeric"),
+        ("output_tokens", "numeric"),
+        ("cache_read_tokens", "numeric"),
+        ("list_cost_usd", "numeric"),
     ]
 
 
@@ -174,12 +198,19 @@ def test_public_reader_can_select_views_but_not_agent_tables(pg):
             session.execute(
                 text("SELECT day, model FROM public_api.agent_activity_daily")
             ).all()
+            session.execute(
+                text(
+                    "SELECT day, model, source "
+                    "FROM public_api.local_session_activity_daily"
+                )
+            ).all()
     finally:
         engine.dispose()
 
     for query in (
         text("SELECT id FROM agent_sessions.agent_sessions"),
         text("SELECT id FROM agent_sessions.agent_turns"),
+        text("SELECT id FROM knowledge.raw_inputs"),
     ):
         engine = create_engine(pg.url)
         try:
@@ -190,3 +221,62 @@ def test_public_reader_can_select_views_but_not_agent_tables(pg):
                 assert "permission denied" in str(exc.value).lower()
         finally:
             engine.dispose()
+
+
+def test_local_session_view_aggregates_collector_usage(session):
+    session.execute(
+        text(
+            """
+            INSERT INTO knowledge.raw_inputs
+                (raw_id, path, source, content_hash, created_at, extra)
+            VALUES
+                ('local-claude-one', 'local-claude-one.md', 'claude-session',
+                 'local-hash-one', now(),
+                 '{"started_at":"2026-09-07T01:00:00Z","model":"claude-opus-5","usage":{"input_tokens":"10","output_tokens":"5","cache_read_tokens":"3"},"usage_cost_usd":"0.25"}'::jsonb),
+                ('local-claude-two', 'local-claude-two.md', 'claude-session',
+                 'local-hash-two', now(),
+                 '{"started_at":"2026-09-07T03:00:00Z","model":"claude-opus-5","usage":{"input_tokens":"2","output_tokens":"4","cache_read_tokens":"8"},"usage_cost_usd":"0.05"}'::jsonb),
+                ('local-codex', 'local-codex.md', 'codex-session',
+                 'local-hash-three', now(),
+                 '{"started_at":"2026-09-07T05:00:00Z","usage":{"input_tokens":"7","output_tokens":"6","cache_read_tokens":"9"}}'::jsonb),
+                ('local-ignored', 'local-ignored.md', 'capture',
+                 'local-hash-four', now(),
+                 '{"started_at":"2026-09-07T05:00:00Z","model":"luna","usage":{"input_tokens":"99"}}'::jsonb)
+            """
+        )
+    )
+
+    rows = session.execute(
+        text(
+            """
+            SELECT day, model, source, sessions, input_tokens, output_tokens,
+                   cache_read_tokens, list_cost_usd
+            FROM public_api.local_session_activity_daily
+            WHERE day = DATE '2026-09-07'
+            ORDER BY model
+            """
+        )
+    ).all()
+
+    assert len(rows) == 2
+    claude, unknown = rows
+    assert tuple(claude[:7]) == (
+        date(2026, 9, 7),
+        "claude-opus-5",
+        "claude-session",
+        2,
+        12,
+        9,
+        11,
+    )
+    assert float(claude.list_cost_usd) == pytest.approx(0.30)
+    assert tuple(unknown) == (
+        date(2026, 9, 7),
+        "unknown",
+        "codex-session",
+        1,
+        7,
+        6,
+        9,
+        None,
+    )

@@ -21,7 +21,13 @@ const numeric = (value) => Number(value ?? 0);
  */
 export function modelLane(modelName) {
   if (typeof modelName !== "string") return "other";
-  return MODEL_LANES.get(modelName.toLowerCase()) ?? "other";
+  const model = modelName.toLowerCase();
+  if (model.startsWith("claude-")) return "claude";
+  if (model === "gpt-5.6-luna") return "luna";
+  if (model === "gpt-5.6-terra" || model === "gpt-5.6-sol") return "codex";
+  if (model === "muse" || model.startsWith("muse-") || model.includes("spark"))
+    return "spark";
+  return MODEL_LANES.get(model) ?? "other";
 }
 
 export function activitySeries(rows) {
@@ -133,10 +139,17 @@ export function tileDerivations(activity, merges, facts, series, now) {
     .map((row) => row.d)
     .sort()
     .at(-1);
+  const totals = activity.totals_7d ?? {};
+  const ember = totals.ember ?? totals;
+  const local = totals.local ?? {};
+  const listCosts = [ember.list_cost_usd, local.list_cost_usd].filter(
+    (value) => value != null,
+  );
   return {
-    live: {
-      value: numeric(activity.now?.active_last_hour),
-      sessionsToday: numeric(activity.now?.sessions_today),
+    sessions: {
+      value: numeric(ember.sessions) + numeric(local.sessions),
+      ember: numeric(ember.sessions),
+      local: numeric(local.sessions),
       spark: last14(series.sessions, "sessions", now),
     },
     merged: {
@@ -151,13 +164,15 @@ export function tileDerivations(activity, merges, facts, series, now) {
       spark: last14(series.lines, "add", now),
     },
     tokens: {
-      input: numeric(activity.totals_7d?.input_tokens),
-      output: numeric(activity.totals_7d?.output_tokens),
+      input: numeric(ember.input_tokens) + numeric(local.input_tokens),
+      output: numeric(ember.output_tokens) + numeric(local.output_tokens),
       spark: last14(series.sessions, "input_tokens", now),
     },
     cost: {
-      metered: numeric(activity.totals_7d?.cost_usd),
-      list: activity.totals_7d?.list_cost_usd,
+      metered: numeric(ember.cost_usd),
+      list: listCosts.length
+        ? listCosts.reduce((sum, value) => sum + numeric(value), 0)
+        : null,
       spark: last14(series.sessions, "cost_usd", now),
     },
     facts: {

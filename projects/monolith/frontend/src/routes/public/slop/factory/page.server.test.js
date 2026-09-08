@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { load } from "./+page.server.js";
 
 const payloads = {
-  "/slop/factory/activity": { now: {}, daily: [], totals_7d: {} },
+  "/slop/factory/activity": {
+    now: {},
+    daily: [],
+    local_daily: [],
+    totals_7d: { ember: {}, local: {} },
+  },
   "/slop/factory/merges": { daily: [], week: [], totals: {} },
   "/slop/factory/facts": {
     daily: [],

@@ -21,6 +21,7 @@ from typer.testing import CliRunner
 import app.jobs_main as jobs_main
 from agent_sessions.models import AgentSession, AgentTurn
 from faas.reconcile import ReconcileReport
+from knowledge.models import RawInput
 
 runner = CliRunner()
 
@@ -315,6 +316,93 @@ def test_price_turns_backfill_prices_only_eligible_rows(tmp_path):
 
             rerun = jobs_main._price_turns_backfill_core(engine, chunk_size=1)
             assert rerun.priced == 0
+    finally:
+        for table in SQLModel.metadata.tables.values():
+            if table.name in original_schemas:
+                table.schema = original_schemas[table.name]
+
+
+def test_price_raws_backfill_merges_costs_in_chunks_and_is_idempotent(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'raw-pricing.db'}")
+    original_schemas = {}
+    for table in SQLModel.metadata.tables.values():
+        if table.schema is not None:
+            original_schemas[table.name] = table.schema
+            table.schema = None
+    try:
+        SQLModel.metadata.create_all(engine)
+        with Session(engine) as session:
+            session.add_all(
+                [
+                    RawInput(
+                        raw_id="claude-priceable",
+                        path="claude-priceable.md",
+                        source="claude-session",
+                        content_hash="one",
+                        extra={
+                            "model": "claude-opus-5",
+                            "usage": {
+                                "shape": "claude",
+                                "input_tokens": 1_000,
+                                "cache_read_tokens": 9_000,
+                                "output_tokens": 100,
+                            },
+                            "preserved": True,
+                        },
+                    ),
+                    RawInput(
+                        raw_id="codex-priceable",
+                        path="codex-priceable.md",
+                        source="codex-session",
+                        content_hash="two",
+                        extra={
+                            "model": "luna",
+                            "usage": {"shape": "codex", "input_tokens": 1_000},
+                        },
+                    ),
+                    RawInput(
+                        raw_id="unknown",
+                        path="unknown.md",
+                        source="codex-session",
+                        content_hash="three",
+                        extra={
+                            "model": "gpt-6-astra",
+                            "usage": {"shape": "codex", "input_tokens": 1_000},
+                        },
+                    ),
+                    RawInput(
+                        raw_id="zero",
+                        path="zero.md",
+                        source="claude-session",
+                        content_hash="four",
+                        extra={"model": "opus", "usage": {"shape": "claude"}},
+                    ),
+                    RawInput(
+                        raw_id="other-source",
+                        path="other-source.md",
+                        source="capture",
+                        content_hash="five",
+                        extra={"model": "luna", "usage": {"input_tokens": 1_000}},
+                    ),
+                ]
+            )
+            session.commit()
+
+            report = jobs_main._price_raws_backfill_core(engine, chunk_size=1)
+
+            assert report == jobs_main.RawPricingBackfillReport(2, 1, 1)
+            rows = {
+                row.raw_id: row
+                for row in session.exec(select(RawInput).order_by(RawInput.id)).all()
+            }
+            assert rows["claude-priceable"].extra["usage_cost_usd"] > 0
+            assert rows["claude-priceable"].extra["usage_cost_source"] == "list"
+            assert rows["claude-priceable"].extra["preserved"] is True
+            assert rows["codex-priceable"].extra["usage_cost_usd"] > 0
+            assert "usage_cost_usd" not in rows["other-source"].extra
+
+            rerun = jobs_main._price_raws_backfill_core(engine, chunk_size=1)
+            assert rerun == jobs_main.RawPricingBackfillReport(0, 1, 1)
     finally:
         for table in SQLModel.metadata.tables.values():
             if table.name in original_schemas:

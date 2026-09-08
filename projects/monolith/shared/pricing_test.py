@@ -145,6 +145,33 @@ def test_claude_transcript_shape_uses_exclusive_input_semantics():
     assert shaped == canonical
 
 
+def test_collector_shapes_apply_provider_cache_semantics():
+    claude = price_usage(
+        "claude-opus-5",
+        {
+            "shape": "claude",
+            "input_tokens": 1_000,
+            "output_tokens": 100,
+            "cache_read_tokens": 9_000,
+            "cache_write_tokens": 0,
+        },
+    )
+    codex = price_usage(
+        "claude-opus-5",
+        {
+            "shape": "codex",
+            "input_tokens": 10_000,
+            "output_tokens": 100,
+            "cache_read_tokens": 9_000,
+            "cache_write_tokens": 0,
+        },
+    )
+
+    assert claude is not None
+    assert codex is not None
+    assert claude.cost_usd == pytest.approx(codex.cost_usd)
+
+
 def test_dated_claude_model_retries_without_date_suffix():
     priced = price_usage(
         "claude-haiku-4-5-20251001", {"input_tokens": 1_000, "output_tokens": 100}

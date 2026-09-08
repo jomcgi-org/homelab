@@ -19,6 +19,12 @@ describe("modelLane", () => {
     ["fable", "claude"],
     ["spark", "spark"],
     ["pi-spark", "spark"],
+    ["claude-opus-5", "claude"],
+    ["gpt-5.6-luna", "luna"],
+    ["gpt-5.6-terra", "codex"],
+    ["gpt-5.6-sol", "codex"],
+    ["muse-spark-1.3-contributor", "spark"],
+    ["muse", "spark"],
     ["qwen", "other"],
     ["unknown", "other"],
     [null, "other"],
@@ -32,6 +38,19 @@ describe("modelLane", () => {
       { day: "2026-09-07", model: "qwen", sessions: 1 },
     ]);
     expect(rows[0]).toMatchObject({ claude: 2, other: 1, sessions: 3 });
+  });
+
+  it("stacks Ember and local rows into the same lane totals", () => {
+    const rows = activitySeries([
+      { day: "2026-09-07", model: "luna", sessions: 2, source: "ember" },
+      {
+        day: "2026-09-07",
+        model: "gpt-5.6-luna",
+        sessions: 3,
+        source: "codex-session",
+      },
+    ]);
+    expect(rows[0]).toMatchObject({ luna: 5, sessions: 5 });
   });
 });
 
@@ -97,5 +116,45 @@ describe("fact and tile derivations", () => {
     expect(markClass({ verification_state: "verified", disputed: true })).toBe(
       "disputed",
     );
+  });
+
+  it("combines dual-source activity totals and accepts legacy flat totals", () => {
+    const shared = [{ d: "2026-09-07", sessions: 5, input_tokens: 12 }];
+    const dual = tileDerivations(
+      {
+        totals_7d: {
+          ember: {
+            sessions: 2,
+            input_tokens: 10,
+            output_tokens: 4,
+            cost_usd: 1.25,
+            list_cost_usd: 2,
+          },
+          local: {
+            sessions: 3,
+            input_tokens: 20,
+            output_tokens: 6,
+            list_cost_usd: 3,
+          },
+        },
+      },
+      { totals: {} },
+      { daily: [], totals: {} },
+      { sessions: shared, merges: [], lines: [], facts: [] },
+      "2026-09-07",
+    );
+    const legacy = tileDerivations(
+      { totals_7d: { sessions: 4, input_tokens: 7, output_tokens: 2 } },
+      { totals: {} },
+      { daily: [], totals: {} },
+      { sessions: [], merges: [], lines: [], facts: [] },
+      "2026-09-07",
+    );
+
+    expect(dual.sessions).toMatchObject({ value: 5, ember: 2, local: 3 });
+    expect(dual.tokens).toMatchObject({ input: 30, output: 10 });
+    expect(dual.cost).toMatchObject({ metered: 1.25, list: 5 });
+    expect(legacy.sessions.value).toBe(4);
+    expect(legacy.tokens.input).toBe(7);
   });
 });

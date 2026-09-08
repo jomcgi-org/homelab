@@ -25,9 +25,10 @@ class _Result:
 
 
 class _FakeSession:
-    def __init__(self, now_row, daily_rows):
+    def __init__(self, now_row, daily_rows, local_daily_rows=None):
         self.now_row = now_row
         self.daily_rows = daily_rows
+        self.local_daily_rows = local_daily_rows or []
         self.statements: list[str] = []
 
     def execute(self, statement):
@@ -37,6 +38,8 @@ class _FakeSession:
             return _Result(one=self.now_row)
         if "public_api.agent_activity_daily" in sql:
             return _Result(rows=self.daily_rows)
+        if "public_api.local_session_activity_daily" in sql:
+            return _Result(rows=self.local_daily_rows)
         raise AssertionError(f"unexpected query: {sql}")
 
 
@@ -65,6 +68,19 @@ def _daily_row(day_value, amount, *, cost=None, list_cost=None, model="luna"):
     }
 
 
+def _local_row(day_value, amount, *, list_cost=None, model="gpt-5.6-luna"):
+    return {
+        "day": day_value,
+        "model": model,
+        "source": "codex-session",
+        "sessions": amount,
+        "input_tokens": amount * 7,
+        "output_tokens": amount * 8,
+        "cache_read_tokens": amount * 9,
+        "list_cost_usd": list_cost,
+    }
+
+
 def test_activity_shape_windows_headers_and_stable_etag():
     today = datetime.now(timezone.utc).date()
     rows = [
@@ -82,6 +98,10 @@ def test_activity_shape_windows_headers_and_stable_etag():
             "last_turn_at": None,
         },
         rows,
+        [
+            _local_row(today, 3, list_cost=2.5),
+            _local_row(today - timedelta(days=7), 9, list_cost=99),
+        ],
     )
 
     with _client(fake_session) as client:
@@ -96,7 +116,7 @@ def test_activity_shape_windows_headers_and_stable_etag():
             "running": 2,
             "last_turn_at": None,
         }
-        assert list(payload) == ["now", "daily", "totals_7d"]
+        assert list(payload) == ["now", "daily", "local_daily", "totals_7d"]
         assert len(payload["daily"]) == 4
         assert set(payload["daily"][0]) == {
             "day",
@@ -116,14 +136,26 @@ def test_activity_shape_windows_headers_and_stable_etag():
             (today - timedelta(days=29)).isoformat(),
         ]
         assert payload["totals_7d"] == {
-            "sessions": 3,
-            "turns": 6,
-            "input_tokens": 9,
-            "output_tokens": 12,
-            "cache_read_tokens": 15,
-            "cost_usd": 1.25,
-            "list_cost_usd": None,
+            "ember": {
+                "sessions": 3,
+                "turns": 6,
+                "input_tokens": 9,
+                "output_tokens": 12,
+                "cache_read_tokens": 15,
+                "cost_usd": 1.25,
+                "list_cost_usd": None,
+            },
+            "local": {
+                "sessions": 3,
+                "turns": 0,
+                "input_tokens": 21,
+                "output_tokens": 24,
+                "cache_read_tokens": 27,
+                "cost_usd": None,
+                "list_cost_usd": 2.5,
+            },
         }
+        assert payload["local_daily"][0]["source"] == "codex-session"
         assert first.headers["cache-control"] == ("public, max-age=300, s-maxage=300")
         assert first.headers["etag"] == second.headers["etag"]
 
@@ -136,7 +168,8 @@ def test_activity_shape_windows_headers_and_stable_etag():
         assert unchanged.headers["cache-control"] == first.headers["cache-control"]
 
     assert fake_session.statements
-    assert all("public_api.agent_activity_" in sql for sql in fake_session.statements)
+    assert all("public_api." in sql for sql in fake_session.statements)
+    assert all("activity_" in sql for sql in fake_session.statements)
     assert all("agent_sessions.agent_" not in sql for sql in fake_session.statements)
 
 

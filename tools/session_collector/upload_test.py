@@ -9,11 +9,17 @@ import httpx
 import pytest
 
 from tools.cli.auth import read_cached_cf_token
-from tools.session_collector.collector import _payload, run_collection
+from tools.session_collector.collector import (
+    _payload,
+    run_collection,
+    run_usage_backfill,
+)
 from tools.session_collector.models import Session
 from tools.session_collector.render import render
 from tools.session_collector.scope import discover_repo
-from tools.session_collector.state import load
+from tools.session_collector.state import load, save
+from tools.session_collector.upload import UploadResult
+from tools.session_collector.upload import upload_usage
 
 ALLOW = {"jomcgi-org/homelab": "repo:jomcgi-org/homelab"}
 
@@ -133,6 +139,99 @@ def test_payload_caps_models_at_twenty():
     rendered = render(session, "jomcgi-org/homelab", "repo:jomcgi-org/homelab")
     payload = _payload(session, rendered, 0)
     assert payload["extra"]["models"] == session.models[:20]
+
+
+def test_usage_backfill_iterates_uploaded_state_and_retries(tmp_path, capsys):
+    claude_dir = tmp_path / "claude"
+    transcript = _session(claude_dir, "old", str(tmp_path / "homelab"))
+    missing = tmp_path / "missing.jsonl"
+    state_file = tmp_path / "state.json"
+    save(
+        state_file,
+        {
+            str(transcript.resolve()): {"status": "uploaded", "raw_id": "raw-old"},
+            str(missing): {"status": "uploaded", "raw_id": "raw-missing"},
+            "failed": {"status": "failed", "raw_id": None},
+        },
+    )
+    results = iter(
+        [
+            UploadResult("failed", status_code=503),
+            UploadResult("uploaded", "raw-old", status_code=200),
+            UploadResult("uploaded", "raw-old", status_code=200),
+        ]
+    )
+
+    with patch(
+        "tools.session_collector.collector.upload_usage",
+        side_effect=lambda *args, **kwargs: next(results),
+    ) as uploader:
+        assert (
+            run_usage_backfill(
+                state_file=state_file,
+                base_url="http://monolith.example.ts.net",
+                auth="none",
+                client=httpx.Client(transport=httpx.MockTransport(lambda r: None)),
+            )
+            == 0
+        )
+        assert "usage_sent_at" not in load(state_file)[str(transcript.resolve())]
+
+        assert (
+            run_usage_backfill(
+                state_file=state_file,
+                base_url="http://monolith.example.ts.net",
+                auth="none",
+                client=httpx.Client(transport=httpx.MockTransport(lambda r: None)),
+            )
+            == 0
+        )
+        sent_at = load(state_file)[str(transcript.resolve())]["usage_sent_at"]
+
+        assert (
+            run_usage_backfill(
+                state_file=state_file,
+                base_url="http://monolith.example.ts.net",
+                auth="none",
+                force=True,
+                client=httpx.Client(transport=httpx.MockTransport(lambda r: None)),
+            )
+            == 0
+        )
+
+    assert uploader.call_count == 3
+    payload = uploader.call_args_list[0].args[4]
+    assert payload["usage"]["shape"] == "claude"
+    assert payload["models"] == ["test-model"]
+    assert payload["model"] == "test-model"
+    assert load(state_file)[str(transcript.resolve())]["usage_sent_at"] >= sent_at
+    output = capsys.readouterr().out
+    assert "failed" in output
+    assert "missing" in output
+    assert "already sent" not in output
+    assert "summary sent=1 already_sent=0 missing=1 failed=0" in output
+
+
+def test_upload_usage_uses_raw_endpoint_and_cloudflare_cookie():
+    requests = []
+
+    def transport(request):
+        requests.append(request)
+        return httpx.Response(200, json={"raw_id": "raw-one", "updated": True})
+
+    with httpx.Client(transport=httpx.MockTransport(transport)) as client:
+        result = upload_usage(
+            client,
+            "https://private.example",
+            "cached-token",
+            "raw-one",
+            {"usage": {}, "models": []},
+            cloudflare=True,
+        )
+
+    assert result.status == "uploaded"
+    assert requests[0].url.path == "/api/knowledge/raws/raw-one/usage"
+    assert requests[0].headers["cookie"] == "CF_Authorization=cached-token"
 
 
 def test_302_stops_without_further_uploads(tmp_path):

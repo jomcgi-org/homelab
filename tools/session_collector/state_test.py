@@ -2,6 +2,7 @@ import json
 import os
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
 from tools.session_collector.cli import main
 from tools.session_collector.state import eligible, forget, load, locked, save
@@ -153,6 +154,35 @@ def test_render_subcommand_prints_redacted_output(tmp_path, capsys):
     output = capsys.readouterr().out
     assert planted not in output
     assert "[REDACTED:github_token]" in output
+
+
+def test_backfill_usage_subcommand_dispatches_options(tmp_path):
+    state_file = tmp_path / "state.json"
+    with patch(
+        "tools.session_collector.cli.run_usage_backfill", return_value=0
+    ) as backfill:
+        assert (
+            main(
+                [
+                    "backfill-usage",
+                    "--state-file",
+                    str(state_file),
+                    "--base-url",
+                    "http://monolith.example.ts.net",
+                    "--auth",
+                    "none",
+                    "--force",
+                ]
+            )
+            == 0
+        )
+
+    backfill.assert_called_once_with(
+        state_file=state_file,
+        base_url="http://monolith.example.ts.net",
+        auth="none",
+        force=True,
+    )
 
 
 def test_install_assets_use_durable_state_and_bootstrap_delay():
