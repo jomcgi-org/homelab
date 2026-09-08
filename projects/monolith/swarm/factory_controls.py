@@ -255,6 +255,48 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
         **_accounting(starts),
     )
     if row.task_id:
+        # Bounded lifecycle evidence on the existing task/status surface. Never
+        # return raw stop identity hashes, turn bodies or execution credentials.
+        stop_rows = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == row.task_id,
+                FactoryAudit.action.in_(
+                    (
+                        "stop_intent",
+                        "stop_request",
+                        "stop_accepted",
+                        "stop_observation",
+                        "stop_settled",
+                    )
+                ),
+            )
+            .order_by(FactoryAudit.id.desc())
+            .limit(16)
+        ).all()
+        result["stop_events"] = []
+        for event in stop_rows:
+            detail = json.loads(event.detail_json)
+            identity = detail.get("identity") or {}
+            result["stop_events"].append(
+                {
+                    "action": event.action,
+                    "created_at": event.created_at.isoformat(),
+                    "workflow_id": detail.get("workflow_id"),
+                    "session_id": detail.get("session_id", identity.get("session_id")),
+                    "guest_id": detail.get("guest_id", identity.get("guest_id")),
+                    **{
+                        key: detail[key]
+                        for key in (
+                            "reason",
+                            "request_number",
+                            "cessation_confirmed",
+                            "intervention_required",
+                        )
+                        if key in detail
+                    },
+                }
+            )
         task = db.get(SwarmTask, row.task_id)
         admitted = (
             task.created_at.replace(tzinfo=timezone.utc)

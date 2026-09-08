@@ -868,6 +868,16 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
         )
         if confirmed is not None:
             result = confirmed
+        else:
+            from swarm.factory_supervision import reconcile_uncertain_attempt
+
+            if reconcile_uncertain_attempt(
+                pin,
+                result.get("session_id") or run.get("session_id"),
+                result,
+                state.status,
+            ):
+                return
     with Session(get_engine()) as db:
         with _locked_session(db):
             # Only a completed timeout result can trigger this repair. Session,

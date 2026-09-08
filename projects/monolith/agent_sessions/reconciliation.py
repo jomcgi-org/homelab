@@ -99,6 +99,161 @@ def _factory_owner(db: Session, pin: dict, session_id: int | None):
     return owner
 
 
+def read_uncertain_factory_attempt(db: Session, pin: dict, session_id: int) -> dict:
+    """Lock and fingerprint the exact failed executor, never its replacement.
+
+    The factory caller holds its control lock. This function acquires the pool
+    before the session, and returns no prompt, result body, or credential.
+    """
+    import hashlib
+    import json
+    from datetime import datetime, timezone
+    from sqlalchemy import or_
+
+    from agent_sessions.constants import UNKNOWN_INVOCATION
+    from agent_sessions.models import AgentTurn, PendingMessage
+
+    admission.lock_pool(db)
+    agent = _factory_owner(db, pin, session_id)
+    if agent is None:
+        raise ValueError("missing_factory_owner")
+    agent = _locked_session(db, agent.id)
+    if _factory_owner(db, pin, session_id) is None:
+        raise ValueError("factory_owner_changed")
+    if (
+        not agent.ember_session_id
+        or agent.result_receipt_fence_id is not None
+        or db.exec(
+            select(PendingMessage.id).where(PendingMessage.session_id == agent.id)
+        ).first()
+        is not None
+    ):
+        raise ValueError("pending_or_missing_factory_guest")
+    turns = db.exec(
+        select(AgentTurn).where(AgentTurn.session_id == agent.id).limit(2)
+    ).all()
+    permits = db.exec(
+        select(AgentCapacityReservation)
+        .where(
+            or_(
+                AgentCapacityReservation.session_id == agent.id,
+                AgentCapacityReservation.local_session_id == agent.local_session_id,
+            )
+        )
+        .execution_options(populate_existing=True)
+        .limit(2)
+    ).all()
+    owners = db.exec(
+        select(AgentSession.id)
+        .where(AgentSession.ember_session_id == agent.ember_session_id)
+        .limit(2)
+    ).all()
+    if len(turns) != 1 or len(permits) != 1 or owners != [agent.id]:
+        raise ValueError("ambiguous_factory_attempt")
+    turn, permit = turns[0], permits[0]
+    if (
+        turn.seq != 1
+        or turn.terminal_reason != "error"
+        or permit.pending_seq != 1
+        or permit.session_id != agent.id
+        or permit.local_session_id != agent.local_session_id
+        or permit.state != "uncertain"
+        or permit.tier != "project"
+        or permit.routine_job_name is not None
+        or not permit.owner
+        or not (
+            (agent.status == "failed" and turn.stop_reason == UNKNOWN_INVOCATION)
+            or (
+                agent.status == "warn"
+                and turn.stop_reason is None
+                and permit.outcome == "delivery_error"
+            )
+        )
+    ):
+        raise ValueError("factory_attempt_not_uncertain")
+    recovery = json.loads(turn.usage_json or "{}").get("recovery", {})
+    count = recovery.get("dispatch_count")
+    if (
+        type(count) is not int
+        or count < 1
+        or recovery.get("claim_owner") != permit.owner
+        or not isinstance(recovery.get("last_dispatch_at"), str)
+    ):
+        raise ValueError("missing_factory_dispatch_identity")
+    dispatched = datetime.fromisoformat(
+        recovery["last_dispatch_at"].replace("Z", "+00:00")
+    )
+    if dispatched.tzinfo is None:
+        dispatched = dispatched.replace(tzinfo=timezone.utc)
+
+    def encode(value):
+        if isinstance(value, bytes):
+            return {"sha256": hashlib.sha256(value).hexdigest(), "bytes": len(value)}
+        if isinstance(value, datetime):
+            return (
+                value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+            ).isoformat()
+        raise TypeError(type(value).__name__)
+
+    protected = {
+        "pin": pin,
+        "permit": permit.model_dump(),
+        "turn": turn.model_dump(),
+        "session_id": agent.id,
+        "local_session_id": agent.local_session_id,
+        "guest_id": agent.ember_session_id,
+        "status": agent.status,
+        "last_turn_at": agent.last_turn_at,
+        "lineage_id": agent.ember_lineage_id,
+        "cli_session_id": agent.cli_session_id,
+        "prior_lineage_id": agent.prior_ember_lineage_id,
+        "prior_cli_session_id": agent.prior_cli_session_id,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(protected, sort_keys=True, default=encode).encode()
+    ).hexdigest()
+    return {
+        "session_id": agent.id,
+        "guest_id": agent.ember_session_id,
+        "permit_id": permit.id,
+        "seq": turn.seq,
+        "claim_owner": permit.owner,
+        "dispatch_count": count,
+        "dispatched_at": dispatched.isoformat(),
+        "identity_sha256": fingerprint,
+        "cost_usd": turn.cost_usd,
+    }
+
+
+def settle_uncertain_factory_attempt(db: Session, pin: dict, identity: dict) -> None:
+    """Settle only after the factory validates its exact durable stop proof.
+
+    Caller composes graph/start/audit settlement in this transaction. The
+    original turn and its UNKNOWN/cost/artifacts are deliberately immutable.
+    """
+    current = read_uncertain_factory_attempt(db, pin, identity["session_id"])
+    if current != identity:
+        raise ValueError("factory_attempt_changed")
+    agent = _locked_session(db, identity["session_id"])
+    admission.settle(
+        db,
+        agent,
+        identity["seq"],
+        outcome="guest_cessation_confirmed",
+        cessation_confirmed=True,
+    )
+    if agent.ember_lineage_id:
+        agent.prior_ember_lineage_id = agent.ember_lineage_id
+    if agent.cli_session_id:
+        agent.prior_cli_session_id = agent.cli_session_id
+    agent.ember_session_id = None
+    agent.ember_session_token = None
+    agent.ember_session_expires_at = None
+    agent.ember_lineage_id = None
+    agent.cli_session_id = None
+    db.add(agent)
+
+
 def read_factory_dispatch(db: Session, pin: dict, session_id: int) -> dict:
     """Project persisted claim evidence without treating a missing row as queued."""
     from agent_sessions.models import PendingMessage

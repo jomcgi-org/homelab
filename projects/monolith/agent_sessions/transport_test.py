@@ -63,6 +63,10 @@ class FakeAsyncClient:
         request = httpx.Request("DELETE", url, **kwargs)
         return await self.handler(request)
 
+    async def request(self, method, url, **kwargs):
+        request = httpx.Request(method, url, **kwargs)
+        return await self.handler(request)
+
 
 def _turn_response(request: httpx.Request, status_code: int = 200):
     return httpx.Response(
@@ -2194,6 +2198,44 @@ def test_destroy_session_maps_404_to_session_gone(monkeypatch):
     _client(monkeypatch, handler)
     with pytest.raises(EmberSessionGone):
         asyncio.run(transport.EmberVmShimTransport().destroy_session("s-1"))
+
+
+@pytest.mark.parametrize("status", [202, 409, 503])
+def test_exact_destroy_preserves_conditional_payload_and_never_retries(
+    monkeypatch, status
+):
+    calls = []
+    expected = {
+        "session_id": "s-1",
+        "generation": 0,
+        "invoke_started_at": 123,
+        "node_id": "node",
+        "pod_uid": "pod",
+        "instance_id": "node/pod",
+        "boot_id": "boot",
+        "vm_id": "vm",
+    }
+
+    async def handler(request):
+        calls.append(request)
+        assert request.method == "DELETE"
+        assert request.headers["authorization"] == "management"
+        assert json.loads(request.content) == {"stop_precondition": expected}
+        return httpx.Response(
+            status, json={"session_id": "s-1", "state": "destroying"}, request=request
+        )
+
+    _client(monkeypatch, handler)
+    operation = transport.EmberVmShimTransport().destroy_session(
+        "s-1", stop_precondition=expected
+    )
+    if status == 202:
+        assert asyncio.run(operation)["state"] == "destroying"
+    else:
+        with pytest.raises(EmberVMTransportError) as caught:
+            asyncio.run(operation)
+        assert not isinstance(caught.value, EmberSessionGone)
+    assert len(calls) == 1
 
 
 def test_destroy_session_keeps_403_and_500_as_plain_failures(monkeypatch):

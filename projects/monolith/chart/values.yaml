@@ -1415,6 +1415,8 @@ metaSpark:
 swarm:
   # Availability gate only. Operator policy and durable enable are separate.
   factoryEnabled: false
+  # Consume exact durable Ember teardown proof for stopped/expired attempts.
+  factoryStopSupervisionEnabled: false
   enabled: false
   # The cheap implementer lane and the reviewer that gates it. The reviewer is
   # never below Opus: ADR 038 decision 5 floors anything assessable only by
