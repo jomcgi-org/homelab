@@ -13,6 +13,11 @@ swarm:
   # operator policy separately controls issue admission and starts disabled.
   factoryEnabled: true
 
+agents:
+  sessions:
+    # Release failed probe holds after exact guest eviction is confirmed.
+    probeSupervisionEnabled: true
+
 postgres:
   storage:
     storageClass: standard-rwo
