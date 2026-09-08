@@ -124,8 +124,8 @@ class TestSingletonBotClose:
         ):
             await _start_singletons(app)
 
-        # bot + outbox + ships + agent_sessions + lock sweeps + title + KG feed
-        assert len(tasks) == 8
+        # Bot, outbox, lock sweep, and six service loops including receipt retention.
+        assert len(tasks) == 9
 
 
 # ---------------------------------------------------------------------------
