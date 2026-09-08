@@ -167,8 +167,7 @@ def prepare_receipt(
         return {"id": receipt.id, "token": token}
 
 
-def capture_result(receipt_id: str, token: str, body: bytes) -> dict:
-    """Acknowledge only a committed, immutable body, including late callbacks."""
+def _check_credential_format(receipt_id: str, token: str) -> None:
     if (
         not isinstance(receipt_id, str)
         or re.fullmatch(r"[0-9a-f]{32}", receipt_id) is None
@@ -176,6 +175,24 @@ def capture_result(receipt_id: str, token: str, body: bytes) -> dict:
         or re.fullmatch(r"[A-Za-z0-9_-]{43,128}", token) is None
     ):
         raise ReceiptRejected(401, "invalid_receipt_token")
+
+
+def authenticate_receipt(receipt_id: str, token: str) -> None:
+    """Reject unknown credentials before the listener reads a native body."""
+    _check_credential_format(receipt_id, token)
+    with Session(get_engine()) as db:
+        digest = db.exec(
+            select(AgentResultReceipt.token_sha256).where(
+                AgentResultReceipt.id == receipt_id
+            )
+        ).one_or_none()
+        if digest is None or not hmac.compare_digest(digest, _sha(token.encode())):
+            raise ReceiptRejected(401, "invalid_receipt_token")
+
+
+def capture_result(receipt_id: str, token: str, body: bytes) -> dict:
+    """Acknowledge only a committed, immutable body, including late callbacks."""
+    _check_credential_format(receipt_id, token)
     if len(body) > MAX_RESULT_BYTES:
         raise ReceiptRejected(413, "result_too_large")
     try:
