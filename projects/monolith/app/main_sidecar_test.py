@@ -475,8 +475,7 @@ async def test_start_bot_when_ready_not_scheduled_when_no_token():
     ):
         await _start_singletons(app)
 
-    # Ships ingest plus the agent_sessions sweep, title refresh, and KG feed.
-    # 5 not 4: cd-probe (cluster) writes the platform_probe latch.
-    assert len(created_tasks) == 5, (
-        f"Expected 5 tasks without a bot token, got {len(created_tasks)}"
+    # Ships, pending-message sweep, titles, KG feed, receipt retention, cd probe.
+    assert len(created_tasks) == 6, (
+        f"Expected 6 tasks without a bot token, got {len(created_tasks)}"
     )
