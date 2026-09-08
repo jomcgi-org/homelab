@@ -2,6 +2,7 @@ package server
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	nodev1 "github.com/jomcgi/homelab/projects/embervm/proto/embervm/node/v1"
@@ -20,12 +21,10 @@ const (
 	vmAssigned                // an Assign has claimed it; single-use in flight
 )
 
-// vmEntry is one live microVM the daemon supervises. Teardown is single-owned by
-// registry removal: Assign and Destroy both remove() the entry before reaping,
-// and the registry lock hands the non-nil entry to exactly one of them, so a
-// racing Destroy and the single-use Assign teardown can never double-Release one
-// VM (see Server.reap).
+// vmEntry is one live microVM the daemon supervises. Its teardown state fences
+// new work and serializes cleanup while retaining inventory until reap succeeds.
 type vmEntry struct {
+	teardown     vmTeardown
 	id           string
 	workload     string
 	snapshotRef  string
@@ -72,7 +71,7 @@ func (r *vmRegistry) claimForAssign(id string) (*vmEntry, bool) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.state != vmPrimed {
+	if e.state != vmPrimed || e.teardown.started.Load() {
 		return nil, false
 	}
 	e.state = vmAssigned
@@ -101,7 +100,7 @@ func (r *vmRegistry) claimForSession(id, workload string) (*vmEntry, bool) {
 		return nil, false
 	}
 	e.mu.Lock()
-	if e.state != vmPrimed || e.workload != workload {
+	if e.state != vmPrimed || e.workload != workload || e.teardown.started.Load() {
 		e.mu.Unlock()
 		return nil, false
 	}
@@ -131,7 +130,7 @@ func (r *vmRegistry) capacity() (primedPerWorkload map[string][]string, live int
 	primedPerWorkload = make(map[string][]string)
 	for id, e := range r.vms {
 		e.mu.Lock()
-		if e.state == vmPrimed {
+		if e.state == vmPrimed && !e.teardown.started.Load() {
 			primedPerWorkload[e.workload] = append(primedPerWorkload[e.workload], id)
 		}
 		e.mu.Unlock()
@@ -191,6 +190,7 @@ func (r *vmRegistry) snapshotRefInUse(ref string) (string, bool) {
 // SessionAssign or Bank may hold a session VM at a time (the control plane
 // serializes anyway; this is the daemon-side backstop the contract requires).
 type sessionEntry struct {
+	teardown    vmTeardown
 	vmID        string
 	sessionID   string
 	workload    string
@@ -242,7 +242,7 @@ func (r *sessionRegistry) beginInFlight(id string) (*sessionEntry, bool) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.inFlight {
+	if e.inFlight || e.teardown.started.Load() {
 		return nil, false
 	}
 	e.inFlight = true
@@ -265,6 +265,36 @@ func (r *sessionRegistry) remove(id string) *sessionEntry {
 	defer r.mu.Unlock()
 	e := r.vms[id]
 	delete(r.vms, id)
+	return e
+}
+
+// vmTeardown retains cleanup progress on the registry entry. Only a completed
+// reap removes the entry; a failed reap can retry without releasing twice.
+// started also fences new assignments while cleanup is in progress or failed.
+type vmTeardown struct {
+	started  atomic.Bool
+	mu       sync.Mutex
+	released bool
+	done     bool
+}
+
+func (r *vmRegistry) forTeardown(id string) *vmEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.vms[id]
+	if e != nil {
+		e.teardown.started.Store(true)
+	}
+	return e
+}
+
+func (r *sessionRegistry) forTeardown(id string) *sessionEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.vms[id]
+	if e != nil {
+		e.teardown.started.Store(true)
+	}
 	return e
 }
 

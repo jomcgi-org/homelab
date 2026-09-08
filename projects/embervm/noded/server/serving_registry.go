@@ -197,6 +197,7 @@ func (r *servingImageRegistry) snapshot() []servingImageEntry {
 // (BANK) may hold a serving VM at a time. The probe handle owns the per-VM health loop
 // and is stopped on teardown; ip/port/tap are the endpoint facts the daemon reports.
 type servingEntry struct {
+	teardown vmTeardown
 	vmID     string
 	workload string
 	handle   substrate.Handle
@@ -222,7 +223,7 @@ type servingEntry struct {
 }
 
 func (e *servingEntry) healthyAndFresh(now time.Time) bool {
-	if e.probe == nil {
+	if e.probe == nil || e.teardown.started.Load() {
 		return false
 	}
 	result := e.probe.Result()
@@ -266,7 +267,7 @@ func (r *servingRegistry) firstByWorkload(workload string) (*servingEntry, bool)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, e := range r.vms {
-		if e.workload == workload {
+		if e.workload == workload && !e.teardown.started.Load() {
 			return e, true
 		}
 	}
@@ -288,7 +289,7 @@ func (r *servingRegistry) snapshotByWorkload(workload string) []*servingEntry {
 	defer r.mu.Unlock()
 	entries := make([]*servingEntry, 0)
 	for _, e := range r.vms {
-		if e.workload == workload {
+		if e.workload == workload && !e.teardown.started.Load() {
 			entries = append(entries, e)
 		}
 	}
@@ -305,7 +306,7 @@ func (r *servingRegistry) withHealthyFreshSplice(entry *servingEntry, now time.T
 		return false
 	}
 	entry.mu.Lock()
-	if entry.inFlight || !entry.healthyAndFresh(now) {
+	if entry.inFlight || entry.teardown.started.Load() || !entry.healthyAndFresh(now) {
 		entry.mu.Unlock()
 		r.mu.Unlock()
 		return false
@@ -322,9 +323,9 @@ func (r *servingRegistry) withHealthyFreshSplice(entry *servingEntry, now time.T
 	return true
 }
 
-// withdrawIfIdle removes entry only while holding the registry and bank guards
+// withdrawIfIdle fences entry only while holding the registry and bank guards
 // in the same order as beginBank. A bank that already owns the entry is left
-// untouched for its snapshot operation.
+// untouched for its snapshot operation. Inventory retains it until reap completes.
 func (r *servingRegistry) withdrawIfIdle(entry *servingEntry) (*servingEntry, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -333,10 +334,10 @@ func (r *servingRegistry) withdrawIfIdle(entry *servingEntry) (*servingEntry, bo
 	}
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
-	if entry.inFlight || entry.spliceReservations > 0 {
+	if entry.inFlight || entry.spliceReservations > 0 || entry.teardown.started.Load() {
 		return nil, false
 	}
-	delete(r.vms, entry.vmID)
+	entry.teardown.started.Store(true)
 	return entry, true
 }
 
@@ -354,7 +355,7 @@ func (r *servingRegistry) beginBank(id string) (*servingEntry, bool) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.inFlight || e.spliceReservations > 0 {
+	if e.inFlight || e.spliceReservations > 0 || e.teardown.started.Load() {
 		return nil, false
 	}
 	e.inFlight = true
@@ -368,6 +369,16 @@ func (r *servingRegistry) remove(id string) *servingEntry {
 	defer r.mu.Unlock()
 	e := r.vms[id]
 	delete(r.vms, id)
+	return e
+}
+
+func (r *servingRegistry) forTeardown(id string) *servingEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := r.vms[id]
+	if e != nil {
+		e.teardown.started.Store(true)
+	}
 	return e
 }
 
@@ -402,7 +413,7 @@ func (r *servingRegistry) snapshot() []servingView {
 		}
 		if e.probe != nil {
 			res := e.probe.Result()
-			v.healthy = res.Healthy
+			v.healthy = res.Healthy && !e.teardown.started.Load()
 			v.lastProbeUnixMs = res.LastProbeUnixMs
 		}
 		out = append(out, v)
