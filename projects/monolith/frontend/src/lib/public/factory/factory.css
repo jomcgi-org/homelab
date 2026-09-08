@@ -66,15 +66,19 @@
   margin: 0 auto;
 }
 
-.factory-page.context-page {
-  height: auto;
-  min-height: 100vh;
-  overflow: visible;
+/* The context view fits the screen on the same terms as the overview: the
+   sidebar and the document column shrink, and the note list pages rather than
+   growing the page. */
+.factory-page.context-page .journal {
+  flex: 1;
+  min-height: 0;
 }
 
-.factory-page.context-page .frame {
-  flex: none;
-  min-height: auto;
+.factory-page.context-page .spine,
+.factory-page.context-page .doc {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
 }
 
 .factory-page .masthead {
@@ -86,16 +90,26 @@
   margin-bottom: 1rem;
 }
 
+/* Tabs and toggle are one strip: the box draws the outline, the children
+   divide it. The toggle used to be a taller free-standing square overlapping
+   the tab border by a pixel, which read as detached. */
 .factory-page .mast-actions {
   display: flex;
-  gap: 0;
-  align-items: center;
+  align-items: stretch;
   min-width: 0;
   margin-left: auto;
+  border: 1px solid var(--ink);
+}
+
+.factory-page .mast-actions .view-tabs {
+  border: 0;
 }
 
 .factory-page .mast-actions .scheme {
-  margin-left: -1px;
+  width: 2.1em;
+  height: auto;
+  border: 0;
+  border-left: 1px solid var(--stroke);
 }
 
 .factory-page .view-tabs {
@@ -679,6 +693,17 @@
   .factory-page .goals {
     overflow-y: visible;
   }
+
+  .factory-page.context-page .journal {
+    flex: none;
+    min-height: auto;
+  }
+
+  .factory-page.context-page .spine,
+  .factory-page.context-page .doc {
+    min-height: auto;
+    overflow-y: visible;
+  }
 }
 
 @media (max-width: 900px) {
@@ -757,17 +782,13 @@
   display: grid;
   grid-template-columns: minmax(12em, 15em) minmax(0, 46em);
   gap: clamp(2em, 4vw, 4em);
-  align-items: start;
+  align-items: stretch;
 }
 
 .factory-page .spine {
-  position: sticky;
-  top: 1.5rem;
   display: grid;
   align-content: start;
-  max-height: calc(100vh - 3rem);
   gap: 1.6rem;
-  overflow-y: auto;
   scrollbar-width: none;
 }
 
@@ -885,7 +906,7 @@
   font-size: 0.72em;
 }
 
-.factory-page .index a {
+.factory-page .topics a {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.6em;
@@ -897,21 +918,21 @@
   text-decoration: none;
 }
 
-.factory-page .index a small {
+.factory-page .topics a small {
   font-family: var(--font-code);
   font-size: 0.72em;
 }
 
-.factory-page .index a:hover,
-.factory-page .index a.active {
+.factory-page .topics a:hover,
+.factory-page .topics a.active {
   color: var(--accent-ink);
 }
 
-.factory-page .index a.active {
+.factory-page .topics a.active {
   border-left-color: var(--accent-ink);
 }
 
-.factory-page .index .group {
+.factory-page .topics .group {
   margin: 0.6em 0 0.2em;
 }
 
@@ -1122,40 +1143,6 @@
   font-size: 0.84rem;
 }
 
-.factory-page .key {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  order: 2;
-  border-top: 1px solid var(--stroke);
-}
-
-.factory-page .key div {
-  display: grid;
-  grid-template-columns: 1.4em minmax(0, 1fr);
-  gap: 0.4em;
-  padding: 0.55em 0.8rem;
-  border-right: 1px solid var(--line);
-  font-size: 0.8rem;
-  line-height: 1.35;
-}
-
-.factory-page .key div:last-child {
-  border-right: 0;
-}
-
-.factory-page .key div > span:first-child {
-  padding-top: 0.15em;
-  color: var(--ink-2);
-  font-family: var(--font-code);
-  font-size: 0.7rem;
-}
-
-.factory-page .key small {
-  display: block;
-  color: var(--ink-2);
-  font-size: 0.85em;
-}
-
 .factory-page .results {
   margin: 0;
   padding: 0;
@@ -1206,8 +1193,61 @@
     position: static;
     max-height: none;
   }
+}
 
-  .factory-page .key {
-    grid-template-columns: 1fr 1fr;
-  }
+/* The (?) beside the Filter label. A button, not a hover target: these are the
+   record's whole vocabulary and must be reachable by keyboard and on touch. */
+.factory-page .sec-label .explain {
+  padding: 0 0.3em;
+  border: 1px solid var(--stroke);
+  background: var(--sheet);
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.66rem;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.factory-page .sec-label .explain:hover,
+.factory-page .sec-label .explain[aria-expanded="true"] {
+  color: var(--accent-ink);
+}
+
+.factory-page .definitions {
+  margin: 0.7em 0 0;
+  padding: 0.6em 0.7em;
+  border: 1px solid var(--stroke);
+  background: var(--band);
+  font-size: 0.78rem;
+}
+
+.factory-page .definitions > div + div {
+  margin-top: 0.5em;
+}
+
+.factory-page .definitions dt {
+  display: flex;
+  gap: 0.45em;
+  align-items: baseline;
+  color: var(--ink);
+  font-family: var(--font-code);
+  font-size: 0.7rem;
+}
+
+.factory-page .definitions dd {
+  margin: 0.15em 0 0 1.15em;
+  color: var(--ink-2);
+  line-height: 1.35;
+}
+
+/* The figure heading sits tight to the figure it names. */
+.factory-page .doc .figure-heading {
+  display: block;
+  margin: 1.4em 0 0.6em;
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }

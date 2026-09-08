@@ -61,7 +61,7 @@ export async function load({ fetch, setHeaders, url }) {
   } else if (entity) {
     contentPromise = getJson(
       fetch,
-      `/slop/factory/entities/project/${encodeURIComponent(entity)}/notes?state=verified%2Cunverified&limit=60`,
+      `/slop/factory/entities/project/${encodeURIComponent(entity)}/notes?state=verified%2Cunverified%2Cdisputed&limit=60`,
       "record chapter",
     );
   }
