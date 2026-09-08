@@ -20,6 +20,7 @@ SUPPORTED_MODELS = (
     "luna",
     "terra",
     "sol",
+    "astra",
     "opus",
     "sonnet",
     "fable",
@@ -64,14 +65,14 @@ def model_family(model: str | None) -> str:
     model = normalize_model(model)
     if model == "pi-spark":
         return "pi"
-    if model in {"luna", "terra", "sol"}:
+    if model in {"luna", "terra", "sol", "astra"}:
         return "codex"
     if model == "spark":
         return "muse"
     if model in {None, "opus", "sonnet", "fable"}:
         return "claude"
     raise ValueError(
-        f"Unknown model {model!r}; valid models: opus, sonnet, fable, luna, terra, sol, spark, pi-spark"
+        f"Unknown model {model!r}; valid models: opus, sonnet, fable, luna, terra, sol, astra, spark, pi-spark"
     )
 
 

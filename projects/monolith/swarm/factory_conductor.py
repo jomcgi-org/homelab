@@ -478,10 +478,14 @@ def _planner_run(run: dict) -> dict:
     result.update(
         _planner_fields(
             run.get("pin") or {},
-            ("model", "workflow_id", "selected_profile", "provider_model"),
+            ("model", "workflow_id", "selected_profile"),
         )
     )
     outcome = _outcome(run)
+    provider_model = outcome.get("provider_model")
+    result["provider_model"] = (
+        provider_model if isinstance(provider_model, str) and provider_model else "unavailable"
+    )
     result["reason"] = _planner_fields(outcome, ("reason",)).get(
         "reason", "invalid structured reason"
     )
@@ -553,7 +557,6 @@ def _planner_context(task: dict, nodes: list[dict], runs: list[dict]) -> str:
         selected = node_profiles.get(item["node_key"])
         if selected is not None:
             item["selected_profile"] = selected
-            item["provider_model"] = item.get("model")
     # These records survive collection limits, including a later negative review.
     # They are evidence, not an alternate implementation of verify_delivery.
     delivery = {}
@@ -805,6 +808,17 @@ def _apply_decision(
             if role == "review"
             else policy["worker_model"],
         )
+        if role == "review" and "model" in decision and model != policy.get(
+            "reviewer_model", policy["conductor_model"]
+        ):
+            _reject_decision(
+                task["id"],
+                cause,
+                action,
+                "reviewer_model_mismatch",
+                "review nodes must use the configured independent reviewer model",
+            )
+            return
         if model not in policy["allowed_models"]:
             _reject_decision(
                 task["id"], cause, action, "model_not_allowed", "model is not allowed"
@@ -1040,7 +1054,7 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     # A crash may fall between graph settlement and the factory reservation
     # settlement. Reconcile terminal facts before attempting any further work.
     for run in runs:
-        if run["status"] in ("succeeded", "failed", "cancelled"):
+        if run["status"] in ("succeeded", "failed", "escalated", "cancelled"):
             result = _outcome(run)
             record_start_outcome(
                 task_id,
@@ -1084,10 +1098,11 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
             apply_decision(task, policy, latest, runs)
             return
     succeeded = {r["node_key"] for r in runs if r["status"] == "succeeded"}
+    escalated = {r["node_key"] for r in runs if r["status"] == "escalated"}
     ready = [
         n
         for n in nodes
-        if n["node_key"] not in succeeded
+        if n["node_key"] not in succeeded and n["node_key"] not in escalated
         and all(dep in succeeded for dep in n["deps"])
         and sum(r["node_key"] == n["node_key"] for r in runs) < n["max_attempts"]
         and sum(r["accounted_cost_usd"] for r in runs if r["node_key"] == n["node_key"])

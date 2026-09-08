@@ -362,7 +362,7 @@ def test_create_session_pi_spark_targets_pi_runtime_workload(monkeypatch):
     assert str(requests[0].url) == "https://ember.test/v1/workloads/pi-runtime/sessions"
 
 
-@pytest.mark.parametrize("model", [None, "opus", "sonnet", "fable", "luna"])
+@pytest.mark.parametrize("model", [None, "opus", "sonnet", "fable", "luna", "astra"])
 def test_create_session_non_pi_models_target_claude_runtime_workload(
     monkeypatch, model
 ):

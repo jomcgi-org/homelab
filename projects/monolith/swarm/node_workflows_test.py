@@ -167,6 +167,37 @@ def test_artifact_failure_is_terminal_without_internal_retry(harness):
     assert len(harness.starts) == 1
 
 
+def test_escalate_artifact_is_escalated_without_internal_retry(harness):
+    import json
+
+    value = {
+        "status": "escalate",
+        "summary": "needs conductor input",
+        "reason": "provider evidence is ambiguous",
+        "requested_model": "astra",
+        "pr_number": None,
+        "head_sha": None,
+    }
+    schema = {
+        "type": "object",
+        "required": ["status", "summary", "reason", "pr_number", "head_sha"],
+        "properties": {
+            "status": {"enum": ["complete", "needs_work", "escalate"]},
+            "summary": {"type": "string"},
+            "reason": {"type": "string"},
+            "requested_model": {"type": "string"},
+            "pr_number": {"type": ["integer", "null"]},
+            "head_sha": {"type": ["string", "null"]},
+        },
+    }
+    harness.stored["artifact_blob"] = json.dumps(value).encode()
+    harness.stored["schema"] = schema
+    result = nodes.execute_node.__wrapped__(pin(artifact_schema=schema))
+    assert result["status"] == "escalated"
+    assert result["value"]["reason"] == "provider evidence is ambiguous"
+    assert harness.cleanups == ["parent-run"]
+
+
 def test_first_planner_completes_before_task_branch_exists(harness, monkeypatch):
     import httpx
     from swarm import steps
