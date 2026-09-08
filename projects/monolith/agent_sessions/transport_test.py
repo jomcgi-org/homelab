@@ -2348,3 +2348,19 @@ def test_get_session_timeout_is_a_failure_not_gone(monkeypatch):
     with pytest.raises(EmberVMTransportError) as caught:
         asyncio.run(transport.EmberVmShimTransport().get_session("s-1"))
     assert not isinstance(caught.value, EmberSessionGone)
+
+
+def test_get_session_rejects_missing_endpoint(monkeypatch):
+    monkeypatch.setattr(transport, "EMBERVM_URL", "")
+    with pytest.raises(EmberVMTransportError, match="not configured"):
+        asyncio.run(transport.EmberVmShimTransport().get_session("s-1"))
+
+
+def test_get_session_invalid_json_is_a_transport_failure(monkeypatch):
+    async def handler(request):
+        return httpx.Response(200, content=b"not JSON", request=request)
+
+    _client(monkeypatch, handler)
+    with pytest.raises(EmberVMTransportError, match="invalid JSON") as caught:
+        asyncio.run(transport.EmberVmShimTransport().get_session("s-1"))
+    assert not isinstance(caught.value, EmberSessionGone)

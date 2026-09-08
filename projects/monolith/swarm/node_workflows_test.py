@@ -524,6 +524,17 @@ def test_cleanup_uses_exact_owner_and_keeps_skipped_guests_visible(monkeypatch):
     assert result == {"status": "pending", "reaped": [7], "failed": [], "skipped": [8]}
 
 
+def test_cleanup_reports_accepted_but_unfinished_teardown_as_pending(monkeypatch):
+    async def reap(workflow_id):
+        assert workflow_id == "parent-run"
+        return {"reaped": [], "failed": [], "skipped": [], "pending": [8]}
+
+    monkeypatch.setattr(nodes, "_reap_api", reap)
+    result = nodes._cleanup_node.__wrapped__("parent-run")
+    assert result["status"] == "pending"
+    assert result["pending"] == [8]
+
+
 def test_cleanup_deadline_keeps_guest_outcome_unconfirmed(monkeypatch):
     import asyncio
 
