@@ -581,7 +581,7 @@ async def send_to_thread_session(thread_id: str, message: str) -> dict | None:
     # Every follow-up turn must stay inside the family the session pinned.
     try:
         await recover_zombie_session_if_needed(session_id)
-    except Exception:
+    except Exception:  # noqa: BLE001 - recovery cannot reject or lose a send
         logger.exception("Recovery check failed for session %s", session_id)
     try:
         turn = await asyncio.to_thread(
@@ -589,7 +589,7 @@ async def send_to_thread_session(thread_id: str, message: str) -> dict | None:
         )
     except store.SessionOutcomeUnknown as exc:
         return {"accepted": False, "error": str(exc), "session_id": session_id}
-    except Exception:
+    except Exception:  # noqa: BLE001 - send gates return structured failures
         logger.exception("Could not persist message for session %s", session_id)
         return {
             "accepted": False,
@@ -598,7 +598,7 @@ async def send_to_thread_session(thread_id: str, message: str) -> dict | None:
         }
     try:
         activated = await asyncio.to_thread(_activate_session_after_enqueue, session_id)
-    except Exception:
+    except Exception:  # noqa: BLE001 - the durable queue remains the backstop
         logger.exception("Could not activate queued session %s", session_id)
         activated = False
     if not activated:
