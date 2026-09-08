@@ -4877,6 +4877,7 @@ def test_result_receipt_unavailable_config_preserves_sync_response(
         {"id": "a" * 31, "token": "x" * 43},
         {"id": 123, "token": "x" * 43},
         {"id": "a" * 32, "token": "x" * 42},
+        {"id": "a" * 32, "token": "x" * 129},
         {"id": "a" * 32, "token": "x" * 43 + "\n"},
         {"id": "a" * 32, "token": "x" * 43 + "/"},
         {"id": "a" * 32, "token": 123},
@@ -4945,6 +4946,26 @@ def test_result_receipt_captures_native_record_before_broken_sync_response(
     assert handler.manager.calls == [
         (("hello", None, None), {"repo": "org/repo", "branch": "main"})
     ]
+
+
+def test_result_receipt_unexpected_failure_preserves_native_response(
+    monkeypatch, result_receipt, capsys
+):
+    def unexpected(*args):
+        raise RuntimeError("private token or result must never be logged")
+
+    monkeypatch.setattr(shim, "_publish_result_receipt", unexpected)
+    events = []
+    record = {"result": "complete"}
+    handler = _receipt_handler(
+        {"message": "hello", "result_receipt": result_receipt}, record, events
+    )
+    handler.do_POST()
+    assert events == ["turn", ("status", 200), "headers"]
+    assert json.loads(handler.wfile.getvalue()) == record
+    assert capsys.readouterr().err == (
+        "ember-claude-shim: result-receipt failed reason=unexpected_callback_failure\n"
+    )
 
 
 def test_result_receipt_absent_metadata_keeps_existing_response(monkeypatch):
