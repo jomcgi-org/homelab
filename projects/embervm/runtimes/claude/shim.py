@@ -1789,7 +1789,7 @@ def _valid_result_receipt(receipt):
         and isinstance(receipt["id"], str)
         and re.fullmatch(r"[0-9a-f]{32}", receipt["id"]) is not None
         and isinstance(receipt["token"], str)
-        and re.fullmatch(r"[A-Za-z0-9_-]{43,}", receipt["token"]) is not None
+        and re.fullmatch(r"[A-Za-z0-9_-]{43,128}", receipt["token"]) is not None
     )
 
 
@@ -1909,7 +1909,7 @@ def _publish_result_receipt(receipt, record):
             # callback running. It may complete late; no cancellation is implied.
             _emit_result_receipt_failure("deadline_exceeded")
             return False
-        reason = results[0]
+        reason = results[0] if results else "worker_failed"
         if reason == "acknowledged":
             return True
         if attempt + 1 < RESULT_RECEIPT_ATTEMPTS:
@@ -5617,7 +5617,10 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self._send(422, {"error": str(exc)})
         else:
             if result_receipt is not None:
-                _publish_result_receipt(result_receipt, record)
+                try:
+                    _publish_result_receipt(result_receipt, record)
+                except Exception:  # noqa: BLE001 - preserve the native response.
+                    _emit_result_receipt_failure("unexpected_callback_failure")
             self._send(200, record)
 
     def _set_clock(self, raw):

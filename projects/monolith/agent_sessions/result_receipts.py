@@ -20,6 +20,7 @@ from sqlalchemy import delete, update
 from sqlmodel import Session, select
 
 from agent_sessions import admission
+from agent_sessions.constants import INTERRUPTED_TERMINAL_REASONS
 from agent_sessions.models import (
     AgentCapacityReservation,
     AgentResultReceipt,
@@ -85,6 +86,9 @@ def prepare_receipt(
         or not isinstance(request_body, bytes)
     ):
         raise ReceiptRejected(409, "invalid_invocation_identity")
+    # Import lazily: the existing store imports the transport which calls here.
+    from agent_sessions import store
+
     with Session(get_engine()) as db, db.begin():
         admission.lock_pool(db)
         db.execute(
@@ -102,7 +106,7 @@ def prepare_receipt(
         now = _now()
         if (
             agent is None
-            or agent.status != "running"
+            or agent.status in {"failed", "awaiting_login"}
             or agent.ember_session_id != guest_id
             or pending is None
             or pending.claimed_by_replica != claim_owner
@@ -117,18 +121,22 @@ def prepare_receipt(
                 AgentCapacityReservation.pending_seq == pending.seq,
             )
         ).one_or_none()
+        previous = db.exec(
+            select(AgentTurn).where(
+                AgentTurn.session_id == session_id,
+                AgentTurn.seq == pending.seq,
+            )
+        ).one_or_none()
         if (
             permit is None
             or permit.state != "running"
             or permit.owner != claim_owner
             or permit.local_session_id != agent.local_session_id
-            or db.exec(
-                select(AgentTurn.id).where(
-                    AgentTurn.session_id == session_id,
-                    AgentTurn.seq == pending.seq,
-                )
-            ).first()
-            is not None
+            or store.has_unknown_outcome(db, session_id)
+            or (
+                previous is not None
+                and previous.terminal_reason not in INTERRUPTED_TERMINAL_REASONS
+            )
         ):
             raise ReceiptRejected(409, "invocation_not_admitted")
         db.execute(
