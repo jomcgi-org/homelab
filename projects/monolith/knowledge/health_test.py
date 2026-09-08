@@ -9,6 +9,7 @@ import pytest
 
 from knowledge.extraction import EXTRACTION_VERSION
 from knowledge.health import _kg_health_core, set_swept_last_cycle
+from shared.invocation_outcomes import UNKNOWN_INVOCATION
 
 
 class _Result:
@@ -109,6 +110,19 @@ def test_kg_health_filters_lane_version_and_counts_null_success_rows():
     provenance_sql, provenance_params = session.calls[1]
     assert "derived_note_id IS DISTINCT FROM 'failed'" in provenance_sql
     assert provenance_params == {"version": EXTRACTION_VERSION}
+
+
+def test_kg_health_uses_shared_hold_marker_and_union():
+    session = _Session(
+        SimpleNamespace(queued=0, held=2, oldest_seconds=None),
+        SimpleNamespace(failed_24h=0, atoms_24h=0, last_success_at=None),
+    )
+
+    _kg_health_core(session, 40)
+
+    queue_sql, queue_params = session.calls[0]
+    assert "UNION" in queue_sql
+    assert queue_params["unknown_outcome"] == UNKNOWN_INVOCATION
 
 
 def test_kg_health_reports_rejected_and_corrected_counts():
