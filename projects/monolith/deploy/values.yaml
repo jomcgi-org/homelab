@@ -154,13 +154,15 @@ cfIngress:
 
 knowledge:
   enabled: true
-  # Publication lane that automatically flips visibility for verified/unverified
-  # facts meeting the policy. Ships suspended because it changes public visibility;
-  # first run is `argo submit --from cronworkflow/publish-facts -n monolith-workflows -p args=--dry-run`
-  # and unsuspending requires a PR.
+  # Publication lane that flips visibility for verified and unverified facts
+  # meeting the policy every 15 minutes. Unsuspended 2026-09-08 after a dry run
+  # reported 3,621 publishable facts with no redaction or dispute skips and a
+  # sample of the set showed nothing beyond what the public repo already holds.
+  # Re-suspend here by PR to stop new publications; unpublishing is automatic
+  # when a fact is invalidated or disputed.
   publishFacts:
     enabled: true
-    suspend: true
+    suspend: false
   # Obsidian fully decommissioned (ADR 006). Note bodies are authoritative in
   # Postgres (knowledge.notes.content); raws live in SeaweedFS. The note
   # read/write paths are DB-only and the /vault disk dependency is gone, so
