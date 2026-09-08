@@ -80,7 +80,7 @@ def load_drainer_settings() -> DrainerSettings:
         enabled=drainer_enabled(),
         max_jobs_per_cycle=int(os.environ.get("DRAINER_MAX_JOBS_PER_CYCLE", "3")),
         turn_timeout_seconds=int(
-            os.environ.get("DRAINER_TURN_TIMEOUT_SECONDS", "1800")
+            os.environ.get("DRAINER_TURN_TIMEOUT_SECONDS", "43800")
         ),
         stall_threshold_seconds=int(
             os.environ.get("DRAINER_STALL_THRESHOLD_SECONDS", "2700")

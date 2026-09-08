@@ -57,12 +57,18 @@ LIST_SESSIONS_READ_TIMEOUT = 5.0
 
 # Destroy runs on the interactive cancel path, once per session, serially. It
 # must never inherit the turn-sized read timeout either: three sessions behind
-# a wedged control plane would otherwise hold one request for 90 minutes.
+# a wedged control plane must not inherit the long invoke budget.
 DESTROY_SESSION_READ_TIMEOUT = 30.0
 
 # A composer prewarm only needs to hand the request to the control plane. The
 # relight continues there if this client gives up before the guest answers.
 PREWARM_SESSION_TIMEOUT = 2.0
+
+# The invoke backstop is twelve hours, plus CP transport/watchdog headroom.
+# Keep create at its previous bound; raising invoke duration must not turn
+# provisioning or other control operations into twelve-hour waits.
+INVOKE_READ_TIMEOUT = 43500.0
+CREATE_SESSION_READ_TIMEOUT = 1800.0
 
 
 def _retryable_from_response(exc: httpx.HTTPStatusError) -> bool:
@@ -99,18 +105,10 @@ _CAPACITY_DENIAL_REASONS = frozenset(
     {"session_cap", "workload_cap", "quota", "no_capacity"}
 )
 
-# A capacity denial clears only when a live turn ends, and a pi turn runs until
-# the EmberVM invoke watchdog at 900s. The generic retryable ladder below tops
-# out around 2 minutes and the create path used to get only 17 seconds, so a
-# create that collided with a running turn could never wait long enough and
-# failed essentially every time. piRuntimeWorkload.concurrency.cap is 2 and is
-# pinned to the KV budget (each session takes 120K of a 262144-token pool), so
-# the cap cannot simply be raised: waiting is the only way to not fail.
-#
-# Sums to roughly 19 minutes, which comfortably outlasts one watchdog-bounded
-# turn. A successful attempt returns immediately, so a fast-clearing collision
-# is not made slower by the long tail; it only converts creates that would
-# have failed into creates that wait.
+# Bounded retry for an ad-hoc capacity collision. The nineteen-minute ladder
+# covers the historical fifteen-minute invoke limit, but does not wait out a
+# twelve-hour task. Durable shared admission owns queued background work;
+# exhausting these pre-invoke retries does not establish an unknown execution.
 _CAPACITY_BACKOFF_SECONDS = (5, 10, 20, 30, 45, 60, 60, 90, 90, 120, 120, 150, 150, 180)
 
 # Jitter so several waiters blocked on the same freed slot do not all wake and
@@ -460,9 +458,9 @@ class ShimTransport(Protocol):
 
 # Read timeout for invoke calls: the OUTER (wall-clock) bound on turn duration.
 # The guest shim (projects/embervm/runtimes/claude/shim.py) enforces an INNER
-# inactivity timeout (TURN_READ_TIMEOUT, per-event), which fires fast if the
-# CLI wedges. This outer cap must be comfortably larger so the inner watchdog
-# can fire first and catch transient hangs; this value catches runaway turns
+# silence backstop (TURN_READ_TIMEOUT, per-event). This outer cap must be
+# comfortably larger so the inner watchdog
+# can return a terminal result first; this value catches runaway turns
 # that produce output continuously but never terminate. The heartbeat on the
 # monolith side (claim refresh every 10s against 30s lease) ensures a turn
 # running for the full duration keeps its claim and is never double-executed.
@@ -479,7 +477,7 @@ class EmberVmShimTransport:
     def __init__(
         self,
         workload: str = agent_sessions.DEFAULT_WORKLOAD,
-        read_timeout: float = 1800.0,
+        read_timeout: float = INVOKE_READ_TIMEOUT,
     ) -> None:
         """Initialize transport for a named EmberVM workload.
 
@@ -488,11 +486,11 @@ class EmberVmShimTransport:
             read_timeout: Total wall-clock duration cap for a single turn
                 (seconds). This is the OUTER bound: the maximum time allowed
                 for the entire turn regardless of output activity. The guest
-                shim enforces an inner inactivity timeout (per-event), which
-                catches wedged CLIs quickly; this outer bound stops runaway
-                turns that produce output continuously. Must be comfortably
+                shim enforces an inner silence backstop (per-event); this
+                outer bound also catches turns that produce output continuously
+                without completing. Must be comfortably
                 larger than the guest's inactivity timeout so the inner
-                watchdog can fire first (default 1800s = 30 minutes).
+                watchdog can return first (default 43500s = 12 hours 5 minutes).
         """
         self.workload = workload
         self.read_timeout = read_timeout
@@ -551,7 +549,10 @@ class EmberVmShimTransport:
 
         url = f"{EMBERVM_URL}/v1/workloads/{self._workload_for(model)}/sessions"
         headers = auth_headers()
-        timeout = httpx.Timeout(self.read_timeout, connect=SUBMIT_CONNECT_TIMEOUT)
+        timeout = httpx.Timeout(
+            min(self.read_timeout, CREATE_SESSION_READ_TIMEOUT),
+            connect=SUBMIT_CONNECT_TIMEOUT,
+        )
         # A normal create posts no body at all: the CP's create route parses
         # an OPTIONAL JSON body, and an absent one is exactly what it treats
         # as "no restore requested" (see optional_restore_lineage in the CP
@@ -644,10 +645,10 @@ class EmberVmShimTransport:
         target_workload = workload if workload is not None else self.workload
         url = f"{EMBERVM_URL}/v1/workloads/{target_workload}/sessions"
         headers = auth_headers()
-        # NOT self.read_timeout: that 30-minute value is sized for a turn,
+        # NOT self.read_timeout: that long value is sized for a turn,
         # and this listing now serves the console's fast VM-state poll. A
         # wedged control plane must fail the poll's degrade path in
-        # seconds, not accumulate half-hour requests behind it.
+        # seconds, not accumulate long invoke waits behind it.
         timeout = httpx.Timeout(
             LIST_SESSIONS_READ_TIMEOUT, connect=SUBMIT_CONNECT_TIMEOUT
         )
@@ -689,7 +690,7 @@ class EmberVmShimTransport:
         headers = auth_headers()
         # Destroy is on the interactive cancel path, and a wedged control plane
         # that accepts the connection but never answers would otherwise hold the
-        # request for the full turn read timeout (1800s) PER session, serially.
+        # request for the full invoke timeout PER session, serially.
         # Same reasoning as LIST_SESSIONS_READ_TIMEOUT above.
         timeout = httpx.Timeout(
             DESTROY_SESSION_READ_TIMEOUT, connect=SUBMIT_CONNECT_TIMEOUT

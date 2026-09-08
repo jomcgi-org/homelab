@@ -2079,12 +2079,10 @@ def _capacity_response(request: httpx.Request, reason: str = "workload_cap"):
 
 
 def test_create_session_waits_out_a_capacity_denial(monkeypatch):
-    """A cap denial must outwait a running turn, not the 17s generic ladder.
+    """Preserve the bounded ad-hoc wait for a historical fifteen-minute collision.
 
-    piRuntimeWorkload.concurrency.cap is 2, a pi turn runs until the 900s
-    invoke watchdog, and the slot frees only when that turn ends. The old
-    3-attempt ladder summed to 17 seconds, so an ad-hoc create that collided
-    with the drainer failed every time.
+    Durable admission owns longer background queue waits. An ad-hoc create does
+    not inherit the twelve-hour execution backstop as a capacity retry budget.
     """
     attempts = []
     sleeps = []
@@ -2112,7 +2110,7 @@ def test_create_session_waits_out_a_capacity_denial(monkeypatch):
     assert len(attempts) == 6
     assert sleeps == [5, 10, 20, 30, 45]
     assert sum(transport._CAPACITY_BACKOFF_SECONDS) > 900, (
-        "the ladder must outlast one watchdog-bounded turn"
+        "preserve the historical fifteen-minute collision allowance"
     )
 
 
@@ -2223,3 +2221,42 @@ def test_create_session_retries_prime_failed_past_the_old_17s_window(monkeypatch
         transport._CAPACITY_BACKOFF_SECONDS
     ), "a non-capacity failure must not wait as long as a full turn"
     assert sleeps == list(transport._CREATE_RETRY_SECONDS[:7])
+
+
+@pytest.mark.parametrize("read_timeout", [None, 7.0])
+def test_long_invoke_budget_does_not_expand_create_wait(monkeypatch, read_timeout):
+    timeouts = []
+    real_timeout = httpx.Timeout
+
+    def capture_timeout(value, **kwargs):
+        configured = real_timeout(value, **kwargs)
+        timeouts.append(configured)
+        return configured
+
+    async def handler(request):
+        if request.url.path.endswith("/sessions"):
+            return httpx.Response(
+                201,
+                json={"session_id": "s1", "session_token": "t1"},
+                request=request,
+            )
+        return _turn_response(request)
+
+    _client(monkeypatch, handler)
+    monkeypatch.setattr(transport.httpx, "Timeout", capture_timeout)
+    client = (
+        transport.EmberVmShimTransport()
+        if read_timeout is None
+        else transport.EmberVmShimTransport(read_timeout=read_timeout)
+    )
+
+    async def run():
+        guest = await client.create_session()
+        return await client.deliver(guest, None, "bounded turn")
+
+    turn, _guest = asyncio.run(run())
+    assert turn.result == "ok"
+    assert [t.read for t in timeouts] == (
+        [1800.0, 43500.0] if read_timeout is None else [7.0, 7.0]
+    )
+    assert all(t.connect == transport.SUBMIT_CONNECT_TIMEOUT for t in timeouts)

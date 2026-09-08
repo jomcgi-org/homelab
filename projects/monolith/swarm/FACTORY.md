@@ -87,6 +87,22 @@ continues to show those reservations and cancellation requests; the stop flag
 does not assert that every guest has ceased. Stop is terminal for this first
 bounded lane. It cannot be reset by replaying an earlier enable request.
 
+Agent workloads have a twelve-hour runtime backstop. The caller's result wait
+and routine drainer observation wait exceed that ceiling. The CLI silence
+backstop is eleven hours and fifty-five minutes: a quiet build is not by itself
+proof of a stuck task. DAG node and task limits remain explicit immutable policy;
+raising the runtime ceiling does not rewrite admitted attempts or grant retries.
+Fresh sessions have a one-day lifetime, and an older session has only the time
+remaining before its absolute expiry. Idle parked sessions still expire after
+one hour.
+
+The current stop path fences admission and requests DBOS workflow cancellation.
+It does not yet guarantee termination of an external Ember guest. Issue #5922
+tracks the bridge to the exact owned invocation, cessation confirmation, ongoing
+run inspection and bounded resume. Until that is implemented, an uncertain
+attempt retains its capacity and cannot be restarted merely because its observer
+or workflow timed out.
+
 ## Validation
 
 New tests have explicit targets in `projects/monolith/BUILD`. File-backed
