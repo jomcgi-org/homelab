@@ -1314,12 +1314,17 @@ defmodule Embervm.SessionManagerTest do
     assert :session_failed in op_kinds_for(ctx, created.session_id)
   end
 
-  test "crash-window park completes to parked on restart adoption" do
+  test "interrupted park completes after a fresh owner report confirms absence" do
     ctx = start_stack(prime_fun: fake_prime_fun("vm-crash-window"), channel_fun: fake_channel_fun())
     created = create_persistence_session(ctx)
     {:ok, _} = SessionStore.transition(ctx.store, created.session_id, :park, :session_parking,
       %{reason: "idled", volume_node_id: "node-4"}, %{volume_node_id: "node-4"})
 
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    assert {:ok, %{state: :parking} = parking} = SessionStore.get(ctx.store, created.session_id)
+    report_empty_node(ctx)
+    {:ok, fact} = NodeCapacity.fetch(ctx.cap_table, "node-4")
+    NodeCapacity.put(ctx.cap_table, "node-4", Map.put(fact, :observed_at_unix_ms, parking.updated_at + 1))
     assert :ok = SessionManager.reconcile(ctx.mgr)
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
     assert session.state == :parked
