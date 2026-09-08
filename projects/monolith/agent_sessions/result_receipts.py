@@ -1,8 +1,9 @@
-"""Capture exact native results without changing execution or accounting state.
+"""Capture native results and validate consumption by the exact active executor.
 
 The guest publishes before writing its synchronous response. A committed receipt
 survives a lost response and deletion of the original pending row. It is evidence
-only: no result adoption, capacity release, guest stop, or retry occurs here.
+only until the normal result writer validates and persists it. There is no
+restart adoption, capacity release, guest stop, or retry in this module.
 """
 
 import asyncio
@@ -16,7 +17,7 @@ import re
 import secrets
 from uuid import uuid4
 
-from sqlalchemy import delete, update
+from sqlalchemy import delete, or_, update
 from sqlmodel import Session, select
 
 from agent_sessions import admission
@@ -108,6 +109,7 @@ def prepare_receipt(
             agent is None
             or agent.status in {"failed", "awaiting_login"}
             or agent.ember_session_id != guest_id
+            or agent.result_receipt_fence_id is not None
             or pending is None
             or pending.claimed_by_replica != claim_owner
             or pending.dispatch_count != dispatch_count
@@ -165,6 +167,288 @@ def prepare_receipt(
         )
         db.add(receipt)
         return {"id": receipt.id, "token": token}
+
+
+def _receipt_metadata(db: Session, receipt_id: str) -> dict | None:
+    # Polling must not load the native body or the callback credential hash.
+    columns = [
+        column
+        for column in AgentResultReceipt.__table__.columns
+        if column.name not in {"result_body", "token_sha256"}
+    ]
+    row = (
+        db.execute(select(*columns).where(AgentResultReceipt.id == receipt_id))
+        .mappings()
+        .one_or_none()
+    )
+    return None if row is None else dict(row)
+
+
+def _check_identity(receipt, session_id, claim_owner, dispatch_count, guest_id):
+    if (
+        type(session_id) is not int
+        or session_id < 1
+        or type(dispatch_count) is not int
+        or dispatch_count < 1
+        or not isinstance(claim_owner, str)
+        or not claim_owner
+        or not isinstance(guest_id, str)
+        or not guest_id
+        or any(
+            receipt[key] != value
+            for key, value in {
+                "session_id": session_id,
+                "claim_owner": claim_owner,
+                "dispatch_count": dispatch_count,
+                "guest_id": guest_id,
+            }.items()
+        )
+    ):
+        raise ReceiptRejected(409, "receipt_identity_changed")
+
+
+def _newer_work_exists(db: Session, receipt: dict) -> bool:
+    # Enqueue remains allowed while the observer fence holds. Only a dispatched
+    # or claimed follow-up conflicts; an untouched queued message does not.
+    return (
+        db.exec(
+            select(PendingMessage.id)
+            .where(
+                PendingMessage.session_id == receipt["session_id"],
+                PendingMessage.seq >= receipt["seq"],
+                or_(
+                    PendingMessage.seq > receipt["seq"],
+                    PendingMessage.dispatch_count != receipt["dispatch_count"],
+                    PendingMessage.claimed_by_replica != receipt["claim_owner"],
+                ),
+                or_(
+                    PendingMessage.dispatch_count > 0,
+                    PendingMessage.claimed_by_replica.isnot(None),
+                ),
+            )
+            .limit(1)
+        ).first()
+        is not None
+        or db.exec(
+            select(AgentTurn.id)
+            .where(
+                AgentTurn.session_id == receipt["session_id"],
+                AgentTurn.seq > receipt["seq"],
+            )
+            .limit(1)
+        ).first()
+        is not None
+    )
+
+
+def _active_owner(db: Session, receipt: dict) -> AgentSession:
+    from agent_sessions import store
+
+    agent = db.get(AgentSession, receipt["session_id"], populate_existing=True)
+    pending = db.exec(
+        select(
+            PendingMessage.seq,
+            PendingMessage.claimed_by_replica,
+            PendingMessage.dispatch_count,
+            PendingMessage.claimed_at,
+        )
+        .where(PendingMessage.session_id == receipt["session_id"])
+        .order_by(PendingMessage.seq)
+        .limit(1)
+    ).first()
+    now = _now()
+    if (
+        receipt["superseded_at"] is not None
+        or now >= _aware(receipt["retain_until"])
+        or agent is None
+        or agent.local_session_id != receipt["local_session_id"]
+        or agent.ember_session_id != receipt["guest_id"]
+        or agent.status in {"failed", "awaiting_login"}
+        or agent.result_receipt_fence_id not in {None, receipt["id"]}
+        or pending is None
+        or pending.seq != receipt["seq"]
+        or pending.claimed_by_replica != receipt["claim_owner"]
+        or pending.dispatch_count != receipt["dispatch_count"]
+        or pending.claimed_at is None
+        or not 0 <= (now - _aware(pending.claimed_at)).total_seconds() < 30
+        or store.has_unknown_outcome(db, receipt["session_id"])
+        or _newer_work_exists(db, receipt)
+    ):
+        raise ReceiptRejected(409, "executor_ownership_changed")
+    permit = db.exec(
+        select(AgentCapacityReservation)
+        .where(
+            AgentCapacityReservation.session_id == receipt["session_id"],
+            AgentCapacityReservation.pending_seq == receipt["seq"],
+        )
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    previous = db.exec(
+        select(AgentTurn.id, AgentTurn.terminal_reason).where(
+            AgentTurn.session_id == receipt["session_id"],
+            AgentTurn.seq == receipt["seq"],
+        )
+    ).one_or_none()
+    if (
+        permit is None
+        or permit.state != "running"
+        or permit.owner != receipt["claim_owner"]
+        or permit.local_session_id != receipt["local_session_id"]
+        or (
+            previous is not None
+            and previous.terminal_reason not in INTERRUPTED_TERMINAL_REASONS
+        )
+    ):
+        raise ReceiptRejected(409, "invocation_not_admitted")
+    return agent
+
+
+def _result(db: Session, receipt: dict) -> dict:
+    body = db.exec(
+        select(AgentResultReceipt.result_body).where(
+            AgentResultReceipt.id == receipt["id"]
+        )
+    ).one_or_none()
+    if (
+        not isinstance(body, bytes)
+        or len(body) > MAX_RESULT_BYTES
+        or _sha(body) != receipt["result_sha256"]
+        or receipt["received_at"] is None
+    ):
+        raise ReceiptRejected(409, "receipt_result_changed")
+    provenance = {
+        key: receipt[key]
+        for key in (
+            "session_id",
+            "local_session_id",
+            "seq",
+            "claim_owner",
+            "dispatch_count",
+            "guest_id",
+            "request_sha256",
+            "result_sha256",
+        )
+    }
+    provenance["receipt_id"] = receipt["id"]
+    provenance["received_at"] = _aware(receipt["received_at"]).isoformat()
+    return {
+        "result_body": body,
+        "result_sha256": receipt["result_sha256"],
+        "provenance": provenance,
+    }
+
+
+def read_active_result(
+    receipt_id: str,
+    session_id: int,
+    claim_owner: str,
+    dispatch_count: int,
+    guest_id: str,
+    request_sha256: str,
+) -> dict | None:
+    """Poll committed evidence without locks; the writer must revalidate it.
+
+    A missing or not-yet-captured receipt returns None. Changed ownership is an
+    explicit refusal, including when no native body has arrived yet. Acceptance
+    expiry governs capture; a committed body remains readable until retention.
+    """
+    with Session(get_engine()) as db:
+        receipt = _receipt_metadata(db, receipt_id)
+        if receipt is None:
+            return None
+        _check_identity(receipt, session_id, claim_owner, dispatch_count, guest_id)
+        if receipt["request_sha256"] != request_sha256:
+            raise ReceiptRejected(409, "receipt_request_changed")
+        _active_owner(db, receipt)
+        if receipt["result_sha256"] is None:
+            return None
+        return _result(db, receipt)
+
+
+def validate_active_result(
+    db: Session,
+    *,
+    receipt_id: str,
+    result_sha256: str,
+    session_id: int,
+    seq: int,
+    claim_owner: str,
+    dispatch_count: int,
+    guest_id: str,
+) -> dict:
+    """Validate and stage the observer fence in the native writer transaction.
+
+    The caller holds pool, session and pending locks, and must parse/compare the
+    returned body before committing its normal turn write. This function never
+    commits, settles admission or changes the original turn history.
+    """
+    # Lock after execution rows. Capture and retention never lock those rows.
+    db.execute(
+        update(AgentResultReceipt)
+        .where(AgentResultReceipt.id == receipt_id)
+        .values(created_at=AgentResultReceipt.created_at)
+    )
+    receipt = _receipt_metadata(db, receipt_id)
+    if receipt is None:
+        raise ReceiptRejected(409, "receipt_unavailable")
+    _check_identity(receipt, session_id, claim_owner, dispatch_count, guest_id)
+    if type(seq) is not int or seq != receipt["seq"]:
+        raise ReceiptRejected(409, "receipt_identity_changed")
+    if result_sha256 is None or result_sha256 != receipt["result_sha256"]:
+        raise ReceiptRejected(409, "receipt_result_changed")
+    agent = _active_owner(db, receipt)
+    result = _result(db, receipt)
+    if receipt["response_observed_at"] is None:
+        agent.result_receipt_fence_id = receipt_id
+        db.add(agent)
+    return result
+
+
+def mark_response_observed(
+    receipt_id: str,
+    session_id: int,
+    claim_owner: str,
+    dispatch_count: int,
+    guest_id: str,
+) -> bool:
+    """Record only the exact original POST's validated native response.
+
+    The trusted transport calls this after parsing its response, never for an
+    error, cancellation or CP observation. It may arrive after turn persistence
+    deleted the pending row. Stale observations remain historical and cannot
+    clear another guest or receipt's fence. Missing retained evidence returns
+    False and never clears a fence.
+    """
+    from agent_sessions import store
+
+    with Session(get_engine()) as db, db.begin():
+        agent = store._lock_session(db, session_id)
+        db.execute(
+            update(AgentResultReceipt)
+            .where(AgentResultReceipt.id == receipt_id)
+            .values(created_at=AgentResultReceipt.created_at)
+        )
+        receipt = _receipt_metadata(db, receipt_id)
+        if receipt is None:
+            return False
+        _check_identity(receipt, session_id, claim_owner, dispatch_count, guest_id)
+        if receipt["response_observed_at"] is None:
+            db.execute(
+                update(AgentResultReceipt)
+                .where(AgentResultReceipt.id == receipt_id)
+                .values(response_observed_at=_now())
+            )
+        if (
+            agent is not None
+            and agent.local_session_id == receipt["local_session_id"]
+            and agent.ember_session_id == receipt["guest_id"]
+            and agent.result_receipt_fence_id == receipt_id
+            and receipt["superseded_at"] is None
+            and not _newer_work_exists(db, receipt)
+        ):
+            agent.result_receipt_fence_id = None
+            db.add(agent)
+        return True
 
 
 def _check_credential_format(receipt_id: str, token: str) -> None:

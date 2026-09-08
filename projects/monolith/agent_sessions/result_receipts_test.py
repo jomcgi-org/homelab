@@ -3,11 +3,13 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+from threading import Event
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 import httpx
 import pytest
+from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from agent_sessions import result_receipts as receipts
@@ -99,6 +101,64 @@ def prepare(**changes):
 
 def capture(receipt, body=b'{"result":"native","terminal_reason":"end_turn"}'):
     return receipts.capture_result(receipt["id"], receipt["token"], body)
+
+
+def read_active(receipt, **changes):
+    return receipts.read_active_result(
+        **(
+            dict(
+                receipt_id=receipt["id"],
+                session_id=1,
+                claim_owner="executor-one",
+                dispatch_count=1,
+                guest_id="guest-one",
+                request_sha256=hashlib.sha256(
+                    b'{"message":"implement task"}'
+                ).hexdigest(),
+            )
+            | changes
+        )
+    )
+
+
+def validate_active(db, receipt, **changes):
+    store._lock_session(db, 1)
+    return receipts.validate_active_result(
+        db,
+        **(
+            dict(
+                receipt_id=receipt["id"],
+                result_sha256=capture_digest(),
+                session_id=1,
+                seq=1,
+                claim_owner="executor-one",
+                dispatch_count=1,
+                guest_id="guest-one",
+            )
+            | changes
+        ),
+    )
+
+
+def capture_digest():
+    return hashlib.sha256(
+        b'{"result":"native","terminal_reason":"end_turn"}'
+    ).hexdigest()
+
+
+def observe_response(receipt, **changes):
+    return receipts.mark_response_observed(
+        **(
+            dict(
+                receipt_id=receipt["id"],
+                session_id=1,
+                claim_owner="executor-one",
+                dispatch_count=1,
+                guest_id="guest-one",
+            )
+            | changes
+        )
+    )
 
 
 def execution_state(engine):
@@ -589,3 +649,374 @@ def test_slow_body_expires_without_capture_and_releases_slot(database, monkeypat
     asyncio.run(run())
     with Session(database) as db:
         assert db.get(AgentResultReceipt, receipt["id"]).result_body is None
+
+
+def test_poll_without_capture_reads_metadata_without_body_or_credential(database):
+    receipt = prepare()
+    statements = []
+
+    def recorded(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(database, "before_cursor_execute", recorded)
+    try:
+        assert read_active(receipt) is None
+    finally:
+        event.remove(database, "before_cursor_execute", recorded)
+    assert statements
+    assert all("result_body" not in sql for sql in statements)
+    assert all("token_sha256" not in sql for sql in statements)
+    assert read_active({"id": "0" * 32}) is None
+
+
+def test_active_result_provenance_is_server_owned_and_body_is_immutable(database):
+    receipt = prepare()
+    body = b'{"usage":{"native_result_receipt":{"receipt_id":"forged"}}}'
+    capture(receipt, body)
+    before = execution_state(database)
+    result = read_active(receipt)
+    assert result["result_body"] == body
+    assert result["result_sha256"] == hashlib.sha256(body).hexdigest()
+    assert result["provenance"] == {
+        "receipt_id": receipt["id"],
+        "session_id": 1,
+        "local_session_id": "factory:task:node:1",
+        "seq": 1,
+        "claim_owner": "executor-one",
+        "dispatch_count": 1,
+        "guest_id": "guest-one",
+        "request_sha256": hashlib.sha256(b'{"message":"implement task"}').hexdigest(),
+        "result_sha256": hashlib.sha256(body).hexdigest(),
+        "received_at": result["provenance"]["received_at"],
+    }
+    assert "+00:00" in result["provenance"]["received_at"]
+    assert "forged" not in repr(result["provenance"])
+    assert receipt["token"] not in repr(result)
+    assert execution_state(database) == before
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"claim_owner": "other"},
+        {"session_id": 2},
+        {"dispatch_count": 2},
+        {"dispatch_count": True},
+        {"guest_id": "replacement"},
+        {"request_sha256": "0" * 64},
+    ],
+)
+def test_poll_rejects_wrong_exact_request_even_before_capture(database, changes):
+    receipt = prepare()
+    with pytest.raises(receipts.ReceiptRejected) as caught:
+        read_active(receipt, **changes)
+    assert caught.value.status == 409
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "owner",
+        "count",
+        "expired_lease",
+        "future_lease",
+        "binding",
+        "local_id",
+        "permit_owner",
+        "permit_local_id",
+        "permit_uncertain",
+        "permit_settled",
+        "permit_missing",
+        "newer_dispatch",
+        "newer_turn",
+        "superseded",
+    ],
+)
+def test_read_and_writer_reject_changed_execution_authority(database, change):
+    receipt = prepare()
+    capture(receipt)
+    assert read_active(receipt) is not None
+    with Session(database) as db, db.begin():
+        agent = db.get(AgentSession, 1)
+        pending = db.exec(select(PendingMessage)).one()
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        if change == "owner":
+            pending.claimed_by_replica = "new-executor"
+        elif change == "count":
+            pending.dispatch_count = 2
+        elif change == "expired_lease":
+            pending.claimed_at = datetime.now(timezone.utc) - timedelta(seconds=31)
+        elif change == "future_lease":
+            pending.claimed_at = datetime.now(timezone.utc) + timedelta(seconds=31)
+        elif change == "binding":
+            agent.ember_session_id = "new-guest"
+        elif change == "local_id":
+            agent.local_session_id = "new-owner"
+        elif change == "permit_owner":
+            permit.owner = "new-executor"
+        elif change == "permit_local_id":
+            permit.local_session_id = "new-owner"
+        elif change in {"permit_uncertain", "permit_settled"}:
+            permit.state = change.removeprefix("permit_")
+        elif change == "newer_dispatch":
+            db.add(
+                PendingMessage(
+                    session_id=1,
+                    seq=2,
+                    message_text="newer",
+                    dispatch_count=1,
+                    claimed_by_replica="new-executor",
+                    claimed_at=datetime.now(timezone.utc),
+                )
+            )
+        elif change == "newer_turn":
+            db.add(AgentTurn(session_id=1, seq=2, prompt="newer", result_text="done"))
+        elif change == "superseded":
+            row = db.get(AgentResultReceipt, receipt["id"])
+            row.superseded_at = datetime.now(timezone.utc)
+            db.add(row)
+        db.add_all([agent, pending, permit])
+        if change == "permit_missing":
+            db.delete(permit)
+    before = execution_state(database)
+    with pytest.raises(receipts.ReceiptRejected) as caught:
+        read_active(receipt)
+    assert caught.value.status == 409
+    with Session(database) as db, pytest.raises(receipts.ReceiptRejected), db.begin():
+        validate_active(db, receipt)
+    assert execution_state(database) == before
+
+
+def test_actual_unknown_writer_remains_held_after_capture_and_observation(database):
+    receipt = prepare()
+    assert store.release_pending_message_claim_sync(
+        1, 1, "executor-one", "executor_cancelled", dispatch_count=1
+    )
+    before = execution_state(database)
+    capture(receipt)
+    assert observe_response(receipt)
+    with pytest.raises(receipts.ReceiptRejected):
+        read_active(receipt)
+    with Session(database) as db, pytest.raises(receipts.ReceiptRejected), db.begin():
+        validate_active(db, receipt)
+    assert execution_state(database) == before
+
+
+def test_consumption_fence_and_turn_evidence_rollback_together(database):
+    receipt = prepare()
+    capture(receipt)
+    before = execution_state(database)
+    with Session(database) as db, pytest.raises(RuntimeError, match="writer failed"):
+        with db.begin():
+            result = validate_active(db, receipt)
+            db.add(
+                AgentTurn(
+                    session_id=1,
+                    seq=1,
+                    prompt="original",
+                    result_text="native",
+                    usage_json=json.dumps(
+                        {"native_result_receipt": result["provenance"]}
+                    ),
+                )
+            )
+            db.flush()
+            assert db.get(AgentSession, 1).result_receipt_fence_id == receipt["id"]
+            raise RuntimeError("writer failed")
+    assert execution_state(database) == before
+
+
+def test_active_validation_is_idempotent_until_normal_writer_finishes(database):
+    receipt = prepare()
+    capture(receipt)
+    with Session(database) as db, db.begin():
+        first = validate_active(db, receipt)
+        assert validate_active(db, receipt) == first
+    with Session(database) as db:
+        assert db.get(AgentSession, 1).result_receipt_fence_id == receipt["id"]
+    with pytest.raises(receipts.ReceiptRejected):
+        prepare()
+
+
+@pytest.mark.parametrize("observed_first", [False, True])
+def test_response_and_consumption_order_with_queued_unclaimed_followup(
+    database, observed_first
+):
+    receipt = prepare()
+    capture(receipt)
+    with Session(database) as db:
+        assert store.create_pending_message(db, 1, "follow-up").seq == 2
+    if observed_first:
+        assert observe_response(receipt)
+    with Session(database) as db, db.begin():
+        result = validate_active(db, receipt)
+        db.delete(db.exec(select(PendingMessage).where(PendingMessage.seq == 1)).one())
+        db.add(
+            AgentTurn(
+                session_id=1,
+                seq=1,
+                prompt="original",
+                result_text="native",
+                usage_json=json.dumps({"native_result_receipt": result["provenance"]}),
+            )
+        )
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        permit.state = "settled"
+        db.add(permit)
+        db.flush()
+        assert db.get(AgentSession, 1).result_receipt_fence_id == (
+            None if observed_first else receipt["id"]
+        )
+    assert observe_response(receipt)
+    with Session(database) as db:
+        row = db.get(AgentResultReceipt, receipt["id"])
+        observed_at = row.response_observed_at
+        assert observed_at is not None
+        assert db.get(AgentSession, 1).result_receipt_fence_id is None
+        assert db.exec(select(PendingMessage)).one().dispatch_count == 0
+        assert db.exec(select(AgentTurn)).one().cost_usd is None
+    assert observe_response(receipt)
+    with Session(database) as db:
+        assert (
+            db.get(AgentResultReceipt, receipt["id"]).response_observed_at
+            == observed_at
+        )
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+def test_response_observer_serializes_with_active_writer(database, rollback):
+    receipt = prepare()
+    capture(receipt)
+    writer_locked = Event()
+    release_writer = Event()
+    observer_started = Event()
+
+    def consume():
+        try:
+            with Session(database) as db, db.begin():
+                validate_active(db, receipt)
+                db.flush()
+                writer_locked.set()
+                assert release_writer.wait(3)
+                if rollback:
+                    raise RuntimeError("rollback")
+        except RuntimeError:
+            if not rollback:
+                raise
+
+    def observe():
+        observer_started.set()
+        return observe_response(receipt)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        writer = pool.submit(consume)
+        try:
+            assert writer_locked.wait(3)
+            observer = pool.submit(observe)
+            assert observer_started.wait(3)
+            assert not observer.done()
+        finally:
+            release_writer.set()
+        writer.result(timeout=3)
+        assert observer.result(timeout=3)
+    with Session(database) as db:
+        assert db.get(AgentSession, 1).result_receipt_fence_id is None
+        assert (
+            db.get(AgentResultReceipt, receipt["id"]).response_observed_at is not None
+        )
+
+
+@pytest.mark.parametrize(
+    "changed",
+    ["fence", "binding", "newer_count", "newer_owner", "newer_seq", "superseded"],
+)
+def test_old_observer_never_clears_a_different_or_newer_execution(database, changed):
+    receipt = prepare()
+    capture(receipt)
+    with Session(database) as db, db.begin():
+        validate_active(db, receipt)
+    with Session(database) as db, db.begin():
+        agent = db.get(AgentSession, 1)
+        if changed == "fence":
+            agent.result_receipt_fence_id = "newer-receipt"
+        elif changed == "binding":
+            agent.ember_session_id = "newer-guest"
+        elif changed == "superseded":
+            row = db.get(AgentResultReceipt, receipt["id"])
+            row.superseded_at = datetime.now(timezone.utc)
+            db.add(row)
+        elif changed == "newer_seq":
+            db.add(
+                PendingMessage(
+                    session_id=1,
+                    seq=2,
+                    message_text="newer",
+                    dispatch_count=1,
+                )
+            )
+        else:
+            pending = db.exec(select(PendingMessage)).one()
+            if changed == "newer_count":
+                pending.dispatch_count = 2
+            else:
+                pending.claimed_by_replica = "new-executor"
+            db.add(pending)
+        expected = agent.result_receipt_fence_id
+        db.add(agent)
+    assert observe_response(receipt)
+    with Session(database) as db:
+        assert db.get(AgentSession, 1).result_receipt_fence_id == expected
+        assert (
+            db.get(AgentResultReceipt, receipt["id"]).response_observed_at is not None
+        )
+
+
+@pytest.mark.parametrize("change", ["seq", "digest", "corrupt_body", "other_fence"])
+def test_locked_validation_rejects_wrong_result_without_mutation(database, change):
+    receipt = prepare()
+    capture(receipt)
+    changes = {}
+    if change in {"corrupt_body", "other_fence"}:
+        with Session(database) as db, db.begin():
+            if change == "corrupt_body":
+                row = db.get(AgentResultReceipt, receipt["id"])
+                row.result_body = b'{"result":"different"}'
+            else:
+                row = db.get(AgentSession, 1)
+                row.result_receipt_fence_id = "other"
+            db.add(row)
+    elif change == "seq":
+        changes["seq"] = 2
+    else:
+        changes["result_sha256"] = "0" * 64
+    before = execution_state(database)
+    with Session(database) as db, pytest.raises(receipts.ReceiptRejected), db.begin():
+        validate_active(db, receipt, **changes)
+    assert execution_state(database) == before
+
+
+def test_retention_deletion_preserves_fence_and_expiry_refuses_consumption(
+    database, monkeypatch
+):
+    receipt = prepare()
+    capture(receipt)
+    with Session(database) as db, db.begin():
+        validate_active(db, receipt)
+        expiry = receipts._aware(db.get(AgentResultReceipt, receipt["id"]).retain_until)
+    monkeypatch.setattr(receipts, "_now", lambda: expiry)
+    before = execution_state(database)
+    with pytest.raises(receipts.ReceiptRejected):
+        read_active(receipt)
+    assert receipts.prune_expired_receipts() == 1
+    assert observe_response(receipt) is False
+    assert execution_state(database) == before
+    with Session(database) as db:
+        assert db.get(AgentSession, 1).result_receipt_fence_id == receipt["id"]
+
+
+def test_observer_rejects_forged_identity_without_recording_response(database):
+    receipt = prepare()
+    with pytest.raises(receipts.ReceiptRejected):
+        observe_response(receipt, claim_owner="impostor")
+    with Session(database) as db:
+        assert db.get(AgentResultReceipt, receipt["id"]).response_observed_at is None
