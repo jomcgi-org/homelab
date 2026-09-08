@@ -89,7 +89,18 @@
   const count = (entity, state) => Number(entity.note_counts?.[state] ?? 0);
   const verifiedTotal = $derived(Number(data.facts.totals?.verified ?? 0));
   const unverifiedTotal = $derived(Number(data.facts.totals?.unverified ?? 0));
-  const contradictedTotal = $derived(Number(data.facts.totals?.disputed ?? 0));
+  // A fact is contradicted by appearing in a contradiction pair, not by
+  // carrying a disputed flag: that column is empty across the whole corpus, so
+  // filtering on it was a control that could never do anything.
+  const contradictedTotal = $derived(Number(data.facts.contradictions ?? 0));
+  const contradictedIds = $derived(
+    new Set(
+      (data.chapter?.contradictions ?? []).flatMap((pair) => [
+        pair.a.note_id,
+        pair.b.note_id,
+      ]),
+    ),
+  );
   const markTotals = $derived({
     verified: verifiedTotal,
     unverified: unverifiedTotal,
@@ -100,7 +111,8 @@
   );
 
   function passesFilter(note) {
-    if (note.disputed) return showContradicted;
+    if (contradictedIds.has(note.note_id) || note.disputed)
+      return showContradicted;
     if (note.verification_state === "verified") return showVerified;
     if (note.verification_state === "unverified") return showUnverified;
     return showContradicted;

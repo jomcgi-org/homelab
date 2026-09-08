@@ -61,7 +61,10 @@ export async function load({ fetch, setHeaders, url }) {
   } else if (entity) {
     contentPromise = getJson(
       fetch,
-      `/slop/factory/entities/project/${encodeURIComponent(entity)}/notes?state=verified%2Cunverified%2Cdisputed&limit=60`,
+      // Only verified and unverified: the notes endpoint rejects any other
+      // state with a 422, and contradictions arrive in this same payload as
+      // pairs rather than as rows with a state of their own.
+      `/slop/factory/entities/project/${encodeURIComponent(entity)}/notes?state=verified%2Cunverified&limit=60`,
       "record chapter",
     );
   }
