@@ -25,7 +25,9 @@ async def test_missing_probe_is_fail_open(monkeypatch):
         return None
 
     monkeypatch.setattr(health, "read_probe", read)
-    assert await health.synthetic_probe_health("bazel", 750)() == {
+    assert await health.synthetic_probe_health(
+        "bazel", health.EMBER_SYNTHETIC_STALENESS_S
+    )() == {
         "ok": True,
         "detail": "no probe recorded yet",
     }
@@ -37,7 +39,9 @@ async def test_failed_probe_stays_down(monkeypatch):
         return _row(ok=False, detail="connection refused")
 
     monkeypatch.setattr(health, "read_probe", read)
-    result = await health.synthetic_probe_health("bazel", 750)()
+    result = await health.synthetic_probe_health(
+        "bazel", health.EMBER_SYNTHETIC_STALENESS_S
+    )()
     assert result["ok"] is False
     assert "connection refused" in result["detail"]
 
@@ -68,7 +72,9 @@ async def test_postgres_failure_names_preemption_cause(monkeypatch):
     monkeypatch.setattr(health.core, "cached_demo_pg_status", live_status)
     monkeypatch.setattr(health.core, "time", lambda: 1_700_000_300.0)
 
-    result = await health.synthetic_probe_health("postgres", 750)()
+    result = await health.synthetic_probe_health(
+        "postgres", health.EMBER_SYNTHETIC_STALENESS_S
+    )()
 
     assert result["ok"] is False
     assert result["cause"] == "preemption"
@@ -96,7 +102,9 @@ async def test_postgres_status_timeout_does_not_hide_probe_failure(monkeypatch):
     monkeypatch.setattr(health.core, "cached_demo_pg_status", live_status)
     monkeypatch.setattr(health.asyncio, "wait_for", time_out)
 
-    result = await health.synthetic_probe_health("postgres", 750)()
+    result = await health.synthetic_probe_health(
+        "postgres", health.EMBER_SYNTHETIC_STALENESS_S
+    )()
 
     assert result["ok"] is False
     assert "connection refused" in result["detail"]
@@ -106,24 +114,29 @@ async def test_postgres_status_timeout_does_not_hide_probe_failure(monkeypatch):
 @pytest.mark.asyncio
 async def test_stale_success_is_down(monkeypatch):
     async def read(_):
-        return _row(checked_at=datetime.now(timezone.utc) - timedelta(seconds=751))
+        return _row(checked_at=datetime.now(timezone.utc) - timedelta(seconds=9001))
 
     monkeypatch.setattr(health, "read_probe", read)
-    result = await health.synthetic_probe_health("bazel", 750)()
+    result = await health.synthetic_probe_health(
+        "bazel", health.EMBER_SYNTHETIC_STALENESS_S
+    )()
     assert result["ok"] is False
     assert "prober may be dead" in result["detail"]
 
 
 @pytest.mark.asyncio
-async def test_fresh_success_is_ok(monkeypatch):
+async def test_hour_old_success_is_ok_until_next_scheduled_probe(monkeypatch):
     async def read(_):
-        return _row()
+        return _row(checked_at=datetime.now(timezone.utc) - timedelta(hours=1))
 
     monkeypatch.setattr(health, "read_probe", read)
-    assert (await health.synthetic_probe_health("bazel", 750)())["ok"] is True
+    assert (
+        await health.synthetic_probe_health(
+            "bazel", health.EMBER_SYNTHETIC_STALENESS_S
+        )()
+    )["ok"] is True
 
 
 def test_staleness_thresholds_match_cron_cadences():
-    assert health.EMBER_SYNTHETIC_STALENESS_S == 750.0
+    assert health.EMBER_SYNTHETIC_STALENESS_S == 9000.0
     assert health.EMBER_CODEX_STALENESS_S == 9000.0
-    assert health.EMBER_SPARK_STALENESS_S == 9000.0

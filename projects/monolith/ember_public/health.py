@@ -13,18 +13,18 @@ from datetime import datetime, timezone
 import ember_public.core as core
 from ember_public.synthetic import read_probe
 
-# All four of the ORIGINAL synthetic probes run in the one ember-synthetic
-# CronWorkflow every 5 minutes (see the jobs.cronWorkflows entry). 2.5x that
-# cadence, so a single missed or slow run never flaps the check but a dead
-# prober still surfaces.
-EMBER_SYNTHETIC_STALENESS_S = 750.0
+# The combined demo probes (bazel, semgrep, pages, postgres) run in the one
+# ember-synthetic CronWorkflow hourly (see the jobs.cronWorkflows entry).
+# 2.5x that cadence, so a single missed or slow run never flaps the check but
+# a dead prober still surfaces. Explicit probe failures still report
+# immediately; only the missing-probe staleness bound follows the cadence.
+EMBER_SYNTHETIC_STALENESS_S = 9000.0
 
 # The Codex lane synthetic runs hourly. Apply the same 2.5x cadence rule so one
-# missed or slow run does not flap the health check.
+# missed or slow run does not flap the health check. The Spark lane probe is
+# manual-only (its CronWorkflow is suspended), so it has no automatic health
+# component; probe_spark and its endpoint remain for manual diagnostics.
 EMBER_CODEX_STALENESS_S = 9000.0
-
-# The Spark lane synthetic also runs hourly and uses its own latch.
-EMBER_SPARK_STALENESS_S = 9000.0
 
 
 def synthetic_probe_health(demo: str, staleness_s: float):
