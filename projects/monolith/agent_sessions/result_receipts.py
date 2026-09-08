@@ -232,6 +232,7 @@ def prune_expired_receipts() -> int:
 
 def start_receipt_retention_loop():
     """Retain the expiry sweep even when new receipt minting is disabled."""
+    from framework import log_task_exception
 
     async def run():
         while True:
@@ -242,4 +243,6 @@ def start_receipt_retention_loop():
                 logger.error("Result receipt retention failed: %s", type(exc).__name__)
             await asyncio.sleep(PRUNE_INTERVAL_SECONDS)
 
-    return [asyncio.create_task(run(), name="agent-result-receipt-retention")]
+    task = asyncio.create_task(run(), name="agent-result-receipt-retention")
+    task.add_done_callback(log_task_exception)
+    return [task]
