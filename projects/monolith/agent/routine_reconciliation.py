@@ -1,7 +1,9 @@
 """Explicit operator reconciliation of ceased KG attempts, never automatic retry.
 
-The trusted caller obtains fresh authoritative Ember GET evidence. This module
-has no HTTP/MCP surface and cannot infer cessation from a timeout or missing row.
+The trusted caller obtains fresh authoritative Ember GET evidence and archives
+positive exact cessation evidence. A parked/evicted label alone is insufficient.
+This module has no HTTP/MCP surface and cannot infer cessation from a timeout or
+missing row.
 Old AgentTurns remain unknown and their sessions remain failed and unsendable.
 """
 
@@ -353,8 +355,11 @@ def reconcile_held_job(
 ) -> dict:
     """Apply one operator-approved disposition; caller-supplied sessions own commit.
 
-    cessation is a fresh trusted GET attestation with the exact guest identity,
-    state, generation, observation and CP timestamps, and archived response hash.
+    cessation carries fresh trusted GET identity, state, generation, observation
+    and CP timestamps. evidence_sha256 binds an archived packet containing the
+    exact GET and positive cessation evidence for that guest; a parked/evicted
+    label alone is insufficient. A null last_invoke_at preserves an unrecorded
+    completion and never substitutes for cessation evidence.
     It is not accepted from guest/model output. Identical lost-response replays
     return the durable result, even after the ordinary job has run or disappeared.
     """
@@ -382,11 +387,17 @@ def reconcile_held_job(
     ):
         raise ValueError("Cessation requires a parked or evicted guest")
     observed = _proof_time(cessation)
-    if any(
-        type(cessation[k]) is not int or cessation[k] < 0
-        for k in ("updated_at", "last_invoke_at")
-    ) or not cessation["last_invoke_at"] <= cessation["updated_at"] <= int(
-        observed.timestamp() * 1000
+    updated_at = cessation["updated_at"]
+    last_invoke_at = cessation["last_invoke_at"]
+    if (
+        type(updated_at) is not int
+        or not 0 <= updated_at <= int(observed.timestamp() * 1000)
+        or (
+            last_invoke_at is not None
+            and (
+                type(last_invoke_at) is not int or not 0 <= last_invoke_at <= updated_at
+            )
+        )
     ):
         raise ValueError("Cessation timestamps conflict")
     _identifier(cessation["session_id"], "guest identity")
