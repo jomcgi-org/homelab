@@ -16,14 +16,19 @@ const activity = {
     last_turn_at: null,
   },
   daily: [],
+  local_daily: [],
+  spend_daily: [{ day: "2026-09-07", spend_usd: 3.75 }],
   totals_7d: {
-    sessions: 0,
-    turns: 0,
-    input_tokens: 0,
-    output_tokens: 0,
-    cache_read_tokens: 0,
-    cost_usd: null,
-    list_cost_usd: null,
+    ember: {},
+    local: {},
+    combined: {
+      sessions: 0,
+      turns: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      spend_usd: 3.75,
+    },
   },
 };
 

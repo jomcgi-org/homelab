@@ -15,6 +15,15 @@ const TYPE_KEYS = ["feat", "fix", "docs", "chore", "test", "refactor", "other"];
 
 const numeric = (value) => Number(value ?? 0);
 
+export function formatSpend(value) {
+  const rounded = Math.round(numeric(value));
+  const abbreviated = (amount, suffix) =>
+    `${amount.toFixed(1).replace(/\.0$/, "")}${suffix}`;
+  if (rounded >= 1e6) return `$${abbreviated(rounded / 1e6, "M")}`;
+  if (rounded >= 1e3) return `$${abbreviated(rounded / 1e3, "k")}`;
+  return `$${rounded}`;
+}
+
 /**
  * @param {string | null} modelName
  * @returns {"luna" | "codex" | "claude" | "spark" | "other"}
@@ -48,13 +57,21 @@ export function activitySeries(rows) {
       sessions: 0,
       input_tokens: 0,
       output_tokens: 0,
-      cost_usd: 0,
     };
     value[modelLane(row.model)] += numeric(row.sessions);
     value.sessions += numeric(row.sessions);
     value.input_tokens += numeric(row.input_tokens);
     value.output_tokens += numeric(row.output_tokens);
-    value.cost_usd += numeric(row.cost_usd);
+    byDay.set(row.day, value);
+  }
+  return [...byDay.values()].sort((a, b) => a.d.localeCompare(b.d));
+}
+
+export function spendSeries(rows) {
+  const byDay = new Map();
+  for (const row of rows) {
+    const value = byDay.get(row.day) ?? { d: row.day, spend_usd: 0 };
+    value.spend_usd += numeric(row.spend_usd);
     byDay.set(row.day, value);
   }
   return [...byDay.values()].sort((a, b) => a.d.localeCompare(b.d));
@@ -176,10 +193,9 @@ export function tileDerivations(activity, merges, facts, series, now) {
       output: numeric(combined.output_tokens),
       spark: last14(series.sessions, "input_tokens", now),
     },
-    cost: {
-      metered: numeric(combined.cost_usd),
-      list: combined.list_cost_usd,
-      spark: last14(series.sessions, "cost_usd", now),
+    spend: {
+      value: numeric(combined.spend_usd),
+      spark: last14(series.spend, "spend_usd", now),
     },
     facts: {
       value:

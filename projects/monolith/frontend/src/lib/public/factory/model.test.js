@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   activitySeries,
   factSeries,
+  formatSpend,
   markClass,
   modelLane,
   paginate,
   sortPullRequests,
+  spendSeries,
   tileDerivations,
 } from "./model.js";
 
@@ -102,7 +104,7 @@ describe("fact and tile derivations", () => {
       { now: {}, totals_7d: {} },
       { totals: {} },
       facts,
-      { sessions: [], merges: [], lines: [], facts: factRows },
+      { sessions: [], spend: [], merges: [], lines: [], facts: factRows },
       "2026-09-07",
     );
 
@@ -122,6 +124,11 @@ describe("fact and tile derivations", () => {
 
   it("combines dual-source activity totals and accepts legacy flat totals", () => {
     const shared = [{ d: "2026-09-07", sessions: 5, input_tokens: 12 }];
+    const spend = spendSeries([
+      { day: "2026-09-06", spend_usd: 700 },
+      { day: "2026-09-07", spend_usd: 500 },
+      { day: "2026-09-07", spend_usd: 34.4 },
+    ]);
     const dual = tileDerivations(
       {
         totals_7d: {
@@ -129,40 +136,40 @@ describe("fact and tile derivations", () => {
             sessions: 2,
             input_tokens: 10,
             output_tokens: 4,
-            cost_usd: 1.25,
-            list_cost_usd: 2,
           },
           local: {
             sessions: 3,
             input_tokens: 20,
             output_tokens: 6,
-            list_cost_usd: 3,
           },
           combined: {
             sessions: 5,
             input_tokens: 30,
             output_tokens: 10,
-            cost_usd: 1.25,
-            list_cost_usd: 5,
+            spend_usd: 1234.4,
           },
         },
       },
       { totals: {} },
       { daily: [], totals: {} },
-      { sessions: shared, merges: [], lines: [], facts: [] },
+      { sessions: shared, spend, merges: [], lines: [], facts: [] },
       "2026-09-07",
     );
     const legacy = tileDerivations(
       { totals_7d: { sessions: 4, input_tokens: 7, output_tokens: 2 } },
       { totals: {} },
       { daily: [], totals: {} },
-      { sessions: [], merges: [], lines: [], facts: [] },
+      { sessions: [], spend: [], merges: [], lines: [], facts: [] },
       "2026-09-07",
     );
 
     expect(dual.sessions).toMatchObject({ value: 5, ember: 2, local: 3 });
     expect(dual.tokens).toMatchObject({ input: 30, output: 10 });
-    expect(dual.cost).toMatchObject({ metered: 1.25, list: 5 });
+    expect(dual.spend.value).toBe(1234.4);
+    expect(dual.spend.spark.at(-2)).toBe(700);
+    expect(dual.spend.spark.at(-1)).toBe(534.4);
+    expect(formatSpend(dual.spend.value)).toBe("$1.2k");
+    expect(formatSpend(12.75)).toBe("$13");
     expect(legacy.sessions.value).toBe(4);
     expect(legacy.tokens.input).toBe(7);
   });
