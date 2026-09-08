@@ -17,7 +17,7 @@ import re
 import secrets
 from uuid import uuid4
 
-from sqlalchemy import delete, or_, update
+from sqlalchemy import delete, or_, text, update
 from sqlmodel import Session, select
 
 from agent_sessions import admission
@@ -338,6 +338,16 @@ def _result(db: Session, receipt: dict) -> dict:
     }
 
 
+def _bound_observer_transaction(db: Session) -> None:
+    # Optional observation must not monopolize an executor on a database lock.
+    # SET LOCAL expires with this transaction and never changes the shared pool
+    # connection's defaults. Connection establishment is bounded by the caller's
+    # dedicated executor; these limits apply once PostgreSQL accepts the query.
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SET LOCAL lock_timeout = '1s'"))
+        db.execute(text("SET LOCAL statement_timeout = '3s'"))
+
+
 def read_active_result(
     receipt_id: str,
     session_id: int,
@@ -353,6 +363,7 @@ def read_active_result(
     expiry governs capture; a committed body remains readable until retention.
     """
     with Session(get_engine()) as db:
+        _bound_observer_transaction(db)
         receipt = _receipt_metadata(db, receipt_id)
         if receipt is None:
             return None
@@ -422,6 +433,7 @@ def mark_response_observed(
     from agent_sessions import store
 
     with Session(get_engine()) as db, db.begin():
+        _bound_observer_transaction(db)
         agent = store._lock_session(db, session_id)
         db.execute(
             update(AgentResultReceipt)
