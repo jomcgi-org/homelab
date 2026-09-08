@@ -572,12 +572,11 @@
             evaluating records against reality and investigating conflicting
             information.
           </p>
-          <h3 class="figure-heading">Where does the data come from?</h3>
           <figure>
             <svg
-              viewBox="0 0 780 252"
+              viewBox="0 44 780 208"
               role="img"
-              aria-label="Exploded view: four parts in a line, sessions to raw input to record to readers, with a dashed return path for disputes"
+              aria-label="Four parts in a line, sessions to raw input to record to readers, with a dashed return path for disputes"
             >
               <g fill="none" stroke="currentColor" stroke-width="1.25">
                 <rect x="20" y="56" width="148" height="130" /><rect
@@ -636,46 +635,6 @@
                   points="642,121 635,117.5 635,124.5"
                 />
               </g>
-              <g fill="none" stroke="currentColor" stroke-width="1">
-                <circle cx="94" cy="26" r="9" /><line
-                  x1="94"
-                  y1="35"
-                  x2="94"
-                  y2="54"
-                /><circle cx="302" cy="26" r="9" /><line
-                  x1="302"
-                  y1="35"
-                  x2="302"
-                  y2="54"
-                /><circle cx="510" cy="26" r="9" /><line
-                  x1="510"
-                  y1="35"
-                  x2="510"
-                  y2="54"
-                /><circle cx="702" cy="26" r="9" /><line
-                  x1="702"
-                  y1="35"
-                  x2="702"
-                  y2="54"
-                />
-              </g>
-              <g fill="currentColor"
-                ><circle cx="94" cy="54" r="2" /><circle
-                  cx="302"
-                  cy="54"
-                  r="2"
-                /><circle cx="510" cy="54" r="2" /><circle
-                  cx="702"
-                  cy="54"
-                  r="2"
-                /></g
-              >
-              <g font-size="11" fill="currentColor" text-anchor="middle"
-                ><text x="94" y="30">1</text><text x="302" y="30">2</text><text
-                  x="510"
-                  y="30">3</text
-                ><text x="702" y="30">4</text></g
-              >
               <path
                 d="M702 186 V218 H302 V188"
                 fill="none"
