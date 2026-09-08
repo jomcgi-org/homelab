@@ -493,10 +493,11 @@ def capture_result(receipt_id: str, token: str, body: bytes) -> dict:
     if len(body) > MAX_RESULT_BYTES:
         raise ReceiptRejected(413, "result_too_large")
     try:
-        record = json.loads(body)
+        # Release the decoded copy before persisting the original bytes.
+        is_object = isinstance(json.loads(body), dict)
     except (ValueError, UnicodeDecodeError, RecursionError):
         raise ReceiptRejected(422, "invalid_result_json") from None
-    if not isinstance(record, dict):
+    if not is_object:
         raise ReceiptRejected(422, "result_must_be_object")
     digest = _sha(body)
     with Session(get_engine()) as db, db.begin():
