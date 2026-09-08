@@ -230,6 +230,77 @@ def test_delivery_error_hold_reconciles_with_recorded_outcome(database):
         assert after["latest_stop_reason"] is None
 
 
+def test_production_delivery_error_writer_creates_a_reconcilable_hold(
+    database, monkeypatch
+):
+    request, _ = held(database)
+    sid = request["session_id"]
+    with Session(database) as db:
+        db.delete(store.get_turn(db, sid, 1))
+        agent = db.get(AgentSession, sid)
+        agent.status = "running"
+        db.add(agent)
+        db.add(
+            PendingMessage(
+                session_id=sid,
+                seq=1,
+                message_text="original",
+                model="luna",
+                partial_text="retained delivery progress",
+                claimed_by_replica="worker",
+                dispatch_count=1,
+            )
+        )
+        db.add(
+            AgentCapacityReservation(
+                local_session_id=agent.local_session_id,
+                session_id=sid,
+                pending_seq=1,
+                routine_job_name=request["job_name"],
+                tier="kg",
+                state="running",
+            )
+        )
+        db.commit()
+
+    monkeypatch.setattr(store, "get_engine", lambda: database)
+    store.mark_turn_error_sync(
+        sid, 1, "invoke_timeout", claim_owner="worker", cessation_confirmed=False
+    )
+
+    with Session(database) as db:
+        before = reconciliation.read_reconciliation_state(db, request["job_name"], sid)
+        assert before["session_status"] == "warn"
+        assert before["latest_terminal_reason"] == "error"
+        assert before["latest_stop_reason"] is None
+        assert before["reservation_state"] == "uncertain"
+        assert before["reservation_outcome"] == "delivery_error"
+        assert before["pending"] is False
+        turn = store.get_turn(db, sid, 1)
+        assert turn.result_text == "retained delivery progress"
+        assert turn.cost_usd is None
+    request["expected_state_sha256"] = before["state_sha256"]
+    now = datetime.now(timezone.utc)
+    request["cessation"].update(
+        observed_at=now.isoformat(),
+        updated_at=int(now.timestamp() * 1000),
+        last_invoke_at=int(now.timestamp() * 1000),
+    )
+
+    assert (
+        reconciliation.reconcile_held_job(**request)["original_outcome"]
+        == "delivery_error"
+    )
+
+    with Session(database) as db:
+        after = reconciliation.read_reconciliation_state(db, request["job_name"], sid)
+        assert after["turns_sha256"] == before["turns_sha256"]
+        assert after["payload_sha256"] == before["payload_sha256"]
+        assert after["raw_sha256"] == before["raw_sha256"]
+        assert after["provenance_sha256"] == before["provenance_sha256"]
+        assert db.exec(select(AgentCapacityReservation)).one().state == "settled"
+
+
 @pytest.mark.parametrize("delivery_error", [False, True])
 def test_existing_extraction_retained_without_false_correction_success(
     database, delivery_error
