@@ -902,7 +902,9 @@ class EmberVmShimTransport:
             logger.warning("embervm session listing transport error: %s", exc)
             raise EmberVMTransportError(str(exc)) from exc
 
-    async def destroy_session(self, ember_session_id: str) -> dict:
+    async def destroy_session(
+        self, ember_session_id: str, *, stop_precondition: dict | None = None
+    ) -> dict:
         """Destroy one control plane session by its EmberVM session id (management auth).
 
         Args:
@@ -930,7 +932,15 @@ class EmberVmShimTransport:
 
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.delete(url, headers=headers)
+                if stop_precondition is None:
+                    response = await client.delete(url, headers=headers)
+                else:
+                    response = await client.request(
+                        "DELETE",
+                        url,
+                        headers=headers,
+                        json={"stop_precondition": stop_precondition},
+                    )
                 response.raise_for_status()
                 return response.json()
         except httpx.TimeoutException as exc:

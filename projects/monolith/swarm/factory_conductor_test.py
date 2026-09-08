@@ -1484,6 +1484,500 @@ def test_timeout_reconciliation_rollback_preserves_queue_and_ledgers(
         assert db.exec(select(AgentTurn)).first() is None
 
 
+@pytest.fixture
+def uncertain_factory(queued_factory, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    import copy
+    import json
+    from sqlmodel import Session
+    from agent_sessions import admission, store
+    from agent_sessions.models import AgentSession
+    from swarm import factory_controls as controls
+    from swarm import factory_supervision as supervisor
+
+    s = queued_factory
+    for module in (controls, admission, store):
+        monkeypatch.setattr(module, "get_engine", lambda: s.engine)
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "true")
+    owner = "original-factory-executor"
+    assert store.claim_pending_message_for_session_sync(s.sid, owner) == 1
+    assert admission.recheck(s.sid, 1, owner)
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        agent.ember_session_id = "s-exact-factory"
+        agent.ember_lineage_id = "lineage-preserved"
+        agent.cli_session_id = "cli-preserved"
+        pending = store.get_pending_message(db, s.sid, 1)
+        pending.last_dispatch_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+        pending.partial_text = "Unpublished partial implementation"
+        db.add_all([agent, pending])
+        db.commit()
+    store.finish_unknown_pending_sync(s.sid, 1, owner, 1, "executor_cancelled")
+    s.result = {
+        "status": "uncertain",
+        "session_id": s.sid,
+        "cost_usd": None,
+        "reason": "unknown_invocation: reconcile before retry",
+        "head_sha": "a" * 40,
+    }
+    conductor.graph.record_dispatch(
+        s.task["id"],
+        s.run["node_key"],
+        1,
+        s.sid,
+        "b" * 40,
+    )
+    assert conductor.graph.record_outcome(
+        s.task["id"],
+        s.run["node_key"],
+        1,
+        "uncertain",
+        None,
+        "a" * 40,
+        json.dumps(s.result),
+    ).ok
+    assert controls.record_start_outcome(
+        s.task["id"],
+        s.run["pin"]["workflow_id"],
+        "uncertain",
+        "executor",
+        session_id=s.sid,
+    )["ok"]
+    s.run = conductor.graph.node_runs(s.task["id"])[0]
+    s.precondition = {
+        "session_id": "s-exact-factory",
+        "generation": 0,
+        "invoke_started_at": 100,
+        "vm_id": "vm-original",
+        "node_id": "node-1",
+        "instance_id": "node-1/pod-original",
+        "pod_uid": "pod-original",
+        "boot_id": "boot-original",
+    }
+    s.cp = {
+        "session_id": "s-exact-factory",
+        "state": "running",
+        "generation": 0,
+        "invoke_started_at": 100,
+        "stop_precondition": s.precondition,
+        "stop_intent": None,
+        "stop_completion": None,
+    }
+    s.calls = []
+
+    def http(guest_id, precondition=None):
+        s.calls.append((guest_id, copy.deepcopy(precondition)))
+        if precondition is not None:
+            assert precondition == s.precondition
+            s.cp["state"] = "destroying"
+            s.cp["stop_intent"] = {
+                **s.precondition,
+                "operation_id": "stop-original",
+                "requested_at_unix_ms": 150,
+            }
+        return copy.deepcopy(s.cp)
+
+    s.http = http
+    monkeypatch.setattr(supervisor, "_http", http)
+    s.dbos = SimpleNamespace(
+        get_workflow_status=lambda _: SimpleNamespace(status="SUCCESS"),
+        retrieve_workflow=lambda _: SimpleNamespace(get_result=lambda: s.result),
+    )
+
+    def complete():
+        s.cp["state"] = "destroyed"
+        s.cp["stop_completion"] = {
+            **s.cp["stop_intent"],
+            "completed_at_unix_ms": 200,
+        }
+
+    s.complete = complete
+    return s
+
+
+def _uncertain_snapshot(s):
+    from sqlmodel import Session, select
+    from agent_sessions.models import (
+        AgentCapacityReservation,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from swarm import factory_controls as controls
+
+    with Session(s.engine) as db:
+        return {
+            "session": db.get(AgentSession, s.sid).model_dump(),
+            "turns": [row.model_dump() for row in db.exec(select(AgentTurn)).all()],
+            "pending": [
+                row.model_dump() for row in db.exec(select(PendingMessage)).all()
+            ],
+            "permits": [
+                row.model_dump()
+                for row in db.exec(select(AgentCapacityReservation)).all()
+            ],
+            "runs": conductor.graph.node_runs(s.task["id"], session=db),
+            "factory": controls.task_snapshot(s.task["id"], session=db),
+        }
+
+
+def test_durable_stop_reconciles_production_factory_owner_without_replay(
+    uncertain_factory,
+):
+    from swarm import factory_controls as controls
+    from sqlmodel import Session, select
+    from swarm.factory_models import FactoryAudit
+
+    s = uncertain_factory
+    before = _uncertain_snapshot(s)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    waiting = _uncertain_snapshot(s)
+    for key in ("session", "turns", "pending", "permits", "runs"):
+        assert waiting[key] == before[key]
+    assert len([call for call in s.calls if call[1] is not None]) == 1
+    s.complete()
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    after = _uncertain_snapshot(s)
+    assert after["turns"] == before["turns"]
+    assert after["turns"][0]["cost_usd"] is None
+    assert after["turns"][0]["stop_reason"] == "invocation_outcome_unknown"
+    assert after["turns"][0]["result_text"] == "Unpublished partial implementation"
+    assert after["pending"] == []
+    assert after["permits"][0]["state"] == "settled"
+    assert after["permits"][0]["outcome"] == "guest_cessation_confirmed"
+    assert after["session"]["ember_session_id"] is None
+    assert after["session"]["prior_ember_lineage_id"] == "lineage-preserved"
+    assert after["session"]["prior_cli_session_id"] == "cli-preserved"
+    assert after["runs"][0]["status"] == "failed"
+    assert after["runs"][0]["pin"] == before["runs"][0]["pin"]
+    assert (
+        after["runs"][0]["accounted_cost_usd"]
+        == before["runs"][0]["accounted_cost_usd"]
+    )
+    for key in ("turns_used", "committed_cost_usd", "deadline_at"):
+        assert after["factory"][key] == before["factory"][key]
+    assert after["factory"]["starts"][0]["status"] == "failed"
+    event = after["factory"]["stop_events"][0]
+    assert event["action"] == "stop_settled"
+    assert event["cessation_confirmed"] is True
+    assert event["intervention_required"] is False
+    assert event["session_id"] == s.sid
+    assert "identity_sha256" not in event and "claim_owner" not in event
+    assert controls.can_start(s.task["id"])["ok"]
+    # The old immutable DBOS result cannot reopen the reconciled execution.
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    assert _uncertain_snapshot(s) == after
+    assert len([call for call in s.calls if call[1] is not None]) == 1
+    with Session(s.engine) as db:
+        assert (
+            len(
+                db.exec(
+                    select(FactoryAudit).where(FactoryAudit.action == "stop_settled")
+                ).all()
+            )
+            == 1
+        )
+
+
+@pytest.mark.parametrize("failure", ["permit", "graph", "start"])
+def test_stop_settlement_rollback_retains_all_original_holds(
+    uncertain_factory, monkeypatch, failure
+):
+    from swarm import factory_controls as controls
+    from swarm import factory_supervision as supervisor
+    from agent_sessions import admission
+
+    s = uncertain_factory
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    before = _uncertain_snapshot(s)
+    s.complete()
+    if failure == "permit":
+
+        def refuse(*args, **kwargs):
+            raise ValueError("injected permit failure")
+
+        monkeypatch.setattr(admission, "settle", refuse)
+    elif failure == "graph":
+        monkeypatch.setattr(
+            supervisor.graph,
+            "record_outcome",
+            lambda *args, **kwargs: SimpleNamespace(ok=False),
+        )
+    else:
+        monkeypatch.setattr(
+            controls, "record_start_outcome", lambda *args, **kwargs: {"ok": False}
+        )
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    after = _uncertain_snapshot(s)
+    for key in ("session", "turns", "pending", "permits", "runs"):
+        assert after[key] == before[key]
+    assert after["factory"]["starts"] == before["factory"]["starts"]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("boot_id", "boot-new"),
+        ("pod_uid", "pod-new"),
+        ("vm_id", "vm-new"),
+        ("operation_id", "stop-new"),
+        ("session_id", "s-new"),
+        ("generation", False),
+        ("completed_at_unix_ms", True),
+    ],
+)
+def test_wrong_or_malformed_completion_cannot_settle(uncertain_factory, field, value):
+    s = uncertain_factory
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    before = _uncertain_snapshot(s)
+    s.complete()
+    s.cp["stop_completion"][field] = value
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    after = _uncertain_snapshot(s)
+    for key in ("session", "turns", "pending", "permits", "runs"):
+        assert after[key] == before[key]
+
+
+def test_lost_ack_reuses_committed_stop_without_another_delete(
+    uncertain_factory, monkeypatch
+):
+    from swarm import factory_supervision as supervisor
+
+    s = uncertain_factory
+
+    def lost_ack(guest_id, precondition=None):
+        value = s.http(guest_id, precondition)
+        if precondition is not None:
+            raise TimeoutError("response lost after durable CP acceptance")
+        return value
+
+    monkeypatch.setattr(supervisor, "_http", lost_ack)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    for _ in range(3):
+        conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    assert len([call for call in s.calls if call[1] is not None]) == 1
+    s.complete()
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "change", ["operation", "top_invoke", "instance", "stamp_type"]
+)
+def test_persisted_stop_operation_and_current_invocation_must_match(
+    uncertain_factory, change
+):
+    s = uncertain_factory
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    # Observe and durably retain the CP operation before completion.
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    before = _uncertain_snapshot(s)
+    s.complete()
+    if change == "operation":
+        s.cp["stop_intent"]["operation_id"] = "other-operation"
+        s.cp["stop_completion"]["operation_id"] = "other-operation"
+    elif change == "top_invoke":
+        s.cp["invoke_started_at"] += 1
+    elif change == "instance":
+        s.cp["stop_intent"]["instance_id"] = "unrelated-instance"
+        s.cp["stop_completion"]["instance_id"] = "unrelated-instance"
+    else:
+        s.cp["stop_intent"]["requested_at_unix_ms"] = 1
+        s.cp["stop_completion"]["requested_at_unix_ms"] = True
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    after = _uncertain_snapshot(s)
+    for key in ("session", "turns", "pending", "permits", "runs"):
+        assert after[key] == before[key]
+
+
+def test_lost_stop_requests_keep_one_identity_and_persistent_bound(
+    uncertain_factory, monkeypatch
+):
+    import json
+    from sqlmodel import Session, select
+    from swarm.factory_models import FactoryAudit
+    from swarm import factory_supervision as supervisor
+
+    s = uncertain_factory
+
+    def dropped(guest_id, precondition=None):
+        if precondition is not None:
+            s.calls.append((guest_id, precondition))
+            raise TimeoutError("request outcome unknown")
+        return dict(s.cp)
+
+    monkeypatch.setattr(supervisor, "_http", dropped)
+    for _ in range(8):
+        conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    assert len(s.calls) == supervisor.MAX_STOP_REQUESTS == 3
+    assert all(call[1] == s.precondition for call in s.calls)
+    assert _uncertain_snapshot(s)["permits"][0]["state"] == "uncertain"
+    with Session(s.engine) as db:
+        audit = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action.like("stop_%"))
+        ).all()
+        assert sum(row.action == "stop_intent" for row in audit) == 1
+        assert sum(row.action == "stop_request" for row in audit) == 3
+        notes = [
+            json.loads(row.detail_json)["reason"]
+            for row in audit
+            if row.action == "stop_observation"
+        ]
+        assert set(notes) == {"stop_request_unconfirmed", "stop_request_bound_reached"}
+
+
+def test_pending_completion_surfaces_one_bounded_intervention_event(
+    uncertain_factory, monkeypatch
+):
+    from datetime import timedelta
+    from swarm import factory_controls as controls
+    from swarm import factory_supervision as supervisor
+
+    s = uncertain_factory
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    future = supervisor._now() + timedelta(
+        seconds=supervisor.COMPLETION_ALARM_SECONDS + 1
+    )
+    monkeypatch.setattr(supervisor, "_now", lambda: future)
+    for _ in range(3):
+        conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    events = controls.task_snapshot(s.task["id"])["stop_events"]
+    pending = [
+        event for event in events if event.get("reason") == "node_completion_pending"
+    ]
+    assert len(pending) == 1 and pending[0]["intervention_required"]
+    assert not pending[0]["cessation_confirmed"]
+    assert _uncertain_snapshot(s)["permits"][0]["state"] == "uncertain"
+
+
+def test_failed_request_budget_write_prevents_external_stop(
+    uncertain_factory, monkeypatch
+):
+    from swarm import factory_supervision as supervisor
+
+    s = uncertain_factory
+    original = supervisor._audit
+
+    def refuse(db, pin, action, **detail):
+        if action == "stop_request":
+            raise ValueError("request budget commit failed")
+        return original(db, pin, action, **detail)
+
+    monkeypatch.setattr(supervisor, "_audit", refuse)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert all(call[1] is None for call in s.calls)
+    assert _uncertain_snapshot(s)["permits"][0]["state"] == "uncertain"
+
+
+def test_operator_stop_can_reconcile_before_deadline_without_resuming_work(
+    uncertain_factory, monkeypatch
+):
+    from datetime import timedelta
+    from swarm import factory_controls as controls
+    from swarm import factory_supervision as supervisor
+
+    s = uncertain_factory
+    before_deadline = supervisor._now() - timedelta(seconds=119)
+    monkeypatch.setattr(supervisor, "_now", lambda: before_deadline)
+    assert controls.set_control("stop", "operator")["ok"]
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    assert len([call for call in s.calls if call[1] is not None]) == 1
+    s.complete()
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    assert _uncertain_snapshot(s)["permits"][0]["state"] == "settled"
+    assert not controls.can_start(s.task["id"])["ok"]
+
+
+@pytest.mark.parametrize("change", ["pending", "permit_owner", "turn", "guest", "run"])
+def test_changed_local_owner_after_get_cannot_authorize_stop(
+    uncertain_factory, monkeypatch, change
+):
+    from sqlmodel import Session, select
+    from agent_sessions.models import (
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+        AgentCapacityReservation,
+    )
+    from swarm.models import SwarmNodeRun
+    from swarm import factory_supervision as supervisor
+
+    s = uncertain_factory
+
+    def changed(guest_id, precondition=None):
+        assert precondition is None, (
+            "stale local ownership authorized a destructive request"
+        )
+        with Session(s.engine) as db:
+            if change == "pending":
+                db.add(PendingMessage(session_id=s.sid, seq=2, message_text="new work"))
+            elif change == "permit_owner":
+                row = db.exec(select(AgentCapacityReservation)).one()
+                row.owner = "new-executor"
+                db.add(row)
+            elif change == "turn":
+                row = db.exec(select(AgentTurn)).one()
+                row.result_text = "new evidence"
+                db.add(row)
+            elif change == "guest":
+                row = db.get(AgentSession, s.sid)
+                row.ember_session_id = "s-replacement"
+                db.add(row)
+            else:
+                row = db.get(SwarmNodeRun, s.run["id"])
+                row.session_id = 999
+                db.add(row)
+            db.commit()
+        return dict(s.cp)
+
+    monkeypatch.setattr(supervisor, "_http", changed)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert _uncertain_snapshot(s)["permits"][0]["state"] == "uncertain"
+
+
+@pytest.mark.parametrize(
+    "blocked",
+    ["disabled", "not_due", "pending_dbos", "missing_identity", "legacy_terminal"],
+)
+def test_supervision_never_substitutes_silence_or_state_for_stop_authority(
+    uncertain_factory, monkeypatch, blocked
+):
+    from datetime import timedelta
+    from swarm import factory_supervision as supervisor
+
+    s = uncertain_factory
+    status = "SUCCESS"
+    if blocked == "disabled":
+        monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
+    elif blocked == "not_due":
+        real_now = supervisor._now()
+        monkeypatch.setattr(
+            supervisor, "_now", lambda: real_now - timedelta(seconds=119)
+        )
+    elif blocked == "pending_dbos":
+        status = "PENDING"
+    elif blocked == "missing_identity":
+        s.cp["stop_precondition"] = None
+    else:
+        s.cp["state"] = "destroyed"
+        s.cp["stop_precondition"] = None
+    before = _uncertain_snapshot(s)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, status
+    )
+    assert all(call[1] is None for call in s.calls)
+    after = _uncertain_snapshot(s)
+    for key in ("session", "turns", "pending", "permits", "runs"):
+        assert after[key] == before[key]
+
+
 @pytest.mark.parametrize("control_action", ["pause_task", "stop", "expired", None])
 def test_waiting_factory_priority_and_live_fence_after_capacity_release(
     queued_factory, control_action, monkeypatch

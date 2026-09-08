@@ -1,0 +1,471 @@
+"""Consume durable exact Ember stop proof through the existing factory owner.
+
+Each tick observes one guest and may issue one conditional stop. No network
+call holds a database lock; an immutable audit intent survives observer loss.
+Native completion is checked first by the conductor. This path preserves an
+unknown turn and settles failed execution only after positive teardown proof.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timedelta, timezone
+import json
+import math
+import os
+
+from sqlmodel import select
+
+from agent_sessions.api import (
+    read_uncertain_factory_attempt,
+    settle_uncertain_factory_attempt,
+)
+from swarm import graph
+from swarm import factory_controls as controls
+from swarm.factory_models import FactoryAudit, FactoryStart
+from swarm.models import SwarmNodeRun
+
+ACTOR = "factory:stop-supervision"
+MAX_STOP_REQUESTS = 3
+HTTP_SECONDS = 5
+COMPLETION_ALARM_SECONDS = 120
+_ACTIONS = (
+    "stop_intent",
+    "stop_request",
+    "stop_accepted",
+    "stop_observation",
+    "stop_settled",
+)
+_PRECONDITION_KEYS = frozenset(
+    {
+        "session_id",
+        "generation",
+        "invoke_started_at",
+        "vm_id",
+        "node_id",
+        "instance_id",
+        "pod_uid",
+        "boot_id",
+    }
+)
+
+
+def _now():
+    return datetime.now(timezone.utc)
+
+
+def _timestamp(value):
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+
+
+def _records(db, pin):
+    rows = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.task_id == pin["task_id"],
+            FactoryAudit.action.in_(_ACTIONS),
+        )
+        .order_by(FactoryAudit.id)
+    ).all()
+    return [
+        (row.action, {**detail, "recorded_at": row.created_at.isoformat()})
+        for row in rows
+        if (detail := json.loads(row.detail_json)).get("workflow_id")
+        == pin["workflow_id"]
+    ]
+
+
+def _audit(db, pin, action, **detail):
+    controls._audit(
+        db,
+        ACTOR,
+        action,
+        task_id=pin["task_id"],
+        workflow_id=pin["workflow_id"],
+        **detail,
+    )
+
+
+def _locked_attempt(db, control, pin, sid):
+    run = db.exec(
+        select(SwarmNodeRun)
+        .where(
+            SwarmNodeRun.task_id == pin["task_id"],
+            SwarmNodeRun.node_key == pin["node_key"],
+            SwarmNodeRun.attempt == pin["attempt"],
+        )
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if (
+        run is None
+        or json.loads(run.pin_json or "null") != pin
+        or run.dispatch_key != pin["workflow_id"]
+        or run.session_id not in (None, sid)
+        or run.status not in ("admitted", "dispatched", "uncertain")
+        or db.exec(
+            select(SwarmNodeRun.id).where(
+                SwarmNodeRun.task_id == pin["task_id"],
+                SwarmNodeRun.node_key == pin["node_key"],
+                SwarmNodeRun.attempt > pin["attempt"],
+            )
+        ).first()
+        is not None
+    ):
+        raise ValueError("factory_run_changed")
+    start = db.exec(
+        select(FactoryStart)
+        .where(
+            FactoryStart.task_id == pin["task_id"],
+            FactoryStart.start_key == pin["workflow_id"],
+        )
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if (
+        start is None
+        or start.status not in ("reserved", "uncertain")
+        or start.session_id not in (None, sid)
+        or start.model != pin["model"]
+        or start.max_cost_usd != pin["max_cost_usd"]
+    ):
+        raise ValueError("factory_start_changed")
+    identity = read_uncertain_factory_attempt(db, pin, sid)
+    snapshot = controls.task_snapshot(pin["task_id"], session=db)
+    deadline = min(
+        _timestamp(snapshot["deadline_at"]),
+        _timestamp(identity["dispatched_at"])
+        + timedelta(seconds=pin["turn_timeout_seconds"]),
+    )
+    if "task_deadline_at" in pin:
+        deadline = min(deadline, _timestamp(pin["task_deadline_at"]))
+    if control.state == "disabled" or (
+        control.state != "stopped"
+        and not snapshot["cancellation_requested"]
+        and _now() < deadline
+    ):
+        raise ValueError("factory_stop_not_due")
+    return identity, run
+
+
+def _precondition(value, guest_id):
+    if not isinstance(value, dict) or set(value) != _PRECONDITION_KEYS:
+        raise ValueError("missing_stop_precondition")
+    if value["session_id"] != guest_id:
+        raise ValueError("wrong_stop_session")
+    for field in _PRECONDITION_KEYS - {"generation", "invoke_started_at"}:
+        if not isinstance(value[field], str) or not 1 <= len(value[field]) <= 256:
+            raise ValueError("invalid_stop_identity")
+    if value["instance_id"] != value["node_id"] + "/" + value["pod_uid"]:
+        raise ValueError("invalid_stop_instance")
+    if type(value["generation"]) is not int or value["generation"] < 0:
+        raise ValueError("invalid_stop_generation")
+    if value["invoke_started_at"] is not None and (
+        type(value["invoke_started_at"]) is not int or value["invoke_started_at"] < 1
+    ):
+        raise ValueError("invalid_stop_invocation")
+    return dict(value)
+
+
+def _completion(view, expected):
+    if not isinstance(view, dict) or view.get("session_id") != expected["session_id"]:
+        raise ValueError("wrong_stop_observation")
+    stamp = view.get("invoke_started_at")
+    if (
+        type(stamp) is not type(expected["invoke_started_at"])
+        or stamp != expected["invoke_started_at"]
+    ):
+        raise ValueError("changed_stop_invocation")
+    intent, proof = view.get("stop_intent"), view.get("stop_completion")
+    if intent is None:
+        if proof is not None:
+            raise ValueError("completion_without_stop_intent")
+        return None
+    if not isinstance(intent, dict) or any(
+        intent.get(key) != value for key, value in expected.items()
+    ):
+        raise ValueError("stop_intent_changed")
+    _precondition(
+        {key: intent.get(key) for key in _PRECONDITION_KEYS}, expected["session_id"]
+    )
+    if (
+        not isinstance(intent.get("operation_id"), str)
+        or not 1 <= len(intent["operation_id"]) <= 256
+        or type(intent.get("requested_at_unix_ms")) is not int
+        or intent["requested_at_unix_ms"] < 1
+    ):
+        raise ValueError("invalid_stop_intent")
+    if proof is None:
+        return None
+    keys = _PRECONDITION_KEYS | {"operation_id", "requested_at_unix_ms"}
+    if (
+        view.get("state") != "destroyed"
+        or type(view.get("generation")) is not int
+        or view["generation"] != expected["generation"]
+        or not isinstance(proof, dict)
+        or any(proof.get(key) != intent.get(key) for key in keys)
+        or type(proof.get("requested_at_unix_ms")) is not int
+        or type(proof.get("completed_at_unix_ms")) is not int
+        or proof["completed_at_unix_ms"] < 1
+    ):
+        raise ValueError("invalid_stop_completion")
+    _precondition(
+        {key: proof.get(key) for key in _PRECONDITION_KEYS}, expected["session_id"]
+    )
+    # Clock values are attribution, not cross-host ordering evidence.
+    return {key: proof[key] for key in keys | {"completed_at_unix_ms"}}
+
+
+def _remember_observation(pin, sid, identity, expected, view):
+    """Commit the first observed CP operation before attempting settlement.
+
+    A later settlement rollback cannot forget that exact accepted operation.
+    """
+    with controls._locked_session() as (db, control):
+        current, _run = _locked_attempt(db, control, pin, sid)
+        if current != identity:
+            raise ValueError("factory_attempt_changed")
+        records = _records(db, pin)
+        existing = [detail for action, detail in records if action == "stop_intent"]
+        if existing and (
+            len(existing) != 1
+            or existing[0]["identity"] != identity
+            or existing[0]["precondition"] != expected
+        ):
+            raise ValueError("stop_intent_changed")
+        if not existing:
+            _audit(db, pin, "stop_intent", identity=identity, precondition=expected)
+        accepted = [detail for action, detail in records if action == "stop_accepted"]
+        cp_intent = view.get("stop_intent")
+        canonical = (
+            None
+            if cp_intent is None
+            else {
+                key: cp_intent[key]
+                for key in _PRECONDITION_KEYS | {"operation_id", "requested_at_unix_ms"}
+            }
+        )
+        if accepted and (len(accepted) != 1 or accepted[0]["intent"] != canonical):
+            raise ValueError("accepted_stop_operation_changed")
+        if not accepted and canonical is not None:
+            _audit(
+                db,
+                pin,
+                "stop_accepted",
+                intent=canonical,
+                session_id=sid,
+                guest_id=identity["guest_id"],
+            )
+
+
+def _http(guest_id, precondition=None):
+    from agent_sessions.transport import EmberVmShimTransport
+
+    async def request():
+        transport = EmberVmShimTransport()
+        operation = (
+            transport.get_session(guest_id)
+            if precondition is None
+            else transport.destroy_session(guest_id, stop_precondition=precondition)
+        )
+        return await asyncio.wait_for(operation, timeout=HTTP_SECONDS)
+
+    return asyncio.run(request())
+
+
+def _note(pin, reason):
+    # Fixed reason codes, once each per attempt; error text and repeated polling
+    # never create an unbounded audit stream or copy request/response bodies.
+    with controls._locked_session() as (db, _control):
+        previous = _records(db, pin)
+        if not any(
+            action == "stop_observation" and detail.get("reason") == reason
+            for action, detail in previous
+        ):
+            _audit(
+                db,
+                pin,
+                "stop_observation",
+                reason=reason,
+                intervention_required=True,
+                cessation_confirmed=False,
+            )
+
+
+def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_status):
+    """One bounded supervision tick for an already terminal DBOS workflow.
+
+    A live DBOS workflow still owns its deadline/cancellation path. No work is
+    started or cancelled here. Three conditional requests maximum are retained
+    across observer restart; Ember owns retrying its accepted durable intent.
+    """
+    if os.environ.get("FACTORY_STOP_SUPERVISION_ENABLED", "false").lower() != "true":
+        return False
+    if workflow_status not in {
+        "SUCCESS",
+        "ERROR",
+        "CANCELLED",
+        "MAX_RECOVERY_ATTEMPTS_EXCEEDED",
+    }:
+        return False
+    if original_result.get("status") != "uncertain" or type(session_id) is not int:
+        return False
+    try:
+        with controls._locked_session() as (db, control):
+            if any(action == "stop_settled" for action, _ in _records(db, pin)):
+                return True
+            identity, _run = _locked_attempt(db, control, pin, session_id)
+            intents = [
+                detail
+                for action, detail in _records(db, pin)
+                if action == "stop_intent"
+            ]
+            if len(intents) > 1:
+                raise ValueError("conflicting_stop_intents")
+            saved = intents[0] if intents else None
+            if saved is not None and saved["identity"] != identity:
+                raise ValueError("factory_attempt_changed")
+    except ValueError as exc:
+        if str(exc) != "factory_stop_not_due":
+            _note(pin, "local_identity_unconfirmed")
+        return False
+
+    try:
+        view = _http(identity["guest_id"])
+    except Exception:
+        _note(pin, "stop_observation_unavailable")
+        return False
+    try:
+        if not isinstance(view, dict) or view.get("session_id") != identity["guest_id"]:
+            raise ValueError("wrong_stop_observation")
+        if saved is None:
+            value = view.get("stop_precondition")
+            if value is None and isinstance(view.get("stop_intent"), dict):
+                value = {
+                    key: view["stop_intent"].get(key) for key in _PRECONDITION_KEYS
+                }
+            expected = _precondition(value, identity["guest_id"])
+        else:
+            expected = saved["precondition"]
+        proof = _completion(view, expected)
+        _remember_observation(pin, session_id, identity, expected, view)
+        with controls._locked_session() as (db, control):
+            current, run = _locked_attempt(db, control, pin, session_id)
+            if current != identity:
+                raise ValueError("factory_attempt_changed")
+            records = _records(db, pin)
+            existing = [detail for action, detail in records if action == "stop_intent"]
+            if existing and (
+                len(existing) != 1
+                or existing[0]["identity"] != identity
+                or existing[0]["precondition"] != expected
+            ):
+                raise ValueError("stop_intent_changed")
+            if not existing:
+                raise ValueError("missing_committed_stop_intent")
+            if proof is not None:
+                known_costs = [
+                    cost
+                    for cost in (
+                        run.cost_usd,
+                        identity["cost_usd"],
+                        original_result.get("cost_usd"),
+                    )
+                    if cost is not None
+                ]
+                if any(
+                    type(cost) not in (int, float)
+                    or not math.isfinite(cost)
+                    or cost < 0
+                    for cost in known_costs
+                ):
+                    raise ValueError("invalid_original_cost")
+                result = {
+                    **original_result,
+                    "status": "failed",
+                    "session_id": session_id,
+                    "cost_usd": max(known_costs) if known_costs else None,
+                    "reason": "guest_cessation_confirmed: exact durable teardown after factory stop or deadline",
+                    "previous_outcome": json.loads(run.outcome_json or "{}"),
+                    "cessation": proof,
+                }
+                settle_uncertain_factory_attempt(db, pin, identity)
+                if run.session_id is None:
+                    bound = graph.record_dispatch(
+                        pin["task_id"],
+                        pin["node_key"],
+                        pin["attempt"],
+                        session_id,
+                        run.base_sha,
+                        session=db,
+                    )
+                    if not bound.ok:
+                        raise ValueError("factory_dispatch_refused")
+                settled = graph.record_outcome(
+                    pin["task_id"],
+                    pin["node_key"],
+                    pin["attempt"],
+                    "failed",
+                    result["cost_usd"],
+                    run.head_sha,
+                    json.dumps(result),
+                    session=db,
+                )
+                if not settled.ok:
+                    raise ValueError("factory_outcome_refused")
+                charged = controls.record_start_outcome(
+                    pin["task_id"],
+                    pin["workflow_id"],
+                    "failed",
+                    ACTOR,
+                    cost_usd=result["cost_usd"],
+                    session_id=session_id,
+                    reconciled=True,
+                    session=db,
+                )
+                if not charged["ok"]:
+                    raise ValueError("factory_start_outcome_refused")
+                _audit(
+                    db,
+                    pin,
+                    "stop_settled",
+                    identity=identity,
+                    completion=proof,
+                    cessation_confirmed=True,
+                    intervention_required=False,
+                )
+                return True
+            requests = sum(action == "stop_request" for action, _ in records)
+            if view.get("stop_intent") is not None or requests >= MAX_STOP_REQUESTS:
+                dispatch = False
+            else:
+                _audit(
+                    db,
+                    pin,
+                    "stop_request",
+                    request_number=requests + 1,
+                    identity_sha256=identity["identity_sha256"],
+                    precondition=expected,
+                )
+                dispatch = True
+        if dispatch:
+            # The durable local request budget was consumed before the external
+            # effect. An observation timeout never creates another identity.
+            try:
+                _http(identity["guest_id"], expected)
+            except Exception:
+                _note(pin, "stop_request_unconfirmed")
+        elif requests >= MAX_STOP_REQUESTS and view.get("stop_intent") is None:
+            _note(pin, "stop_request_bound_reached")
+        elif view.get("stop_intent") is not None:
+            accepted = [
+                detail for action, detail in records if action == "stop_accepted"
+            ]
+            if (
+                accepted
+                and (_now() - _timestamp(accepted[0]["recorded_at"])).total_seconds()
+                >= COMPLETION_ALARM_SECONDS
+            ):
+                _note(pin, "node_completion_pending")
+    except ValueError:
+        _note(pin, "stop_evidence_or_ownership_changed")
+    return False
