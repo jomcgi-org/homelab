@@ -1,9 +1,11 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from threading import Event
+from types import SimpleNamespace
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -1020,3 +1022,57 @@ def test_observer_rejects_forged_identity_without_recording_response(database):
         observe_response(receipt, claim_owner="impostor")
     with Session(database) as db:
         assert db.get(AgentResultReceipt, receipt["id"]).response_observed_at is None
+
+
+@pytest.mark.parametrize("dialect", ["postgresql", "sqlite"])
+@pytest.mark.parametrize("operation", ["read", "observe"])
+def test_optional_observers_set_only_postgres_transaction_limits_before_queries(
+    monkeypatch, dialect, operation
+):
+    calls = []
+
+    class ObserverSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            calls.append("session_closed")
+
+        def begin(self):
+            return nullcontext(self)
+
+        def get_bind(self):
+            return SimpleNamespace(dialect=SimpleNamespace(name=dialect))
+
+        def execute(self, statement):
+            calls.append(str(statement))
+
+    def metadata(db, receipt_id):
+        calls.append("metadata_read")
+        return None
+
+    def lock_session(db, session_id):
+        calls.append("session_lock")
+        return None
+
+    monkeypatch.setattr(receipts, "get_engine", lambda: None)
+    monkeypatch.setattr(receipts, "Session", lambda engine: ObserverSession())
+    monkeypatch.setattr(receipts, "_receipt_metadata", metadata)
+    monkeypatch.setattr(store, "_lock_session", lock_session)
+    if operation == "read":
+        assert read_active({"id": "0" * 32}) is None
+    else:
+        assert observe_response({"id": "0" * 32}) is False
+    limits = [call for call in calls if call.startswith("SET")]
+    assert limits == (
+        ["SET LOCAL lock_timeout = '1s'", "SET LOCAL statement_timeout = '3s'"]
+        if dialect == "postgresql"
+        else []
+    )
+    # Both bounds precede the optional receipt read and, for a late response,
+    # the pool/session lock. LOCAL prevents a pooled connection default change.
+    assert calls[: len(limits)] == limits
+    assert calls[len(limits)] == (
+        "metadata_read" if operation == "read" else "session_lock"
+    )
+    assert calls[-1] == "session_closed"
