@@ -90,7 +90,7 @@ describe("factory context loader", () => {
     });
 
     expect(fetch.mock.calls.map(([path]) => path)).toContain(
-      "/slop/factory/entities/project/small-project/notes?state=verified%2Cunverified%2Cdisputed&limit=60",
+      "/slop/factory/entities/project/small-project/notes?state=verified%2Cunverified&limit=60",
     );
     expect(result.projects.map((project) => project.slug)).not.toContain(
       "small-project",
@@ -118,7 +118,7 @@ describe("factory context loader", () => {
     ["/slop/factory/entities", "entities", ""],
     ["/slop/factory/facts", "facts", ""],
     [
-      "/slop/factory/entities/project/embervm/notes?state=verified%2Cunverified%2Cdisputed&limit=60",
+      "/slop/factory/entities/project/embervm/notes?state=verified%2Cunverified&limit=60",
       "chapter",
       "?entity=embervm",
     ],
