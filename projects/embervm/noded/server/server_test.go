@@ -52,7 +52,10 @@ type fakeDriver struct {
 	// failRelease injects a driver Release failure so a test can prove a reap
 	// failure surfaces as a Destroy error (teardown NOT confirmed), not a false
 	// confirmation (ADR embervm/014 decision 5).
-	failRelease error
+	failRelease      error
+	failRemoveBundle error
+	releaseStarted   chan struct{}
+	blockRelease     <-chan struct{}
 	// failSnapshotSession injects a Bank snapshot failure. The real driver tears
 	// the VM down on any snapshot error (a bank is destructive), so the fake
 	// mirrors that by decrementing live before returning the error.
@@ -114,8 +117,20 @@ func (f *fakeDriver) restoreTracksDirtyPages() bool {
 
 func (f *fakeDriver) Release(_ context.Context, _ substrate.Handle) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.releases++
+	started, blocked := f.releaseStarted, f.blockRelease
+	f.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if blocked != nil {
+		<-blocked
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.failRelease != nil {
 		return f.failRelease
 	}
@@ -129,7 +144,7 @@ func (f *fakeDriver) RemoveBundle(_ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.removeBundles++
-	return nil
+	return f.failRemoveBundle
 }
 
 func (f *fakeDriver) VsockUDSPath(threadID string) string {
@@ -199,19 +214,28 @@ func (f *fakeDriver) SnapshotSession(_ context.Context, _ substrate.Handle, snap
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failSnapshotSession != nil {
-		// Mirror the real driver: a bank error tears the VM down (Release), so the
-		// live count drops even though no bundle is produced.
-		if f.live > 0 {
+		confirmed := f.failRelease == nil
+		if confirmed && f.live > 0 {
 			f.live--
 		}
-		return substrate.SnapshotRef{}, f.failSnapshotSession
+		return substrate.SnapshotRef{}, &fakeSnapshotTeardownError{cause: f.failSnapshotSession, confirmed: confirmed}
 	}
+
 	if f.sessionBundles == nil {
 		f.sessionBundles = map[string]string{}
 	}
 	f.sessionBundles[snapshotRef] = f.nextBankMarker
 	return substrate.SnapshotRef{ID: snapshotRef, Node: "node-4", Arch: "amd64", SizeBytes: 8192}, nil
 }
+
+type fakeSnapshotTeardownError struct {
+	cause     error
+	confirmed bool
+}
+
+func (e *fakeSnapshotTeardownError) Error() string           { return e.cause.Error() }
+func (e *fakeSnapshotTeardownError) Unwrap() error           { return e.cause }
+func (e *fakeSnapshotTeardownError) TeardownConfirmed() bool { return e.confirmed }
 
 func (f *fakeDriver) snapshotSessionCount() int {
 	f.mu.Lock()
@@ -951,6 +975,213 @@ func TestDestroyUnknownConfirmed(t *testing.T) {
 	}
 	if _, releases, removeBundles, _ := drv.counts(); releases != 0 || removeBundles != 0 {
 		t.Errorf("Destroy of unknown id reaped: releases=%d removeBundles=%d, want 0/0", releases, removeBundles)
+	}
+}
+
+func TestDestroyRetainsInventoryUntilReleaseCompletes(t *testing.T) {
+	for _, kind := range []string{"task", "session", "serving"} {
+		t.Run(kind, func(t *testing.T) {
+			blocked := make(chan struct{})
+			started := make(chan struct{}, 1)
+			drv := &fakeDriver{live: 1, blockRelease: blocked, releaseStarted: started}
+			client, srv := newSessionTestServer(t, drv, &fakeTransport{}, 8)
+			var unblock sync.Once
+			t.Cleanup(func() { unblock.Do(func() { close(blocked) }) })
+			h := substrate.Handle{ID: "vm-delayed", ThreadID: "delayed"}
+			switch kind {
+			case "task":
+				srv.vms.add(&vmEntry{id: h.ID, workload: "echo", handle: h})
+			case "session":
+				srv.sessionVMs.add(&sessionEntry{vmID: h.ID, sessionID: "s-delayed", workload: "echo", handle: h})
+			case "serving":
+				srv.servingVMs.add(&servingEntry{vmID: h.ID, workload: "echo", handle: h})
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			first := make(chan error, 1)
+			go func() { _, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: h.ID}); first <- err }()
+			select {
+			case <-started:
+			case <-ctx.Done():
+				t.Fatal("Destroy did not enter Release")
+			}
+			if drv.LiveCount() != 1 {
+				t.Fatal("Release published absence before completing")
+			}
+			switch kind {
+			case "task":
+				primed, live := srv.vms.capacity()
+				if live != 1 || len(primed["echo"]) != 0 {
+					t.Fatalf("teardown capacity = %v/%d", primed, live)
+				}
+				if _, ok := srv.vms.claimForAssign(h.ID); ok {
+					t.Fatal("teardown VM accepted Assign")
+				}
+			case "session":
+				if ids := sessionVMIDs(srv.nodeStatus()); !contains(ids, h.ID) {
+					t.Fatalf("teardown missing from inventory: %v", ids)
+				}
+				if _, ok := srv.sessionVMs.beginInFlight(h.ID); ok {
+					t.Fatal("teardown VM accepted SessionAssign")
+				}
+			case "serving":
+				if _, ok := srv.servingVMs.byID(h.ID); !ok {
+					t.Fatal("teardown missing from serving inventory")
+				}
+				if _, ok := srv.servingVMs.beginBank(h.ID); ok {
+					t.Fatal("teardown VM accepted Bank")
+				}
+			}
+			if reply, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: h.ID}); status.Code(err) != codes.Unavailable || reply.GetTeardownConfirmed() {
+				t.Fatalf("concurrent Destroy = %v, %v", reply, err)
+			}
+			unblock.Do(func() { close(blocked) })
+			select {
+			case err := <-first:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatal("Destroy did not finish")
+			}
+			if reply, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: h.ID}); err != nil || !reply.GetTeardownConfirmed() {
+				t.Fatalf("completed retry = %v, %v", reply, err)
+			}
+			if _, releases, _, _ := drv.counts(); releases != 1 {
+				t.Fatalf("Release count = %d", releases)
+			}
+		})
+	}
+}
+
+func TestDestroyFailureRetainsRetryableSession(t *testing.T) {
+	for _, stage := range []string{"release", "bundle"} {
+		t.Run(stage, func(t *testing.T) {
+			drv := &fakeDriver{live: 1}
+			if stage == "release" {
+				drv.failRelease = errors.New("release failed")
+			} else {
+				drv.failRemoveBundle = errors.New("bundle failed")
+			}
+			client, srv := newSessionTestServer(t, drv, &fakeTransport{}, 8)
+			h := substrate.Handle{ID: "vm-failed", ThreadID: "failed"}
+			srv.sessionVMs.add(&sessionEntry{vmID: h.ID, sessionID: "s-failed", handle: h})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: h.ID}); status.Code(err) != codes.Internal {
+				t.Fatalf("first Destroy = %v", err)
+			}
+			if ids := sessionVMIDs(srv.nodeStatus()); !contains(ids, h.ID) {
+				t.Fatalf("failed teardown lost identity: %v", ids)
+			}
+			if _, ok := srv.sessionVMs.beginInFlight(h.ID); ok {
+				t.Fatal("failed teardown accepted work")
+			}
+			drv.mu.Lock()
+			drv.failRelease, drv.failRemoveBundle = nil, nil
+			drv.mu.Unlock()
+			if reply, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: h.ID}); err != nil || !reply.GetTeardownConfirmed() {
+				t.Fatalf("retry = %v, %v", reply, err)
+			}
+			wantReleases := 1
+			if stage == "release" {
+				wantReleases = 2
+			}
+			if _, releases, _, _ := drv.counts(); releases != wantReleases {
+				t.Fatalf("Release count = %d, want %d", releases, wantReleases)
+			}
+			if ids := sessionVMIDs(srv.nodeStatus()); len(ids) != 0 {
+				t.Fatalf("completed teardown retained inventory: %v", ids)
+			}
+		})
+	}
+}
+
+func TestAssignCleanupSharesDestroyEvidence(t *testing.T) {
+	blocked := make(chan struct{})
+	started := make(chan struct{}, 1)
+	drv := &fakeDriver{live: 1, blockRelease: blocked, releaseStarted: started}
+	client, srv := newTestServer(t, drv, &fakeTransport{}, 8)
+	var unblock sync.Once
+	t.Cleanup(func() { unblock.Do(func() { close(blocked) }) })
+	h := substrate.Handle{ID: "vm-assign-cleanup", ThreadID: "assign-cleanup"}
+	srv.vms.add(&vmEntry{id: h.ID, workload: "echo", handle: h})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	assigned := make(chan error, 1)
+	go func() {
+		_, err := client.Assign(ctx, &nodev1.AssignRequest{VmId: h.ID, Request: &nodev1.GuestRequest{Body: []byte("echo")}, TimeoutMs: 1000})
+		assigned <- err
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("Assign did not enter deferred Release")
+	}
+	if _, live := srv.vms.capacity(); live != 1 {
+		t.Fatal("Assign cleanup lost inventory")
+	}
+	if reply, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: h.ID}); status.Code(err) != codes.Unavailable || reply.GetTeardownConfirmed() {
+		t.Fatalf("Destroy during Assign cleanup = %v, %v", reply, err)
+	}
+	unblock.Do(func() { close(blocked) })
+	select {
+	case err := <-assigned:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("Assign did not finish")
+	}
+	if reply, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: h.ID}); err != nil || !reply.GetTeardownConfirmed() {
+		t.Fatalf("Destroy after Assign cleanup = %v, %v", reply, err)
+	}
+	if _, releases, _, _ := drv.counts(); releases != 1 {
+		t.Fatalf("Release count = %d", releases)
+	}
+}
+
+func TestFailedBankCannotConfirmDestroyBeforeRelease(t *testing.T) {
+	blocked := make(chan struct{})
+	started := make(chan struct{}, 1)
+	drv := &fakeDriver{live: 1, failSnapshotSession: errors.New("snapshot failed"), failRelease: errors.New("release failed"), snapshotSessionStarted: started, blockSnapshotSession: blocked}
+	client, srv := newSessionTestServer(t, drv, &fakeTransport{}, 8)
+	var unblock sync.Once
+	t.Cleanup(func() { unblock.Do(func() { close(blocked) }) })
+	h := substrate.Handle{ID: "vm-bank", ThreadID: "bank"}
+	srv.sessionVMs.add(&sessionEntry{vmID: h.ID, sessionID: "s-bank", workload: "echo", handle: h})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	bank := make(chan error, 1)
+	go func() { _, err := client.Bank(ctx, &nodev1.BankRequest{VmId: h.ID, SessionId: "s-bank"}); bank <- err }()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("Bank did not start")
+	}
+	if _, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: h.ID}); status.Code(err) != codes.Unavailable {
+		t.Fatalf("Destroy during destructive Bank = %v", err)
+	}
+	unblock.Do(func() { close(blocked) })
+	select {
+	case err := <-bank:
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("Bank = %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("Bank did not finish")
+	}
+	if ids := sessionVMIDs(srv.nodeStatus()); !contains(ids, h.ID) || drv.LiveCount() != 1 {
+		t.Fatalf("failed Bank lost live identity: %v", ids)
+	}
+	if _, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: h.ID}); status.Code(err) != codes.Internal {
+		t.Fatalf("Destroy after failed Release = %v", err)
+	}
+	drv.mu.Lock()
+	drv.failRelease = nil
+	drv.mu.Unlock()
+	if reply, err := client.Destroy(ctx, &nodev1.DestroyRequest{VmId: h.ID}); err != nil || !reply.GetTeardownConfirmed() {
+		t.Fatalf("final Destroy = %v, %v", reply, err)
 	}
 }
 

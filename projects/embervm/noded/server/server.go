@@ -188,8 +188,9 @@ type Server struct {
 	// over the pod network. Overridable in tests (a fake archive server).
 	httpClient *http.Client
 
-	vms   *vmRegistry
-	bases *baseRegistry
+	vmLifecycleMu sync.Mutex // task-to-session identity transfer
+	vms           *vmRegistry
+	bases         *baseRegistry
 	// scratchGeneration is the marker value whose on-disk base inventory was
 	// adopted into bases. scratchReconcileMu serializes generation checks with
 	// registry reset and disk rescan operations.
@@ -1353,21 +1354,8 @@ func (s *Server) Assign(ctx context.Context, req *nodev1.AssignRequest) (*nodev1
 		// Unknown or not primed: no VM is touched, no second task runs.
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: vm %q not assignable (unknown, already assigned, or destroyed)", vmID)
 	}
-	// Single-use: destroy the VM after this call regardless of outcome. Reap only
-	// if THIS defer is the one that removes the entry from the registry: an out-of-
-	// band Destroy racing this Assign may remove-and-reap first (killing the VM
-	// mid-round-trip, which just fails this Assign), and map removal under the
-	// registry lock guarantees exactly one caller gets the non-nil entry, so the VM
-	// is never Released twice.
-	defer func() {
-		if removed := s.vms.remove(vmID); removed != nil {
-			if removed.lineageID != "" {
-				s.volumes.DetachLineage(removed.workload, removed.lineageID)
-			}
-			s.reap(removed.handle, removed.egressCancel)
-		}
-		s.signalChange()
-	}()
+	// Assign and explicit Destroy share the same retained teardown entry.
+	defer func() { _, _ = s.destroyTaskVM(vmID) }()
 
 	gr := req.GetRequest()
 	method := gr.GetMethod()
@@ -1439,39 +1427,103 @@ func (s *Server) Assign(ctx context.Context, req *nodev1.AssignRequest) (*nodev1
 // instance in destroying rather than recording a destroyed transition that did
 // not happen (ADR embervm/014 decision 5).
 func (s *Server) Destroy(_ context.Context, req *nodev1.DestroyRequest) (*nodev1.DestroyResponse, error) {
-	if e := s.vms.remove(req.GetVmId()); e != nil {
-		if e.lineageID != "" {
-			s.volumes.DetachLineage(e.workload, e.lineageID)
-		}
-		if err := s.reap(e.handle, e.egressCancel); err != nil {
-			return nil, status.Errorf(codes.Internal, "noded: reap vm %q: %v", req.GetVmId(), err)
-		}
-		s.signalChange()
-		return &nodev1.DestroyResponse{TeardownConfirmed: true}, nil
+	vmID := req.GetVmId()
+	// Serialize selection with the task-to-session registry handoff, never with
+	// the slow reap itself. An adopted VM must not appear unknown between maps.
+	s.vmLifecycleMu.Lock()
+	task := s.vms.forTeardown(vmID)
+	session := s.sessionVMs.forTeardown(vmID)
+	serving := s.servingVMs.forTeardown(vmID)
+	s.vmLifecycleMu.Unlock()
+	var err error
+	switch {
+	case task != nil:
+		err = s.reapTaskEntry(task)
+	case session != nil:
+		err = s.reapSessionEntry(session)
+	case serving != nil:
+		err = s.reapServingEntry(serving)
 	}
-	// A session VM destroyed out of band (e.g. the control plane tearing down a
-	// suspect or terminal session) lives in the distinct session registry.
-	if e := s.sessionVMs.remove(req.GetVmId()); e != nil {
-		if e.lineageID != "" {
-			s.volumes.DetachLineage(e.workload, e.lineageID)
+	if err != nil {
+		if errors.Is(err, errTeardownInProgress) {
+			return nil, status.Errorf(codes.Unavailable, "noded: vm %q teardown in progress", vmID)
 		}
-		if err := s.reap(e.handle, e.egressCancel); err != nil {
-			return nil, status.Errorf(codes.Internal, "noded: reap session vm %q: %v", req.GetVmId(), err)
-		}
-		s.signalChange()
-		return &nodev1.DestroyResponse{TeardownConfirmed: true}, nil
+		return nil, status.Errorf(codes.Internal, "noded: reap vm %q: %v", vmID, err)
 	}
-	// A serving VM destroyed out of band lives in the distinct serving registry; its
-	// probe loop is stopped and its tap released alongside the reap.
-	if e := s.servingVMs.remove(req.GetVmId()); e != nil {
-		e.probe.Stop()
-		if err := s.reapServing(e.handle, e.ip); err != nil {
-			return nil, status.Errorf(codes.Internal, "noded: reap serving vm %q: %v", req.GetVmId(), err)
-		}
-		s.signalChange()
-	}
-	// Unknown vm_id: nothing held, so the destroyed end-state already holds.
 	return &nodev1.DestroyResponse{TeardownConfirmed: true}, nil
+}
+
+func snapshotTeardownConfirmed(err error) bool {
+	var proof interface{ TeardownConfirmed() bool }
+	return errors.As(err, &proof) && proof.TeardownConfirmed()
+}
+
+var errTeardownInProgress = errors.New("teardown in progress")
+
+func (t *vmTeardown) run(cleanup func() error) error {
+	if !t.mu.TryLock() {
+		return errTeardownInProgress
+	}
+	defer t.mu.Unlock()
+	if t.done {
+		return nil
+	}
+	if err := cleanup(); err != nil {
+		return err
+	}
+	t.done = true
+	return nil
+}
+
+func (s *Server) destroyTaskVM(vmID string) (bool, error) {
+	e := s.vms.forTeardown(vmID)
+	if e == nil {
+		return false, nil
+	}
+	return true, s.reapTaskEntry(e)
+}
+
+func (s *Server) reapTaskEntry(e *vmEntry) error {
+	return e.teardown.run(func() error {
+		if err := s.reapTracked(e.handle, e.egressCancel, &e.teardown); err != nil {
+			return err
+		}
+		if e.lineageID != "" {
+			s.volumes.DetachLineage(e.workload, e.lineageID)
+		}
+		s.vms.remove(e.id)
+		s.signalChange()
+		return nil
+	})
+}
+
+func (s *Server) reapSessionEntry(e *sessionEntry) error {
+	return e.teardown.run(func() error {
+		if err := s.reapTracked(e.handle, e.egressCancel, &e.teardown); err != nil {
+			return err
+		}
+		if e.lineageID != "" {
+			s.volumes.DetachLineage(e.workload, e.lineageID)
+		}
+		s.sessionVMs.remove(e.vmID)
+		s.signalChange()
+		return nil
+	})
+}
+
+func (s *Server) reapServingEntry(e *servingEntry) error {
+	return e.teardown.run(func() error {
+		e.probe.Stop()
+		if err := s.reapTracked(e.handle, func() {}, &e.teardown); err != nil {
+			return err
+		}
+		if s.servingNet != nil {
+			s.servingNet.ReleaseTap(context.Background(), e.ip)
+		}
+		s.servingVMs.remove(e.vmID)
+		s.signalChange()
+		return nil
+	})
 }
 
 // liveVMCount is the node-wide count of live microVMs for the backstop cap:
@@ -1506,6 +1558,8 @@ func (s *Server) slotsExhausted() bool {
 // physical VM is already a session-base VM (restored from the session workload's
 // base, running the persistent kernel); only its registry bookkeeping changes.
 func (s *Server) adoptPrimedSession(vmID, sessionID, workload string) (*sessionEntry, bool) {
+	s.vmLifecycleMu.Lock()
+	defer s.vmLifecycleMu.Unlock()
 	ve, ok := s.vms.claimForSession(vmID, workload)
 	if !ok {
 		return nil, false
@@ -1650,27 +1704,35 @@ func (s *Server) Bank(ctx context.Context, req *nodev1.BankRequest) (*nodev1.Ban
 		}
 		e = adopted
 	}
-	// The Bank destroys the VM either way: on success the entry is removed and the
-	// paused VM reaped below; on failure SnapshotSession has already torn the VM
-	// down (a bank is destructive), so drop the now-dead registry entry rather than
-	// leave it misreporting session capacity until the control plane reaps it.
-	snapshotRef := newID("sess")
-	ref, err := s.sessionDriver.SnapshotSession(ctx, e.handle, snapshotRef)
-	if err != nil {
-		// SnapshotSession already tore the VM down, so there is nothing to reap,
-		// but the forwarder is still bound to a socket for a VM that no longer
-		// exists. Stop it here or it outlives every failed bank.
-		if removed := s.sessionVMs.remove(vmID); removed != nil && removed.egressCancel != nil {
-			removed.egressCancel()
+	// Hold the retained teardown entry across the destructive snapshot, including
+	// its internal failure cleanup. Destroy must not race that hidden Release.
+	e.teardown.started.Store(true)
+	var ref substrate.SnapshotRef
+	var snapshotErr error
+	snapshotStarted := false
+	if err := e.teardown.run(func() error {
+		snapshotStarted = true
+		ref, snapshotErr = s.sessionDriver.SnapshotSession(ctx, e.handle, newID("sess"))
+		if snapshotErr != nil && snapshotTeardownConfirmed(snapshotErr) {
+			e.teardown.released = true
 		}
+		if err := s.reapTracked(e.handle, e.egressCancel, &e.teardown); err != nil {
+			return errors.Join(snapshotErr, err)
+		}
+		if e.lineageID != "" {
+			s.volumes.DetachLineage(e.workload, e.lineageID)
+		}
+		s.sessionVMs.remove(vmID)
+		s.signalChange()
+		return nil
+	}); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: bank session vm %q: %v", vmID, err)
 	}
-	// Destroy the VM: the session releases its live capacity and holds only disk.
-	if removed := s.sessionVMs.remove(vmID); removed != nil {
-		if removed.lineageID != "" {
-			s.volumes.DetachLineage(removed.workload, removed.lineageID)
-		}
-		s.reap(removed.handle, removed.egressCancel)
+	if !snapshotStarted {
+		return nil, status.Error(codes.FailedPrecondition, "noded: VM teardown already completed")
+	}
+	if snapshotErr != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: bank session vm %q: %v", vmID, snapshotErr)
 	}
 	s.sessionSnap.add(sessionSnapshotEntry{
 		snapshotRef:     ref.ID,
@@ -2918,31 +2980,28 @@ func (s *Server) signalChange() {
 	}
 }
 
-// reap tears a VM down: stop egress, kill the process, remove the bundle. Callers
-// that can race (Assign's single-use teardown vs an out-of-band Destroy) both
-// remove the entry from the registry FIRST, and map removal under the registry
-// lock hands the non-nil entry to exactly one caller, so reap runs once per VM.
-// Best-effort: failures are logged, never returned.
-// reap releases the microVM process and removes its on-disk bundle. It is
-// best-effort at the fire-and-forget call sites (bank cleanup, Assign's
-// single-use teardown), which ignore the return; the destroy-class handlers
-// inspect it so they only confirm teardown (ADR embervm/014 decision 5) when
-// both steps actually succeeded. The two failures are still logged here so a
-// swallowed error at a best-effort site is never silent.
+// reap is the cleanup helper for VMs that have not entered a public registry.
+// Published VMs retain progress on their entry through reapTracked instead.
 func (s *Server) reap(h substrate.Handle, egressCancel func()) error {
+	return s.reapTracked(h, egressCancel, &vmTeardown{})
+}
+
+func (s *Server) reapTracked(h substrate.Handle, egressCancel func(), progress *vmTeardown) error {
 	if egressCancel != nil {
 		egressCancel()
 	}
-	var errs []error
-	if err := s.driver.Release(context.Background(), h); err != nil {
-		s.logger.Warn("noded: release vm", "vm", h.ID, "thread", h.ThreadID, "err", err)
-		errs = append(errs, fmt.Errorf("release vm: %w", err))
+	if !progress.released {
+		if err := s.driver.Release(context.Background(), h); err != nil {
+			s.logger.Warn("noded: release vm", "vm", h.ID, "thread", h.ThreadID, "err", err)
+			return fmt.Errorf("release vm: %w", err)
+		}
+		progress.released = true
 	}
 	if err := s.driver.RemoveBundle(h.ThreadID); err != nil {
 		s.logger.Warn("noded: remove bundle", "vm", h.ID, "thread", h.ThreadID, "err", err)
-		errs = append(errs, fmt.Errorf("remove bundle: %w", err))
+		return fmt.Errorf("remove bundle: %w", err)
 	}
-	return errors.Join(errs...)
+	return nil
 }
 
 // snapshotDiskUsage reports the sessions snapshot dir filesystem's free and used

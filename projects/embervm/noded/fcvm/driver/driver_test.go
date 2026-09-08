@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
@@ -751,6 +752,204 @@ func TestDriverReleaseUnknownHandleErrors(t *testing.T) {
 	d := testDriver(t)
 	if err := d.Release(context.Background(), substrate.Handle{ID: "nope"}); err == nil {
 		t.Fatal("release of unknown handle should error")
+	}
+}
+
+type delayedReleaseProcess struct {
+	mu          sync.Mutex
+	started     chan struct{}
+	blocked     <-chan struct{}
+	killErr     error
+	waitErr     error
+	waitStarted chan struct{}
+	blockWait   <-chan struct{}
+	kills       int
+}
+
+func (p *delayedReleaseProcess) Kill() error {
+	p.mu.Lock()
+	p.kills++
+	p.mu.Unlock()
+	if p.started != nil {
+		select {
+		case p.started <- struct{}{}:
+		default:
+		}
+	}
+	if p.blocked != nil {
+		<-p.blocked
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.killErr
+}
+
+func (p *delayedReleaseProcess) Wait() error {
+	if p.waitStarted != nil {
+		p.waitStarted <- struct{}{}
+	}
+	if p.blockWait != nil {
+		<-p.blockWait
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.waitErr
+}
+func (p *delayedReleaseProcess) Pid() int { return 0 }
+
+func TestReleaseKeepsOwnershipUntilProcessExit(t *testing.T) {
+	d := testDriver(t)
+	blocked := make(chan struct{})
+	p := &delayedReleaseProcess{started: make(chan struct{}, 1), blocked: blocked}
+	var unblock sync.Once
+	t.Cleanup(func() { unblock.Do(func() { close(blocked) }) })
+	h := substrate.Handle{ID: "vm-delayed-release", ThreadID: "delayed-release"}
+	d.track(&instance{handle: h, proc: p, memMib: 128})
+	first := make(chan error, 1)
+	go func() { first <- d.Release(context.Background(), h) }()
+	select {
+	case <-p.started:
+	case <-time.After(time.Second):
+		t.Fatal("Release did not enter Kill")
+	}
+	if d.LiveCount() != 1 || d.ClaimedMib() != 128 || d.get(h.ID) == nil {
+		t.Fatal("in-progress Kill lost ownership or memory charge")
+	}
+	// Another VM can finish while the first process is still being reaped.
+	other := substrate.Handle{ID: "vm-independent", ThreadID: "independent"}
+	d.track(&instance{handle: other, proc: &delayedReleaseProcess{}, memMib: 64})
+	if err := d.Release(context.Background(), other); err != nil {
+		t.Fatal(err)
+	}
+	if d.LiveCount() != 1 {
+		t.Fatal("independent Release changed pending ownership")
+	}
+	unblock.Do(func() { close(blocked) })
+	select {
+	case err := <-first:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Release did not finish")
+	}
+	if d.LiveCount() != 0 || d.ClaimedMib() != 0 || d.get(h.ID) != nil {
+		t.Fatal("completed release kept ownership")
+	}
+}
+
+func TestReleaseWaitKeepsMemoryCharged(t *testing.T) {
+	d := testDriver(t)
+	blocked := make(chan struct{})
+	p := &delayedReleaseProcess{waitStarted: make(chan struct{}, 1), blockWait: blocked}
+	var unblock sync.Once
+	t.Cleanup(func() { unblock.Do(func() { close(blocked) }) })
+	h := substrate.Handle{ID: "vm-delayed-wait", ThreadID: "delayed-wait"}
+	d.track(&instance{handle: h, proc: p, memMib: 128})
+	finished := make(chan error, 1)
+	go func() { finished <- d.Release(context.Background(), h) }()
+	select {
+	case <-p.waitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Release did not call Wait")
+	}
+	if d.LiveCount() != 1 || d.ClaimedMib() != 128 {
+		t.Fatal("Kill alone released ownership before Wait completed")
+	}
+	unblock.Do(func() { close(blocked) })
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Release did not finish")
+	}
+	if d.LiveCount() != 0 {
+		t.Fatal("Wait completion did not release ownership")
+	}
+}
+
+func TestReleaseFailureKeepsIdentityForRetry(t *testing.T) {
+	d := testDriver(t)
+	p := &delayedReleaseProcess{killErr: errors.New("kill failed")}
+	h := substrate.Handle{ID: "vm-retry-release", ThreadID: "retry-release"}
+	d.track(&instance{handle: h, proc: p, memMib: 128})
+	if err := d.Release(context.Background(), h); err == nil {
+		t.Fatal("failed Kill was confirmed")
+	}
+	if d.LiveCount() != 1 || d.ClaimedMib() != 128 {
+		t.Fatal("failed Kill lost ownership")
+	}
+	p.killErr = nil
+	if err := d.Release(context.Background(), h); err != nil {
+		t.Fatal(err)
+	}
+	if p.kills != 2 || d.LiveCount() != 0 {
+		t.Fatal("retry did not complete the retained process")
+	}
+}
+
+func TestReleaseUnexpectedWaitFailureKeepsIdentity(t *testing.T) {
+	d := testDriver(t)
+	p := &delayedReleaseProcess{waitErr: errors.New("wait failed")}
+	h := substrate.Handle{ID: "vm-retry-wait", ThreadID: "retry-wait"}
+	d.track(&instance{handle: h, proc: p, memMib: 128})
+	if err := d.Release(context.Background(), h); err == nil {
+		t.Fatal("unexpected Wait failure was confirmed")
+	}
+	if d.LiveCount() != 1 || d.ClaimedMib() != 128 {
+		t.Fatal("unexpected Wait failure lost ownership")
+	}
+	p.waitErr = nil
+	if err := d.Release(context.Background(), h); err != nil {
+		t.Fatal(err)
+	}
+	if d.LiveCount() != 0 {
+		t.Fatal("confirmed retry kept ownership")
+	}
+}
+
+func TestFailedBankReportsActualReleaseEvidence(t *testing.T) {
+	for _, kind := range []string{"session", "serving"} {
+		for _, releaseFails := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/release_failure=%t", kind, releaseFails), func(t *testing.T) {
+				d := testDriver(t)
+				p := &delayedReleaseProcess{}
+				if releaseFails {
+					p.killErr = errors.New("kill failed")
+				}
+				h := substrate.Handle{ID: "vm-bank-release", ThreadID: "bank-release"}
+				d.track(&instance{handle: h, proc: p, memMib: 128})
+				// A file where the bundle directory belongs fails before any API or VM IO.
+				bundle := d.sessionDir("blocked-bank")
+				if kind == "serving" {
+					bundle = d.servingDir("blocked-bank")
+				}
+				if err := os.MkdirAll(filepath.Dir(bundle), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(bundle, []byte("blocked"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				if kind == "session" {
+					_, err = d.SnapshotSession(context.Background(), h, "blocked-bank")
+				} else {
+					_, err = d.SnapshotServing(context.Background(), h, "blocked-bank", "")
+				}
+				if err == nil {
+					t.Fatal("bank unexpectedly succeeded")
+				}
+				var proof interface{ TeardownConfirmed() bool }
+				if !errors.As(fmt.Errorf("bank: %w", err), &proof) || proof.TeardownConfirmed() == releaseFails {
+					t.Fatalf("bank release evidence = %v", err)
+				}
+				if (d.LiveCount() == 1) != releaseFails {
+					t.Fatal("bank evidence disagrees with retained ownership")
+				}
+			})
+		}
 	}
 }
 

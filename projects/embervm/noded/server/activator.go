@@ -184,7 +184,7 @@ func (a *activator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // withdraw removes an endpoint that the activator must not splice into. The
-// registry removal withdraws it from NodeStatus, while reaping releases the
+// teardown fence prevents new splices while reaping releases the
 // VM and its DNAT/tap resources before the bounded wake path starts.
 func (a *activator) withdraw(entry *servingEntry) {
 	removed, ok := a.server.servingVMs.withdrawIfIdle(entry)
@@ -192,7 +192,7 @@ func (a *activator) withdraw(entry *servingEntry) {
 		return
 	}
 	removed.probe.Stop()
-	if err := a.server.reapServing(removed.handle, removed.ip); err != nil {
+	if err := a.server.reapServingEntry(removed); err != nil {
 		a.server.logger.Warn("activator: failed to reap withdrawn serving vm", "workload", removed.workload, "vm", removed.vmID, "err", err)
 	}
 	a.server.signalChange()

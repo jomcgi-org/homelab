@@ -234,12 +234,14 @@ type statefulCheckpoint struct {
 }
 
 type instance struct {
-	handle substrate.Handle
-	proc   Process
-	client fcAPI
-	dir    string
-	sock   string
-	memMib int
+	releaseMu sync.Mutex
+	released  bool
+	handle    substrate.Handle
+	proc      Process
+	client    fcAPI
+	dir       string
+	sock      string
+	memMib    int
 	// resources is the drive backing set embedded in this VM's snapshots. It is
 	// recorded even in direct mode so snapshots remain jail-restorable after the
 	// escape hatch is turned back off.
@@ -1705,6 +1707,17 @@ func (d *Driver) RemoveBaseBundle(baseKey string) error {
 	return nil
 }
 
+// snapshotTeardownError preserves whether a destructive bank actually stopped
+// its process. Callers must not infer cessation from an ordinary snapshot error.
+type snapshotTeardownError struct {
+	cause      error
+	releaseErr error
+}
+
+func (e *snapshotTeardownError) Error() string           { return errors.Join(e.cause, e.releaseErr).Error() }
+func (e *snapshotTeardownError) Unwrap() []error         { return []error{e.cause, e.releaseErr} }
+func (e *snapshotTeardownError) TeardownConfirmed() bool { return e.releaseErr == nil }
+
 // SnapshotSession captures a LIVE session microVM into a self-contained session
 // bundle keyed by the opaque snapshot_ref, under sessions/<ref>. It is the R2
 // session-bank mechanic and REUSES the base-bundle format exactly (a full memfile
@@ -1715,14 +1728,14 @@ func (d *Driver) RemoveBaseBundle(baseKey string) error {
 // destroy. A bank after RestoreSession writes a diff and synchronously merges it
 // onto a copy of the prior full before returning. The Bank RPC does not return
 // until the self-contained bundle is published. On a snapshot failure the VM is
-// torn down (a stranded paused VM would squat capacity), matching SnapshotBase's
-// failure posture.
+// release is attempted. The returned error carries whether teardown completed,
+// so an unconfirmed release remains retryable.
 //
 // The bundle is written to temp paths and renamed into place (memfile before
 // snapfile, so a concurrent restore reading the snapfile always finds its memfile),
 // the same publish discipline the base path uses. The sessions dir is created 0700
 // so a banked bundle (a principal's memory image) is never world-readable.
-func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapshotRef string) (substrate.SnapshotRef, error) {
+func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapshotRef string) (result substrate.SnapshotRef, resultErr error) {
 	if snapshotRef == "" {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: SnapshotSession requires a snapshot_ref")
 	}
@@ -1731,14 +1744,13 @@ func (d *Driver) SnapshotSession(ctx context.Context, h substrate.Handle, snapsh
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: snapshot-session of unknown handle %q", h.ID)
 	}
 	// A bank is destructive: the VM is destined for teardown regardless of outcome.
-	// Any failure AFTER the handle is confirmed tears the VM down here (it may be
-	// running, or stranded paused mid-snapshot), so a failed bank NEVER leaves a
-	// live or paused handle behind for the server to misreport as session capacity.
+	// Any failure AFTER the handle is confirmed attempts teardown here. A failed
+	// Release retains live ownership and is reported explicitly to the caller.
 	// On success the caller (server Bank) destroys the paused VM.
 	banked := false
 	defer func() {
 		if !banked {
-			_ = d.Release(ctx, h)
+			resultErr = &snapshotTeardownError{cause: resultErr, releaseErr: d.Release(ctx, h)}
 		}
 	}()
 	if err := os.MkdirAll(d.sessionDir(snapshotRef), 0o700); err != nil {
@@ -1904,9 +1916,9 @@ func (d *Driver) RemoveSessionBundle(snapshotRef string) error {
 // (memfile + snapfile) under serving/<ref>, plus the pinned-IP sidecar. It does NOT
 // resume: the caller Releases the VM immediately after (StopServing BANK destroys). It
 // mirrors SnapshotSession; the only addition is persisting pinnedIP so a relight can
-// re-acquire it. On any failure after the handle is confirmed the VM is torn down (a
-// bank is destructive), so a failed bank never leaves a live/paused handle behind.
-func (d *Driver) SnapshotServing(ctx context.Context, h substrate.Handle, snapshotRef, pinnedIP string) (substrate.SnapshotRef, error) {
+// re-acquire it. A failure after finding the handle attempts release and returns
+// explicit evidence of whether that destructive cleanup completed.
+func (d *Driver) SnapshotServing(ctx context.Context, h substrate.Handle, snapshotRef, pinnedIP string) (result substrate.SnapshotRef, resultErr error) {
 	if snapshotRef == "" {
 		return substrate.SnapshotRef{}, fmt.Errorf("driver: SnapshotServing requires a snapshot_ref")
 	}
@@ -1917,7 +1929,7 @@ func (d *Driver) SnapshotServing(ctx context.Context, h substrate.Handle, snapsh
 	banked := false
 	defer func() {
 		if !banked {
-			_ = d.Release(ctx, h)
+			resultErr = &snapshotTeardownError{cause: resultErr, releaseErr: d.Release(ctx, h)}
 		}
 	}()
 	if err := os.MkdirAll(d.servingDir(snapshotRef), 0o700); err != nil {
@@ -2779,18 +2791,34 @@ func (d *Driver) Exec(_ context.Context, _ substrate.Handle, _ substrate.Request
 func (d *Driver) Release(_ context.Context, h substrate.Handle) error {
 	d.mu.Lock()
 	inst, ok := d.live[h.ID]
-	if ok {
-		delete(d.live, h.ID)
-	}
 	d.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("driver: release of unknown handle %q", h.ID)
 	}
+	// Keep ownership and memory charged until Kill has waited for process exit.
+	// Serialize only this VM, so status and unrelated releases stay responsive.
+	inst.releaseMu.Lock()
+	defer inst.releaseMu.Unlock()
+	if inst.released {
+		return nil
+	}
 	killErr := inst.proc.Kill()
-	_ = os.Remove(inst.sock)
 	if killErr != nil {
 		return fmt.Errorf("driver: kill firecracker: %w", killErr)
 	}
+	// The production process caches Wait, including the normal killed exit
+	// status. Keep the driver's contract explicit for every Process implementation.
+	if waitErr := inst.proc.Wait(); waitErr != nil {
+		var exited *exec.ExitError
+		if !errors.As(waitErr, &exited) || exited.ProcessState == nil {
+			return fmt.Errorf("driver: wait firecracker: %w", waitErr)
+		}
+	}
+	_ = os.Remove(inst.sock)
+	inst.released = true
+	d.mu.Lock()
+	delete(d.live, h.ID)
+	d.mu.Unlock()
 	return nil
 }
 

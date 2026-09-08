@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -277,19 +278,34 @@ func (s *Server) stopServingBank(ctx context.Context, req *nodev1.StopServingReq
 	if !ok {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: serving vm %q not bankable (unknown or a bank is already in flight)", vmID)
 	}
-	// Stop the health probe before banking: the VM is about to pause then die.
-	e.probe.Stop()
-	snapshotRef := newID("serv")
-	ref, err := s.servingDriver.SnapshotServing(ctx, e.handle, snapshotRef, e.ip.String())
-	if err != nil {
-		// A bank is destructive: SnapshotServing tore the VM down on failure, so drop
-		// the now-dead registry entry and release its tap rather than misreport capacity.
+	e.teardown.started.Store(true)
+	var ref substrate.SnapshotRef
+	var snapshotErr error
+	snapshotStarted := false
+	if err := e.teardown.run(func() error {
+		snapshotStarted = true
+		e.probe.Stop()
+		ref, snapshotErr = s.servingDriver.SnapshotServing(ctx, e.handle, newID("serv"), e.ip.String())
+		if snapshotErr != nil && snapshotTeardownConfirmed(snapshotErr) {
+			e.teardown.released = true
+		}
+		if err := s.reapTracked(e.handle, func() {}, &e.teardown); err != nil {
+			return errors.Join(snapshotErr, err)
+		}
+		if s.servingNet != nil {
+			s.servingNet.ReleaseTap(context.Background(), e.ip)
+		}
 		s.servingVMs.remove(vmID)
-		s.servingNet.ReleaseTap(ctx, e.ip)
+		s.signalChange()
+		return nil
+	}); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: bank serving vm %q: %v", vmID, err)
 	}
-	if removed := s.servingVMs.remove(vmID); removed != nil {
-		s.reapServing(removed.handle, removed.ip)
+	if !snapshotStarted {
+		return nil, status.Error(codes.FailedPrecondition, "noded: VM teardown already completed")
+	}
+	if snapshotErr != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "noded: bank serving vm %q: %v", vmID, snapshotErr)
 	}
 	s.servingSnap.add(servingSnapshotEntry{
 		snapshotRef:     ref.ID,
@@ -310,12 +326,14 @@ func (s *Server) stopServingBank(ctx context.Context, req *nodev1.StopServingReq
 // holds). teardown_confirmed is true only when the reap fully completed; a reap
 // failure returns an error, not a false confirm (ADR embervm/014 decision 5).
 func (s *Server) stopServingDestroy(vmID string) (*nodev1.StopServingResponse, error) {
-	if removed := s.servingVMs.remove(vmID); removed != nil {
-		removed.probe.Stop()
-		if err := s.reapServing(removed.handle, removed.ip); err != nil {
-			return nil, status.Errorf(codes.Internal, "noded: reap serving vm %q: %v", vmID, err)
+	if entry := s.servingVMs.forTeardown(vmID); entry != nil {
+		if err := s.reapServingEntry(entry); err != nil {
+			code := codes.Internal
+			if errors.Is(err, errTeardownInProgress) {
+				code = codes.Unavailable
+			}
+			return nil, status.Errorf(code, "noded: reap serving vm %q: %v", vmID, err)
 		}
-		s.signalChange()
 	}
 	return &nodev1.StopServingResponse{TeardownConfirmed: true}, nil
 }
