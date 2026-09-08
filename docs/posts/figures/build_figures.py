@@ -35,7 +35,7 @@ def memory_tiers() -> Figure:
     f.hline(150, 550, 54, tone="gpu")
     f.vline(270, 54, 128, tone="gpu")
     f.vline(420, 54, 128, tone="gpu")
-    f.lines(160, 74, ["dense layers", "9.2 GB"])
+    f.lines(160, 74, ["dense layers", "9.2 GiB"])
     f.lines(
         280, 74, ["expert slot cache", "hot set stays", "resident here"], tone="hot"
     )
@@ -52,25 +52,23 @@ def memory_tiers() -> Figure:
     f.box(150, 176, 400, 78, tone="ram")
     f.text(160, 194, "PINNED HOST MEMORY: part of the 64 GB DDR5", tone="ram")
     f.hline(150, 550, 202, tone="ram")
-    f.vline(410, 202, 254, tone="hot")
-    f.lines(160, 222, ["expert banks, 40 GB", "30 whole layers"], tone="warm")
-    f.lines(420, 222, ["hot rows, 6 GB", "18 disk layers"], tone="hot")
+    f.vline(400, 202, 254, tone="ram")
+    f.lines(160, 222, ["expert banks", "budgeted with page cache"], tone="warm")
+    f.lines(410, 222, ["transfer buffers", "bounded staging"], tone="ram")
     f.keyed(40, 215, "3", 150, 215, tone="warm")
 
     # 6 CPU executor, fed from the page cache. Level with the pinned host
     # memory part: same top and bottom edges, so the CPU reads as the
     # other half of the host beside its memory.
     f.box(590, 176, 96, 78)
-    f.lines(598, 203, ["CPU MoE", "executor", "8 cores"])
+    f.lines(598, 203, ["CPU MoE", "executor", "host RAM"])
     f.keyed(638, 148, "6", 638, 176)
     f.path_arrow([(550, 308), (570, 308), (570, 236), (590, 236)])
 
     # 4 page cache
     f.box(150, 280, 400, 56, dashed=True, tone="cache")
-    f.text(
-        160, 298, "PAGE CACHE: about 16 GB, what the kernel keeps of 5", tone="cache"
-    )
-    f.text(160, 316, "recently used cold expert rows", tone="cold")
+    f.text(160, 298, "PAGE CACHE: shares the host's 64 GB with 3", tone="cache")
+    f.text(160, 316, "file pages in RAM; a miss needs NVMe", tone="cold")
     f.keyed(40, 308, "4", 150, 308, tone="cold")
 
     # 5 NVMe
@@ -78,8 +76,8 @@ def memory_tiers() -> Figure:
     f.text(160, 384, "NVMe: 1.9 TB", tone="disk")
     f.hline(150, 550, 392, tone="disk")
     f.vline(400, 392, 442, tone="disk")
-    f.lines(160, 412, ["expert banks, 63.5 GB", "48 layers x 512 experts"])
-    f.lines(410, 412, ["lookup table, 27 GB", "n-gram rows"])
+    f.lines(160, 412, ["expert banks, 63.5 GiB", "48 layers x 512 experts"])
+    f.lines(410, 412, ["lookup table, 27 GiB", "n-gram rows"])
     f.keyed(40, 404, "5", 150, 404, tone="disk")
     return f
 
@@ -102,15 +100,15 @@ def _decode_parts(f: Figure, px: float, py: float, *, letters: bool) -> None:
     f.lines(x(278), y(134), ["CPU", "exec"])
     # B pinned banks
     f.box(x(48), y(118), 210, 40, tone="ram")
-    f.lines(x(54), y(134), ["pinned banks", "40 GB"], tone="warm")
+    f.lines(x(54), y(134), ["pinned banks", "host RAM"], tone="warm")
     # C page cache
     f.box(x(48), y(172), 210, 34, dashed=True, tone="cache")
     f.text(x(54), y(192), "cold experts: page cache", tone="cold")
     # D NVMe
     f.box(x(48), y(220), 210, 40, tone="disk")
     f.line(x(170), y(220), x(170), y(260), weight=1.25, tone="disk")
-    f.lines(x(54), y(236), ["expert banks", "63.5 GB"], tone="disk")
-    f.lines(x(176), y(236), ["table", "27 GB"], tone="disk")
+    f.lines(x(54), y(236), ["expert banks", "63.5 GiB"], tone="disk")
+    f.lines(x(176), y(236), ["table", "27 GiB"], tone="disk")
     if letters:
         f.keyed(x(26), y(71), "A", x(48), y(71), tone="hot")
         f.keyed(x(26), y(138), "B", x(48), y(138), tone="warm")
@@ -145,9 +143,9 @@ def decode_step() -> Figure:
     # 2 Sort by residency
     px, py = slots[1]
     rows = [
-        ("hot", 6, "stay on A (72%)", "hot"),
-        ("pinned", 2, "fetched from B", "warm"),
-        ("cold", 4, "read from D through C", "cold"),
+        ("hot", 6, "reuse A", "hot"),
+        ("pinned", 2, "B to A on cache miss", "warm"),
+        ("cold", 4, "C hit, or read D", "cold"),
     ]
     for i, (name, n, where, tone) in enumerate(rows):
         yy = py + 274 + i * 14
@@ -188,7 +186,7 @@ def decode_step() -> Figure:
         f.line(bx, py + 300, bx, py + 300 - h, weight=1.25)
     f.line(px + 50, py + 300, px + 150, py + 300)
     f.text(px + 160, py + 282, "per-expert counters")
-    f.text(px + 160, py + 296, "half-life 2,000 steps")
+    f.text(px + 160, py + 296, "decay with newer traffic")
     return f
 
 
@@ -307,8 +305,7 @@ def prefill_chunk() -> Figure:
 
 
 def moe_selection() -> Figure:
-    f = Figure(700, 226, "One MoE layer: route, run selected experts, combine")
-    f.parts.append('<g transform="translate(0 -24)">')
+    f = Figure(700, 250, "One MoE layer: route, run selected experts, combine")
     f.text(18, 125, "input")
     f.arrow(58, 121, 95, 121)
     f.box(95, 96, 100, 50)
@@ -328,8 +325,15 @@ def moe_selection() -> Figure:
     f.text(521, 133, "combine outputs", anchor="middle")
     f.arrow(577, 121, 630, 121)
     f.text(640, 125, "output")
-    f.text(330, 225, "solid: selected   dashed: idle", anchor="middle")
-    f.parts.append("</g>")
+    f.keyed(145, 174, "1", 145, 146)
+    f.keyed(245, 44, "2", 285, 58)
+    f.keyed(521, 174, "3", 521, 146)
+    f.text(
+        330,
+        225,
+        "illustration: 2 of 5 selected; dashed experts are idle",
+        anchor="middle",
+    )
     return f
 
 
