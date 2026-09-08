@@ -209,6 +209,35 @@ class PendingMessage(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class AgentResultReceipt(SQLModel, table=True):
+    """Native result evidence, independent of executor and pending-row lifetime."""
+
+    __tablename__ = "result_receipts"
+    __table_args__ = (
+        Index("result_receipts_session_seq_idx", "session_id", "seq"),
+        {"schema": "agent_sessions", "extend_existing": True},
+    )
+
+    id: str = Field(primary_key=True)
+    token_sha256: str = Field(unique=True)
+    session_id: int = Field(sa_type=_BIGINT)
+    local_session_id: str
+    seq: int
+    dispatch_count: int
+    claim_owner: str
+    guest_id: str
+    request_sha256: str
+    created_at: datetime = Field(sa_type=DateTime(timezone=True))
+    accept_until: datetime = Field(sa_type=DateTime(timezone=True))
+    retain_until: datetime = Field(sa_type=DateTime(timezone=True), index=True)
+    superseded_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
+    received_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    result_sha256: str | None = None
+    result_body: bytes | None = Field(default=None, sa_type=LargeBinary)
+
+
 class VoiceUICompanion(SQLModel, table=True):
     __tablename__ = "voice_ui_companions"
     __table_args__ = {"schema": "agent_sessions", "extend_existing": True}

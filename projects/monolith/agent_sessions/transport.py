@@ -453,6 +453,7 @@ class ShimTransport(Protocol):
         agent_session_id: int | None = None,
         dispatch_count: int = 0,
         admission_check: Callable[[], Awaitable[None]] | None = None,
+        receipt_claim_owner: str | None = None,
     ) -> tuple[Turn, EmberSession]: ...
 
 
@@ -854,6 +855,7 @@ class EmberVmShimTransport:
         agent_session_id: int | None = None,
         dispatch_count: int = 0,
         admission_check: Callable[[], Awaitable[None]] | None = None,
+        receipt_claim_owner: str | None = None,
     ) -> tuple[Turn, EmberSession]:
         # Set None explicitly for unrelated deliveries, including a nested
         # delivery started in a factory callback. Always restore the caller's
@@ -876,6 +878,7 @@ class EmberVmShimTransport:
                     artifact_path=artifact_path,
                     agent_session_id=agent_session_id,
                     dispatch_count=dispatch_count,
+                    receipt_claim_owner=receipt_claim_owner,
                 )
         finally:
             _delivery_admission_check.reset(token)
@@ -896,6 +899,7 @@ class EmberVmShimTransport:
         artifact_path: str | None = None,
         agent_session_id: int | None = None,
         dispatch_count: int = 0,
+        receipt_claim_owner: str | None = None,
     ) -> tuple[Turn, EmberSession]:
         """Execute one turn on the guest session and return the result.
 
@@ -1007,6 +1011,20 @@ class EmberVmShimTransport:
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     await _check_delivery_admission()
+                    if receipt_claim_owner is not None:
+                        from agent_sessions import result_receipts
+
+                        # Each physical POST gets a fresh identity, including
+                        # transport recovery within one pending dispatch count.
+                        payload["result_receipt"] = await asyncio.to_thread(
+                            result_receipts.prepare_receipt,
+                            agent_session_id,
+                            receipt_claim_owner,
+                            dispatch_count,
+                            current.session_id,
+                            body.encode(),
+                        )
+                        body = json.dumps(payload)
                     response = await client.post(
                         url, content=body.encode(), headers=headers
                     )

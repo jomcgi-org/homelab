@@ -23,6 +23,7 @@ async def _leader_start(app):
     from agent_sessions.kg_feed import start_kg_feed_loop
     from agent_sessions.mcp import start_pending_message_sweep
     from agent_sessions.probe_supervision import start_probe_supervision_loop
+    from agent_sessions.result_receipts import start_receipt_retention_loop
     from agent_sessions.titles import start_title_refresh_loop
 
     tasks = []
@@ -31,6 +32,7 @@ async def _leader_start(app):
         start_title_refresh_loop,
         start_kg_feed_loop,
         start_probe_supervision_loop,
+        start_receipt_retention_loop,
     ):
         started = start()
         register_leader_tasks(app, started)
