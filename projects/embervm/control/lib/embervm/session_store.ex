@@ -111,6 +111,11 @@ defmodule Embervm.SessionStore do
     GenServer.call(store, {:transition, session_id, event, op_kind, payload, updates})
   end
 
+  @doc "Atomically compares the invoke/residency and persists a strict stop intent."
+  def begin_exact_destroy(store, session_id, intent) do
+    GenServer.call(store, {:begin_exact_destroy, session_id, intent})
+  end
+
   @doc """
   Like `transition/6`, but the durable append may be DEFERRED to Embervm.AsyncWriter
   when `EMBERVM_ASYNC_LIFECYCLE_WRITES` is on (ADR embervm/014 decision 2). Used only
@@ -418,7 +423,9 @@ defmodule Embervm.SessionStore do
       expires_at: row.expires_at,
       updated_at: row.updated_at,
       terminal_reason: row.terminal_reason,
-      idempotency_key: Map.get(row, :idempotency_key)
+      idempotency_key: Map.get(row, :idempotency_key),
+      stop_intent: Map.get(row, :stop_intent),
+      stop_completion: Map.get(row, :stop_completion)
     }
   end
 
@@ -444,6 +451,22 @@ defmodule Embervm.SessionStore do
   @impl true
   def handle_call({:create, attrs}, _from, state) do
     do_create(attrs, state)
+  end
+
+  def handle_call({:begin_exact_destroy, session_id, intent}, _from, state) do
+    case fetch(state, session_id) do
+      {:ok, session} ->
+        if Embervm.SessionStopProof.valid_intent?(intent) and
+             Embervm.SessionStopProof.row_matches?(session, Embervm.SessionStopProof.precondition(intent)) and
+             is_nil(Map.get(session, :stop_intent)) do
+          do_transition(state, session_id, :begin_destroy, :session_destroying,
+            %{reason: :destroyed, stop_intent: intent}, %{stop_intent: intent})
+        else
+          {:reply, {:error, :stop_precondition_failed}, state}
+        end
+
+      {:error, _} = error -> {:reply, error, state}
+    end
   end
 
   def handle_call({:transition, session_id, event, op_kind, payload, updates}, _from, state) do
@@ -694,6 +717,8 @@ defmodule Embervm.SessionStore do
       expires_at: Map.get(attrs, :expires_at),
       updated_at: ts,
       terminal_reason: nil,
+      stop_intent: nil,
+      stop_completion: nil,
       idempotency_key: idempotency_key
     }
 

@@ -885,6 +885,7 @@ defmodule Embervm.NodeRegistry do
       # that has not yet stamped pod_uid on its status still keys consistently.
       pod_uid: rt.pod_uid,
       instance_id: rt.instance_id,
+      boot_id: Map.get(rt, :boot_id, ""),
       # Brick fact (brick-capacity PR-1, additive): the daemon-reported T-shirt
       # size-class label ("2gi"/"4gi"/"8gi"/"16gi") this instance was deployed
       # as. Embervm.Brick buckets per-instance headroom by it and (from
@@ -1671,6 +1672,11 @@ defmodule Embervm.NodeRegistry do
         |> expire_instance(instance_id)
         |> add_instance(norm, now)
 
+      %{boot_id: boot_id} when boot_id != norm.boot_id ->
+        state
+        |> expire_instance(instance_id)
+        |> add_instance(norm, now)
+
       %{scratch_generation: generation} when generation != norm.scratch_generation ->
         Logger.warning(
           "embervm node registry: instance #{instance_id} scratch generation changed from #{inspect(generation)} to #{inspect(norm.scratch_generation)}"
@@ -1709,7 +1715,7 @@ defmodule Embervm.NodeRegistry do
   defp add_instance(state, norm, now) do
     rt =
       seed_runtime(
-        %{id: norm.node, address: norm.address, pod_uid: norm.pod_uid},
+        %{id: norm.node, address: norm.address, pod_uid: norm.pod_uid, boot_id: norm.boot_id},
         state.base_backoff_ms,
         now
       )
@@ -1768,6 +1774,7 @@ defmodule Embervm.NodeRegistry do
       configured_id: node,
       pod_uid: pod_uid,
       instance_id: instance_id_of(node, pod_uid),
+      boot_id: Map.get(spec, :boot_id, ""),
       address: spec.address,
       # {pid, ref} of the live streamer, or nil when no stream is open.
       streamer: nil,

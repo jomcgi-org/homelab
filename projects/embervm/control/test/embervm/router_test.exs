@@ -157,6 +157,10 @@ defmodule Embervm.RouterTest do
     def invoke(_srv, "s-brick-gone", _req), do: {:error, :brick_gone}
     def invoke(_srv, _id, _req), do: {:error, :not_found}
 
+    def stop_identity(_srv, _id), do: nil
+    def destroy(_srv, "s-live", %{"session_id" => "s-live", "invoke_started_at" => nil}), do: {:ok, :destroying}
+    def destroy(_srv, _id, _expected), do: {:error, :stop_precondition_failed}
+
     def destroy(_srv, "s-live"), do: {:ok, :destroyed}
     def destroy(_srv, "s-destroying"), do: {:ok, :destroying}
     def destroy(_srv, "s-error"), do: {:error, :backend_down}
@@ -1670,6 +1674,23 @@ defmodule Embervm.RouterTest do
     assert req(:delete, "/v1/sessions/s-error", auth("good")).status == 500
     # Management auth required.
     assert req(:delete, "/v1/sessions/s-live").status == 401
+  end
+
+  test "exact DELETE parses null invocation identity and rejects malformed or stale preconditions" do
+    with_session_fakes()
+    expected = %{"session_id" => "s-live", "generation" => 0, "invoke_started_at" => nil,
+      "vm_id" => "vm-1", "node_id" => "node-1", "instance_id" => "node-1/pod-1",
+      "pod_uid" => "pod-1", "boot_id" => "boot-1"}
+    body = "{\"stop_precondition\":" <> Embervm.SessionStopProof.encode(expected) <> "}"
+    assert req(:delete, "/v1/sessions/s-live", auth("good"), body).status == 202
+    assert req(:delete, "/v1/sessions/s-destroying", auth("good"), body).status == 409
+    for invalid <- ["{", "null", "{\"stop_precondition\":null}", "{\"stop_precondition\":{}}"] do
+      assert req(:delete, "/v1/sessions/s-live", auth("good"), invalid).status == 400
+    end
+    view = req(:get, "/v1/sessions/s-live", auth("good")) |> Map.fetch!(:body) |> json()
+    assert is_nil(view["stop_intent"])
+    assert is_nil(view["stop_completion"])
+    assert is_nil(view["stop_precondition"])
   end
 
   test "GET /v1/workloads/:name/sessions lists (management auth)" do

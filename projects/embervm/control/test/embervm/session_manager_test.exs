@@ -70,6 +70,18 @@ defmodule Embervm.SessionManagerTest do
     def append(server, op), do: SQLite.append(server, op)
   end
 
+  defmodule UnavailableStopIntentOpLog do
+    def load_sessions(server), do: SQLite.load_sessions(server)
+    def append(_server, %Embervm.OpLog.Op{kind: :session_destroying}), do: {:error, :unavailable}
+    def append(server, op), do: SQLite.append(server, op)
+  end
+
+  defmodule UnavailableStopCompletionOpLog do
+    def load_sessions(server), do: SQLite.load_sessions(server)
+    def append(_server, %Embervm.OpLog.Op{kind: :session_destroyed}), do: {:error, :unavailable}
+    def append(server, op), do: SQLite.append(server, op)
+  end
+
   defmodule CapabilityS3 do
     def get(agent, _key) do
       Agent.get_and_update(agent, fn state ->
@@ -163,6 +175,7 @@ defmodule Embervm.SessionManagerTest do
       channel_fun: Keyword.get(opts, :session_channel_fun, fn _node -> {:ok, :ch} end),
       assign_fun: assign_fun,
       destroy_fun: Keyword.get(opts, :destroy_fun, fn _ch, _vm -> {:ok, %{teardown_confirmed: true}} end),
+      destroy_exact_fun: Keyword.get(opts, :destroy_exact_fun, fn _ch, _req -> {:error, :unsupported} end),
       invalidate_fun: fn _node, _ch -> :ok end,
       brick_status_fun:
         Keyword.get(opts, :brick_status_fun, fn _node ->
@@ -4007,6 +4020,162 @@ defmodule Embervm.SessionManagerTest do
     send(worker, :confirm)
     assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
     refute :session_parked in op_kinds_for(ctx, created.session_id)
+  end
+
+  test "exact stop appends intent before RPC and completion survives store rebuild" do
+    parent = self()
+    ctx = start_stack(destroy_exact_fun: fn _ch, request ->
+      send(parent, {:exact_stop, self(), request})
+      receive do
+        :complete -> {:ok, exact_stop_response(request)}
+      after
+        5_000 -> {:error, :timeout}
+      end
+    end)
+    {ctx, session, expected} = prepare_exact_stop(ctx, "wl-exact-stop")
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, session.session_id, expected)
+    assert_receive {:exact_stop, worker, request}, 1_000
+    assert {:ok, [durable]} = SQLite.load_sessions(ctx.op_log)
+    assert durable.state == "destroying"
+    assert durable.stop_intent["operation_id"] == request.operation_id
+    assert durable.stop_intent["boot_id"] == request.expected_boot_id
+    assert is_nil(durable.stop_completion)
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, session.session_id, expected)
+    refute_received {:exact_stop, _, _}
+    send(worker, :complete)
+    complete = wait_for_state(ctx, session.session_id, :destroyed)
+    assert complete.stop_completion == Map.put(complete.stop_intent, "completed_at_unix_ms", 5_000_001)
+    assert Embervm.SessionStopProof.completion(complete) == complete.stop_completion
+    rebuilt = start_supervised!({SessionStore, name: nil, op_log: ctx.op_log, op_log_mod: SQLite})
+    assert {:ok, restored} = SessionStore.get(rebuilt, session.session_id)
+    assert Embervm.SessionStopProof.completion(restored) == complete.stop_completion
+    assert {:ok, :destroyed} = SessionManager.destroy(ctx.mgr, session.session_id, expected)
+    assert {:error, :stop_precondition_failed} =
+      SessionManager.destroy(ctx.mgr, session.session_id, Map.put(expected, "generation", 1))
+  end
+
+  test "lost strict ack and CP rebuild replay original operation despite missing or replacement inventory" do
+    parent = self()
+    {:ok, calls} = Agent.start_link(fn -> [] end)
+    ctx = start_stack(destroy_exact_fun: fn _ch, request ->
+      count = Agent.get_and_update(calls, fn seen -> {length(seen), [request | seen]} end)
+      send(parent, {:replayed_stop, request})
+      if count == 0, do: {:error, :lost_ack}, else: {:ok, exact_stop_response(request)}
+    end)
+    {ctx, session, expected} = prepare_exact_stop(ctx, "wl-exact-replay")
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, session.session_id, expected)
+    assert_receive {:replayed_stop, original}, 1_000
+    assert eventually(fn -> map_size(:sys.get_state(ctx.mgr).destroy_workers) == 0 end)
+    rebuilt = start_supervised!({SessionStore, name: nil, op_log: ctx.op_log, op_log_mod: SQLite})
+    :sys.replace_state(ctx.mgr, fn state -> %{state | session_store: rebuilt, session_dials: %{}} end)
+    ctx = %{ctx | store: rebuilt}
+    # Ordinary inventory is allowed to show a newer residency. It cannot replace
+    # the original operation's VM, node instance or boot during replay.
+    NodeCapacity.put(ctx.cap_table, "node-4", %{configured_id: "node-4",
+      instance_id: "node-4/new-pod", pod_uid: "new-pod", boot_id: "new-boot",
+      workloads: %{}, session_vms: [%{session_id: session.session_id, vm_id: "new-vm", workload: session.workload}]})
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    assert_receive {:replayed_stop, replay}, 1_000
+    assert replay == original
+    assert wait_for_state(ctx, session.session_id, :destroyed).stop_completion["vm_id"] == expected["vm_id"]
+  end
+
+  test "exact stop rejects newer invokes and changed residency without dispatch" do
+    parent = self()
+    ctx = start_stack(destroy_exact_fun: fn _ch, request -> send(parent, {:unexpected_exact, request}); {:error, :bad} end)
+    {ctx, session, expected} = prepare_exact_stop(ctx, "wl-exact-stale")
+    assert {:ok, _} = SessionStore.record_invoke_started(ctx.store, session.session_id)
+    assert {:error, :stop_precondition_failed} = SessionManager.destroy(ctx.mgr, session.session_id, expected)
+    assert {:error, :stop_precondition_failed} = SessionStore.begin_exact_destroy(ctx.store, session.session_id,
+      Embervm.SessionStopProof.new_intent(expected, 5_000_000))
+    fresh = SessionManager.stop_identity(ctx.mgr, session.session_id)
+    assert :ok = SessionStore.adopt_residency(ctx.store, session.session_id, "node-4", "new-vm")
+    assert {:error, :stop_precondition_failed} = SessionManager.destroy(ctx.mgr, session.session_id, fresh)
+    refute_received {:unexpected_exact, _}
+    refute :session_destroying in op_kinds_for(ctx, session.session_id)
+  end
+
+  test "an invoke failure racing an exact intent cannot issue legacy teardown" do
+    parent = self()
+    ctx = start_stack(
+      assign_fun: fn _ch, _request ->
+        send(parent, {:invoke_waiting, self()})
+        receive do
+          :fail -> {:error, :unavailable}
+        after
+          5_000 -> {:error, :timeout}
+        end
+      end,
+      destroy_fun: fn _ch, vm -> send(parent, {:unexpected_legacy_stop, vm}); {:ok, %{teardown_confirmed: true}} end)
+    {ctx, session, _expected} = prepare_exact_stop(ctx, "wl-exact-fail-race")
+    caller = Task.async(fn -> SessionManager.invoke(ctx.mgr, session.session_id,
+      %{method: "POST", path: "/", headers: %{}, body: "test"}) end)
+    assert_receive {:invoke_waiting, invoke_worker}, 1_000
+    expected = SessionManager.stop_identity(ctx.mgr, session.session_id)
+    intent = Embervm.SessionStopProof.new_intent(expected, 5_000_000)
+    assert {:ok, _} = SessionStore.begin_exact_destroy(ctx.store, session.session_id, intent)
+    send(invoke_worker, :fail)
+    assert {:error, _} = Task.await(caller)
+    assert eventually(fn -> Registry.lookup(ctx.registry, session.session_id) == [] end)
+    refute_received {:unexpected_legacy_stop, _}
+    assert {:ok, %{state: :destroying, stop_intent: ^intent}} = SessionStore.get(ctx.store, session.session_id)
+  end
+
+  test "failed exact intent append leaves session and native invocation untouched" do
+    parent = self()
+    ctx = start_stack(store_op_log_mod: UnavailableStopIntentOpLog,
+      destroy_exact_fun: fn _ch, request -> send(parent, {:unexpected_exact, request}); {:error, :bad} end)
+    {ctx, session, expected} = prepare_exact_stop(ctx, "wl-exact-intent-fail")
+    assert {:error, :unavailable} = SessionManager.destroy(ctx.mgr, session.session_id, expected)
+    assert {:ok, %{state: :running, stop_intent: nil}} = SessionStore.get(ctx.store, session.session_id)
+    assert [{pid, _}] = Registry.lookup(ctx.registry, session.session_id)
+    assert Process.alive?(pid)
+    refute_received {:unexpected_exact, _}
+  end
+
+  test "wrong proof, old node response and append failure cannot expose exact completion" do
+    for mode <- [:wrong_identity, :legacy_response, :append_failure] do
+      ctx = start_stack(
+        store_op_log_mod: if(mode == :append_failure, do: UnavailableStopCompletionOpLog, else: SQLite),
+        destroy_exact_fun: fn _ch, request ->
+          response = exact_stop_response(request)
+          case mode do
+            :wrong_identity -> {:ok, put_in(response, [:completion, :boot_id], "wrong-boot")}
+            :legacy_response -> {:ok, %{teardown_confirmed: true}}
+            :append_failure -> {:ok, response}
+          end
+        end)
+      {ctx, session, expected} = prepare_exact_stop(ctx, "wl-exact-failure-#{mode}")
+      assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, session.session_id, expected)
+      assert eventually(fn -> map_size(:sys.get_state(ctx.mgr).destroy_workers) == 0 end)
+      assert {:ok, still} = SessionStore.get(ctx.store, session.session_id)
+      assert still.state == :destroying
+      assert is_nil(Embervm.SessionStopProof.completion(still))
+      assert {:ok, [row]} = SQLite.load_sessions(ctx.op_log)
+      assert is_nil(row.stop_completion)
+      report_empty_node(ctx)
+      assert :ok = SessionManager.reconcile(ctx.mgr)
+      assert eventually(fn -> map_size(:sys.get_state(ctx.mgr).destroy_workers) == 0 end)
+      assert {:ok, %{state: :destroying}} = SessionStore.get(ctx.store, session.session_id)
+    end
+  end
+
+  defp prepare_exact_stop(ctx, workload) do
+    put_session_workload(ctx, workload)
+    {:ok, created} = SessionManager.create(ctx.mgr, workload, "p1")
+    {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    report_session_vm(ctx, session.session_id, workload, session.vm_id)
+    {:ok, fact} = NodeCapacity.fetch(ctx.cap_table, "node-4")
+    NodeCapacity.put(ctx.cap_table, "node-4", Map.merge(fact, %{
+      instance_id: "node-4/pod-node-4", pod_uid: "pod-node-4", boot_id: "boot-original"}))
+    {ctx, session, SessionManager.stop_identity(ctx.mgr, session.session_id)}
+  end
+
+  defp exact_stop_response(request) do
+    %{teardown_confirmed: true, completion: %{
+      operation_id: request.operation_id, vm_id: request.vm_id,
+      boot_id: request.expected_boot_id, session_id: request.expected_session_id,
+      node: "node-4", pod_uid: "pod-node-4", completed_at_unix_ms: 5_000_001}}
   end
 
   # -- gated-destroy test helpers --------------------------------------------

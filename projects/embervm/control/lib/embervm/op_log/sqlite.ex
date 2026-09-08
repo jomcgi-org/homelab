@@ -222,6 +222,8 @@ defmodule Embervm.OpLog.SQLite do
       snapshot_size_bytes INTEGER,
       token_sha256 TEXT,
       created_at INTEGER NOT NULL,
+      stop_intent_json TEXT,
+      stop_completion_json TEXT,
       invoke_started_at INTEGER,
       last_invoke_at INTEGER,
       expires_at INTEGER,
@@ -1333,10 +1335,10 @@ defmodule Embervm.OpLog.SQLite do
   # than forgetting it. session_destroyed (terminal) is appended only after the node
   # confirms teardown.
   defp project(conn, %Op{kind: :session_destroying} = op, _seq) do
-    sql = "UPDATE sessions SET state='destroying', updated_at=? WHERE session_id=?"
+    sql = "UPDATE sessions SET state='destroying', updated_at=?, stop_intent_json=COALESCE(stop_intent_json, ?) WHERE session_id=?"
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
-         :ok <- Sqlite3.bind(stmt, [op.ts, op.session_id]),
+         :ok <- Sqlite3.bind(stmt, [op.ts, Embervm.SessionStopProof.encode(Map.get(op.payload, :stop_intent)), op.session_id]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
       :ok
@@ -2162,10 +2164,10 @@ defmodule Embervm.OpLog.SQLite do
   # reason (defaulting to the state itself when the payload omits one).
   defp terminate_session(conn, %Op{} = op, state) do
     reason = to_string(Map.get(op.payload, :reason, state))
-    sql = "UPDATE sessions SET state=?, terminal_reason=?, updated_at=? WHERE session_id=?"
+    sql = "UPDATE sessions SET state=?, terminal_reason=?, updated_at=?, stop_completion_json=COALESCE(stop_completion_json, ?) WHERE session_id=?"
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
-         :ok <- Sqlite3.bind(stmt, [state, reason, op.ts, op.session_id]),
+         :ok <- Sqlite3.bind(stmt, [state, reason, op.ts, Embervm.SessionStopProof.encode(Map.get(op.payload, :stop_completion)), op.session_id]),
          :done <- Sqlite3.step(conn, stmt),
          :ok <- Sqlite3.release(conn, stmt) do
       :ok
@@ -2759,7 +2761,7 @@ defmodule Embervm.OpLog.SQLite do
     SELECT session_id, tenant, principal, workload, state, node_id, volume_node_id,
            base_snapshot_ref, base_digest, generation, snapshot_ref, snapshot_size_bytes,
            token_sha256, created_at, invoke_started_at, last_invoke_at, expires_at, updated_at, terminal_reason,
-           COALESCE(lineage_id, session_id), idempotency_key
+           COALESCE(lineage_id, session_id), idempotency_key, stop_intent_json, stop_completion_json
     FROM sessions
     """
 
@@ -2794,7 +2796,9 @@ defmodule Embervm.OpLog.SQLite do
          updated_at,
          terminal_reason,
          lineage_id,
-         idempotency_key
+         idempotency_key,
+         stop_intent_json,
+         stop_completion_json
        ]} ->
         session = %{
           session_id: session_id,
@@ -2817,7 +2821,9 @@ defmodule Embervm.OpLog.SQLite do
           updated_at: updated_at,
           terminal_reason: terminal_reason,
           lineage_id: lineage_id,
-          idempotency_key: idempotency_key
+          idempotency_key: idempotency_key,
+          stop_intent: Embervm.SessionStopProof.decode(stop_intent_json),
+          stop_completion: Embervm.SessionStopProof.decode(stop_completion_json)
         }
 
         collect_sessions(conn, stmt, [session | acc])
@@ -3734,12 +3740,23 @@ defmodule Embervm.OpLog.SQLite do
          :ok <- migrate_sessions_lineage_id(conn),
          :ok <- migrate_sessions_idempotency_key(conn),
          :ok <- migrate_sessions_invoke_started_at(conn),
+         :ok <- migrate_sessions_stop_proof(conn),
          :ok <- migrate_ops_session_id(conn),
          :ok <- migrate_ops_serving_instance_id(conn),
          :ok <- migrate_usage_request_count(conn),
          :ok <- migrate_ops_stateful_instance_id(conn),
          :ok <- migrate_volumes_exported_generation(conn),
          :ok <- migrate_ops_group_instance_id(conn) do
+      :ok
+    end
+  end
+
+  defp migrate_sessions_stop_proof(conn) do
+    with {:ok, cols} <- table_columns(conn, "sessions"),
+         :ok <- add_column_if_missing(conn, cols, "stop_intent_json",
+           "ALTER TABLE sessions ADD COLUMN stop_intent_json TEXT"),
+         :ok <- add_column_if_missing(conn, cols, "stop_completion_json",
+           "ALTER TABLE sessions ADD COLUMN stop_completion_json TEXT") do
       :ok
     end
   end
