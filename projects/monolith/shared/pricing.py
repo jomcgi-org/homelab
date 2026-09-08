@@ -79,7 +79,15 @@ def _normalized_usage(
     input_tokens = _token_count(usage, "input_tokens")
     output_tokens = _token_count(usage, "output_tokens")
 
-    if _CLAUDE_CACHE_KEYS & usage.keys():
+    collector_shape = usage.get("shape")
+    if collector_shape not in {None, "claude", "codex"}:
+        raise ValueError("invalid collector usage shape")
+
+    if collector_shape in {"claude", "codex"}:
+        cache_read_tokens = _token_count(usage, "cache_read_tokens")
+        cache_write_tokens = _token_count(usage, "cache_write_tokens")
+        claude_shape = collector_shape == "claude"
+    elif _CLAUDE_CACHE_KEYS & usage.keys():
         cache_read_tokens = _token_count(usage, "cache_read_input_tokens")
         cache_write_tokens = _token_count(usage, "cache_creation_input_tokens")
         claude_shape = True

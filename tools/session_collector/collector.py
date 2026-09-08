@@ -19,11 +19,96 @@ from .models import Session
 from .render import RenderedSession, render
 from .scope import allowed_scope, discover_repo, reset_worktree_cache
 from .state import eligible, load, locked, save
-from .upload import upload_raw
+from .upload import upload_raw, upload_usage
 
 MIN_BODY_BYTES = 2 * 1024
 TOKEN_MESSAGE = "token expired: run cloudflared access login https://private.jomcgi.dev"
 TAILNET_CONNECT_TIMEOUT_SECONDS = 10
+
+
+def run_usage_backfill(
+    *,
+    state_file: Path,
+    base_url: str = DEFAULT_BASE_URL,
+    auth: str = "auto",
+    force: bool = False,
+    client: httpx.Client | None = None,
+    token_reader: Callable[[str], str | None] | None = None,
+) -> int:
+    """Reparse uploaded transcripts and attach collector usage to their raws."""
+    state_file = state_file.expanduser()
+    auth_mode = resolve_auth_mode(auth, base_url)
+    owned_client = client is None
+    if client is None:
+        client = httpx.Client(
+            timeout=httpx.Timeout(60, connect=TAILNET_CONNECT_TIMEOUT_SECONDS),
+            follow_redirects=False,
+        )
+    summary = {"sent": 0, "already_sent": 0, "missing": 0, "failed": 0}
+    token: str | None = None
+    try:
+        with locked(state_file):
+            state_value = load(state_file)
+            entries = sorted(state_value.items())
+            if auth_mode == "cloudflare" and any(
+                entry.get("raw_id")
+                and (force or not entry.get("usage_sent_at"))
+                and Path(path).is_file()
+                for path, entry in entries
+            ):
+                hostname = urlparse(base_url).hostname or "private.jomcgi.dev"
+                token = (token_reader or read_cached_cf_token)(hostname)
+                if not token:
+                    print(TOKEN_MESSAGE, file=sys.stderr)
+                    return 0
+
+            for path_text, entry in entries:
+                raw_id = entry.get("raw_id")
+                if not raw_id:
+                    continue
+                path = Path(path_text)
+                if entry.get("usage_sent_at") and not force:
+                    summary["already_sent"] += 1
+                    print(f"already sent {path}: {raw_id}")
+                    continue
+                if not path.is_file():
+                    summary["missing"] += 1
+                    print(f"missing {path}: {raw_id}")
+                    continue
+                try:
+                    parsed = parse_session(path)
+                    result = upload_usage(
+                        client,
+                        base_url,
+                        token,
+                        str(raw_id),
+                        {
+                            "usage": parsed.usage or {},
+                            "models": parsed.models[:20],
+                            "model": parsed.model,
+                        },
+                        cloudflare=auth_mode == "cloudflare",
+                    )
+                except Exception as error:
+                    summary["failed"] += 1
+                    print(f"failed {path}: {type(error).__name__}")
+                    continue
+                if result.status == "expired":
+                    print(TOKEN_MESSAGE, file=sys.stderr)
+                    return 0
+                if result.status != "uploaded":
+                    summary["failed"] += 1
+                    print(f"failed {path}: HTTP {result.status_code}")
+                    continue
+                entry["usage_sent_at"] = datetime.now(timezone.utc).isoformat()
+                save(state_file, state_value)
+                summary["sent"] += 1
+                print(f"sent {path}: {raw_id}")
+    finally:
+        if owned_client:
+            client.close()
+    print("summary " + " ".join(f"{key}={value}" for key, value in summary.items()))
+    return 0
 
 
 def parse_session(path: Path) -> Session:

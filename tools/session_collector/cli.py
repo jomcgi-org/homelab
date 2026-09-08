@@ -8,7 +8,7 @@ from collections import Counter
 from pathlib import Path
 
 from .base_url import resolve_base_url
-from .collector import parse_session, run_collection
+from .collector import parse_session, run_collection, run_usage_backfill
 from .render import render
 from .scope import discover_repo, parse_allowlist, parse_path_allowlist
 from .state import forget, load
@@ -51,6 +51,15 @@ def build_parser() -> argparse.ArgumentParser:
     forget_parser = subparsers.add_parser("forget", help="forget one session")
     forget_parser.add_argument("path", type=Path)
     forget_parser.add_argument("--state-file", type=Path, default=DEFAULT_STATE)
+    backfill = subparsers.add_parser(
+        "backfill-usage", help="attach usage to previously uploaded sessions"
+    )
+    backfill.add_argument("--force", action="store_true")
+    backfill.add_argument("--base-url")
+    backfill.add_argument(
+        "--auth", choices=("auto", "cloudflare", "none"), default="auto"
+    )
+    backfill.add_argument("--state-file", type=Path, default=DEFAULT_STATE)
     return parser
 
 
@@ -116,6 +125,13 @@ def main(argv: list[str] | None = None) -> int:
         removed = forget(args.state_file, args.path)
         print("forgotten" if removed else "not found")
         return 0
+    if args.command == "backfill-usage":
+        return run_usage_backfill(
+            state_file=args.state_file,
+            base_url=args.base_url or resolve_base_url(),
+            auth=args.auth,
+            force=args.force,
+        )
     parser.error("unknown command")
     return 2
 

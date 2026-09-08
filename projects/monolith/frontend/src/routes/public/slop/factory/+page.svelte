@@ -30,7 +30,12 @@
   };
   const day = (value) => value?.slice(5, 10).replace("-", "·") ?? "";
   const today = new Date().toISOString().slice(0, 10);
-  const sessions = $derived(activitySeries(data.activity.daily));
+  const sessions = $derived(
+    activitySeries([
+      ...(data.activity.daily ?? []),
+      ...(data.activity.local_daily ?? []),
+    ]),
+  );
   const merges = $derived(mergeSeries(data.merges.daily));
   const lines = $derived(lineSeries(data.merges.week));
   const facts = $derived(factSeries(data.facts, today));
@@ -45,10 +50,10 @@
   );
   const stats = $derived([
     {
-      key: "Live",
-      value: number(tiles.live.value),
-      subline: `${number(tiles.live.sessionsToday)} sessions today`,
-      spark: tiles.live.spark,
+      key: "Sessions, 7d",
+      value: number(tiles.sessions.value),
+      subline: `${number(tiles.sessions.ember)} Ember · ${number(tiles.sessions.local)} Mac`,
+      spark: tiles.sessions.spark,
     },
     {
       key: "Merged, 7d",
@@ -76,7 +81,7 @@
       subline:
         tiles.cost.list == null
           ? "Codex on subscription"
-          : `list $${Number(tiles.cost.list).toFixed(0)}`,
+          : `$${Number(tiles.cost.list).toFixed(0)} list`,
       spark: tiles.cost.spark,
     },
     {

@@ -48,6 +48,13 @@ class TurnPricingBackfillReport:
     skipped_zero: int
 
 
+@dataclass(frozen=True)
+class RawPricingBackfillReport:
+    priced: int
+    skipped_unknown_model: int
+    skipped_zero: int
+
+
 def _usage_has_tokens(usage: object) -> bool:
     if not isinstance(usage, dict):
         return False
@@ -121,6 +128,89 @@ def _price_turns_backfill_core(
             session.commit()
 
     return TurnPricingBackfillReport(
+        priced=priced_count,
+        skipped_unknown_model=skipped_unknown_model,
+        skipped_zero=skipped_zero,
+    )
+
+
+def _price_raws_backfill_core(
+    engine, chunk_size: int = 500
+) -> RawPricingBackfillReport:
+    """Price collector raws in bounded pages using database JSON merge updates."""
+    from sqlalchemy import func, literal, update
+    from sqlalchemy.dialects.postgresql import JSONB
+    from sqlmodel import Session, select
+
+    from knowledge.models import RawInput
+    from shared.pricing import price_usage
+
+    priced_count = 0
+    skipped_unknown_model = 0
+    skipped_zero = 0
+    last_id = 0
+    postgres = engine.dialect.name == "postgresql"
+    with Session(engine) as session:
+        while True:
+            statement = select(RawInput).where(
+                RawInput.id > last_id,
+                RawInput.source.in_(("claude-session", "codex-session")),
+            )
+            if postgres:
+                statement = statement.where(
+                    RawInput.extra.op("?")("usage"),
+                    ~RawInput.extra.op("?")("usage_cost_usd"),
+                )
+            else:
+                statement = statement.where(
+                    func.json_type(RawInput.extra, "$.usage").is_not(None),
+                    func.json_type(RawInput.extra, "$.usage_cost_usd").is_(None),
+                )
+            rows = session.exec(statement.order_by(RawInput.id).limit(chunk_size)).all()
+            if not rows:
+                break
+
+            for row in rows:
+                extra = row.extra or {}
+                usage = extra.get("usage")
+                if not _usage_has_tokens(usage):
+                    skipped_zero += 1
+                    continue
+                try:
+                    calculated = price_usage(extra.get("model"), usage)
+                    if calculated is None:
+                        skipped_unknown_model += 1
+                        continue
+                    patch = {
+                        "usage_cost_usd": calculated.cost_usd,
+                        "usage_cost_source": "list",
+                    }
+                    if postgres:
+                        merged = RawInput.extra.op("||")(literal(patch, type_=JSONB))
+                        still_unpriced = ~RawInput.extra.op("?")("usage_cost_usd")
+                    else:
+                        merged = func.json_patch(RawInput.extra, json.dumps(patch))
+                        still_unpriced = func.json_type(
+                            RawInput.extra, "$.usage_cost_usd"
+                        ).is_(None)
+                    result = session.exec(
+                        update(RawInput)
+                        .where(RawInput.id == row.id, still_unpriced)
+                        .values(extra=merged)
+                    )
+                    if result.rowcount:
+                        priced_count += 1
+                except Exception:
+                    logger.warning(
+                        "price-raws-backfill: failed to price raw id=%s",
+                        row.id,
+                        exc_info=True,
+                    )
+
+            last_id = rows[-1].id
+            session.commit()
+
+    return RawPricingBackfillReport(
         priced=priced_count,
         skipped_unknown_model=skipped_unknown_model,
         skipped_zero=skipped_zero,
@@ -221,6 +311,23 @@ def price_turns_backfill() -> None:
     report = _price_turns_backfill_core(get_engine())
     logger.info(
         "price-turns-backfill: priced=%d skipped-unknown-model=%d skipped-zero=%d",
+        report.priced,
+        report.skipped_unknown_model,
+        report.skipped_zero,
+    )
+    typer.echo(json.dumps(asdict(report), sort_keys=True))
+
+
+@app.command("price-raws-backfill")
+def price_raws_backfill() -> None:
+    """Fill list-price costs for collector raws that already include usage."""
+    from core.db import get_engine
+
+    configure_logging()
+    logger.info("price-raws-backfill: starting")
+    report = _price_raws_backfill_core(get_engine())
+    logger.info(
+        "price-raws-backfill: priced=%d skipped-unknown-model=%d skipped-zero=%d",
         report.priced,
         report.skipped_unknown_model,
         report.skipped_zero,

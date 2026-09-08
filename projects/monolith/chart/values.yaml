@@ -896,6 +896,21 @@ jobs:
           memory: 512Mi
         limits:
           memory: 512Mi
+    # One-time list-price backfill for collector raws. Ships suspended and is
+    # submitted manually with:
+    #   argo submit --from cronworkflow/price-raws-backfill -n monolith-workflows
+    - name: price-raws-backfill
+      args: ["price-raws-backfill"]
+      schedule: "0 0 1 1 *" # inert; suspended, manual-only
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 1800
+      suspend: true
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
     # whatsapp.morning_digest: render today's calendar + open reminders into one
     # whatsapp_outbox message per enabled household group (ADR 039 spec 5d). Runs
     # hourly so a group whose send time or quiet hours have just lifted still gets

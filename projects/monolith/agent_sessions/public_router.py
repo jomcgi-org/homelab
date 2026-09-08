@@ -46,6 +46,22 @@ _DAILY_QUERY = text(
     ORDER BY day DESC, model ASC
     """
 )
+_LOCAL_DAILY_QUERY = text(
+    """
+    SELECT
+        day,
+        model,
+        source,
+        sessions,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        list_cost_usd
+    FROM public_api.local_session_activity_daily
+    WHERE day >= CURRENT_DATE - interval '29 days'
+    ORDER BY day DESC, model ASC, source ASC
+    """
+)
 
 
 def _value(row: Any, name: str) -> Any:
@@ -82,9 +98,17 @@ def _sum_optional(rows: list[dict], field: str) -> float | None:
     return float(sum(values)) if values else None
 
 
+def _totals(rows: list[dict], fields: tuple[str, ...]) -> dict:
+    result = {field: sum(row[field] for row in rows) for field in fields}
+    result["cost_usd"] = _sum_optional(rows, "cost_usd")
+    result["list_cost_usd"] = _sum_optional(rows, "list_cost_usd")
+    return result
+
+
 def _shape_activity(
     now_row: Any,
     daily_rows: list[Any],
+    local_daily_rows: list[Any] | None = None,
     *,
     today: date | None = None,
 ) -> dict:
@@ -115,19 +139,39 @@ def _shape_activity(
     daily.sort(key=lambda row: row["model"])
     daily.sort(key=lambda row: row["day"], reverse=True)
 
-    totals_rows = [row for row in daily if row["day"] >= totals_start.isoformat()]
-    totals = {
-        field: sum(row[field] for row in totals_rows)
-        for field in (
-            "sessions",
-            "turns",
-            "input_tokens",
-            "output_tokens",
-            "cache_read_tokens",
+    local_daily = []
+    for row in local_daily_rows or []:
+        row_day = _day(_value(row, "day"))
+        if row_day < daily_start or row_day > today:
+            continue
+        local_daily.append(
+            {
+                "day": row_day.isoformat(),
+                "model": _value(row, "model"),
+                "source": _value(row, "source"),
+                "sessions": int(_value(row, "sessions") or 0),
+                "turns": 0,
+                "input_tokens": int(_value(row, "input_tokens") or 0),
+                "output_tokens": int(_value(row, "output_tokens") or 0),
+                "cache_read_tokens": int(_value(row, "cache_read_tokens") or 0),
+                "cost_usd": None,
+                "list_cost_usd": _number(_value(row, "list_cost_usd")),
+            }
         )
-    }
-    totals["cost_usd"] = _sum_optional(totals_rows, "cost_usd")
-    totals["list_cost_usd"] = _sum_optional(totals_rows, "list_cost_usd")
+    local_daily.sort(key=lambda row: (row["model"], row["source"]))
+    local_daily.sort(key=lambda row: row["day"], reverse=True)
+
+    ember_totals_rows = [row for row in daily if row["day"] >= totals_start.isoformat()]
+    local_totals_rows = [
+        row for row in local_daily if row["day"] >= totals_start.isoformat()
+    ]
+    total_fields = (
+        "sessions",
+        "turns",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+    )
 
     return {
         "now": {
@@ -137,7 +181,11 @@ def _shape_activity(
             "last_turn_at": _as_utc_iso(_value(now_row, "last_turn_at")),
         },
         "daily": daily,
-        "totals_7d": totals,
+        "local_daily": local_daily,
+        "totals_7d": {
+            "ember": _totals(ember_totals_rows, total_fields),
+            "local": _totals(local_totals_rows, total_fields),
+        },
     }
 
 
@@ -157,13 +205,14 @@ def get_public_agent_activity(
     try:
         now_row = session.execute(_NOW_QUERY).one()
         daily_rows = list(session.execute(_DAILY_QUERY).all())
+        local_daily_rows = list(session.execute(_LOCAL_DAILY_QUERY).all())
     except SQLAlchemyError as exc:
         logger.warning("public.agent_activity.unavailable", exc_info=exc)
         raise HTTPException(
             status_code=500, detail="agent activity unavailable"
         ) from exc
 
-    payload = _shape_activity(now_row, daily_rows)
+    payload = _shape_activity(now_row, daily_rows, local_daily_rows)
     etag = _activity_etag(payload)
     headers = {"Cache-Control": _ACTIVITY_CACHE_CONTROL, "ETag": etag}
     if request.headers.get("if-none-match") == etag:

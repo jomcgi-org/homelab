@@ -19,7 +19,12 @@ export async function load({ fetch, setHeaders }) {
     getJson(fetch, "/slop/factory/facts"),
   ]);
   const fallback = [
-    { now: {}, daily: [], totals_7d: {} },
+    {
+      now: {},
+      daily: [],
+      local_daily: [],
+      totals_7d: { ember: {}, local: {} },
+    },
     { daily: [], week: [], totals: {} },
     {
       daily: [],
