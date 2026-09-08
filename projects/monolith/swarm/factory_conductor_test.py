@@ -1608,3 +1608,72 @@ def test_expired_task_finishes_only_after_queue_attempt_reconciles(
     assert receipt["deadline_at"] == deadline
     assert receipt["turns_used"] == 1
     assert receipt["evidence"]["state"] == "task_deadline"
+
+
+def test_legacy_reservation_replays_unchanged_and_uses_original_wait(
+    feedback_db, monkeypatch
+):
+    from datetime import datetime, timezone
+    from sqlmodel import Session
+    from swarm import factory_controls as controls
+    import swarm.node_workflows as nodes
+
+    task, policy = feedback_task()
+    node_key = "conductor_1"
+    workflow = f"factory-node:{task['id']}:{node_key}:1"
+    assert conductor._add(
+        task, policy, node_key, "plan", [], "opus", "test:legacy", "legacy replay"
+    ).ok
+    context = {
+        "repo": task["repo"],
+        "branch": f"factory/{task['id']}",
+        "hydration_branch": "main",
+        "workflow_id": workflow,
+        "artifact_path": ".factory/legacy.json",
+        "artifact_schema": conductor.DECISION_SCHEMA,
+    }
+    # Reproduce admission by the previous release, before deadline pinning.
+    with Session(feedback_db) as db:
+        with controls._locked_session(db):
+            admitted = conductor.graph.admit_dispatch(
+                task["id"],
+                node_key,
+                dispatch_key=workflow,
+                execution_context=context,
+                session=db,
+            )
+            assert admitted.ok
+            assert controls.authorize_start(
+                task["id"],
+                workflow,
+                "legacy-controller",
+                model="opus",
+                max_cost_usd=admitted.pin["max_cost_usd"],
+                session=db,
+            )["ok"]
+        db.commit()
+    original = conductor.graph.node_runs(task["id"])
+    original_starts = controls.task_snapshot(task["id"])["starts"]
+    assert "task_deadline_at" not in original[0]["pin"]
+    assert conductor.reserve_node(task["id"], node_key, workflow, context)
+    current = conductor.graph.node_runs(task["id"])
+    assert current == original and len(current) == 1
+    assert "task_deadline_at" not in current[0]["pin"]
+    assert controls.task_snapshot(task["id"])["starts"] == original_starts
+
+    waits = []
+    monkeypatch.setattr(
+        nodes, "observe_clock", lambda: datetime.now(timezone.utc).isoformat()
+    )
+    monkeypatch.setattr(
+        nodes, "_start_node_session", lambda *_: {"started": True, "session_id": 7}
+    )
+    monkeypatch.setattr(nodes, "_await_node_turn", lambda *args: waits.append(args))
+    monkeypatch.setattr(
+        nodes,
+        "_await_dispatched_node_turn",
+        lambda *_: pytest.fail("legacy durable step sequence changed"),
+    )
+    result = nodes.execute_node.__wrapped__(current[0]["pin"])
+    assert len(waits) == 1 and waits[0][0] == 7
+    assert result["status"] == "uncertain"
