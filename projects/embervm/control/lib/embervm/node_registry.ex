@@ -932,6 +932,9 @@ defmodule Embervm.NodeRegistry do
       # with no store configured or one that never sets it (wire-compatible).
       store_reachable: s.store_reachable,
       updated_at: now,
+      # Session lifecycle intents are durable Unix timestamps. Keep the existing
+      # monotonic liveness clock and expose a separate receipt stamp for ordering.
+      observed_at_unix_ms: System.system_time(:millisecond),
       # Session facts (R2): the node's LIVE session VMs and BANKED snapshot
       # inventory, plus the sessions snapshot-dir disk usage. These are the source
       # of truth Embervm.SessionManager reconciles its ETS residency + banked

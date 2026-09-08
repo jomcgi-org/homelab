@@ -98,9 +98,13 @@ defmodule Embervm.NodeRegistryTest do
     {clock, _advance} = new_clock()
     {reg, table} = start_registry(clock: clock)
 
+    before_observation = System.system_time(:millisecond)
     :ok = NodeRegistry.inject_status(reg, "node-4", node_status(free_primed_slots: 3))
 
     assert [facts] = NodeRegistry.capacity(table)
+    assert facts.updated_at == 0
+    assert facts.observed_at_unix_ms >= before_observation
+    assert facts.observed_at_unix_ms <= System.system_time(:millisecond)
     assert facts.node_id == "node-4"
     assert facts.workloads["echo"].free_primed_slots == 3
     assert facts.workloads["echo"].base_state == :BASE_BUILD_STATE_READY
