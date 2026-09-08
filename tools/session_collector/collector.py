@@ -32,10 +32,13 @@ def run_usage_backfill(
     base_url: str = DEFAULT_BASE_URL,
     auth: str = "auto",
     force: bool = False,
+    limit: int = 200,
     client: httpx.Client | None = None,
     token_reader: Callable[[str], str | None] | None = None,
 ) -> int:
     """Reparse uploaded transcripts and attach collector usage to their raws."""
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
     state_file = state_file.expanduser()
     auth_mode = resolve_auth_mode(auth, base_url)
     owned_client = client is None
@@ -46,15 +49,28 @@ def run_usage_backfill(
         )
     summary = {"sent": 0, "already_sent": 0, "missing": 0, "failed": 0}
     token: str | None = None
+    processed: set[str] = set()
     try:
-        with locked(state_file):
-            state_value = load(state_file)
-            entries = sorted(state_value.items())
-            if auth_mode == "cloudflare" and any(
-                entry.get("raw_id")
-                and (force or not entry.get("usage_sent_at"))
-                and Path(path).is_file()
-                for path, entry in entries
+        while True:
+            with locked(state_file):
+                entries = [
+                    (path, dict(entry))
+                    for path, entry in sorted(load(state_file).items())
+                    if path not in processed
+                ][:limit]
+            if not entries:
+                break
+            processed.update(path for path, _entry in entries)
+
+            if (
+                token is None
+                and auth_mode == "cloudflare"
+                and any(
+                    entry.get("raw_id")
+                    and (force or not entry.get("usage_sent_at"))
+                    and Path(path).is_file()
+                    for path, entry in entries
+                )
             ):
                 hostname = urlparse(base_url).hostname or "private.jomcgi.dev"
                 token = (token_reader or read_cached_cf_token)(hostname)
@@ -100,8 +116,15 @@ def run_usage_backfill(
                     summary["failed"] += 1
                     print(f"failed {path}: HTTP {result.status_code}")
                     continue
-                entry["usage_sent_at"] = datetime.now(timezone.utc).isoformat()
-                save(state_file, state_value)
+                with locked(state_file):
+                    state_value = load(state_file)
+                    current = state_value.get(path_text)
+                    if current is None or current.get("raw_id") != raw_id:
+                        summary["failed"] += 1
+                        print(f"failed {path}: state changed during backfill")
+                        continue
+                    current["usage_sent_at"] = datetime.now(timezone.utc).isoformat()
+                    save(state_file, state_value)
                 summary["sent"] += 1
                 print(f"sent {path}: {raw_id}")
     finally:

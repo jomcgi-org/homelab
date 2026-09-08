@@ -82,7 +82,9 @@ To attach usage to sessions uploaded before collector v2, run
 `python3 -m tools.session_collector backfill-usage`. It reparses every uploaded
 transcript that still exists, posts usage and model metadata to its stored raw
 ID, and records `usage_sent_at` after success so retries are safe. Pass `--force`
-to resend records already marked complete.
+to resend records already marked complete. Work is processed in batches of 200
+by default, with the state lock released between batches so scheduled collection
+can proceed. Pass `--limit N` to choose a different batch size.
 
 When a transcript's working directory is gone or has no Git origin, the
 collector uses path-prefix mappings for known homelab worktree locations. A

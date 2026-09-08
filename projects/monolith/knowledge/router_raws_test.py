@@ -207,15 +207,57 @@ def test_backfill_raw_usage_prices_and_preserves_existing_metadata(client, sessi
 def test_backfill_raw_usage_validation_and_not_found(client):
     missing = client.post(
         "/api/knowledge/raws/missing/usage",
-        json={"usage": {}, "models": []},
+        json={"usage": {"shape": "codex"}, "models": []},
     )
     oversized = client.post(
         "/api/knowledge/raws/missing/usage",
         json={"usage": {"padding": "x" * (64 * 1024)}, "models": []},
     )
+    negative = client.post(
+        "/api/knowledge/raws/missing/usage",
+        json={
+            "usage": {"shape": "codex", "input_tokens": -1},
+            "models": [],
+        },
+    )
+    string_tokens = client.post(
+        "/api/knowledge/raws/missing/usage",
+        json={
+            "usage": {"shape": "codex", "input_tokens": "1"},
+            "models": [],
+        },
+    )
+    extra_key = client.post(
+        "/api/knowledge/raws/missing/usage",
+        json={
+            "usage": {"shape": "codex", "unexpected": 1},
+            "models": [],
+        },
+    )
+    invalid_shape = client.post(
+        "/api/knowledge/raws/missing/usage",
+        json={"usage": {"shape": "other"}, "models": []},
+    )
+    too_many_models = client.post(
+        "/api/knowledge/raws/missing/usage",
+        json={
+            "usage": {"shape": "codex"},
+            "models": [f"model-{index}" for index in range(21)],
+        },
+    )
+    long_model = client.post(
+        "/api/knowledge/raws/missing/usage",
+        json={"usage": {"shape": "codex"}, "models": ["m" * 51]},
+    )
 
     assert missing.status_code == 404
     assert oversized.status_code == 422
+    assert negative.status_code == 422
+    assert string_tokens.status_code == 422
+    assert extra_key.status_code == 422
+    assert invalid_shape.status_code == 422
+    assert too_many_models.status_code == 422
+    assert long_model.status_code == 422
 
 
 def test_backfill_raw_usage_never_fails_on_pricing_error(client, session):

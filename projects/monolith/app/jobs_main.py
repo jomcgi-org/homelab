@@ -170,8 +170,9 @@ def _price_raws_backfill_core(
             if not rows:
                 break
 
-            for row in rows:
-                extra = row.extra or {}
+            page = [(row.id, row.extra or {}) for row in rows]
+            page_last_id = page[-1][0]
+            for row_id, extra in page:
                 usage = extra.get("usage")
                 if not _usage_has_tokens(usage):
                     skipped_zero += 1
@@ -195,20 +196,21 @@ def _price_raws_backfill_core(
                         ).is_(None)
                     result = session.exec(
                         update(RawInput)
-                        .where(RawInput.id == row.id, still_unpriced)
+                        .where(RawInput.id == row_id, still_unpriced)
                         .values(extra=merged)
                     )
                     if result.rowcount:
+                        session.commit()
                         priced_count += 1
                 except Exception:
+                    session.rollback()
                     logger.warning(
                         "price-raws-backfill: failed to price raw id=%s",
-                        row.id,
+                        row_id,
                         exc_info=True,
                     )
 
-            last_id = rows[-1].id
-            session.commit()
+            last_id = page_last_id
 
     return RawPricingBackfillReport(
         priced=priced_count,

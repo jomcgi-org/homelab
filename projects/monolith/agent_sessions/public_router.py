@@ -172,6 +172,8 @@ def _shape_activity(
         "output_tokens",
         "cache_read_tokens",
     )
+    ember_totals = _totals(ember_totals_rows, total_fields)
+    local_totals = _totals(local_totals_rows, total_fields)
 
     return {
         "now": {
@@ -183,8 +185,9 @@ def _shape_activity(
         "daily": daily,
         "local_daily": local_daily,
         "totals_7d": {
-            "ember": _totals(ember_totals_rows, total_fields),
-            "local": _totals(local_totals_rows, total_fields),
+            "ember": ember_totals,
+            "local": local_totals,
+            "combined": _totals([*ember_totals_rows, *local_totals_rows], total_fields),
         },
     }
 

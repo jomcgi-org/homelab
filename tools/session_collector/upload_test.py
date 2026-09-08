@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -210,6 +211,60 @@ def test_usage_backfill_iterates_uploaded_state_and_retries(tmp_path, capsys):
     assert "missing" in output
     assert "already sent" not in output
     assert "summary sent=1 already_sent=0 missing=1 failed=0" in output
+
+
+def test_usage_backfill_releases_state_lock_for_bounded_batches(tmp_path):
+    claude_dir = tmp_path / "claude"
+    first = _session(claude_dir, "first", str(tmp_path / "homelab"))
+    second = _session(claude_dir, "second", str(tmp_path / "homelab"))
+    state_file = tmp_path / "state.json"
+    save(
+        state_file,
+        {
+            str(first.resolve()): {"status": "uploaded", "raw_id": "raw-first"},
+            str(second.resolve()): {"status": "uploaded", "raw_id": "raw-second"},
+        },
+    )
+    lock_active = False
+    lock_entries = 0
+
+    @contextmanager
+    def observed_lock(_state_file):
+        nonlocal lock_active, lock_entries
+        assert lock_active is False
+        lock_active = True
+        lock_entries += 1
+        try:
+            yield
+        finally:
+            lock_active = False
+
+    def upload_outside_lock(*_args, **_kwargs):
+        assert lock_active is False
+        return UploadResult("uploaded", status_code=200)
+
+    with (
+        patch("tools.session_collector.collector.locked", observed_lock),
+        patch(
+            "tools.session_collector.collector.upload_usage",
+            side_effect=upload_outside_lock,
+        ) as uploader,
+    ):
+        assert (
+            run_usage_backfill(
+                state_file=state_file,
+                base_url="http://monolith.example.ts.net",
+                auth="none",
+                limit=1,
+                client=httpx.Client(
+                    transport=httpx.MockTransport(lambda request: None)
+                ),
+            )
+            == 0
+        )
+
+    assert uploader.call_count == 2
+    assert lock_entries == 5
 
 
 def test_upload_usage_uses_raw_endpoint_and_cloudflare_cookie():

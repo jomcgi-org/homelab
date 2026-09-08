@@ -24,7 +24,12 @@ export function modelLane(modelName) {
   const model = modelName.toLowerCase();
   if (model.startsWith("claude-")) return "claude";
   if (model === "gpt-5.6-luna") return "luna";
-  if (model === "gpt-5.6-terra" || model === "gpt-5.6-sol") return "codex";
+  if (
+    model === "gpt-5.6-terra" ||
+    model === "gpt-5.6-sol" ||
+    model === "codex-auto-review"
+  )
+    return "codex";
   if (model === "muse" || model.startsWith("muse-") || model.includes("spark"))
     return "spark";
   return MODEL_LANES.get(model) ?? "other";
@@ -142,12 +147,15 @@ export function tileDerivations(activity, merges, facts, series, now) {
   const totals = activity.totals_7d ?? {};
   const ember = totals.ember ?? totals;
   const local = totals.local ?? {};
-  const listCosts = [ember.list_cost_usd, local.list_cost_usd].filter(
-    (value) => value != null,
-  );
+  const combined = totals.combined ?? totals;
   return {
+    live: {
+      value: numeric(activity.now?.active_last_hour),
+      sessionsToday: numeric(activity.now?.sessions_today),
+      spark: last14(series.sessions, "sessions", now),
+    },
     sessions: {
-      value: numeric(ember.sessions) + numeric(local.sessions),
+      value: numeric(combined.sessions),
       ember: numeric(ember.sessions),
       local: numeric(local.sessions),
       spark: last14(series.sessions, "sessions", now),
@@ -164,15 +172,13 @@ export function tileDerivations(activity, merges, facts, series, now) {
       spark: last14(series.lines, "add", now),
     },
     tokens: {
-      input: numeric(ember.input_tokens) + numeric(local.input_tokens),
-      output: numeric(ember.output_tokens) + numeric(local.output_tokens),
+      input: numeric(combined.input_tokens),
+      output: numeric(combined.output_tokens),
       spark: last14(series.sessions, "input_tokens", now),
     },
     cost: {
-      metered: numeric(ember.cost_usd),
-      list: listCosts.length
-        ? listCosts.reduce((sum, value) => sum + numeric(value), 0)
-        : null,
+      metered: numeric(combined.cost_usd),
+      list: combined.list_cost_usd,
       spark: last14(series.sessions, "cost_usd", now),
     },
     facts: {

@@ -18,7 +18,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from email.utils import format_datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -558,16 +558,31 @@ class CreateRawRequest(BaseModel):
         return value
 
 
+class RawUsage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    shape: Literal["claude", "codex"]
+    input_tokens: int = Field(default=0, ge=0, strict=True)
+    output_tokens: int = Field(default=0, ge=0, strict=True)
+    cache_read_tokens: int = Field(default=0, ge=0, strict=True)
+    cache_write_tokens: int = Field(default=0, ge=0, strict=True)
+    reasoning_tokens: int = Field(default=0, ge=0, strict=True)
+    messages: int = Field(default=0, ge=0, strict=True)
+
+
 class RawUsageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    usage: dict[str, Any]
-    models: list[str]
-    model: str | None = None
+    usage: RawUsage
+    models: list[Annotated[str, Field(max_length=50)]] = Field(max_length=20)
+    model: str | None = Field(default=None, max_length=50)
 
     @model_validator(mode="after")
     def _request_is_bounded(self) -> RawUsageRequest:
-        candidate: dict[str, Any] = {"usage": self.usage, "models": self.models}
+        candidate: dict[str, Any] = {
+            "usage": self.usage.model_dump(),
+            "models": self.models,
+        }
         if self.model is not None:
             candidate["model"] = self.model
         CreateRawRequest._extra_is_bounded(candidate)
@@ -628,7 +643,7 @@ def backfill_raw_usage(
 
     original_extra = dict(raw.extra or {})
     extra = dict(original_extra)
-    extra.setdefault("usage", data.usage)
+    extra.setdefault("usage", data.usage.model_dump())
     extra.setdefault("models", data.models)
     if data.model is not None:
         extra.setdefault("model", data.model)
@@ -638,7 +653,7 @@ def backfill_raw_usage(
             priced = price_usage(extra.get("model"), extra.get("usage"))
             if priced is not None:
                 extra["usage_cost_usd"] = priced.cost_usd
-                extra["usage_cost_source"] = "list"
+                extra["usage_cost_source"] = priced.source
         except Exception:
             logger.warning("Failed to price backfilled raw usage", exc_info=True)
 
