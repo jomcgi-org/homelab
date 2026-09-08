@@ -145,6 +145,7 @@ defmodule Embervm.SessionState do
     {:relighting, :destroy} => :destroyed,
     {:creating, :begin_destroy} => :destroying,
     {:running, :begin_destroy} => :destroying,
+    {:parking, :begin_destroy} => :destroying,
     {:banking, :begin_destroy} => :destroying,
     {:banked, :begin_destroy} => :destroying,
     {:relighting, :begin_destroy} => :destroying,

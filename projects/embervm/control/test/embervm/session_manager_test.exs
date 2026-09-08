@@ -64,6 +64,12 @@ defmodule Embervm.SessionManagerTest do
     def append(server, op), do: Embervm.OpLog.SQLite.append(server, op)
   end
 
+  defmodule UnavailableParkingOpLog do
+    def load_sessions(server), do: SQLite.load_sessions(server)
+    def append(_server, %Embervm.OpLog.Op{kind: :session_parking}), do: {:error, :unavailable}
+    def append(server, op), do: SQLite.append(server, op)
+  end
+
   defmodule CapabilityS3 do
     def get(agent, _key) do
       Agent.get_and_update(agent, fn state ->
@@ -3257,9 +3263,8 @@ defmodule Embervm.SessionManagerTest do
     assert_receive {:relight_started, relight_worker}, 1_000
     assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
 
-    # A relighting row has no live vm_id, so the destroy worker confirms without
-    # calling destroy_fun. Gate-on drain still replies the parked invoke gone
-    # before any relight completion can resurrect a process.
+    # A relighting row has no live vm_id. Keep teardown unconfirmed while
+    # draining the parked invoke, and do not let a late relight resurrect it.
     assert {:error, {:gone, "destroyed"}} = Task.await(invoke_task, 1_000)
 
     send(
@@ -3277,6 +3282,14 @@ defmodule Embervm.SessionManagerTest do
     refute session.state == :running
 
     send(relight_worker, :finish_relight)
+    assert eventually(fn -> not MapSet.member?(:sys.get_state(ctx.mgr).destroy_inflight, created.session_id) end)
+    assert {:ok, %{state: :destroying}} = SessionStore.get(ctx.store, created.session_id)
+    refute :session_destroyed in op_kinds_for(ctx, created.session_id)
+
+    report_session_vm(ctx, created.session_id, "wl-relight-destroy-race", "vm-raced-relight")
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    assert_receive {:destroy_started, destroy_worker}, 1_000
+    send(destroy_worker, :finish_destroy)
     assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
   end
 
@@ -3471,7 +3484,7 @@ defmodule Embervm.SessionManagerTest do
     assert confirm_destroy["vars"]["confirmed_by"] == "teardown"
   end
 
-  test "reconcile skips a dead owning instance and confirms destruction by absence" do
+  test "reconcile does not use a replacement instance to confirm a dead owner is absent" do
     {:ok, dials} = Agent.start_link(fn -> [] end)
 
     ctx =
@@ -3488,8 +3501,8 @@ defmodule Embervm.SessionManagerTest do
     {:ok, session} = SessionStore.get(ctx.store, created.session_id)
 
     # Model a post-roll reconcile snapshot: the stale aggregate still identifies
-    # the VM's old owner, but that exact instance key is absent. A fresh sibling on
-    # the node reports authoritatively, so absence may complete destruction.
+    # the VM's old owner, but that exact instance key is absent. A fresh sibling
+    # cannot confirm that the old instance stopped its VM.
     NodeCapacity.drop(ctx.cap_table, "node-4")
 
     NodeCapacity.put(ctx.cap_table, "stale-node-4", %{
@@ -3535,7 +3548,8 @@ defmodule Embervm.SessionManagerTest do
     assert Agent.get(dials, & &1) == []
     assert log =~ "session redrive skipped dead instance"
     assert log =~ "node-4/dead-pod"
-    assert {:ok, %{state: :destroyed}} = SessionStore.get(ctx.store, created.session_id)
+    assert {:ok, %{state: :destroying}} = SessionStore.get(ctx.store, created.session_id)
+    refute :session_destroyed in op_kinds_for(ctx, created.session_id)
   end
 
   test "gated: a session stuck in destroying alarms ONCE across reconciles, not every tick" do
@@ -3817,6 +3831,153 @@ defmodule Embervm.SessionManagerTest do
     :ok = SessionManager.reconcile(ctx.mgr)
 
     refute_received {:destroyed, "vm-primed-x"}
+  end
+
+  test "rejoin failure preserves the guest when its parking intent cannot be recorded" do
+    parent = self()
+    ctx = start_stack(store_op_log_mod: UnavailableParkingOpLog,
+      destroy_fun: fn _ch, vm -> send(parent, {:unexpected_destroy, vm}); {:ok, %{teardown_confirmed: true}} end)
+    put_session_workload(ctx, "wl-park-intent")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-park-intent", "p1")
+    [{pid, _}] = Registry.lookup(ctx.registry, created.session_id)
+
+    send(ctx.mgr, {:rejoin_assign_failed, created.session_id, :delivery_failed})
+    _ = :sys.get_state(ctx.mgr)
+
+    assert Process.alive?(pid)
+    assert {:ok, %{state: :running}} = SessionStore.get(ctx.store, created.session_id)
+    refute_received {:unexpected_destroy, _}
+    refute :session_parked in op_kinds_for(ctx, created.session_id)
+  end
+
+  test "unconfirmed rejoin cleanup retains residency and reconcile retries parking" do
+    {:ok, attempts} = Agent.start_link(fn -> 0 end)
+    ctx = start_stack(destroy_fun: fn _ch, _vm ->
+      attempt = Agent.get_and_update(attempts, fn n -> {n, n + 1} end)
+      {:ok, %{teardown_confirmed: attempt > 0}}
+    end)
+    put_session_workload(ctx, "wl-retry-park")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-retry-park", "p1")
+    {:ok, before} = SessionStore.get(ctx.store, created.session_id)
+
+    send(ctx.mgr, {:rejoin_assign_failed, created.session_id, :delivery_failed})
+    _ = :sys.get_state(ctx.mgr)
+    assert {:ok, %{state: :parking} = parking} = SessionStore.get(ctx.store, created.session_id)
+    assert parking.vm_id == before.vm_id
+    assert parking.node_id == before.node_id
+    refute :session_parked in op_kinds_for(ctx, created.session_id)
+
+    report_session_vm(ctx, created.session_id, "wl-retry-park", before.vm_id)
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    parked = wait_for_state(ctx, created.session_id, :parked)
+    assert parked.vm_id == nil
+    assert Agent.get(attempts, & &1) == 2
+  end
+
+  for {event, kind, pending, completed} <- [
+        {:park, :session_parking, :parking, :parked},
+        {:begin_destroy, :session_destroying, :destroying, :destroyed}
+      ] do
+    test "#{pending} requires a complete owner report newer than its intent" do
+      ctx = start_stack(node_confirmed_destroy: true, store_clock: fn -> 4_000_000 end)
+      put_session_workload(ctx, "wl-absence")
+      {:ok, created} = SessionManager.create(ctx.mgr, "wl-absence", "p1")
+      {:ok, _} = SessionStore.transition(ctx.store, created.session_id, unquote(event), unquote(kind),
+        %{volume_node_id: "node-4"}, %{volume_node_id: "node-4"})
+
+      NodeCapacity.drop(ctx.cap_table, "node-4")
+      assert :ok = SessionManager.reconcile(ctx.mgr)
+      assert {:ok, %{state: unquote(pending)}} = SessionStore.get(ctx.store, created.session_id)
+
+      # A newer but incomplete report is still no evidence of absence.
+      put_session_workload(ctx, "wl-absence")
+      assert :ok = SessionManager.reconcile(ctx.mgr)
+      assert {:ok, %{state: unquote(pending)}} = SessionStore.get(ctx.store, created.session_id)
+
+      report_empty_node(ctx)
+      {:ok, fact} = NodeCapacity.fetch(ctx.cap_table, "node-4")
+      for timestamp <- [3_000_000, 4_000_000] do
+        NodeCapacity.put(ctx.cap_table, "node-4", %{fact | updated_at: timestamp})
+        assert :ok = SessionManager.reconcile(ctx.mgr)
+        assert {:ok, %{state: unquote(pending)}} = SessionStore.get(ctx.store, created.session_id)
+      end
+
+      # A replacement instance is not the owner of this VM.
+      NodeCapacity.drop(ctx.cap_table, "node-4")
+      NodeCapacity.put(ctx.cap_table, {"node-4", "replacement"}, Map.put(fact, :instance_id, "node-4/replacement"))
+      assert :ok = SessionManager.reconcile(ctx.mgr)
+      assert {:ok, %{state: unquote(pending)}} = SessionStore.get(ctx.store, created.session_id)
+
+      NodeCapacity.drop(ctx.cap_table, {"node-4", "replacement"})
+      NodeCapacity.put(ctx.cap_table, "node-4", fact)
+      assert :ok = SessionManager.reconcile(ctx.mgr)
+      assert {:ok, %{state: unquote(completed)}} = SessionStore.get(ctx.store, created.session_id)
+    end
+  end
+
+  test "restart rebinds a destroying VM and waits for the real teardown response" do
+    parent = self()
+    ctx = start_stack(node_confirmed_destroy: true, destroy_fun: fn _ch, vm ->
+      send(parent, {:recovered_destroy, self(), vm})
+      receive do
+        :confirm -> {:ok, %{teardown_confirmed: true}}
+      after
+        5_000 -> {:ok, %{teardown_confirmed: false}}
+      end
+    end)
+    put_session_workload(ctx, "wl-restart-destroy")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-restart-destroy", "p1")
+    {:ok, prior} = SessionStore.get(ctx.store, created.session_id)
+    {:ok, _} = SessionStore.transition(ctx.store, created.session_id, :begin_destroy, :session_destroying, %{}, %{})
+    [{pid, _}] = Registry.lookup(ctx.registry, created.session_id)
+    :ok = DynamicSupervisor.terminate_child(ctx.sup, pid)
+
+    rebuilt = start_supervised!({SessionStore, name: nil, op_log: ctx.op_log, op_log_mod: SQLite})
+    assert {:ok, %{state: :destroying, vm_id: nil}} = SessionStore.get(rebuilt, created.session_id)
+    :sys.replace_state(ctx.mgr, fn state -> %{state | session_store: rebuilt, session_dials: %{}} end)
+    ctx = %{ctx | store: rebuilt}
+
+    # No binding plus an empty report cannot confirm teardown after restart.
+    report_empty_node(ctx)
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    assert {:ok, %{state: :destroying}} = SessionStore.get(rebuilt, created.session_id)
+    refute_received {:recovered_destroy, _, _}
+
+    report_session_vm(ctx, created.session_id, "wl-restart-destroy", prior.vm_id)
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    assert_receive {:recovered_destroy, worker, vm}, 1_000
+    assert vm == prior.vm_id
+    assert {:ok, %{state: :destroying, vm_id: ^vm}} = SessionStore.get(rebuilt, created.session_id)
+    refute :session_destroyed in op_kinds_for(ctx, created.session_id)
+    send(worker, :confirm)
+    assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
+  end
+
+  test "destroy can take over a parking worker without duplicate teardown" do
+    parent = self()
+    ctx = start_stack(node_confirmed_destroy: true, destroy_fun: fn _ch, vm ->
+      send(parent, {:parking_destroy, self(), vm})
+      receive do
+        :confirm -> {:ok, %{teardown_confirmed: true}}
+      after
+        5_000 -> {:ok, %{teardown_confirmed: false}}
+      end
+    end)
+    put_session_workload(ctx, "wl-park-destroy")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-park-destroy", "p1")
+    {:ok, prior} = SessionStore.get(ctx.store, created.session_id)
+    {:ok, _} = SessionStore.transition(ctx.store, created.session_id, :park, :session_parking,
+      %{volume_node_id: "node-4"}, %{volume_node_id: "node-4"})
+    report_session_vm(ctx, created.session_id, "wl-park-destroy", prior.vm_id)
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    assert_receive {:parking_destroy, worker, _vm}, 1_000
+
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    refute_received {:parking_destroy, _, _}
+    send(worker, :confirm)
+    assert wait_for_state(ctx, created.session_id, :destroyed).state == :destroyed
+    refute :session_parked in op_kinds_for(ctx, created.session_id)
   end
 
   # -- gated-destroy test helpers --------------------------------------------
