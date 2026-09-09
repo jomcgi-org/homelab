@@ -34,6 +34,11 @@ PLANNER_TEXT_CHARS = 1_000
 PLANNER_TASK_CHARS = 12_000
 _KEY = r"^[a-z][a-z0-9_]{0,63}$"
 
+
+class PlannerContextOverflow(ValueError):
+    """Required planner evidence cannot fit the bounded context."""
+
+
 RESULT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -664,7 +669,21 @@ def _planner_context(task: dict, nodes: list[dict], runs: list[dict]) -> str:
             context["omitted"]["task_characters"] += removed
 
 
-def planner_prompt(task: dict, nodes: list[dict], runs: list[dict]) -> str:
+def planner_prompt(
+    task: dict,
+    nodes: list[dict],
+    runs: list[dict],
+    *,
+    decision_revision: int | None = None,
+) -> str:
+    context = json.loads(_planner_context(task, nodes, runs))
+    if decision_revision is not None:
+        context["graph_revision"] = decision_revision
+    encoded = json.dumps(
+        context, default=str, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    ).encode("utf-8", errors="backslashreplace")
+    if len(encoded) > PLANNER_CONTEXT_CHARS:
+        raise PlannerContextOverflow("factory planner evidence exceeds context limit")
     return (
         "You are the task conductor, running in an Ember guest. Choose one next "
         "graph edit from the typed schema. Investigate, implement, independently "
@@ -686,6 +705,9 @@ def planner_prompt(task: dict, nodes: list[dict], runs: list[dict]) -> str:
         "current denial of a new edit. A conductor_ key names a planner node, not "
         "the work node you are being asked to choose. Unmatched or newer refusals "
         "remain evidence. "
+        "graph_revision is the decision revision after this planner node's own "
+        "insertion; use it for expected_version when proposing a graph edit. "
+        "A later graph edit can still make that revision stale. "
         "budget_evidence comes from server accounting before this planner node "
         "was added: its pending planner ceiling is not yet included. Each node's "
         "max_cost_usd is ONE aggregate ceiling shared across all max_attempts; "
@@ -705,7 +727,7 @@ def planner_prompt(task: dict, nodes: list[dict], runs: list[dict]) -> str:
         "work is absent or accepted; inspect the task branch or pause if needed. "
         "Explain each edit and delivered-versus-requested "
         "judgment. Pause if scope, authority or evidence cannot support progress.\n"
-        + _planner_context(task, nodes, runs)
+        + encoded.decode("utf-8")
     )
 
 
@@ -1112,6 +1134,9 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
                 },
             )
         return
+    # Guard the graph snapshot, including the planner's own insertion, against
+    # graph edits that race with reading nodes or constructing the prompt.
+    insertion_revision = graph.current_version(task_id)
     nodes = graph.load_graph(task_id)
     planners = [
         r
@@ -1139,15 +1164,23 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     if not ready:
         ordinal = sum(n["node_key"].startswith("conductor_") for n in nodes) + 1
         key = f"conductor_{ordinal}"
+        try:
+            prompt = planner_prompt(
+                task, nodes, runs, decision_revision=insertion_revision + 1
+            )
+        except PlannerContextOverflow:
+            set_control("pause_task", ACTOR, task_id=task_id)
+            return
         result = _add(
             task,
             policy,
             key,
-            planner_prompt(task, nodes, runs),
+            prompt,
             [],
             policy["conductor_model"],
             f"factory-plan:{key}",
             "Reconcile task evidence",
+            expected_version=insertion_revision,
         )
         if not result.ok:
             set_control("pause_task", ACTOR, task_id=task_id)
