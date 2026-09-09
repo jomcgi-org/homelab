@@ -1,6 +1,6 @@
 const SVG_WIDTH = 600;
 const SVG_HEIGHT = 120;
-const LEFT = 34;
+const LEFT = 48;
 const BOTTOM = 20;
 const TOP = 6;
 
@@ -95,7 +95,7 @@ export function barChartSvg(id, rows, series, colors) {
   let svg = `<svg viewBox="0 0 ${SVG_WIDTH} ${SVG_HEIGHT}" role="img" aria-label="Bar chart">`;
   svg += `<defs><pattern id="${patternId}" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="currentColor" stroke-width="1" opacity="0.55"/></pattern></defs>`;
   for (let value = 0; value <= top; value += step) {
-    svg += `<line x1="${LEFT}" y1="${y(value)}" x2="${SVG_WIDTH}" y2="${y(value)}" stroke="currentColor" stroke-width="0.5" opacity="${value === 0 ? 0.8 : 0.18}"/><text x="${LEFT - 6}" y="${y(value) + 3.5}" font-size="9" text-anchor="end" fill="currentColor" opacity="0.7">${value}</text>`;
+    svg += `<line x1="${LEFT}" y1="${y(value)}" x2="${SVG_WIDTH}" y2="${y(value)}" stroke="currentColor" stroke-width="0.5" opacity="${value === 0 ? 0.8 : 0.18}"/><text x="${LEFT - 6}" y="${y(value) + 3.5}" font-size="13" text-anchor="end" fill="currentColor" opacity="0.7">${value}</text>`;
   }
   days.forEach((day, dayIndex) => {
     const row = byDay[day];
@@ -109,9 +109,15 @@ export function barChartSvg(id, rows, series, colors) {
       svg += `<rect x="${x}" y="${y(accumulated + value)}" width="${Math.max(0, barWidth - 2)}" height="${y(accumulated) - y(accumulated + value)}" fill="${fill}" stroke="${color === "hatch" ? "currentColor" : "none"}" stroke-width="0.5"/>`;
       accumulated += value;
     });
-    if (dayIndex % 7 === 0 || dayIndex === days.length - 1) {
+    // Both ends of the range are always labelled. Between them a weekly tick
+    // is dropped when it would land within three bars of the last one, which
+    // is what printed "09·08 09·08" twice on every 30 day chart.
+    const isLast = dayIndex === days.length - 1;
+    const isFirst = dayIndex === 0;
+    const crowdsLast = days.length - 1 - dayIndex < 3;
+    if (isLast || isFirst || (dayIndex % 7 === 0 && !crowdsLast)) {
       const label = day.slice(5).replace("-", "·");
-      svg += `<text x="${x + (barWidth - 2) / 2}" y="${SVG_HEIGHT - 6}" font-size="9" text-anchor="middle" fill="currentColor" opacity="0.7">${label}</text>`;
+      svg += `<text x="${x + (barWidth - 2) / 2}" y="${SVG_HEIGHT - 6}" font-size="13" text-anchor="middle" fill="currentColor" opacity="0.7">${label}</text>`;
     }
   });
   return `${svg}</svg>`;

@@ -311,15 +311,14 @@
             </li>
             {#each prRows.rows as pr (pr.number)}
               <li>
-                <span class:feat={pr.type === "feat"} class="ty">{pr.type}</span
-                >
+                <span class="ty">{pr.type}</span>
                 <span
                   ><a
                     href={`https://github.com/jomcgi/homelab/pull/${pr.number}`}
                     >{cleanPullTitle(pr.title)}</a
-                  >{#if pr.scope}
-                    <span class="sc">· {pr.scope}</span>{/if}</span
+                  ></span
                 >
+                <span class="sc">{pr.scope ?? ""}</span>
                 <span class="ch"
                   ><b>+{shortNumber(pr.additions)}</b>
                   <s>−{shortNumber(pr.deletions)}</s></span
