@@ -565,7 +565,6 @@ def _report_drainer_failure(settings: dict, name: str, error: str) -> None:
 def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bool:
     from agent_sessions import admission, store
     from agent_sessions.mcp import (
-        _clear_ember_bindings_for,
         _load_session_row,
         _transport,
     )
@@ -609,6 +608,8 @@ def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bo
             # A session that timed out before the orphan sweep claimed its first
             # message must not create a VM after cleanup has already run.
             current_ember_id = None
+            workflow_id = None
+            cleanup_claim_id = None
             with Session(get_engine()) as session:
                 current = store._lock_session(session, resolved_session_id)
                 if current is None or store.has_unknown_outcome(
@@ -617,15 +618,34 @@ def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bo
                     span.set_attribute("drain.destroyed", False)
                     return False
                 current_ember_id = current.ember_session_id
-                if (
-                    current_ember_id is not None
-                    and store.guest_cleanup_hold(
-                        session, resolved_session_id, current_ember_id
+                workflow_id = current.workflow_id
+                if current_ember_id is not None:
+                    if not workflow_id:
+                        # A legacy row without authoritative workflow identity
+                        # cannot safely claim this guest.
+                        span.set_attribute("drain.destroyed", False)
+                        return False
+                    claim = store.begin_guest_cleanup(
+                        session,
+                        resolved_session_id,
+                        current_ember_id,
+                        workflow_id,
                     )
-                    is not None
-                ):
-                    span.set_attribute("drain.destroyed", False)
-                    return False
+                    if claim.get("hold") is not None:
+                        span.set_attribute("drain.destroyed", False)
+                        return False
+                    cleanup_claim_id = claim["claim_id"]
+                    # begin_guest_cleanup commits its claim. Re-lock and read
+                    # the row again before applying destructive cleanup.
+                    current = store._lock_session(session, resolved_session_id)
+                    if (
+                        current is None
+                        or current.ember_session_id != current_ember_id
+                        or current.workflow_id != workflow_id
+                        or current.guest_cleanup_id != cleanup_claim_id
+                    ):
+                        span.set_attribute("drain.destroyed", False)
+                        return False
                 for pending in session.exec(
                     select(PendingMessage).where(
                         PendingMessage.session_id == resolved_session_id
@@ -655,9 +675,27 @@ def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bo
                 asyncio.run(_transport.destroy_session(ember_session_id))
             except EmberSessionGone:
                 pass
-            _clear_ember_bindings_for(ember_session_id)
-            span.set_attribute("drain.destroyed", True)
-            return True
+            else:
+                observed = asyncio.run(_transport.get_session(ember_session_id))
+                if (
+                    not isinstance(observed, dict)
+                    or observed.get("session_id") != ember_session_id
+                    or not isinstance(observed.get("state"), str)
+                    or observed["state"]
+                    not in {"destroyed", "expired", "evicted", "failed"}
+                ):
+                    span.set_attribute("drain.destroyed", False)
+                    return False
+            with Session(get_engine()) as session:
+                finished = store.finish_guest_cleanup(
+                    session,
+                    resolved_session_id,
+                    ember_session_id,
+                    workflow_id,
+                    cleanup_claim_id,
+                )
+            span.set_attribute("drain.destroyed", finished)
+            return finished
         except Exception:  # noqa: BLE001 - cleanup failure must not strand the queue
             logger.warning(
                 "Luna drainer failed to destroy session %s (ember %s)",
