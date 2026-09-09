@@ -35,6 +35,7 @@ def clear_negative_oracle_memo():
         ("luna", "codex"),
         ("terra", "codex"),
         ("sol", "codex"),
+        ("astra", "codex"),
         ("spark", "muse"),
         ("qwen", "muse"),
         ("pi-spark", "pi"),

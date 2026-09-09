@@ -25,6 +25,17 @@ def test_conductor_contract_rejects_missing_action_fields_and_authority_changes(
         },
         conductor.DECISION_SCHEMA,
     )
+    assert not schema_errors(
+        {
+            "status": "escalate",
+            "reason": "needs conductor review",
+            "summary": "bounded escalation",
+            "pr_number": None,
+            "head_sha": None,
+            "requested_model": "opus",
+        },
+        conductor.RESULT_SCHEMA,
+    )
 
 
 def test_missing_delivery_branch_hydrates_base_without_hiding_outages(monkeypatch):
@@ -406,7 +417,9 @@ def test_discard_before_task_branch_exists_records_absent_head_and_advances(
         ).raise_for_status()
 
     monkeypatch.setattr(conductor, "github_get", missing)
-    conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
+    conductor.apply_decision(
+        task, policy, run, conductor.graph.node_runs(task["id"])
+    )
     feedback_db.dispose()
     conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
     assert len(reads) == 1
@@ -777,6 +790,8 @@ def test_planner_keeps_completed_review_after_recursive_historical_prompts(monke
     assert context["graph"][3]["max_attempts"] == 2
     assert context["graph"][3]["latest_status"] == "succeeded"
     assert context["runs"][1]["accounted_cost_usd"] == 0.25
+    assert context["runs"][1]["selected_profile"] == "luna"
+    assert context["runs"][1]["provider_model"] == "unavailable"
     for excluded in (
         "historical-prompt-must-not-return",
         '"pin"',
@@ -2309,3 +2324,29 @@ def test_legacy_reservation_replays_unchanged_and_uses_original_wait(
     result = nodes.execute_node.__wrapped__(current[0]["pin"])
     assert len(waits) == 1 and waits[0][0] == 7
     assert result["status"] == "uncertain"
+
+
+def test_review_model_override_is_refused_before_graph_admission(feedback_db):
+    task, policy = feedback_task()
+    policy["reviewer_model"] = "opus"
+    run = complete_feedback_node(
+        task,
+        policy,
+        "conductor_1",
+        {
+            "action": "add_node",
+            "node_key": "review_fix",
+            "role": "review",
+            "model": "luna",
+            "prompt": "review",
+            "deps": [],
+            "reason": "independent review",
+        },
+    )
+    conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
+    audits = feedback_audits(feedback_db, task["id"])
+    assert audits[0]["refusal_code"] == "reviewer_model_mismatch"
+    assert not any(
+        node["node_key"] == "review_fix"
+        for node in conductor.graph.load_graph(task["id"])
+    )

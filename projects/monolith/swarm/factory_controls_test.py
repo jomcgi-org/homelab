@@ -336,6 +336,16 @@ def test_unlisted_model_and_untrusted_policy_field_are_refused(db, policy):
     assert grant(task, model="issue-selected-model")["reason"] == "model_not_allowed"
 
 
+def test_reviewer_model_defaults_to_conductor_and_is_independent(db, policy):
+    normalized = controls.validate_policy(policy)
+    assert normalized["reviewer_model"] == "opus"
+    policy["reviewer_model"] = "luna"
+    assert controls.validate_policy(policy)["reviewer_model"] == "luna"
+    policy["reviewer_model"] = "disabled"
+    with pytest.raises(ValueError, match="reviewer model"):
+        controls.validate_policy(policy)
+
+
 def test_task_deadline_fences_new_starts_without_claiming_existing_ceased(
     db, policy, monkeypatch
 ):

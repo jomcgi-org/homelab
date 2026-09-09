@@ -38,6 +38,7 @@ _POLICY_KEYS = {
     "turn_budget_usd",
     "allowed_models",
     "conductor_model",
+    "reviewer_model",
     "base_branch",
     "turn_timeout_seconds",
     "max_attempts",
@@ -85,9 +86,14 @@ def normalize_repo(repo: str) -> str:
 
 
 def validate_policy(policy: dict) -> dict:
-    if not isinstance(policy, dict) or set(policy) != _POLICY_KEYS:
+    if not isinstance(policy, dict) or set(policy) not in (
+        _POLICY_KEYS,
+        _POLICY_KEYS - {"reviewer_model"},
+    ):
         raise ValueError("policy must contain exactly the supported operator fields")
     result = dict(policy)
+    if "reviewer_model" not in result:
+        result["reviewer_model"] = policy["conductor_model"]
     result["repo"] = normalize_repo(policy["repo"])
     issues = policy["issue_numbers"]
     if not isinstance(issues, list) or not 1 <= len(issues) <= 100:
@@ -114,6 +120,8 @@ def validate_policy(policy: dict) -> dict:
     result["allowed_models"] = sorted({_text(m, "model", 128) for m in models})
     if policy["conductor_model"] not in result["allowed_models"]:
         raise ValueError("conductor model is not allowed")
+    if result["reviewer_model"] not in result["allowed_models"]:
+        raise ValueError("reviewer model is not allowed")
     if policy["worker_model"] not in result["allowed_models"]:
         raise ValueError("worker model is not allowed")
     if result["turn_timeout_seconds"] > result["task_timeout_seconds"]:
