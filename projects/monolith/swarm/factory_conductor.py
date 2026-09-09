@@ -1057,6 +1057,47 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 return
     with Session(get_engine()) as db:
         with _locked_session(db):
+            if (
+                result["status"] == "uncertain"
+                and result.get("cost_usd") is None
+                and run.get("cost_usd") is None
+            ):
+                from agent_sessions.api import read_not_invoked_factory_attempt
+
+                proof = read_not_invoked_factory_attempt(
+                    db, pin, result.get("session_id") or run.get("session_id")
+                )
+                if proof is not None:
+                    current = next(
+                        (
+                            value
+                            for value in graph.node_runs(
+                                task["id"], run["node_key"], session=db
+                            )
+                            if value["attempt"] == run["attempt"]
+                        ),
+                        None,
+                    )
+                    if (
+                        current is None
+                        or current["pin"] != pin
+                        or current["dispatch_key"] != key
+                        or current["session_id"] not in (None, proof["session_id"])
+                        or current["status"]
+                        not in ("admitted", "dispatched", "uncertain")
+                        or current["cost_usd"] is not None
+                    ):
+                        raise ValueError("not-invoked factory attempt changed")
+                    result = {
+                        **result,
+                        "status": "failed",
+                        "session_id": proof["session_id"],
+                        "cost_usd": None,
+                        "head_sha": current.get("head_sha") or result.get("head_sha"),
+                        "reason": "not_invoked: exact session-owner failure before model POST",
+                        "previous_outcome": _outcome(current) or result,
+                        "not_invoked": proof,
+                    }
             # Only a completed timeout result can trigger this repair. Session,
             # graph and factory settlement share the same transaction and locks.
             if result["status"] == "uncertain" and str(

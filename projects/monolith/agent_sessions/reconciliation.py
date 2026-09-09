@@ -149,6 +149,161 @@ def _factory_owner(db: Session, pin: dict, session_id: int | None):
     return owner
 
 
+def read_not_invoked_factory_attempt(
+    db: Session, pin: dict, session_id: int | None
+) -> dict | None:
+    """Validate the session owner's completed first-dispatch failure.
+
+    The factory caller holds its control lock and keeps this transaction open
+    through graph/start settlement. This reads positive, paired turn/permit
+    evidence under pool/session locks; it never settles capacity, clears a
+    binding, or infers physical cessation from an absent guest.
+    """
+    from datetime import datetime, timezone
+    from sqlalchemy import or_
+
+    from agent_sessions import normalize_model
+    from agent_sessions.models import AgentResultReceipt, AgentTurn, PendingMessage
+
+    if session_id is not None and (type(session_id) is not int or session_id < 1):
+        raise ValueError("invalid factory session identity")
+    admission.lock_pool(db)
+    agent = _factory_owner(db, pin, session_id)
+    if agent is None:
+        return None
+    agent = _locked_session(db, agent.id)
+    if _factory_owner(db, pin, agent.id) is None:
+        return None
+    if (
+        agent.status != "warn"
+        or agent.result_receipt_fence_id is not None
+        or admission.cleanup_pending(db, agent)
+        or db.exec(
+            select(PendingMessage.id).where(PendingMessage.session_id == agent.id)
+        ).first()
+        is not None
+    ):
+        return None
+    turns = db.exec(
+        select(AgentTurn).where(AgentTurn.session_id == agent.id).limit(2)
+    ).all()
+    if len(turns) != 1:
+        return None
+    turn = turns[0]
+    if (
+        turn.seq != 1
+        or turn.terminal_reason != "error"
+        or turn.stop_reason is not None
+        or turn.cost_usd is not None
+        or turn.model != normalize_model(pin["model"])
+    ):
+        return None
+    try:
+        usage = json.loads(turn.usage_json or "{}")
+        recovery = usage.get("recovery", {})
+        if (
+            not isinstance(recovery, dict)
+            or recovery.get("invocation_phase") != "not_invoked"
+            or type(recovery.get("dispatch_count")) is not int
+            or recovery["dispatch_count"] != 1
+            or not isinstance(recovery.get("claim_owner"), str)
+            or not recovery["claim_owner"]
+            or not isinstance(recovery.get("last_dispatch_at"), str)
+        ):
+            return None
+        dispatched = datetime.fromisoformat(
+            recovery["last_dispatch_at"].replace("Z", "+00:00")
+        )
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+    def aware(value):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+    permits = db.exec(
+        select(AgentCapacityReservation)
+        .where(
+            or_(
+                AgentCapacityReservation.session_id == agent.id,
+                AgentCapacityReservation.local_session_id == agent.local_session_id,
+            )
+        )
+        .execution_options(populate_existing=True)
+        .limit(2)
+    ).all()
+    if len(permits) != 1:
+        return None
+    permit = permits[0]
+    if (
+        permit.session_id != agent.id
+        or permit.local_session_id != agent.local_session_id
+        or permit.pending_seq != 1
+        or permit.tier != "project"
+        or permit.routine_job_name is not None
+        or permit.model != normalize_model(pin["model"])
+        or permit.state != "settled"
+        or permit.outcome != "not_invoked"
+        or permit.owner != recovery["claim_owner"]
+        or permit.settled_at is None
+        or not aware(dispatched) <= aware(turn.created_at) <= aware(permit.settled_at)
+    ):
+        return None
+    # A prepared empty receipt can precede a failed POST setup. Any captured
+    # response, response marker, different owner or newer attempt conflicts
+    # with this proof. Read metadata only, never a native result body.
+    receipts = db.exec(
+        select(
+            AgentResultReceipt.local_session_id,
+            AgentResultReceipt.session_id,
+            AgentResultReceipt.seq,
+            AgentResultReceipt.dispatch_count,
+            AgentResultReceipt.claim_owner,
+            AgentResultReceipt.guest_id,
+            AgentResultReceipt.received_at,
+            AgentResultReceipt.response_observed_at,
+            AgentResultReceipt.result_sha256,
+            AgentResultReceipt.result_body.isnot(None),
+        )
+        .where(
+            or_(
+                AgentResultReceipt.session_id == agent.id,
+                AgentResultReceipt.local_session_id == agent.local_session_id,
+            )
+        )
+        .with_for_update()
+        .limit(2)
+    ).all()
+    if len(receipts) > 1 or any(
+        tuple(receipt[:6])
+        != (
+            agent.local_session_id,
+            agent.id,
+            1,
+            1,
+            permit.owner,
+            agent.ember_session_id,
+        )
+        or any(value is not None for value in receipt[6:9])
+        or receipt[9]
+        for receipt in receipts
+    ):
+        return None
+    return {
+        "session_id": agent.id,
+        "local_session_id": agent.local_session_id,
+        "workflow_id": agent.workflow_id,
+        "turn_id": turn.id,
+        "seq": 1,
+        "dispatch_count": 1,
+        "claim_owner": permit.owner,
+        "last_dispatch_at": recovery["last_dispatch_at"],
+        "permit_id": permit.id,
+        "permit_outcome": permit.outcome,
+        "invocation_phase": "not_invoked",
+        "cost_usd": None,
+    }
+
+
 def read_uncertain_factory_attempt(db: Session, pin: dict, session_id: int) -> dict:
     """Lock and fingerprint the exact failed executor, never its replacement.
 
