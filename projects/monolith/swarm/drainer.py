@@ -564,11 +564,8 @@ def _report_drainer_failure(settings: dict, name: str, error: str) -> None:
 @DBOS.step()
 def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bool:
     from agent_sessions import admission, store
-    from agent_sessions.execution_api import _REAP_TERMINAL_STATES
-    from agent_sessions.mcp import (
-        _load_session_row,
-        _transport,
-    )
+    from agent_sessions.execution_api import destroy_and_confirm
+    from agent_sessions.mcp import _load_session_row
     from agent_sessions.models import PendingMessage
     from agent_sessions.transport import EmberSessionGone
     from core.db import get_engine
@@ -633,6 +630,12 @@ def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bo
                         workflow_id,
                     )
                     if claim.get("hold") is not None:
+                        # invocation_pending on this row's own attempted
+                        # dispatch is only raised once result receipts are
+                        # enabled: the guest may still deliver a native result
+                        # that receipt-first adoption settles, so the claim
+                        # waits and the stranded-claim retry below returns to
+                        # it each cycle rather than deleting a live turn.
                         span.set_attribute("drain.destroyed", False)
                         return False
                     cleanup_claim_id = claim["claim_id"]
@@ -672,20 +675,26 @@ def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bo
             return False
         ember_session_id = current_ember_id
         try:
+            # Ember answers 202 destroying before teardown completes, and this
+            # job is the only caller for its row, so spend a bounded number of
+            # confirming reads here. An unconfirmed guest keeps its claim and
+            # the next drain cycle retries it (retry_stranded_drainer_cleanups).
             try:
-                asyncio.run(_transport.destroy_session(ember_session_id))
-                observed = asyncio.run(_transport.get_session(ember_session_id))
+                confirmed = asyncio.run(
+                    destroy_and_confirm(
+                        ember_session_id,
+                        attempts=CLEANUP_CONFIRM_ATTEMPTS,
+                        interval_seconds=CLEANUP_CONFIRM_INTERVAL_SECONDS,
+                    )
+                )
             except EmberSessionGone:
-                pass
-            else:
-                if (
-                    not isinstance(observed, dict)
-                    or observed.get("session_id") != ember_session_id
-                    or not isinstance(observed.get("state"), str)
-                    or observed["state"] not in _REAP_TERMINAL_STATES
-                ):
-                    span.set_attribute("drain.destroyed", False)
-                    return False
+                confirmed = True
+            if not confirmed:
+                span.set_attribute("drain.destroyed", False)
+                return False
+            # finish_guest_cleanup retires only the claiming row. Alias rows
+            # bound to the same guest self-heal through EmberSessionGone on
+            # their next use, matching the workflow reaper's per-row model.
             with Session(get_engine()) as session:
                 finished = store.finish_guest_cleanup(
                     session,
@@ -715,6 +724,53 @@ def _workflow_id() -> str:
     if not workflow_id:
         raise RuntimeError("DBOS workflow id is unavailable")
     return workflow_id
+
+
+# Confirming reads after DELETE: five reads two seconds apart covers the
+# ordinary asynchronous teardown without holding a drain cycle for long.
+CLEANUP_CONFIRM_ATTEMPTS = 5
+CLEANUP_CONFIRM_INTERVAL_SECONDS = 2.0
+STRANDED_CLEANUP_LIMIT = 8
+
+
+@DBOS.step()
+def stranded_drainer_cleanups(limit: int = STRANDED_CLEANUP_LIMIT) -> list[dict]:
+    """List drainer-owned sessions still holding a guest cleanup claim.
+
+    A drainer job calls destroy_drainer_session exactly once. When the guest
+    is not terminal by the last confirming read, or the DELETE fails, the
+    claim is retained on purpose and no other owner reaps drainer rows: the
+    stale-cycle reaper lists PENDING workflows only and the factory
+    reconciler owns factory rows. This is the retry owner.
+    """
+    from agent_sessions.models import AgentSession
+    from core.db import get_engine
+    from sqlmodel import Session, or_, select
+
+    patterns = [f"%:{key}:%" for key in (DRAINER_NODE_KEY, KG_NODE_KEY)]
+    with Session(get_engine()) as session:
+        rows = session.exec(
+            select(AgentSession.id, AgentSession.local_session_id)
+            .where(
+                AgentSession.guest_cleanup_id.is_not(None),
+                or_(*(AgentSession.local_session_id.like(p) for p in patterns)),
+            )
+            .order_by(AgentSession.guest_cleanup_started_at, AgentSession.id)
+            .limit(limit)
+        ).all()
+    return [{"session_id": sid, "local_session_id": local} for sid, local in rows]
+
+
+def retry_stranded_drainer_cleanups(*, list_fn=None, destroy_fn=None) -> dict:
+    """Resume every stranded drainer cleanup claim once per cycle."""
+    list_fn = stranded_drainer_cleanups if list_fn is None else list_fn
+    destroy_fn = destroy_drainer_session if destroy_fn is None else destroy_fn
+    stranded = list_fn()
+    retired = 0
+    for item in stranded:
+        if destroy_fn(item["session_id"], item["local_session_id"]):
+            retired += 1
+    return {"stranded": len(stranded), "retired": retired}
 
 
 def _session_key(
@@ -925,9 +981,16 @@ def drain_cycle() -> dict:
             set_kg_swept_last_cycle(sweep_kg_raws())
 
         workflow_id = _workflow_id()
+        try:
+            stranded = retry_stranded_drainer_cleanups()
+        except Exception:  # noqa: BLE001 - cleanup retry must not stop the cycle
+            logger.warning("Luna drainer stranded cleanup retry failed", exc_info=True)
+            stranded = {"stranded": -1, "retired": 0}
         set_attributes(
             span,
             {
+                "drain.stranded_cleanups": stranded["stranded"],
+                "drain.stranded_cleanups_retired": stranded["retired"],
                 "drain.workflow_id": workflow_id,
                 "drain.job_kinds": ",".join(enabled_kinds),
                 "drain.max_jobs_per_cycle": settings["max_jobs_per_cycle"],

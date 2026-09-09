@@ -56,6 +56,7 @@ def _clear_spans(monkeypatch):
         raise AssertionError("hermetic test requires an explicit local database")
 
     monkeypatch.setattr("core.db.get_engine", require_explicit_database)
+    monkeypatch.setattr(drainer, "CLEANUP_CONFIRM_INTERVAL_SECONDS", 0.0)
     monkeypatch.setattr(
         drainer, "_turn_has_unknown_outcome_lookup", lambda _session_id, _seq: False
     )
@@ -2181,6 +2182,10 @@ def test_cleanup_resumes_exact_claim_until_terminal_confirmation(
         assert retained.guest_cleanup_guest_id == "guest-exact"
         assert retained.guest_cleanup_workflow_id == "workflow-deferred"
         assert db.exec(select(AgentTurn)).all() == []
+        # The held claim excludes a competitor from binding the same guest.
+        with pytest.raises(store.PendingClaimLost):
+            store.set_ember_session(db, other_sid, "guest-exact", "late", None)
+        db.rollback()
 
     phase = "terminal"
     assert drainer.destroy_drainer_session.__wrapped__(sid, "deferred-cleanup")
@@ -2271,6 +2276,7 @@ def test_cleanup_defers_legacy_workflowless_binding(admission_database, monkeypa
     async def unexpected_destroy(_guest_id):
         pytest.fail("workflow-less legacy binding must not be destroyed")
 
+    monkeypatch.setattr(mcp, "get_engine", lambda: admission_database)
     monkeypatch.setattr(mcp._transport, "destroy_session", unexpected_destroy)
     assert not drainer.destroy_drainer_session.__wrapped__(sid, "legacy-cleanup")
     with Session(admission_database) as db:
@@ -2525,3 +2531,129 @@ def test_extraction_rechecks_claim_after_preparation_rollback(
             assert raw.extra["extraction_notes"] == "old worker output"
             assert len(provenance) == len(provenance_before) + 1
     engine.dispose()
+
+
+def test_cleanup_confirms_after_bounded_destroying_reads(
+    admission_database, monkeypatch
+):
+    from agent_sessions import mcp, store
+    from agent_sessions.models import AgentSession
+
+    monkeypatch.setattr(mcp, "get_engine", lambda: admission_database)
+    monkeypatch.setattr(drainer, "CLEANUP_CONFIRM_ATTEMPTS", 3)
+    with Session(admission_database) as db:
+        row = store.create_session(
+            db, "slow-teardown", "<guest>", "main", workflow_id="workflow-slow"
+        )
+        sid = row.id
+        store.set_ember_session(db, sid, "guest-slow", "token", None)
+
+    reads = []
+
+    async def destroy(_guest_id):
+        return {"state": "destroying"}
+
+    async def get_session(guest_id):
+        reads.append(guest_id)
+        state = "destroying" if len(reads) < 3 else "destroyed"
+        return {"session_id": guest_id, "state": state}
+
+    monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
+    monkeypatch.setattr(mcp._transport, "get_session", get_session)
+    assert drainer.destroy_drainer_session.__wrapped__(sid, "slow-teardown")
+    assert reads == ["guest-slow"] * 3
+    with Session(admission_database) as db:
+        retired = db.get(AgentSession, sid)
+        assert retired.ember_session_id is None
+        assert retired.guest_cleanup_id is None
+
+
+def test_cleanup_retains_claim_when_reads_exhaust_without_terminal_state(
+    admission_database, monkeypatch
+):
+    from agent_sessions import mcp, store
+    from agent_sessions.models import AgentSession
+
+    monkeypatch.setattr(mcp, "get_engine", lambda: admission_database)
+    monkeypatch.setattr(drainer, "CLEANUP_CONFIRM_ATTEMPTS", 2)
+    with Session(admission_database) as db:
+        row = store.create_session(
+            db, "stuck-teardown", "<guest>", "main", workflow_id="workflow-stuck"
+        )
+        sid = row.id
+        store.set_ember_session(db, sid, "guest-stuck", "token", None)
+
+    reads = []
+
+    async def destroy(_guest_id):
+        return {"state": "destroying"}
+
+    async def get_session(guest_id):
+        reads.append(guest_id)
+        return {"session_id": guest_id, "state": "destroying"}
+
+    monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
+    monkeypatch.setattr(mcp._transport, "get_session", get_session)
+    assert not drainer.destroy_drainer_session.__wrapped__(sid, "stuck-teardown")
+    assert reads == ["guest-stuck"] * 2
+    with Session(admission_database) as db:
+        retained = db.get(AgentSession, sid)
+        assert retained.ember_session_id == "guest-stuck"
+        assert retained.guest_cleanup_id is not None
+
+
+def test_cycle_retries_stranded_drainer_claims_and_leaves_factory_rows(
+    admission_database, monkeypatch
+):
+    from agent_sessions import mcp, store
+    from agent_sessions.constants import DRAINER_NODE_KEY, KG_NODE_KEY
+    from agent_sessions.models import AgentSession
+    from agent_sessions.transport import EmberSessionGone
+
+    monkeypatch.setattr(mcp, "get_engine", lambda: admission_database)
+    with Session(admission_database) as db:
+        stranded = []
+        for local, guest in (
+            (f"wf-old:{DRAINER_NODE_KEY}:job-1", "guest-old-1"),
+            (f"wf-old:{KG_NODE_KEY}:job-2", "guest-old-2"),
+        ):
+            row = store.create_session(
+                db, local, "<guest>", "main", workflow_id="wf-old"
+            )
+            store.set_ember_session(db, row.id, guest, "token", None)
+            assert store.begin_guest_cleanup(db, row.id, guest, "wf-old").get(
+                "claim_id"
+            )
+            stranded.append(row.id)
+        factory = store.create_session(
+            db, "factory:t-1:implement:1", "<guest>", "main", workflow_id="wf-factory"
+        )
+        store.set_ember_session(db, factory.id, "guest-factory", "token", None)
+        assert store.begin_guest_cleanup(
+            db, factory.id, "guest-factory", "wf-factory"
+        ).get("claim_id")
+        factory_sid = factory.id
+
+    destroyed = []
+
+    async def destroy(guest_id):
+        destroyed.append(guest_id)
+        raise EmberSessionGone("gone")
+
+    monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
+    listed = drainer.stranded_drainer_cleanups.__wrapped__()
+    assert [item["session_id"] for item in listed] == stranded
+    summary = drainer.retry_stranded_drainer_cleanups(
+        list_fn=drainer.stranded_drainer_cleanups.__wrapped__,
+        destroy_fn=drainer.destroy_drainer_session.__wrapped__,
+    )
+    assert summary == {"stranded": 2, "retired": 2}
+    assert sorted(destroyed) == ["guest-old-1", "guest-old-2"]
+    with Session(admission_database) as db:
+        for sid in stranded:
+            retired = db.get(AgentSession, sid)
+            assert retired.ember_session_id is None
+            assert retired.guest_cleanup_id is None
+        untouched = db.get(AgentSession, factory_sid)
+        assert untouched.ember_session_id == "guest-factory"
+        assert untouched.guest_cleanup_id is not None

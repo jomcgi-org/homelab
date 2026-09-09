@@ -443,6 +443,38 @@ def _finish_guest_cleanup(
         )
 
 
+async def destroy_and_confirm(
+    ember_session_id: str, *, attempts: int = 1, interval_seconds: float = 0.0
+) -> bool:
+    """DELETE the exact guest and confirm it reached a terminal state.
+
+    True only on an authoritative gone response (``EmberSessionGone`` off the
+    status code) or an explicitly terminal state read back for the same
+    session id. Ember answers 202 with state destroying before teardown
+    completes, so the caller chooses how many confirming reads to spend:
+    the workflow reaper reads once because it is invoked repeatedly, while
+    the drainer, which gets one shot per job, reads a bounded number of
+    times. Anything unconfirmed after the last read returns False and the
+    caller must retain its cleanup claim. Transport errors propagate.
+    """
+    await _transport.destroy_session(ember_session_id)
+    for attempt in range(max(1, attempts)):
+        if attempt and interval_seconds > 0:
+            await asyncio.sleep(interval_seconds)
+        try:
+            observed = await _transport.get_session(ember_session_id)
+        except EmberSessionGone:
+            return True
+        if (
+            isinstance(observed, dict)
+            and observed.get("session_id") == ember_session_id
+            and isinstance(observed.get("state"), str)
+            and observed["state"] in _REAP_TERMINAL_STATES
+        ):
+            return True
+    return False
+
+
 async def reap_sessions_for_workflow(workflow_id: str) -> dict:
     """Destroy and unbind every guest session owned by a swarm workflow.
 
@@ -497,27 +529,20 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
                 summary["skipped" if hold == "unknown" else "pending"].append(row.id)
                 continue
             try:
-                await _transport.destroy_session(ember_session_id)
-                observed = await _transport.get_session(ember_session_id)
+                confirmed = await destroy_and_confirm(ember_session_id)
             except EmberSessionGone:
                 # The control plane says this exact session no longer exists.
-                pass
-            else:
-                if (
-                    not isinstance(observed, dict)
-                    or observed.get("session_id") != ember_session_id
-                    or not isinstance(observed.get("state"), str)
-                    or observed["state"] not in _REAP_TERMINAL_STATES
-                ):
-                    logger.info(
-                        "swarm reap awaiting terminal state for session %s "
-                        "(ember %s) of workflow %s",
-                        row.id,
-                        ember_session_id,
-                        workflow_id,
-                    )
-                    summary["pending"].append(row.id)
-                    continue
+                confirmed = True
+            if not confirmed:
+                logger.info(
+                    "swarm reap awaiting terminal state for session %s "
+                    "(ember %s) of workflow %s",
+                    row.id,
+                    ember_session_id,
+                    workflow_id,
+                )
+                summary["pending"].append(row.id)
+                continue
             cleared = await asyncio.to_thread(
                 _finish_guest_cleanup,
                 row.id,
