@@ -150,15 +150,35 @@ def test_concurrent_admissions_cannot_both_claim_wip(db, policy):
         assert len(session.exec(select(SwarmTask)).all()) == 1
 
 
-def test_completed_task_consumes_lifetime_task_cap(db, policy):
+def test_max_tasks_bounds_tasks_in_flight_not_tasks_ever_admitted(db, policy):
     policy["max_tasks"] = 1
     enable(policy)
     issue(1)
     issue(2)
     first = admit_next("scheduler")
+    refused = admit_next("scheduler")
+    assert refused["reason"] == "wip_limit" and refused["limit"] == 1
     assert controls.finish_task(first["task_id"], "failed", "scheduler")["ok"]
-    assert admit_next("scheduler")["reason"] == "task_limit"
-    assert controls.status()["admitted_count"] == 1
+    second = admit_next("scheduler")
+    assert second["ok"] and second["task_id"] != first["task_id"]
+    assert controls.status()["admitted_count"] == 2
+
+
+def test_concurrency_is_the_smaller_of_policy_and_chart_cap(db, policy, monkeypatch):
+    policy["max_tasks"] = 3
+    enable(policy)
+    for number in (1, 2, 3):
+        issue(number)
+    first = admit_next("scheduler")
+    assert first["ok"]
+    capped = admit_next("scheduler")
+    assert capped["reason"] == "wip_limit" and capped["limit"] == 1
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+    second = admit_next("scheduler")
+    assert second["ok"] and second["task_id"] != first["task_id"]
+    third = admit_next("scheduler")
+    assert third["reason"] == "wip_limit" and third["active"] == 2
+    assert len(controls.status()["active_tasks"]) == 2
 
 
 def test_recurrence_needs_distinct_explicit_operator_generation(db, policy):

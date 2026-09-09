@@ -212,18 +212,64 @@ def test_running_workflow_does_not_start_another_session(monkeypatch):
     conductor._submit_or_reconcile({"id": "t-1"}, run, dbos)
 
 
+def test_tick_admits_up_to_the_concurrency_limit_and_reconciles_every_task(
+    monkeypatch,
+):
+    import swarm.factory_controls as controls
+    import swarm.factory_intake as intake
+
+    policy = {"max_tasks": 3}
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+    monkeypatch.setattr(
+        controls,
+        "status",
+        lambda: {"state": "enabled", "policy": policy, "active_tasks": []},
+    )
+    monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
+    ingested = []
+    monkeypatch.setattr(conductor, "ingest_eligible", lambda p: ingested.append(p))
+    admitted = iter(
+        [
+            {"ok": True, "task_id": "t-1", "policy": policy},
+            {"ok": True, "task_id": "t-2", "policy": policy},
+            {"ok": True, "task_id": "t-3", "policy": policy},
+        ]
+    )
+    monkeypatch.setattr(intake, "admit_next", lambda _actor: next(admitted))
+    reconciled = []
+    monkeypatch.setattr(
+        conductor,
+        "reconcile_task",
+        lambda task_id, p, _dbos: reconciled.append(task_id),
+    )
+    conductor.tick()
+    assert ingested == [policy]
+    assert reconciled == ["t-1", "t-2"]
+
+
 def test_stopped_factory_never_polls_or_admits(monkeypatch):
     import swarm.factory_controls as controls
 
     monkeypatch.setattr(
-        controls, "status", lambda: {"state": "stopped", "active_tasks": []}
+        controls,
+        "status",
+        lambda: {
+            "state": "stopped",
+            "active_tasks": [{"task_id": "t-1"}, {"task_id": "t-2"}],
+        },
     )
     monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
     monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
     monkeypatch.setattr(
         conductor, "ingest_eligible", lambda _: pytest.fail("stopped admission")
     )
+    cancelled = []
+    monkeypatch.setattr(
+        conductor, "cancel_owned", lambda task_id, _dbos: cancelled.append(task_id)
+    )
     conductor.tick()
+    assert cancelled == ["t-1", "t-2"]
 
 
 @pytest.fixture

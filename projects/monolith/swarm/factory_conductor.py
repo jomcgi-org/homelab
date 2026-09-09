@@ -1339,17 +1339,23 @@ def tick() -> None:
     dbos = runtime.init_dbos()
     if not runtime.is_launched() or dbos is None:
         return
-    active = snapshot["active_tasks"]
+    active = list(snapshot["active_tasks"])
     if snapshot["state"] == "stopped":
-        for task in active[:1]:
+        for task in active:
             cancel_owned(task["task_id"], dbos)
         return
-    if not active and snapshot["state"] == "enabled":
-        ingest_eligible(snapshot["policy"])
-        admitted = admit_next(ACTOR)
-        if admitted["ok"]:
-            active = [admitted]
-    for task in active[:1]:
+    if snapshot["state"] == "enabled":
+        from swarm.factory_intake import concurrency_limit
+
+        limit = concurrency_limit(snapshot["policy"])
+        if len(active) < limit:
+            ingest_eligible(snapshot["policy"])
+        while len(active) < limit:
+            admitted = admit_next(ACTOR)
+            if not admitted["ok"]:
+                break
+            active.append(admitted)
+    for task in active:
         reconcile_task(task["task_id"], task["policy"], dbos)
 
 

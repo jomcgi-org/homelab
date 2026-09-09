@@ -82,22 +82,40 @@ def receive_issue(
         return {"ok": True, "created": True, "receipt": _snapshot(db, row)}
 
 
+def concurrency_limit(policy: dict) -> int:
+    """Tasks the factory may have in flight: policy max_tasks under the chart cap."""
+    from swarm.config import factory_max_concurrent_tasks
+
+    return max(1, min(int(policy["max_tasks"]), factory_max_concurrent_tasks()))
+
+
 def admit_next(actor: str, *, session: Session | None = None) -> dict:
-    """Atomically reserve WIP=1 and pin the operator policy to a new SwarmTask."""
+    """Atomically reserve one WIP slot and pin the operator policy to a new SwarmTask.
+
+    max_tasks bounds tasks in flight, not tasks ever admitted: an autonomous
+    intake must keep admitting as tasks settle, with spend bounded by the
+    per-task budgets and the daily quota accounting rather than by a counter a
+    human has to re-arm. admitted_count is kept for status only.
+    """
     actor = _text(actor, "actor")
     with _locked_session(session) as (db, control):
         if control.state != "enabled":
             return {"ok": False, "reason": control.state}
         policy = validate_policy(json.loads(control.policy_json))
-        if control.admitted_count >= policy["max_tasks"]:
-            return {"ok": False, "reason": "task_limit"}
+        limit = concurrency_limit(policy)
         active = db.exec(
-            select(FactoryReceipt).where(
-                FactoryReceipt.state.in_(("admitted", "uncertain"))
-            )
-        ).first()
-        if active is not None:
-            return {"ok": False, "reason": "wip_limit", "task_id": active.task_id}
+            select(FactoryReceipt)
+            .where(FactoryReceipt.state.in_(("admitted", "uncertain")))
+            .order_by(FactoryReceipt.id)
+        ).all()
+        if len(active) >= limit:
+            return {
+                "ok": False,
+                "reason": "wip_limit",
+                "task_id": active[0].task_id,
+                "active": len(active),
+                "limit": limit,
+            }
         row = db.exec(
             select(FactoryReceipt)
             .where(
