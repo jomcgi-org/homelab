@@ -1444,6 +1444,14 @@ swarm:
   # Concurrent Codex dispatches. Three concurrent dispatches have been killed
   # before, so this stays at 2 until there is evidence it can go higher.
   codexConcurrency: 2
+  # Per-class, per-role floors on REMAINING quota percent (#5974). A role
+  # below its floor is walled for that class and spills through its model
+  # pool while a role with a lower floor keeps drawing, so the last slice of
+  # a class goes to the role ranked highest. Empty applies no floors.
+  #   quotaFloors:
+  #     codex: {worker: 10, drainer: 25, conductor: 0}
+  #     claude: {worker: 15, review: 0}
+  quotaFloors: {}
 
 # Grimoire: D&D campaign manager ingest pipeline (private tier only; spec
 # the grimoire pg-first design). Two daily scheduled jobs

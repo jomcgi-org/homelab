@@ -65,6 +65,155 @@ type tokenBroker struct {
 	mu      sync.Mutex
 	grants  map[string]*brokerGrantState
 	forced  map[string]time.Time
+
+	// Per-grant quota views from the broker's /quota, cached for
+	// grantQuotaTTL so choosing a grant per connection costs nothing on the
+	// relay path. A failed read keeps the previous views; no views at all
+	// means every grant is unobserved and the pool order decides.
+	viewsMu      sync.Mutex
+	views        map[string]grantQuotaView
+	viewsFetched time.Time
+}
+
+const grantQuotaTTL = 30 * time.Second
+
+// grantQuotaView is the subset of the broker's per-grant quota view the
+// ranker needs. Windows carry the broker's expired flag so a lapsed window
+// never counts against a grant.
+type grantQuotaView struct {
+	Observed  bool   `json:"observed"`
+	Exhausted bool   `json:"exhausted"`
+	Provider  string `json:"provider"`
+	Windows   []struct {
+		Name        string  `json:"name"`
+		UsedPercent float64 `json:"used_percent"`
+		ResetsAt    string  `json:"resets_at"`
+		Expired     bool    `json:"expired"`
+	} `json:"windows"`
+}
+
+// grantViews returns the broker's per-grant quota views, refreshing at most
+// once per grantQuotaTTL.
+func (b *tokenBroker) grantViews(now time.Time) map[string]grantQuotaView {
+	if b == nil || b.baseURL == "" || b.client == nil {
+		return nil
+	}
+	b.viewsMu.Lock()
+	defer b.viewsMu.Unlock()
+	if b.views != nil && now.Sub(b.viewsFetched) < grantQuotaTTL {
+		return b.views
+	}
+	resp, err := b.client.Get(b.baseURL + "/quota")
+	if err != nil {
+		return b.views
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return b.views
+	}
+	var payload struct {
+		Grants map[string]grantQuotaView `json:"grants"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return b.views
+	}
+	if payload.Grants == nil {
+		payload.Grants = map[string]grantQuotaView{}
+	}
+	b.views, b.viewsFetched = payload.Grants, now
+	return b.views
+}
+
+// grantBand is the ranking key for one grant: remaining quota in 25% bands
+// (4 = untouched or unobserved, 0 = under a quarter left, -1 = exhausted)
+// and the reset time of the window that set the band, for tie-breaking.
+type grantBand struct {
+	band     int
+	resetsAt time.Time
+}
+
+func bandFor(view grantQuotaView, ok bool, now time.Time) grantBand {
+	if !ok || !view.Observed {
+		// An account that has never reported is assumed full: that is what
+		// puts a freshly added grant into rotation.
+		return grantBand{band: 4}
+	}
+	if view.Exhausted {
+		return grantBand{band: -1}
+	}
+	preferred := "primary"
+	if view.Provider == "claude" {
+		preferred = "5h"
+	}
+	remaining, resetsAt, found := 100.0, time.Time{}, false
+	for _, window := range view.Windows {
+		if window.Expired {
+			continue
+		}
+		if found && window.Name != preferred {
+			continue
+		}
+		remaining = 100 - window.UsedPercent
+		if parsed, err := time.Parse(time.RFC3339, window.ResetsAt); err == nil {
+			resetsAt = parsed
+		}
+		found = true
+		if window.Name == preferred {
+			break
+		}
+	}
+	band := int(remaining / 25)
+	if band < 0 {
+		band = 0
+	}
+	if band > 4 {
+		band = 4
+	}
+	return grantBand{band: band, resetsAt: resetsAt}
+}
+
+// rankGrants picks the grant to use next from an ordered pool.
+//
+// The best grant is the one with the most remaining quota by band; within a
+// band the sooner reset wins, because that quota is the quota that would
+// otherwise go unused; within that, pool order wins. The current grant is
+// kept unless the best is a full band ahead of it, so a brick stays on one
+// account through small differences and each account burns down in
+// quarter steps rather than the pool ping-ponging on every reading.
+func rankGrants(pool []string, views map[string]grantQuotaView, current string, now time.Time) string {
+	if len(pool) == 0 {
+		return current
+	}
+	bands := make(map[string]grantBand, len(pool))
+	best := ""
+	for _, grant := range pool {
+		view, ok := views[grant]
+		bands[grant] = bandFor(view, ok, now)
+		if best == "" || better(bands[grant], bands[best]) {
+			best = grant
+		}
+	}
+	if current == "" {
+		return best
+	}
+	currentBand, inPool := bands[current]
+	if !inPool {
+		return best
+	}
+	if bands[best].band > currentBand.band {
+		return best
+	}
+	return current
+}
+
+func better(candidate, incumbent grantBand) bool {
+	if candidate.band != incumbent.band {
+		return candidate.band > incumbent.band
+	}
+	if candidate.resetsAt.IsZero() || incumbent.resetsAt.IsZero() {
+		return false
+	}
+	return candidate.resetsAt.Before(incumbent.resetsAt)
 }
 
 func newTokenBroker(rawURL string) *tokenBroker {
@@ -203,6 +352,11 @@ type secretEntry struct {
 	BasicUser   string `json:"basicUser"`
 	Env         string `json:"env"`
 	BrokerGrant string `json:"brokerGrant"`
+	// BrokerGrants is an ordered pool of broker grants for one destination:
+	// more than one account on the same provider. The sidecar picks the
+	// active grant per connection (rankGrants) and BrokerGrant then names it.
+	// Exactly one of env, brokerGrant or brokerGrants is set.
+	BrokerGrants []string `json:"brokerGrants"`
 	// QuotaProvider enables response-header observation for this entry. Empty
 	// preserves the existing relay path without quota work.
 	QuotaProvider string   `json:"quotaProvider"`
@@ -260,7 +414,28 @@ func (e *secretEntry) live() bool {
 	return e.value != ""
 }
 
+// activeGrant is the broker grant this entry currently injects, safe to read
+// while a pool selection may be swapping it.
+func (e *secretEntry) activeGrant() string {
+	if e.mu != nil {
+		e.mu.RLock()
+		defer e.mu.RUnlock()
+	}
+	return e.BrokerGrant
+}
+
 func (e *secretEntry) resolve() error {
+	if len(e.BrokerGrants) > 1 && e.broker != nil {
+		chosen := rankGrants(e.BrokerGrants, e.broker.grantViews(time.Now()), e.activeGrant(), time.Now())
+		if chosen != "" && chosen != e.activeGrant() {
+			if e.mu == nil {
+				e.mu = &sync.RWMutex{}
+			}
+			e.mu.Lock()
+			e.BrokerGrant, e.value, e.expiresAt = chosen, "", time.Time{}
+			e.mu.Unlock()
+		}
+	}
 	if e.BrokerGrant == "" {
 		return nil
 	}
@@ -350,11 +525,28 @@ func loadSecretsWithBroker(logger *slog.Logger, brokerURL string) []secretEntry 
 	broker := newTokenBroker(brokerURL)
 	out := make([]secretEntry, 0, len(entries))
 	for _, e := range entries {
-		hasSecret := (e.Env != "") != (e.BrokerGrant != "")
-		if e.Header == "" || len(e.EgressTo) == 0 || !hasSecret {
-			logger.Error("invalid secret catalog entry (needs exactly one of env or brokerGrant, plus header and egressTo); refusing to start", "env", e.Env, "brokerGrant", e.BrokerGrant)
+		sources := 0
+		for _, set := range []bool{e.Env != "", e.BrokerGrant != "", len(e.BrokerGrants) > 0} {
+			if set {
+				sources++
+			}
+		}
+		if e.Header == "" || len(e.EgressTo) == 0 || sources != 1 {
+			logger.Error("invalid secret catalog entry (needs exactly one of env, brokerGrant or brokerGrants, plus header and egressTo); refusing to start", "env", e.Env, "brokerGrant", e.BrokerGrant, "brokerGrants", e.BrokerGrants)
 			exitFn(1)
 			return nil
+		}
+		for _, grant := range e.BrokerGrants {
+			if grant == "" {
+				logger.Error("secret catalog entry has an empty grant in brokerGrants; refusing to start", "egressTo", e.EgressTo)
+				exitFn(1)
+				return nil
+			}
+		}
+		if len(e.BrokerGrants) > 0 {
+			// The pool's first member is the preference until quota says
+			// otherwise; from here on BrokerGrant is the active selection.
+			e.BrokerGrant = e.BrokerGrants[0]
 		}
 		// basicUser and valuePrefix are two different encodings of the same
 		// header, so setting both is a config error rather than a precedence
@@ -656,23 +848,24 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, guestDeadline i
 			p.logger.Warn("egress swap: read response", "dest", host, "err", err)
 			return
 		}
-		if resp.StatusCode == http.StatusUnauthorized && sec.BrokerGrant != "" {
+		if grant := sec.activeGrant(); resp.StatusCode == http.StatusUnauthorized && grant != "" {
 			// The destination can invalidate a grant server-side long before its
 			// stored expires_at. Without invalidation, the sidecar keeps injecting
 			// that dead token until the false expiry. Relay this 401 instead of
 			// replaying: the request body is already upstream, and buffering every
 			// credentialed request costs more than the one failed turn it would save.
-			sec.broker.invalidate(sec.BrokerGrant)
+			sec.broker.invalidate(grant)
 			sec.invalidate()
-			p.logger.Warn("egress swap: upstream rejected broker credential; cache invalidated and refresh scheduled", "dest", host, "grant", sec.BrokerGrant)
+			p.logger.Warn("egress swap: upstream rejected broker credential; cache invalidated and refresh scheduled", "dest", host, "grant", grant)
 			go func(b *tokenBroker, grant string) {
 				if refreshErr := b.forceRefresh(grant); refreshErr != nil {
 					p.logger.Warn("egress swap: broker force refresh failed", "dest", host, "grant", grant, "err", refreshErr)
 				}
-			}(sec.broker, sec.BrokerGrant)
+			}(sec.broker, grant)
 		}
 		if sec.QuotaProvider != "" {
 			if obs, ok := observeQuota(sec, resp, time.Now()); ok {
+				obs.Grant = sec.activeGrant()
 				if window, ok := quotaSummary(obs); ok {
 					p.logger.Info("egress quota observed", "provider", obs.Provider, "status", obs.Status, "window", window.Name, "used_percent", window.UsedPercent, "resets_at", window.ResetsAt)
 				} else {

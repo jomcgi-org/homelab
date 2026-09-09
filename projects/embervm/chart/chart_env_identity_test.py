@@ -1251,7 +1251,11 @@ def _broker_rules(names):
     [
         ([], False, ["codex-cluster"]),
         (["PROD_VALUES"], True, ["codex-cluster"]),
-        (["PROD_VALUES", "GKE_VALUES"], True, ["codex-cluster", "agent-mcp"]),
+        (
+            ["PROD_VALUES", "GKE_VALUES"],
+            True,
+            ["codex-cluster", "codex-b", "agent-mcp"],
+        ),
     ],
     ids=["defaults", "home", "gke"],
 )

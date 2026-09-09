@@ -15,6 +15,7 @@ exhaustion moves selection down the pool.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -44,6 +45,42 @@ def exhausted_percent() -> float:
 
 def max_quota_age_seconds() -> float:
     return _env_float("SWARM_MODEL_POOL_QUOTA_MAX_AGE_SECONDS", 900.0)
+
+
+def quota_floors() -> dict:
+    """Per-class, per-role floors on remaining quota, from SWARM_QUOTA_FLOORS.
+
+    Shape: {"codex": {"worker": 10, "conductor": 0}, "claude": {"worker": 15}}.
+    A role below its floor is walled for that class and spills through its
+    pool; a role with a lower floor keeps drawing, so the last slice of a
+    class goes to whichever role the operator ranked highest. Empty (the
+    default) applies no floors.
+    """
+    raw = os.environ.get("SWARM_QUOTA_FLOORS", "")
+    if not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        logger.warning("ignoring malformed SWARM_QUOTA_FLOORS")
+        return {}
+    floors: dict = {}
+    if isinstance(parsed, dict):
+        for provider, roles in parsed.items():
+            if not isinstance(roles, dict):
+                continue
+            floors[provider] = {
+                role: float(value)
+                for role, value in roles.items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            }
+    return floors
+
+
+def floor_for(provider: str, role: str | None) -> float:
+    if role is None:
+        return 0.0
+    return float(quota_floors().get(provider, {}).get(role, 0.0))
 
 
 def pool_for(role: str, policy: dict) -> list[str]:
@@ -85,8 +122,8 @@ def reset_passed(resets_at: object, now: datetime | None = None) -> bool | None:
     return (now or datetime.now(timezone.utc)) >= reset
 
 
-def availability(model: str, quota: dict) -> tuple[bool, str]:
-    """Decide whether a model's provider has quota, with the reason.
+def availability(model: str, quota: dict, role: str | None = None) -> tuple[bool, str]:
+    """Decide whether a model's provider has quota for a role, with the reason.
 
     Exhaustion is trusted only while it can still be true: until a known
     reset time, or while the observation is fresh when no reset time is
@@ -106,14 +143,22 @@ def availability(model: str, quota: dict) -> tuple[bool, str]:
         return True, "unobserved"
     used = summary.get("headline_used_percent")
     age = summary.get("age_seconds")
-    walled = bool(summary.get("exhausted")) or (
-        isinstance(used, (int, float))
-        and not isinstance(used, bool)
-        and used >= exhausted_percent()
+    floor = floor_for(provider, role)
+    has_used = isinstance(used, (int, float)) and not isinstance(used, bool)
+    below_floor = has_used and floor > 0 and (100.0 - used) < floor
+    walled = (
+        bool(summary.get("exhausted"))
+        or (has_used and used >= exhausted_percent())
+        or below_floor
     )
     if not walled:
         return True, "available"
-    reason = "exhausted" if summary.get("exhausted") else f"used_percent {used:g}"
+    if summary.get("exhausted"):
+        reason = "exhausted"
+    elif has_used and used >= exhausted_percent():
+        reason = f"used_percent {used:g}"
+    else:
+        reason = f"below_floor {floor:g} remaining {100.0 - used:g}"
     passed = reset_passed(summary.get("resets_at"))
     if passed is True:
         return True, "reset_passed"
@@ -124,14 +169,53 @@ def availability(model: str, quota: dict) -> tuple[bool, str]:
     return False, reason
 
 
+def rollup_grants(summary: dict, grants: dict) -> dict:
+    """Fold per-grant views into the class view a pool member is judged on.
+
+    With more than one account on a class the provider-level view is only
+    the latest report, whichever grant made it. The class has room while any
+    grant does, so the class view takes the least-used non-exhausted grant
+    (its used percent, reset time and age) and is exhausted only when every
+    reporting grant is. Classes with no reporting grant are left untouched.
+    """
+    merged = dict(summary)
+    by_provider: dict[str, list[dict]] = {}
+    for view in grants.values():
+        provider = view.get("provider")
+        if isinstance(provider, str) and view.get("observed"):
+            by_provider.setdefault(provider, []).append(view)
+    for provider, views in by_provider.items():
+        open_views = [v for v in views if not v.get("exhausted")]
+        if not open_views:
+            best = min(views, key=lambda v: v.get("age_seconds") or 0.0)
+            merged[provider] = {**best, "exhausted": True}
+            continue
+        best = min(
+            open_views,
+            key=lambda v: (
+                v.get("headline_used_percent")
+                if isinstance(v.get("headline_used_percent"), (int, float))
+                else -1.0
+            ),
+        )
+        merged[provider] = {**best, "exhausted": False}
+    return merged
+
+
 def quota_summary() -> dict:
     """Read the broker quota summary, treating any failure as unobserved."""
     try:
-        from agent_sessions.provider_quota import fetch_provider_quota_sync, summarise
+        from agent_sessions.provider_quota import (
+            fetch_provider_quota_sync,
+            summarise,
+            summarise_grants,
+        )
 
         fetched = fetch_provider_quota_sync()
         providers = fetched.get("providers", {}) if isinstance(fetched, dict) else {}
-        return summarise(providers if isinstance(providers, dict) else {})
+        summary = summarise(providers if isinstance(providers, dict) else {})
+        grants = fetched.get("grants") if isinstance(fetched, dict) else None
+        return rollup_grants(summary, summarise_grants(grants))
     # nosemgrep: no-broad-except-swallow
     except Exception as exc:  # noqa: BLE001
         logger.warning("provider quota unavailable for model selection: %s", exc)
@@ -156,7 +240,7 @@ def select_model(role: str, policy: dict, *, quota: dict | None = None) -> dict:
         quota = quota_summary()
     skipped: list[dict] = []
     for model in pool:
-        ok, reason = availability(model, quota)
+        ok, reason = availability(model, quota, role)
         if ok:
             if model != preferred:
                 logger.warning(

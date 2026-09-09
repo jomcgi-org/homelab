@@ -41,9 +41,12 @@ def _store_result(now: float, result: dict) -> dict:
 def _available_result(payload: object) -> dict:
     if not isinstance(payload, dict) or not isinstance(payload.get("providers"), dict):
         raise ValueError("quota response has no providers object")
+    grants = payload.get("grants")
     return {
         "available": True,
         "providers": payload["providers"],
+        # Per-grant views (one account each) when the broker reports them.
+        "grants": grants if isinstance(grants, dict) else {},
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -150,6 +153,25 @@ def _preferred_window_name(provider: str) -> str:
     return "primary" if provider == "codex" else "5h"
 
 
+def summarise_grants(grants: object) -> dict:
+    """Summarise each reporting grant like a provider, keyed by grant name."""
+    if not isinstance(grants, dict):
+        return {}
+    summary = {}
+    for name, value in grants.items():
+        if not isinstance(value, dict) or not value.get("observed", False):
+            continue
+        provider = value.get("provider")
+        if provider not in ("codex", "claude"):
+            continue
+        summary[name] = {
+            **_summarise_view(provider, value),
+            "grant": name,
+            "provider": provider,
+        }
+    return summary
+
+
 def summarise(providers: dict) -> dict:
     """Select the actionable quota window for each observed provider."""
     summary = {}
@@ -157,27 +179,31 @@ def summarise(providers: dict) -> dict:
         value = providers.get(provider)
         if not isinstance(value, dict) or not value.get("observed", False):
             continue
-        headline = _headline_window(provider, value.get("windows"))
-        used_percent = headline.get("used_percent") if headline is not None else None
-        window_name = headline.get("name") if headline is not None else None
-        age_seconds = value.get("age_seconds")
-        summary[provider] = {
-            "observed": True,
-            "exhausted": bool(value.get("exhausted", False)),
-            "status": str(value.get("status", "unknown")),
-            "age_seconds": (
-                float(age_seconds)
-                if isinstance(age_seconds, (int, float))
-                and not isinstance(age_seconds, bool)
-                else None
-            ),
-            "headline_window": window_name if isinstance(window_name, str) else None,
-            "headline_used_percent": (
-                float(used_percent) if isinstance(used_percent, (int, float)) else None
-            ),
-            "resets_at": headline.get("resets_at") if headline is not None else None,
-        }
+        summary[provider] = _summarise_view(provider, value)
     return summary
+
+
+def _summarise_view(provider: str, value: dict) -> dict:
+    headline = _headline_window(provider, value.get("windows"))
+    used_percent = headline.get("used_percent") if headline is not None else None
+    window_name = headline.get("name") if headline is not None else None
+    age_seconds = value.get("age_seconds")
+    return {
+        "observed": True,
+        "exhausted": bool(value.get("exhausted", False)),
+        "status": str(value.get("status", "unknown")),
+        "age_seconds": (
+            float(age_seconds)
+            if isinstance(age_seconds, (int, float))
+            and not isinstance(age_seconds, bool)
+            else None
+        ),
+        "headline_window": window_name if isinstance(window_name, str) else None,
+        "headline_used_percent": (
+            float(used_percent) if isinstance(used_percent, (int, float)) else None
+        ),
+        "resets_at": headline.get("resets_at") if headline is not None else None,
+    }
 
 
 def _age_suffix(age_seconds: object) -> str:

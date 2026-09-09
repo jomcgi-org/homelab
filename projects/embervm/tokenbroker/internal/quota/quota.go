@@ -38,6 +38,7 @@ type ViewWindow struct {
 // View is the latest observation plus state derived when it is read.
 type View struct {
 	Provider    string
+	Grant       string
 	Observed    bool
 	ObservedAt  string
 	Status      string
@@ -59,6 +60,7 @@ func (v View) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(struct {
 		Provider    string       `json:"provider"`
+		Grant       string       `json:"grant,omitempty"`
 		ObservedAt  string       `json:"observed_at"`
 		Status      string       `json:"status"`
 		ReachedType string       `json:"reached_type"`
@@ -68,7 +70,7 @@ func (v View) MarshalJSON() ([]byte, error) {
 		AgeSeconds  float64      `json:"age_seconds"`
 		Exhausted   bool         `json:"exhausted"`
 	}{
-		Provider: v.Provider, ObservedAt: v.ObservedAt, Status: v.Status,
+		Provider: v.Provider, Grant: v.Grant, ObservedAt: v.ObservedAt, Status: v.Status,
 		ReachedType: v.ReachedType, Windows: v.Windows, Observed: true,
 		ReceivedAt: v.ReceivedAt, AgeSeconds: v.AgeSeconds, Exhausted: v.Exhausted,
 	})
@@ -79,15 +81,67 @@ type storedObservation struct {
 	receivedAt  time.Time
 }
 
-// Store keeps only the latest observation for each provider. Its contents are
-// process-local and are lost when tokenbroker restarts.
+// Store keeps only the latest observation for each provider, and separately
+// for each grant that reported one. The provider view is the class-level
+// reading every existing consumer reads (latest wins across all grants of the
+// class); the grant views let a router with more than one account per class
+// tell them apart. Its contents are process-local and are lost when
+// tokenbroker restarts.
 type Store struct {
 	mu           sync.RWMutex
 	observations map[string]storedObservation
+	grants       map[string]storedObservation
 }
 
 func NewStore() *Store {
-	return &Store{observations: make(map[string]storedObservation)}
+	return &Store{
+		observations: make(map[string]storedObservation),
+		grants:       make(map[string]storedObservation),
+	}
+}
+
+// PutGrant records an observation for one grant and refreshes the class-level
+// provider view with the same reading, so a class with a single grant behaves
+// exactly as before.
+func (s *Store) PutGrant(grant, provider string, obs Observation, receivedAt time.Time) {
+	s.Put(provider, obs, receivedAt)
+	obs.Provider = provider
+	obs.Windows = append([]Window(nil), obs.Windows...)
+	s.mu.Lock()
+	if s.grants == nil {
+		s.grants = make(map[string]storedObservation)
+	}
+	s.grants[grant] = storedObservation{observation: obs, receivedAt: receivedAt.UTC()}
+	s.mu.Unlock()
+}
+
+// GetGrant returns the latest view for one grant; unobserved grants come back
+// with Observed false and an empty provider.
+func (s *Store) GetGrant(grant string) View {
+	s.mu.RLock()
+	stored, ok := s.grants[grant]
+	s.mu.RUnlock()
+	if !ok {
+		return View{Grant: grant}
+	}
+	view := makeView(stored, time.Now().UTC())
+	view.Grant = grant
+	return view
+}
+
+// Grants returns every grant that has reported at least one observation.
+func (s *Store) Grants() map[string]View {
+	s.mu.RLock()
+	names := make([]string, 0, len(s.grants))
+	for name := range s.grants {
+		names = append(names, name)
+	}
+	s.mu.RUnlock()
+	views := make(map[string]View, len(names))
+	for _, name := range names {
+		views[name] = s.GetGrant(name)
+	}
+	return views
 }
 
 func (s *Store) Put(provider string, obs Observation, receivedAt time.Time) {

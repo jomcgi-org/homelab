@@ -294,7 +294,9 @@ func (s *server) quota(w http.ResponseWriter, r *http.Request) {
 		for _, provider := range s.quotaProviderOrder {
 			providers[provider] = s.quotaStore.Get(provider)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"providers": providers})
+		// grants carries only the grants that have reported, keyed by grant
+		// name; the provider map above is unchanged for existing readers.
+		writeJSON(w, http.StatusOK, map[string]any{"providers": providers, "grants": s.quotaStore.Grants()})
 		return
 	}
 
@@ -311,18 +313,37 @@ func (s *server) quota(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// An optional grant query parameter keys the observation by account as
+	// well as by provider class. It must name a configured grant.
+	grant := r.URL.Query().Get("grant")
+	if grant != "" {
+		if _, ok := s.configs[grant]; !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{"reason": "unknown_grant"})
+			return
+		}
+	}
 	switch r.Method {
 	case http.MethodGet:
+		if grant != "" {
+			view := s.quotaStore.GetGrant(grant)
+			if view.Observed && view.Provider != provider {
+				// The grant last reported under another class: for this
+				// path it is unobserved rather than a misfiled reading.
+				view = quota.View{Provider: provider, Grant: grant}
+			}
+			writeJSON(w, http.StatusOK, view)
+			return
+		}
 		writeJSON(w, http.StatusOK, s.quotaStore.Get(provider))
 	case http.MethodPost:
-		s.acceptQuota(provider, w, r)
+		s.acceptQuota(provider, grant, w, r)
 	default:
 		w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"reason": "method_not_allowed"})
 	}
 }
 
-func (s *server) acceptQuota(provider string, w http.ResponseWriter, r *http.Request) {
+func (s *server) acceptQuota(provider, grant string, w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	decoder := json.NewDecoder(r.Body)
 	var obs quota.Observation
@@ -340,8 +361,12 @@ func (s *server) acceptQuota(provider string, w http.ResponseWriter, r *http.Req
 		return
 	}
 	receivedAt := time.Now().UTC()
-	s.quotaStore.Put(provider, obs, receivedAt)
-	s.logger.Info("tokenbroker quota observation accepted", "provider", provider, "status", obs.Status, "windows", len(obs.Windows))
+	if grant != "" {
+		s.quotaStore.PutGrant(grant, provider, obs, receivedAt)
+	} else {
+		s.quotaStore.Put(provider, obs, receivedAt)
+	}
+	s.logger.Info("tokenbroker quota observation accepted", "provider", provider, "grant", grant, "status", obs.Status, "windows", len(obs.Windows))
 	w.WriteHeader(http.StatusNoContent)
 }
 

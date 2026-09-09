@@ -176,7 +176,44 @@ func quotaTestServer(providers ...string) (*server, *prometheus.Registry) {
 	return &server{
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)), quotaStore: quotaStore,
 		quotaProviders: providerSet, quotaProviderOrder: providers,
+		configs: map[string]grantConfig{"codex-cluster": {Name: "codex-cluster", ProviderName: "codex-chatgpt"}},
 	}, registry
+}
+
+func TestQuotaGrantKeyedObservationRollsUpToProvider(t *testing.T) {
+	s, _ := quotaTestServer("codex", "claude")
+	body := `{"observed_at":"2026-09-09T12:00:00Z","status":"allowed","windows":[{"name":"primary","used_percent":42}]}`
+	if rec := requestQuota(t, s, http.MethodPost, "/quota/codex?grant=codex-cluster", body); rec.Code != http.StatusNoContent {
+		t.Fatalf("grant-keyed post: status %d body %q", rec.Code, rec.Body.String())
+	}
+	if rec := requestQuota(t, s, http.MethodPost, "/quota/codex?grant=codex-nope", body); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown grant: status %d", rec.Code)
+	}
+	all := decodeBody(t, requestQuota(t, s, http.MethodGet, "/quota", ""))
+	providers := all["providers"].(map[string]any)
+	codex := providers["codex"].(map[string]any)
+	if codex["observed"] != true || codex["provider"] != "codex" {
+		t.Fatalf("provider view not refreshed by grant-keyed post: %v", codex)
+	}
+	if _, hasGrant := codex["grant"]; hasGrant {
+		t.Fatalf("provider view must not carry a grant name: %v", codex)
+	}
+	grants := all["grants"].(map[string]any)
+	if len(grants) != 1 {
+		t.Fatalf("expected exactly one reporting grant, got %v", grants)
+	}
+	view := grants["codex-cluster"].(map[string]any)
+	if view["grant"] != "codex-cluster" || view["provider"] != "codex" || view["observed"] != true {
+		t.Fatalf("unexpected grant view %v", view)
+	}
+	one := decodeBody(t, requestQuota(t, s, http.MethodGet, "/quota/codex?grant=codex-cluster", ""))
+	if one["grant"] != "codex-cluster" || one["exhausted"] != false {
+		t.Fatalf("unexpected single grant view %v", one)
+	}
+	none := decodeBody(t, requestQuota(t, s, http.MethodGet, "/quota/claude?grant=codex-cluster", ""))
+	if none["observed"] != false {
+		t.Fatalf("grant view is keyed by grant, not provider: %v", none)
+	}
 }
 
 func requestQuota(t *testing.T, s *server, method, path, body string) *httptest.ResponseRecorder {

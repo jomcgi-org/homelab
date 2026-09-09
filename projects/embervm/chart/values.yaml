@@ -1850,6 +1850,21 @@ egress:
   #     egressTo: [api.openai.com]
   #     secretRef: {name: <secret>, key: OPENAI_API_KEY}
   #
+  #   - header: Authorization                      # a token-broker grant instead
+  #     valuePrefix: "Bearer "                     # of a static Secret: the sidecar
+  #     brokerGrant: codex-cluster                 # fetches a short-lived token from
+  #     egressTo: [chatgpt.com]                    # tokenBroker.grants[].name
+  #     quotaProvider: codex
+  #
+  #   - header: Authorization                      # a POOL of grants, more than one
+  #     valuePrefix: "Bearer "                     # account on the same provider. The
+  #     brokerGrants: [codex-a, codex-b]           # sidecar picks the active grant per
+  #     egressTo: [chatgpt.com]                    # connection by remaining quota in
+  #     quotaProvider: codex                       # 25% bands with hysteresis (see
+  #                                                # rankGrants in the egress proxy);
+  #                                                # exactly one of secretRef,
+  #                                                # brokerGrant or brokerGrants.
+  #
   # Nothing here has to match anything in the guest. The guest sends whatever it
   # likes in that header and the sidecar discards it, so there is no byte-identical
   # coupling to keep in sync and a guest cannot authenticate as another account by

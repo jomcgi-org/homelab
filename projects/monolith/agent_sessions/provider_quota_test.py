@@ -401,3 +401,38 @@ def test_module_registers_provider_quota_as_advisory():
     assert MODULE.register_health_advisory == {
         "provider_quota": quota.provider_quota_health
     }
+
+
+def test_available_result_keeps_grants_and_summarises_them():
+    from agent_sessions.provider_quota import _available_result, summarise_grants
+
+    payload = {
+        "providers": {},
+        "grants": {
+            "codex-b": {
+                "provider": "codex",
+                "observed": True,
+                "status": "allowed",
+                "exhausted": False,
+                "age_seconds": 4.0,
+                "windows": [
+                    {
+                        "name": "primary",
+                        "used_percent": 33.0,
+                        "resets_at": "2026-09-15T01:25:04Z",
+                    }
+                ],
+            },
+            "agent-mcp": {"provider": "authentik", "observed": True},
+            "codex-cluster": {"provider": "codex", "observed": False},
+        },
+    }
+    result = _available_result(payload)
+    assert result["grants"] == payload["grants"]
+    assert _available_result({"providers": {}})["grants"] == {}
+    summary = summarise_grants(result["grants"])
+    assert list(summary) == ["codex-b"]
+    assert summary["codex-b"]["grant"] == "codex-b"
+    assert summary["codex-b"]["provider"] == "codex"
+    assert summary["codex-b"]["headline_used_percent"] == 33.0
+    assert summary["codex-b"]["resets_at"] == "2026-09-15T01:25:04Z"

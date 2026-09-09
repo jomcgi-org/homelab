@@ -32,6 +32,10 @@ type quotaCollector struct {
 	resetsAt  *prometheus.Desc
 	exhausted *prometheus.Desc
 	observed  *prometheus.Desc
+	// Per-grant families are separate from the per-provider ones above so
+	// the provider label sets stay exactly as dashboards and tests expect.
+	grantUsed      *prometheus.Desc
+	grantExhausted *prometheus.Desc
 }
 
 func NewQuotaCollector(store *quota.Store, providers []string) prometheus.Collector {
@@ -58,6 +62,16 @@ func NewQuotaCollector(store *quota.Store, providers []string) prometheus.Collec
 			"Latest quota observation time as Unix seconds.",
 			[]string{"provider"}, nil,
 		),
+		grantUsed: prometheus.NewDesc(
+			"tokenbroker_grant_quota_used_percent",
+			"Latest observed quota utilization percentage for one grant.",
+			[]string{"grant", "provider", "window"}, nil,
+		),
+		grantExhausted: prometheus.NewDesc(
+			"tokenbroker_grant_quota_exhausted",
+			"Whether the latest quota observation for one grant is exhausted.",
+			[]string{"grant", "provider"}, nil,
+		),
 	}
 }
 
@@ -66,6 +80,8 @@ func (c *quotaCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.resetsAt
 	ch <- c.exhausted
 	ch <- c.observed
+	ch <- c.grantUsed
+	ch <- c.grantExhausted
 }
 
 func (c *quotaCollector) Collect(ch chan<- prometheus.Metric) {
@@ -92,6 +108,16 @@ func (c *quotaCollector) Collect(ch chan<- prometheus.Metric) {
 				continue
 			}
 			ch <- prometheus.MustNewConstMetric(c.resetsAt, prometheus.GaugeValue, float64(reset.Unix()), provider, window.Name)
+		}
+	}
+	for grant, view := range c.store.Grants() {
+		exhausted := 0.0
+		if view.Exhausted {
+			exhausted = 1
+		}
+		ch <- prometheus.MustNewConstMetric(c.grantExhausted, prometheus.GaugeValue, exhausted, grant, view.Provider)
+		for _, window := range view.Windows {
+			ch <- prometheus.MustNewConstMetric(c.grantUsed, prometheus.GaugeValue, window.UsedPercent, grant, view.Provider, window.Name)
 		}
 	}
 }

@@ -180,3 +180,107 @@ def test_broker_failure_reads_as_unobserved(monkeypatch):
     monkeypatch.setattr(quota, "fetch_provider_quota_sync", boom)
     assert model_pool.quota_summary() == {}
     assert model_pool.select_model("worker", policy())["model"] == "sol"
+
+
+def test_role_floor_walls_only_the_floored_role(monkeypatch):
+    monkeypatch.setenv(
+        "SWARM_QUOTA_FLOORS", '{"codex": {"worker": 10, "conductor": 0}}'
+    )
+    quota = {"codex": {"headline_used_percent": 92.0, "age_seconds": 5.0}}
+    worker = model_pool.select_model("worker", policy(), quota=quota)
+    assert worker["model"] == "sonnet"
+    assert worker["skipped"] == [
+        {"model": "sol", "reason": "below_floor 10 remaining 8"}
+    ]
+    assert (
+        model_pool.select_model("conductor", policy(), quota=quota)["model"] == "astra"
+    )
+
+
+def test_malformed_floors_apply_nothing(monkeypatch):
+    monkeypatch.setenv("SWARM_QUOTA_FLOORS", "{nope")
+    assert model_pool.quota_floors() == {}
+    monkeypatch.setenv("SWARM_QUOTA_FLOORS", '{"codex": {"worker": "ten"}, "x": 1}')
+    assert model_pool.quota_floors() == {"codex": {}}
+
+
+def test_rollup_takes_the_least_used_open_grant_per_class():
+    summary = {
+        "codex": {"headline_used_percent": 99.0, "exhausted": False, "age_seconds": 1.0}
+    }
+    grants = {
+        "codex-cluster": {
+            "provider": "codex",
+            "observed": True,
+            "exhausted": False,
+            "headline_used_percent": 99.0,
+            "age_seconds": 1.0,
+            "resets_at": "a",
+        },
+        "codex-b": {
+            "provider": "codex",
+            "observed": True,
+            "exhausted": False,
+            "headline_used_percent": 12.0,
+            "age_seconds": 40.0,
+            "resets_at": "b",
+        },
+        "claude-x": {"provider": "claude", "observed": False},
+    }
+    merged = model_pool.rollup_grants(summary, grants)
+    assert merged["codex"]["headline_used_percent"] == 12.0
+    assert merged["codex"]["resets_at"] == "b"
+    assert "claude" not in merged
+
+
+def test_rollup_is_exhausted_only_when_every_grant_is():
+    grants = {
+        "codex-cluster": {
+            "provider": "codex",
+            "observed": True,
+            "exhausted": True,
+            "age_seconds": 9.0,
+        },
+        "codex-b": {
+            "provider": "codex",
+            "observed": True,
+            "exhausted": True,
+            "age_seconds": 3.0,
+        },
+    }
+    merged = model_pool.rollup_grants({}, grants)
+    assert merged["codex"]["exhausted"] is True
+    assert merged["codex"]["age_seconds"] == 3.0
+
+
+def test_quota_summary_rolls_broker_grants_into_the_class(monkeypatch):
+    import agent_sessions.provider_quota as quota
+
+    payload = {
+        "available": True,
+        "providers": {
+            "codex": {
+                "observed": True,
+                "exhausted": True,
+                "status": "rejected",
+                "windows": [],
+            }
+        },
+        "grants": {
+            "codex-b": {
+                "provider": "codex",
+                "observed": True,
+                "exhausted": False,
+                "status": "allowed",
+                "age_seconds": 2.0,
+                "windows": [
+                    {"name": "primary", "used_percent": 20.0, "expired": False}
+                ],
+            }
+        },
+    }
+    monkeypatch.setattr(quota, "fetch_provider_quota_sync", lambda **_k: payload)
+    summary = model_pool.quota_summary()
+    assert summary["codex"]["exhausted"] is False
+    assert summary["codex"]["headline_used_percent"] == 20.0
+    assert summary["codex"]["grant"] == "codex-b"

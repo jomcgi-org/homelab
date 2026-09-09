@@ -1170,3 +1170,132 @@ func TestLoadSecretsRejectsBothBasicUserAndValuePrefix(t *testing.T) {
 		t.Error("an entry setting both encodings must refuse to start, not pick one")
 	}
 }
+
+func grantView(observed, exhausted bool, provider string, used float64, resetsAt string) grantQuotaView {
+	view := grantQuotaView{Observed: observed, Exhausted: exhausted, Provider: provider}
+	if observed && !exhausted {
+		view.Windows = append(view.Windows, struct {
+			Name        string  `json:"name"`
+			UsedPercent float64 `json:"used_percent"`
+			ResetsAt    string  `json:"resets_at"`
+			Expired     bool    `json:"expired"`
+		}{Name: "primary", UsedPercent: used, ResetsAt: resetsAt})
+	}
+	return view
+}
+
+func TestRankGrantsBandsHysteresisAndSoonerReset(t *testing.T) {
+	now := time.Date(2026, 9, 9, 16, 0, 0, 0, time.UTC)
+	pool := []string{"codex-a", "codex-b"}
+	for _, tc := range []struct {
+		name    string
+		views   map[string]grantQuotaView
+		current string
+		want    string
+	}{
+		{"unobserved pool keeps order", nil, "", "codex-a"},
+		{"unobserved current stays", nil, "codex-b", "codex-b"},
+		{"exhausted current yields", map[string]grantQuotaView{
+			"codex-a": grantView(true, true, "codex", 100, ""),
+			"codex-b": grantView(true, false, "codex", 10, ""),
+		}, "codex-a", "codex-b"},
+		{"same band keeps current", map[string]grantQuotaView{
+			"codex-a": grantView(true, false, "codex", 40, ""),
+			"codex-b": grantView(true, false, "codex", 30, ""),
+		}, "codex-a", "codex-a"},
+		{"full band ahead switches", map[string]grantQuotaView{
+			"codex-a": grantView(true, false, "codex", 55, ""),
+			"codex-b": grantView(true, false, "codex", 30, ""),
+		}, "codex-a", "codex-b"},
+		{"fresh grant is assumed full", map[string]grantQuotaView{
+			"codex-a": grantView(true, false, "codex", 30, ""),
+		}, "codex-a", "codex-b"},
+		{"same band sooner reset wins for a new choice", map[string]grantQuotaView{
+			"codex-a": grantView(true, false, "codex", 40, "2026-09-15T00:00:00Z"),
+			"codex-b": grantView(true, false, "codex", 45, "2026-09-10T00:00:00Z"),
+		}, "", "codex-b"},
+		{"unknown current is replaced", map[string]grantQuotaView{
+			"codex-a": grantView(true, false, "codex", 40, ""),
+		}, "codex-old", "codex-b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := rankGrants(pool, tc.views, tc.current, now); got != tc.want {
+				t.Fatalf("rankGrants = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if got := rankGrants(nil, nil, "codex-a", now); got != "codex-a" {
+		t.Fatalf("empty pool must keep current, got %q", got)
+	}
+}
+
+func TestLoadSecretsBrokerGrantsPoolSelectsByQuotaAndTagsReports(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	originalExit := exitFn
+	t.Cleanup(func() { exitFn = originalExit })
+	exitFn = func(int) { t.Fatal("a valid pool must not exit") }
+
+	var tokenGrants []string
+	var reportQueries []string
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/quota" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"providers": map[string]any{},
+				"grants": map[string]any{
+					"codex-a": map[string]any{"observed": true, "exhausted": true, "provider": "codex"},
+					"codex-b": map[string]any{
+						"observed": true, "exhausted": false, "provider": "codex",
+						"windows": []map[string]any{{"name": "primary", "used_percent": 12.0}},
+					},
+				},
+			})
+		case strings.HasPrefix(r.URL.Path, "/grants/") && strings.HasSuffix(r.URL.Path, "/token"):
+			tokenGrants = append(tokenGrants, strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/grants/"), "/token"))
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+		case strings.HasPrefix(r.URL.Path, "/quota/") && r.Method == http.MethodPost:
+			reportQueries = append(reportQueries, r.URL.RawQuery)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected broker request %s %s", r.Method, r.URL)
+		}
+	}))
+	defer broker.Close()
+
+	t.Setenv("EGRESS_SECRETS", `[{"header":"Authorization","valuePrefix":"Bearer ","brokerGrants":["codex-a","codex-b"],"quotaProvider":"codex","egressTo":["chatgpt.com"]}]`)
+	got := loadSecretsWithBroker(logger, broker.URL)
+	if len(got) != 1 {
+		t.Fatalf("got %d entries", len(got))
+	}
+	sec := &got[0]
+	if !sec.live() || sec.activeGrant() != "codex-b" {
+		t.Fatalf("pool must skip the exhausted grant: live=%v active=%q", sec.live(), sec.activeGrant())
+	}
+	if len(tokenGrants) != 1 || tokenGrants[0] != "codex-b" {
+		t.Fatalf("token fetched for %v, want only codex-b", tokenGrants)
+	}
+
+	reporter := newQuotaReporter(broker.URL, logger)
+	reporter.post(QuotaObservation{Grant: sec.activeGrant(), Provider: "codex", ObservedAt: "2026-09-09T12:00:00Z", Status: "allowed"})
+	if len(reportQueries) != 1 || reportQueries[0] != "grant=codex-b" {
+		t.Fatalf("quota report queries %v, want grant=codex-b", reportQueries)
+	}
+}
+
+func TestLoadSecretsRejectsMixedGrantSources(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	originalExit := exitFn
+	t.Cleanup(func() { exitFn = originalExit })
+	for _, catalog := range []string{
+		`[{"header":"Authorization","brokerGrant":"codex-a","brokerGrants":["codex-a","codex-b"],"egressTo":["chatgpt.com"]}]`,
+		`[{"header":"Authorization","brokerGrants":["codex-a",""],"egressTo":["chatgpt.com"]}]`,
+	} {
+		exited := false
+		exitFn = func(int) { exited = true }
+		t.Setenv("EGRESS_SECRETS", catalog)
+		loadSecretsWithBroker(logger, "")
+		if !exited {
+			t.Errorf("catalog %s must refuse to start", catalog)
+		}
+	}
+}

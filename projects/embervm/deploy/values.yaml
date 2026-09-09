@@ -629,6 +629,9 @@ egress:
         - "chatgpt.com"
       # The subscription grant supplies short-lived tokens. If the broker is
       # absent or unavailable, the sidecar fails closed and denies this host.
+      # To spread across two accounts once codex-b is logged in (#5974),
+      # replace this line with `brokerGrants: ["codex-cluster", "codex-b"]`:
+      # the sidecar then picks per connection by remaining quota.
       brokerGrant: "codex-cluster"
       claimHeader: "chatgpt-account-id"
       claimPath: "https://api.openai.com/auth.chatgpt_account_id"
