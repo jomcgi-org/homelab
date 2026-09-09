@@ -3575,6 +3575,16 @@ def test_planner_add_node_without_model_uses_worker_pool_when_codex_walled(
     )
     conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
     assert _node(task["id"], "implement_fix")["model"] == "sonnet"
+    from sqlmodel import Session, select
+    from swarm.models import SwarmPlanVersion
+
+    with Session(feedback_db) as db:
+        version = db.exec(
+            select(SwarmPlanVersion)
+            .where(SwarmPlanVersion.task_id == task["id"])
+            .order_by(SwarmPlanVersion.version.desc())
+        ).first()
+    assert "model fallback sol -> sonnet: sol exhausted" in version.stated_reason
 
 
 def test_planner_add_node_review_never_falls_back(feedback_db, monkeypatch):
