@@ -519,12 +519,14 @@ containers:
       {{- $catalog := list }}
       {{- range $s := $ctx.Values.egress.secrets }}
       {{- $hasSecretRef := and (hasKey $s "secretRef") (not (empty $s.secretRef)) }}
-      {{- $hasBrokerGrant := and (hasKey $s "brokerGrant") (not (empty $s.brokerGrant)) }}
-      {{- if or (and $hasSecretRef $hasBrokerGrant) (not (or $hasSecretRef $hasBrokerGrant)) (and $hasSecretRef (empty $s.env)) }}
-      {{- fail (printf "egress.secrets entry for %v must set exactly one of secretRef or brokerGrant, and secretRef entries need env" $s.egressTo) }}
+      {{- $hasSingleGrant := and (hasKey $s "brokerGrant") (not (empty $s.brokerGrant)) }}
+      {{- $hasGrantPool := and (hasKey $s "brokerGrants") (not (empty $s.brokerGrants)) }}
+      {{- $hasBrokerGrant := or $hasSingleGrant $hasGrantPool }}
+      {{- if or (and $hasSecretRef $hasBrokerGrant) (and $hasSingleGrant $hasGrantPool) (not (or $hasSecretRef $hasBrokerGrant)) (and $hasSecretRef (empty $s.env)) }}
+      {{- fail (printf "egress.secrets entry for %v must set exactly one of secretRef, brokerGrant or brokerGrants, and secretRef entries need env" $s.egressTo) }}
       {{- end }}
       {{- if $hasBrokerGrant }}
-      {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "basicUser" ($s.basicUser | default "") "brokerGrant" $s.brokerGrant "egressTo" $s.egressTo "claimHeader" ($s.claimHeader | default "") "claimPath" ($s.claimPath | default "") "injectAlwaysPaths" ($s.injectAlwaysPaths | default (list)) "plaintextUpstream" ($s.plaintextUpstream | default false) "quotaProvider" ($s.quotaProvider | default "")) }}
+      {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "basicUser" ($s.basicUser | default "") "brokerGrant" ($s.brokerGrant | default "") "brokerGrants" ($s.brokerGrants | default (list)) "egressTo" $s.egressTo "claimHeader" ($s.claimHeader | default "") "claimPath" ($s.claimPath | default "") "injectAlwaysPaths" ($s.injectAlwaysPaths | default (list)) "plaintextUpstream" ($s.plaintextUpstream | default false) "quotaProvider" ($s.quotaProvider | default "")) }}
       {{- else }}
       {{- $catalog = append $catalog (dict "header" $s.header "valuePrefix" ($s.valuePrefix | default "") "basicUser" ($s.basicUser | default "") "env" $s.env "egressTo" $s.egressTo "claimHeader" ($s.claimHeader | default "") "claimPath" ($s.claimPath | default "") "injectAlwaysPaths" ($s.injectAlwaysPaths | default (list)) "plaintextUpstream" ($s.plaintextUpstream | default false) "quotaProvider" ($s.quotaProvider | default "")) }}
       {{- end }}
@@ -535,7 +537,7 @@ containers:
       {{- range $s := $ctx.Values.egress.secrets }}
       {{- /* Quota observation reports to the broker too, so a secretRef-only
       entry that opts in still needs the URL or its reporter is silently nil. */}}
-      {{- if or (and (hasKey $s "brokerGrant") (not (empty $s.brokerGrant))) (and (hasKey $s "quotaProvider") (not (empty $s.quotaProvider))) }}{{- $hasBroker = true }}{{- end }}
+      {{- if or (and (hasKey $s "brokerGrant") (not (empty $s.brokerGrant))) (and (hasKey $s "brokerGrants") (not (empty $s.brokerGrants))) (and (hasKey $s "quotaProvider") (not (empty $s.quotaProvider))) }}{{- $hasBroker = true }}{{- end }}
       {{- end }}
       {{- if $hasBroker }}
       - name: EGRESS_TOKEN_BROKER_URL

@@ -90,6 +90,13 @@ tokenBroker:
     - name: codex-cluster
       provider: codex-chatgpt
       fqdn: auth.openai.com
+    # Second Codex account (#5974). Registered here so the broker holds its
+    # Secret and accepts its device-flow login; nothing routes to it until the
+    # chatgpt.com catalog entry in deploy/values.yaml becomes a brokerGrants
+    # pool, so an unlogged grant is inert.
+    - name: codex-b
+      provider: codex-chatgpt
+      fqdn: auth.openai.com
     - name: agent-mcp
       provider: authentik
       fqdn: auth.jomcgi.dev

@@ -25,6 +25,10 @@ type Window struct {
 
 // QuotaObservation is the shared JSON contract sent to the token broker.
 type QuotaObservation struct {
+	// Grant is the broker grant the observed response was served with. It
+	// travels as a query parameter, never in the body, so the wire body the
+	// broker validates is unchanged.
+	Grant       string   `json:"-"`
 	Provider    string   `json:"provider"`
 	ObservedAt  string   `json:"observed_at"`
 	Status      string   `json:"status"`
@@ -259,6 +263,9 @@ func (r *quotaReporter) post(obs QuotaObservation) {
 		return
 	}
 	endpoint := r.brokerURL + "/quota/" + url.PathEscape(obs.Provider)
+	if obs.Grant != "" {
+		endpoint += "?grant=" + url.QueryEscape(obs.Grant)
+	}
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		r.logger.Warn("egress quota report failed", "provider", obs.Provider, "err", err)

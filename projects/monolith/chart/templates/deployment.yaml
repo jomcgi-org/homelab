@@ -233,6 +233,8 @@ spec:
               value: {{ .Values.swarm.decisionTimeoutSeconds | quote }}
             - name: SWARM_CODEX_CONCURRENCY
               value: {{ .Values.swarm.codexConcurrency | quote }}
+            - name: SWARM_QUOTA_FLOORS
+              value: {{ .Values.swarm.quotaFloors | default dict | toJson | quote }}
             {{- end }}
             {{- if and .Values.scratchPostgres.onepassword.itemPath (or .Values.scratchPostgres.enabled .Values.scratchPostgres.demoListenPort) }}
             # Shared postgres password for the EmberVM stateful DSNs below. Comes
