@@ -1419,7 +1419,12 @@ swarm:
   factoryStopSupervisionEnabled: false
   # Hard ceiling on factory tasks in flight at once. The policy's max_tasks
   # asks for a concurrency and this caps it, so a posted policy cannot open
-  # more lanes than the guests, quota and review capacity have been sized for.
+  # more lanes than the platform is sized for. Size it against the session
+  # admission constants in agent_sessions/admission.py (TOTAL_LIMIT 4,
+  # BACKGROUND_LIMIT 3, shared with the drainer): a node that waits past its
+  # turn timeout for a permit settles uncertain and holds its slot rather
+  # than backing off. Minimum 1; zero is not a kill switch (use the factory
+  # stop control).
   factoryMaxConcurrentTasks: 1
   enabled: false
   # The cheap implementer lane and the reviewer that gates it. The reviewer is

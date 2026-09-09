@@ -212,7 +212,7 @@ def test_running_workflow_does_not_start_another_session(monkeypatch):
     conductor._submit_or_reconcile({"id": "t-1"}, run, dbos)
 
 
-def test_tick_admits_up_to_the_concurrency_limit_and_reconciles_every_task(
+def test_tick_admits_up_to_the_concurrency_limit(
     monkeypatch,
 ):
     import swarm.factory_controls as controls
@@ -245,7 +245,77 @@ def test_tick_admits_up_to_the_concurrency_limit_and_reconciles_every_task(
     )
     conductor.tick()
     assert ingested == [policy]
-    assert reconciled == ["t-1", "t-2"]
+    # Tasks admitted this tick are reconciled on the next one.
+    assert reconciled == []
+
+
+def test_tick_at_the_limit_reconciles_without_ingesting_or_admitting(monkeypatch):
+    import swarm.factory_controls as controls
+    import swarm.factory_intake as intake
+
+    policy = {"max_tasks": 1}
+    monkeypatch.delenv("FACTORY_MAX_CONCURRENT_TASKS", raising=False)
+    monkeypatch.setattr(
+        controls,
+        "status",
+        lambda: {
+            "state": "enabled",
+            "policy": policy,
+            "active_tasks": [{"task_id": "t-1", "policy": policy}],
+        },
+    )
+    monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
+    monkeypatch.setattr(
+        conductor, "ingest_eligible", lambda _p: pytest.fail("at the limit")
+    )
+    monkeypatch.setattr(intake, "admit_next", lambda _a: pytest.fail("at the limit"))
+    reconciled = []
+    monkeypatch.setattr(
+        conductor,
+        "reconcile_task",
+        lambda task_id, p, _dbos: reconciled.append(task_id),
+    )
+    conductor.tick()
+    assert reconciled == ["t-1"]
+
+
+def test_tick_isolates_a_failing_task_and_a_failing_ingest(monkeypatch):
+    import swarm.factory_controls as controls
+    import swarm.factory_intake as intake
+
+    policy = {"max_tasks": 3}
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "3")
+    monkeypatch.setattr(
+        controls,
+        "status",
+        lambda: {
+            "state": "enabled",
+            "policy": policy,
+            "active_tasks": [
+                {"task_id": "t-poisoned", "policy": policy},
+                {"task_id": "t-healthy", "policy": policy},
+            ],
+        },
+    )
+    monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
+    reconciled = []
+
+    def reconcile(task_id, _policy, _dbos):
+        reconciled.append(task_id)
+        if task_id == "t-poisoned":
+            raise ValueError("factory outcome refused: conflicting_outcome")
+
+    monkeypatch.setattr(conductor, "reconcile_task", reconcile)
+
+    def ingest(_policy):
+        raise RuntimeError("404 on a transferred issue")
+
+    monkeypatch.setattr(conductor, "ingest_eligible", ingest)
+    monkeypatch.setattr(intake, "admit_next", lambda _a: pytest.fail("ingest raised"))
+    conductor.tick()
+    assert reconciled == ["t-poisoned", "t-healthy"]
 
 
 def test_stopped_factory_never_polls_or_admits(monkeypatch):
@@ -265,9 +335,13 @@ def test_stopped_factory_never_polls_or_admits(monkeypatch):
         conductor, "ingest_eligible", lambda _: pytest.fail("stopped admission")
     )
     cancelled = []
-    monkeypatch.setattr(
-        conductor, "cancel_owned", lambda task_id, _dbos: cancelled.append(task_id)
-    )
+
+    def cancel(task_id, _dbos):
+        cancelled.append(task_id)
+        if task_id == "t-1":
+            raise RuntimeError("reap failed")
+
+    monkeypatch.setattr(conductor, "cancel_owned", cancel)
     conductor.tick()
     assert cancelled == ["t-1", "t-2"]
 

@@ -93,9 +93,10 @@ def admit_next(actor: str, *, session: Session | None = None) -> dict:
     """Atomically reserve one WIP slot and pin the operator policy to a new SwarmTask.
 
     max_tasks bounds tasks in flight, not tasks ever admitted: an autonomous
-    intake must keep admitting as tasks settle, with spend bounded by the
-    per-task budgets and the daily quota accounting rather than by a counter a
-    human has to re-arm. admitted_count is kept for status only.
+    intake must keep admitting as tasks settle. Total spend per generation is
+    bounded by the receipts it can hold (one per repo/issue/generation, never
+    returned to queued) times task_budget_usd, not by a counter a human has
+    to re-arm. admitted_count is kept for status only.
     """
     actor = _text(actor, "actor")
     with _locked_session(session) as (db, control):
@@ -113,6 +114,7 @@ def admit_next(actor: str, *, session: Session | None = None) -> dict:
                 "ok": False,
                 "reason": "wip_limit",
                 "task_id": active[0].task_id,
+                "active_task_ids": [row.task_id for row in active],
                 "active": len(active),
                 "limit": limit,
             }
