@@ -1609,6 +1609,7 @@ def admission_database(tmp_path, monkeypatch):
     from agent_sessions.models import (
         AgentCapacityPool,
         AgentCapacityReservation,
+        AgentResultReceipt,
         AgentSession,
         AgentTurn,
         PendingMessage,
@@ -1627,6 +1628,7 @@ def admission_database(tmp_path, monkeypatch):
             for m in (
                 AgentCapacityPool,
                 AgentCapacityReservation,
+                AgentResultReceipt,
                 AgentSession,
                 AgentTurn,
                 PendingMessage,
@@ -1966,6 +1968,106 @@ def test_cleanup_refunds_only_never_dispatched_pending(
         permit = db.exec(select(AgentCapacityReservation)).one()
         assert permit.state == ("reserved" if attempted else "settled")
         assert permit.outcome == (None if attempted else "cancelled_before_dispatch")
+
+
+@pytest.mark.parametrize("handoff", ["pending_receipt", "fenced", "stale_snapshot"])
+def test_cleanup_preserves_native_receipt_owner(
+    admission_database, monkeypatch, handoff
+):
+    from agent_sessions import admission, mcp, result_receipts, store
+    from agent_sessions.models import (
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from sqlmodel import select
+
+    for module in (mcp, result_receipts, store):
+        monkeypatch.setattr(module, "get_engine", lambda: admission_database)
+    with Session(admission_database) as db:
+        row = store.create_session(
+            db, "receipt-cleanup", "<guest>", "main", "luna", admission_tier="kg"
+        )
+        sid = row.id
+        store.set_ember_session(db, sid, "receipt-guest", "guest-token", None)
+        store.create_pending_message(db, sid, "original", "luna")
+    assert store.claim_pending_message_for_session_sync(sid, "original-owner") == 1
+    assert admission.recheck(sid, 1, "original-owner")
+    receipt = result_receipts.prepare_receipt(
+        sid, "original-owner", 1, "receipt-guest", b'{"message":"original"}'
+    )
+    detached = mcp._load_session_row(sid)
+    assert detached.result_receipt_fence_id is None
+    if handoff != "pending_receipt":
+        # Reproduce the writer's atomic pending-to-fence handoff after an older
+        # cleanup snapshot was read. The integration test uses the real writer.
+        with Session(admission_database) as db, db.begin():
+            row = store._lock_session(db, sid)
+            db.delete(store.get_pending_message(db, sid, 1))
+            row.result_receipt_fence_id = receipt["id"]
+            db.add(row)
+            db.add(
+                AgentTurn(session_id=sid, seq=1, prompt="original", result_text="done")
+            )
+            permit = db.exec(select(AgentCapacityReservation)).one()
+            permit.state = "settled"
+            db.add(permit)
+        with Session(admission_database) as db:
+            assert store.create_pending_message(db, sid, "KG correction").seq == 2
+    if handoff == "stale_snapshot":
+        monkeypatch.setattr(mcp, "_load_session_row", lambda _sid: detached)
+
+    def snapshot():
+        with Session(admission_database) as db:
+            return {
+                model.__name__: [row.model_dump() for row in db.exec(select(model))]
+                for model in (
+                    AgentSession,
+                    PendingMessage,
+                    AgentTurn,
+                    AgentCapacityReservation,
+                    AgentResultReceipt,
+                )
+            }
+
+    async def unexpected_destroy(_guest):
+        pytest.fail("receipt ownership must prevent guest DELETE")
+
+    def unexpected_clear(_guest):
+        pytest.fail("receipt ownership must prevent binding cleanup")
+
+    monkeypatch.setattr(mcp._transport, "destroy_session", unexpected_destroy)
+    monkeypatch.setattr(mcp, "_clear_ember_bindings_for", unexpected_clear)
+    before = snapshot()
+    assert not drainer.destroy_drainer_session.__wrapped__(sid, "receipt-cleanup")
+    assert snapshot() == before
+
+
+def test_cleanup_uses_locked_guest_binding(admission_database, monkeypatch):
+    from agent_sessions import mcp, store
+    from agent_sessions.models import AgentSession
+
+    monkeypatch.setattr(mcp, "get_engine", lambda: admission_database)
+    with Session(admission_database) as db:
+        row = store.create_session(db, "rebound-cleanup", "<guest>", "main")
+        sid = row.id
+        store.set_ember_session(db, sid, "old-guest", "old-token", None)
+    detached = mcp._load_session_row(sid)
+    with Session(admission_database) as db:
+        store.set_ember_session(db, sid, "current-guest", "current-token", None)
+    monkeypatch.setattr(mcp, "_load_session_row", lambda _sid: detached)
+    destroyed = []
+
+    async def destroy(guest_id):
+        destroyed.append(guest_id)
+
+    monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
+    assert drainer.destroy_drainer_session.__wrapped__(sid, "rebound-cleanup")
+    assert destroyed == ["current-guest"]
+    with Session(admission_database) as db:
+        assert db.get(AgentSession, sid).ember_session_id is None
 
 
 @pytest.mark.parametrize("pause", ["enabled", "max_jobs_per_cycle"])

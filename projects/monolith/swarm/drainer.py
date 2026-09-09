@@ -608,10 +608,21 @@ def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bo
         try:
             # A session that timed out before the orphan sweep claimed its first
             # message must not create a VM after cleanup has already run.
+            current_ember_id = None
             with Session(get_engine()) as session:
                 current = store._lock_session(session, resolved_session_id)
                 if current is None or store.has_unknown_outcome(
                     session, resolved_session_id
+                ):
+                    span.set_attribute("drain.destroyed", False)
+                    return False
+                current_ember_id = current.ember_session_id
+                if (
+                    current_ember_id is not None
+                    and store.guest_cleanup_hold(
+                        session, resolved_session_id, current_ember_id
+                    )
+                    is not None
                 ):
                     span.set_attribute("drain.destroyed", False)
                     return False
@@ -635,10 +646,10 @@ def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bo
             )
             span.set_attribute("drain.destroyed", False)
             return False
-        if row.ember_session_id is None:
+        if current_ember_id is None:
             span.set_attribute("drain.destroyed", False)
             return False
-        ember_session_id = row.ember_session_id
+        ember_session_id = current_ember_id
         try:
             try:
                 asyncio.run(_transport.destroy_session(ember_session_id))
