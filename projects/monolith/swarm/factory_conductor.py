@@ -559,11 +559,6 @@ def _planner_run(run: dict) -> dict:
 def _planner_context(task: dict, nodes: list[dict], runs: list[dict]) -> str:
     ordered_runs = sorted(runs, key=lambda run: run["id"])
     projected_runs = [_planner_run(run) for run in ordered_runs]
-    node_profiles = {node["node_key"]: node.get("model") for node in nodes}
-    for item in projected_runs:
-        selected = node_profiles.get(item["node_key"])
-        if selected is not None:
-            item["selected_profile"] = selected
     # These records survive collection limits, including a later negative review.
     # They are evidence, not an alternate implementation of verify_delivery.
     delivery = {}
@@ -1086,7 +1081,7 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     for run in runs:
         if run["status"] in ("succeeded", "failed", "escalated", "cancelled"):
             result = _outcome(run)
-            record_start_outcome(
+            charged = record_start_outcome(
                 task_id,
                 run["pin"]["workflow_id"],
                 run["status"],
@@ -1095,6 +1090,8 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
                 session_id=result.get("session_id"),
                 reconciled=True,
             )
+            if not charged["ok"]:
+                raise ValueError(f"factory outcome refused: {charged['reason']}")
     active = [r for r in runs if r["status"] in ("admitted", "dispatched", "uncertain")]
     if active:
         for run in active[:1]:

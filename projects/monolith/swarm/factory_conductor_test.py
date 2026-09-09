@@ -2464,3 +2464,241 @@ def test_factory_stop_refuses_cleanup_ownership_changed_after_observation(
             settle_uncertain_factory_attempt(db, s.run["pin"], identity)
         db.rollback()
     assert _uncertain_snapshot(s) == before
+
+
+@pytest.fixture
+def escalating_factory(feedback_db, monkeypatch):
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
+    task, policy = feedback_task()
+    key = "implement_escalate"
+    workflow = f"factory-node:{task['id']}:{key}:1"
+    assert conductor._add(
+        task, policy, key, "bounded work", [], "luna", "test:escalate", "test"
+    ).ok
+    context = {
+        "repo": task["repo"],
+        "branch": f"factory/{task['id']}",
+        "workflow_id": workflow,
+        "artifact_path": ".factory/escalate.json",
+        "artifact_schema": conductor.RESULT_SCHEMA,
+        "hydration_branch": "main",
+    }
+    assert conductor.reserve_node(task["id"], key, workflow, context)
+    run = conductor.graph.node_runs(task["id"])[0]
+    value = {
+        "status": "escalate",
+        "summary": "Needs a stronger worker",
+        "reason": "Implementation exceeds the current worker's capability",
+        "requested_model": "opus",
+        "pr_number": None,
+        "head_sha": None,
+    }
+    result = {
+        "status": "escalated",
+        "session_id": 77,
+        "cost_usd": 0.25,
+        "value": value,
+        "artifact": {"status": "ok", "value": value, "errors": []},
+    }
+    dbos = SimpleNamespace(
+        get_workflow_status=lambda _: SimpleNamespace(status="SUCCESS"),
+        retrieve_workflow=lambda _: SimpleNamespace(get_result=lambda: result),
+        start_workflow=lambda *_: pytest.fail("must not invoke another worker"),
+    )
+    return SimpleNamespace(
+        engine=feedback_db, task=task, policy=policy, run=run, result=result, dbos=dbos
+    )
+
+
+@pytest.mark.parametrize("cost", [0.25, None, 35.0])
+@pytest.mark.parametrize("recovered", [False, True])
+def test_escalation_settles_both_ledgers_without_retry_or_successful_dependency(
+    escalating_factory, monkeypatch, cost, recovered
+):
+    import json
+    from swarm import factory_controls as controls
+    from swarm import node_workflows as nodes
+
+    s = escalating_factory
+    s.result["cost_usd"] = cost
+    before = controls.task_snapshot(s.task["id"])
+    assert conductor._add(
+        s.task,
+        s.policy,
+        "review_blocked",
+        "review",
+        [s.run["node_key"]],
+        "opus",
+        "test:dependent",
+        "test",
+        review=True,
+    ).ok
+    if recovered:
+        s.dbos.get_workflow_status = lambda _: SimpleNamespace(status="ERROR")
+        monkeypatch.setattr(nodes, "reconcile_completed_node", lambda *_: s.result)
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    assert run["status"] == "escalated" and run["finished_at"] is not None
+    assert run["pin"] == s.run["pin"]
+    assert json.loads(run["outcome_json"]) == s.result
+    assert run["accounted_cost_usd"] == (2 if cost is None else cost)
+    current = controls.task_snapshot(s.task["id"])
+    assert current["starts"][0]["status"] == "failed"
+    assert current["starts"][0]["session_id"] == 77
+    assert current["starts"][0]["cost_usd"] == cost
+    assert current["unresolved_starts"] == 0
+    assert current["turns_used"] == before["turns_used"] == 1
+    assert current["committed_cost_usd"] == (2 if cost is None else cost)
+    assert current["deadline_at"] == before["deadline_at"]
+    assert current["policy"] == before["policy"]
+    # The next tick may ask the conductor to replan; it cannot retry the worker
+    # or treat escalation as a successful dependency, even with attempts left.
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    assert conductor.graph.node_runs(s.task["id"]) == [run]
+    assert controls.task_snapshot(s.task["id"])["starts"] == current["starts"]
+    if cost != 35.0:
+        assert any(
+            n["node_key"] == "conductor_1"
+            for n in conductor.graph.load_graph(s.task["id"])
+        )
+
+
+@pytest.mark.parametrize("previous", ["reserved", "uncertain", "failed"])
+def test_historical_escalation_settles_exact_start_before_further_admission(
+    escalating_factory, monkeypatch, previous
+):
+    import json
+    from swarm import factory_controls as controls
+
+    s = escalating_factory
+    s.result["cost_usd"] = None
+    key = s.run["pin"]["workflow_id"]
+    if previous != "reserved":
+        assert controls.record_start_outcome(
+            s.task["id"], key, previous, "test", session_id=77
+        )["ok"]
+    assert conductor.graph.record_outcome(
+        s.task["id"],
+        s.run["node_key"],
+        1,
+        "escalated",
+        None,
+        None,
+        json.dumps(s.result),
+    ).ok
+    before = conductor.graph.node_runs(s.task["id"])
+    checks = []
+
+    def check_after_settlement(task_id):
+        checks.append(controls.task_snapshot(task_id))
+        return {"ok": False, "reason": "task_paused"}
+
+    monkeypatch.setattr(controls, "can_start", check_after_settlement)
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    assert len(checks) == 2 and checks[0] == checks[1]
+    assert checks[0]["starts"][0]["status"] == "failed"
+    assert checks[0]["unresolved_starts"] == 0
+    assert checks[0]["committed_cost_usd"] == 2
+    assert checks[0]["turns_used"] == 1
+    assert conductor.graph.node_runs(s.task["id"]) == before
+
+
+@pytest.mark.parametrize(
+    "status,cost,session_id,reason",
+    [
+        ("succeeded", 0.25, 77, "conflicting_outcome"),
+        ("failed", 0.5, 77, "conflicting_outcome"),
+        ("uncertain", None, 78, "conflicting_session"),
+    ],
+)
+def test_historical_escalation_conflict_stops_before_new_work(
+    escalating_factory, monkeypatch, status, cost, session_id, reason
+):
+    import json
+    from swarm import factory_controls as controls
+
+    s = escalating_factory
+    assert controls.record_start_outcome(
+        s.task["id"],
+        s.run["pin"]["workflow_id"],
+        status,
+        "test",
+        cost_usd=cost,
+        session_id=session_id,
+    )["ok"]
+    assert conductor.graph.record_outcome(
+        s.task["id"],
+        s.run["node_key"],
+        1,
+        "escalated",
+        0.25,
+        None,
+        json.dumps(s.result),
+    ).ok
+    before = controls.task_snapshot(s.task["id"])
+    monkeypatch.setattr(
+        controls, "can_start", lambda *_: pytest.fail("conflict must block admission")
+    )
+    with pytest.raises(ValueError, match=reason):
+        conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    assert controls.task_snapshot(s.task["id"]) == before
+
+
+def test_escalation_settlement_rolls_back_both_ledgers_on_audit_failure(
+    escalating_factory,
+):
+    from sqlalchemy import event
+    from sqlmodel import Session
+    from swarm import factory_controls as controls
+    from swarm.factory_models import FactoryAudit
+
+    s = escalating_factory
+    before_runs = conductor.graph.node_runs(s.task["id"])
+    before = controls.task_snapshot(s.task["id"])
+
+    def reject_settlement_audit(db, *_):
+        if any(
+            isinstance(row, FactoryAudit) and row.action == "record_start_outcome"
+            for row in db.new
+        ):
+            raise RuntimeError("injected audit failure")
+
+    event.listen(Session, "before_flush", reject_settlement_audit)
+    try:
+        with pytest.raises(RuntimeError, match="injected audit failure"):
+            conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    finally:
+        event.remove(Session, "before_flush", reject_settlement_audit)
+    assert conductor.graph.node_runs(s.task["id"]) == before_runs
+    assert controls.task_snapshot(s.task["id"]) == before
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "escalated"
+    assert controls.task_snapshot(s.task["id"])["unresolved_starts"] == 0
+
+
+@pytest.mark.parametrize("selected_profile", [None, "historical-profile"])
+def test_planner_keeps_pin_profile_distinct_from_current_node_and_provider(
+    monkeypatch, selected_profile
+):
+    import json
+
+    task, runs = delivery(monkeypatch)
+    task["task_text"] = "Preserve historical dispatch evidence."
+    run = runs[-1]
+    run["pin"]["selected_profile"] = selected_profile
+    outcome = json.loads(run["outcome_json"])
+    outcome["provider_model"] = "native-provider-model"
+    run["outcome_json"] = json.dumps(outcome)
+    nodes = [{"node_key": run["node_key"], "model": "current-node-profile", "deps": []}]
+    monkeypatch.setattr(conductor, "_decision_evidence", lambda _: [])
+    context = planner_context(conductor.planner_prompt(task, nodes, runs))
+    expected = selected_profile or "opus"
+    assert context["graph"][0]["model"] == "current-node-profile"
+    for projected in (
+        context["runs"][-1],
+        context["delivery_evidence"]["latest_review"],
+    ):
+        assert projected["selected_profile"] == expected
+        assert projected["model"] == "opus"
+        assert projected["provider_model"] == "native-provider-model"

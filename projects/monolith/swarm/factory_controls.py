@@ -601,14 +601,16 @@ def record_start_outcome(
     actor = _text(actor, "actor")
     if type(reconciled) is not bool:
         raise ValueError("invalid reconciled flag")
-    if status not in (*_TERMINAL, "uncertain"):
+    if status not in (*_TERMINAL, "uncertain", "escalated"):
         raise ValueError("invalid start outcome")
     cost = None if cost_usd is None else _money(cost_usd, "cost_usd", zero=True)
     if session_id is not None:
         _integer(session_id, "session_id", 1, 2**31 - 1)
     # Known completion without provider cost consumes the reserved ceiling.
     # Only uncertain execution retains an active reservation.
-    effective = status
+    # Escalation is terminal work without delivery. Keep its richer graph
+    # outcome while settling this reservation under the existing failed status.
+    effective = "failed" if status == "escalated" else status
     with _locked_session(session) as (db, _control):
         start = next(
             (s for s in _starts(db, task_id) if s.start_key == start_key), None
