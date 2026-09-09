@@ -27,7 +27,8 @@
   // Measured from the space the list actually gets, because a fixed count
   // cannot fit a box whose height depends on the viewport. Paginating and
   // then scrolling inside the page would defeat the point of paginating.
-  let pageSize = $state(8);
+  const DEFAULT_PAGE_SIZE = 8;
+  let pageSize = $state(DEFAULT_PAGE_SIZE);
   let listEl = $state(null);
 
   const day = (value) => value?.slice(5, 10).replace("-", "·") ?? "";
@@ -108,9 +109,21 @@
   );
   const prRows = $derived(paginate(sortedPrs, prPage, pageSize));
 
+  // Measuring only means anything while the page is a fixed height and the list
+  // is the flexible band inside it. Below these breakpoints the layout reverts
+  // to ordinary document flow, where the list is as tall as its own rows: the
+  // measurement would then just count the rows it had rendered, and any partial
+  // page would ratchet the size down permanently.
+  const FITS_TO_VIEWPORT = "(min-width: 901px) and (min-height: 721px)";
+
   $effect(() => {
     if (!listEl) return;
+    const media = window.matchMedia(FITS_TO_VIEWPORT);
     const fit = () => {
+      if (!media.matches) {
+        pageSize = DEFAULT_PAGE_SIZE;
+        return;
+      }
       const head = listEl.querySelector("li.hd");
       const row = listEl.querySelector("li:not(.hd)");
       if (!row) return;
@@ -118,6 +131,7 @@
       if (rowHeight <= 0) return;
       const available =
         listEl.clientHeight - (head?.getBoundingClientRect().height ?? 0);
+      if (available <= 0) return;
       // Rows are a uniform height in CSS, so this division is exact rather
       // than an estimate that overflows when several long titles collide.
       const next = Math.max(3, Math.floor(available / rowHeight));
@@ -126,7 +140,11 @@
     fit();
     const observer = new ResizeObserver(fit);
     observer.observe(listEl);
-    return () => observer.disconnect();
+    media.addEventListener("change", fit);
+    return () => {
+      observer.disconnect();
+      media.removeEventListener("change", fit);
+    };
   });
 
   function changeSort(next) {
@@ -329,12 +347,12 @@
             <span
               ><button
                 type="button"
-                onclick={() => (prPage -= 1)}
-                disabled={prPage === 0}>prev</button
+                onclick={() => (prPage = prRows.page - 1)}
+                disabled={prRows.page === 0}>prev</button
               ><button
                 type="button"
-                onclick={() => (prPage += 1)}
-                disabled={prPage >= prRows.pageCount - 1}>next</button
+                onclick={() => (prPage = prRows.page + 1)}
+                disabled={prRows.page >= prRows.pageCount - 1}>next</button
               ></span
             >
           </div>
