@@ -508,7 +508,16 @@ def capture_result(receipt_id: str, token: str, body: bytes) -> dict:
             .where(AgentResultReceipt.id == receipt_id)
             .values(created_at=AgentResultReceipt.created_at)
         )
-        receipt = db.get(AgentResultReceipt, receipt_id, populate_existing=True)
+        # Retries must not fetch a second full native body into this receiver.
+        # Keep the existing row lock while checking metadata and exact bytes.
+        receipt = db.exec(
+            select(
+                AgentResultReceipt.token_sha256,
+                AgentResultReceipt.retain_until,
+                AgentResultReceipt.accept_until,
+                AgentResultReceipt.result_sha256,
+            ).where(AgentResultReceipt.id == receipt_id)
+        ).one_or_none()
         if receipt is None or not hmac.compare_digest(
             receipt.token_sha256, _sha(token.encode())
         ):
@@ -517,15 +526,26 @@ def capture_result(receipt_id: str, token: str, body: bytes) -> dict:
         if now >= _aware(receipt.retain_until):
             raise ReceiptRejected(410, "receipt_expired")
         if receipt.result_sha256 is not None:
-            if receipt.result_sha256 != digest or receipt.result_body != body:
+            if receipt.result_sha256 != digest:
+                raise ReceiptRejected(409, "receipt_result_conflict")
+            # Return only a boolean, avoiding PostgreSQL's encoded result and
+            # the decoded stored body alongside the incoming bytes. A digest
+            # match alone is insufficient, including a corrupt or NULL body.
+            identical = db.exec(
+                select(AgentResultReceipt.result_body == body).where(
+                    AgentResultReceipt.id == receipt_id
+                )
+            ).one()
+            if identical is not True:
                 raise ReceiptRejected(409, "receipt_result_conflict")
         else:
             if now >= _aware(receipt.accept_until):
                 raise ReceiptRejected(410, "receipt_acceptance_expired")
-            receipt.result_body = body
-            receipt.result_sha256 = digest
-            receipt.received_at = now
-            db.add(receipt)
+            db.execute(
+                update(AgentResultReceipt)
+                .where(AgentResultReceipt.id == receipt_id)
+                .values(result_body=body, result_sha256=digest, received_at=now)
+            )
         return {"receipt_id": receipt_id, "result_sha256": digest}
 
 
