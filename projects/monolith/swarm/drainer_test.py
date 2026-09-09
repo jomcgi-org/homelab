@@ -2170,9 +2170,7 @@ def test_cleanup_resumes_exact_claim_until_terminal_confirmation(
         with pytest.raises(asyncio.CancelledError):
             drainer.destroy_drainer_session.__wrapped__(sid, "deferred-cleanup")
     else:
-        assert not drainer.destroy_drainer_session.__wrapped__(
-            sid, "deferred-cleanup"
-        )
+        assert not drainer.destroy_drainer_session.__wrapped__(sid, "deferred-cleanup")
     with Session(admission_database) as db:
         retained = db.get(AgentSession, sid)
         assert retained.ember_session_id == "guest-exact"
@@ -2261,9 +2259,7 @@ def test_cleanup_retires_claim_when_exact_guest_is_gone(
         assert retired.guest_cleanup_id is None
 
 
-def test_cleanup_defers_legacy_workflowless_binding(
-    admission_database, monkeypatch
-):
+def test_cleanup_defers_legacy_workflowless_binding(admission_database, monkeypatch):
     from agent_sessions import mcp, store
     from agent_sessions.models import AgentSession
 
