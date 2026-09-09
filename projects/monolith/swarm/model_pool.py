@@ -190,12 +190,15 @@ def rollup_grants(summary: dict, grants: dict) -> dict:
             best = min(views, key=lambda v: v.get("age_seconds") or 0.0)
             merged[provider] = {**best, "exhausted": True}
             continue
+        # A grant with no usable window says nothing about room: it sorts
+        # last, so it can only win when it is the only open grant.
         best = min(
             open_views,
             key=lambda v: (
                 v.get("headline_used_percent")
                 if isinstance(v.get("headline_used_percent"), (int, float))
-                else -1.0
+                and not isinstance(v.get("headline_used_percent"), bool)
+                else float("inf")
             ),
         )
         merged[provider] = {**best, "exhausted": False}

@@ -935,6 +935,25 @@ token (Codex ChatGPT) or an authentik service-account grant rotates in one
 place and never enters a guest. The grant Secret's data is broker-owned and
 `ignoreDifferences`d in the Application.
 
+**Grant pools** (**Built**, inert until a second account is logged in):
+a catalog entry may name `brokerGrants`, an ordered pool of grants on one
+provider, and the sidecar picks the active grant per connection from the
+broker's per-grant quota views: remaining quota in 25% bands taken from the
+worst unexpired window, the current grant kept until another is a full band
+ahead, ties to the sooner reset, an exhausted grant out of the ranking until
+its reset, a grant the broker cannot mint for skipped for a minute. Quota
+reports carry the grant they were served with, so the broker keeps a
+per-grant view beside the per-provider one and the monolith's model pools
+judge a class by its least-used open grant.
+
+**Why.** The sidecar is one per brick pod, shared by every guest on it, and
+nothing per session reaches it: choosing an account per session would need
+the control plane, noded and the proto to carry it. Choosing per connection
+with hysteresis gets nearly the same cache locality (a brick stays on one
+account for long stretches and each account burns down in quarter steps)
+for no cross-service plumbing, and the occasional cache miss on a flip is
+cheaper than that plumbing. See #5974.
+
 **Agent MCP lane** (**Built** on the hub): the guest half of the agents tier
 described in [projects/mcp/ARCHITECTURE.md](../mcp/ARCHITECTURE.md#topology).
 The shim writes a strict MCP client config from a URL delivered by
@@ -1206,6 +1225,7 @@ this table when the work ships or the issue closes without it.
 | The brick `maxReplicas` ceiling itself moves on sustained denial pressure, not only the replica count clamped inside it | section 7 | #5505 | not started |
 | SPIFFE-issued identity moves beyond issuance: mTLS on the CP-to-noded hop, per-principal guest JWT-SVIDs, and GCP federation | section 9 | #5706 | not started |
 | A session workspace gets a size budget instead of unbounded growth | Decision history (embervm/027) | #5074 | not started |
+| A second Codex account joins the chatgpt.com grant pool once logged in, and quota floors per class and role protect planning capacity | section 9 | #5974 | grant pool built, pool not yet activated |
 
 ---
 
