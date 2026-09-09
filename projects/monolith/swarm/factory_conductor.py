@@ -481,6 +481,11 @@ def _planner_run(run: dict) -> dict:
             ("model", "workflow_id", "selected_profile"),
         )
     )
+    pin = run.get("pin") or {}
+    if "selected_profile" not in result and isinstance(pin.get("model"), str):
+        # The immutable pin records the profile selected for this dispatch.
+        # The observed provider model is separate evidence below.
+        result["selected_profile"] = pin["model"]
     outcome = _outcome(run)
     provider_model = outcome.get("provider_model")
     result["provider_model"] = (
@@ -897,7 +902,9 @@ def _apply_decision(
         result = graph.discard_node(
             task["id"],
             node_key=decision["node_key"],
-            expected_version=graph.current_version(task["id"]),
+            expected_version=decision.get(
+                "expected_version", graph.current_version(task["id"])
+            ),
             author_kind="conductor",
             author=policy["conductor_model"],
             cause_kind="factory_conductor",
