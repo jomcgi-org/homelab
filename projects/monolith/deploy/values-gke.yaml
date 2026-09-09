@@ -22,7 +22,7 @@ agents:
     probeSupervisionEnabled: true
     # Preserve native results before their synchronous response is delivered.
     resultReceiptsEnabled: true
-    resultReceiptAdoptionEnabled: false
+    resultReceiptAdoptionEnabled: true
 
 postgres:
   storage:
