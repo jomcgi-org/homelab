@@ -101,11 +101,6 @@
       ]),
     ),
   );
-  const markTotals = $derived({
-    verified: verifiedTotal,
-    unverified: unverifiedTotal,
-    disputed: contradictedTotal,
-  });
   const noneShown = $derived(
     !showVerified && !showUnverified && !showContradicted,
   );
@@ -585,9 +580,9 @@
                   width="148"
                   height="130"
                 /><rect x="436" y="56" width="148" height="130" /><rect
-                  x="644"
+                  x="632"
                   y="56"
-                  width="116"
+                  width="148"
                   height="130"
                 />
               </g>
@@ -598,9 +593,9 @@
                   x2="376"
                   y2="80"
                 /><line x1="436" y1="80" x2="584" y2="80" /><line
-                  x1="644"
+                  x1="632"
                   y1="80"
-                  x2="760"
+                  x2="780"
                   y2="80"
                 />
               </g>
@@ -622,21 +617,21 @@
                 ><text x="444" y="156">confidence</text><text x="444" y="174"
                   >validity window</text
                 >
-                <text x="652" y="72">readers</text><text x="652" y="102"
+                <text x="640" y="72">readers</text><text x="640" y="102"
                   >agents</text
-                ><text x="652" y="120">this page</text>
+                ><text x="640" y="120">this page</text>
               </g>
               <g stroke="currentColor" stroke-width="1" fill="currentColor">
                 <line x1="170" y1="121" x2="220" y2="121" /><polygon
                   points="226,121 219,117.5 219,124.5"
                 /><line x1="378" y1="121" x2="428" y2="121" /><polygon
                   points="434,121 427,117.5 427,124.5"
-                /><line x1="586" y1="121" x2="636" y2="121" /><polygon
-                  points="642,121 635,117.5 635,124.5"
+                /><line x1="586" y1="121" x2="624" y2="121" /><polygon
+                  points="630,121 623,117.5 623,124.5"
                 />
               </g>
               <path
-                d="M702 186 V218 H302 V188"
+                d="M706 186 V218 H302 V188"
                 fill="none"
                 stroke="currentColor"
                 stroke-width="1"
@@ -653,6 +648,25 @@
                 >dispute: a new raw input, the fact stays</text
               >
             </svg>
+            <!-- The same sequence for a phone, where the drawing above would
+                 either scale its labels into illegibility or scroll a box off
+                 the edge with nothing saying it had. -->
+            <div class="stack" aria-hidden="true">
+              <div>
+                <b>sessions</b><span>codex, claude, ember, agent report</span>
+              </div>
+              <div>
+                <b>raw input</b><span>immutable, content hash, source lane</span
+                >
+              </div>
+              <div>
+                <b>record</b><span
+                  >verified, unverified, scope, confidence, validity window</span
+                >
+              </div>
+              <div><b>readers</b><span>agents, this page</span></div>
+              <p>dispute: a new raw input, the fact stays</p>
+            </div>
             <figcaption>Fig. 1 Context data flow</figcaption>
           </figure>
           <section>
@@ -664,7 +678,7 @@
                     <summary
                       ><i class={`mark ${mark.state}`}></i><span
                         >{mark.label}: {mark.definition}.</span
-                      ><time>{number(markTotals[mark.state])}</time></summary
+                      ></summary
                     >
                   </details>
                 </li>

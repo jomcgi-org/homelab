@@ -290,9 +290,9 @@
 }
 
 .factory-page .charts {
-  /* charts.js draws a 600 wide viewBox with LEFT = 34 reserved for the
-     y-axis, so the plot area starts 34/600 in. The legend matches it. */
-  --plot-gutter: 5.6667%;
+  /* charts.js draws a 600 wide viewBox with LEFT = 48 reserved for the
+     y-axis, so the plot area starts 48/600 in. The legend matches it. */
+  --plot-gutter: 8%;
 
   display: grid;
   flex: none;
@@ -444,7 +444,10 @@
      being squeezed by their container before that measurement is taken. */
   box-sizing: border-box;
   flex: none;
-  grid-template-columns: 3.2em minmax(0, 1fr) 5.5em 3.2em;
+  /* The area is its own column, not a suffix inside the title cell: sharing
+     the cell meant the ellipsis ate the area and left a dangling separator,
+     which is how a reader tells two similarly named changes apart. */
+  grid-template-columns: 3.2em minmax(0, 1fr) auto 5.5em 3.2em;
   gap: 0.6em;
   align-items: baseline;
   overflow: hidden;
@@ -504,15 +507,6 @@
   color: var(--ink-2);
   font-family: var(--font-code);
   font-size: 0.7rem;
-}
-
-.factory-page .prs .ty.feat {
-  color: var(--ink);
-  font-weight: 700;
-}
-
-.factory-page .prs .sc {
-  color: var(--ink-2);
 }
 
 .factory-page .prs .dt,
@@ -799,7 +793,10 @@
 
 .factory-page .journal {
   display: grid;
-  grid-template-columns: minmax(12em, 15em) minmax(0, 46em);
+  /* The document runs to the frame's edge. Capping the column at 46em left a
+     126px gutter on the right against 63px on the left, which read as a column
+     that had failed to load. The measure belongs on the prose, not the grid. */
+  grid-template-columns: minmax(12em, 15em) minmax(0, 1fr);
   gap: clamp(2em, 4vw, 4em);
   align-items: stretch;
 }
@@ -1153,6 +1150,13 @@
   font-family: var(--font-code);
 }
 
+/* The stacked form of the figure is the phone fallback only; the drawing is
+   the real thing at any width that can hold it. Declared here, ahead of the
+   breakpoint that reveals it, so the media query wins on order. */
+.factory-page figure .stack {
+  display: none;
+}
+
 .factory-page figcaption {
   /* No max-width: the caption is a one-line label now, and its rule is the
      figure's bottom edge, so it has to span the whole figure rather than
@@ -1275,11 +1279,18 @@
     min-width: 0;
   }
 
-  /* The diagram is a wide technical drawing: shrinking it to 390px makes the
-     11px labels unreadable, so it keeps a legible floor and scrolls sideways
-     inside the figure instead. */
+  /* The diagram is a wide technical drawing. Scaling it to a phone width puts
+     its 11px labels at about 6px, and scrolling it sideways hides the last box
+     with no affordance saying so, so below this width the figure is replaced
+     by the same sequence set as stacked rows. */
   .factory-page figure svg {
-    min-width: 34em;
+    display: none;
+  }
+
+  .factory-page figure .stack {
+    display: grid;
+    gap: 0.5rem;
+    padding: 0.9rem 1rem;
   }
 }
 
@@ -1414,4 +1425,47 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* The area column: fixed to its content, never shrinking, so the title cell is
+   the only one that ellipses. */
+.factory-page .prs > li > .sc {
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 0.82em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 8em;
+}
+
+/* Four header cells across five columns: the title label spans the title and
+   area columns, which are one idea ("title . area") to the reader. */
+.factory-page .prs > li.hd {
+  grid-template-columns: 3.2em minmax(0, 1fr) 5.5em 3.2em;
+}
+
+.factory-page figure .stack > div {
+  display: grid;
+  grid-template-columns: 7em minmax(0, 1fr);
+  gap: 0.6em;
+  padding: 0.4em 0;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.factory-page figure .stack > div b {
+  font-weight: 500;
+}
+
+.factory-page figure .stack > div span {
+  color: var(--ink-2);
+}
+
+.factory-page figure .stack > p {
+  margin: 0.4em 0 0;
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.68rem;
 }
