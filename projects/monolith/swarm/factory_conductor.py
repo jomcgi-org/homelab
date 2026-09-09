@@ -39,11 +39,19 @@ RESULT_SCHEMA = {
     "additionalProperties": False,
     "required": ["status", "summary", "pr_number", "head_sha"],
     "properties": {
-        "status": {"enum": ["complete", "needs_work"]},
+        "status": {"enum": ["complete", "needs_work", "escalate"]},
         "summary": {"type": "string", "maxLength": 8000},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "requested_model": {"type": "string", "pattern": r"^[a-z][a-z0-9_.-]{0,63}$"},
         "pr_number": {"type": ["integer", "null"], "minimum": 1},
         "head_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
     },
+    "allOf": [
+        {
+            "if": {"properties": {"status": {"const": "escalate"}}},
+            "then": {"required": ["reason"]},
+        }
+    ],
 }
 REVIEW_SCHEMA = {
     "type": "object",
@@ -65,6 +73,7 @@ DECISION_SCHEMA = {
         "reason": {"type": "string", "minLength": 1, "maxLength": 4000},
         "node_key": {"type": "string", "pattern": _KEY},
         "role": {"enum": ["investigate", "implement", "review"]},
+        "model": {"type": "string", "pattern": r"^[a-z][a-z0-9_.-]{0,63}$"},
         "prompt": {"type": "string", "minLength": 1, "maxLength": 16000},
         "deps": {
             "type": "array",
@@ -73,6 +82,10 @@ DECISION_SCHEMA = {
             "items": {"type": "string", "pattern": _KEY},
         },
         "pr_number": {"type": "integer", "minimum": 1},
+        "max_attempts": {"type": "integer"},
+        "max_cost_usd": {"type": "number"},
+        "turn_timeout_seconds": {"type": "integer"},
+        "expected_version": {"type": "integer", "minimum": 0},
     },
     "allOf": [
         {
@@ -336,6 +349,7 @@ def _budget_evidence(task_id: str) -> dict:
         policy = receipt["policy"]
         return {
             **budget,
+            "graph_revision": graph.current_version(task_id, session=db),
             "turns_used": receipt["turns_used"],
             "max_turns_per_task": policy["max_turns_per_task"],
             "deadline_at": receipt["deadline_at"],
@@ -363,6 +377,10 @@ def _add(
     reason: str,
     *,
     review: bool = False,
+    max_attempts: int | None = None,
+    max_cost_usd: float | None = None,
+    turn_timeout_seconds: int | None = None,
+    expected_version: int | None = None,
 ) -> graph.GraphOp:
     boundary = (
         f"Factory task {task['id']}, repository {task['repo']}, "
@@ -386,16 +404,26 @@ def _add(
         cause_kind="factory_conductor",
         cause_ref=cause,
         stated_reason=reason,
-        expected_version=graph.current_version(task["id"]),
+        expected_version=(
+            graph.current_version(task["id"])
+            if expected_version is None
+            else expected_version
+        ),
         node_key=key,
         kind="gate" if review else "work",
         prompt=boundary + prompt,
         model=model,
         deps=deps,
-        max_cost_usd=policy["turn_budget_usd"],
+        max_cost_usd=policy["turn_budget_usd"]
+        if max_cost_usd is None
+        else max_cost_usd,
         side_effects=not review,
-        max_attempts=policy["max_attempts"],
-        turn_timeout_seconds=policy["turn_timeout_seconds"],
+        max_attempts=policy["max_attempts"] if max_attempts is None else max_attempts,
+        turn_timeout_seconds=(
+            policy["turn_timeout_seconds"]
+            if turn_timeout_seconds is None
+            else turn_timeout_seconds
+        ),
     )
 
 
@@ -447,8 +475,24 @@ def _planner_run(run: dict) -> dict:
             "finished_at",
         ),
     )
-    result.update(_planner_fields(run.get("pin") or {}, ("model", "workflow_id")))
+    result.update(
+        _planner_fields(
+            run.get("pin") or {},
+            ("model", "workflow_id", "selected_profile"),
+        )
+    )
+    pin = run.get("pin") or {}
+    if result.get("selected_profile") is None and isinstance(pin.get("model"), str):
+        # The immutable pin records the profile selected for this dispatch.
+        # The observed provider model is separate evidence below.
+        result["selected_profile"] = pin["model"]
     outcome = _outcome(run)
+    provider_model = outcome.get("provider_model")
+    result["provider_model"] = (
+        provider_model
+        if isinstance(provider_model, str) and provider_model
+        else "unavailable"
+    )
     result["reason"] = _planner_fields(outcome, ("reason",)).get(
         "reason", "invalid structured reason"
     )
@@ -504,6 +548,7 @@ def _planner_run(run: dict) -> dict:
             "pr_number",
             "head_sha",
             "verdict",
+            "requested_model",
         ),
     )
     if "deps" in artifact:
@@ -572,16 +617,21 @@ def _planner_context(task: dict, nodes: list[dict], runs: list[dict]) -> str:
         )
         for item in _decision_evidence(task["id"])
     ]
+    budget_evidence = _budget_evidence(task["id"])
     context = {
         "delivery_evidence": delivery,
         "decision_feedback": feedback,
-        "budget_evidence": _budget_evidence(task["id"]),
+        "budget_evidence": budget_evidence,
         "task": task_text,
         "task_identity": _planner_fields(
             task, ("id", "repo", "base_branch", "conductor_model", "budget_usd")
         ),
         "graph": projected_nodes[-PLANNER_RECORD_LIMIT:],
         "runs": projected_runs[-PLANNER_RECORD_LIMIT:],
+        "graph_revision": budget_evidence.get(
+            "graph_revision",
+            max((node.get("created_in_version", 0) for node in nodes), default=0),
+        ),
         "omitted": {
             "task_characters": len(task["task_text"]) - len(task_text),
             "graph_records": max(0, len(nodes) - PLANNER_RECORD_LIMIT),
@@ -648,6 +698,9 @@ def planner_prompt(task: dict, nodes: list[dict], runs: list[dict]) -> str:
         "delivery_evidence retains the latest completed implementation and review; "
         "check recorded verdict, PR, heads, model and session before requesting "
         "another review. Evidence does not replace the server's delivery checks. "
+        "A worker status of escalate is a bounded request for conductor evidence, "
+        "not permission to retry or change profile; requested_model is only a hint "
+        "and the server accepts it only when allowed_models contains it. "
         "Omission counts and text markers mean context is incomplete, not that "
         "work is absent or accepted; inspect the task branch or pause if needed. "
         "Explain each edit and delivered-versus-requested "
@@ -656,7 +709,9 @@ def planner_prompt(task: dict, nodes: list[dict], runs: list[dict]) -> str:
     )
 
 
-def verify_delivery(task: dict, number: int, runs: list[dict]) -> dict:
+def verify_delivery(
+    task: dict, number: int, runs: list[dict], reviewer_model: str | None = None
+) -> dict:
     pr = github_get(task["repo"], f"pulls/{number}")
     branch = f"factory/{task['id']}"
     if (
@@ -689,7 +744,8 @@ def verify_delivery(task: dict, number: int, runs: list[dict]) -> dict:
         or not implementers
         or _artifact(review).get("verdict") != "approve"
         or review.get("head_sha") != head
-        or review.get("pin", {}).get("model") != task["conductor_model"]
+        or review.get("pin", {}).get("model")
+        != (reviewer_model or task.get("reviewer_model", task["conductor_model"]))
         or not review.get("session_id")
         or any(review["session_id"] == worker["session_id"] for worker in implementers)
     ):
@@ -748,9 +804,65 @@ def _apply_decision(
         key = key if key.startswith(f"{role}_") else f"{role}_{key}"
         if len(key) > 64:
             raise ValueError("node key exceeds role prefix limit")
-        model = (
-            policy["conductor_model"] if role == "review" else policy["worker_model"]
+        model = decision.get(
+            "model",
+            policy.get("reviewer_model", policy["conductor_model"])
+            if role == "review"
+            else policy["worker_model"],
         )
+        if (
+            role == "review"
+            and "model" in decision
+            and model != policy.get("reviewer_model", policy["conductor_model"])
+        ):
+            _reject_decision(
+                task["id"],
+                cause,
+                action,
+                "reviewer_model_mismatch",
+                "review nodes must use the configured independent reviewer model",
+            )
+            return
+        if model not in policy["allowed_models"]:
+            _reject_decision(
+                task["id"], cause, action, "model_not_allowed", "model is not allowed"
+            )
+            return
+        bounds = {
+            "max_attempts": decision.get("max_attempts", policy["max_attempts"]),
+            "max_cost_usd": decision.get("max_cost_usd", policy["turn_budget_usd"]),
+            "turn_timeout_seconds": decision.get(
+                "turn_timeout_seconds", policy["turn_timeout_seconds"]
+            ),
+        }
+        limits = {
+            "max_attempts": policy["max_attempts"],
+            "max_cost_usd": policy["turn_budget_usd"],
+            "turn_timeout_seconds": policy["turn_timeout_seconds"],
+        }
+        for name, value in bounds.items():
+            valid = (
+                type(value) is int and value > 0
+                if name != "max_cost_usd"
+                else isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                and value > 0
+            )
+            if not valid:
+                _reject_decision(
+                    task["id"], cause, action, "bound_invalid", f"invalid {name}"
+                )
+                return
+            if value > limits[name]:
+                _reject_decision(
+                    task["id"],
+                    cause,
+                    action,
+                    "bound_exceeds_policy",
+                    f"{name} exceeds policy",
+                )
+                return
         result = _add(
             task,
             policy,
@@ -761,6 +873,10 @@ def _apply_decision(
             cause,
             decision["reason"],
             review=role == "review",
+            max_attempts=bounds["max_attempts"],
+            max_cost_usd=bounds["max_cost_usd"],
+            turn_timeout_seconds=bounds["turn_timeout_seconds"],
+            expected_version=decision.get("expected_version"),
         )
         if not result.ok:
             _reject_decision(
@@ -783,7 +899,9 @@ def _apply_decision(
         result = graph.discard_node(
             task["id"],
             node_key=decision["node_key"],
-            expected_version=graph.current_version(task["id"]),
+            expected_version=decision.get(
+                "expected_version", graph.current_version(task["id"])
+            ),
             author_kind="conductor",
             author=policy["conductor_model"],
             cause_kind="factory_conductor",
@@ -801,7 +919,12 @@ def _apply_decision(
                 result.detail or "graph operation refused",
             )
     elif action == "finish":
-        evidence = verify_delivery(task, decision["pr_number"], runs)
+        evidence = verify_delivery(
+            task,
+            decision["pr_number"],
+            runs,
+            policy.get("reviewer_model", policy["conductor_model"]),
+        )
         result = finish_task(task["id"], "succeeded", ACTOR, evidence=evidence)
         if not result["ok"]:
             _reject_decision(
@@ -956,9 +1079,9 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     # A crash may fall between graph settlement and the factory reservation
     # settlement. Reconcile terminal facts before attempting any further work.
     for run in runs:
-        if run["status"] in ("succeeded", "failed", "cancelled"):
+        if run["status"] in graph.TERMINAL_RUN_STATUSES:
             result = _outcome(run)
-            record_start_outcome(
+            charged = record_start_outcome(
                 task_id,
                 run["pin"]["workflow_id"],
                 run["status"],
@@ -967,6 +1090,8 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
                 session_id=result.get("session_id"),
                 reconciled=True,
             )
+            if not charged["ok"]:
+                raise ValueError(f"factory outcome refused: {charged['reason']}")
     active = [r for r in runs if r["status"] in ("admitted", "dispatched", "uncertain")]
     if active:
         for run in active[:1]:
@@ -1000,10 +1125,12 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
             apply_decision(task, policy, latest, runs)
             return
     succeeded = {r["node_key"] for r in runs if r["status"] == "succeeded"}
+    escalated = {r["node_key"] for r in runs if r["status"] == "escalated"}
     ready = [
         n
         for n in nodes
         if n["node_key"] not in succeeded
+        and n["node_key"] not in escalated
         and all(dep in succeeded for dep in n["deps"])
         and sum(r["node_key"] == n["node_key"] for r in runs) < n["max_attempts"]
         and sum(r["accounted_cost_usd"] for r in runs if r["node_key"] == n["node_key"])
@@ -1140,7 +1267,7 @@ def cancel_owned(task_id: str, dbos) -> None:
                 for r in graph.node_runs(task_id)
                 if r["node_key"] == run["node_key"] and r["attempt"] == run["attempt"]
             )
-            if current["status"] in ("succeeded", "failed", "cancelled"):
+            if current["status"] in graph.TERMINAL_RUN_STATUSES:
                 continue
         with _locked_session() as (db, _control):
             previous = db.exec(
@@ -1166,8 +1293,7 @@ def cancel_owned(task_id: str, dbos) -> None:
             )
         return
     if all(
-        r["status"] in ("succeeded", "failed", "cancelled")
-        for r in graph.node_runs(task_id)
+        r["status"] in graph.TERMINAL_RUN_STATUSES for r in graph.node_runs(task_id)
     ):
         finish_task(task_id, "cancelled", ACTOR)
 

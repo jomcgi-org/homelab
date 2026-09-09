@@ -707,7 +707,23 @@ def execute_node(pin: dict) -> dict:
         reasons.append(
             f"artifact_{artifact['status']}: {'; '.join(artifact['errors'])}"
         )
-    status = "failed" if overrun or artifact["status"] != "ok" else "succeeded"
+    artifact_value = artifact.get("value")
+    escalated = (
+        artifact["status"] == "ok"
+        and isinstance(artifact_value, dict)
+        and artifact_value.get("status") == "escalate"
+    )
+    if escalated:
+        reasons.append(
+            f"escalated: {artifact_value.get('reason', 'conductor intervention requested')}"
+        )
+    status = (
+        "escalated"
+        if escalated
+        else "failed"
+        if overrun or artifact["status"] != "ok"
+        else "succeeded"
+    )
     result = _result(
         status,
         session_id,
@@ -718,6 +734,8 @@ def execute_node(pin: dict) -> dict:
         artifact["value"],
         "; ".join(reasons) or None,
     )
+    if turn_model := turn.get("model"):
+        result["provider_model"] = turn_model
     try:
         result["cleanup"] = _cleanup_node(pin["workflow_id"])
     except Exception as exc:
@@ -800,6 +818,7 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
         ):
             return None
         cost = _known_cost(turn.cost_usd)
+        provider_model = turn.model
         artifact = _evaluate_stored_artifact(
             turn.artifact_path,
             turn.artifact_blob,
@@ -823,8 +842,22 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
         reasons.append(
             f"artifact_{artifact['status']}: {'; '.join(artifact['errors'])}"
         )
+    artifact_value = artifact.get("value")
+    escalated = (
+        artifact["status"] == "ok"
+        and isinstance(artifact_value, dict)
+        and artifact_value.get("status") == "escalate"
+    )
+    if escalated:
+        reasons.append(
+            f"escalated: {artifact_value.get('reason', 'conductor intervention requested')}"
+        )
     result = _result(
-        "failed" if overrun or artifact["status"] != "ok" else "succeeded",
+        "escalated"
+        if escalated
+        else "failed"
+        if overrun or artifact["status"] != "ok"
+        else "succeeded",
         session_id,
         pin["attempt"],
         cost,
@@ -833,6 +866,8 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
         artifact["value"],
         "; ".join(reasons) or None,
     )
+    if provider_model:
+        result["provider_model"] = provider_model
     result["cleanup"] = {
         "status": "pending",
         "reason": "read-only reconciliation did not reap the guest",

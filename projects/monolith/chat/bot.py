@@ -63,6 +63,7 @@ _ALL_AGENT_MODEL_CHOICES = (
     "luna",
     "terra",
     "sol",
+    "astra",
     "opus",
     "sonnet",
     "fable",

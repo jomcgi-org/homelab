@@ -180,6 +180,7 @@ def test_poll_turn_includes_rationale_and_stop_reason(monkeypatch, stop_reason):
                     if stop_reason == "invocation_outcome_unknown"
                     else "completed",
                     "stop_reason": stop_reason,
+                    "model": "luna",
                     "cost_usd": 0.25,
                     "usage_json": None,
                 },

@@ -33,7 +33,7 @@ from swarm.models import (
 )
 
 _NODE_KINDS = ("work", "gate", "merge", "fable_escalation")
-_TERMINAL_RUN_STATUSES = ("succeeded", "failed", "escalated", "cancelled")
+TERMINAL_RUN_STATUSES = ("succeeded", "failed", "escalated", "cancelled")
 MAX_ATTEMPTS = 10
 MAX_TURN_TIMEOUT_SECONDS = 43200
 _CONTEXT_FIELDS = frozenset(
@@ -650,7 +650,7 @@ def _reservation(run: SwarmNodeRun, budgets: dict[str, float]) -> float:
 
 def _accounted_cost(run: SwarmNodeRun, budgets: dict[str, float]) -> float:
     measured = run.cost_usd if _valid_cost(run.cost_usd, zero=True) else None
-    if run.status in _TERMINAL_RUN_STATUSES and measured is not None:
+    if run.status in TERMINAL_RUN_STATUSES and measured is not None:
         return float(measured)
     return max(_reservation(run, budgets), float(measured or 0.0))
 
@@ -686,7 +686,7 @@ def budget_snapshot(task_id: str, *, session: Session | None = None) -> dict:
         runs = _runs(db, task_id)
         budgets = _node_budgets(db, task_id)
         accounted = sum(_accounted_cost(run, budgets) for run in runs)
-        active = [run for run in runs if run.status not in _TERMINAL_RUN_STATUSES]
+        active = [run for run in runs if run.status not in TERMINAL_RUN_STATUSES]
         active_cost = sum(_accounted_cost(run, budgets) for run in active)
         planned = _planned_cost(db, task_id, _visible_nodes(db, task_id, version))
         return {
@@ -707,7 +707,7 @@ def budget_snapshot(task_id: str, *, session: Session | None = None) -> dict:
 
 
 def _accounting_basis(run: SwarmNodeRun) -> str:
-    if run.status not in _TERMINAL_RUN_STATUSES:
+    if run.status not in TERMINAL_RUN_STATUSES:
         return "active_reservation"
     if not _valid_cost(run.cost_usd, zero=True):
         return "reserved_unknown_cost"
@@ -797,7 +797,7 @@ def admit_dispatch(
         runs = [run for run in all_runs if run.node_key == node_key]
         if any(run.status == "succeeded" for run in runs):
             return refuse("node_succeeded")
-        if any(run.status not in _TERMINAL_RUN_STATUSES for run in runs):
+        if any(run.status not in TERMINAL_RUN_STATUSES for run in runs):
             return refuse("active_attempt")
         if len(runs) >= node.max_attempts:
             return refuse("attempts_exhausted")
@@ -943,7 +943,7 @@ def record_outcome(
     with _session(session) as db:
         task = _lock_task(db, task_id)
         version = _current_version(db, task_id)
-        if status not in (*_TERMINAL_RUN_STATUSES, "uncertain"):
+        if status not in (*TERMINAL_RUN_STATUSES, "uncertain"):
             raise ValueError(f"Invalid swarm node run outcome status {status}")
         if cost_usd is not None and not _valid_cost(cost_usd, zero=True):
             return _refuse(db, task, "record_outcome", args, version, "invalid_cost")
@@ -959,7 +959,7 @@ def record_outcome(
                 version,
                 GraphOp(ok=True, version=version, attempt=attempt),
             )
-        if run.status in _TERMINAL_RUN_STATUSES or (
+        if run.status in TERMINAL_RUN_STATUSES or (
             run.status == "uncertain" and status == "uncertain"
         ):
             return _refuse(
@@ -972,7 +972,7 @@ def record_outcome(
         run.head_sha = head_sha
         run.outcome_json = outcome_json
         run.finished_at = (
-            datetime.now(timezone.utc) if status in _TERMINAL_RUN_STATUSES else None
+            datetime.now(timezone.utc) if status in TERMINAL_RUN_STATUSES else None
         )
         db.add(run)
         return _finish(
