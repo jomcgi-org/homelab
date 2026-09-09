@@ -1,5 +1,9 @@
 # GKE hub overrides. This file is applied after deploy/values.yaml.
 
+claudeRuntimeWorkload:
+  # Match the existing total-session limit; placement still checks node memory.
+  cap: 8
+
 # The hub starts with node-local state only. An empty endpoint is the chart's
 # safe store-disabled mode, and no object-store credentials are rendered.
 noded:
