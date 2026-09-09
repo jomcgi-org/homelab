@@ -179,7 +179,7 @@
 
 <Seo
   title="Ember Software Factory · jomcgi.dev"
-  description="What the agents merged, what it cost, what they learned."
+  description="Self-improving flywheel, shoveling slop via Firecracker VMs"
   path="/slop/factory"
 />
 
