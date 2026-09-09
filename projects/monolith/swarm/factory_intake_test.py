@@ -165,6 +165,7 @@ def test_max_tasks_bounds_tasks_in_flight_not_tasks_ever_admitted(db, policy):
 
 
 def test_concurrency_is_the_smaller_of_policy_and_chart_cap(db, policy, monkeypatch):
+    monkeypatch.delenv("FACTORY_MAX_CONCURRENT_TASKS", raising=False)
     policy["max_tasks"] = 3
     enable(policy)
     for number in (1, 2, 3):
@@ -178,6 +179,7 @@ def test_concurrency_is_the_smaller_of_policy_and_chart_cap(db, policy, monkeypa
     assert second["ok"] and second["task_id"] != first["task_id"]
     third = admit_next("scheduler")
     assert third["reason"] == "wip_limit" and third["active"] == 2
+    assert third["active_task_ids"] == [first["task_id"], second["task_id"]]
     assert len(controls.status()["active_tasks"]) == 2
 
 

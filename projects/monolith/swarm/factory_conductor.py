@@ -1342,21 +1342,38 @@ def tick() -> None:
     active = list(snapshot["active_tasks"])
     if snapshot["state"] == "stopped":
         for task in active:
-            cancel_owned(task["task_id"], dbos)
+            # One task's cancellation failing must not leave the others running.
+            try:
+                cancel_owned(task["task_id"], dbos)
+            except Exception:  # noqa: BLE001 - per-task isolation keeps stop total
+                logger.exception("factory stop failed for task %s", task["task_id"])
         return
-    if snapshot["state"] == "enabled":
-        from swarm.factory_intake import concurrency_limit
+    # Reconcile what is already in flight before admitting more, and isolate
+    # each task: a task stuck on a refused outcome or a failed GitHub read
+    # must not starve its neighbours of their tick, and a stale issue number
+    # in the policy must not stall every in-flight task behind the ingest.
+    for task in active:
+        try:
+            reconcile_task(task["task_id"], task["policy"], dbos)
+        except Exception:  # noqa: BLE001 - per-task isolation keeps the lane live
+            logger.exception("factory reconcile failed for task %s", task["task_id"])
+    if snapshot["state"] != "enabled":
+        return
+    from swarm.factory_intake import concurrency_limit
 
-        limit = concurrency_limit(snapshot["policy"])
-        if len(active) < limit:
-            ingest_eligible(snapshot["policy"])
+    limit = concurrency_limit(snapshot["policy"])
+    if len(active) >= limit:
+        return
+    try:
+        ingest_eligible(snapshot["policy"])
         while len(active) < limit:
             admitted = admit_next(ACTOR)
             if not admitted["ok"]:
                 break
+            # A task admitted this tick is reconciled on the next one.
             active.append(admitted)
-    for task in active:
-        reconcile_task(task["task_id"], task["policy"], dbos)
+    except Exception:  # noqa: BLE001 - admission problems are logged, not fatal
+        logger.exception("factory admission failed")
 
 
 def cancel_owned(task_id: str, dbos) -> None:

@@ -1,7 +1,11 @@
 # Bounded issue delivery lane
 
 The first autonomous lane reads explicitly selected GitHub issues, records one
-durable receipt per repository/issue/generation, and admits one task at a time.
+durable receipt per repository/issue/generation, and admits up to the policy's
+`max_tasks` tasks at a time, capped by the chart's
+`swarm.factoryMaxConcurrentTasks` (1 today). `max_tasks` is a concurrency,
+not a lifetime count: as tasks settle the lane keeps admitting until its
+issue list is exhausted, so it runs without an operator re-arming it.
 An Opus session in Ember plans one graph edit at a time. The server reconciles
 the mutable graph and dispatches each admitted node as an independent DBOS
 workflow with immutable inputs. Planning does not run in the monolith process.
@@ -90,7 +94,7 @@ bounded lane. It cannot be reset by replaying an earlier enable request.
 Agent workloads have a twelve-hour runtime backstop. The caller's result wait
 and routine drainer observation wait exceed that ceiling. The CLI silence
 backstop is eleven hours and fifty-five minutes: a quiet build is not by itself
-proof of a stuck task. DAG node and task limits remain explicit immutable policy;
+proof of a stuck task. DAG node limits remain explicit immutable policy;
 raising the runtime ceiling does not rewrite admitted attempts or grant retries.
 Fresh sessions have a one-day lifetime, and an older session has only the time
 remaining before its absolute expiry. Idle parked sessions still expire after
