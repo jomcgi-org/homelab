@@ -14,6 +14,14 @@ import pytest
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from agent_sessions.models import (
+    AgentCapacityPool,
+    AgentCapacityReservation,
+    AgentResultReceipt,
+    AgentSession,
+    AgentTurn,
+    PendingMessage,
+)
 from swarm import factory_conductor as conductor
 from swarm import factory_controls as controls
 from swarm import graph
@@ -39,7 +47,9 @@ HEAD = "a" * 40
 def db(tmp_path, monkeypatch):
     engine = create_engine(
         f"sqlite:///{tmp_path / 'factory-integration.db'}",
-        execution_options={"schema_translate_map": {"swarm": None}},
+        execution_options={
+            "schema_translate_map": {"swarm": None, "agent_sessions": None}
+        },
     )
 
     @event.listens_for(engine, "connect")
@@ -47,6 +57,12 @@ def db(tmp_path, monkeypatch):
         connection.execute("PRAGMA foreign_keys=ON")
 
     tables = (
+        AgentCapacityPool,
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
         SwarmTask,
         SwarmPlanVersion,
         SwarmPlanNode,
@@ -365,6 +381,11 @@ def test_late_confirmed_result_settles_unknown_identity_without_new_vm(
     conductor.reconcile_task(task_id, policy, dbos)
     assert graph.node_runs(task_id)[0]["status"] == "uncertain"
     assert controls.task_snapshot(task_id)["state"] == "uncertain"
+    with Session(db) as session:
+        # The real typed-proof reader acquired its pool lock and found no
+        # session evidence. It must not fabricate a turn to resolve the hold.
+        assert session.get(AgentCapacityPool, 1) is not None
+        assert session.exec(select(AgentTurn)).first() is None
     observed["result"] = completed
     conductor.reconcile_task(task_id, policy, dbos)
     run = graph.node_runs(task_id)[0]
