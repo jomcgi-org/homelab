@@ -80,10 +80,10 @@ def database(tmp_path, monkeypatch):
         engine.dispose()
 
 
-def queue(engine, key="receipt-project"):
+def queue(engine, key="receipt-project", *, tier="project"):
     with Session(engine) as db:
         agent = store.create_session(
-            db, key, "<guest>", "main", "luna", admission_tier="project"
+            db, key, "<guest>", "main", "luna", admission_tier=tier
         )
         sid = agent.id
         store.set_ember_session(db, sid, f"guest-{sid}", "guest-token", None)
@@ -540,10 +540,14 @@ async def drain_observers():
 
 
 @pytest.mark.parametrize("cost", [None, 0.125])
+@pytest.mark.parametrize("tier", ["project", "kg"])
 def test_receipt_completes_once_and_fences_only_its_guest_until_response(
-    database, monkeypatch, cost
+    database, monkeypatch, cost, tier
 ):
-    sid = queue(database)
+    from swarm import drainer
+
+    sid = queue(database, tier=tier)
+    monkeypatch.setattr(execution_api, "_schedule_next_message", lambda _sid: None)
     record = native_record(cost)
     release_response = asyncio.Event()
     captured = {}
@@ -594,10 +598,13 @@ def test_receipt_completes_once_and_fences_only_its_guest_until_response(
             assert "guest-forged" not in json.dumps(provenance)
             assert captured["receipt"]["token"] not in turn["usage_json"]
 
-            with Session(database) as db:
-                assert (
-                    store.create_pending_message(db, sid, "follow-up", "luna").seq == 2
+            assert execution_api.send_to_swarm_session(sid, "KG correction") == 2
+            if tier == "kg":
+                protected = snapshot(database, sid)
+                assert not await asyncio.to_thread(
+                    drainer.destroy_drainer_session.__wrapped__, sid, "receipt-project"
                 )
+                assert snapshot(database, sid) == protected
             assert (
                 store.claim_pending_message_for_session_sync(sid, "follow-up-owner")
                 is None
@@ -633,6 +640,58 @@ def test_receipt_completes_once_and_fences_only_its_guest_until_response(
             await asyncio.wait_for(drain_observers(), 3)
 
     asyncio.run(asyncio.wait_for(run(), 12))
+
+
+@pytest.mark.parametrize("response", ["disconnect", "cancelled_observer"])
+def test_kg_cleanup_preserves_fence_after_lost_original_response(
+    database, monkeypatch, response
+):
+    from swarm import drainer
+
+    sid = queue(database, "kg-lost-response", tier="kg")
+    record = native_record()
+    captured = {}
+    release_response = asyncio.Event()
+    monkeypatch.setattr(execution_api, "_schedule_next_message", lambda _sid: None)
+
+    async def handler(request):
+        assert not captured, "KG cleanup must never replay the model POST"
+        receipt, _body = await publish(request, record)
+        captured.update(receipt)
+        if response == "disconnect":
+            raise httpx.ReadError("original response lost", request=request)
+        await release_response.wait()
+        return httpx.Response(200, json=record, request=request)
+
+    requests = fake_http(monkeypatch, handler)
+
+    async def run():
+        try:
+            await asyncio.wait_for(mcp._execute_pending_message(sid), 5)
+            if response == "cancelled_observer":
+                assert transport._receipt_observers
+                for observer in list(transport._receipt_observers):
+                    observer.cancel()
+            await asyncio.wait_for(drain_observers(), 3)
+            assert execution_api.send_to_swarm_session(sid, "KG correction") == 2
+            before = snapshot(database, sid)
+            assert before["session"]["result_receipt_fence_id"] == captured["id"]
+            assert not await asyncio.to_thread(
+                drainer.destroy_drainer_session.__wrapped__, sid, "kg-lost-response"
+            )
+            assert snapshot(database, sid) == before
+            assert (
+                store.claim_pending_message_for_session_sync(sid, "correction") is None
+            )
+            with Session(database) as db:
+                receipt = db.get(AgentResultReceipt, captured["id"])
+                assert receipt.response_observed_at is None
+            assert len(requests) == 1
+        finally:
+            release_response.set()
+            await asyncio.wait_for(drain_observers(), 3)
+
+    asyncio.run(asyncio.wait_for(run(), 10))
 
 
 @pytest.mark.parametrize(
