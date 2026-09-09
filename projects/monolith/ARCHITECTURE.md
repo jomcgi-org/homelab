@@ -414,10 +414,10 @@ visibility flip for verified/unverified agent facts).
 (see: /projects/monolith/deploy/values.yaml)
 
 Facts are anchored to entities seeded from a committed manifest
-(`projects/monolith/entities.yaml`); `note_entities` edges link facts to subjects
-(projects, orgs, environments) with role constraints, and extraction uses the
-closed subject vocabulary and scope grammar to derive facts about the repository
-rather than hallucinations.
+(`projects/monolith/knowledge/entities.yaml`); `note_entities` edges link facts
+to entities with role constraints, and extraction uses the closed vocabulary of
+project, service, environment, and issue kinds, together with the scope grammar,
+to derive facts about the repository rather than hallucinations.
 
 **Why.** Facts needed a subject so the public record and the extraction lens
 could speak about tangible entities (projects, organizations) rather than
