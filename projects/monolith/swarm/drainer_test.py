@@ -2063,11 +2063,47 @@ def test_cleanup_uses_locked_guest_binding(admission_database, monkeypatch):
     async def destroy(guest_id):
         destroyed.append(guest_id)
 
+    async def get_session(guest_id):
+        return {"session_id": guest_id, "state": "destroyed"}
+
     monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
+    monkeypatch.setattr(mcp._transport, "get_session", get_session)
     assert drainer.destroy_drainer_session.__wrapped__(sid, "rebound-cleanup")
     assert destroyed == ["current-guest"]
     with Session(admission_database) as db:
         assert db.get(AgentSession, sid).ember_session_id is None
+
+
+@pytest.mark.parametrize("outcome", ["exception", "nonterminal", "malformed"])
+def test_cleanup_retains_exact_claim_until_terminal_confirmation(
+    admission_database, monkeypatch, outcome
+):
+    from agent_sessions import mcp, store
+    from agent_sessions.models import AgentSession
+
+    with Session(admission_database) as db:
+        row = store.create_session(db, "deferred-cleanup", "<guest>", "main")
+        sid = row.id
+        store.set_ember_session(db, sid, "guest-exact", "token", None)
+
+    async def destroy(_guest_id):
+        if outcome == "exception":
+            raise RuntimeError("transport unavailable")
+
+    async def get_session(guest_id):
+        if outcome == "nonterminal":
+            return {"session_id": guest_id, "state": "destroying"}
+        return {"wrong": "shape"}
+
+    monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
+    monkeypatch.setattr(mcp._transport, "get_session", get_session)
+    assert not drainer.destroy_drainer_session.__wrapped__(sid, "deferred-cleanup")
+    with Session(admission_database) as db:
+        retained = db.get(AgentSession, sid)
+        assert retained.ember_session_id == "guest-exact"
+        assert retained.guest_cleanup_id
+        assert retained.guest_cleanup_guest_id == "guest-exact"
+        assert retained.guest_cleanup_workflow_id == "main"
 
 
 @pytest.mark.parametrize("pause", ["enabled", "max_jobs_per_cycle"])
