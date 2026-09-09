@@ -44,7 +44,10 @@ _POLICY_KEYS = {
     "max_attempts",
     "worker_model",
     "task_timeout_seconds",
+    "model_pools",
 }
+_OPTIONAL_POLICY_KEYS = {"reviewer_model", "model_pools"}
+_POOL_ROLES = {"conductor": "conductor_model", "worker": "worker_model"}
 
 
 def _now() -> datetime:
@@ -86,9 +89,9 @@ def normalize_repo(repo: str) -> str:
 
 
 def validate_policy(policy: dict) -> dict:
-    if not isinstance(policy, dict) or set(policy) not in (
-        _POLICY_KEYS,
-        _POLICY_KEYS - {"reviewer_model"},
+    if (
+        not isinstance(policy, dict)
+        or not (_POLICY_KEYS - _OPTIONAL_POLICY_KEYS) <= set(policy) <= _POLICY_KEYS
     ):
         raise ValueError("policy must contain exactly the supported operator fields")
     result = dict(policy)
@@ -124,9 +127,30 @@ def validate_policy(policy: dict) -> dict:
         raise ValueError("reviewer model is not allowed")
     if policy["worker_model"] not in result["allowed_models"]:
         raise ValueError("worker model is not allowed")
+    if "model_pools" in policy:
+        result["model_pools"] = _validate_model_pools(policy["model_pools"], result)
     if result["turn_timeout_seconds"] > result["task_timeout_seconds"]:
         raise ValueError("turn timeout exceeds task timeout")
     result["base_branch"] = _text(policy["base_branch"], "base_branch", 256)
+    return result
+
+
+def _validate_model_pools(pools: object, policy: dict) -> dict:
+    """Each pool is an ordered preference list headed by the role's own model."""
+    if not isinstance(pools, dict) or not pools or not set(pools) <= set(_POOL_ROLES):
+        raise ValueError("invalid model_pools")
+    result = {}
+    for role, pool in pools.items():
+        if not isinstance(pool, list) or not 1 <= len(pool) <= 8:
+            raise ValueError(f"invalid model_pools.{role}")
+        models = [_text(m, "model", 128) for m in pool]
+        if len(set(models)) != len(models):
+            raise ValueError(f"duplicate model in model_pools.{role}")
+        if models[0] != policy[_POOL_ROLES[role]]:
+            raise ValueError(f"model_pools.{role} must start with the {role} model")
+        if any(m not in policy["allowed_models"] for m in models):
+            raise ValueError(f"model_pools.{role} names a model that is not allowed")
+        result[role] = models
     return result
 
 

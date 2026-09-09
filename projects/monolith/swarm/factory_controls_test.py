@@ -309,6 +309,12 @@ def test_supplied_session_can_rollback_reservation_with_caller_graph_changes(
         ("conductor_model", "unlisted"),
         ("generation", -1),
         ("base_branch", ""),
+        ("model_pools", {}),
+        ("model_pools", {"review": ["opus"]}),
+        ("model_pools", {"worker": ["luna", "unlisted"]}),
+        ("model_pools", {"worker": ["opus", "luna"]}),
+        ("model_pools", {"conductor": ["opus", "opus"]}),
+        ("model_pools", {"worker": []}),
     ],
 )
 def test_invalid_policy_refuses_before_any_control_mutation(db, policy, key, value):
@@ -475,3 +481,16 @@ def test_escalation_requires_exact_uncertain_reconciliation_and_is_not_task_outc
     )
     with pytest.raises(ValueError, match="invalid task outcome"):
         controls.finish_task(task, "escalated", "scheduler")
+
+
+def test_model_pools_are_normalised_and_stored_in_policy(db, policy):
+    policy["model_pools"] = {"conductor": ["opus", "luna"]}
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    stored = controls.status()["policy"]
+    assert stored["model_pools"] == {"conductor": ["opus", "luna"]}
+    assert stored["conductor_model"] == "opus"
+
+
+def test_policy_without_model_pools_stays_unchanged(db, policy):
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    assert "model_pools" not in controls.status()["policy"]

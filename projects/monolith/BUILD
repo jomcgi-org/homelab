@@ -4616,6 +4616,17 @@ py_test(
 )
 
 py_test(
+    name = "swarm_model_pool_test",
+    srcs = ["swarm/model_pool_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_swarm",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "swarm_factory_controls_test",
     srcs = ["swarm/factory_controls_test.py"],
     imports = ["."],

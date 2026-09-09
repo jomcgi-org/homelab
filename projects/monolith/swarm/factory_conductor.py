@@ -22,6 +22,7 @@ from sqlmodel import Session, select
 from core.db import get_engine
 from core.github import GITHUB_API
 from swarm import graph, runtime
+from swarm.model_pool import select_model, selection_reason
 from swarm.models import SwarmConductorCall, SwarmPlanVersion, SwarmTask
 
 logger = logging.getLogger(__name__)
@@ -849,12 +850,14 @@ def _apply_decision(
         key = key if key.startswith(f"{role}_") else f"{role}_{key}"
         if len(key) > 64:
             raise ValueError("node key exceeds role prefix limit")
-        model = decision.get(
-            "model",
-            policy.get("reviewer_model", policy["conductor_model"])
-            if role == "review"
-            else policy["worker_model"],
-        )
+        if "model" in decision:
+            model = decision["model"]
+        elif role == "review":
+            model = policy.get("reviewer_model", policy["conductor_model"])
+        else:
+            # The planner left worker routing to policy: honour the pool order
+            # and skip providers with positive evidence of exhausted quota.
+            model = select_model("worker", policy)["model"]
         if (
             role == "review"
             and "model" in decision
@@ -1240,15 +1243,16 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
             )
             set_control("pause_task", ACTOR, task_id=task_id)
             return
+        choice = select_model("conductor", policy)
         result = _add(
             task,
             policy,
             key,
             prompt,
             [],
-            policy["conductor_model"],
+            choice["model"],
             f"factory-plan:{key}",
-            "Reconcile task evidence",
+            selection_reason("Reconcile task evidence", choice),
             expected_version=insertion_revision,
         )
         if not result.ok:

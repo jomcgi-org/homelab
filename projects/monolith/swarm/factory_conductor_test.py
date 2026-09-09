@@ -3492,3 +3492,107 @@ def test_stop_after_escalation_settles_task_without_cancelling_worker(
     assert run["status"] == "escalated" and run["pin"] == s.run["pin"]
     assert controls.status()["active_tasks"] == []
     assert controls.status()["state"] == "stopped"
+
+
+def pooled_task(monkeypatch, quota):
+    """Admit a task whose policy pools Codex models ahead of cheaper fallbacks."""
+    import swarm.model_pool as model_pool
+    from swarm import factory_controls as controls
+    from swarm.factory_intake import admit_next, receive_issue
+
+    monkeypatch.setattr(model_pool, "quota_summary", lambda: quota)
+    policy = {
+        "repo": "owner/repo",
+        "issue_numbers": [9],
+        "generation": 0,
+        "max_tasks": 1,
+        "max_turns_per_task": 8,
+        "task_budget_usd": 30.0,
+        "turn_budget_usd": 2.0,
+        "allowed_models": ["astra", "spark", "sol", "sonnet", "opus"],
+        "conductor_model": "astra",
+        "worker_model": "sol",
+        "reviewer_model": "opus",
+        "model_pools": {"conductor": ["astra", "spark"], "worker": ["sol", "sonnet"]},
+        "base_branch": "main",
+        "turn_timeout_seconds": 60,
+        "task_timeout_seconds": 3600,
+        "max_attempts": 2,
+    }
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    assert controls.set_control("enable", "operator")["ok"]
+    receive_issue(
+        "owner/repo",
+        9,
+        "Fix issue",
+        "Untrusted issue text",
+        "https://github.com/owner/repo/issues/9",
+        "poller",
+    )
+    admitted = admit_next("scheduler")
+    assert admitted["ok"]
+    return conductor._task(admitted["task_id"]), controls.status()["policy"]
+
+
+def _node(task_id, node_key):
+    return next(
+        n for n in conductor.graph.load_graph(task_id) if n["node_key"] == node_key
+    )
+
+
+@pytest.mark.parametrize(
+    "quota, expected",
+    [
+        ({"codex": {"headline_used_percent": 12.0, "age_seconds": 5.0}}, "astra"),
+        ({"codex": {"exhausted": True}}, "spark"),
+        ({}, "astra"),
+    ],
+)
+def test_first_planner_node_follows_conductor_pool_and_quota(
+    feedback_db, monkeypatch, quota, expected
+):
+    task, policy = pooled_task(monkeypatch, quota)
+    conductor.reconcile_task(task["id"], policy, object())
+    assert _node(task["id"], "conductor_1")["model"] == expected
+
+
+def test_planner_add_node_without_model_uses_worker_pool_when_codex_walled(
+    feedback_db, monkeypatch
+):
+    task, policy = pooled_task(monkeypatch, {"codex": {"exhausted": True}})
+    run = complete_feedback_node(
+        task,
+        policy,
+        "conductor_1",
+        {
+            "action": "add_node",
+            "node_key": "implement_fix",
+            "role": "implement",
+            "prompt": "do the work",
+            "deps": [],
+            "reason": "implement",
+        },
+    )
+    conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
+    assert _node(task["id"], "implement_fix")["model"] == "sonnet"
+
+
+def test_planner_add_node_review_never_falls_back(feedback_db, monkeypatch):
+    task, policy = pooled_task(
+        monkeypatch, {"codex": {"exhausted": True}, "claude": {"exhausted": True}}
+    )
+    run = complete_feedback_node(
+        task,
+        policy,
+        "conductor_1",
+        {
+            "action": "add_node",
+            "node_key": "review_fix",
+            "role": "review",
+            "prompt": "review the work",
+            "deps": [],
+            "reason": "review",
+        },
+    )
+    conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
+    assert _node(task["id"], "review_fix")["model"] == "opus"
