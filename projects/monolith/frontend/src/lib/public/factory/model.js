@@ -102,19 +102,6 @@ export function mergeSeries(rows) {
   }));
 }
 
-export function lineSeries(rows) {
-  const byDay = new Map();
-  for (const row of rows) {
-    const d = row.merged_at?.slice(0, 10);
-    if (!d) continue;
-    const value = byDay.get(d) ?? { d, add: 0, del: 0 };
-    value.add += numeric(row.additions);
-    value.del += numeric(row.deletions);
-    byDay.set(d, value);
-  }
-  return [...byDay.values()].sort((a, b) => a.d.localeCompare(b.d));
-}
-
 export function factSeries(facts, now) {
   return window(facts.daily ?? [], now, 30).map((row) => ({
     ...row,
@@ -168,14 +155,11 @@ export function breakdown(rows, value, limit = 4) {
 }
 
 export function tileDerivations(activity, merges, facts, series, now) {
-  const add = numeric(merges.totals?.add_7d);
-  const del = numeric(merges.totals?.del_7d);
   const totals = activity.totals_7d ?? {};
   const combined = totals.combined ?? totals;
   return {
     live: {
       value: numeric(activity.now?.active_last_hour),
-      sessionsToday: numeric(activity.now?.sessions_today),
       spark: last14(series.sessions, "sessions", now),
     },
     sessions: {
@@ -184,18 +168,10 @@ export function tileDerivations(activity, merges, facts, series, now) {
     },
     merged: {
       value: numeric(merges.totals?.n_7d),
-      agent: numeric(merges.totals?.agent_7d),
       spark: last14(series.merges, "n", now),
-    },
-    lines: {
-      additions: add,
-      deletions: del,
-      net: add - del,
-      spark: last14(series.lines, "add", now),
     },
     tokens: {
       input: numeric(combined.input_tokens),
-      output: numeric(combined.output_tokens),
       spark: last14(series.sessions, "input_tokens", now),
     },
     spend: {

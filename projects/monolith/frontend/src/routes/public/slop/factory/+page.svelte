@@ -9,7 +9,6 @@
     formatCount,
     formatSpend,
     goalSummary,
-    lineSeries,
     mergeSeries,
     paginate,
     shortNumber,
@@ -51,14 +50,13 @@
   );
   const spend = $derived(spendSeries(data.activity.spend_daily ?? []));
   const merges = $derived(mergeSeries(data.merges.daily));
-  const lines = $derived(lineSeries(data.merges.week));
   const facts = $derived(factSeries(data.facts, today));
   const tiles = $derived(
     tileDerivations(
       data.activity,
       data.merges,
       data.facts,
-      { sessions, spend, merges, lines, facts },
+      { sessions, spend, merges, facts },
       today,
     ),
   );
@@ -69,7 +67,6 @@
     {
       key: "Live",
       value: formatCount(tiles.live.value),
-      subline: `${formatCount(tiles.live.sessionsToday)} sessions today`,
       spark: tiles.live.spark,
     },
     {
@@ -85,7 +82,6 @@
     {
       key: "Tokens, 7d",
       value: shortNumber(tiles.tokens.input),
-      subline: `${shortNumber(tiles.tokens.output)} out`,
       spark: tiles.tokens.spark,
     },
     {
@@ -200,7 +196,6 @@
               {/if}
             </div>
             {@html sparkSvg(stat.spark)}
-            {#if stat.subline}<div class="s">{stat.subline}</div>{/if}
           </div>
         {/each}
       </div>
