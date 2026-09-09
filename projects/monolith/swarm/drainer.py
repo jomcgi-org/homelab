@@ -564,6 +564,7 @@ def _report_drainer_failure(settings: dict, name: str, error: str) -> None:
 @DBOS.step()
 def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bool:
     from agent_sessions import admission, store
+    from agent_sessions.execution_api import _REAP_TERMINAL_STATES
     from agent_sessions.mcp import (
         _load_session_row,
         _transport,
@@ -673,16 +674,15 @@ def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bo
         try:
             try:
                 asyncio.run(_transport.destroy_session(ember_session_id))
+                observed = asyncio.run(_transport.get_session(ember_session_id))
             except EmberSessionGone:
                 pass
             else:
-                observed = asyncio.run(_transport.get_session(ember_session_id))
                 if (
                     not isinstance(observed, dict)
                     or observed.get("session_id") != ember_session_id
                     or not isinstance(observed.get("state"), str)
-                    or observed["state"]
-                    not in {"destroyed", "expired", "evicted", "failed"}
+                    or observed["state"] not in _REAP_TERMINAL_STATES
                 ):
                     span.set_attribute("drain.destroyed", False)
                     return False
