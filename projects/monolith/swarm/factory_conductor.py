@@ -1079,7 +1079,7 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     # A crash may fall between graph settlement and the factory reservation
     # settlement. Reconcile terminal facts before attempting any further work.
     for run in runs:
-        if run["status"] in ("succeeded", "failed", "escalated", "cancelled"):
+        if run["status"] in graph.TERMINAL_RUN_STATUSES:
             result = _outcome(run)
             charged = record_start_outcome(
                 task_id,
@@ -1267,7 +1267,7 @@ def cancel_owned(task_id: str, dbos) -> None:
                 for r in graph.node_runs(task_id)
                 if r["node_key"] == run["node_key"] and r["attempt"] == run["attempt"]
             )
-            if current["status"] in ("succeeded", "failed", "cancelled"):
+            if current["status"] in graph.TERMINAL_RUN_STATUSES:
                 continue
         with _locked_session() as (db, _control):
             previous = db.exec(
@@ -1293,8 +1293,7 @@ def cancel_owned(task_id: str, dbos) -> None:
             )
         return
     if all(
-        r["status"] in ("succeeded", "failed", "cancelled")
-        for r in graph.node_runs(task_id)
+        r["status"] in graph.TERMINAL_RUN_STATUSES for r in graph.node_runs(task_id)
     ):
         finish_task(task_id, "cancelled", ACTOR)
 

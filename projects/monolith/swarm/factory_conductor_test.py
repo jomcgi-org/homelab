@@ -1800,6 +1800,7 @@ def test_attempt_stop_missing_or_unresponsive_workflow_is_bounded_and_visible(
 def test_durable_stop_reconciles_production_factory_owner_without_replay(
     uncertain_factory,
     cleanup_claim,
+    monkeypatch,
 ):
     from swarm import factory_controls as controls
     from sqlmodel import Session, select
@@ -1864,6 +1865,13 @@ def test_durable_stop_reconciles_production_factory_owner_without_replay(
     conductor._submit_or_reconcile(s.task, s.run, s.dbos)
     assert _uncertain_snapshot(s) == after
     assert len([call for call in s.calls if call[1] is not None]) == 1
+    # A later ordinary tick repairs this supervision-settled terminal run
+    # idempotently before deciding whether more work is permitted.
+    monkeypatch.setattr(
+        controls, "can_start", lambda _: {"ok": False, "reason": "task_paused"}
+    )
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    assert _uncertain_snapshot(s) == after
     with Session(s.engine) as db:
         assert (
             len(
@@ -2702,3 +2710,42 @@ def test_planner_keeps_pin_profile_distinct_from_current_node_and_provider(
         assert projected["selected_profile"] == expected
         assert projected["model"] == "opus"
         assert projected["provider_model"] == "native-provider-model"
+
+
+@pytest.mark.parametrize("already_settled", [False, True])
+def test_stop_after_escalation_settles_task_without_cancelling_worker(
+    escalating_factory, monkeypatch, already_settled
+):
+    from agent_sessions import api
+    from swarm import factory_controls as controls
+
+    s = escalating_factory
+    s.result["cost_usd"] = None
+
+    async def unexpected_reap(*_):
+        pytest.fail("completed escalation needs no external guest cancellation")
+
+    # The execution export is lazy; install the boundary without importing a
+    # transport client, since neither successful path should call it.
+    monkeypatch.setitem(api.__dict__, "reap_sessions_for_workflow", unexpected_reap)
+    s.dbos.cancel_workflow = lambda *_args, **_kwargs: pytest.fail(
+        "completed escalation needs no workflow cancellation"
+    )
+    if already_settled:
+        conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    original = controls.task_snapshot(s.task["id"])
+    assert controls.set_control("stop", "operator:test")["ok"]
+    conductor.cancel_owned(s.task["id"], s.dbos)
+    current = controls.task_snapshot(s.task["id"])
+    assert current["state"] == "cancelled"
+    assert current["unresolved_starts"] == 0
+    assert current["starts"][0]["status"] == "failed"
+    assert current["starts"][0]["cost_usd"] is None
+    assert current["committed_cost_usd"] == original["committed_cost_usd"] == 2
+    assert current["turns_used"] == original["turns_used"] == 1
+    assert current["deadline_at"] == original["deadline_at"]
+    assert current["policy"] == original["policy"]
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    assert run["status"] == "escalated" and run["pin"] == s.run["pin"]
+    assert controls.status()["active_tasks"] == []
+    assert controls.status()["state"] == "stopped"
