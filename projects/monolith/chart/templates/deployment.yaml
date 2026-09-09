@@ -213,6 +213,8 @@ spec:
               value: {{ .Values.swarm.factoryEnabled | default false | quote }}
             - name: FACTORY_STOP_SUPERVISION_ENABLED
               value: {{ .Values.swarm.factoryStopSupervisionEnabled | default false | quote }}
+            - name: FACTORY_MAX_CONCURRENT_TASKS
+              value: {{ .Values.swarm.factoryMaxConcurrentTasks | default 1 | quote }}
             # DBOS swarm layer (ADR agents/038, agents/053). SWARM_ENABLED is
             # the master switch the module reads: with it false the router still
             # mounts but every run endpoint 503s and DBOS is never launched, so

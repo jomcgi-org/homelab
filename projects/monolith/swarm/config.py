@@ -36,3 +36,10 @@ def decision_timeout_seconds() -> int:
 
 def codex_concurrency() -> int:
     return int(os.environ.get("SWARM_CODEX_CONCURRENCY", "2"))
+
+
+def factory_max_concurrent_tasks() -> int:
+    # Hard ceiling on factory tasks in flight at once, applied on top of the
+    # policy's max_tasks. The chart owns it so a policy posted with a larger
+    # number cannot open more lanes than the platform has been sized for.
+    return max(1, int(os.environ.get("FACTORY_MAX_CONCURRENT_TASKS", "1")))
