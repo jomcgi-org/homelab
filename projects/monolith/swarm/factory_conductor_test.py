@@ -1768,6 +1768,424 @@ def queued_factory(feedback_db, monkeypatch):
     )
 
 
+@pytest.fixture
+def not_invoked_factory(queued_factory, monkeypatch):
+    import json
+    from sqlmodel import Session, SQLModel, select
+    from agent_sessions import admission, store
+    from agent_sessions.models import (
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from swarm import factory_controls as controls
+    from swarm import factory_supervision, node_workflows
+
+    s = queued_factory
+    SQLModel.metadata.create_all(s.engine, tables=[AgentResultReceipt.__table__])
+    for module in (admission, store, controls):
+        monkeypatch.setattr(module, "get_engine", lambda: s.engine)
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("typed outcome reconciliation must not invoke or clean up")
+
+    monkeypatch.setattr(factory_supervision, "_http", unexpected)
+    monkeypatch.setattr(node_workflows, "_cleanup_node", unexpected)
+    monkeypatch.setattr(node_workflows, "_read_reconciliation_head", unexpected)
+    owner = "original-executor"
+    assert store.claim_pending_message_for_session_sync(s.sid, owner) == 1
+    assert admission.recheck(s.sid, 1, owner, "claude-runtime")
+    store.mark_turn_error_sync(
+        s.sid,
+        1,
+        "create capacity denied",
+        owner,
+        invocation_not_attempted=True,
+        dispatch_count=1,
+    )
+    with Session(s.engine) as db:
+        turn = db.exec(select(AgentTurn)).one()
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        assert turn.cost_usd is None
+        assert (
+            json.loads(turn.usage_json)["recovery"]["invocation_phase"] == "not_invoked"
+        )
+        assert permit.state == "settled" and permit.outcome == "not_invoked"
+        assert db.exec(select(PendingMessage)).first() is None
+    s.result = {
+        "status": "uncertain",
+        "reason": "terminal reason does not confirm clean completion; reconcile before retry",
+        "session_id": s.sid,
+        "cost_usd": None,
+    }
+
+    def state(workflow):
+        assert workflow == s.run["pin"]["workflow_id"]
+        return SimpleNamespace(status="SUCCESS")
+
+    s.dbos = SimpleNamespace(
+        get_workflow_status=state,
+        retrieve_workflow=lambda _: SimpleNamespace(get_result=lambda: s.result),
+        start_workflow=unexpected,
+        cancel_workflow=unexpected,
+    )
+
+    def native_snapshot():
+        with Session(s.engine) as db:
+            return {
+                model.__tablename__: [
+                    row.model_dump() for row in db.exec(select(model))
+                ]
+                for model in (
+                    AgentSession,
+                    AgentTurn,
+                    PendingMessage,
+                    AgentCapacityReservation,
+                    AgentResultReceipt,
+                )
+            }
+
+    s.native_snapshot = native_snapshot
+    return s
+
+
+def _persist_uncertain_not_invoked(s):
+    import json
+    from swarm import factory_controls as controls
+
+    assert conductor.graph.record_dispatch(
+        s.task["id"], s.run["node_key"], 1, s.sid, None
+    ).ok
+    assert conductor.graph.record_outcome(
+        s.task["id"],
+        s.run["node_key"],
+        1,
+        "uncertain",
+        None,
+        None,
+        json.dumps(s.result),
+    ).ok
+    assert controls.record_start_outcome(
+        s.task["id"],
+        s.run["dispatch_key"],
+        "uncertain",
+        "original-reconciler",
+        session_id=s.sid,
+    )["ok"]
+    s.run = conductor.graph.node_runs(s.task["id"])[0]
+
+
+@pytest.mark.parametrize("historical", [False, True])
+@pytest.mark.parametrize("bound_guest", [False, True, "prepared_receipt"])
+@pytest.mark.parametrize("supervision", [False, True])
+def test_not_invoked_settles_actual_factory_path_without_refunding_or_cleanup(
+    not_invoked_factory, monkeypatch, historical, bound_guest, supervision
+):
+    import json
+    from datetime import datetime, timedelta, timezone
+    from sqlmodel import Session
+    from agent_sessions.models import AgentResultReceipt, AgentSession
+    from swarm import factory_controls as controls
+
+    s = not_invoked_factory
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", str(supervision).lower())
+    if bound_guest:
+        with Session(s.engine) as db:
+            agent = db.get(AgentSession, s.sid)
+            agent.ember_session_id = "created-before-post-setup-failed"
+            agent.ember_session_token = "preserved-test-token"
+            agent.ember_lineage_id = "preserved-lineage"
+            agent.cli_session_id = "preserved-cli"
+            db.add(agent)
+            if bound_guest == "prepared_receipt":
+                now = datetime.now(timezone.utc)
+                db.add(
+                    AgentResultReceipt(
+                        id="a" * 32,
+                        token_sha256="b" * 64,
+                        session_id=s.sid,
+                        local_session_id=agent.local_session_id,
+                        seq=1,
+                        dispatch_count=1,
+                        claim_owner="original-executor",
+                        guest_id=agent.ember_session_id,
+                        request_sha256="c" * 64,
+                        created_at=now,
+                        accept_until=now + timedelta(hours=13),
+                        retain_until=now + timedelta(days=7),
+                    )
+                )
+            db.commit()
+    if historical:
+        _persist_uncertain_not_invoked(s)
+    before = controls.task_snapshot(s.task["id"])
+    native = s.native_snapshot()
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    current = controls.task_snapshot(s.task["id"])
+    result = json.loads(run["outcome_json"])
+    assert run["status"] == current["starts"][0]["status"] == "failed"
+    assert run["finished_at"] is not None and run["pin"] == s.run["pin"]
+    assert run["cost_usd"] is current["starts"][0]["cost_usd"] is None
+    assert run["accounted_cost_usd"] == current["committed_cost_usd"] == 2
+    assert run["accounting_basis"] == "reserved_unknown_cost"
+    assert current["state"] == "admitted" and current["unresolved_starts"] == 0
+    assert current["turns_used"] == before["turns_used"] == 1
+    assert current["deadline_at"] == before["deadline_at"]
+    assert current["policy"] == before["policy"]
+    assert controls.status()["admitted_count"] == 1
+    assert result["previous_outcome"] == s.result
+    assert result["not_invoked"]["invocation_phase"] == "not_invoked"
+    assert result["not_invoked"]["claim_owner"] == "original-executor"
+    assert result["not_invoked"]["dispatch_count"] == 1
+    assert s.native_snapshot() == native
+    # The next ordinary tick can plan within the original task, without replay
+    # or a hidden refund. This tick inserts a planner; it starts no workflow.
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_: {"object": {"sha": "a" * 40}}
+    )
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    assert conductor.graph.node_runs(s.task["id"]) == [run]
+    assert controls.task_snapshot(s.task["id"])["starts"] == current["starts"]
+    assert any(
+        node["node_key"] == "conductor_2"
+        for node in conductor.graph.load_graph(s.task["id"])
+    )
+    assert s.native_snapshot() == native
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "unknown",
+        "generic_error",
+        "owner",
+        "dispatch_zero",
+        "dispatch_newer",
+        "dispatch_bool",
+        "dispatch_string",
+        "dispatch_missing",
+        "future_dispatch",
+        "permit_missing",
+        "permit_uncertain",
+        "permit_running",
+        "permit_outcome",
+        "permit_owner",
+        "permit_local",
+        "permit_timestamp",
+        "workflow",
+        "model",
+        "new_pending",
+        "new_turn",
+        "captured_receipt",
+        "receipt_owner",
+        "fence",
+        "cleanup",
+        "pin",
+    ],
+)
+def test_not_invoked_refuses_conflicting_or_insufficient_proof(
+    not_invoked_factory, case
+):
+    import copy
+    import json
+    from datetime import datetime, timedelta, timezone
+    from sqlmodel import Session, select
+    from agent_sessions.constants import UNKNOWN_INVOCATION
+    from agent_sessions.models import (
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from swarm import factory_controls as controls
+
+    s = not_invoked_factory
+    _persist_uncertain_not_invoked(s)
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        turn = db.exec(select(AgentTurn)).one()
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        usage = json.loads(turn.usage_json)
+        if case == "unknown":
+            turn.stop_reason = UNKNOWN_INVOCATION
+        elif case == "generic_error":
+            usage["recovery"].pop("invocation_phase")
+        elif case == "owner":
+            usage["recovery"]["claim_owner"] = "other-owner"
+        elif case.startswith("dispatch_"):
+            value = {
+                "dispatch_zero": 0,
+                "dispatch_newer": 2,
+                "dispatch_bool": True,
+                "dispatch_string": "1",
+                "dispatch_missing": None,
+            }[case]
+            usage["recovery"]["dispatch_count"] = value
+        elif case == "future_dispatch":
+            usage["recovery"]["last_dispatch_at"] = (
+                datetime.now(timezone.utc) + timedelta(days=1)
+            ).isoformat()
+        elif case == "permit_missing":
+            db.delete(permit)
+        elif case.startswith("permit_"):
+            field, value = {
+                "permit_uncertain": ("state", "uncertain"),
+                "permit_running": ("state", "running"),
+                "permit_outcome": ("outcome", "delivery_error"),
+                "permit_owner": ("owner", "new-owner"),
+                "permit_local": ("local_session_id", "another-session"),
+                "permit_timestamp": ("settled_at", None),
+            }[case]
+            setattr(permit, field, value)
+            db.add(permit)
+        elif case == "workflow":
+            agent.workflow_id = "factory-node:another:work:1"
+        elif case == "model":
+            turn.model = "luna"
+        elif case == "new_pending":
+            db.add(PendingMessage(session_id=s.sid, seq=2, message_text="new work"))
+        elif case == "new_turn":
+            db.add(AgentTurn(session_id=s.sid, seq=2, prompt="new", result_text="new"))
+        elif case in {"captured_receipt", "receipt_owner"}:
+            agent.ember_session_id = "same-created-guest"
+            now = datetime.now(timezone.utc)
+            db.add(
+                AgentResultReceipt(
+                    id="a" * 32,
+                    token_sha256="b" * 64,
+                    session_id=s.sid,
+                    local_session_id=agent.local_session_id,
+                    seq=1,
+                    dispatch_count=1,
+                    claim_owner="other-owner"
+                    if case == "receipt_owner"
+                    else permit.owner,
+                    guest_id=agent.ember_session_id,
+                    request_sha256="c" * 64,
+                    created_at=now,
+                    accept_until=now + timedelta(hours=13),
+                    retain_until=now + timedelta(days=7),
+                    received_at=now if case == "captured_receipt" else None,
+                    result_sha256="d" * 64 if case == "captured_receipt" else None,
+                    result_body=b"{}" if case == "captured_receipt" else None,
+                )
+            )
+        elif case == "fence":
+            agent.result_receipt_fence_id = "a" * 32
+        elif case == "cleanup":
+            agent.guest_cleanup_id = "a" * 32
+        turn.usage_json = json.dumps(usage)
+        db.add_all([agent, turn])
+        db.commit()
+    if case == "pin":
+        s.run = copy.deepcopy(s.run)
+        s.run["pin"]["prompt"] = "different immutable request"
+    before = controls.task_snapshot(s.task["id"])
+    native = s.native_snapshot()
+    runs = conductor.graph.node_runs(s.task["id"])
+    if case in {"workflow", "pin"}:
+        with pytest.raises(ValueError, match="ownership conflict|attempt changed"):
+            conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    else:
+        conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    assert conductor.graph.node_runs(s.task["id"]) == runs
+    assert controls.task_snapshot(s.task["id"])["starts"] == before["starts"]
+    assert controls.task_snapshot(s.task["id"])["state"] == "uncertain"
+    assert s.native_snapshot() == native
+
+
+def test_not_invoked_atomic_rollback_then_historical_reconciliation(
+    not_invoked_factory,
+):
+    from sqlalchemy import event
+    from sqlmodel import Session
+    from swarm import factory_controls as controls
+    from swarm.factory_models import FactoryAudit
+
+    s = not_invoked_factory
+    _persist_uncertain_not_invoked(s)
+    before = controls.task_snapshot(s.task["id"])
+    runs = conductor.graph.node_runs(s.task["id"])
+    native = s.native_snapshot()
+
+    def fail_audit(db, *_):
+        if any(
+            isinstance(row, FactoryAudit) and row.action == "record_start_outcome"
+            for row in db.new
+        ):
+            raise RuntimeError("injected settlement failure")
+
+    event.listen(Session, "before_flush", fail_audit)
+    try:
+        with pytest.raises(RuntimeError, match="injected settlement failure"):
+            conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    finally:
+        event.remove(Session, "before_flush", fail_audit)
+    assert conductor.graph.node_runs(s.task["id"]) == runs
+    assert controls.task_snapshot(s.task["id"]) == before
+    assert s.native_snapshot() == native
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "failed"
+    assert controls.task_snapshot(s.task["id"])["unresolved_starts"] == 0
+    assert s.native_snapshot() == native
+
+
+@pytest.mark.parametrize(
+    "workflow_status", ["PENDING", "ENQUEUED", "ERROR", "CANCELLED"]
+)
+def test_not_invoked_honors_terminal_workflow_boundary(
+    not_invoked_factory, workflow_status
+):
+    from swarm import factory_controls as controls
+
+    s = not_invoked_factory
+    _persist_uncertain_not_invoked(s)
+    s.dbos.get_workflow_status = lambda _: SimpleNamespace(status=workflow_status)
+    before = controls.task_snapshot(s.task["id"])
+    native = s.native_snapshot()
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    current = controls.task_snapshot(s.task["id"])
+    if workflow_status in {"PENDING", "ENQUEUED"}:
+        assert current == before
+        assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "uncertain"
+    else:
+        assert current["unresolved_starts"] == 0
+        assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "failed"
+        assert current["turns_used"] == 1 and current["committed_cost_usd"] == 2
+    assert s.native_snapshot() == native
+
+
+@pytest.mark.parametrize("action", ["pause_task", "stop"])
+def test_not_invoked_reconciliation_does_not_override_operating_controls(
+    not_invoked_factory, action
+):
+    from swarm import factory_controls as controls
+
+    s = not_invoked_factory
+    _persist_uncertain_not_invoked(s)
+    assert controls.set_control(
+        action, "operator", task_id=s.task["id"] if action == "pause_task" else None
+    )["ok"]
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    runs = conductor.graph.node_runs(s.task["id"])
+    assert runs[0]["status"] == "failed"
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    assert conductor.graph.node_runs(s.task["id"]) == runs
+    assert len(conductor.graph.load_graph(s.task["id"])) == 1
+    current = controls.task_snapshot(s.task["id"])
+    assert current["turns_used"] == 1 and current["committed_cost_usd"] == 2
+    assert (
+        current["task_paused"]
+        if action == "pause_task"
+        else current["cancellation_requested"]
+    )
+
+
 def test_reservation_pins_original_task_deadline_and_replays(queued_factory):
     from swarm.factory_controls import task_snapshot
 
