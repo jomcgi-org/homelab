@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 from opentelemetry import trace
@@ -2092,13 +2093,17 @@ def test_cleanup_uses_locked_guest_binding(admission_database, monkeypatch):
         assert db.get(AgentSession, sid).ember_session_id is None
 
 
-@pytest.mark.parametrize("outcome", ["exception", "nonterminal", "malformed"])
-def test_cleanup_retains_exact_claim_until_terminal_confirmation(
+@pytest.mark.parametrize(
+    "outcome", ["exception", "cancelled", "nonterminal", "wrong_identity"]
+)
+def test_cleanup_resumes_exact_claim_until_terminal_confirmation(
     admission_database, monkeypatch, outcome
 ):
     from agent_sessions import mcp, store
-    from agent_sessions.models import AgentSession
+    from agent_sessions.models import AgentSession, AgentTurn
+    from sqlmodel import select
 
+    monkeypatch.setattr(mcp, "get_engine", lambda: admission_database)
     with Session(admission_database) as db:
         row = store.create_session(
             db,
@@ -2109,25 +2114,151 @@ def test_cleanup_retains_exact_claim_until_terminal_confirmation(
         )
         sid = row.id
         store.set_ember_session(db, sid, "guest-exact", "token", None)
+        row = db.get(AgentSession, sid)
+        row.ember_lineage_id = "lineage-exact"
+        row.cli_session_id = "cli-exact"
+        db.add(row)
+        other = store.create_session(
+            db,
+            "same-workflow-other-job",
+            "<guest>",
+            "main",
+            workflow_id="workflow-deferred",
+        )
+        other_sid = other.id
+        store.set_ember_session(db, other_sid, "guest-other", "other-token", None)
+
+    phase = "retain"
+    cleanup_claims = []
+    original_begin = store.begin_guest_cleanup
+
+    def begin_guest_cleanup(*args):
+        result = original_begin(*args)
+        claimed = args[0].get(AgentSession, sid)
+        cleanup_claims.append(
+            (
+                result.get("claim_id"),
+                claimed.guest_cleanup_guest_id,
+                claimed.guest_cleanup_workflow_id,
+                claimed.guest_cleanup_dispatch_json,
+                claimed.guest_cleanup_started_at,
+            )
+        )
+        return result
 
     async def destroy(_guest_id):
-        if outcome == "exception":
+        if phase == "retain" and outcome == "exception":
             raise RuntimeError("transport unavailable")
+        if phase == "retain" and outcome == "cancelled":
+            raise asyncio.CancelledError
 
     async def get_session(guest_id):
+        if phase != "retain":
+            return {"session_id": guest_id, "state": "destroyed"}
         if outcome == "nonterminal":
             return {"session_id": guest_id, "state": "destroying"}
-        return {"wrong": "shape"}
+        return {"session_id": "different-guest", "state": "destroyed"}
 
+    async def unexpected_create(*_args, **_kwargs):
+        pytest.fail("cleanup retry must not create a model session")
+
+    monkeypatch.setattr(store, "begin_guest_cleanup", begin_guest_cleanup)
     monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
     monkeypatch.setattr(mcp._transport, "get_session", get_session)
-    assert not drainer.destroy_drainer_session.__wrapped__(sid, "deferred-cleanup")
+    monkeypatch.setattr(mcp._transport, "create_session", unexpected_create)
+    if outcome == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            drainer.destroy_drainer_session.__wrapped__(sid, "deferred-cleanup")
+    else:
+        assert not drainer.destroy_drainer_session.__wrapped__(
+            sid, "deferred-cleanup"
+        )
     with Session(admission_database) as db:
         retained = db.get(AgentSession, sid)
         assert retained.ember_session_id == "guest-exact"
-        assert retained.guest_cleanup_id
+        retained_claim_id = retained.guest_cleanup_id
+        retained_started_at = retained.guest_cleanup_started_at
+        retained_dispatches = retained.guest_cleanup_dispatch_json
+        assert retained_claim_id
         assert retained.guest_cleanup_guest_id == "guest-exact"
         assert retained.guest_cleanup_workflow_id == "workflow-deferred"
+        assert db.exec(select(AgentTurn)).all() == []
+
+    phase = "terminal"
+    assert drainer.destroy_drainer_session.__wrapped__(sid, "deferred-cleanup")
+    assert cleanup_claims == [
+        (
+            retained_claim_id,
+            "guest-exact",
+            "workflow-deferred",
+            retained_dispatches,
+            retained_started_at,
+        ),
+        (
+            retained_claim_id,
+            "guest-exact",
+            "workflow-deferred",
+            retained_dispatches,
+            retained_started_at,
+        ),
+    ]
+    with Session(admission_database) as db:
+        retired = db.get(AgentSession, sid)
+        assert retired.ember_session_id is None
+        assert retired.guest_cleanup_id is None
+        assert retired.prior_ember_lineage_id == "lineage-exact"
+        assert retired.prior_cli_session_id == "cli-exact"
+        other = db.get(AgentSession, other_sid)
+        assert other.ember_session_id == "guest-other"
+        assert other.ember_session_token == "other-token"
+        assert other.guest_cleanup_id is None
+        assert db.exec(select(AgentTurn)).all() == []
+    assert retained_started_at is not None
+    assert retained_dispatches == "[]"
+
+
+@pytest.mark.parametrize("gone_from", ["delete", "confirming_get"])
+def test_cleanup_retires_claim_when_exact_guest_is_gone(
+    admission_database, monkeypatch, gone_from
+):
+    from agent_sessions import mcp, store
+    from agent_sessions.models import AgentSession
+    from agent_sessions.transport import EmberSessionGone
+
+    monkeypatch.setattr(mcp, "get_engine", lambda: admission_database)
+    with Session(admission_database) as db:
+        row = store.create_session(
+            db,
+            f"gone-{gone_from}",
+            "<guest>",
+            "main",
+            workflow_id=f"workflow-{gone_from}",
+        )
+        sid = row.id
+        store.set_ember_session(db, sid, f"guest-{gone_from}", "token", None)
+
+    calls = []
+
+    async def destroy(guest_id):
+        calls.append(("delete", guest_id))
+        if gone_from == "delete":
+            raise EmberSessionGone("exact guest disappeared before DELETE")
+
+    async def get_session(guest_id):
+        calls.append(("get", guest_id))
+        raise EmberSessionGone("exact guest disappeared before confirming GET")
+
+    monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
+    monkeypatch.setattr(mcp._transport, "get_session", get_session)
+    assert drainer.destroy_drainer_session.__wrapped__(sid, f"gone-{gone_from}")
+    expected = [("delete", f"guest-{gone_from}")]
+    if gone_from == "confirming_get":
+        expected.append(("get", f"guest-{gone_from}"))
+    assert calls == expected
+    with Session(admission_database) as db:
+        retired = db.get(AgentSession, sid)
+        assert retired.ember_session_id is None
+        assert retired.guest_cleanup_id is None
 
 
 def test_cleanup_defers_legacy_workflowless_binding(

@@ -23,7 +23,11 @@ class FakeDBOS:
 
 
 def _create_session(
-    session: Session, local_session_id: str, ember_session_id: str | None = None
+    session: Session,
+    local_session_id: str,
+    ember_session_id: str | None = None,
+    *,
+    workflow_id: str | None = None,
 ) -> int:
     row = store.create_session(
         session,
@@ -32,6 +36,7 @@ def _create_session(
         "main",
         model="luna",
         repo="jomcgi-org/homelab",
+        workflow_id=workflow_id,
     )
     assert row.id is not None
     if ember_session_id is not None:
@@ -263,7 +268,12 @@ def test_destroy_drainer_session_clears_ember_binding(
 
     ember_session_id = f"ember-drainer-{session_gone}"
     local_session_id = f"drainer-with-ember-{session_gone}"
-    session_id = _create_session(agent_db, local_session_id, ember_session_id)
+    session_id = _create_session(
+        agent_db,
+        local_session_id,
+        ember_session_id,
+        workflow_id="drainer-bdd-workflow",
+    )
     destroyed = []
 
     async def destroy_session(value: str) -> None:
@@ -271,7 +281,12 @@ def test_destroy_drainer_session_clears_ember_binding(
         if session_gone:
             raise EmberSessionGone("session already gone")
 
+    async def get_session(value: str) -> dict:
+        assert not session_gone
+        return {"session_id": value, "state": "destroyed"}
+
     monkeypatch.setattr(mcp._transport, "destroy_session", destroy_session)
+    monkeypatch.setattr(mcp._transport, "get_session", get_session)
 
     assert (
         drainer.destroy_drainer_session.__wrapped__(session_id, local_session_id)
