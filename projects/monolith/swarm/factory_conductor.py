@@ -482,7 +482,7 @@ def _planner_run(run: dict) -> dict:
         )
     )
     pin = run.get("pin") or {}
-    if "selected_profile" not in result and isinstance(pin.get("model"), str):
+    if result.get("selected_profile") is None and isinstance(pin.get("model"), str):
         # The immutable pin records the profile selected for this dispatch.
         # The observed provider model is separate evidence below.
         result["selected_profile"] = pin["model"]

@@ -716,6 +716,32 @@ def planner_context(prompt):
     return json.loads(prompt.split("\n", 1)[1])
 
 
+@pytest.mark.parametrize(
+    "selected_profile",
+    [pytest.param("absent", id="absent"), None, "explicit"],
+)
+def test_planner_run_falls_back_for_absent_or_null_selected_profile(selected_profile):
+    import json
+
+    pin = {"model": "immutable-profile"}
+    if selected_profile != "absent":
+        pin["selected_profile"] = selected_profile
+    run = {
+        "pin": pin,
+        "outcome_json": json.dumps(
+            {"artifact": {"status": "invalid", "errors": []}}
+        ),
+    }
+
+    result = conductor._planner_run(run)
+
+    expected_profile = (
+        "immutable-profile" if selected_profile in ("absent", None) else "explicit"
+    )
+    assert result["selected_profile"] == expected_profile
+    assert result["provider_model"] == "unavailable"
+
+
 def test_planner_keeps_completed_review_after_recursive_historical_prompts(monkeypatch):
     import copy
     import json
