@@ -108,7 +108,7 @@ describe("fact and tile derivations", () => {
       { now: {}, totals_7d: {} },
       { totals: {} },
       facts,
-      { sessions: [], spend: [], merges: [], lines: [], facts: factRows },
+      { sessions: [], spend: [], merges: [], facts: factRows },
       "2026-09-07",
     );
 
@@ -156,19 +156,19 @@ describe("fact and tile derivations", () => {
       },
       { totals: {} },
       { daily: [], totals: {} },
-      { sessions: shared, spend, merges: [], lines: [], facts: [] },
+      { sessions: shared, spend, merges: [], facts: [] },
       "2026-09-07",
     );
     const legacy = tileDerivations(
       { totals_7d: { sessions: 4, input_tokens: 7, output_tokens: 2 } },
       { totals: {} },
       { daily: [], totals: {} },
-      { sessions: [], spend: [], merges: [], lines: [], facts: [] },
+      { sessions: [], spend: [], merges: [], facts: [] },
       "2026-09-07",
     );
 
     expect(dual.sessions).toMatchObject({ value: 5 });
-    expect(dual.tokens).toMatchObject({ input: 30, output: 10 });
+    expect(dual.tokens).toMatchObject({ input: 30 });
     expect(dual.spend.value).toBe(1234.4);
     expect(dual.spend.spark.at(-2)).toBe(700);
     expect(dual.spend.spark.at(-1)).toBe(534.4);
