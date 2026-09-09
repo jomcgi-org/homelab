@@ -70,7 +70,7 @@ def test_missing_pools_use_the_single_role_model():
         "conductor", single, quota={"codex": {"exhausted": True}}
     )
     assert choice["model"] == "astra"
-    assert choice["reason"] == "pool_exhausted"
+    assert choice["reason"] == "single_member_pool"
 
 
 def test_review_is_not_a_pooled_role():
@@ -78,11 +78,85 @@ def test_review_is_not_a_pooled_role():
         model_pool.select_model("review", policy(), quota={})
 
 
-def test_unknown_model_has_no_quota_feed():
-    assert model_pool.availability("not-a-model", {"codex": {"exhausted": True}}) == (
-        True,
-        "no_quota_feed",
+def test_unsupported_model_is_never_selected():
+    assert model_pool.availability("not-a-model", {}) == (False, "unsupported_model")
+    typo = policy(
+        allowed_models=["sol", "sonnett"],
+        model_pools={"conductor": ["astra", "spark"], "worker": ["sol", "sonnett"]},
     )
+    choice = model_pool.select_model(
+        "worker", typo, quota={"codex": {"exhausted": True}}
+    )
+    assert choice["model"] == "sol"
+    assert choice["reason"] == "pool_exhausted"
+    assert choice["skipped"][1] == {"model": "sonnett", "reason": "unsupported_model"}
+
+
+def test_exhausted_holds_until_a_known_reset_regardless_of_age():
+    quota = {
+        "codex": {
+            "exhausted": True,
+            "age_seconds": 36000.0,
+            "resets_at": "2999-01-01T00:00:00Z",
+        }
+    }
+    assert (
+        model_pool.select_model("conductor", policy(), quota=quota)["model"] == "spark"
+    )
+
+
+def test_exhausted_expires_once_the_known_reset_has_passed():
+    quota = {
+        "codex": {
+            "exhausted": True,
+            "age_seconds": 5.0,
+            "resets_at": "2000-01-01T00:00:00+00:00",
+        }
+    }
+    choice = model_pool.select_model("conductor", policy(), quota=quota)
+    assert choice["model"] == "astra"
+    assert choice["reason"] == "reset_passed"
+
+
+def test_exhausted_without_reset_time_expires_with_the_observation():
+    stale = {"codex": {"exhausted": True, "age_seconds": 901.0}}
+    assert (
+        model_pool.select_model("conductor", policy(), quota=stale)["model"] == "astra"
+    )
+    fresh = {"codex": {"exhausted": True, "age_seconds": 899.0}}
+    assert (
+        model_pool.select_model("conductor", policy(), quota=fresh)["model"] == "spark"
+    )
+
+
+def test_reset_passed_accepts_epoch_and_rejects_garbage():
+    assert model_pool.reset_passed(0) is True
+    assert model_pool.reset_passed("not a time") is None
+    assert model_pool.reset_passed(None) is None
+    assert model_pool.reset_passed(True) is None
+
+
+def test_single_member_pool_never_reads_the_broker(monkeypatch):
+    monkeypatch.setattr(
+        model_pool, "quota_summary", lambda: pytest.fail("broker must not be read")
+    )
+    single = policy()
+    del single["model_pools"]
+    choice = model_pool.select_model("worker", single)
+    assert choice == {
+        "model": "sol",
+        "preferred": "sol",
+        "fallback_from": None,
+        "skipped": [],
+        "reason": "single_member_pool",
+    }
+
+
+def test_malformed_tunables_fall_back_to_defaults(monkeypatch):
+    monkeypatch.setenv("SWARM_MODEL_POOL_EXHAUSTED_PERCENT", "97%")
+    monkeypatch.setenv("SWARM_MODEL_POOL_QUOTA_MAX_AGE_SECONDS", "soon")
+    assert model_pool.exhausted_percent() == 97.0
+    assert model_pool.max_quota_age_seconds() == 900.0
 
 
 def test_selection_reason_carries_fallback_evidence_within_limit():

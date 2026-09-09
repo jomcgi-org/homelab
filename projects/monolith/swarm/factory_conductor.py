@@ -850,6 +850,7 @@ def _apply_decision(
         key = key if key.startswith(f"{role}_") else f"{role}_{key}"
         if len(key) > 64:
             raise ValueError("node key exceeds role prefix limit")
+        stated_reason = decision["reason"]
         if "model" in decision:
             model = decision["model"]
         elif role == "review":
@@ -857,7 +858,9 @@ def _apply_decision(
         else:
             # The planner left worker routing to policy: honour the pool order
             # and skip providers with positive evidence of exhausted quota.
-            model = select_model("worker", policy)["model"]
+            choice = select_model("worker", policy)
+            model = choice["model"]
+            stated_reason = selection_reason(stated_reason, choice)
         if (
             role == "review"
             and "model" in decision
@@ -919,7 +922,7 @@ def _apply_decision(
             decision["deps"],
             model,
             cause,
-            decision["reason"],
+            stated_reason,
             review=role == "review",
             max_attempts=bounds["max_attempts"],
             max_cost_usd=bounds["max_cost_usd"],
