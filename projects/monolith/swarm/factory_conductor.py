@@ -815,8 +815,10 @@ def _apply_decision(
             if role == "review"
             else policy["worker_model"],
         )
-        if role == "review" and "model" in decision and model != policy.get(
-            "reviewer_model", policy["conductor_model"]
+        if (
+            role == "review"
+            and "model" in decision
+            and model != policy.get("reviewer_model", policy["conductor_model"])
         ):
             _reject_decision(
                 task["id"],
@@ -1130,7 +1132,8 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     ready = [
         n
         for n in nodes
-        if n["node_key"] not in succeeded and n["node_key"] not in escalated
+        if n["node_key"] not in succeeded
+        and n["node_key"] not in escalated
         and all(dep in succeeded for dep in n["deps"])
         and sum(r["node_key"] == n["node_key"] for r in runs) < n["max_attempts"]
         and sum(r["accounted_cost_usd"] for r in runs if r["node_key"] == n["node_key"])

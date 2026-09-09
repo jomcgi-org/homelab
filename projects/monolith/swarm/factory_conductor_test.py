@@ -417,9 +417,7 @@ def test_discard_before_task_branch_exists_records_absent_head_and_advances(
         ).raise_for_status()
 
     monkeypatch.setattr(conductor, "github_get", missing)
-    conductor.apply_decision(
-        task, policy, run, conductor.graph.node_runs(task["id"])
-    )
+    conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
     feedback_db.dispose()
     conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
     assert len(reads) == 1
@@ -728,9 +726,7 @@ def test_planner_run_falls_back_for_absent_or_null_selected_profile(selected_pro
         pin["selected_profile"] = selected_profile
     run = {
         "pin": pin,
-        "outcome_json": json.dumps(
-            {"artifact": {"status": "invalid", "errors": []}}
-        ),
+        "outcome_json": json.dumps({"artifact": {"status": "invalid", "errors": []}}),
     }
 
     result = conductor._planner_run(run)
