@@ -424,12 +424,12 @@
                   <span
                     ><button
                       type="button"
-                      onclick={() => (notePage -= 1)}
-                      disabled={notePage === 0}>prev</button
+                      onclick={() => (notePage = pagedRows.page - 1)}
+                      disabled={pagedRows.page === 0}>prev</button
                     ><button
                       type="button"
-                      onclick={() => (notePage += 1)}
-                      disabled={notePage >= pagedRows.pageCount - 1}
+                      onclick={() => (notePage = pagedRows.page + 1)}
+                      disabled={pagedRows.page >= pagedRows.pageCount - 1}
                       >next</button
                     ></span
                   >
@@ -489,12 +489,12 @@
                   <span
                     ><button
                       type="button"
-                      onclick={() => (notePage -= 1)}
-                      disabled={notePage === 0}>prev</button
+                      onclick={() => (notePage = pagedRows.page - 1)}
+                      disabled={pagedRows.page === 0}>prev</button
                     ><button
                       type="button"
-                      onclick={() => (notePage += 1)}
-                      disabled={notePage >= pagedRows.pageCount - 1}
+                      onclick={() => (notePage = pagedRows.page + 1)}
+                      disabled={pagedRows.page >= pagedRows.pageCount - 1}
                       >next</button
                     ></span
                   >
@@ -580,7 +580,7 @@
                   width="148"
                   height="130"
                 /><rect x="436" y="56" width="148" height="130" /><rect
-                  x="632"
+                  x="612"
                   y="56"
                   width="148"
                   height="130"
@@ -593,9 +593,9 @@
                   x2="376"
                   y2="80"
                 /><line x1="436" y1="80" x2="584" y2="80" /><line
-                  x1="632"
+                  x1="612"
                   y1="80"
-                  x2="780"
+                  x2="760"
                   y2="80"
                 />
               </g>
@@ -617,21 +617,21 @@
                 ><text x="444" y="156">confidence</text><text x="444" y="174"
                   >validity window</text
                 >
-                <text x="640" y="72">readers</text><text x="640" y="102"
+                <text x="620" y="72">readers</text><text x="620" y="102"
                   >agents</text
-                ><text x="640" y="120">this page</text>
+                ><text x="620" y="120">this page</text>
               </g>
               <g stroke="currentColor" stroke-width="1" fill="currentColor">
                 <line x1="170" y1="121" x2="220" y2="121" /><polygon
                   points="226,121 219,117.5 219,124.5"
                 /><line x1="378" y1="121" x2="428" y2="121" /><polygon
                   points="434,121 427,117.5 427,124.5"
-                /><line x1="586" y1="121" x2="624" y2="121" /><polygon
-                  points="630,121 623,117.5 623,124.5"
+                /><line x1="586" y1="121" x2="604" y2="121" /><polygon
+                  points="610,121 603,117.5 603,124.5"
                 />
               </g>
               <path
-                d="M706 186 V218 H302 V188"
+                d="M686 186 V218 H302 V188"
                 fill="none"
                 stroke="currentColor"
                 stroke-width="1"
@@ -651,7 +651,7 @@
             <!-- The same sequence for a phone, where the drawing above would
                  either scale its labels into illegibility or scroll a box off
                  the edge with nothing saying it had. -->
-            <div class="stack" aria-hidden="true">
+            <div class="stack">
               <div>
                 <b>sessions</b><span>codex, claude, ember, agent report</span>
               </div>
@@ -671,7 +671,7 @@
           </figure>
           <section>
             <h3><span>1</span><span>What the marks mean</span></h3>
-            <ol>
+            <ol class="legend-list">
               {#each MARK_DEFINITIONS as mark}
                 <li>
                   <details>
