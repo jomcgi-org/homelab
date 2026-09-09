@@ -1551,7 +1551,13 @@ def test_cleanup_preserves_unknown_session_pending_and_guest(monkeypatch, tmp_pa
 
         monkeypatch.setattr("agent_sessions.mcp._transport.destroy_session", destroy)
         with Session(engine) as session:
-            row = store.create_session(session, "held-drainer", "<guest>", "main")
+            row = store.create_session(
+                session,
+                "held-drainer",
+                "<guest>",
+                "main",
+                workflow_id="workflow-held",
+            )
             row.ember_session_id = "guest-retain"
             row.ember_lineage_id = "lineage-retain"
             session.add(row)
@@ -1988,7 +1994,13 @@ def test_cleanup_preserves_native_receipt_owner(
         monkeypatch.setattr(module, "get_engine", lambda: admission_database)
     with Session(admission_database) as db:
         row = store.create_session(
-            db, "receipt-cleanup", "<guest>", "main", "luna", admission_tier="kg"
+            db,
+            "receipt-cleanup",
+            "<guest>",
+            "main",
+            "luna",
+            workflow_id="workflow-receipt",
+            admission_tier="kg",
         )
         sid = row.id
         store.set_ember_session(db, sid, "receipt-guest", "guest-token", None)
@@ -2051,7 +2063,13 @@ def test_cleanup_uses_locked_guest_binding(admission_database, monkeypatch):
 
     monkeypatch.setattr(mcp, "get_engine", lambda: admission_database)
     with Session(admission_database) as db:
-        row = store.create_session(db, "rebound-cleanup", "<guest>", "main")
+        row = store.create_session(
+            db,
+            "rebound-cleanup",
+            "<guest>",
+            "main",
+            workflow_id="workflow-rebound",
+        )
         sid = row.id
         store.set_ember_session(db, sid, "old-guest", "old-token", None)
     detached = mcp._load_session_row(sid)
@@ -2082,7 +2100,13 @@ def test_cleanup_retains_exact_claim_until_terminal_confirmation(
     from agent_sessions.models import AgentSession
 
     with Session(admission_database) as db:
-        row = store.create_session(db, "deferred-cleanup", "<guest>", "main")
+        row = store.create_session(
+            db,
+            "deferred-cleanup",
+            "<guest>",
+            "main",
+            workflow_id="workflow-deferred",
+        )
         sid = row.id
         store.set_ember_session(db, sid, "guest-exact", "token", None)
 
@@ -2103,7 +2127,29 @@ def test_cleanup_retains_exact_claim_until_terminal_confirmation(
         assert retained.ember_session_id == "guest-exact"
         assert retained.guest_cleanup_id
         assert retained.guest_cleanup_guest_id == "guest-exact"
-        assert retained.guest_cleanup_workflow_id == "main"
+        assert retained.guest_cleanup_workflow_id == "workflow-deferred"
+
+
+def test_cleanup_defers_legacy_workflowless_binding(
+    admission_database, monkeypatch
+):
+    from agent_sessions import mcp, store
+    from agent_sessions.models import AgentSession
+
+    with Session(admission_database) as db:
+        row = store.create_session(db, "legacy-cleanup", "<guest>", "main")
+        sid = row.id
+        store.set_ember_session(db, sid, "legacy-guest", "token", None)
+
+    async def unexpected_destroy(_guest_id):
+        pytest.fail("workflow-less legacy binding must not be destroyed")
+
+    monkeypatch.setattr(mcp._transport, "destroy_session", unexpected_destroy)
+    assert not drainer.destroy_drainer_session.__wrapped__(sid, "legacy-cleanup")
+    with Session(admission_database) as db:
+        retained = db.get(AgentSession, sid)
+        assert retained.ember_session_id == "legacy-guest"
+        assert retained.guest_cleanup_id is None
 
 
 @pytest.mark.parametrize("pause", ["enabled", "max_jobs_per_cycle"])
