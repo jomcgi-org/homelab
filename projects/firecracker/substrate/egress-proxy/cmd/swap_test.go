@@ -21,6 +21,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1219,13 +1220,141 @@ func TestRankGrantsBandsHysteresisAndSoonerReset(t *testing.T) {
 		}, "codex-old", "codex-b"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := rankGrants(pool, tc.views, tc.current, now); got != tc.want {
-				t.Fatalf("rankGrants = %q, want %q", got, tc.want)
+			if got := rankGrants(pool, tc.views, tc.current, now, nil); got[0] != tc.want {
+				t.Fatalf("rankGrants = %v, want %q first", got, tc.want)
 			}
 		})
 	}
-	if got := rankGrants(nil, nil, "codex-a", now); got != "codex-a" {
-		t.Fatalf("empty pool must keep current, got %q", got)
+	if got := rankGrants(nil, nil, "codex-a", now, nil); len(got) != 1 || got[0] != "codex-a" {
+		t.Fatalf("empty pool must keep current, got %v", got)
+	}
+}
+
+func TestBandForUsesTheWorstWindowAndExpiresExhaustion(t *testing.T) {
+	now := time.Date(2026, 9, 9, 16, 0, 0, 0, time.UTC)
+	weekly := grantView(true, false, "codex", 10, "2026-09-09T20:00:00Z")
+	weekly.Windows = append(weekly.Windows, struct {
+		Name        string  `json:"name"`
+		UsedPercent float64 `json:"used_percent"`
+		ResetsAt    string  `json:"resets_at"`
+		Expired     bool    `json:"expired"`
+	}{Name: "secondary", UsedPercent: 96, ResetsAt: "2026-09-15T01:25:04Z"})
+	if got := bandFor(weekly, true, now); got.band != 0 || !got.resetsAt.Equal(time.Date(2026, 9, 15, 1, 25, 4, 0, time.UTC)) {
+		t.Fatalf("band must follow the spent weekly window and its reset, got %+v", got)
+	}
+	expired := weekly
+	expired.Windows[1].Expired = true
+	if got := bandFor(expired, true, now); got.band != 3 {
+		t.Fatalf("an expired window must not count, got %+v", got)
+	}
+	for _, tc := range []struct {
+		name string
+		view grantQuotaView
+		want int
+	}{
+		{"exhausted with a future reset stays out", func() grantQuotaView {
+			v := grantView(true, false, "codex", 100, "2026-09-09T20:00:00Z")
+			v.Exhausted, v.AgeSeconds = true, 40000
+			return v
+		}(), -1},
+		{"exhausted with a passed reset is stale", func() grantQuotaView {
+			v := grantView(true, false, "codex", 100, "2026-09-09T12:00:00Z")
+			v.Exhausted, v.AgeSeconds = true, 40000
+			return v
+		}(), 0},
+		{"fresh window-less 429 stays out", func() grantQuotaView {
+			v := grantView(true, true, "codex", 0, "")
+			v.AgeSeconds = 60
+			return v
+		}(), -1},
+		{"stale window-less 429 drops to band zero", func() grantQuotaView {
+			v := grantView(true, true, "codex", 0, "")
+			v.AgeSeconds = 901
+			return v
+		}(), 0},
+		{"boundaries round down", grantView(true, false, "codex", 25, ""), 3},
+		{"just past a boundary drops a band", grantView(true, false, "codex", 25.5, ""), 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := bandFor(tc.view, true, now); got.band != tc.want {
+				t.Fatalf("band = %d, want %d", got.band, tc.want)
+			}
+		})
+	}
+}
+
+func TestRankGrantsPutsDeadGrantsLast(t *testing.T) {
+	now := time.Date(2026, 9, 9, 16, 0, 0, 0, time.UTC)
+	dead := func(grant string, _ time.Time) bool { return grant == "codex-b" }
+	got := rankGrants([]string{"codex-a", "codex-b"}, nil, "codex-b", now, dead)
+	if got[0] != "codex-a" || got[1] != "codex-b" {
+		t.Fatalf("a dead current grant must yield to a healthy one, got %v", got)
+	}
+}
+
+func TestResolveFallsThroughAnUnloggedGrantAndCoolsItDown(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	originalExit := exitFn
+	t.Cleanup(func() { exitFn = originalExit })
+	exitFn = func(int) { t.Fatal("a valid pool must not exit") }
+
+	var tokenGrants []string
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/quota":
+			// codex-b has never reported: the ranker assumes it is full.
+			_ = json.NewEncoder(w).Encode(map[string]any{"providers": map[string]any{}, "grants": map[string]any{
+				"codex-a": map[string]any{
+					"observed": true, "exhausted": false, "provider": "codex",
+					"windows": []map[string]any{{"name": "primary", "used_percent": 60.0}},
+				},
+			}})
+		case strings.HasPrefix(r.URL.Path, "/grants/codex-b/"):
+			tokenGrants = append(tokenGrants, "codex-b")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"reason":"no_grant"}`))
+		case strings.HasPrefix(r.URL.Path, "/grants/codex-a/"):
+			tokenGrants = append(tokenGrants, "codex-a")
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok-a", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+		default:
+			t.Errorf("unexpected broker request %s %s", r.Method, r.URL)
+		}
+	}))
+	defer broker.Close()
+
+	t.Setenv("EGRESS_SECRETS", `[{"header":"Authorization","valuePrefix":"Bearer ","brokerGrants":["codex-a","codex-b"],"egressTo":["chatgpt.com"]}]`)
+	got := loadSecretsWithBroker(logger, broker.URL)
+	sec := &got[0]
+	if !sec.live() || sec.activeGrant() != "codex-a" || sec.credential().value != "tok-a" {
+		t.Fatalf("resolve must fall through to the healthy grant: live=%v active=%q", sec.live(), sec.activeGrant())
+	}
+	if err := sec.resolve(); err != nil || sec.activeGrant() != "codex-a" {
+		t.Fatalf("second resolve must stay on codex-a during the cooldown: err=%v active=%q", err, sec.activeGrant())
+	}
+	if tokenGrants[0] != "codex-b" || strings.Count(strings.Join(tokenGrants, ","), "codex-b") != 1 {
+		t.Fatalf("codex-b must be tried once then cooled down, got %v", tokenGrants)
+	}
+}
+
+func TestGrantViewsNegativeCacheAndSingleFlight(t *testing.T) {
+	var gets int32
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&gets, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer broker.Close()
+	b := newTokenBroker(broker.URL)
+	now := time.Now()
+	if views := b.grantViews(now); len(views) != 0 {
+		t.Fatalf("a failed read yields no views, got %v", views)
+	}
+	b.grantViews(now.Add(time.Second))
+	b.grantViews(now.Add(2 * time.Second))
+	if atomic.LoadInt32(&gets) != 1 {
+		t.Fatalf("a failure must be cached for the TTL, broker saw %d GETs", gets)
+	}
+	if b.grantViews(now.Add(grantQuotaTTL)); atomic.LoadInt32(&gets) != 2 {
+		t.Fatalf("the TTL must expire a failure too, broker saw %d GETs", gets)
 	}
 }
 

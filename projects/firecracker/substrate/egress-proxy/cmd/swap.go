@@ -34,6 +34,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -70,9 +71,11 @@ type tokenBroker struct {
 	// grantQuotaTTL so choosing a grant per connection costs nothing on the
 	// relay path. A failed read keeps the previous views; no views at all
 	// means every grant is unobserved and the pool order decides.
-	viewsMu      sync.Mutex
-	views        map[string]grantQuotaView
-	viewsFetched time.Time
+	viewsMu       sync.Mutex
+	views         map[string]grantQuotaView
+	viewsFetched  time.Time
+	viewsFetching bool
+	dead          map[string]time.Time
 }
 
 const grantQuotaTTL = 30 * time.Second
@@ -81,10 +84,11 @@ const grantQuotaTTL = 30 * time.Second
 // ranker needs. Windows carry the broker's expired flag so a lapsed window
 // never counts against a grant.
 type grantQuotaView struct {
-	Observed  bool   `json:"observed"`
-	Exhausted bool   `json:"exhausted"`
-	Provider  string `json:"provider"`
-	Windows   []struct {
+	Observed   bool    `json:"observed"`
+	Exhausted  bool    `json:"exhausted"`
+	Provider   string  `json:"provider"`
+	AgeSeconds float64 `json:"age_seconds"`
+	Windows    []struct {
 		Name        string  `json:"name"`
 		UsedPercent float64 `json:"used_percent"`
 		ResetsAt    string  `json:"resets_at"`
@@ -93,36 +97,92 @@ type grantQuotaView struct {
 }
 
 // grantViews returns the broker's per-grant quota views, refreshing at most
-// once per grantQuotaTTL.
+// once per grantQuotaTTL. The GET runs outside the lock and only one runs at
+// a time; concurrent callers and a failed or slow broker get the previous
+// views (or none) immediately, so a broker outage denies fast instead of
+// queueing every guest connection behind a 10 second timeout. A failure is
+// cached for the same TTL as a success.
 func (b *tokenBroker) grantViews(now time.Time) map[string]grantQuotaView {
 	if b == nil || b.baseURL == "" || b.client == nil {
 		return nil
 	}
 	b.viewsMu.Lock()
-	defer b.viewsMu.Unlock()
-	if b.views != nil && now.Sub(b.viewsFetched) < grantQuotaTTL {
-		return b.views
+	if b.viewsFetching || (b.views != nil && now.Sub(b.viewsFetched) < grantQuotaTTL) {
+		views := b.views
+		b.viewsMu.Unlock()
+		return views
 	}
+	b.viewsFetching = true
+	b.viewsMu.Unlock()
+
+	fetched := b.fetchGrantViews()
+
+	b.viewsMu.Lock()
+	defer b.viewsMu.Unlock()
+	b.viewsFetching = false
+	b.viewsFetched = now
+	if fetched != nil {
+		b.views = fetched
+	} else if b.views == nil {
+		b.views = map[string]grantQuotaView{}
+	}
+	return b.views
+}
+
+func (b *tokenBroker) fetchGrantViews() map[string]grantQuotaView {
 	resp, err := b.client.Get(b.baseURL + "/quota")
 	if err != nil {
-		return b.views
+		return nil
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return b.views
+		return nil
 	}
 	var payload struct {
 		Grants map[string]grantQuotaView `json:"grants"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return b.views
+		return nil
 	}
 	if payload.Grants == nil {
 		payload.Grants = map[string]grantQuotaView{}
 	}
-	b.views, b.viewsFetched = payload.Grants, now
-	return b.views
+	return payload.Grants
 }
+
+// markDead records that the broker could not mint a token for a grant (not
+// logged in, refresh failed, broker error). The grant is skipped by the pool
+// ranking for grantDeadCooldown so one dead account never takes a
+// destination down while another in the pool is healthy.
+func (b *tokenBroker) markDead(grant string, now time.Time) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	if b.dead == nil {
+		b.dead = make(map[string]time.Time)
+	}
+	b.dead[grant] = now
+	b.mu.Unlock()
+}
+
+func (b *tokenBroker) isDead(grant string, now time.Time) bool {
+	if b == nil {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	since, ok := b.dead[grant]
+	return ok && now.Sub(since) < grantDeadCooldown
+}
+
+const grantDeadCooldown = 60 * time.Second
+
+// grantExhaustionStaleAfter bounds how long a window-less exhaustion (a
+// bare 429, which carries no reset time) is believed. The broker only sees
+// a grant that gets traffic, so an exhausted flag with no reset would
+// otherwise latch a grant out of the pool forever.
+const grantExhaustionStaleAfter = 15 * time.Minute
 
 // grantBand is the ranking key for one grant: remaining quota in 25% bands
 // (4 = untouched or unobserved, 0 = under a quarter left, -1 = exhausted)
@@ -132,35 +192,54 @@ type grantBand struct {
 	resetsAt time.Time
 }
 
+// bandFor scores one grant from the broker's view of it.
+//
+// The band is the MINIMUM remaining across every unexpired window, not the
+// headline window alone: codex reports a five-hour primary and a weekly
+// secondary, and an account with a fresh primary but a spent weekly window
+// has no room. An exhausted grant is out of the ranking while its reset is
+// in the future, or while the observation is younger than
+// grantExhaustionStaleAfter when no reset is known; a stale exhaustion
+// drops to band 0 so the grant is retried only once everything else is
+// worse, and the retry produces a fresh observation either way.
 func bandFor(view grantQuotaView, ok bool, now time.Time) grantBand {
 	if !ok || !view.Observed {
 		// An account that has never reported is assumed full: that is what
-		// puts a freshly added grant into rotation.
+		// puts a freshly added grant into rotation. A grant the broker cannot
+		// mint for is handled by markDead, not here.
 		return grantBand{band: 4}
 	}
-	if view.Exhausted {
-		return grantBand{band: -1}
-	}
-	preferred := "primary"
-	if view.Provider == "claude" {
-		preferred = "5h"
-	}
 	remaining, resetsAt, found := 100.0, time.Time{}, false
+	soonestFuture, anyReset := time.Time{}, false
 	for _, window := range view.Windows {
 		if window.Expired {
 			continue
 		}
-		if found && window.Name != preferred {
-			continue
-		}
-		remaining = 100 - window.UsedPercent
+		reset, hasReset := time.Time{}, false
 		if parsed, err := time.Parse(time.RFC3339, window.ResetsAt); err == nil {
-			resetsAt = parsed
+			reset, hasReset, anyReset = parsed, true, true
+			if reset.After(now) && (soonestFuture.IsZero() || reset.Before(soonestFuture)) {
+				soonestFuture = reset
+			}
 		}
-		found = true
-		if window.Name == preferred {
-			break
+		left := 100 - window.UsedPercent
+		if !found || left < remaining {
+			remaining, found = left, true
+			if hasReset {
+				resetsAt = reset
+			} else {
+				resetsAt = time.Time{}
+			}
 		}
+	}
+	if view.Exhausted {
+		// A known reset decides on its own: still out while it is in the
+		// future, retryable once it has passed. The freshness rule only
+		// covers a window-less rejection, which carries no reset at all.
+		if !soonestFuture.IsZero() || (!anyReset && view.AgeSeconds <= grantExhaustionStaleAfter.Seconds()) {
+			return grantBand{band: -1, resetsAt: soonestFuture}
+		}
+		return grantBand{band: 0}
 	}
 	band := int(remaining / 25)
 	if band < 0 {
@@ -172,7 +251,10 @@ func bandFor(view grantQuotaView, ok bool, now time.Time) grantBand {
 	return grantBand{band: band, resetsAt: resetsAt}
 }
 
-// rankGrants picks the grant to use next from an ordered pool.
+// rankGrants orders a pool by preference: the grant to try first, then the
+// rest by rank, with grants the broker recently failed to mint for
+// (isDead) moved to the end so a healthy account is always tried before a
+// dead one.
 //
 // The best grant is the one with the most remaining quota by band; within a
 // band the sooner reset wins, because that quota is the quota that would
@@ -180,38 +262,61 @@ func bandFor(view grantQuotaView, ok bool, now time.Time) grantBand {
 // kept unless the best is a full band ahead of it, so a brick stays on one
 // account through small differences and each account burns down in
 // quarter steps rather than the pool ping-ponging on every reading.
-func rankGrants(pool []string, views map[string]grantQuotaView, current string, now time.Time) string {
+func rankGrants(pool []string, views map[string]grantQuotaView, current string, now time.Time, isDead func(string, time.Time) bool) []string {
 	if len(pool) == 0 {
-		return current
+		if current == "" {
+			return nil
+		}
+		return []string{current}
 	}
 	bands := make(map[string]grantBand, len(pool))
-	best := ""
+	var live, dead []string
 	for _, grant := range pool {
 		view, ok := views[grant]
 		bands[grant] = bandFor(view, ok, now)
-		if best == "" || better(bands[grant], bands[best]) {
-			best = grant
+		if isDead != nil && isDead(grant, now) {
+			dead = append(dead, grant)
+		} else {
+			live = append(live, grant)
 		}
 	}
-	if current == "" {
-		return best
+	sortByBand := func(grants []string) {
+		sort.SliceStable(grants, func(i, j int) bool {
+			return better(bands[grants[i]], bands[grants[j]])
+		})
+	}
+	sortByBand(live)
+	sortByBand(dead)
+	ordered := append(live, dead...)
+	if current == "" || len(live) == 0 {
+		return ordered
 	}
 	currentBand, inPool := bands[current]
-	if !inPool {
-		return best
+	if !inPool || (isDead != nil && isDead(current, now)) {
+		return ordered
 	}
-	if bands[best].band > currentBand.band {
-		return best
+	if bands[ordered[0]].band > currentBand.band {
+		return ordered
 	}
-	return current
+	// Keep the current grant in front; the rest keep their rank order.
+	kept := []string{current}
+	for _, grant := range ordered {
+		if grant != current {
+			kept = append(kept, grant)
+		}
+	}
+	return kept
 }
 
+// better is a strict total order so the stable sort keeps pool order among
+// true ties: higher band first, then a known reset before an unknown one,
+// then the sooner reset.
 func better(candidate, incumbent grantBand) bool {
 	if candidate.band != incumbent.band {
 		return candidate.band > incumbent.band
 	}
-	if candidate.resetsAt.IsZero() || incumbent.resetsAt.IsZero() {
-		return false
+	if candidate.resetsAt.IsZero() != incumbent.resetsAt.IsZero() {
+		return !candidate.resetsAt.IsZero()
 	}
 	return candidate.resetsAt.Before(incumbent.resetsAt)
 }
@@ -424,47 +529,61 @@ func (e *secretEntry) activeGrant() string {
 	return e.BrokerGrant
 }
 
+// credential is one consistent (grant, value) pair. A request snapshots it
+// once and carries it through injection, the 401 path and the quota report,
+// so a pool swap on a concurrent connection can never pair grant A's token
+// with grant B's account id or file A's usage under B.
+type credential struct {
+	grant string
+	value string
+}
+
+func (e *secretEntry) credential() credential {
+	if e.mu != nil {
+		e.mu.RLock()
+		defer e.mu.RUnlock()
+	}
+	return credential{grant: e.BrokerGrant, value: e.value}
+}
+
+func (e *secretEntry) setCredential(grant, token string, expiresAt time.Time) {
+	e.mu.Lock()
+	e.BrokerGrant, e.value, e.expiresAt = grant, token, expiresAt
+	e.mu.Unlock()
+}
+
 func (e *secretEntry) resolve() error {
-	if len(e.BrokerGrants) > 1 && e.broker != nil {
-		chosen := rankGrants(e.BrokerGrants, e.broker.grantViews(time.Now()), e.activeGrant(), time.Now())
-		if chosen != "" && chosen != e.activeGrant() {
-			if e.mu == nil {
-				e.mu = &sync.RWMutex{}
-			}
-			e.mu.Lock()
-			e.BrokerGrant, e.value, e.expiresAt = chosen, "", time.Time{}
-			e.mu.Unlock()
-		}
-	}
-	if e.BrokerGrant == "" {
-		return nil
-	}
-	if e.broker == nil {
-		if e.mu == nil {
-			e.mu = &sync.RWMutex{}
-		}
-		e.mu.Lock()
-		e.value, e.expiresAt = "", time.Time{}
-		e.mu.Unlock()
-		return fmt.Errorf("token broker is not configured")
-	}
-	token, expiresAt, err := e.broker.token(e.BrokerGrant)
-	if err != nil {
-		if e.mu == nil {
-			e.mu = &sync.RWMutex{}
-		}
-		e.mu.Lock()
-		e.value, e.expiresAt = "", time.Time{}
-		e.mu.Unlock()
-		return err
-	}
 	if e.mu == nil {
 		e.mu = &sync.RWMutex{}
 	}
-	e.mu.Lock()
-	e.value, e.expiresAt = token, expiresAt
-	e.mu.Unlock()
-	return nil
+	if len(e.BrokerGrants) == 0 && e.activeGrant() == "" {
+		return nil
+	}
+	if e.broker == nil {
+		e.setCredential(e.activeGrant(), "", time.Time{})
+		return fmt.Errorf("token broker is not configured")
+	}
+	now := time.Now()
+	current := e.activeGrant()
+	candidates := []string{current}
+	if len(e.BrokerGrants) > 1 {
+		candidates = rankGrants(e.BrokerGrants, e.broker.grantViews(now), current, now, e.broker.isDead)
+	}
+	var lastErr error
+	for _, grant := range candidates {
+		token, expiresAt, err := e.broker.token(grant)
+		if err != nil {
+			// Fall through to the next pool member: a grant that is not logged
+			// in or whose refresh failed must not take the destination down.
+			e.broker.markDead(grant, now)
+			lastErr = err
+			continue
+		}
+		e.setCredential(grant, token, expiresAt)
+		return nil
+	}
+	e.setCredential(current, "", time.Time{})
+	return lastErr
 }
 
 func (e *secretEntry) invalidate() {
@@ -480,7 +599,11 @@ func (e *secretEntry) invalidate() {
 // entry names a user, otherwise the prefix form. One place, so the two callers
 // (claim-bearing and plain) cannot diverge on encoding.
 func (e *secretEntry) headerValue() string {
-	value := e.resolvedValue()
+	return e.headerValueFor(e.resolvedValue())
+}
+
+// headerValueFor renders the header for one snapshotted credential value.
+func (e *secretEntry) headerValueFor(value string) string {
 	if e.BasicUser != "" {
 		return "Basic " + base64.StdEncoding.EncodeToString([]byte(e.BasicUser+":"+value))
 	}
@@ -566,7 +689,7 @@ func loadSecretsWithBroker(logger *slog.Logger, brokerURL string) []secretEntry 
 			e.broker = broker
 			e.mu = &sync.RWMutex{}
 			if err := e.resolve(); err != nil {
-				logger.Error("broker token empty; its egressTo hosts will be DENIED", "grant", e.BrokerGrant, "egressTo", e.EgressTo, "err", err)
+				logger.Error("broker token empty; its egressTo hosts will be DENIED", "grant", e.activeGrant(), "pool", e.BrokerGrants, "egressTo", e.EgressTo, "err", err)
 			}
 		} else {
 			e.value = os.Getenv(e.Env)
@@ -799,7 +922,8 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, guestDeadline i
 			p.logger.Warn("egress swap: credential trailer denied", "dest", host, "header", sec.Header)
 			return
 		}
-		injected := injectRequest(req, sec)
+		cred := sec.credential()
+		injected := injectRequestWith(req, sec, cred)
 		if sec.ClaimHeader != "" && !injected {
 			p.logger.Warn("egress swap: claim injection failed; request denied", "dest", host, "header", sec.ClaimHeader, "status", "denied")
 			return
@@ -848,7 +972,7 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, guestDeadline i
 			p.logger.Warn("egress swap: read response", "dest", host, "err", err)
 			return
 		}
-		if grant := sec.activeGrant(); resp.StatusCode == http.StatusUnauthorized && grant != "" {
+		if grant := cred.grant; resp.StatusCode == http.StatusUnauthorized && grant != "" {
 			// The destination can invalidate a grant server-side long before its
 			// stored expires_at. Without invalidation, the sidecar keeps injecting
 			// that dead token until the false expiry. Relay this 401 instead of
@@ -865,7 +989,7 @@ func (p *proxy) swapPump(guestR *bufio.Reader, guestW io.Writer, guestDeadline i
 		}
 		if sec.QuotaProvider != "" {
 			if obs, ok := observeQuota(sec, resp, time.Now()); ok {
-				obs.Grant = sec.activeGrant()
+				obs.Grant = cred.grant
 				if window, ok := quotaSummary(obs); ok {
 					p.logger.Info("egress quota observed", "provider", obs.Provider, "status", obs.Status, "window", window.Name, "used_percent", window.UsedPercent, "resets_at", window.ResetsAt)
 				} else {
@@ -1043,6 +1167,12 @@ func rejectSwapRequest(req *http.Request) bool {
 // the point: the guest's value is uncoupled config, and a prompt-injected guest
 // cannot authenticate as a different account by supplying its own token.
 func injectRequest(req *http.Request, sec *secretEntry) bool {
+	return injectRequestWith(req, sec, sec.credential())
+}
+
+// injectRequestWith injects one snapshotted credential, so the token and
+// the account id claim are always read from the same value.
+func injectRequestWith(req *http.Request, sec *secretEntry, cred credential) bool {
 	if sec.ClaimHeader != "" {
 		requested := len(req.Header.Values(sec.Header)) > 0 || sec.injectAlwaysPath(req.URL.Path)
 		// Both guest values go before either decision, so a prompt-injected guest
@@ -1052,7 +1182,7 @@ func injectRequest(req *http.Request, sec *secretEntry) bool {
 		if !requested || sec.ClaimPath == "" {
 			return false
 		}
-		claim, ok := jwtClaim(sec.resolvedValue(), sec.ClaimPath)
+		claim, ok := jwtClaim(cred.value, sec.ClaimPath)
 		if !ok {
 			return false
 		}
@@ -1061,7 +1191,7 @@ func injectRequest(req *http.Request, sec *secretEntry) bool {
 		// claim here rather than trusting the guest: they cannot drift, and a
 		// valid token paired with a stale account id is exactly the failure this
 		// fixes (the provider rejects the pair and calls it token_expired).
-		req.Header.Set(sec.Header, sec.headerValue())
+		req.Header.Set(sec.Header, sec.headerValueFor(cred.value))
 		req.Header.Set(sec.ClaimHeader, claim)
 		return true
 	}
@@ -1073,7 +1203,7 @@ func injectRequest(req *http.Request, sec *secretEntry) bool {
 	if !requested {
 		return false
 	}
-	req.Header.Set(sec.Header, sec.headerValue())
+	req.Header.Set(sec.Header, sec.headerValueFor(cred.value))
 	return true
 }
 

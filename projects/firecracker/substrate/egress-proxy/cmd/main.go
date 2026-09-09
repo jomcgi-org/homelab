@@ -349,7 +349,7 @@ func (p *proxy) handle(client net.Conn) {
 	// came from the preamble, so no SNI/Host sniffing is required.
 	if sec := p.secretFor(host); sec != nil {
 		if err := sec.resolve(); err != nil {
-			p.logger.Error("egress denied: credential unresolved", "dest", dest, "env", sec.Env, "brokerGrant", sec.BrokerGrant, "err", err)
+			p.logger.Error("egress denied: credential unresolved", "dest", dest, "env", sec.Env, "brokerGrant", sec.activeGrant(), "err", err)
 			return
 		}
 		// FAIL CLOSED. A credentialed host whose secret has not resolved must be

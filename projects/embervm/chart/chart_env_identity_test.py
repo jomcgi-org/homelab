@@ -1828,3 +1828,39 @@ def test_agent_invokes_fit_runtime_schema_and_fresh_session_lifetime():
         assert spec["invocation"]["timeoutSeconds"] == timeout["maximum"]
         assert spec["session"]["maxLifetimeSeconds"] > timeout["maximum"]
         assert spec["session"]["bankedTtlSeconds"] == 3600
+
+
+def _egress_catalog(rendered: str) -> list[dict]:
+    for document in yaml.safe_load_all(rendered):
+        if not isinstance(document, dict):
+            continue
+        pod = document.get("spec", {}).get("template", {}).get("spec", {})
+        for container in pod.get("containers", []):
+            if container.get("name") != "egress-proxy":
+                continue
+            env = {e["name"]: e for e in container.get("env", [])}
+            return json.loads(env["EGRESS_SECRETS"]["value"])
+    raise AssertionError("no egress-proxy container rendered")
+
+
+def test_egress_catalog_renders_a_broker_grant_pool():
+    pool = [
+        "egress.enabled=true",
+        "egress.secrets[0].header=Authorization",
+        "egress.secrets[0].valuePrefix=Bearer ",
+        "egress.secrets[0].brokerGrants[0]=codex-cluster",
+        "egress.secrets[0].brokerGrants[1]=codex-b",
+        "egress.secrets[0].egressTo[0]=chatgpt.com",
+        "egress.secrets[0].quotaProvider=codex",
+    ]
+    catalog = _egress_catalog(_render_with_set("embervm", pool))
+    entry = next(e for e in catalog if e["egressTo"] == ["chatgpt.com"])
+    assert entry["brokerGrants"] == ["codex-cluster", "codex-b"]
+    assert entry["brokerGrant"] == ""
+    assert "env" not in entry
+    with pytest.raises(
+        RuntimeError, match="exactly one of secretRef, brokerGrant or brokerGrants"
+    ):
+        _render_with_set(
+            "embervm", pool + ["egress.secrets[0].brokerGrant=codex-cluster"]
+        )

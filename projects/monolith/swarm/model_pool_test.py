@@ -284,3 +284,26 @@ def test_quota_summary_rolls_broker_grants_into_the_class(monkeypatch):
     assert summary["codex"]["exhausted"] is False
     assert summary["codex"]["headline_used_percent"] == 20.0
     assert summary["codex"]["grant"] == "codex-b"
+
+
+def test_rollup_does_not_let_a_window_less_grant_hide_a_spent_class():
+    grants = {
+        "codex-cluster": {
+            "provider": "codex",
+            "observed": True,
+            "exhausted": False,
+            "headline_used_percent": 99.0,
+            "age_seconds": 1.0,
+        },
+        "codex-b": {
+            "provider": "codex",
+            "observed": True,
+            "exhausted": False,
+            "headline_used_percent": None,
+            "age_seconds": 1.0,
+        },
+    }
+    merged = model_pool.rollup_grants({}, grants)
+    assert merged["codex"]["headline_used_percent"] == 99.0
+    only = {"codex-b": grants["codex-b"]}
+    assert model_pool.rollup_grants({}, only)["codex"]["headline_used_percent"] is None

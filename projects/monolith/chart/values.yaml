@@ -1447,10 +1447,14 @@ swarm:
   # Per-class, per-role floors on REMAINING quota percent (#5974). A role
   # below its floor is walled for that class and spills through its model
   # pool while a role with a lower floor keeps drawing, so the last slice of
-  # a class goes to the role ranked highest. Empty applies no floors.
+  # a class goes to the role ranked highest. Only the pooled factory roles
+  # read this, conductor and worker: review never substitutes and the
+  # drainer does not route through the pool. A role whose pool has one
+  # member never consults quota, so a floor needs a model_pools entry with
+  # somewhere to spill to. Empty applies no floors.
   #   quotaFloors:
-  #     codex: {worker: 10, drainer: 25, conductor: 0}
-  #     claude: {worker: 15, review: 0}
+  #     codex: {worker: 10, conductor: 0}
+  #     claude: {worker: 15}
   quotaFloors: {}
 
 # Grimoire: D&D campaign manager ingest pipeline (private tier only; spec
