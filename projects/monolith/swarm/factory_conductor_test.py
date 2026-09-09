@@ -662,6 +662,233 @@ def test_repair_does_not_replenish_factory_turn_budget(feedback_db, monkeypatch)
     assert len(conductor.graph.node_runs(task["id"])) == 1
 
 
+@pytest.mark.parametrize("later_planner", [False, True])
+@pytest.mark.parametrize("later_graph_edit", [False, True])
+def test_inserted_planner_decision_uses_its_own_committed_revision(
+    feedback_db, monkeypatch, later_planner, later_graph_edit
+):
+    import json
+    from swarm import factory_controls as controls
+
+    task, policy = feedback_task()
+    if later_planner:
+        prior = complete_feedback_node(
+            task,
+            policy,
+            "conductor_1",
+            {
+                "action": "add_node",
+                "node_key": "conductor_forbidden",
+                "role": "implement",
+                "prompt": "not authorized",
+                "deps": [],
+                "reason": "needs a corrected decision",
+            },
+        )
+        conductor.apply_decision(
+            task, policy, prior, conductor.graph.node_runs(task["id"])
+        )
+    before_budget = conductor._budget_evidence(task["id"])
+    before_receipt = controls.task_snapshot(task["id"])
+    insertion_revision = conductor.graph.current_version(task["id"])
+    planner_key = "conductor_2" if later_planner else "conductor_1"
+
+    conductor.reconcile_task(task["id"], policy, object())
+    planner = next(
+        node
+        for node in conductor.graph.load_graph(task["id"])
+        if node["node_key"] == planner_key
+    )
+    context = json.loads(planner["prompt"].rsplit("\n", 1)[1])
+    decision_revision = context["graph_revision"]
+    assert decision_revision == insertion_revision + 1
+    assert decision_revision == planner["created_in_version"]
+    assert decision_revision == conductor.graph.current_version(task["id"])
+    assert context["budget_evidence"] == before_budget
+    assert context["budget_evidence"]["graph_revision"] == insertion_revision
+    assert (
+        context["budget_evidence"]["snapshot_phase"]
+        == "before_this_planner_node_is_added_or_admitted"
+    )
+    assert controls.task_snapshot(task["id"])["starts"] == before_receipt["starts"]
+
+    # The ordinary reconciliation owner reserves this exact frozen prompt.
+    monkeypatch.setattr(conductor, "github_get", lambda *_args: {})
+    conductor.reconcile_task(task["id"], policy, object())
+    run = conductor.graph.node_runs(task["id"])[-1]
+    assert run["node_key"] == planner_key and run["pin"]["prompt"] == planner["prompt"]
+    armed_planner = next(
+        node
+        for node in conductor.graph.load_graph(task["id"])
+        if node["node_key"] == planner_key
+    )
+    assert armed_planner["armed_at"] is not None
+    assert {**armed_planner, "armed_at": None} == planner
+    decision = {
+        "action": "add_node",
+        "node_key": "implement_revision_fix",
+        "role": "implement",
+        "prompt": "Fix the reported issue",
+        "deps": [],
+        "expected_version": decision_revision,
+        "reason": "Use the revision advertised by the admitted planner",
+    }
+    result = {
+        "status": "succeeded",
+        "session_id": 202,
+        "cost_usd": 0.25,
+        "value": decision,
+        "artifact": {"status": "ok", "value": decision, "errors": []},
+        "cleanup": {"status": "completed"},
+    }
+    dbos = SimpleNamespace(
+        get_workflow_status=lambda _key: SimpleNamespace(status="SUCCESS"),
+        retrieve_workflow=lambda _key: SimpleNamespace(get_result=lambda: result),
+    )
+    conductor.reconcile_task(task["id"], policy, dbos)
+    assert conductor.graph.node_runs(task["id"])[-1]["status"] == "succeeded"
+    if later_graph_edit:
+        assert conductor._add(
+            task,
+            policy,
+            "implement_competing",
+            "A separately authorized graph edit",
+            [],
+            "luna",
+            "test:competing",
+            "Competing edit after planner insertion",
+            expected_version=decision_revision,
+        ).ok
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = conductor.graph.load_graph(task["id"])
+    applied = any(node["node_key"] == decision["node_key"] for node in nodes)
+    assert applied is not later_graph_edit
+    assert conductor.graph.current_version(task["id"]) == decision_revision + 1
+    assert (
+        next(node for node in nodes if node["node_key"] == planner_key) == armed_planner
+    )
+    feedback = feedback_audits(feedback_db, task["id"])
+    if later_graph_edit:
+        assert feedback[-1]["refusal_code"] == "stale_version"
+    else:
+        assert all(item["refusal_code"] != "stale_version" for item in feedback)
+    after = controls.task_snapshot(task["id"])
+    assert after["policy"] == before_receipt["policy"]
+    assert after["deadline_at"] == before_receipt["deadline_at"]
+    assert after["turns_used"] == before_receipt["turns_used"] + 1
+    assert after["committed_cost_usd"] == before_receipt["committed_cost_usd"] + 0.25
+
+
+@pytest.mark.parametrize("edit_during", ["graph_read", "prompt_construction"])
+def test_planner_insertion_refuses_edit_that_races_with_its_snapshot(
+    feedback_db, monkeypatch, edit_during
+):
+    import json
+    from sqlmodel import Session, select
+    from swarm import factory_controls as controls
+    from swarm.models import SwarmConductorCall
+
+    task, policy = feedback_task()
+    before = controls.task_snapshot(task["id"])
+    load_graph = conductor.graph.load_graph
+    prompt = conductor.planner_prompt
+
+    def competing_edit():
+        assert conductor._add(
+            task,
+            policy,
+            "implement_competing",
+            "A separately authorized graph edit",
+            [],
+            "luna",
+            "test:competing",
+            "Competing edit before planner insertion",
+            expected_version=0,
+        ).ok
+
+    def changed_graph(*args, **kwargs):
+        result = load_graph(*args, **kwargs)
+        competing_edit()
+        return result
+
+    def changed_prompt(*args, **kwargs):
+        result = prompt(*args, **kwargs)
+        competing_edit()
+        return result
+
+    with monkeypatch.context() as race:
+        if edit_during == "graph_read":
+            race.setattr(conductor.graph, "load_graph", changed_graph)
+        else:
+            race.setattr(conductor, "planner_prompt", changed_prompt)
+        conductor.reconcile_task(task["id"], policy, object())
+    assert [node["node_key"] for node in load_graph(task["id"])] == [
+        "implement_competing"
+    ]
+    assert conductor.graph.current_version(task["id"]) == 1
+    after = controls.task_snapshot(task["id"])
+    assert after["task_paused"]
+    for field in (
+        "policy",
+        "deadline_at",
+        "starts",
+        "turns_used",
+        "committed_cost_usd",
+    ):
+        assert after[field] == before[field]
+    with Session(feedback_db) as db:
+        calls = db.exec(
+            select(SwarmConductorCall).order_by(SwarmConductorCall.id)
+        ).all()
+        assert len(calls) == 2
+        refused = calls[-1]
+        assert refused.outcome == "refused" and refused.refusal_code == "stale_version"
+        assert refused.version_before == refused.version_after == 1
+        assert json.loads(refused.args_json)["expected_version"] == 0
+    # A paused reconciliation does not retry against the now-current revision.
+    conductor.reconcile_task(task["id"], policy, object())
+    with Session(feedback_db) as db:
+        assert len(db.exec(select(SwarmConductorCall)).all()) == 2
+
+
+@pytest.mark.parametrize("overflow", [True, False])
+def test_planner_context_overflow_pauses_without_inserting_or_starting(
+    feedback_db, monkeypatch, overflow
+):
+    from sqlmodel import Session, select
+    from swarm import factory_controls as controls
+    from swarm.models import SwarmConductorCall
+
+    task, policy = feedback_task()
+    before = controls.task_snapshot(task["id"])
+
+    def context_failure(*args):
+        error = conductor.PlannerContextOverflow if overflow else ValueError
+        raise error("required planner evidence cannot fit")
+
+    monkeypatch.setattr(conductor, "_planner_context", context_failure)
+    if overflow:
+        conductor.reconcile_task(task["id"], policy, object())
+    else:
+        with pytest.raises(ValueError, match="required planner evidence"):
+            conductor.reconcile_task(task["id"], policy, object())
+    assert conductor.graph.current_version(task["id"]) == 0
+    assert conductor.graph.load_graph(task["id"]) == []
+    assert conductor.graph.node_runs(task["id"]) == []
+    after = controls.task_snapshot(task["id"])
+    assert after["task_paused"] is overflow
+    for field in (
+        "policy",
+        "deadline_at",
+        "starts",
+        "turns_used",
+        "committed_cost_usd",
+    ):
+        assert after[field] == before[field]
+    with Session(feedback_db) as db:
+        assert db.exec(select(SwarmConductorCall)).all() == []
+
+
 def test_new_graph_refusal_is_not_hidden_by_older_audit_feedback(feedback_db):
     import json
     from datetime import datetime, timedelta, timezone
