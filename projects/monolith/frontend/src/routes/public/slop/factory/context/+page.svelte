@@ -101,11 +101,6 @@
       ]),
     ),
   );
-  const markTotals = $derived({
-    verified: verifiedTotal,
-    unverified: unverifiedTotal,
-    disputed: contradictedTotal,
-  });
   const noneShown = $derived(
     !showVerified && !showUnverified && !showContradicted,
   );
@@ -429,12 +424,12 @@
                   <span
                     ><button
                       type="button"
-                      onclick={() => (notePage -= 1)}
-                      disabled={notePage === 0}>prev</button
+                      onclick={() => (notePage = pagedRows.page - 1)}
+                      disabled={pagedRows.page === 0}>prev</button
                     ><button
                       type="button"
-                      onclick={() => (notePage += 1)}
-                      disabled={notePage >= pagedRows.pageCount - 1}
+                      onclick={() => (notePage = pagedRows.page + 1)}
+                      disabled={pagedRows.page >= pagedRows.pageCount - 1}
                       >next</button
                     ></span
                   >
@@ -494,12 +489,12 @@
                   <span
                     ><button
                       type="button"
-                      onclick={() => (notePage -= 1)}
-                      disabled={notePage === 0}>prev</button
+                      onclick={() => (notePage = pagedRows.page - 1)}
+                      disabled={pagedRows.page === 0}>prev</button
                     ><button
                       type="button"
-                      onclick={() => (notePage += 1)}
-                      disabled={notePage >= pagedRows.pageCount - 1}
+                      onclick={() => (notePage = pagedRows.page + 1)}
+                      disabled={pagedRows.page >= pagedRows.pageCount - 1}
                       >next</button
                     ></span
                   >
@@ -572,12 +567,11 @@
             evaluating records against reality and investigating conflicting
             information.
           </p>
-          <h3 class="figure-heading">Where does the data come from?</h3>
           <figure>
             <svg
-              viewBox="0 0 780 252"
+              viewBox="0 44 780 208"
               role="img"
-              aria-label="Exploded view: four parts in a line, sessions to raw input to record to readers, with a dashed return path for disputes"
+              aria-label="Four parts in a line, sessions to raw input to record to readers, with a dashed return path for disputes"
             >
               <g fill="none" stroke="currentColor" stroke-width="1.25">
                 <rect x="20" y="56" width="148" height="130" /><rect
@@ -586,9 +580,9 @@
                   width="148"
                   height="130"
                 /><rect x="436" y="56" width="148" height="130" /><rect
-                  x="644"
+                  x="612"
                   y="56"
-                  width="116"
+                  width="148"
                   height="130"
                 />
               </g>
@@ -599,7 +593,7 @@
                   x2="376"
                   y2="80"
                 /><line x1="436" y1="80" x2="584" y2="80" /><line
-                  x1="644"
+                  x1="612"
                   y1="80"
                   x2="760"
                   y2="80"
@@ -623,61 +617,21 @@
                 ><text x="444" y="156">confidence</text><text x="444" y="174"
                   >validity window</text
                 >
-                <text x="652" y="72">readers</text><text x="652" y="102"
+                <text x="620" y="72">readers</text><text x="620" y="102"
                   >agents</text
-                ><text x="652" y="120">this page</text>
+                ><text x="620" y="120">this page</text>
               </g>
               <g stroke="currentColor" stroke-width="1" fill="currentColor">
                 <line x1="170" y1="121" x2="220" y2="121" /><polygon
                   points="226,121 219,117.5 219,124.5"
                 /><line x1="378" y1="121" x2="428" y2="121" /><polygon
                   points="434,121 427,117.5 427,124.5"
-                /><line x1="586" y1="121" x2="636" y2="121" /><polygon
-                  points="642,121 635,117.5 635,124.5"
+                /><line x1="586" y1="121" x2="604" y2="121" /><polygon
+                  points="610,121 603,117.5 603,124.5"
                 />
               </g>
-              <g fill="none" stroke="currentColor" stroke-width="1">
-                <circle cx="94" cy="26" r="9" /><line
-                  x1="94"
-                  y1="35"
-                  x2="94"
-                  y2="54"
-                /><circle cx="302" cy="26" r="9" /><line
-                  x1="302"
-                  y1="35"
-                  x2="302"
-                  y2="54"
-                /><circle cx="510" cy="26" r="9" /><line
-                  x1="510"
-                  y1="35"
-                  x2="510"
-                  y2="54"
-                /><circle cx="702" cy="26" r="9" /><line
-                  x1="702"
-                  y1="35"
-                  x2="702"
-                  y2="54"
-                />
-              </g>
-              <g fill="currentColor"
-                ><circle cx="94" cy="54" r="2" /><circle
-                  cx="302"
-                  cy="54"
-                  r="2"
-                /><circle cx="510" cy="54" r="2" /><circle
-                  cx="702"
-                  cy="54"
-                  r="2"
-                /></g
-              >
-              <g font-size="11" fill="currentColor" text-anchor="middle"
-                ><text x="94" y="30">1</text><text x="302" y="30">2</text><text
-                  x="510"
-                  y="30">3</text
-                ><text x="702" y="30">4</text></g
-              >
               <path
-                d="M702 186 V218 H302 V188"
+                d="M686 186 V218 H302 V188"
                 fill="none"
                 stroke="currentColor"
                 stroke-width="1"
@@ -694,18 +648,37 @@
                 >dispute: a new raw input, the fact stays</text
               >
             </svg>
+            <!-- The same sequence for a phone, where the drawing above would
+                 either scale its labels into illegibility or scroll a box off
+                 the edge with nothing saying it had. -->
+            <div class="stack">
+              <div>
+                <b>sessions</b><span>codex, claude, ember, agent report</span>
+              </div>
+              <div>
+                <b>raw input</b><span>immutable, content hash, source lane</span
+                >
+              </div>
+              <div>
+                <b>record</b><span
+                  >verified, unverified, scope, confidence, validity window</span
+                >
+              </div>
+              <div><b>readers</b><span>agents, this page</span></div>
+              <p>dispute: a new raw input, the fact stays</p>
+            </div>
             <figcaption>Fig. 1 Context data flow</figcaption>
           </figure>
           <section>
             <h3><span>1</span><span>What the marks mean</span></h3>
-            <ol>
+            <ol class="legend-list">
               {#each MARK_DEFINITIONS as mark}
                 <li>
                   <details>
                     <summary
                       ><i class={`mark ${mark.state}`}></i><span
                         >{mark.label}: {mark.definition}.</span
-                      ><time>{number(markTotals[mark.state])}</time></summary
+                      ></summary
                     >
                   </details>
                 </li>

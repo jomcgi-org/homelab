@@ -39,6 +39,32 @@ def lock_pool(db: Session) -> None:
     db.execute(update(AgentCapacityPool).where(AgentCapacityPool.id == 1).values(id=1))
 
 
+def guest_has_cleanup_claim(db: Session, guest_id: str | None) -> bool:
+    """Read under the pool lock before binding or dispatching a shared guest."""
+    if guest_id is None:
+        return False
+    return db.exec(
+        select(
+            exists().where(
+                AgentSession.guest_cleanup_id.isnot(None),
+                AgentSession.guest_cleanup_guest_id == guest_id,
+            )
+        )
+    ).one()
+
+
+def cleanup_pending(db: Session, agent: AgentSession) -> bool:
+    # Scalar projection avoids a preloaded ORM object's stale binding/fence.
+    row = db.exec(
+        select(AgentSession.guest_cleanup_id, AgentSession.ember_session_id).where(
+            AgentSession.id == agent.id
+        )
+    ).one_or_none()
+    return row is not None and (
+        row[0] is not None or guest_has_cleanup_claim(db, row[1])
+    )
+
+
 def reservation(db: Session, local_session_id: str, pending_seq: int = 1):
     return db.exec(
         select(AgentCapacityReservation).where(
@@ -132,11 +158,14 @@ def _higher_priority_waiting(db: Session, tier: str) -> bool:
             ),
             AgentSession.status.notin_(("failed", "awaiting_login", "recovering")),
             AgentSession.result_receipt_fence_id.is_(None),
+            AgentSession.guest_cleanup_id.is_(None),
         )
         .order_by(PendingMessage.session_id, PendingMessage.seq)
     ).all()
     seen = set()
     for agent, pending in candidates:
+        if cleanup_pending(db, agent):
+            continue
         if agent.id in seen:
             continue
         seen.add(agent.id)
@@ -184,6 +213,11 @@ def reserve_start(
     if tier not in TIERS or pending_seq < 1:
         raise ValueError("Invalid server admission identity")
     lock_pool(db)
+    agent = db.exec(
+        select(AgentSession).where(AgentSession.local_session_id == local_session_id)
+    ).first()
+    if agent is not None and cleanup_pending(db, agent):
+        return False
     adopt_existing(db)
     existing = reservation(db, local_session_id, pending_seq)
     if existing is not None:
@@ -255,7 +289,8 @@ def bind_session(db: Session, agent: AgentSession) -> None:
 def claim_pending(
     db: Session, agent: AgentSession, pending: PendingMessage, owner: str
 ) -> bool:
-    if agent.result_receipt_fence_id is not None:
+    lock_pool(db)
+    if agent.result_receipt_fence_id is not None or cleanup_pending(db, agent):
         return False
     existing = reservation(db, agent.local_session_id, pending.seq)
     initial = existing or reservation(db, agent.local_session_id)
@@ -309,6 +344,7 @@ def recheck(
             or agent is None
             or agent.status in {"failed", "awaiting_login"}
             or agent.result_receipt_fence_id is not None
+            or cleanup_pending(db, agent)
             or unknown is not None
             or (workload is not None and row.workload not in (None, workload))
         ):

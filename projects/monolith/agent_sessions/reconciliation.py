@@ -4,10 +4,58 @@ The routine owner verifies exact fresh cessation evidence and holds the pool,
 session and job locks. These operations never commit or infer cessation.
 """
 
+import json
+import re
+
 from sqlmodel import Session, select
 
 from agent_sessions import admission
 from agent_sessions.models import AgentCapacityReservation, AgentSession
+
+
+_CLEANUP_FIELDS = (
+    "guest_cleanup_id",
+    "guest_cleanup_guest_id",
+    "guest_cleanup_workflow_id",
+    "guest_cleanup_dispatch_json",
+    "guest_cleanup_started_at",
+)
+
+
+def _matching_cleanup_claim(agent: AgentSession) -> dict | None:
+    """Validate existing cleanup ownership, never treat its intent as proof."""
+    claim = {field: getattr(agent, field) for field in _CLEANUP_FIELDS}
+    if all(value is None for value in claim.values()):
+        return None
+    if (
+        any(value is None for value in claim.values())
+        or not re.fullmatch(r"[0-9a-f]{32}", agent.guest_cleanup_id or "")
+        or not agent.ember_session_id
+        or agent.guest_cleanup_guest_id != agent.ember_session_id
+        or not agent.workflow_id
+        or agent.guest_cleanup_workflow_id != agent.workflow_id
+    ):
+        raise ValueError("cleanup claim ownership conflict")
+    try:
+        dispatches = json.loads(agent.guest_cleanup_dispatch_json)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("cleanup claim ownership conflict") from exc
+    if not isinstance(dispatches, list) or any(
+        not isinstance(item, dict)
+        or set(item) != {"session_id", "seq", "dispatch_count", "claim_owner"}
+        or item["session_id"] != agent.id
+        for item in dispatches
+    ):
+        raise ValueError("cleanup claim ownership conflict")
+    return claim
+
+
+def _retire_cleanup_claim(agent: AgentSession) -> None:
+    # The domain caller already validated positive exact cessation. Retiring an
+    # intent alongside the binding must not change UNKNOWN history or accounting.
+    _matching_cleanup_claim(agent)
+    for field in _CLEANUP_FIELDS:
+        setattr(agent, field, None)
 
 
 def _locked_session(db: Session, session_id: int) -> AgentSession:
@@ -39,6 +87,7 @@ def confirm_reconciled_guest_cessation(
     fenced. The caller owns the audit and commits all changes together.
     """
     agent = _locked_session(db, session_id)
+    _matching_cleanup_claim(agent)
     admission.adopt_existing(db)
     if db.exec(
         select(AgentCapacityReservation).where(
@@ -64,6 +113,7 @@ def confirm_reconciled_guest_cessation(
         agent.prior_ember_lineage_id = agent.ember_lineage_id
     if agent.cli_session_id:
         agent.prior_cli_session_id = agent.cli_session_id
+    _retire_cleanup_claim(agent)
     agent.ember_session_id = None
     agent.ember_session_token = None
     agent.ember_session_expires_at = None
@@ -120,6 +170,7 @@ def read_uncertain_factory_attempt(db: Session, pin: dict, session_id: int) -> d
     agent = _locked_session(db, agent.id)
     if _factory_owner(db, pin, session_id) is None:
         raise ValueError("factory_owner_changed")
+    _matching_cleanup_claim(agent)
     if (
         not agent.ember_session_id
         or agent.result_receipt_fence_id is not None
@@ -246,6 +297,7 @@ def settle_uncertain_factory_attempt(db: Session, pin: dict, identity: dict) -> 
         agent.prior_ember_lineage_id = agent.ember_lineage_id
     if agent.cli_session_id:
         agent.prior_cli_session_id = agent.cli_session_id
+    _retire_cleanup_claim(agent)
     agent.ember_session_id = None
     agent.ember_session_token = None
     agent.ember_session_expires_at = None

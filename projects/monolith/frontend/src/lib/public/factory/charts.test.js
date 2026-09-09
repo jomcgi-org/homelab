@@ -47,6 +47,26 @@ describe("barChartSvg", () => {
     expect(svg.match(/<rect /g)).toHaveLength(2);
   });
 
+  it("labels both ends of a month without printing the last date twice", () => {
+    // The bug this guards: a tick was drawn for every seventh day and again
+    // for the last day, and over a thirty day window index 28 and index 29 are
+    // one bar apart, so every chart printed its final date twice.
+    const start = Date.UTC(2026, 7, 10);
+    const days = Array.from({ length: 30 }, (_, index) => ({
+      d: new Date(start + index * 86400000).toISOString().slice(0, 10),
+      value: index,
+    }));
+    const svg = barChartSvg("month", days, ["value"], ["var(--tone-gpu)"]);
+    const labels = [...svg.matchAll(/>(\d\d·\d\d)<\/text>/g)].map(
+      (match) => match[1],
+    );
+
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(labels.at(0)).toBe("08·10");
+    expect(labels.at(-1)).toBe("09·08");
+    expect(labels).not.toContain("09·07");
+  });
+
   it("does not interpolate unsafe ids, dates, or colors", () => {
     const svg = barChartSvg(
       'x"><script>',

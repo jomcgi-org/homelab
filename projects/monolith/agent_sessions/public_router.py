@@ -62,12 +62,6 @@ _LOCAL_DAILY_QUERY = text(
     ORDER BY day DESC, model ASC, source ASC
     """
 )
-_SESSION_COST_QUERY = text(
-    """
-    SELECT max_session_cost_usd
-    FROM public_api.agent_session_cost_7d
-    """
-)
 
 
 def _value(row: Any, name: str) -> Any:
@@ -123,7 +117,6 @@ def _shape_activity(
     now_row: Any,
     daily_rows: list[Any],
     local_daily_rows: list[Any] | None = None,
-    max_session_cost_usd: Decimal | float | int | None = None,
     *,
     today: date | None = None,
 ) -> dict:
@@ -219,7 +212,6 @@ def _shape_activity(
             "ember": ember_totals,
             "local": local_totals,
             "combined": combined_totals,
-            "max_session_cost_usd": _number(max_session_cost_usd),
         },
     }
 
@@ -247,22 +239,7 @@ def get_public_agent_activity(
             status_code=500, detail="agent activity unavailable"
         ) from exc
 
-    # The session-cost view feeds one optional subline, and it is the newest
-    # object here: a lagging migration must degrade that subline rather than
-    # take the whole activity endpoint down with it.
-    try:
-        session_cost_row = session.execute(_SESSION_COST_QUERY).one()
-        max_session_cost = _value(session_cost_row, "max_session_cost_usd")
-    except SQLAlchemyError as exc:
-        logger.warning("public.agent_activity.session_cost_unavailable", exc_info=exc)
-        max_session_cost = None
-
-    payload = _shape_activity(
-        now_row,
-        daily_rows,
-        local_daily_rows,
-        max_session_cost,
-    )
+    payload = _shape_activity(now_row, daily_rows, local_daily_rows)
     etag = _activity_etag(payload)
     headers = {"Cache-Control": _ACTIVITY_CACHE_CONTROL, "ETag": etag}
     if request.headers.get("if-none-match") == etag:

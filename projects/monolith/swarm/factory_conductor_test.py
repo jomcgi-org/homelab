@@ -1796,14 +1796,18 @@ def test_attempt_stop_missing_or_unresponsive_workflow_is_bounded_and_visible(
         assert not detail["cessation_confirmed"]
 
 
+@pytest.mark.parametrize("cleanup_claim", [False, True, "retired"])
 def test_durable_stop_reconciles_production_factory_owner_without_replay(
     uncertain_factory,
+    cleanup_claim,
 ):
     from swarm import factory_controls as controls
     from sqlmodel import Session, select
     from swarm.factory_models import FactoryAudit
 
     s = uncertain_factory
+    if cleanup_claim:
+        _factory_cleanup_claim(s)
     before = _uncertain_snapshot(s)
     conductor._submit_or_reconcile(s.task, s.run, s.dbos)
     waiting = _uncertain_snapshot(s)
@@ -1811,6 +1815,15 @@ def test_durable_stop_reconciles_production_factory_owner_without_replay(
         assert waiting[key] == before[key]
     assert len([call for call in s.calls if call[1] is not None]) == 1
     s.complete()
+    if cleanup_claim == "retired":
+        from agent_sessions import store
+
+        # A concurrent exact terminal cleanup releases only its fence while
+        # UNKNOWN preserves the binding. The durable factory intent stays valid.
+        with Session(s.engine) as db:
+            assert not store.finish_guest_cleanup(
+                db, s.sid, "s-exact-factory", s.run["pin"]["workflow_id"], "c" * 32
+            )
     conductor._submit_or_reconcile(s.task, s.run, s.dbos)
     after = _uncertain_snapshot(s)
     assert after["turns"] == before["turns"]
@@ -1821,6 +1834,14 @@ def test_durable_stop_reconciles_production_factory_owner_without_replay(
     assert after["permits"][0]["state"] == "settled"
     assert after["permits"][0]["outcome"] == "guest_cessation_confirmed"
     assert after["session"]["ember_session_id"] is None
+    for field in (
+        "guest_cleanup_id",
+        "guest_cleanup_guest_id",
+        "guest_cleanup_workflow_id",
+        "guest_cleanup_dispatch_json",
+        "guest_cleanup_started_at",
+    ):
+        assert after["session"][field] is None
     assert after["session"]["prior_ember_lineage_id"] == "lineage-preserved"
     assert after["session"]["prior_cli_session_id"] == "cli-preserved"
     assert after["runs"][0]["status"] == "failed"
@@ -1855,14 +1876,17 @@ def test_durable_stop_reconciles_production_factory_owner_without_replay(
 
 
 @pytest.mark.parametrize("failure", ["permit", "graph", "start"])
+@pytest.mark.parametrize("cleanup_claim", [False, True])
 def test_stop_settlement_rollback_retains_all_original_holds(
-    uncertain_factory, monkeypatch, failure
+    uncertain_factory, monkeypatch, failure, cleanup_claim
 ):
     from swarm import factory_controls as controls
     from swarm import factory_supervision as supervisor
     from agent_sessions import admission
 
     s = uncertain_factory
+    if cleanup_claim:
+        _factory_cleanup_claim(s)
     conductor._submit_or_reconcile(s.task, s.run, s.dbos)
     before = _uncertain_snapshot(s)
     s.complete()
@@ -2372,3 +2396,71 @@ def test_review_model_override_is_refused_before_graph_admission(feedback_db):
         node["node_key"] == "review_fix"
         for node in conductor.graph.load_graph(task["id"])
     )
+
+
+def _factory_cleanup_claim(s, **changes):
+    from datetime import datetime, timezone
+    from sqlmodel import Session
+    from agent_sessions.models import AgentSession
+
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        for field, value in {
+            "guest_cleanup_id": "c" * 32,
+            "guest_cleanup_guest_id": agent.ember_session_id,
+            "guest_cleanup_workflow_id": agent.workflow_id,
+            "guest_cleanup_dispatch_json": "[]",
+            "guest_cleanup_started_at": datetime.now(timezone.utc),
+            **changes,
+        }.items():
+            setattr(agent, field, value)
+        db.add(agent)
+        db.commit()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"guest_cleanup_guest_id": "different-guest"},
+        {"guest_cleanup_workflow_id": "different-workflow"},
+        {"guest_cleanup_id": None},
+    ],
+)
+def test_factory_stop_refuses_mismatched_cleanup_claim(uncertain_factory, change):
+    s = uncertain_factory
+    _factory_cleanup_claim(s, **change)
+    before = _uncertain_snapshot(s)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos)
+    after = _uncertain_snapshot(s)
+    for key in ("session", "turns", "pending", "permits", "runs"):
+        assert after[key] == before[key]
+    assert not s.calls
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"guest_cleanup_guest_id": "different-guest"},
+        {"guest_cleanup_workflow_id": "different-workflow"},
+    ],
+)
+def test_factory_stop_refuses_cleanup_ownership_changed_after_observation(
+    uncertain_factory, change
+):
+    from sqlmodel import Session
+    from agent_sessions.reconciliation import (
+        read_uncertain_factory_attempt,
+        settle_uncertain_factory_attempt,
+    )
+
+    s = uncertain_factory
+    _factory_cleanup_claim(s)
+    with Session(s.engine) as db:
+        identity = read_uncertain_factory_attempt(db, s.run["pin"], s.sid)
+    _factory_cleanup_claim(s, **change)
+    before = _uncertain_snapshot(s)
+    with Session(s.engine) as db:
+        with pytest.raises(ValueError, match="cleanup claim ownership conflict"):
+            settle_uncertain_factory_attempt(db, s.run["pin"], identity)
+        db.rollback()
+    assert _uncertain_snapshot(s) == before

@@ -6,6 +6,7 @@ import hashlib
 import json
 from threading import Event
 from types import SimpleNamespace
+import tracemalloc
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -236,6 +237,56 @@ def test_conflicting_duplicate_preserves_original(database):
             db.get(AgentResultReceipt, receipt["id"]).result_body
             == b'{"result":"first"}'
         )
+
+
+@pytest.mark.parametrize("stored_body", [b'{"result":"changed"}', None])
+def test_duplicate_checks_exact_stored_bytes_even_when_digest_matches(
+    database, stored_body
+):
+    receipt = prepare()
+    result = capture(receipt)
+    with Session(database) as db, db.begin():
+        row = db.get(AgentResultReceipt, receipt["id"])
+        received_at = row.received_at
+        row.result_body = stored_body
+        db.add(row)
+    with pytest.raises(receipts.ReceiptRejected, match="conflict") as caught:
+        capture(receipt)
+    assert caught.value.status == 409
+    with Session(database) as db:
+        row = db.get(AgentResultReceipt, receipt["id"])
+        assert row.result_body == stored_body
+        assert row.result_sha256 == result["result_sha256"]
+        assert row.received_at == received_at
+
+
+def test_duplicate_callback_does_not_transfer_stored_body(database):
+    receipt = prepare()
+    result = capture(receipt)
+    result_columns = []
+
+    def recorded(conn, cursor, statement, parameters, context, executemany):
+        if cursor.description is not None:
+            result_columns.extend(column[0] for column in cursor.description)
+
+    event.listen(database, "after_cursor_execute", recorded)
+    try:
+        assert capture(receipt) == result
+    finally:
+        event.remove(database, "after_cursor_execute", recorded)
+    assert result_columns
+    assert "result_body" not in result_columns
+
+
+def test_parallel_identical_callbacks_return_one_immutable_result(database):
+    receipt = prepare()
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results = list(pool.map(lambda _: capture(receipt), range(3)))
+    assert results == [results[0]] * 3
+    with Session(database) as db:
+        row = db.get(AgentResultReceipt, receipt["id"])
+        assert row.result_sha256 == results[0]["result_sha256"]
+        assert hashlib.sha256(row.result_body).hexdigest() == row.result_sha256
 
 
 def test_parallel_conflicting_callbacks_commit_only_one_body(database):
@@ -587,6 +638,50 @@ def test_receiver_authenticates_before_reading_body(database):
         assert caught.value.status_code == 401
 
     asyncio.run(run())
+
+
+def test_receiver_retains_only_one_boundary_body_when_capture_starts(
+    database, monkeypatch
+):
+    receipt = prepare()
+    size = receipts.MAX_RESULT_BYTES
+    was_tracing = tracemalloc.is_tracing()
+    if not was_tracing:
+        tracemalloc.start()
+    baseline = tracemalloc.get_traced_memory()[0]
+
+    class Request:
+        async def stream(self):
+            yield b'{"result":"'
+            remaining = size - len(b'{"result":""}')
+            while remaining:
+                length = min(remaining, 64 * 1024)
+                yield b"x" * length
+                remaining -= length
+            yield b'"}'
+
+    def capture_with_memory_check(receipt_id, token, body):
+        retained = tracemalloc.get_traced_memory()[0] - baseline
+        assert len(body) == size
+        # Leave room for request/thread bookkeeping, but not another copy of
+        # the uploaded chunks. This is Python retention, not a cgroup proof.
+        assert retained < size + 1024 * 1024
+        return {
+            "receipt_id": receipt_id,
+            "result_sha256": hashlib.sha256(body).hexdigest(),
+        }
+
+    monkeypatch.setattr(receipts, "capture_result", capture_with_memory_check)
+    try:
+        result = asyncio.run(
+            result_receipts_router.ingest_result(
+                receipt["id"], Request(), "Bearer " + receipt["token"]
+            )
+        )
+        assert result["receipt_id"] == receipt["id"]
+    finally:
+        if not was_tracing:
+            tracemalloc.stop()
 
 
 def test_receiver_bounds_concurrent_uploads_and_releases_slot(database):

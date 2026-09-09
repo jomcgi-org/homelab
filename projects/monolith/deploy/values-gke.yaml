@@ -20,6 +20,9 @@ agents:
   sessions:
     # Release failed probe holds after exact guest eviction is confirmed.
     probeSupervisionEnabled: true
+    # Preserve native results before their synchronous response is delivered.
+    resultReceiptsEnabled: true
+    resultReceiptAdoptionEnabled: false
 
 postgres:
   storage:

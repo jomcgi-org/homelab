@@ -253,16 +253,6 @@
   color: var(--tone-disk);
 }
 
-.factory-page .stats .s {
-  margin-top: 0.25em;
-  overflow: hidden;
-  color: var(--ink-2);
-  font-family: var(--font-code);
-  font-size: 0.7rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .factory-page .stats .sp {
   display: block;
   width: 100%;
@@ -290,9 +280,9 @@
 }
 
 .factory-page .charts {
-  /* charts.js draws a 600 wide viewBox with LEFT = 34 reserved for the
-     y-axis, so the plot area starts 34/600 in. The legend matches it. */
-  --plot-gutter: 5.6667%;
+  /* charts.js draws a 600 wide viewBox with LEFT = 48 reserved for the
+     y-axis, so the plot area starts 48/600 in. The legend matches it. */
+  --plot-gutter: 8%;
 
   display: grid;
   flex: none;
@@ -431,15 +421,26 @@
   min-height: 0;
   margin: 0;
   padding: 0;
-  overflow-y: auto;
+  /* hidden, not auto: the list is paginated, and a scrollbar inside a paginated
+     list means the page size is wrong. The row count is measured to fit. */
+  overflow: hidden;
   list-style: none;
 }
 
 .factory-page .prs > li {
   display: grid;
-  grid-template-columns: 3.2em minmax(0, 1fr) 5.5em 3.2em;
+  /* One line per row, always. A uniform height is what lets the page size be
+     computed by division instead of guessed, and flex: none stops the rows
+     being squeezed by their container before that measurement is taken. */
+  box-sizing: border-box;
+  flex: none;
+  /* The area is its own column, not a suffix inside the title cell: sharing
+     the cell meant the ellipsis ate the area and left a dangling separator,
+     which is how a reader tells two similarly named changes apart. */
+  grid-template-columns: 3.2em minmax(0, 1fr) auto 5.5em 3.2em;
   gap: 0.6em;
   align-items: baseline;
+  overflow: hidden;
   padding: 0.32em 0;
   border-top: 1px solid var(--line);
   font-size: 0.88rem;
@@ -496,15 +497,6 @@
   color: var(--ink-2);
   font-family: var(--font-code);
   font-size: 0.7rem;
-}
-
-.factory-page .prs .ty.feat {
-  color: var(--ink);
-  font-weight: 700;
-}
-
-.factory-page .prs .sc {
-  color: var(--ink-2);
 }
 
 .factory-page .prs .dt,
@@ -687,7 +679,9 @@
   .factory-page .prs {
     flex: none;
     min-height: auto;
-    overflow-y: visible;
+    /* Both axes, not just y: with overflow-x still hidden the computed
+       overflow-y resolves back to auto and the list can grow a scrollbar. */
+    overflow: visible;
   }
 
   .factory-page .goals {
@@ -779,11 +773,17 @@
     gap: 1rem;
   }
 
-  .factory-page .prs > li {
+  /* Rows and the header must agree on their columns or the header labels sit
+     over the wrong cells. Both drop the area and the line counts here, so both
+     are three columns; the .hd rule further down is repeated inside this query
+     because it is later in source and would otherwise win. */
+  .factory-page .prs > li,
+  .factory-page .prs > li.hd {
     grid-template-columns: 3.2em minmax(0, 1fr) 3.2em;
   }
 
   .factory-page .prs .ch,
+  .factory-page .prs > li > .sc,
   .factory-page .prs .hd button:nth-child(3) {
     display: none;
   }
@@ -791,7 +791,10 @@
 
 .factory-page .journal {
   display: grid;
-  grid-template-columns: minmax(12em, 15em) minmax(0, 46em);
+  /* The document runs to the frame's edge. Capping the column at 46em left a
+     126px gutter on the right against 63px on the left, which read as a column
+     that had failed to load. The measure belongs on the prose, not the grid. */
+  grid-template-columns: minmax(12em, 15em) minmax(0, 1fr);
   gap: clamp(2em, 4vw, 4em);
   align-items: stretch;
 }
@@ -965,6 +968,7 @@
   letter-spacing: 0;
 }
 
+.factory-page .doc p,
 .factory-page .doc .lede {
   max-width: 62ch;
   margin: 0.5rem 0 0;
@@ -1027,6 +1031,12 @@
 
 .factory-page .doc ol li:last-child {
   border-bottom: 1px solid var(--line);
+}
+
+/* The marks legend renders no count, so it declares three columns; the fact
+   list below still has its <time> and keeps the four-column rule. */
+.factory-page .doc .legend-list details > summary {
+  grid-template-columns: 2em 1.1em minmax(0, 1fr);
 }
 
 .factory-page .doc details > summary {
@@ -1145,9 +1155,18 @@
   font-family: var(--font-code);
 }
 
+/* The stacked form of the figure is the phone fallback only; the drawing is
+   the real thing at any width that can hold it. Declared here, ahead of the
+   breakpoint that reveals it, so the media query wins on order. */
+.factory-page figure .stack {
+  display: none;
+}
+
 .factory-page figcaption {
+  /* No max-width: the caption is a one-line label now, and its rule is the
+     figure's bottom edge, so it has to span the whole figure rather than
+     stopping at a measure meant for a paragraph. */
   order: 1;
-  max-width: 70ch;
   padding: 0.7em 1rem 0.9em;
   border-top: 1px solid var(--stroke);
   color: var(--ink-2);
@@ -1251,18 +1270,6 @@
   line-height: 1.35;
 }
 
-/* The figure heading sits tight to the figure it names. */
-.factory-page .doc .figure-heading {
-  display: block;
-  margin: 1.4em 0 0.6em;
-  color: var(--ink-2);
-  font-family: var(--font-code);
-  font-size: 0.68rem;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
 /* Wide content scrolls inside its own container; the page never scrolls
    sideways. The figure is the one thing here wider than a phone screen. */
 .factory-page figure {
@@ -1275,13 +1282,6 @@
   .factory-page .journal {
     max-width: 100%;
     min-width: 0;
-  }
-
-  /* The diagram is a wide technical drawing: shrinking it to 390px makes the
-     11px labels unreadable, so it keeps a legible floor and scrolls sideways
-     inside the figure instead. */
-  .factory-page figure svg {
-    min-width: 34em;
   }
 }
 
@@ -1406,5 +1406,74 @@
 
   .factory-page .stats > div:nth-last-child(-n + 2) {
     border-bottom: 0;
+  }
+}
+
+/* The title is the only cell that can run long, so it truncates with an
+   ellipsis rather than wrapping. Wrapping made rows different heights, which
+   is what forced the list to scroll inside a box that was already paginated. */
+.factory-page .prs > li:not(.hd) > span:nth-child(2) {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The area column: fixed to its content, never shrinking, so the title cell is
+   the only one that ellipses. */
+.factory-page .prs > li > .sc {
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 0.82em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 8em;
+}
+
+/* Four header cells across five columns: the title label spans the title and
+   area columns, which are one idea ("title . area") to the reader. */
+.factory-page .prs > li.hd {
+  grid-template-columns: 3.2em minmax(0, 1fr) 5.5em 3.2em;
+}
+
+.factory-page figure .stack > div {
+  display: grid;
+  grid-template-columns: 7em minmax(0, 1fr);
+  gap: 0.6em;
+  padding: 0.4em 0;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.factory-page figure .stack > div b {
+  font-weight: 500;
+}
+
+.factory-page figure .stack > div span {
+  color: var(--ink-2);
+}
+
+.factory-page figure .stack > p {
+  margin: 0.4em 0 0;
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.68rem;
+}
+
+/* The diagram is a wide technical drawing. Squeezed into a narrow column its
+   11px labels land at about 6px, and scrolling it sideways hides the last box
+   with nothing saying so, so it is replaced by the same sequence set as
+   stacked rows. The boundary is 900px rather than the phone breakpoint because
+   the document column is still narrow while the journal is two columns. */
+@media (max-width: 900px) {
+  .factory-page figure svg {
+    display: none;
+  }
+
+  .factory-page figure .stack {
+    display: grid;
+    gap: 0.5rem;
+    padding: 0.9rem 1rem;
   }
 }

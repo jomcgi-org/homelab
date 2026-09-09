@@ -9,7 +9,6 @@
     formatCount,
     formatSpend,
     goalSummary,
-    lineSeries,
     mergeSeries,
     paginate,
     shortNumber,
@@ -25,7 +24,12 @@
   let sort = $state("date");
   let direction = $state(-1);
   let prPage = $state(0);
-  const pageSize = 8;
+  // Measured from the space the list actually gets, because a fixed count
+  // cannot fit a box whose height depends on the viewport. Paginating and
+  // then scrolling inside the page would defeat the point of paginating.
+  const DEFAULT_PAGE_SIZE = 8;
+  let pageSize = $state(DEFAULT_PAGE_SIZE);
+  let listEl = $state(null);
 
   const day = (value) => value?.slice(5, 10).replace("-", "·") ?? "";
   const today = new Date().toISOString().slice(0, 10);
@@ -47,14 +51,13 @@
   );
   const spend = $derived(spendSeries(data.activity.spend_daily ?? []));
   const merges = $derived(mergeSeries(data.merges.daily));
-  const lines = $derived(lineSeries(data.merges.week));
   const facts = $derived(factSeries(data.facts, today));
   const tiles = $derived(
     tileDerivations(
       data.activity,
       data.merges,
       data.facts,
-      { sessions, spend, merges, lines, facts },
+      { sessions, spend, merges, facts },
       today,
     ),
   );
@@ -65,7 +68,6 @@
     {
       key: "Live",
       value: formatCount(tiles.live.value),
-      subline: `${formatCount(tiles.live.sessionsToday)} sessions today`,
       spark: tiles.live.spark,
     },
     {
@@ -76,21 +78,16 @@
     {
       key: "Merged, 7d",
       value: formatCount(tiles.merged.value),
-      subline: `${formatCount(tiles.merged.agent)} by agents · +${shortNumber(tiles.lines.additions)} −${shortNumber(tiles.lines.deletions)}`,
       spark: tiles.merged.spark,
     },
     {
       key: "Tokens, 7d",
       value: shortNumber(tiles.tokens.input),
-      subline: `${shortNumber(tiles.tokens.output)} out`,
       spark: tiles.tokens.spark,
     },
     {
       key: "Spend, 7d",
       value: formatSpend(tiles.spend.value),
-      subline: tiles.spend.maxSession
-        ? `${formatSpend(tiles.spend.maxSession)} priciest session`
-        : "",
       spark: tiles.spend.spark,
     },
     {
@@ -111,6 +108,44 @@
     sortPullRequests(data.merges.week, sort, direction),
   );
   const prRows = $derived(paginate(sortedPrs, prPage, pageSize));
+
+  // Measuring only means anything while the page is a fixed height and the list
+  // is the flexible band inside it. Below these breakpoints the layout reverts
+  // to ordinary document flow, where the list is as tall as its own rows: the
+  // measurement would then just count the rows it had rendered, and any partial
+  // page would ratchet the size down permanently.
+  const FITS_TO_VIEWPORT = "(min-width: 901px) and (min-height: 721px)";
+
+  $effect(() => {
+    if (!listEl) return;
+    const media = window.matchMedia(FITS_TO_VIEWPORT);
+    const fit = () => {
+      if (!media.matches) {
+        pageSize = DEFAULT_PAGE_SIZE;
+        return;
+      }
+      const head = listEl.querySelector("li.hd");
+      const row = listEl.querySelector("li:not(.hd)");
+      if (!row) return;
+      const rowHeight = row.getBoundingClientRect().height;
+      if (rowHeight <= 0) return;
+      const available =
+        listEl.clientHeight - (head?.getBoundingClientRect().height ?? 0);
+      if (available <= 0) return;
+      // Rows are a uniform height in CSS, so this division is exact rather
+      // than an estimate that overflows when several long titles collide.
+      const next = Math.max(3, Math.floor(available / rowHeight));
+      if (next !== pageSize) pageSize = next;
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(listEl);
+    media.addEventListener("change", fit);
+    return () => {
+      observer.disconnect();
+      media.removeEventListener("change", fit);
+    };
+  });
 
   function changeSort(next) {
     if (sort === next) direction *= -1;
@@ -144,7 +179,7 @@
 
 <Seo
   title="Ember Software Factory · jomcgi.dev"
-  description="What the agents merged, what it cost, what they learned."
+  description="Self-improving flywheel, shoveling slop via Firecracker VMs"
   path="/slop/factory"
 />
 
@@ -179,7 +214,6 @@
               {/if}
             </div>
             {@html sparkSvg(stat.spark)}
-            {#if stat.subline}<div class="s">{stat.subline}</div>{/if}
           </div>
         {/each}
       </div>
@@ -272,7 +306,7 @@
               </div>
             {/each}
           </div>
-          <ol class="prs">
+          <ol class="prs" bind:this={listEl}>
             <li class="hd">
               {#each [["type", "type"], ["area", "title · area"], ["lines", "lines"], ["date", "day"]] as [key, label], index}
                 <button
@@ -290,15 +324,14 @@
             </li>
             {#each prRows.rows as pr (pr.number)}
               <li>
-                <span class:feat={pr.type === "feat"} class="ty">{pr.type}</span
-                >
+                <span class="ty">{pr.type}</span>
                 <span
                   ><a
                     href={`https://github.com/jomcgi/homelab/pull/${pr.number}`}
                     >{cleanPullTitle(pr.title)}</a
-                  >{#if pr.scope}
-                    <span class="sc">· {pr.scope}</span>{/if}</span
+                  ></span
                 >
+                <span class="sc">{pr.scope ?? ""}</span>
                 <span class="ch"
                   ><b>+{shortNumber(pr.additions)}</b>
                   <s>−{shortNumber(pr.deletions)}</s></span
@@ -314,12 +347,12 @@
             <span
               ><button
                 type="button"
-                onclick={() => (prPage -= 1)}
-                disabled={prPage === 0}>prev</button
+                onclick={() => (prPage = prRows.page - 1)}
+                disabled={prRows.page === 0}>prev</button
               ><button
                 type="button"
-                onclick={() => (prPage += 1)}
-                disabled={prPage >= prRows.pageCount - 1}>next</button
+                onclick={() => (prPage = prRows.page + 1)}
+                disabled={prRows.page >= prRows.pageCount - 1}>next</button
               ></span
             >
           </div>

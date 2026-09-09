@@ -41,11 +41,16 @@ async def ingest_result(
                 if total > result_receipts.MAX_RESULT_BYTES:
                     raise HTTPException(status_code=413, detail="result_too_large")
                 parts.append(chunk)
+        body = b"".join(parts)
+        # The callback shares 256 MiB with progress. Release the upload buffers
+        # before JSON validation and the database driver allocate their copies.
+        parts.clear()
+        chunk = b""
         return await run_in_threadpool(
             result_receipts.capture_result,
             receipt_id,
             token,
-            b"".join(parts),
+            body,
         )
     except HTTPException:
         raise
