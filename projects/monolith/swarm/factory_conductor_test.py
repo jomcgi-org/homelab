@@ -494,14 +494,24 @@ def test_premature_finish_is_processed_once_and_next_planner_gets_reason(
             task,
             policy,
             "implement_fix",
-            {"status": "complete", "pr_number": 3, "head_sha": head},
+            {
+                "status": "complete",
+                "summary": "Implemented the change; CI still needs acceptance.",
+                "pr_number": 3,
+                "head_sha": head,
+            },
             head=head,
         )
         complete_feedback_node(
             task,
             policy,
             "review_fix",
-            {"verdict": "approve", "pr_number": 3, "head_sha": head},
+            {
+                "verdict": "approve",
+                "summary": "Reviewed the exact head; required CI remains separate.",
+                "pr_number": 3,
+                "head_sha": head,
+            },
             head=head,
         )
     run = complete_feedback_node(
@@ -1118,10 +1128,9 @@ def test_planner_limits_complete_json_without_losing_older_delivery_evidence(
     assert context["omitted"]["task_characters"] > 0
     assert context["omitted"]["run_records"] == len(runs) - len(context["runs"])
     assert context["omitted"]["graph_records"] == len(nodes) - len(context["graph"])
-    assert (
-        "[text omitted]"
-        in context["delivery_evidence"]["latest_review"]["artifact"]["summary"]
-    )
+    for role in ("latest_implement", "latest_review"):
+        assert context["delivery_evidence"][role]["summary_complete"] is True
+        assert context["delivery_evidence"][role]["artifact"]["summary"] == long_text
     assert (task, nodes, runs, feedback) == before
 
 
@@ -1215,12 +1224,101 @@ def test_planner_bounds_encoded_protected_text_without_losing_review(monkeypatch
     assert context["omitted"]["task_characters"] == 0
     assert context["omitted"]["run_records"] == 0
     assert context["task"] == task["task_text"]
+    assert review["summary_complete"] is True
+    assert review["artifact"]["summary"] == text
     for value in (
-        review["artifact"]["summary"],
+        context["runs"][-1]["artifact"]["summary"],
         context["decision_feedback"][0]["reason"],
     ):
         assert value.endswith(" [text omitted]")
         assert len(json.dumps(value)) <= conductor.PLANNER_TEXT_CHARS
+
+
+def test_planner_preserves_review_findings_after_long_preamble(monkeypatch):
+    import copy
+    import json
+
+    task, runs = delivery(monkeypatch)
+    task["task_text"] = "Complete every requested review correction."
+    findings = "BLOCKER: handle terminal readback. BLOCKER: test retained ownership."
+    summary = "Design observations. " * 350 + findings
+    outcome = json.loads(runs[-1]["outcome_json"])
+    outcome["value"].update(verdict="changes_requested", summary=summary)
+    assert not schema_errors(outcome["value"], conductor.REVIEW_SCHEMA)
+    runs[-1]["outcome_json"] = json.dumps(outcome)
+    before = copy.deepcopy(runs)
+    monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
+
+    context = planner_context(conductor.planner_prompt(task, [], runs))
+
+    review = context["delivery_evidence"]["latest_review"]
+    assert review["id"] == 2 and review["session_id"] == 11
+    assert review["summary_complete"] is True
+    assert review["artifact"]["verdict"] == "changes_requested"
+    assert review["artifact"]["summary"] == summary
+    assert review["artifact"]["summary"].endswith(findings)
+    assert context["runs"][-1]["artifact"]["summary"].endswith(" [text omitted]")
+    assert "summary_complete" not in context["runs"][-1]
+    assert runs == before
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "\U0001f600" * 7980 + "FINAL BLOCKER",
+        "\u2603" * 1500 + "\ud800" + r"\ud800" + "FINAL BLOCKER",
+        '"\\\n' * 2000 + "FINAL BLOCKER",
+    ],
+)
+def test_planner_keeps_complete_unicode_review_as_valid_bounded_json(
+    monkeypatch, summary
+):
+    import json
+
+    task, runs = delivery(monkeypatch)
+    task["task_text"] = "Resolve the final review finding."
+    outcome = json.loads(runs[-1]["outcome_json"])
+    outcome["value"].update(verdict="changes_requested", summary=summary)
+    assert not schema_errors(outcome["value"], conductor.REVIEW_SCHEMA)
+    runs[-1]["outcome_json"] = json.dumps(outcome)
+    monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
+
+    prompt = conductor.planner_prompt(task, [], runs, decision_revision=7)
+    context = planner_context(prompt)
+
+    assert (
+        len(prompt.split("\n", 1)[1].encode("utf-8")) <= conductor.PLANNER_CONTEXT_CHARS
+    )
+    assert (
+        context["delivery_evidence"]["latest_review"]["artifact"]["summary"] == summary
+    )
+    assert context["delivery_evidence"]["latest_review"]["summary_complete"] is True
+    assert context["graph_revision"] == 7
+
+
+def test_planner_refuses_overflow_instead_of_clipping_required_summaries(monkeypatch):
+    import copy
+    import json
+
+    task, runs = delivery(monkeypatch)
+    task["task_text"] = "Preserve review findings."
+    for run in runs:
+        outcome = json.loads(run["outcome_json"])
+        outcome["value"]["summary"] = "\U0001f600" * 8000
+        runs_schema = (
+            conductor.REVIEW_SCHEMA
+            if run["node_key"].startswith("review_")
+            else conductor.RESULT_SCHEMA
+        )
+        assert not schema_errors(outcome["value"], runs_schema)
+        run["outcome_json"] = json.dumps(outcome)
+    before = copy.deepcopy((task, runs))
+    monkeypatch.setattr(conductor, "_decision_evidence", lambda _task: [])
+
+    with pytest.raises(conductor.PlannerContextOverflow, match="context limit"):
+        conductor.planner_prompt(task, [], runs)
+
+    assert (task, runs) == before
 
 
 @pytest.mark.parametrize("status", ["failed", "uncertain"])

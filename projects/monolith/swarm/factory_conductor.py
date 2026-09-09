@@ -461,7 +461,18 @@ def _planner_fields(source: dict, fields: tuple[str, ...]) -> dict:
     return result
 
 
-def _planner_run(run: dict) -> dict:
+def _planner_json(context: dict) -> bytes:
+    # Preserve Unicode efficiently while escaping lone surrogates as valid JSON.
+    return json.dumps(
+        context,
+        default=str,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8", errors="backslashreplace")
+
+
+def _planner_run(run: dict, *, complete_summary: bool = False) -> dict:
     result = _planner_fields(
         run,
         (
@@ -558,6 +569,16 @@ def _planner_run(run: dict) -> dict:
     )
     if "deps" in artifact:
         result["artifact"]["deps"] = list(artifact["deps"])
+    if complete_summary:
+        summary = artifact.get("summary")
+        if not isinstance(summary, str) or len(summary) > PLANNER_CONTEXT_CHARS:
+            raise PlannerContextOverflow(
+                "required delivery summary exceeds context bound"
+            )
+        # Only the selected delivery records retain full summaries. Historical
+        # projections stay compact and never acquire the original prompt/payload.
+        result["artifact"]["summary"] = summary
+        result["summary_complete"] = True
     return result
 
 
@@ -569,13 +590,15 @@ def _planner_context(task: dict, nodes: list[dict], runs: list[dict]) -> str:
     delivery = {}
     for role in ("implement", "review"):
         completed = [
-            run
-            for run in projected_runs
+            original
+            for original, run in zip(ordered_runs, projected_runs, strict=True)
             if run["node_key"].startswith(role + "_")
             and run["status"] == "succeeded"
             and run["artifact_validation"]["status"] == "ok"
         ]
-        delivery["latest_" + role] = completed[-1] if completed else None
+        delivery["latest_" + role] = (
+            _planner_run(completed[-1], complete_summary=True) if completed else None
+        )
     projected_nodes = []
     for node in nodes:
         item = _planner_fields(
@@ -647,11 +670,9 @@ def _planner_context(task: dict, nodes: list[dict], runs: list[dict]) -> str:
     # Bound complete JSON objects, not the serialized text. Always retain the
     # latest completed work/review, newest attempt and newest rejection evidence.
     while True:
-        encoded = json.dumps(
-            context, default=str, separators=(",", ":"), allow_nan=False
-        )
+        encoded = _planner_json(context)
         if len(encoded) <= PLANNER_CONTEXT_CHARS:
-            return encoded
+            return encoded.decode("utf-8")
         for key, omitted_key, index in (
             ("runs", "run_records", 0),
             ("graph", "graph_records", 0),
@@ -664,7 +685,9 @@ def _planner_context(task: dict, nodes: list[dict], runs: list[dict]) -> str:
         else:
             removed = len(context["task"]) // 2
             if removed == 0:
-                raise ValueError("factory planner evidence exceeds context limit")
+                raise PlannerContextOverflow(
+                    "factory planner evidence exceeds context limit"
+                )
             context["task"] = context["task"][:-removed]
             context["omitted"]["task_characters"] += removed
 
@@ -679,9 +702,7 @@ def planner_prompt(
     context = json.loads(_planner_context(task, nodes, runs))
     if decision_revision is not None:
         context["graph_revision"] = decision_revision
-    encoded = json.dumps(
-        context, default=str, separators=(",", ":"), ensure_ascii=False, allow_nan=False
-    ).encode("utf-8", errors="backslashreplace")
+    encoded = _planner_json(context)
     if len(encoded) > PLANNER_CONTEXT_CHARS:
         raise PlannerContextOverflow("factory planner evidence exceeds context limit")
     return (
@@ -717,8 +738,10 @@ def planner_prompt(
         "history and remaining unfinished-node ceilings, not unused successful "
         "node ceilings. These values are a snapshot, not permission or a hard "
         "in-flight provider spend cap; all actual admissions recheck current bounds. "
-        "delivery_evidence retains the latest completed implementation and review; "
-        "check recorded verdict, PR, heads, model and session before requesting "
+        "delivery_evidence retains the latest completed implementation and review "
+        "with their complete summaries; historical runs may omit text. Carry all "
+        "unresolved review findings into a correction brief. Check recorded verdict, "
+        "PR, heads, model and session before requesting "
         "another review. Evidence does not replace the server's delivery checks. "
         "A worker status of escalate is a bounded request for conductor evidence, "
         "not permission to retry or change profile; requested_model is only a hint "
@@ -1169,6 +1192,11 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
                 task, nodes, runs, decision_revision=insertion_revision + 1
             )
         except PlannerContextOverflow:
+            logger.warning(
+                "Factory planner cannot retain required evidence within its context "
+                "bound for task %s",
+                task_id,
+            )
             set_control("pause_task", ACTOR, task_id=task_id)
             return
         result = _add(
