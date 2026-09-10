@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   budgetShare,
   conductorHref,
+  conductorModel,
   conductorPrompt,
   deadlineLabel,
   focusNode,
   laneSummary,
+  money,
   phaseLabel,
   planRanks,
   turnShare,
@@ -117,12 +119,28 @@ describe("factory board helpers", () => {
     expect(conductorPrompt(null)).toContain("new proposal");
   });
 
-  it("links into the console with the model and prompt prefilled", () => {
-    const href = conductorHref(receipt);
+  it("links into the console with the policy's conductor and the prompt", () => {
+    const href = conductorHref(
+      { ...receipt, policy: { ...receipt.policy, conductor_model: "spark" } },
+      { policy: { conductor_model: "astra" } },
+    );
     const url = new URL(href, "https://private.jomcgi.dev");
     expect(url.pathname).toBe("/agents");
     expect(url.searchParams.get("compose")).toBe("1");
-    expect(url.searchParams.get("model")).toBe("astra");
+    expect(url.searchParams.get("model")).toBe("spark");
     expect(url.searchParams.get("prompt")).toContain("t-1");
+  });
+
+  it("falls back from the receipt to the board to astra for the conductor", () => {
+    expect(conductorModel(null, { policy: { conductor_model: "spark" } })).toBe(
+      "spark",
+    );
+    expect(conductorModel(null, null)).toBe("astra");
+  });
+
+  it("renders money with a real zero", () => {
+    expect(money(0)).toBe("$0.00");
+    expect(money(9.041)).toBe("$9.04");
+    expect(money(null)).toBe("");
   });
 });

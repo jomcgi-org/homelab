@@ -142,3 +142,112 @@ def test_shape_receipt_without_a_plan_carries_no_nodes():
     assert shaped["nodes"] == []
     assert shaped["starts"] == []
     assert shaped["policy"]["conductor_model"] is None
+
+
+def test_shape_policy_keeps_the_board_keys_only():
+    from agent_sessions.factory_view import shape_policy
+
+    shaped = shape_policy(
+        {
+            "generation": 4,
+            "max_tasks": 1,
+            "conductor_model": "astra",
+            "worker_model": "sol",
+            "reviewer_model": "opus",
+            "max_turns_per_task": 9,
+            "task_budget_usd": 36.0,
+            "max_attempts": 2,
+            "repo": "x/y",
+            "issue_numbers": [5983],
+            "model_pools": {"worker": ["sol"]},
+        }
+    )
+    assert shaped == {
+        "generation": 4,
+        "max_tasks": 1,
+        "conductor_model": "astra",
+        "worker_model": "sol",
+        "reviewer_model": "opus",
+        "max_turns_per_task": 9,
+        "task_budget_usd": 36.0,
+        "max_attempts": 2,
+    }
+    assert shape_policy(None) is None
+
+
+def test_build_factory_view_reads_a_real_control_row(tmp_path):
+    """Drive the glue through sqlite so the status call signature and the
+    board keys are exercised, not just the pure shaping."""
+    from sqlalchemy import event
+    from sqlmodel import Session, SQLModel, create_engine
+
+    from agent_sessions.factory_view import build_factory_view
+    from swarm.factory_models import (
+        FactoryAudit,
+        FactoryControl,
+        FactoryReceipt,
+        FactoryStart,
+    )
+    from swarm.models import SwarmTask
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'view.db'}",
+        connect_args={"check_same_thread": False},
+        execution_options={"schema_translate_map": {"swarm": None}},
+    )
+
+    @event.listens_for(engine, "connect")
+    def _fk(conn, _record):
+        conn.execute("PRAGMA foreign_keys=ON")
+
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            m.__table__
+            for m in (
+                SwarmTask,
+                FactoryControl,
+                FactoryReceipt,
+                FactoryStart,
+                FactoryAudit,
+            )
+        ],
+    )
+    with Session(engine) as db:
+        assert build_factory_view(session=db)["ok"] is False
+        db.add(
+            FactoryControl(
+                id="factory",
+                state="enabled",
+                policy_json=(
+                    '{"repo": "x/y", "generation": 4, "max_tasks": 1, '
+                    '"conductor_model": "astra", "worker_model": "sol", '
+                    '"reviewer_model": "opus", "max_turns_per_task": 9, '
+                    '"task_budget_usd": 36.0, "max_attempts": 2}'
+                ),
+                actor="test",
+            )
+        )
+        # A queued receipt the way factory_intake.receive_issue writes it; the
+        # intake module lives in the swarm package this test does not link.
+        db.add(
+            FactoryReceipt(
+                repo="x/y",
+                issue_number=5983,
+                generation=4,
+                title="held jobs",
+                body="body",
+                url="https://github.com/x/y/issues/5983",
+                actor="test",
+                state="queued",
+            )
+        )
+        db.commit()
+        view = build_factory_view(session=db)
+    assert view["ok"] is True
+    assert view["state"] == "enabled"
+    assert view["policy"]["conductor_model"] == "astra"
+    assert "repo" not in view["policy"]
+    assert [r["issue_number"] for r in view["queued"]] == [5983]
+    assert view["queued"][0]["nodes"] == []
+    assert view["active"] == [] and view["recent"] == []

@@ -791,11 +791,15 @@
     if (params.get("compose") !== "1") return;
     const model = params.get("model") || "";
     const prompt = params.get("prompt") || "";
+    const offered = availableModels.includes(model);
     newSession = {
       ...newSession,
-      model: availableModels.includes(model) ? model : newSession.model,
+      model: offered ? model : newSession.model,
       prompt,
     };
+    if (model && !offered) {
+      noticeMessage = `${model} is not offered on this console; the draft keeps the default model.`;
+    }
     openNewPanel();
     const next = new URLSearchParams(params);
     next.delete("compose");

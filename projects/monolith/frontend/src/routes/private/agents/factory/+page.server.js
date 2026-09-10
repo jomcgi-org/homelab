@@ -4,8 +4,11 @@
 // here for a fast first paint; the page then polls /agents/factory itself.
 const API_BASE = process.env.API_BASE;
 
-export async function load({ fetch, url }) {
-  const task = url.searchParams.get("task");
+export async function load({ fetch, url, untrack }) {
+  // untrack: the page owns ?task= after the first paint (toggle + goto with
+  // replaceState), so the load must not depend on it or every toggle would
+  // re-run this fetch and discard the result.
+  const task = untrack(() => url.searchParams.get("task"));
   const query = task ? `?task=${encodeURIComponent(task)}` : "";
   try {
     const response = await fetch(`${API_BASE}/api/agents/factory${query}`, {

@@ -3,14 +3,15 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
   import "$lib/private/dashboard-theme.css";
-  import { fmtCost } from "../run-format.js";
   import { relativeTime } from "../run-history.js";
   import {
     NODE_STATE_WORD,
     RECEIPT_STATE_WORD,
     budgetShare,
     conductorHref,
+    conductorModel,
     deadlineLabel,
+    money,
     phaseLabel,
     planRanks,
     turnShare,
@@ -100,7 +101,7 @@
   function attemptWord(attempt) {
     const parts = [attempt.status];
     if (attempt.session?.model) parts.push(attempt.session.model);
-    if (attempt.cost_usd != null) parts.push(fmtCost(attempt.cost_usd));
+    if (attempt.cost_usd != null) parts.push(money(attempt.cost_usd));
     return parts.join(" · ");
   }
 
@@ -122,14 +123,10 @@
     <h1 class="sr-only">Factory</h1>
 
     <header class="masthead">
-      <nav class="trail" aria-label="Breadcrumb">
-        <a href="/agents">agents</a>
-        <span aria-current="page">factory</span>
-      </nav>
       <nav class="view-tabs" aria-label="Agents views">
         <a class="here" href="/agents/factory" aria-current="page">factory</a>
         <a href="/agents">sessions</a>
-        <a href="/agents/drain">knowledge queue</a>
+        <a href="/agents/drain">knowledge extraction queue</a>
       </nav>
     </header>
 
@@ -163,15 +160,20 @@
     <p class="policy-line">
       {#if policy}
         <span
-          >generation {policy.generation} · {policy.max_tasks} at a time · {fmtCost(
+          >generation {policy.generation} · {policy.max_tasks} at a time · {money(
             policy.task_budget_usd,
           )} and {policy.max_turns_per_task} starts per task · policy v{board.version}</span
         >
       {/if}
+      {#if board && board.ok === false}
+        <span class="warn">factory {board.reason ?? "not ready"}</span>
+      {/if}
       {#if unavailable}
         <span class="warn">board unavailable, showing the last read</span>
       {/if}
-      <a class="talk" href={conductorHref(null)}>Talk to the conductor</a>
+      <a class="talk" href={conductorHref(null, board)}
+        >Talk to the conductor ({conductorModel(null, board)})</a
+      >
     </p>
 
     <section>
@@ -258,7 +260,7 @@
               ><i style={`width:${pct(budgetShare(receipt))}`}></i></span
             >
             <span class="num"
-              >{fmtCost(receipt.committed_cost_usd)} of {fmtCost(
+              >{money(receipt.committed_cost_usd)} of {money(
                 receipt.policy.task_budget_usd,
               )}</span
             >
@@ -361,7 +363,7 @@
             <span>{start.model}</span>
             <span class={`state-${start.status}`}>{start.status}</span>
             <span class="num"
-              >{start.cost_usd != null ? fmtCost(start.cost_usd) : ""}</span
+              >{start.cost_usd != null ? money(start.cost_usd) : ""}</span
             >
           </li>
         {/each}
@@ -462,7 +464,12 @@
     gap: 0.75rem;
     margin-bottom: 1rem;
   }
-  .trail,
+  /* Every inline link that is a control keeps the phone's 44px floor. */
+  .target {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.75rem;
+  }
   .view-tabs {
     display: flex;
     border: 1px solid var(--stroke);
@@ -470,31 +477,26 @@
     font-size: 0.72rem;
     letter-spacing: 0.04em;
   }
-  .trail > *,
   .view-tabs > a {
     display: inline-flex;
     align-items: center;
     min-height: 2.75rem;
     padding: 0 0.9em;
+    border-bottom: 2px solid transparent;
     color: var(--ink-2);
     text-decoration: none;
   }
-  .trail > * + *,
   .view-tabs > a + a {
     border-left: 1px solid var(--stroke);
-  }
-  .trail [aria-current] {
-    color: var(--ink);
-  }
-  .view-tabs {
-    margin-left: auto;
   }
   .view-tabs a:hover {
     color: var(--ink);
   }
+  /* The selection marker in a horizontal strip is a bottom underline, drawn
+     as a border like the blog's tabs, never a shadow. */
   .view-tabs .here {
+    border-bottom-color: var(--accent-ink);
     color: var(--accent-ink);
-    box-shadow: inset 0 -2px 0 var(--accent-ink);
   }
 
   /* State strip: the stats box from the slop page, six cells on a desk and

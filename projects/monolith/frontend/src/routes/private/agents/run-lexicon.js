@@ -198,7 +198,6 @@ export const RUN_LEXICON = {
     factoryInFlight: "{count} in flight",
     factoryQueued: "{count} queued",
     factoryPaused: "{count} paused",
-    factoryOff: "off",
     drainHeading: "knowledge extraction queue",
     drainRunning: "running",
     drainIdle: "idle",

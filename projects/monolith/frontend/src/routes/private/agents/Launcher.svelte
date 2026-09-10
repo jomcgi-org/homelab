@@ -170,8 +170,11 @@
         aria-hidden="true"
       ></span>
       <span>{P.labels.factoryHeading}</span>
+      {#if factory.state !== "enabled"}
+        <span aria-hidden="true">{P.punct.dot}</span>
+        <span>{factory.state}</span>
+      {/if}
       <span aria-hidden="true">{P.punct.dot}</span>
-      <span>{factory.state === "enabled" ? "" : factory.state}</span>
       <span
         >{P.labels.factoryInFlight.replace(
           "{count}",
