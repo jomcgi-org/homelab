@@ -347,7 +347,7 @@ def _decision_evidence(task_id: str) -> list[dict]:
 
 def _budget_evidence(task_id: str) -> dict:
     """Read the graph accounting owner and immutable factory limits for context."""
-    from swarm.factory_controls import task_snapshot
+    from swarm.factory_controls import planner_turn_cap, task_snapshot
 
     with Session(get_engine()) as db:
         budget = graph.budget_snapshot(task_id, session=db)
@@ -359,6 +359,7 @@ def _budget_evidence(task_id: str) -> dict:
             "turns_used": receipt["turns_used"],
             "planner_turns_used": receipt["planner_turns_used"],
             "max_turns_per_task": policy["max_turns_per_task"],
+            "max_planner_turns": planner_turn_cap(policy),
             "deadline_at": receipt["deadline_at"],
             "new_node_max_cost_usd": policy["turn_budget_usd"],
             "max_attempts": policy["max_attempts"],

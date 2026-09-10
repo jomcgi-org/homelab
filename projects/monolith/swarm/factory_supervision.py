@@ -152,18 +152,23 @@ def _locked_attempt(db, control, pin, sid, *, require_stop_due=True):
     return identity, run
 
 
-def _settlement_basis(chosen: float | None, original: dict) -> str:
+def _settlement_accounting(chosen: float | None, original: dict) -> dict:
     """Name the evidence behind the cost this cessation settles at.
 
     The supervisor charges the highest known figure. That is list-priced only
     when it is exactly the node result's own list price, so a measured cost or
-    a retained reservation never inherits the estimate's provenance.
+    a retained reservation never inherits the estimate's provenance. The label
+    is written with the basis so the pair can never disagree.
     """
+    from swarm.node_workflows import ACCOUNTING_LABELS
+
     if chosen is None:
-        return "unknown"
-    if original.get("cost_basis") == "list" and original.get("cost_usd") == chosen:
-        return "list"
-    return "provider"
+        basis = "unknown"
+    elif original.get("cost_basis") == "list" and original.get("cost_usd") == chosen:
+        basis = "list"
+    else:
+        basis = "provider"
+    return {"cost_basis": basis, "accounting": ACCOUNTING_LABELS[basis]}
 
 
 def _precondition(value, guest_id):
@@ -509,7 +514,7 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                     "status": "failed",
                     "session_id": session_id,
                     "cost_usd": chosen,
-                    "cost_basis": _settlement_basis(chosen, original_result),
+                    **_settlement_accounting(chosen, original_result),
                     "reason": "guest_cessation_confirmed: exact control-plane cessation after factory dispatch",
                     "previous_outcome": json.loads(run.outcome_json or "{}"),
                     "cessation": proof,

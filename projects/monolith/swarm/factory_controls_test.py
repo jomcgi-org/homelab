@@ -297,6 +297,10 @@ def test_supplied_session_can_rollback_reservation_with_caller_graph_changes(
         ("max_tasks", True),
         ("max_tasks", 0),
         ("max_turns_per_task", 0),
+        ("max_planner_turns", 0),
+        ("max_planner_turns", 101),
+        ("max_planner_turns", True),
+        ("max_planner_turns", 1.0),
         ("turn_timeout_seconds", 0),
         ("turn_timeout_seconds", None),
         ("max_attempts", 0),
@@ -517,6 +521,7 @@ def test_planner_starts_cost_money_but_do_not_consume_the_work_turn_cap(db, poli
 
 def test_work_starts_alone_reach_the_turn_limit_and_fence_admission(db, policy):
     policy["max_turns_per_task"] = 2
+    policy["max_planner_turns"] = 3
     task = admitted(policy)
     for index, node in enumerate(
         ("conductor_1", "implement_one", "conductor_2", "implement_two")
@@ -551,3 +556,68 @@ def test_unparsable_start_keys_count_as_work_turns(db, policy, key):
     assert grant(task, key)["ok"]
     snapshot = controls.task_snapshot(task)
     assert snapshot["turns_used"] == 1 and snapshot["planner_turns_used"] == 0
+
+
+def test_planner_cap_falls_back_for_a_policy_pinned_before_the_field():
+    assert controls.planner_turn_cap({"max_turns_per_task": 7}) == 7
+    assert (
+        controls.planner_turn_cap({"max_turns_per_task": 7, "max_planner_turns": 2})
+        == 2
+    )
+
+
+def test_absent_planner_cap_inherits_the_work_cap(db, policy):
+    assert "max_planner_turns" not in policy
+    policy["max_turns_per_task"] = 1
+    task = admitted(policy)
+    assert controls.task_snapshot(task)["policy"]["max_planner_turns"] == 1
+    key = node_key(task, "conductor_1")
+    assert grant(task, key, cost=0.5)["ok"]
+    assert controls.record_start_outcome(
+        task, key, "succeeded", "worker", cost_usd=0.1, session_id=1
+    )["ok"]
+    assert grant(task, node_key(task, "conductor_2"), cost=0.5) == {
+        "ok": False,
+        "reason": "planner_turn_limit",
+    }
+
+
+def test_planner_rounds_meet_their_own_cap_while_work_still_admits(db, policy):
+    policy["max_turns_per_task"] = 3
+    policy["max_planner_turns"] = 1
+    task = admitted(policy)
+    key = node_key(task, "conductor_1")
+    assert grant(task, key, cost=0.5)["ok"]
+    assert controls.record_start_outcome(
+        task, key, "succeeded", "worker", cost_usd=0.1, session_id=1
+    )["ok"]
+    limits = controls.task_snapshot(task)["limits"]
+    assert limits["planner_turn_limit_reached"] is True
+    assert limits["turn_limit_reached"] is False
+    assert grant(task, node_key(task, "conductor_2"), cost=0.5) == {
+        "ok": False,
+        "reason": "planner_turn_limit",
+    }
+    # The planning cap does not fence delivery.
+    assert grant(task, node_key(task, "implement_fix"), cost=0.5)["ok"]
+
+
+def test_planner_starts_answer_to_the_task_budget(db, policy):
+    # A refused decision can mint a planner every tick, so the budget has to
+    # fence deliberation even while the planning cap has room left.
+    policy["max_planner_turns"] = 50
+    task = admitted(policy)
+    for index, node in enumerate(("conductor_1", "conductor_2")):
+        key = node_key(task, node)
+        assert grant(task, key, cost=2.0)["ok"]
+        assert controls.record_start_outcome(
+            task, key, "succeeded", "worker", cost_usd=2.0, session_id=index + 1
+        )["ok"]
+    snapshot = controls.task_snapshot(task)
+    assert snapshot["committed_cost_usd"] == 4.0
+    assert snapshot["planner_turns_used"] == 2
+    assert snapshot["limits"]["planner_turn_limit_reached"] is False
+    assert grant(task, node_key(task, "conductor_3"), cost=2.0) == {
+        "ok": False,
+        "reason": "budget_limit",
+    }
