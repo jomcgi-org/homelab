@@ -1109,6 +1109,7 @@ def test_muse_settings_json_pins_plaintext_endpoint_transport(
     manager.turn("settings", model="spark")
 
     settings = json.loads((tmp_path / "muse-settings.json").read_text())
+    assert settings["telemetry"] == {"enabled": False}
     assert settings["endpoint_transport"] == {
         "base_url": "http://api.meta.ai/v1",
         "auth": "bearer",
