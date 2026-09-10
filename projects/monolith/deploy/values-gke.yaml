@@ -15,6 +15,13 @@ swarm:
   # Exact operator requests and original deadlines retain the existing task
   # bounds. Capacity is released only after durable guest cessation proof.
   factoryStopSupervisionEnabled: true
+  # Per-class floors on remaining quota percent (#5974). Workers spill from
+  # sol to the next pool member below 10 percent Codex; the conductor keeps
+  # drawing to zero so the last slice of the class goes to planning.
+  quotaFloors:
+    codex:
+      worker: 10
+      conductor: 0
 
 agents:
   sessions:
