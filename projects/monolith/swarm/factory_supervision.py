@@ -87,7 +87,7 @@ def _audit(db, pin, action, **detail):
     )
 
 
-def _locked_attempt(db, control, pin, sid):
+def _locked_attempt(db, control, pin, sid, *, require_stop_due=True):
     run = db.exec(
         select(SwarmNodeRun)
         .where(
@@ -142,7 +142,8 @@ def _locked_attempt(db, control, pin, sid):
 
     requested = matching_request(db, pin, identity)
     if control.state == "disabled" or (
-        requested is None
+        require_stop_due
+        and requested is None
         and control.state != "stopped"
         and not snapshot["cancellation_requested"]
         and _now() < deadline
@@ -217,6 +218,25 @@ def _completion(view, expected):
     )
     # Clock values are attribution, not cross-host ordering evidence.
     return {key: proof[key] for key in keys | {"completed_at_unix_ms"}}
+
+
+def _control_plane_cessation(view, identity):
+    """Return terminal CP evidence ordered after this factory dispatch."""
+    if view.get("state") not in {"evicted", "destroyed"}:
+        return None
+    updated_at = view.get("updated_at")
+    # Some legacy destroyed views have no terminal timestamp. They cannot prove
+    # ordering, but may still carry the existing exact stop-completion proof.
+    if type(updated_at) is not int or updated_at < 1:
+        return None
+    dispatched_at = int(_timestamp(identity["dispatched_at"]).timestamp() * 1000)
+    if updated_at <= dispatched_at:
+        raise ValueError("cessation_precedes_dispatch")
+    return {
+        "session_id": identity["guest_id"],
+        "state": view["state"],
+        "updated_at": updated_at,
+    }
 
 
 def _remember_observation(pin, sid, identity, expected, view):
@@ -313,11 +333,21 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
         return False
     if original_result.get("status") != "uncertain" or type(session_id) is not int:
         return False
+    cessation_enabled = (
+        os.environ.get("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "false").lower()
+        == "true"
+    )
     try:
         with controls._locked_session() as (db, control):
             if any(action == "stop_settled" for action, _ in _records(db, pin)):
                 return True
-            identity, _run = _locked_attempt(db, control, pin, session_id)
+            identity, _run = _locked_attempt(
+                db,
+                control,
+                pin,
+                session_id,
+                require_stop_due=not cessation_enabled,
+            )
             intents = [
                 detail
                 for action, detail in _records(db, pin)
@@ -341,31 +371,52 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
     try:
         if not isinstance(view, dict) or view.get("session_id") != identity["guest_id"]:
             raise ValueError("wrong_stop_observation")
-        if saved is None:
-            value = view.get("stop_precondition")
-            if value is None and isinstance(view.get("stop_intent"), dict):
-                value = {
-                    key: view["stop_intent"].get(key) for key in _PRECONDITION_KEYS
-                }
-            expected = _precondition(value, identity["guest_id"])
+        cessation = None
+        if cessation_enabled:
+            cessation = _control_plane_cessation(view, identity)
+        if cessation is not None:
+            expected = None
+            proof = cessation
         else:
-            expected = saved["precondition"]
-        proof = _completion(view, expected)
-        _remember_observation(pin, session_id, identity, expected, view)
+            if cessation_enabled:
+                with controls._locked_session() as (db, control):
+                    current, _run = _locked_attempt(
+                        db, control, pin, session_id, require_stop_due=True
+                    )
+                    if current != identity:
+                        raise ValueError("factory_attempt_changed")
+            if saved is None:
+                value = view.get("stop_precondition")
+                if value is None and isinstance(view.get("stop_intent"), dict):
+                    value = {
+                        key: view["stop_intent"].get(key) for key in _PRECONDITION_KEYS
+                    }
+                expected = _precondition(value, identity["guest_id"])
+            else:
+                expected = saved["precondition"]
+            proof = _completion(view, expected)
+            _remember_observation(pin, session_id, identity, expected, view)
         with controls._locked_session() as (db, control):
-            current, run = _locked_attempt(db, control, pin, session_id)
+            current, run = _locked_attempt(
+                db,
+                control,
+                pin,
+                session_id,
+                require_stop_due=cessation is None,
+            )
             if current != identity:
                 raise ValueError("factory_attempt_changed")
             records = _records(db, pin)
             existing = [detail for action, detail in records if action == "stop_intent"]
-            if existing and (
-                len(existing) != 1
-                or existing[0]["identity"] != identity
-                or existing[0]["precondition"] != expected
-            ):
-                raise ValueError("stop_intent_changed")
-            if not existing:
-                raise ValueError("missing_committed_stop_intent")
+            if cessation is None:
+                if existing and (
+                    len(existing) != 1
+                    or existing[0]["identity"] != identity
+                    or existing[0]["precondition"] != expected
+                ):
+                    raise ValueError("stop_intent_changed")
+                if not existing:
+                    raise ValueError("missing_committed_stop_intent")
             if proof is not None:
                 known_costs = [
                     cost
@@ -388,7 +439,7 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                     "status": "failed",
                     "session_id": session_id,
                     "cost_usd": max(known_costs) if known_costs else None,
-                    "reason": "guest_cessation_confirmed: exact durable teardown after factory stop or deadline",
+                    "reason": "guest_cessation_confirmed: exact control-plane cessation after factory dispatch",
                     "previous_outcome": json.loads(run.outcome_json or "{}"),
                     "cessation": proof,
                 }
@@ -470,6 +521,7 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                 >= COMPLETION_ALARM_SECONDS
             ):
                 _note(pin, "node_completion_pending")
-    except ValueError:
-        _note(pin, "stop_evidence_or_ownership_changed")
+    except ValueError as exc:
+        if str(exc) != "factory_stop_not_due":
+            _note(pin, "stop_evidence_or_ownership_changed")
     return False

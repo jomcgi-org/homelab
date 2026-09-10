@@ -1,11 +1,12 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
+import json
 from types import SimpleNamespace
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from agent_sessions import admission, probe_supervision as supervision
+from agent_sessions import admission, permit_supervision as supervision
 from agent_sessions.constants import UNKNOWN_INVOCATION
 from agent_sessions.models import (
     AgentCapacityPool,
@@ -14,7 +15,7 @@ from agent_sessions.models import (
     AgentTurn,
     PendingMessage,
 )
-from agent_sessions.probe_supervision import ProbeObservation
+from agent_sessions.permit_supervision import ProbeObservation
 
 
 @pytest.fixture
@@ -38,21 +39,36 @@ def database(tmp_path, monkeypatch):
             )
         ],
     )
+    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
     yield engine
     engine.dispose()
 
 
-def seed(engine, key="one", tier="probe", legacy=False):
+def seed(
+    engine,
+    key="one",
+    tier="probe",
+    legacy=False,
+    *,
+    guest_bound=True,
+    turn_count=1,
+    dispatch_count=None,
+    workflow_id=None,
+    node_key=None,
+    routine_job_name=None,
+):
     at = datetime.now(timezone.utc) - timedelta(seconds=10)
     with Session(engine) as db, db.begin():
         agent = AgentSession(
-            local_session_id="synthetic:" + key,
+            local_session_id=("synthetic:" if tier == "probe" else "session:") + key,
             workspace="<guest>",
             branch="main",
             admission_tier=tier,
             status="warn" if legacy else "failed",
-            ember_session_id="guest-" + key,
+            workflow_id=workflow_id,
+            node_key=node_key,
+            ember_session_id="guest-" + key if guest_bound else None,
             ember_session_token="never-export-this-token",
             last_turn_at=at,
         )
@@ -65,21 +81,33 @@ def seed(engine, key="one", tier="probe", legacy=False):
             tier=tier,
             state="uncertain",
             outcome="delivery_error" if legacy else "executor_cancelled",
+            routine_job_name=(
+                routine_job_name
+                if routine_job_name is not None
+                else f"kg:{key}"
+                if tier == "kg"
+                else None
+            ),
         )
         db.add(permit)
-        db.add(
-            AgentTurn(
-                session_id=agent.id,
-                seq=1,
-                prompt="original prompt",
-                result_text="lost",
-                terminal_reason="error",
-                stop_reason=None if legacy else UNKNOWN_INVOCATION,
-                cost_usd=None,
-                created_at=at,
-                artifact_blob=b"retained artifact",
+        if turn_count:
+            usage = {}
+            if dispatch_count is not None:
+                usage["recovery"] = {"dispatch_count": dispatch_count}
+            db.add(
+                AgentTurn(
+                    session_id=agent.id,
+                    seq=1,
+                    prompt="original prompt",
+                    result_text="lost",
+                    terminal_reason="error",
+                    stop_reason=None if legacy else UNKNOWN_INVOCATION,
+                    cost_usd=None,
+                    created_at=at,
+                    artifact_blob=b"retained artifact",
+                    usage_json=json.dumps(usage),
+                )
             )
-        )
         db.flush()
         return permit.id
 
@@ -138,7 +166,11 @@ def test_exact_probe_settles_preserving_history_and_other_tiers(database, legacy
     after = before(database, pid)
     assert after[0]["state"] == "settled"
     assert after[0]["outcome"] == "guest_cessation_confirmed"
-    assert after[1:] == original[1:]
+    assert after[1]["ember_session_id"] is None
+    assert after[1]["ember_session_token"] is None
+    for field in after[1].keys() - {"ember_session_id", "ember_session_token"}:
+        assert after[1][field] == original[1][field]
+    assert after[2] == original[2]
     assert [before(database, p) for p in others] == untouched
     with Session(database) as db:
         audit = db.get(ProbeObservation, pid)
@@ -150,6 +182,130 @@ def test_exact_probe_settles_preserving_history_and_other_tiers(database, legacy
         assert db.get(ProbeObservation, pid).model_dump() == receipt
 
 
+@pytest.mark.parametrize("tier", ["kg", "project"])
+def test_non_probe_guest_with_eviction_settles(database, monkeypatch, tier):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(database, tier, tier=tier)
+    sweep(proof(f"guest-{tier}"))
+    assert before(database, pid)[0]["state"] == "settled"
+    assert before(database, pid)[0]["outcome"] == "guest_cessation_confirmed"
+
+
+def test_factory_owned_session_is_skipped(database, monkeypatch):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database,
+        "factory",
+        tier="project",
+        workflow_id="factory-workflow",
+        node_key="implement",
+    )
+    assert pid not in supervision._candidates()
+    original = before(database, pid)
+    sweep(proof("guest-factory"))
+    assert before(database, pid) == original
+
+
+@pytest.mark.parametrize("tier", ["probe", "kg", "project"])
+@pytest.mark.parametrize("turn_count", [0, 1])
+def test_no_guest_without_delivery_settles(database, monkeypatch, turn_count, tier):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database,
+        f"no-guest-{tier}-{turn_count}",
+        tier=tier,
+        guest_bound=False,
+        turn_count=turn_count,
+        dispatch_count=0 if turn_count else None,
+    )
+    sweep(None)
+    assert before(database, pid)[0]["state"] == "settled"
+    assert before(database, pid)[0]["outcome"] == "no_guest_bound"
+
+
+@pytest.mark.parametrize("guest_bound", [False, True])
+def test_pending_message_blocks_settlement(database, monkeypatch, guest_bound):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database,
+        f"pending-{guest_bound}",
+        tier="kg",
+        guest_bound=guest_bound,
+        dispatch_count=0 if not guest_bound else None,
+    )
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        db.add(
+            PendingMessage(
+                session_id=permit.session_id,
+                seq=2,
+                message_text="still owned by an executor",
+            )
+        )
+    original = before(database, pid)
+    sweep(proof(f"guest-pending-{guest_bound}"))
+    assert before(database, pid) == original
+
+
+def test_no_guest_with_dispatch_evidence_remains_uncertain(database, monkeypatch):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database,
+        "attempted",
+        tier="kg",
+        guest_bound=False,
+        dispatch_count=1,
+    )
+    original = before(database, pid)
+    sweep(None)
+    assert before(database, pid) == original
+
+
+def test_non_probe_flag_off_leaves_kg_and_project_untouched(database, monkeypatch):
+    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
+    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
+    probe_id = seed(database, "probe")
+    other_ids = [seed(database, tier, tier=tier) for tier in ("kg", "project")]
+    originals = [before(database, pid) for pid in other_ids]
+    sweep(lambda guest: proof(guest))
+    assert before(database, probe_id)[0]["state"] == "settled"
+    assert [before(database, pid) for pid in other_ids] == originals
+
+
+def test_probe_flag_off_excludes_probe_when_general_flag_is_on(database, monkeypatch):
+    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "false")
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    probe_id = seed(database, "probe")
+    kg_id = seed(database, "kg", tier="kg")
+    original_probe = before(database, probe_id)
+    sweep(lambda guest: proof(guest))
+    assert before(database, probe_id) == original_probe
+    assert before(database, kg_id)[0]["state"] == "settled"
+
+
+def test_cessation_timestamp_before_failed_turn_does_not_settle(database, monkeypatch):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(database, "early", tier="project")
+    original = before(database, pid)
+    created_at = original[2][0]["created_at"]
+    updated_at = int(created_at.timestamp() * 1000) - 1
+    sweep(
+        proof(
+            "guest-early",
+            invoke_started_at=updated_at - 1000,
+            last_invoke_at=updated_at - 500,
+            updated_at=updated_at,
+        )
+    )
+    assert before(database, pid) == original
+
+
+def test_destroyed_with_timestamp_settles(database):
+    pid = seed(database)
+    sweep(proof(state="destroyed"))
+    assert before(database, pid)[0]["state"] == "settled"
+
+
 @pytest.mark.parametrize(
     "state",
     [
@@ -157,7 +313,6 @@ def test_exact_probe_settles_preserving_history_and_other_tiers(database, legacy
         "parked",
         "banked",
         "destroying",
-        "destroyed",
         "expired",
         "failed",
         "EVICTED",
@@ -334,14 +489,15 @@ def test_failed_get_does_not_block_later_terminal_candidate(database):
 
 def test_disabled_start_creates_no_task(monkeypatch):
     monkeypatch.delenv("AGENT_PROBE_SUPERVISION_ENABLED", raising=False)
-    assert supervision.start_probe_supervision_loop() == []
+    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
+    assert supervision.start_permit_supervision_loop() == []
 
 
 def test_enabled_leader_task_is_cancellable(monkeypatch):
     monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
 
     async def check():
-        tasks = supervision.start_probe_supervision_loop()
+        tasks = supervision.start_permit_supervision_loop()
         assert len(tasks) == 1
         tasks[0].cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -362,6 +518,6 @@ def test_nonsettling_reasons_are_visible_without_secret_payloads(database, caplo
     pid = seed(database)
     with caplog.at_level("INFO", logger=supervision.__name__):
         sweep(proof(state="running", unexpected="never-log-this"))
-    assert f"Probe supervision permit {pid}: awaiting_eviction" in caplog.text
+    assert f"Permit supervision permit {pid}: awaiting_cessation" in caplog.text
     assert "never-log-this" not in caplog.text
     assert "never-export-this-token" not in caplog.text

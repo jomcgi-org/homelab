@@ -172,6 +172,8 @@ spec:
               value: {{ .Values.agents.models | default "" | quote }}
             - name: AGENT_PROBE_SUPERVISION_ENABLED
               value: {{ .Values.agents.sessions.probeSupervisionEnabled | quote }}
+            - name: AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED
+              value: {{ .Values.agents.sessions.uncertainPermitSupervisionEnabled | quote }}
             - name: AGENT_RESULT_RECEIPTS_ENABLED
               value: {{ .Values.agents.sessions.resultReceiptsEnabled | quote }}
             - name: AGENT_RESULT_RECEIPT_ADOPTION_ENABLED
