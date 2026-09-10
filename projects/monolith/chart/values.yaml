@@ -114,7 +114,8 @@ agents:
   sessions:
     # Observe failed probes until exact eviction evidence releases their hold.
     probeSupervisionEnabled: false
-    # Extend cessation supervision to kg, project, and factory-owned permits.
+    # Cover bound or proven-no-guest kg/project drainers and interactive permits,
+    # probe destroyed/no-guest shapes, and bound factory project attempts.
     uncertainPermitSupervisionEnabled: false
     # Capture exact completed results before the guest's synchronous response.
     resultReceiptsEnabled: false

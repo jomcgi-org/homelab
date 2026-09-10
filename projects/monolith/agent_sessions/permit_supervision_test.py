@@ -16,6 +16,10 @@ from agent_sessions.models import (
     PendingMessage,
 )
 from agent_sessions.permit_supervision import ProbeObservation
+from swarm.factory_models import FactoryStart
+from swarm.models import SwarmNodeRun, SwarmTask
+
+_DEFAULT_ROUTINE = object()
 
 
 @pytest.fixture
@@ -23,7 +27,9 @@ def database(tmp_path, monkeypatch):
     engine = create_engine(
         f"sqlite:///{tmp_path / 'probes.db'}",
         connect_args={"check_same_thread": False, "timeout": 10},
-        execution_options={"schema_translate_map": {"agent_sessions": None}},
+        execution_options={
+            "schema_translate_map": {"agent_sessions": None, "swarm": None}
+        },
     )
     SQLModel.metadata.create_all(
         engine,
@@ -36,6 +42,9 @@ def database(tmp_path, monkeypatch):
                 AgentCapacityPool,
                 AgentCapacityReservation,
                 ProbeObservation,
+                SwarmTask,
+                FactoryStart,
+                SwarmNodeRun,
             )
         ],
     )
@@ -56,12 +65,27 @@ def seed(
     dispatch_count=None,
     workflow_id=None,
     node_key=None,
-    routine_job_name=None,
+    routine_job_name=_DEFAULT_ROUTINE,
+    local_session_id=None,
+    claimed=True,
+    recovery_updates=None,
 ):
     at = datetime.now(timezone.utc) - timedelta(seconds=10)
+    if routine_job_name is _DEFAULT_ROUTINE:
+        routine_job_name = f"job:{key}" if tier in {"kg", "project"} else None
+    if tier in {"kg", "project"}:
+        workflow_id = workflow_id or f"wf-{key}"
+        node_key = node_key or ("kg-drain" if tier == "kg" else "qwen-drain")
+    local_session_id = local_session_id or (
+        f"synthetic:{key}"
+        if tier == "probe"
+        else f"{workflow_id}:{node_key}:{routine_job_name}"
+        if tier in {"kg", "project"}
+        else f"session:{key}"
+    )
     with Session(engine) as db, db.begin():
         agent = AgentSession(
-            local_session_id=("synthetic:" if tier == "probe" else "session:") + key,
+            local_session_id=local_session_id,
             workspace="<guest>",
             branch="main",
             admission_tier=tier,
@@ -69,7 +93,7 @@ def seed(
             workflow_id=workflow_id,
             node_key=node_key,
             ember_session_id="guest-" + key if guest_bound else None,
-            ember_session_token="never-export-this-token",
+            ember_session_token="never-export-this-token" if guest_bound else None,
             last_turn_at=at,
         )
         db.add(agent)
@@ -81,19 +105,23 @@ def seed(
             tier=tier,
             state="uncertain",
             outcome="delivery_error" if legacy else "executor_cancelled",
-            routine_job_name=(
-                routine_job_name
-                if routine_job_name is not None
-                else f"kg:{key}"
-                if tier == "kg"
-                else None
-            ),
+            owner="worker" if claimed else None,
+            routine_job_name=routine_job_name,
         )
         db.add(permit)
         if turn_count:
-            usage = {}
-            if dispatch_count is not None:
-                usage["recovery"] = {"dispatch_count": dispatch_count}
+            usage = {
+                "recovery": {
+                    "dispatch_count": dispatch_count
+                    if dispatch_count is not None
+                    else 1,
+                    "claim_owner": "worker" if claimed else None,
+                    "last_dispatch_at": at.isoformat() if claimed else None,
+                    "partial_text": None,
+                    "partial_activities": None,
+                    **(recovery_updates or {}),
+                }
+            }
             db.add(
                 AgentTurn(
                     session_id=agent.id,
@@ -166,10 +194,7 @@ def test_exact_probe_settles_preserving_history_and_other_tiers(database, legacy
     after = before(database, pid)
     assert after[0]["state"] == "settled"
     assert after[0]["outcome"] == "guest_cessation_confirmed"
-    assert after[1]["ember_session_id"] is None
-    assert after[1]["ember_session_token"] is None
-    for field in after[1].keys() - {"ember_session_id", "ember_session_token"}:
-        assert after[1][field] == original[1][field]
+    assert after[1] == original[1]
     assert after[2] == original[2]
     assert [before(database, p) for p in others] == untouched
     with Session(database) as db:
@@ -182,7 +207,7 @@ def test_exact_probe_settles_preserving_history_and_other_tiers(database, legacy
         assert db.get(ProbeObservation, pid).model_dump() == receipt
 
 
-@pytest.mark.parametrize("tier", ["kg", "project"])
+@pytest.mark.parametrize("tier", ["kg", "project", "interactive"])
 def test_non_probe_guest_with_eviction_settles(database, monkeypatch, tier):
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, tier, tier=tier)
@@ -199,6 +224,8 @@ def test_factory_owned_session_is_skipped(database, monkeypatch):
         tier="project",
         workflow_id="factory-workflow",
         node_key="implement",
+        routine_job_name=None,
+        local_session_id="factory:task-1:implement:1",
     )
     assert pid not in supervision._candidates()
     original = before(database, pid)
@@ -206,21 +233,84 @@ def test_factory_owned_session_is_skipped(database, monkeypatch):
     assert before(database, pid) == original
 
 
-@pytest.mark.parametrize("tier", ["probe", "kg", "project"])
-@pytest.mark.parametrize("turn_count", [0, 1])
-def test_no_guest_without_delivery_settles(database, monkeypatch, turn_count, tier):
+def test_factory_owned_session_is_skipped_via_swarm_node_run_pin(database, monkeypatch):
+    """A drainer-shaped permit still gets excluded when it carries a pin.
+
+    local_session_id and routine_job_name here are indistinguishable from a
+    real drainer row, so only the SwarmNodeRun.pin_json ownership check can
+    tell this attempt is factory-owned.
+    """
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
-        f"no-guest-{tier}-{turn_count}",
+        "factory-pin",
+        tier="project",
+        workflow_id="wf-factory-pin",
+        node_key="qwen-drain",
+        routine_job_name="job:factory-pin",
+    )
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        db.add(SwarmTask(id="task-pin", task_text="pinned", conductor_model="luna"))
+        db.add(
+            SwarmNodeRun(
+                task_id="task-pin",
+                node_key="implement",
+                attempt=1,
+                pin_json="{}",
+                session_id=permit.session_id,
+                status="dispatched",
+            )
+        )
+    assert pid not in supervision._candidates()
+    original = before(database, pid)
+    sweep(proof("guest-factory-pin"))
+    assert before(database, pid) == original
+
+
+def test_drainer_worker_prefix_alone_is_selected_and_settles(database, monkeypatch):
+    """The `_drainer-worker:` local_session_id prefix is its own selector.
+
+    Real drainer rows always also carry routine_job_name, but the prefix
+    check must independently select a row that somehow lacks it.
+    """
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database,
+        "drainer-prefix",
+        tier="kg",
+        workflow_id="_drainer-worker:0:1",
+        node_key="kg-drain",
+        routine_job_name=None,
+        local_session_id="_drainer-worker:0:1:kg-drain:kg-job",
+    )
+    assert pid in supervision._candidates()
+    sweep(proof("guest-drainer-prefix"))
+    assert before(database, pid)[0]["state"] == "settled"
+
+
+@pytest.mark.parametrize("tier", ["probe", "kg", "project", "interactive"])
+def test_no_guest_without_delivery_settles(database, monkeypatch, tier):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database,
+        f"no-guest-{tier}",
         tier=tier,
         guest_bound=False,
-        turn_count=turn_count,
-        dispatch_count=0 if turn_count else None,
+        dispatch_count=2,
+        claimed=True,
     )
     sweep(None)
     assert before(database, pid)[0]["state"] == "settled"
     assert before(database, pid)[0]["outcome"] == "no_guest_bound"
+
+
+def test_no_guest_without_claim_identity_remains_uncertain(database, monkeypatch):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(database, "unclaimed", tier="kg", guest_bound=False, claimed=False)
+    original = before(database, pid)
+    sweep(None)
+    assert before(database, pid) == original
 
 
 @pytest.mark.parametrize("guest_bound", [False, True])
@@ -231,7 +321,7 @@ def test_pending_message_blocks_settlement(database, monkeypatch, guest_bound):
         f"pending-{guest_bound}",
         tier="kg",
         guest_bound=guest_bound,
-        dispatch_count=0 if not guest_bound else None,
+        dispatch_count=1,
     )
     with Session(database) as db, db.begin():
         permit = db.get(AgentCapacityReservation, pid)
@@ -247,7 +337,13 @@ def test_pending_message_blocks_settlement(database, monkeypatch, guest_bound):
     assert before(database, pid) == original
 
 
-def test_no_guest_with_dispatch_evidence_remains_uncertain(database, monkeypatch):
+@pytest.mark.parametrize(
+    "recovery_updates",
+    [None, {"guest_id": "guest-attempted"}, {"binding": {"persisted": True}}],
+)
+def test_no_guest_with_delivery_or_missing_recovery_remains_uncertain(
+    database, monkeypatch, recovery_updates
+):
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,
@@ -255,7 +351,16 @@ def test_no_guest_with_dispatch_evidence_remains_uncertain(database, monkeypatch
         tier="kg",
         guest_bound=False,
         dispatch_count=1,
+        recovery_updates=recovery_updates,
     )
+    if recovery_updates is None:
+        with Session(database) as db, db.begin():
+            permit = db.get(AgentCapacityReservation, pid)
+            turn = db.exec(
+                select(AgentTurn).where(AgentTurn.session_id == permit.session_id)
+            ).one()
+            turn.usage_json = "{}"
+            db.add(turn)
     original = before(database, pid)
     sweep(None)
     assert before(database, pid) == original
@@ -300,9 +405,33 @@ def test_cessation_timestamp_before_failed_turn_does_not_settle(database, monkey
     assert before(database, pid) == original
 
 
-def test_destroyed_with_timestamp_settles(database):
+def test_destroyed_with_timestamp_settles_under_general_flag(database, monkeypatch):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database)
     sweep(proof(state="destroyed"))
+    assert before(database, pid)[0]["state"] == "settled"
+
+
+def test_probe_only_destroyed_view_preserves_hold_and_binding(database, monkeypatch):
+    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
+    pid = seed(database)
+    original = before(database, pid)
+    sweep(proof(state="destroyed"))
+    assert before(database, pid) == original
+
+
+def test_production_drainer_kg_is_candidate_and_settles(database, monkeypatch):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(
+        database,
+        "production-kg",
+        tier="kg",
+        workflow_id="wf-1",
+        node_key="kg-drain",
+        routine_job_name="kg-job",
+    )
+    assert pid in supervision._candidates()
+    sweep(proof("guest-production-kg"))
     assert before(database, pid)[0]["state"] == "settled"
 
 
