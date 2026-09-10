@@ -352,7 +352,7 @@ def test_real_factory_turn_rejection_rolls_back_graph_dispatch_and_arming(db, po
         session.add(
             FactoryStart(
                 task_id=task_id,
-                start_key="factory-node:crashed:1",
+                start_key=f"factory-node:{task_id}:conductor_9:1",
                 actor="crashed-reconciler",
                 model="luna",
                 max_cost_usd=1.0,
