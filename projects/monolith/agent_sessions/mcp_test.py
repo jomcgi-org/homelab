@@ -2398,3 +2398,90 @@ def test_executor_checks_shared_permit_before_delivery_and_settles(
     assert observed == [("running", "interactive")]
     session.expire_all()
     assert session.exec(select(AgentCapacityReservation)).one().state == "settled"
+
+
+def test_probe_delivered_by_worker_path_destroys_guest(monkeypatch, session):
+    """#5980: a probe-tier turn delivered by the background worker, not the
+    direct run_synthetic_session caller, must still destroy its guest on
+    completion. Only the direct path did this before the fix, so a probe
+    picked up by a worker (any replica racing the pending claim) parked its
+    guest forever and ate into session.maxSessions.
+    """
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _sid: None)
+
+    async def notify(*_args, **_kwargs):
+        pass
+
+    monkeypatch.setattr(mcp.agent_api, "notify", notify)
+
+    row = store.create_session(
+        session,
+        "probe-worker-completed",
+        "<guest>",
+        "main",
+        model="luna",
+        admission_tier="probe",
+    )
+    store.create_pending_message(session, row.id, "ping")
+
+    async def deliver(*args, **kwargs):
+        return _completed_delivery(args[2])
+
+    destroyed = []
+
+    async def destroy(guest_id):
+        destroyed.append(guest_id)
+
+    monkeypatch.setattr(mcp._transport, "deliver", deliver)
+    monkeypatch.setattr(mcp._transport, "destroy_session", destroy)
+
+    asyncio.run(mcp._execute_pending_message(row.id))
+
+    assert destroyed == ["ember-1"]
+    session.expire_all()
+    reloaded = store.get_session(session, row.id)
+    assert reloaded.ember_session_id is None
+    assert reloaded.ember_session_token is None
+
+
+def test_probe_worker_path_retains_guest_on_unknown_outcome(monkeypatch, session):
+    """The other half of #5980's contract: an unknown outcome must never
+    destroy the guest, worker path included. release_pending_message_claim_sync
+    reports an unknown outcome when the observer lost the row between delete
+    and release (its own docstring: "observer loss is an unknown outcome"),
+    which is indistinguishable here from a claim stolen just after persist.
+    """
+    monkeypatch.setattr(mcp, "_schedule_next_message", lambda _sid: None)
+
+    async def notify(*_args, **_kwargs):
+        pass
+
+    monkeypatch.setattr(mcp.agent_api, "notify", notify)
+
+    row = store.create_session(
+        session,
+        "probe-worker-unknown",
+        "<guest>",
+        "main",
+        model="luna",
+        admission_tier="probe",
+    )
+    store.create_pending_message(session, row.id, "ping")
+
+    async def deliver(*args, **kwargs):
+        return _completed_delivery(args[2])
+
+    async def must_not_destroy(_guest_id):
+        pytest.fail("unknown-outcome probe must retain its guest")
+
+    monkeypatch.setattr(mcp._transport, "deliver", deliver)
+    monkeypatch.setattr(mcp._transport, "destroy_session", must_not_destroy)
+    monkeypatch.setattr(
+        mcp, "_release_pending_message_claim_sync", lambda *_a, **_k: True
+    )
+
+    asyncio.run(mcp._execute_pending_message(row.id))
+
+    session.expire_all()
+    reloaded = store.get_session(session, row.id)
+    assert reloaded.ember_session_id == "ember-1"
