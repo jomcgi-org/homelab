@@ -3283,7 +3283,9 @@ url = %s
         _reap_orphans()
 
 
-INFERENCE_BASE_URL = "https://api.meta.ai/v1"
+# Pi only. Pi trusts NODE_EXTRA_CA_CERTS, so it uses the sidecar's CA-backed
+# HTTPS interception lane. Muse cannot (see MUSE_BASE_URL below).
+PI_BASE_URL = "https://api.meta.ai/v1"
 
 # Muse ignores every CA environment variable and the system trust store, as
 # verified against 1.0.3-R2198.1 on 2026-09-10. Its bundled roots cannot trust
@@ -3623,7 +3625,12 @@ class MuseProcess:
         environment variable and the system trust store, trusting only its
         bundled roots. The endpoint pin must therefore match the plaintext
         --base-url routed through the sidecar, which injects the real key so
-        the guest holds no credential.
+        the guest holds no credential. `auth` must stay "bearer": the
+        api.meta.ai catalog entry has no injectAlwaysPaths, so the sidecar
+        injects only when the guest's request already carries an
+        Authorization header. Any auth mode that stops Muse sending one
+        forwards the request uncredentialed and Meta answers 401, which reads
+        like a bad META_SPARK_API_KEY rather than a settings change.
         """
         agent_mcp_url = os.environ.get(AGENT_MCP_URL_ENV)
         if not self._mcp_probe_cached:
@@ -4202,7 +4209,7 @@ class PiProcess:
         config = {
             "providers": {
                 "openai-completions": {
-                    "baseUrl": INFERENCE_BASE_URL,
+                    "baseUrl": PI_BASE_URL,
                     "api": "openai-completions",
                     "apiKey": "sk-noauth",
                     "compat": {

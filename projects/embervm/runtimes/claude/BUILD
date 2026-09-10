@@ -237,12 +237,6 @@ py_test(
     ],
 )
 
-filegroup(
-    name = "shim_source",
-    srcs = ["shim.py"],
-    visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
-)
-
 # Guard (ADR 023 6b): the guest points its API client at an http:// URL, so the
 # sidecar MUST have a credential entry for that host. Without one the connection
 # blind-tunnels and the whole prompt leaves the cluster unencrypted.
@@ -253,7 +247,7 @@ py_test(
     data = [
         "//projects/embervm/deploy:deploy_values",
         "//projects/embervm/deploy:deploy_values_gke",
-        "//projects/embervm/runtimes/claude:shim_source",
+        "shim.py",
         "//projects/embervm/runtimes/claude/guest-init/cmd:guest_init_source",
     ],
     imports = ["."],
