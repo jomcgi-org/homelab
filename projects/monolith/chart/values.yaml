@@ -1032,7 +1032,10 @@ jobs:
       # completion, so Argo killing the pod at 300s was the ceiling under the
       # ceiling (exit 143 at 21:07Z on 2026-09-03).
       activeDeadlineSeconds: 480
-      suspend: true
+      # Unsuspended 2026-09-10 after #5978 put Muse on the plaintext egress
+      # lane and session 3511 completed on the new runtime. Suspended again
+      # only if Spark fails two consecutive hours.
+      suspend: false
       internalApi: true
       resources:
         requests:
