@@ -398,7 +398,7 @@ def feedback_db(tmp_path, monkeypatch):
     engine.dispose()
 
 
-def feedback_task(*, max_turns=8):
+def feedback_task(*, max_turns=8, body="Untrusted issue text"):
     from swarm import factory_controls as controls
     from swarm.factory_intake import admit_next, receive_issue
 
@@ -424,7 +424,7 @@ def feedback_task(*, max_turns=8):
         "owner/repo",
         7,
         "Fix issue",
-        "Untrusted issue text",
+        body,
         "https://github.com/owner/repo/issues/7",
         "poller",
     )
@@ -4455,3 +4455,258 @@ def test_the_first_planner_call_is_named_as_the_initial_plan(feedback_db):
         if node["node_key"] == "conductor_1"
     )
     assert node_planner_context(planner)["deviation"]["code"] == "initial_plan"
+
+
+def test_a_maximal_deviation_is_bounded_with_the_rest_of_the_context(
+    feedback_db, monkeypatch
+):
+    # The deviation is why this planner exists, so it must survive trimming and
+    # must never be the thing that tips the prompt over its bound and pauses.
+    task, policy = feedback_task()
+    task = {**task, "task_text": "x" * (conductor.PLANNER_CONTEXT_CHARS * 2)}
+    deviation = {
+        "code": "node_failed",
+        "node_key": "implement_fix",
+        "evidence": "e" * 4000,
+        "text": "t" * 4000,
+    }
+    import json
+
+    prompt = conductor.planner_prompt(task, [], [], deviation=deviation)
+    context = json.loads(prompt.rsplit("\n", 1)[1])
+    assert context["deviation"]["code"] == "node_failed"
+    assert context["deviation"]["node_key"] == "implement_fix"
+    assert len(conductor._planner_json(context)) <= conductor.PLANNER_CONTEXT_CHARS
+    assert context["omitted"]["task_characters"] > 0
+
+
+def test_a_maximal_deviation_does_not_pause_a_task_that_would_otherwise_plan(
+    feedback_db, monkeypatch
+):
+    from swarm import deviations
+    from swarm import factory_controls as controls
+
+    # A long task text is the evidence the shrink loop can trade away to make
+    # room, which is the whole point of the deviation living inside the bound.
+    task, policy = feedback_task(body="u" * 60000)
+    assert conductor._add(
+        task,
+        policy,
+        "implement_fix",
+        "bounded work",
+        [],
+        "luna",
+        "test:implement_fix",
+        "test fixture",
+        max_attempts=1,
+    ).ok
+    run_feedback_node(
+        task,
+        "implement_fix",
+        {"status": "needs_work", "summary": "no", "pr_number": None, "head_sha": None},
+        status="failed",
+    )
+    nodes = conductor.graph.load_graph(task["id"])
+    runs = conductor.graph.node_runs(task["id"])
+    # Squeeze the bound to exactly what this evidence needs with no deviation,
+    # so a deviation added after the shrink loop could only overflow it.
+    import json
+
+    baseline = conductor._planner_context(task, nodes, runs)
+    without = len(baseline)
+    baseline_omitted = json.loads(baseline)["omitted"]["task_characters"]
+    monkeypatch.setattr(conductor, "PLANNER_CONTEXT_CHARS", without)
+    monkeypatch.setattr(
+        deviations,
+        "factory_deviation",
+        lambda *_args, **_kwargs: {
+            "code": "node_failed",
+            "node_key": "implement_fix",
+            "evidence": "e" * 4000,
+            "text": "t" * 4000,
+        },
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    assert not controls.task_snapshot(task["id"])["task_paused"]
+    planner = next(
+        node
+        for node in conductor.graph.load_graph(task["id"])
+        if node["node_key"] == "conductor_1"
+    )
+    context = node_planner_context(planner)
+    assert context["deviation"]["code"] == "node_failed"
+    assert context["deviation"]["node_key"] == "implement_fix"
+    assert len(conductor._planner_json(context)) <= without
+    assert context["deviation"]["evidence"].endswith("[text omitted]")
+    assert len(context["deviation"]["evidence"]) <= conductor.PLANNER_TEXT_CHARS
+    # The deviation earned its place by displacing other evidence, not by
+    # being trimmed away or by tipping the prompt over the bound.
+    assert context["omitted"]["task_characters"] > baseline_omitted
+
+
+def test_a_plan_lands_whichever_order_and_dep_spelling_it_uses(feedback_db):
+    task, _policy = planned_task(
+        feedback_task(),
+        [
+            plan_edit("check", "review", ["fix"]),
+            plan_edit("fix", "implement", ["investigate_scope"]),
+            plan_edit("scope", "investigate"),
+        ],
+    )
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert set(nodes) == {
+        "conductor_1",
+        "investigate_scope",
+        "implement_fix",
+        "review_check",
+    }
+    # The review named the implementation by the key it wrote, and the batch
+    # was written leaves first.
+    assert nodes["review_check"]["deps"] == ["implement_fix"]
+    assert nodes["implement_fix"]["deps"] == ["investigate_scope"]
+    assert [
+        nodes[key]["created_in_version"]
+        for key in ("investigate_scope", "implement_fix", "review_check")
+    ] == [2, 3, 4]
+    assert feedback_audits(feedback_db, task["id"]) == []
+
+
+def test_a_refused_review_round_does_not_switch_the_loop_off(feedback_db, monkeypatch):
+    task, policy = reviewed_task()
+    real = conductor.graph.apply_edits
+    attempts = []
+
+    def refuse_once(*args, **kwargs):
+        attempts.append(kwargs.get("cause_ref"))
+        if len(attempts) == 1:
+            return conductor.graph.GraphOp(
+                ok=False,
+                version=conductor.graph.current_version(task["id"]),
+                refusal_code="stale_version",
+                detail="a competing edit landed first",
+            )
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(conductor.graph, "apply_edits", refuse_once)
+    conductor.reconcile_task(task["id"], policy, object())
+    audits = feedback_audits(feedback_db, task["id"])
+    assert audits[-1]["refusal_code"] == "stale_version"
+    assert audits[-1]["cause"] == "factory-loop:review_1"
+    planner = next(
+        node
+        for node in conductor.graph.load_graph(task["id"])
+        if node["node_key"] == "conductor_1"
+    )
+    assert node_planner_context(planner)["deviation"]["code"] == "loop_insert_refused"
+    # A refused round consumed nothing, so the bound is untouched.
+    assert conductor._review_rounds_used(task["id"]) == 0
+
+    # The planner answers, and the very next reconciliation opens the round the
+    # task is still owed rather than treating that cause as spent forever.
+    run_feedback_node(
+        task,
+        "conductor_1",
+        {
+            "action": "add_node",
+            "node_key": "conductor_forbidden",
+            "role": "implement",
+            "prompt": "not authorized",
+            "deps": [],
+            "reason": "a decision the server refuses",
+        },
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    conductor.reconcile_task(task["id"], policy, object())
+    keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
+    assert {"correct_1", "review_1"} <= keys
+    assert attempts == ["factory-loop:review_1"] * 2
+    assert conductor._review_rounds_used(task["id"]) == 1
+
+
+def test_a_correction_falls_through_a_model_the_policy_no_longer_allows(feedback_db):
+    task, policy = feedback_task()
+    head = HEAD_ONE
+    complete_feedback_node(
+        task,
+        policy,
+        "implement_fix",
+        {
+            "status": "complete",
+            "summary": "Delivered",
+            "pr_number": 21,
+            "head_sha": head,
+        },
+        head=head,
+        model="luna",
+    )
+    complete_feedback_node(
+        task,
+        policy,
+        "review_fix",
+        {
+            "verdict": "changes_requested",
+            "summary": "Needs work.",
+            "pr_number": 21,
+            "head_sha": head,
+        },
+        head=head,
+        deps=["implement_fix"],
+    )
+    # The reviewed head's model is no longer permitted, so the loop keeps
+    # looking instead of refusing itself out of existence.
+    narrowed = {**policy, "allowed_models": ["opus"], "worker_model": "opus"}
+    conductor.reconcile_task(task["id"], narrowed, object())
+    correct = next(
+        node
+        for node in conductor.graph.load_graph(task["id"])
+        if node["node_key"] == "correct_1"
+    )
+    assert correct["model"] == "opus"
+
+
+def test_a_correction_round_names_the_resolved_bound_not_a_missing_field(feedback_db):
+    from sqlmodel import Session, select
+    from swarm.models import SwarmPlanVersion
+
+    task, policy = reviewed_task()
+    assert "max_review_rounds" not in policy
+    conductor.reconcile_task(task["id"], policy, object())
+    with Session(feedback_db) as db:
+        reasons = db.exec(
+            select(SwarmPlanVersion.stated_reason).where(
+                SwarmPlanVersion.cause_ref == "factory-loop:review_1"
+            )
+        ).all()
+    assert "correction round 1 of 2" in reasons[0]
+    assert "None" not in reasons[0]
+
+
+def test_a_failed_node_with_an_attempt_left_retries_before_the_planner(
+    feedback_db, monkeypatch
+):
+    task, policy = feedback_task()
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_ONE}}
+    )
+    assert conductor._add(
+        task,
+        policy,
+        "implement_fix",
+        "bounded work",
+        [],
+        "luna",
+        "test:implement_fix",
+        "test fixture",
+    ).ok
+    run_feedback_node(
+        task,
+        "implement_fix",
+        {"status": "needs_work", "summary": "no", "pr_number": None, "head_sha": None},
+        status="failed",
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    assert not any(
+        node["node_key"].startswith("conductor_")
+        for node in conductor.graph.load_graph(task["id"])
+    )
+    assert [r["attempt"] for r in conductor.graph.node_runs(task["id"])] == [1, 2]
