@@ -262,19 +262,29 @@ def _identity(db, permit):
             .limit(2)
         ).all()
     )
-    permits = db.exec(
-        select(AgentCapacityReservation.id)
-        .where(
+    reservations = db.exec(
+        select(AgentCapacityReservation).where(
             or_(
                 AgentCapacityReservation.session_id == agent.id,
                 AgentCapacityReservation.local_session_id == agent.local_session_id,
             )
         )
-        .limit(2)
     ).all()
-    if (agent.ember_session_id is not None and owners != [agent.id]) or permits != [
-        permit.id
-    ]:
+    if permit.tier == "interactive":
+        # admission.claim_pending reserves a start for every turn and a settled
+        # reservation is never deleted, so a third-turn conversation owns three
+        # rows. Earlier settled rows are ordinary history. A second live row,
+        # or any row at this seq or past it, is a different attempt.
+        ambiguous = any(
+            row.id != permit.id
+            and (row.state != "settled" or row.pending_seq >= permit.pending_seq)
+            for row in reservations
+        )
+    else:
+        # Probe and drainer sessions carry exactly one turn by construction, so
+        # a second reservation of any state is a shape this loop does not model.
+        ambiguous = [row.id for row in reservations] != [permit.id]
+    if (agent.ember_session_id is not None and owners != [agent.id]) or ambiguous:
         raise ValueError("ambiguous_ownership")
     # Hash the complete turn to detect intervening evidence without copying
     # prompts, results, artifacts, or credentials into lifecycle audit records.
@@ -426,6 +436,9 @@ def _record(candidate, observed, observed_at):
             if any(type(observed.get(k)) is not int or observed[k] < 0 for k in fields):
                 raise ValueError("malformed_identity")
             generation, started, updated = (observed[k] for k in fields)
+            # Control-plane milliseconds ordered against a monolith-side
+            # timestamp. The gap asserted is an invocation's own length, which
+            # is far larger than plausible skew between the two clocks.
             if started > int(_aware(turn.created_at).timestamp() * 1000):
                 raise ValueError("invoke_after_failed_turn")
             # Idle banking increments generation on the same session. It does
@@ -471,6 +484,9 @@ def _record(candidate, observed, observed_at):
             last_invoke = observed.get("last_invoke_at")
             if type(last_invoke) is not int or not started <= last_invoke <= updated:
                 raise ValueError("missing_invoke_completion")
+            # The same cross-clock comparison in the other direction: the gap
+            # from recording the failure to the guest ceasing is an eviction or
+            # teardown, again far larger than plausible skew.
             if updated <= int(_aware(turn.created_at).timestamp() * 1000):
                 raise ValueError("cessation_precedes_turn")
         except ValueError as exc:

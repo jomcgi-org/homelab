@@ -265,8 +265,24 @@ def _control_plane_cessation(view, identity, saved=None):
             return None
     if not started <= last_invoke <= updated_at:
         return None
+    # The control plane stamps these in its own milliseconds and they are
+    # ordered here against monolith-side timestamps. The gaps asserted are the
+    # invoke start to the recorded failure and the failure to the terminal
+    # update, both of which are turn-length or eviction-length in production
+    # and so far larger than plausible skew between the two clocks. _completion
+    # deliberately orders nothing: the exact stop proof is matched by operation
+    # identity, which needs no shared clock at all.
     dispatched_at = int(_timestamp(identity["dispatched_at"]).timestamp() * 1000)
-    if started > dispatched_at or updated_at <= dispatched_at:
+    failed_turn_at = int(_timestamp(identity["failed_turn_at"]).timestamp() * 1000)
+    # dispatched_at is the pending message's last_dispatch_at, stamped when the
+    # executor CLAIMED the turn (agent_sessions/store.py
+    # claim_pending_message_for_session_sync), which is before the guest is
+    # invoked, so every invoked attempt starts after it. The failed turn is the
+    # anchor instead: the invocation that failed had to begin before the
+    # failure was recorded, and the terminal update had to land after it.
+    if started > failed_turn_at or updated_at <= failed_turn_at:
+        return None
+    if updated_at <= dispatched_at:
         return None
     return {
         "session_id": identity["guest_id"],

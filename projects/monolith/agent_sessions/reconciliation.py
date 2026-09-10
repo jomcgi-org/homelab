@@ -401,10 +401,16 @@ def read_uncertain_factory_attempt(db: Session, pin: dict, session_id: int) -> d
             ).isoformat()
         raise TypeError(type(value).__name__)
 
+    failed_turn_at = (
+        turn.created_at.replace(tzinfo=timezone.utc)
+        if turn.created_at.tzinfo is None
+        else turn.created_at
+    )
     protected = {
         "pin": pin,
         "permit": permit.model_dump(),
         "turn": turn.model_dump(),
+        "failed_turn_at": failed_turn_at,
         "session_id": agent.id,
         "local_session_id": agent.local_session_id,
         "guest_id": agent.ember_session_id,
@@ -426,6 +432,10 @@ def read_uncertain_factory_attempt(db: Session, pin: dict, session_id: int) -> d
         "claim_owner": permit.owner,
         "dispatch_count": count,
         "dispatched_at": dispatched.isoformat(),
+        # Stamped when the failure was recorded, so it sits AFTER the invoke
+        # this attempt made, where dispatched_at (the claim stamp) sits before
+        # it. Cessation ordering anchors on this one.
+        "failed_turn_at": failed_turn_at.isoformat(),
         "identity_sha256": fingerprint,
         "cost_usd": turn.cost_usd,
     }
