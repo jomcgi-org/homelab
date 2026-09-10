@@ -1,8 +1,10 @@
 """Settle uncertain permits from exact control-plane cessation evidence.
 
 This loop never stops, invokes, or retries a guest. Factory-owned sessions have
-their own settlement path. A terminal control-plane timestamp must follow the
-failed turn so a historical guest state cannot release a current permit.
+their own settlement path, and a permit whose routine job row is still parked on
+this attempt is left to the operator reconciliation path that re-arms that job.
+A terminal control-plane timestamp must follow the failed turn so a historical
+guest state cannot release a current permit.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ import json
 import logging
 import os
 
-from sqlalchemy import exists, or_
+from sqlalchemy import exists, or_, text
 from sqlmodel import Session, select
 
 from agent_sessions import admission
@@ -80,6 +82,54 @@ def _factory_owned(db, agent):
     ).one()
 
 
+# Every durable trace a live binding leaves behind. A no-guest proof means the
+# turn never reached a guest, so any of these being set says a binding existed
+# and was cleared afterwards, which is not the same claim.
+_BINDING_EVIDENCE = (
+    "ember_lineage_id",
+    "prior_ember_lineage_id",
+    "cli_session_id",
+    "prior_cli_session_id",
+    "guest_cleanup_id",
+    "guest_cleanup_guest_id",
+    "guest_cleanup_workflow_id",
+    "guest_cleanup_dispatch_json",
+    "guest_cleanup_started_at",
+)
+
+
+def _routine_job_held(db, permit):
+    """Report whether the routine job row is parked on this exact attempt.
+
+    hold_job_for_unknown_outcome (agent/routine_jobs.py) parks the row with
+    last_status=UNKNOWN_INVOCATION, next_run_at NULL and a "session_id=<id>: "
+    summary. The only owner that re-arms it is the operator path in
+    agent/routine_reconciliation.py, whose delivery_error_hold predicate
+    requires the reservation to still be uncertain. Settling the permit here
+    would therefore strand the job with no owner able to run it again, so this
+    loop leaves held-job permits to that path.
+    """
+    table = (
+        "routine_jobs"
+        if db.bind.dialect.name == "sqlite"
+        else "claude_agent.routine_jobs"
+    )
+    row = db.execute(
+        text(
+            f"SELECT last_status, next_run_at, last_summary FROM {table} "
+            "WHERE name = :name"
+        ),
+        {"name": permit.routine_job_name},
+    ).first()
+    return bool(
+        row is not None
+        and row.last_status == UNKNOWN_INVOCATION
+        and row.next_run_at is None
+        and isinstance(row.last_summary, str)
+        and row.last_summary.startswith(f"session_id={permit.session_id}:")
+    )
+
+
 def _no_guest_delivery(permit, recovery):
     if permit.outcome not in {"delivery_error", "executor_cancelled"}:
         raise ValueError("unrecognised_outcome")
@@ -137,16 +187,34 @@ def _identity(db, permit):
         is not None
     ):
         raise ValueError("pending_executor")
-    turns = db.exec(
-        select(AgentTurn).where(AgentTurn.session_id == agent.id).limit(2)
-    ).all()
-    turn = turns[0] if len(turns) == 1 else None
-    if (
-        turn is None
-        or turn.seq != permit.pending_seq
-        or turn.terminal_reason != "error"
-    ):
+    turn = db.exec(
+        select(AgentTurn).where(
+            AgentTurn.session_id == agent.id,
+            AgentTurn.seq == permit.pending_seq,
+        )
+    ).first()
+    # The failed turn must still be the last one. An interactive session
+    # reaches here with completed history in front of it, so earlier turns are
+    # evidence of a normal conversation rather than of a changed attempt.
+    later = db.exec(
+        select(AgentTurn.seq)
+        .where(AgentTurn.session_id == agent.id, AgentTurn.seq > permit.pending_seq)
+        .limit(1)
+    ).first()
+    if turn is None or later is not None or turn.terminal_reason != "error":
         raise ValueError("changed_attempt")
+    if (
+        permit.tier != "interactive"
+        and db.exec(
+            select(AgentTurn.seq)
+            .where(AgentTurn.session_id == agent.id, AgentTurn.seq < permit.pending_seq)
+            .limit(1)
+        ).first()
+        is not None
+    ):
+        # Probe and drainer sessions carry exactly one turn by construction, so
+        # history here is a shape this loop does not model, not a race.
+        raise ValueError("unsupported_shape")
     if permit.tier == "probe":
         unknown = agent.status == "failed" and turn.stop_reason == UNKNOWN_INVOCATION
         legacy = (
@@ -161,11 +229,14 @@ def _identity(db, permit):
             or not (unknown or legacy)
         ):
             raise ValueError("ineligible_probe")
-    elif permit.tier in {"kg", "project"} and not (
-        agent.local_session_id.startswith("_drainer-worker:")
-        or permit.routine_job_name is not None
-    ):
+    elif permit.tier in {"kg", "project"} and permit.routine_job_name is None:
+        # A real drainer session keys on "<workflow>:<node_key>:<job_name>"
+        # (swarm/drainer.py _session_key). "_drainer-worker:" is a routine job
+        # NAME prefix and never leads a local_session_id, so the routine job
+        # is the only selector that reaches these rows.
         raise ValueError("ineligible_drainer")
+    if permit.routine_job_name is not None and _routine_job_held(db, permit):
+        raise ValueError("routine_job_held")
     if agent.ember_session_id is None:
         if permit.tier == "probe" and not _general_enabled():
             raise ValueError("no_guest_supervision_disabled")
@@ -175,6 +246,12 @@ def _identity(db, permit):
             raise ValueError("malformed_recovery") from None
         if not isinstance(usage, dict):
             raise ValueError("malformed_recovery")
+        # store.clear_ember_bindings_by_ember_id now refuses a session holding
+        # an unknown outcome, but a binding cleared before that guard, or by
+        # another path, still leaves these traces. Without them a cleared
+        # binding would read as "no guest was ever bound".
+        if any(getattr(agent, name) is not None for name in _BINDING_EVIDENCE):
+            raise ValueError("prior_binding_evidence")
         _no_guest_delivery(permit, usage.get("recovery"))
     owners = (
         []
@@ -209,7 +286,7 @@ def _identity(db, permit):
             "guest_id": agent.ember_session_id,
             "last_turn_at": agent.last_turn_at,
             "status": agent.status,
-            "turn": turn.model_dump() if turn is not None else None,
+            "turn": turn.model_dump(),
         }
     )
     return agent, turn, identity
@@ -246,7 +323,6 @@ def _candidates():
                     ),
                     or_(
                         AgentCapacityReservation.tier.in_(("probe", "interactive")),
-                        AgentSession.local_session_id.startswith("_drainer-worker:"),
                         AgentCapacityReservation.routine_job_name.isnot(None),
                     ),
                 )

@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from agent_sessions import admission, permit_supervision as supervision
@@ -48,6 +49,16 @@ def database(tmp_path, monkeypatch):
             )
         ],
     )
+    # The routine job table is raw SQL in agent/routine_jobs.py rather than a
+    # SQLModel, so mirror the columns hold_job_for_unknown_outcome writes.
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE routine_jobs (name TEXT PRIMARY KEY, "
+                "routine_kind TEXT, last_status TEXT, last_summary TEXT, "
+                "next_run_at TIMESTAMP, locked_by TEXT, locked_at TIMESTAMP)"
+            )
+        )
     monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
     monkeypatch.setattr(supervision, "get_engine", lambda: engine)
     yield engine
@@ -69,6 +80,8 @@ def seed(
     local_session_id=None,
     claimed=True,
     recovery_updates=None,
+    history=0,
+    job_held=False,
 ):
     at = datetime.now(timezone.utc) - timedelta(seconds=10)
     if routine_job_name is _DEFAULT_ROUTINE:
@@ -98,10 +111,11 @@ def seed(
         )
         db.add(agent)
         db.flush()
+        failed_seq = history + 1
         permit = AgentCapacityReservation(
             local_session_id=agent.local_session_id,
             session_id=agent.id,
-            pending_seq=1,
+            pending_seq=failed_seq,
             tier=tier,
             state="uncertain",
             outcome="delivery_error" if legacy else "executor_cancelled",
@@ -109,6 +123,33 @@ def seed(
             routine_job_name=routine_job_name,
         )
         db.add(permit)
+        if routine_job_name is not None:
+            db.execute(
+                text(
+                    "INSERT INTO routine_jobs (name, routine_kind, last_status, "
+                    "last_summary, next_run_at) VALUES "
+                    "(:name, :kind, :status, :summary, :next_run_at)"
+                ),
+                {
+                    "name": routine_job_name,
+                    "kind": "kg-drain" if tier == "kg" else "docfix",
+                    "status": UNKNOWN_INVOCATION if job_held else "ok",
+                    "summary": f"session_id={agent.id}: lost response",
+                    "next_run_at": None if job_held else at,
+                },
+            )
+        for seq in range(1, failed_seq):
+            db.add(
+                AgentTurn(
+                    session_id=agent.id,
+                    seq=seq,
+                    prompt="earlier prompt",
+                    result_text="answered",
+                    terminal_reason=None,
+                    stop_reason=None,
+                    created_at=at - timedelta(seconds=failed_seq - seq),
+                )
+            )
         if turn_count:
             usage = {
                 "recovery": {
@@ -125,7 +166,7 @@ def seed(
             db.add(
                 AgentTurn(
                     session_id=agent.id,
-                    seq=1,
+                    seq=failed_seq,
                     prompt="original prompt",
                     result_text="lost",
                     terminal_reason="error",
@@ -144,7 +185,11 @@ def before(engine, permit_id):
     with Session(engine) as db:
         permit = db.get(AgentCapacityReservation, permit_id)
         agent = db.get(AgentSession, permit.session_id)
-        turns = db.exec(select(AgentTurn).where(AgentTurn.session_id == agent.id)).all()
+        turns = db.exec(
+            select(AgentTurn)
+            .where(AgentTurn.session_id == agent.id)
+            .order_by(AgentTurn.seq)
+        ).all()
         return permit.model_dump(), agent.model_dump(), [t.model_dump() for t in turns]
 
 
@@ -266,27 +311,6 @@ def test_factory_owned_session_is_skipped_via_swarm_node_run_pin(database, monke
     original = before(database, pid)
     sweep(proof("guest-factory-pin"))
     assert before(database, pid) == original
-
-
-def test_drainer_worker_prefix_alone_is_selected_and_settles(database, monkeypatch):
-    """The `_drainer-worker:` local_session_id prefix is its own selector.
-
-    Real drainer rows always also carry routine_job_name, but the prefix
-    check must independently select a row that somehow lacks it.
-    """
-    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    pid = seed(
-        database,
-        "drainer-prefix",
-        tier="kg",
-        workflow_id="_drainer-worker:0:1",
-        node_key="kg-drain",
-        routine_job_name=None,
-        local_session_id="_drainer-worker:0:1:kg-drain:kg-job",
-    )
-    assert pid in supervision._candidates()
-    sweep(proof("guest-drainer-prefix"))
-    assert before(database, pid)[0]["state"] == "settled"
 
 
 @pytest.mark.parametrize("tier", ["probe", "kg", "project", "interactive"])
@@ -418,6 +442,103 @@ def test_probe_only_destroyed_view_preserves_hold_and_binding(database, monkeypa
     original = before(database, pid)
     sweep(proof(state="destroyed"))
     assert before(database, pid) == original
+
+
+def test_held_routine_job_permit_is_left_to_the_operator_path(database, monkeypatch):
+    """Production shape: swarm/drainer.py calls hold_drainer_job on
+    InvocationOutcomeUnknown, and agent/routine_jobs.py
+    hold_job_for_unknown_outcome writes the row this seeds: last_status
+    unknown_invocation, next_run_at NULL, a "session_id=<id>: " summary and no
+    lock holder. Only agent/routine_reconciliation.py re-arms that row, and its
+    delivery_error_hold predicate requires the reservation to still be
+    uncertain, so settling here would strand the job forever.
+    """
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(database, "held-kg", tier="kg", job_held=True)
+    assert pid in supervision._candidates()
+    original = before(database, pid)
+    sweep(proof("guest-held-kg"))
+    assert before(database, pid) == original
+    with Session(database) as db:
+        assert db.get(ProbeObservation, pid).reason == "routine_job_held"
+
+
+def test_interactive_session_with_completed_history_settles(database, monkeypatch):
+    """Production shape: agent_sessions/router.py keeps one interactive session
+    per conversation and store.create_turn appends a turn per send, so the
+    failed turn arrives behind completed turns 1 and 2 rather than alone.
+    """
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(database, "chat", tier="interactive", history=2)
+    assert before(database, pid)[0]["pending_seq"] == 3
+    assert pid in supervision._candidates()
+    sweep(proof("guest-chat"))
+    after = before(database, pid)
+    assert after[0]["state"] == "settled"
+    assert after[0]["outcome"] == "guest_cessation_confirmed"
+    assert [turn["seq"] for turn in after[2]] == [1, 2, 3]
+
+
+def test_drainer_history_is_reported_as_unsupported_shape(database, monkeypatch):
+    """A kg drainer session is created per job by swarm/drainer.py and carries
+    exactly one turn, so history on one is a shape this loop does not model.
+    """
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(database, "kg-history", tier="kg", history=1)
+    original = before(database, pid)
+    sweep(proof("guest-kg-history"))
+    assert before(database, pid) == original
+    with Session(database) as db:
+        assert db.get(ProbeObservation, pid).reason == "unsupported_shape"
+
+
+def test_later_turn_after_the_failed_turn_is_a_changed_attempt(database, monkeypatch):
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(database, "resent", tier="interactive", history=1)
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        db.add(
+            AgentTurn(
+                session_id=permit.session_id,
+                seq=3,
+                prompt="a later send",
+                result_text="done",
+            )
+        )
+    sweep(proof("guest-resent"))
+    with Session(database) as db:
+        assert db.get(ProbeObservation, pid).reason == "changed_attempt"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [name for name in supervision._BINDING_EVIDENCE if name != "guest_cleanup_id"],
+)
+def test_residual_binding_evidence_blocks_a_no_guest_settlement(
+    database, monkeypatch, field
+):
+    """Whatever cleared an earlier binding, these columns survive it: they are
+    written by store.set_ember_session, replace_ember_session_after_preemption
+    and the guest cleanup claim in agent_sessions/admission.py. The operator
+    destroy that motivated this lives in admission_test.py, which can import
+    store: test_operator_destroy_retains_a_binding_under_an_unknown_outcome.
+    """
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(database, f"residual-{field}", tier="kg", guest_bound=False)
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        agent = db.get(AgentSession, permit.session_id)
+        setattr(
+            agent,
+            field,
+            datetime.now(timezone.utc) if field.endswith("_at") else "residual",
+        )
+        db.add(agent)
+    original = before(database, pid)
+    sweep(None)
+    assert before(database, pid) == original
+    with Session(database) as db:
+        assert db.get(ProbeObservation, pid).reason == "prior_binding_evidence"
 
 
 def test_production_drainer_kg_is_candidate_and_settles(database, monkeypatch):

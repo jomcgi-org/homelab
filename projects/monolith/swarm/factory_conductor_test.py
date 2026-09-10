@@ -2750,6 +2750,13 @@ def test_durable_stop_reconciles_production_factory_owner_without_replay(
 def test_evicted_guest_settles_factory_without_committed_stop_intent(
     uncertain_factory, monkeypatch
 ):
+    """The headline case, in the shape the control plane actually returns.
+
+    SessionStopProof.identity/2 (projects/embervm/control/lib/embervm/
+    session_stop_proof.ex) returns nil for every non-running session, and
+    session_manager.ex only falls back to a stop intent's precondition, so a
+    guest evicted before any stop was sent reports stop_precondition null.
+    """
     import json
     from datetime import datetime, timedelta, timezone
     from sqlmodel import Session, select
@@ -2763,6 +2770,7 @@ def test_evicted_guest_settles_factory_without_committed_stop_intent(
     monkeypatch.setattr(supervisor, "_now", lambda: observed_at + timedelta(seconds=1))
     s.cp.update(
         state="evicted",
+        stop_precondition=None,
         updated_at=int(observed_at.timestamp() * 1000),
     )
 
@@ -2793,6 +2801,76 @@ def test_evicted_guest_settles_factory_without_committed_stop_intent(
         assert (
             controls.task_snapshot(s.task["id"], session=db)["unresolved_starts"] == 0
         )
+
+
+def test_evicted_guest_settles_factory_from_the_committed_stop_intent(
+    uncertain_factory, monkeypatch
+):
+    """A stop was already requested, so a stop_intent audit is committed. The
+    guest is then evicted rather than stopped, which drops the CP's
+    stop_precondition back to null (SessionStopProof.identity/2 answers only
+    for a running session). The committed precondition is the identity then.
+    """
+    import json
+    from datetime import datetime, timedelta, timezone
+    from sqlmodel import Session, select
+    from swarm import factory_supervision as supervisor
+    from swarm.factory_models import FactoryAudit
+
+    s = uncertain_factory
+    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    with Session(s.engine) as db:
+        committed = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "stop_intent")
+        ).all()
+        assert len(committed) == 1
+        assert json.loads(committed[0].detail_json)["precondition"] == s.precondition
+
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    observed_at = datetime.now(timezone.utc)
+    monkeypatch.setattr(supervisor, "_now", lambda: observed_at + timedelta(seconds=1))
+    s.cp.update(
+        state="evicted",
+        stop_precondition=None,
+        stop_intent=None,
+        stop_completion=None,
+        updated_at=int(observed_at.timestamp() * 1000),
+    )
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    after = _uncertain_snapshot(s)
+    assert after["permits"][0]["state"] == "settled"
+    assert after["permits"][0]["outcome"] == "guest_cessation_confirmed"
+    assert after["runs"][0]["status"] == "failed"
+
+
+def test_evicted_guest_with_a_foreign_stop_precondition_is_refused(
+    uncertain_factory, monkeypatch
+):
+    """A populated precondition still has to name this guest and invocation."""
+    from datetime import datetime, timedelta, timezone
+    from swarm import factory_supervision as supervisor
+
+    s = uncertain_factory
+    dispatched_at = datetime.now(timezone.utc) - timedelta(seconds=60)
+    s.cp.update(
+        state="evicted",
+        updated_at=int(datetime.now(timezone.utc).timestamp() * 1000),
+    )
+    s.cp["stop_precondition"] = {**s.precondition, "generation": 7}
+    identity = {
+        "guest_id": "s-exact-factory",
+        "dispatched_at": dispatched_at.isoformat(),
+    }
+    assert supervisor._control_plane_cessation(s.cp, identity) is None
+    saved = {"precondition": {**s.precondition, "generation": 7}}
+    s.cp["stop_precondition"] = None
+    assert supervisor._control_plane_cessation(s.cp, identity, saved) is None
+    assert supervisor._control_plane_cessation(s.cp, identity) is not None
 
 
 def test_evicted_factory_guest_does_not_settle_without_new_flag(

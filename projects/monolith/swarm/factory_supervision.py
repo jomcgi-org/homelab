@@ -220,8 +220,19 @@ def _completion(view, expected):
     return {key: proof[key] for key in keys | {"completed_at_unix_ms"}}
 
 
-def _control_plane_cessation(view, identity):
-    """Return terminal CP evidence ordered after this factory dispatch."""
+def _control_plane_cessation(view, identity, saved=None):
+    """Return terminal CP evidence ordered after this factory dispatch.
+
+    A guest that ceased without ever being sent a stop carries no
+    stop_precondition: SessionStopProof.identity/2 returns nil for every
+    non-running session, so the control plane can only populate that field for
+    a session with a stop intent or still running. Requiring one would hold the
+    permit forever in exactly the case this path exists for: spot preemption,
+    idle TTL, or a sweeper eviction before the stop deadline. So the identity
+    comes from the committed stop intent when one exists, and otherwise from
+    the view's own invocation fields, ordered against the recorded attempt the
+    way the permit loop orders its own observation.
+    """
     if view.get("state") not in {"evicted", "destroyed"}:
         return None
     generation = view.get("generation")
@@ -239,15 +250,20 @@ def _control_plane_cessation(view, identity):
         or generation < 0
     ):
         return None
-    try:
-        expected = _precondition(view.get("stop_precondition"), identity["guest_id"])
-    except ValueError:
-        return None
-    if (
-        generation != expected["generation"]
-        or started != expected["invoke_started_at"]
-        or not started <= last_invoke <= updated_at
-    ):
+    recorded = view.get("stop_precondition")
+    if recorded is None and saved is not None:
+        recorded = saved.get("precondition")
+    if recorded is not None:
+        try:
+            expected = _precondition(recorded, identity["guest_id"])
+        except ValueError:
+            return None
+        if (
+            generation != expected["generation"]
+            or started != expected["invoke_started_at"]
+        ):
+            return None
+    if not started <= last_invoke <= updated_at:
         return None
     dispatched_at = int(_timestamp(identity["dispatched_at"]).timestamp() * 1000)
     if started > dispatched_at or updated_at <= dispatched_at:
@@ -396,7 +412,7 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
             raise ValueError("wrong_stop_observation")
         cessation = None
         if cessation_enabled:
-            cessation = _control_plane_cessation(view, identity)
+            cessation = _control_plane_cessation(view, identity, saved)
         if cessation is not None:
             expected = None
             proof = cessation
