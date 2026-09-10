@@ -672,13 +672,41 @@ def test_a_three_node_plan_sizes_its_own_task(policy):
         plan, [], policy, review_rounds_remaining=2, graph_revision=4
     )
     # Three work nodes of two attempts each, plus two prospective review rounds
-    # of two turns. The planner node costs money but never a work turn.
-    assert allowance["turns"] == 3 * 2 + 2 * 2
+    # of a correction and a re-review at the same two attempts, which is what
+    # the engine will really insert. The planner node costs money but never a
+    # work turn.
+    assert allowance["turns"] == 3 * 2 + 2 * 2 * policy["max_attempts"]
     assert allowance["usd"] == 4 * 2.0 + 2 * 2 * policy["turn_budget_usd"]
     assert allowance["graph_revision"] == 4 and allowance["derived"] is True
 
 
-def test_a_review_round_extends_the_allowance_by_two(policy):
+def test_a_plan_with_no_review_node_reserves_no_review_round(policy):
+    allowance = controls.allowance_from_graph(
+        [graph_node("implement_fix")],
+        [],
+        policy,
+        review_rounds_remaining=2,
+        graph_revision=1,
+    )
+    assert allowance["turns"] == 2 and allowance["review_rounds_reserved"] == 0
+
+
+def test_a_fan_in_is_reserved_as_the_node_the_engine_will_insert(policy):
+    plan = [graph_node("implement_alpha"), graph_node("implement_beta")]
+    allowance = controls.allowance_from_graph(
+        plan,
+        [],
+        policy,
+        review_rounds_remaining=0,
+        fan_ins_remaining=1,
+        graph_revision=2,
+    )
+    assert allowance["fan_ins_reserved"] == 1
+    assert allowance["turns"] == 2 * 2 + policy["max_attempts"]
+    assert allowance["usd"] == 2 * 2.0 + policy["turn_budget_usd"]
+
+
+def test_a_review_round_is_turn_neutral_against_the_allowance(policy):
     plan = [
         graph_node("implement_fix"),
         graph_node("review_fix", deps=["implement_fix"]),
@@ -697,9 +725,9 @@ def test_a_review_round_extends_the_allowance_by_two(policy):
         review_rounds_remaining=1,
         graph_revision=4,
     )
-    # The round turns a two-turn prospective reserve into two real nodes of
-    # max_attempts each, so with two attempts per node it costs two more turns.
-    assert opened["turns"] - before["turns"] == 2
+    # The reserve is what the round will really cost, a correction and a
+    # re-review at max_attempts each, so opening one moves nothing.
+    assert opened["turns"] == before["turns"]
 
 
 def test_a_discarded_node_never_refunds_a_consumed_turn(policy):
@@ -825,5 +853,6 @@ def test_a_task_with_no_accepted_plan_falls_back_to_the_envelope(db, policy):
         "usd": 5.0,
         "graph_revision": None,
         "review_rounds_reserved": 0,
+        "fan_ins_reserved": 0,
         "derived": False,
     }

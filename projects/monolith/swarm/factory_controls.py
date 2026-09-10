@@ -337,17 +337,24 @@ def allowance_from_graph(
     policy: dict,
     *,
     review_rounds_remaining: int,
+    fan_ins_remaining: int = 0,
     graph_revision: int,
 ) -> dict:
     """Size a task from the plan it accepted, not from a fixed policy number.
 
     Work turns are one per attempt the live graph can still spend, plus every
-    work turn history already spent, plus two prospective turns for each review
-    round the engine may still open. An attempt already spent is counted in
-    history, so its node slot is not counted again; before anything runs the
-    two readings agree. Dollars are the same shape in money: charged history
-    plus every live unsucceeded node's unspent ceiling, plus the prospective
-    rounds at the per-turn ceiling.
+    work turn history already spent, plus the nodes the engine may still insert
+    on its own: a review round is a correction and a re-review, and a fan-in is
+    one node, each carrying the policy's ``max_attempts`` exactly as the
+    inserted node will. Reserving what the insertion actually costs is what
+    makes the insertion turn-neutral, since the reserve falls away as the real
+    nodes appear. Review rounds are reserved only when the plan holds a review
+    node that could open one.
+
+    An attempt already spent is counted in history, so its node slot is not
+    counted again; before anything runs the two readings agree. Dollars are the
+    same shape in money: charged history plus every live unsucceeded node's
+    unspent ceiling, plus the prospective insertions at the per-turn ceiling.
 
     A discarded node stops contributing its remaining slots, and its spent
     attempts stay in history, so discarding never refunds a consumed turn.
@@ -377,14 +384,20 @@ def allowance_from_graph(
         if key.startswith("conductor_"):
             continue
         remaining_turns += max(0, node["max_attempts"] - attempts.get(key, 0))
-    rounds = max(0, review_rounds_remaining)
+    reviewable = any(node["node_key"].startswith("review_") for node in nodes)
+    rounds = max(0, review_rounds_remaining) if reviewable else 0
+    fan_ins = max(0, fan_ins_remaining)
+    reserved_nodes = 2 * rounds + fan_ins
+    attempts_each = policy["max_attempts"]
     return {
-        "turns": work_turns_used + remaining_turns + 2 * rounds,
+        "turns": work_turns_used + remaining_turns + reserved_nodes * attempts_each,
         "usd": round(
-            charged_total + remaining_usd + 2 * rounds * policy["turn_budget_usd"], 6
+            charged_total + remaining_usd + reserved_nodes * policy["turn_budget_usd"],
+            6,
         ),
         "graph_revision": graph_revision,
         "review_rounds_reserved": rounds,
+        "fan_ins_reserved": fan_ins,
         "derived": True,
     }
 
@@ -394,6 +407,7 @@ def derive_allowance(
     policy: dict,
     *,
     review_rounds_remaining: int,
+    fan_ins_remaining: int = 0,
     session: Session | None = None,
 ) -> dict:
     """Read the live graph and size the task from it."""
@@ -405,6 +419,7 @@ def derive_allowance(
             graph.node_runs(task_id, session=db),
             policy,
             review_rounds_remaining=review_rounds_remaining,
+            fan_ins_remaining=fan_ins_remaining,
             graph_revision=graph.current_version(task_id, session=db),
         )
 
@@ -437,8 +452,18 @@ def _stored_allowance(row: FactoryReceipt, policy: dict) -> dict:
         "usd": policy["task_budget_usd"],
         "graph_revision": None,
         "review_rounds_reserved": 0,
+        "fan_ins_reserved": 0,
         "derived": False,
     }
+
+
+def task_allowance(task_id: str, *, session: Session | None = None) -> dict:
+    """The allowance currently stored for a task, or the envelope standing in."""
+    with _read_session(session) as db:
+        row = _receipt(db, task_id)
+        if row is None or not row.policy_json:
+            return {"turns": 0, "usd": 0.0, "graph_revision": None, "derived": False}
+        return _stored_allowance(row, json.loads(row.policy_json))
 
 
 def record_allowance(
@@ -447,6 +472,7 @@ def record_allowance(
     actor: str,
     *,
     review_rounds_remaining: int,
+    fan_ins_remaining: int = 0,
     cause: str | None = None,
     session: Session | None = None,
 ) -> dict:
@@ -460,6 +486,7 @@ def record_allowance(
             task_id,
             policy,
             review_rounds_remaining=review_rounds_remaining,
+            fan_ins_remaining=fan_ins_remaining,
             session=db,
         )
         # Acceptance refuses an over-envelope plan, so this can only clamp a

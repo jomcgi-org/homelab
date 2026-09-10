@@ -195,9 +195,19 @@ def _session_key(task_id: str, node_key: str, attempt: int) -> str:
 
 
 def _node_prompt(
-    prompt: str, artifact_path: str, schema: dict, retry_context: str = ""
+    prompt: str,
+    artifact_path: str,
+    schema: dict,
+    retry_context: str = "",
+    branch: str = "",
 ) -> str:
     schema_json = json.dumps(schema, sort_keys=True)
+    working = (
+        f"\n\nYour working branch for this attempt is {branch}. Commit and push "
+        "source changes to that exact branch and to no other."
+        if branch
+        else ""
+    )
     prior = ""
     if retry_context:
         prior = (
@@ -208,7 +218,7 @@ def _node_prompt(
         )
     absolute_artifact = f"{CAPTURE_CHECKOUT}/{artifact_path}"
     return (
-        f"{prompt}{prior}\n\n"
+        f"{prompt}{working}{prior}\n\n"
         f"Write the declared JSON artifact fresh at the exact absolute path "
         f"{absolute_artifact}, as a single JSON document satisfying this schema: "
         f"{schema_json}. Create its parent directories if needed. Keep this "
@@ -641,6 +651,7 @@ def execute_node(pin: dict) -> dict:
                 pin["artifact_path"],
                 pin["artifact_schema"],
                 pin["retry_context"],
+                pin["branch"],
             ),
             deadline.isoformat(),
         )

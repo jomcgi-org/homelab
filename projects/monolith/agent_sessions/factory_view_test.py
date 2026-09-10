@@ -6,6 +6,7 @@ from agent_sessions.factory_view import (
     first_line,
     node_label,
     shape_node,
+    shape_policy,
     shape_receipt,
 )
 
@@ -255,3 +256,23 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
     assert [r["issue_number"] for r in view["queued"]] == [5983]
     assert view["queued"][0]["nodes"] == []
     assert view["active"] == [] and view["recent"] == []
+
+
+def test_a_policy_pinned_before_the_envelope_still_shows_its_turn_bound():
+    """The live control row carries only the old fixed cap. It is the envelope."""
+    legacy = {
+        "generation": 4,
+        "max_tasks": 1,
+        "conductor_model": "astra",
+        "worker_model": "sol",
+        "reviewer_model": "opus",
+        "max_turns_per_task": 9,
+        "task_budget_usd": 36.0,
+        "max_attempts": 2,
+    }
+    assert shape_policy(legacy)["max_task_turns_hard"] == 9
+    assert (
+        shape_policy({**legacy, "max_task_turns_hard": 40})["max_task_turns_hard"] == 40
+    )
+    shaped = shape_receipt({"policy": legacy, "id": 1, "issue_number": 7})
+    assert shaped["policy"]["max_task_turns_hard"] == 9
