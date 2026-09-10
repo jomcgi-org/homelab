@@ -238,6 +238,50 @@ def test_missing_or_invalid_usage_consumes_reservation_without_inventing_uncerta
     assert "full admission reservation" in result["reason"]
 
 
+def test_codex_turn_settles_at_its_list_price_with_a_visible_basis(harness):
+    # Codex-backed models report no provider cost. The turn store prices their
+    # token usage, and that list price settles the attempt.
+    harness.turn["cost_usd"] = None
+    harness.turn["list_cost_usd"] = 0.31
+    result = nodes.execute_node.__wrapped__(pin())
+    assert result["status"] == "succeeded"
+    assert result["cost_usd"] == 0.31
+    assert result["cost_basis"] == "list"
+    assert result["accounting"] == "list_priced_cost"
+    assert "list_priced_cost" in result["reason"]
+    assert "full admission reservation" not in result["reason"]
+
+
+def test_reported_provider_cost_wins_over_a_stored_list_price(harness):
+    harness.turn["cost_usd"] = 0.5
+    harness.turn["list_cost_usd"] = 9.0
+    result = nodes.execute_node.__wrapped__(pin())
+    assert result["cost_usd"] == 0.5
+    assert result["cost_basis"] == "provider"
+    assert result["accounting"] == "reported_cost"
+
+
+def test_list_price_above_the_ceiling_settles_without_discarding_the_work(harness):
+    harness.turn["cost_usd"] = None
+    harness.turn["list_cost_usd"] = 3.0
+    result = nodes.execute_node.__wrapped__(pin())
+    assert result["status"] == "succeeded"
+    assert result["cost_usd"] == 3.0
+    assert result["cost_basis"] == "list"
+    assert "above the admission ceiling" in result["reason"]
+    assert "cost_exceeded" not in result["reason"]
+
+
+def test_invalid_list_price_still_consumes_the_reservation(harness):
+    harness.turn["cost_usd"] = None
+    harness.turn["list_cost_usd"] = float("nan")
+    result = nodes.execute_node.__wrapped__(pin())
+    assert result["cost_usd"] is None
+    assert result["cost_basis"] == "unknown"
+    assert result["accounting"] == "unknown_cost"
+    assert "full admission reservation" in result["reason"]
+
+
 def test_reported_cost_overrun_keeps_actual_spend_and_fails(harness):
     harness.turn["cost_usd"] = 3
     result = nodes.execute_node.__wrapped__(pin())
@@ -909,6 +953,16 @@ def test_reconcile_validates_stored_artifact_and_preserves_accounting(
     if cost is None:
         assert result["accounting"] == "unknown_cost"
         assert "full admission reservation" in result["reason"]
+
+
+def test_reconcile_settles_a_codex_turn_at_its_stored_list_price(reconciliation_db):
+    state = reconciliation_db
+    state.complete(cost_usd=None, list_cost_usd=0.42)
+    result = nodes.reconcile_completed_node(state.pin, 7)
+    assert result["status"] == "succeeded"
+    assert result["cost_usd"] == 0.42
+    assert result["cost_basis"] == "list"
+    assert result["accounting"] == "list_priced_cost"
 
 
 def test_reconcile_branch_read_failure_cannot_settle_reservation(

@@ -249,7 +249,9 @@
               ><i style={`width:${pct(turnShare(receipt))}`}></i></span
             >
             <span class="num"
-              >{receipt.turns_used} of {receipt.policy.max_turns_per_task}</span
+              >{receipt.turns_used} of {receipt.policy
+                .max_turns_per_task}{#if receipt.planner_turns_used}
+                + {receipt.planner_turns_used} planning{/if}</span
             >
           </span>
         </div>

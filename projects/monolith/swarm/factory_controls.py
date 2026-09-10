@@ -230,9 +230,30 @@ def _starts(db: Session, task_id: str) -> list[FactoryStart]:
     )
 
 
+# Start keys are "factory-node:<task id>:<node key>:<attempt>". A node key may
+# itself contain colons, so the attempt and the two fixed leading segments are
+# what anchor the parse.
+_START_KEY = re.compile(r"^factory-node:[^:]+:(?P<node_key>.+):[0-9]+$")
+
+
+def _planner_start(row: FactoryStart) -> bool:
+    """True for a conductor planning round rather than a unit of task work.
+
+    An unparsable key counts as work, so the turn cap can never be widened by
+    a start whose shape this cannot read.
+    """
+    match = _START_KEY.match(row.start_key or "")
+    return bool(match) and match.group("node_key").startswith("conductor_")
+
+
 def _accounting(starts: list[FactoryStart]) -> dict:
+    # Planner rounds read evidence and decide; they do not do the task's work.
+    # Counting them against max_turns_per_task exhausts a task before it has
+    # spent its allowance on delivery. They still consume budget.
+    planner = sum(_planner_start(row) for row in starts)
     return {
-        "turns_used": len(starts),
+        "turns_used": len(starts) - planner,
+        "planner_turns_used": planner,
         "committed_cost_usd": sum(
             max(row.max_cost_usd, row.cost_usd or 0)
             if row.status in ("reserved", "uncertain")

@@ -218,6 +218,21 @@ describe("factory board page", () => {
     );
   });
 
+  test("counts planning rounds beside the work turns, not inside them", () => {
+    const planning = receipt({ turns_used: 2, planner_turns_used: 5 });
+    const target = renderPage({
+      board: board({ active: [planning] }),
+      task: null,
+      error: false,
+    });
+    expect(target.querySelector(".panel.admitted .spec").textContent).toContain(
+      "2 of 9",
+    );
+    expect(target.querySelector(".panel.admitted .spec").textContent).toContain(
+      "5 planning",
+    );
+  });
+
   test("renders a zero spend as $0.00 rather than a blank", () => {
     const fresh = receipt({ committed_cost_usd: 0, turns_used: 0 });
     const target = renderPage({

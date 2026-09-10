@@ -621,6 +621,39 @@ def test_terminal_unknown_usage_allows_dependency_but_consumes_ceiling(db):
     assert admit_dispatch(task_id, "two").ok
 
 
+def test_list_priced_completion_settles_at_its_cost_with_a_visible_basis(db):
+    task_id = make_task(db, budget=1.0)
+    assert add_work(task_id, "one", 0, max_cost_usd=0.5).ok
+    assert add_work(task_id, "two", 1, max_cost_usd=0.5, deps=["one"]).ok
+    assert admit_dispatch(task_id, "one").ok
+    outcome = json.dumps({"status": "succeeded", "cost_basis": "list"})
+    assert record_outcome(task_id, "one", 1, "succeeded", 0.08, "head", outcome).ok
+    row = node_runs(task_id, "one")[0]
+    assert row["accounted_cost_usd"] == 0.08
+    assert row["accounting_basis"] == "list_priced"
+    assert admit_dispatch(task_id, "two").ok
+
+
+def test_provider_priced_completion_keeps_the_reported_basis(db):
+    task_id = make_task(db, budget=1.0)
+    assert add_work(task_id, "one", 0, max_cost_usd=0.5).ok
+    assert admit_dispatch(task_id, "one").ok
+    outcome = json.dumps({"status": "succeeded", "cost_basis": "provider"})
+    assert record_outcome(task_id, "one", 1, "succeeded", 0.08, "head", outcome).ok
+    assert node_runs(task_id, "one")[0]["accounting_basis"] == "reported"
+
+
+def test_uncertain_run_keeps_its_reservation_even_with_a_list_price(db):
+    task_id = make_task(db, budget=1.0)
+    assert add_work(task_id, "one", 0, max_cost_usd=0.5).ok
+    assert admit_dispatch(task_id, "one").ok
+    outcome = json.dumps({"status": "uncertain", "cost_basis": "list"})
+    assert record_outcome(task_id, "one", 1, "uncertain", 0.08, None, outcome).ok
+    row = node_runs(task_id, "one")[0]
+    assert row["accounted_cost_usd"] == 0.5
+    assert row["accounting_basis"] == "active_reservation"
+
+
 def test_dispatch_key_cannot_alias_another_node(db):
     task_id = make_task(db)
     assert add_work(task_id, "one", 0).ok

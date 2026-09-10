@@ -152,6 +152,20 @@ def _locked_attempt(db, control, pin, sid, *, require_stop_due=True):
     return identity, run
 
 
+def _settlement_basis(chosen: float | None, original: dict) -> str:
+    """Name the evidence behind the cost this cessation settles at.
+
+    The supervisor charges the highest known figure. That is list-priced only
+    when it is exactly the node result's own list price, so a measured cost or
+    a retained reservation never inherits the estimate's provenance.
+    """
+    if chosen is None:
+        return "unknown"
+    if original.get("cost_basis") == "list" and original.get("cost_usd") == chosen:
+        return "list"
+    return "provider"
+
+
 def _precondition(value, guest_id):
     if not isinstance(value, dict) or set(value) != _PRECONDITION_KEYS:
         raise ValueError("missing_stop_precondition")
@@ -489,11 +503,13 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                     for cost in known_costs
                 ):
                     raise ValueError("invalid_original_cost")
+                chosen = max(known_costs) if known_costs else None
                 result = {
                     **original_result,
                     "status": "failed",
                     "session_id": session_id,
-                    "cost_usd": max(known_costs) if known_costs else None,
+                    "cost_usd": chosen,
+                    "cost_basis": _settlement_basis(chosen, original_result),
                     "reason": "guest_cessation_confirmed: exact control-plane cessation after factory dispatch",
                     "previous_outcome": json.loads(run.outcome_json or "{}"),
                     "cessation": proof,
