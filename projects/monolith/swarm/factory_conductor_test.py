@@ -2389,9 +2389,9 @@ def uncertain_factory(queued_factory, monkeypatch):
     from datetime import datetime, timedelta, timezone
     import copy
     import json
-    from sqlmodel import Session
+    from sqlmodel import Session, select
     from agent_sessions import admission, store
-    from agent_sessions.models import AgentSession
+    from agent_sessions.models import AgentSession, AgentTurn
     from swarm import factory_controls as controls
     from swarm import factory_supervision as supervisor
 
@@ -2402,17 +2402,36 @@ def uncertain_factory(queued_factory, monkeypatch):
     owner = "original-factory-executor"
     assert store.claim_pending_message_for_session_sync(s.sid, owner) == 1
     assert admission.recheck(s.sid, 1, owner)
+    # store.claim_pending_message_for_session_sync stamps last_dispatch_at when
+    # the executor claims the turn, before the guest is invoked, so the control
+    # plane's own invoke stamps fall after it and before the failed turn.
+    s.dispatched_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+    s.invoke_started_at = int(
+        (s.dispatched_at + timedelta(seconds=1)).timestamp() * 1000
+    )
+    s.last_invoke_at = s.invoke_started_at + 1000
     with Session(s.engine) as db:
         agent = db.get(AgentSession, s.sid)
         agent.ember_session_id = "s-exact-factory"
         agent.ember_lineage_id = "lineage-preserved"
         agent.cli_session_id = "cli-preserved"
         pending = store.get_pending_message(db, s.sid, 1)
-        pending.last_dispatch_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+        pending.last_dispatch_at = s.dispatched_at
         pending.partial_text = "Unpublished partial implementation"
         db.add_all([agent, pending])
         db.commit()
     store.finish_unknown_pending_sync(s.sid, 1, owner, 1, "executor_cancelled")
+    with Session(s.engine) as db:
+        # The moment the failure was recorded. Every control-plane stamp this
+        # attempt produced is ordered against this, not against the claim.
+        failed = db.exec(
+            select(AgentTurn).where(AgentTurn.session_id == s.sid, AgentTurn.seq == 1)
+        ).one()
+        s.failed_turn_at = (
+            failed.created_at.replace(tzinfo=timezone.utc)
+            if failed.created_at.tzinfo is None
+            else failed.created_at
+        )
     s.result = {
         "status": "uncertain",
         "session_id": s.sid,
@@ -2447,7 +2466,7 @@ def uncertain_factory(queued_factory, monkeypatch):
     s.precondition = {
         "session_id": "s-exact-factory",
         "generation": 0,
-        "invoke_started_at": 100,
+        "invoke_started_at": s.invoke_started_at,
         "vm_id": "vm-original",
         "node_id": "node-1",
         "instance_id": "node-1/pod-original",
@@ -2458,8 +2477,8 @@ def uncertain_factory(queued_factory, monkeypatch):
         "session_id": "s-exact-factory",
         "state": "running",
         "generation": 0,
-        "invoke_started_at": 100,
-        "last_invoke_at": 150,
+        "invoke_started_at": s.invoke_started_at,
+        "last_invoke_at": s.last_invoke_at,
         "stop_precondition": s.precondition,
         "stop_intent": None,
         "stop_completion": None,
@@ -2474,7 +2493,7 @@ def uncertain_factory(queued_factory, monkeypatch):
             s.cp["stop_intent"] = {
                 **s.precondition,
                 "operation_id": "stop-original",
-                "requested_at_unix_ms": 150,
+                "requested_at_unix_ms": s.last_invoke_at + 1000,
             }
         return copy.deepcopy(s.cp)
 
@@ -2489,7 +2508,7 @@ def uncertain_factory(queued_factory, monkeypatch):
         s.cp["state"] = "destroyed"
         s.cp["stop_completion"] = {
             **s.cp["stop_intent"],
-            "completed_at_unix_ms": 200,
+            "completed_at_unix_ms": s.last_invoke_at + 2000,
         }
 
     s.complete = complete
@@ -2771,7 +2790,9 @@ def test_evicted_guest_settles_factory_without_committed_stop_intent(
     s.cp.update(
         state="evicted",
         stop_precondition=None,
-        updated_at=int(observed_at.timestamp() * 1000),
+        # The guest ceased after the failure was recorded, which is the
+        # ordering the loop requires and the only one production produces.
+        updated_at=int((s.failed_turn_at + timedelta(seconds=1)).timestamp() * 1000),
     )
 
     assert supervisor.reconcile_uncertain_attempt(
@@ -2837,7 +2858,9 @@ def test_evicted_guest_settles_factory_from_the_committed_stop_intent(
         stop_precondition=None,
         stop_intent=None,
         stop_completion=None,
-        updated_at=int(observed_at.timestamp() * 1000),
+        # The guest ceased after the failure was recorded, which is the
+        # ordering the loop requires and the only one production produces.
+        updated_at=int((s.failed_turn_at + timedelta(seconds=1)).timestamp() * 1000),
     )
     assert supervisor.reconcile_uncertain_attempt(
         s.run["pin"], s.sid, s.result, "SUCCESS"
@@ -2852,19 +2875,19 @@ def test_evicted_guest_with_a_foreign_stop_precondition_is_refused(
     uncertain_factory, monkeypatch
 ):
     """A populated precondition still has to name this guest and invocation."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import timedelta
     from swarm import factory_supervision as supervisor
 
     s = uncertain_factory
-    dispatched_at = datetime.now(timezone.utc) - timedelta(seconds=60)
     s.cp.update(
         state="evicted",
-        updated_at=int(datetime.now(timezone.utc).timestamp() * 1000),
+        updated_at=int((s.failed_turn_at + timedelta(seconds=1)).timestamp() * 1000),
     )
     s.cp["stop_precondition"] = {**s.precondition, "generation": 7}
     identity = {
         "guest_id": "s-exact-factory",
-        "dispatched_at": dispatched_at.isoformat(),
+        "dispatched_at": s.dispatched_at.isoformat(),
+        "failed_turn_at": s.failed_turn_at.isoformat(),
     }
     assert supervisor._control_plane_cessation(s.cp, identity) is None
     saved = {"precondition": {**s.precondition, "generation": 7}}
@@ -2885,7 +2908,9 @@ def test_evicted_factory_guest_does_not_settle_without_new_flag(
     monkeypatch.setattr(supervisor, "_now", lambda: observed_at + timedelta(seconds=1))
     s.cp.update(
         state="evicted",
-        updated_at=int(observed_at.timestamp() * 1000),
+        # The guest ceased after the failure was recorded, which is the
+        # ordering the loop requires and the only one production produces.
+        updated_at=int((s.failed_turn_at + timedelta(seconds=1)).timestamp() * 1000),
     )
     assert not supervisor.reconcile_uncertain_attempt(
         s.run["pin"], s.sid, s.result, "SUCCESS"
@@ -2927,6 +2952,7 @@ def test_old_cessation_timestamp_falls_through_to_stop_completion(
     identity = {
         "guest_id": "s-exact-factory",
         "dispatched_at": dispatched_at.isoformat(),
+        "failed_turn_at": s.failed_turn_at.isoformat(),
     }
     s.cp["updated_at"] = int(dispatched_at.timestamp() * 1000)
     assert supervisor._control_plane_cessation(s.cp, identity) is None
@@ -2938,12 +2964,18 @@ def test_old_cessation_timestamp_falls_through_to_stop_completion(
 
 
 def test_factory_cessation_rejects_reinvoked_guest(uncertain_factory):
-    from datetime import datetime, timedelta, timezone
+    """An invoke that began after the failure was recorded is a later attempt.
+
+    agent_sessions/store.py stamps last_dispatch_at when the executor claims
+    the turn, before the invoke, so dispatched_at cannot separate this attempt
+    from the next one. The failed turn's created_at can: the invocation that
+    failed had to start before the failure was written.
+    """
+    from datetime import timedelta
     from swarm import factory_supervision as supervisor
 
     s = uncertain_factory
-    dispatched_at = datetime.now(timezone.utc) - timedelta(seconds=60)
-    started = int((dispatched_at + timedelta(seconds=1)).timestamp() * 1000)
+    started = int((s.failed_turn_at + timedelta(seconds=1)).timestamp() * 1000)
     s.cp.update(
         state="evicted",
         invoke_started_at=started,
@@ -2956,9 +2988,19 @@ def test_factory_cessation_rejects_reinvoked_guest(uncertain_factory):
     }
     identity = {
         "guest_id": "s-exact-factory",
-        "dispatched_at": dispatched_at.isoformat(),
+        "dispatched_at": s.dispatched_at.isoformat(),
+        "failed_turn_at": s.failed_turn_at.isoformat(),
     }
     assert supervisor._control_plane_cessation(s.cp, identity) is None
+    # The same view, moved back before the recorded failure, is accepted.
+    started = int((s.failed_turn_at - timedelta(seconds=1)).timestamp() * 1000)
+    s.cp.update(
+        invoke_started_at=started,
+        last_invoke_at=started + 1,
+        updated_at=int((s.failed_turn_at + timedelta(seconds=1)).timestamp() * 1000),
+    )
+    s.cp["stop_precondition"] = {**s.precondition, "invoke_started_at": started}
+    assert supervisor._control_plane_cessation(s.cp, identity) is not None
 
 
 @pytest.mark.parametrize("failure", ["permit", "graph", "start"])

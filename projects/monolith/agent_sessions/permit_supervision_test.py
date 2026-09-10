@@ -150,6 +150,22 @@ def seed(
                     created_at=at - timedelta(seconds=failed_seq - seq),
                 )
             )
+            # admission.claim_pending calls reserve_start for every turn and
+            # admission.settle only flips state, so each completed turn leaves
+            # its own settled reservation row behind.
+            db.add(
+                AgentCapacityReservation(
+                    local_session_id=agent.local_session_id,
+                    session_id=agent.id,
+                    pending_seq=seq,
+                    tier=tier,
+                    state="settled",
+                    outcome="completed",
+                    owner="worker",
+                    routine_job_name=routine_job_name,
+                    settled_at=at - timedelta(seconds=failed_seq - seq),
+                )
+            )
         if turn_count:
             usage = {
                 "recovery": {
@@ -253,7 +269,15 @@ def test_exact_probe_settles_preserving_history_and_other_tiers(database, legacy
 
 
 @pytest.mark.parametrize("tier", ["kg", "project", "interactive"])
-def test_non_probe_guest_with_eviction_settles(database, monkeypatch, tier):
+def test_workflow_died_before_hold_settles_non_probe_guest(database, monkeypatch, tier):
+    """The drainer shape here is the one where the hold was never written.
+
+    swarm/drainer.py calls hold_drainer_job on InvocationOutcomeUnknown, so a
+    drainer permit normally arrives with its routine job parked. When the
+    workflow dies before that call the row agent/routine_jobs.py last wrote
+    still says last_status ok with next_run_at set, which is what seed writes
+    unless job_held is passed. Interactive permits have no routine job at all.
+    """
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, tier, tier=tier)
     sweep(proof(f"guest-{tier}"))
@@ -444,20 +468,38 @@ def test_probe_only_destroyed_view_preserves_hold_and_binding(database, monkeypa
     assert before(database, pid) == original
 
 
-def test_held_routine_job_permit_is_left_to_the_operator_path(database, monkeypatch):
-    """Production shape: swarm/drainer.py calls hold_drainer_job on
-    InvocationOutcomeUnknown, and agent/routine_jobs.py
+@pytest.mark.parametrize("tier", ["kg", "project"])
+def test_held_routine_job_permit_is_left_to_the_operator_path(
+    database, monkeypatch, tier
+):
+    """Production shape, and the ordinary one: swarm/drainer.py calls
+    hold_drainer_job on every InvocationOutcomeUnknown, and agent/routine_jobs.py
     hold_job_for_unknown_outcome writes the row this seeds: last_status
     unknown_invocation, next_run_at NULL, a "session_id=<id>: " summary and no
     lock holder. Only agent/routine_reconciliation.py re-arms that row, and its
     delivery_error_hold predicate requires the reservation to still be
-    uncertain, so settling here would strand the job forever.
+    uncertain, so settling here would strand the job forever. That path also
+    refuses any routine_kind other than kg-drain, so the project row here has
+    no owner able to re-arm it at all (#5983); refusing is still correct,
+    because settling would remove the last evidence it is held.
     """
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
-    pid = seed(database, "held-kg", tier="kg", job_held=True)
+    pid = seed(database, f"held-{tier}", tier=tier, job_held=True)
     assert pid in supervision._candidates()
+    with Session(database) as db:
+        row = db.execute(
+            text(
+                "SELECT routine_kind, last_status, next_run_at, last_summary "
+                "FROM routine_jobs"
+            )
+        ).one()
+        assert row.routine_kind == ("kg-drain" if tier == "kg" else "docfix")
+        assert row.last_status == UNKNOWN_INVOCATION
+        assert row.next_run_at is None
+        permit = db.get(AgentCapacityReservation, pid)
+        assert row.last_summary.startswith(f"session_id={permit.session_id}:")
     original = before(database, pid)
-    sweep(proof("guest-held-kg"))
+    sweep(proof(f"guest-held-{tier}"))
     assert before(database, pid) == original
     with Session(database) as db:
         assert db.get(ProbeObservation, pid).reason == "routine_job_held"
@@ -466,17 +508,61 @@ def test_held_routine_job_permit_is_left_to_the_operator_path(database, monkeypa
 def test_interactive_session_with_completed_history_settles(database, monkeypatch):
     """Production shape: agent_sessions/router.py keeps one interactive session
     per conversation and store.create_turn appends a turn per send, so the
-    failed turn arrives behind completed turns 1 and 2 rather than alone.
+    failed turn arrives behind completed turns 1 and 2 rather than alone. Each
+    of those sends also went through admission.claim_pending, which calls
+    reserve_start per turn, so the session owns three reservation rows and the
+    two earlier ones are settled.
     """
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, "chat", tier="interactive", history=2)
     assert before(database, pid)[0]["pending_seq"] == 3
+    with Session(database) as db:
+        permit = db.get(AgentCapacityReservation, pid)
+        rows = db.exec(
+            select(AgentCapacityReservation)
+            .where(AgentCapacityReservation.session_id == permit.session_id)
+            .order_by(AgentCapacityReservation.pending_seq)
+        ).all()
+        assert [(r.pending_seq, r.state) for r in rows] == [
+            (1, "settled"),
+            (2, "settled"),
+            (3, "uncertain"),
+        ]
     assert pid in supervision._candidates()
     sweep(proof("guest-chat"))
     after = before(database, pid)
     assert after[0]["state"] == "settled"
     assert after[0]["outcome"] == "guest_cessation_confirmed"
     assert [turn["seq"] for turn in after[2]] == [1, 2, 3]
+
+
+def test_interactive_reservation_past_the_failed_turn_is_ambiguous(
+    database, monkeypatch
+):
+    """A row at a later seq means admission.claim_pending already reserved a
+    start for a newer send (agent_sessions/admission.py claim_pending calls
+    reserve_start with the new pending seq), so this permit is no longer the
+    session's live attempt and the loop must not settle it.
+    """
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(database, "chat-resent", tier="interactive", history=1)
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        db.add(
+            AgentCapacityReservation(
+                local_session_id=permit.local_session_id,
+                session_id=permit.session_id,
+                pending_seq=permit.pending_seq + 1,
+                tier="interactive",
+                state="reserved",
+                owner="worker",
+            )
+        )
+    original = before(database, pid)
+    sweep(proof("guest-chat-resent"))
+    assert before(database, pid) == original
+    with Session(database) as db:
+        assert db.get(ProbeObservation, pid).reason == "ambiguous_ownership"
 
 
 def test_drainer_history_is_reported_as_unsupported_shape(database, monkeypatch):
@@ -541,7 +627,16 @@ def test_residual_binding_evidence_blocks_a_no_guest_settlement(
         assert db.get(ProbeObservation, pid).reason == "prior_binding_evidence"
 
 
-def test_production_drainer_kg_is_candidate_and_settles(database, monkeypatch):
+def test_production_drainer_kg_settles_when_the_workflow_died_before_the_hold(
+    database, monkeypatch
+):
+    """Selector coverage for the real kg row shape, again pre-hold.
+
+    swarm/drainer.py builds the local_session_id as
+    "<workflow>:<node_key>:<job_name>" (_session_key) and registers the job
+    name on the reservation, which is the only selector _candidates matches on.
+    The routine job row is still armed because hold_drainer_job never ran.
+    """
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
         database,

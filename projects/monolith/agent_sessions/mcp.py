@@ -1487,6 +1487,8 @@ async def monolith_agent_session_destroy(ember_session_id: str) -> dict:
     so this is intended for stale or parked test sessions. Any monolith agent session
     bound to the destroyed id has its binding cleared so the next send
     creates a fresh EmberVM session instead of invoking a dead one.
+    A session holding an unknown outcome is the exception: it keeps its binding
+    as evidence for reconciliation and is not listed in cleared_bindings.
     """
     try:
         result = await _transport.destroy_session(ember_session_id)

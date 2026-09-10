@@ -290,17 +290,25 @@ destroyed and no-guest proof. A bound guest requires exact control-plane
 eviction or timestamped destruction after the failed turn, and a guest that
 ceased without ever being stopped reports no stop precondition, so the factory
 path takes its identity from the committed stop intent or from the observed
-invocation ordered against the dispatch. A no-guest permit requires durable
+invocation. Both loops order that invocation against the failed turn rather
+than against the dispatch, because the dispatch stamp is written when the
+executor claims the turn and so lands before the guest is ever invoked. A
+no-guest permit requires durable
 claim evidence with no guest, binding or residual lineage evidence, and an
 operator destroy no longer clears a binding under an unresolved outcome, so a
 cleared binding cannot masquerade as one that never existed. A drainer permit
 whose routine job row is still parked on the attempt is left to the operator
-reconciliation path, which is the only owner that re-arms that job and which
-requires the reservation to still be uncertain. The shared settler preserves
-the session binding, while factory-owned sessions use the factory settlement
-path. Factory attempts with no bound guest remain held until that path can
-prove no delivery. This avoids indefinite holds that block admission (stall on
-2026-09-09). Legacy swarm `implement_then_review` sessions stay a residual:
+reconciliation path, and that path only handles kg jobs: it refuses any
+`routine_kind` other than `kg-drain`. `swarm/drainer.py` holds the job on every
+`InvocationOutcomeUnknown`, so the held row is the rule for drainer permits
+rather than the exception, and a held non-kg job currently has no owner at all
+(#5983). What this loop covers for drainers is the narrower shape where the
+workflow died before the hold was written, leaving the job row still armed. The
+two KG permits from the 2026-09-09 stall are held rows and still need the
+operator path. The shared settler preserves the session binding, while
+factory-owned sessions use the factory settlement path. Factory attempts with
+no bound guest remain held until that path can prove no delivery. Legacy swarm
+`implement_then_review` sessions stay a residual:
 they are project tier with no routine job and no factory pin, so nothing
 settles them, and covering them needs a check that their DBOS workflow is
 terminal, which this loop does not have.
