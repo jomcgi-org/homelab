@@ -28,6 +28,7 @@ describe("agents /private/agents/factory load", () => {
     const result = await load({
       fetch: fetchMock,
       url: new URL("https://private.jomcgi.dev/agents/factory?task=t-1"),
+      untrack: (fn) => fn(),
     });
 
     expect(result).toEqual({ board, task: "t-1", error: false });
@@ -43,6 +44,7 @@ describe("agents /private/agents/factory load", () => {
     const result = await load({
       fetch: fetchMock,
       url: new URL("https://private.jomcgi.dev/agents/factory"),
+      untrack: (fn) => fn(),
     });
 
     expect(result).toEqual({ board: null, task: null, error: true });

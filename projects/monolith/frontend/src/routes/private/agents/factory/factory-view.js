@@ -28,6 +28,14 @@ export function planRanks(nodes) {
   return computeRanks(keyed);
 }
 
+/** fmtCost renders 0 as an empty string; a ledger wants the zero. */
+export function money(value) {
+  if (value === null || value === undefined || value === "") return "";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "";
+  return n === 0 ? "$0.00" : `$${n.toFixed(2)}`;
+}
+
 /** Share of the task budget already committed, clamped to [0, 1]. */
 export function budgetShare(receipt) {
   const budget = Number(receipt?.policy?.task_budget_usd);
@@ -118,10 +126,22 @@ export function conductorPrompt(receipt) {
   return lines.join("\n");
 }
 
-export function conductorHref(receipt, model = "astra") {
+/**
+ * The conductor is whatever the policy says plans: the receipt's own policy
+ * for a task, the board's for a fresh proposal, astra when neither is loaded.
+ */
+export function conductorModel(receipt, board) {
+  return (
+    receipt?.policy?.conductor_model ||
+    board?.policy?.conductor_model ||
+    "astra"
+  );
+}
+
+export function conductorHref(receipt, board = null) {
   const params = new URLSearchParams();
   params.set("compose", "1");
-  params.set("model", model);
+  params.set("model", conductorModel(receipt, board));
   params.set("prompt", conductorPrompt(receipt));
   return `/agents?${params.toString()}`;
 }

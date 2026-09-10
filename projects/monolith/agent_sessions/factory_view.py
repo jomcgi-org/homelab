@@ -104,6 +104,25 @@ def shape_node(node: dict, runs: list[dict], sessions: dict[int, dict]) -> dict:
     }
 
 
+BOARD_POLICY_KEYS = (
+    "generation",
+    "max_tasks",
+    "conductor_model",
+    "worker_model",
+    "reviewer_model",
+    "max_turns_per_task",
+    "task_budget_usd",
+    "max_attempts",
+)
+
+
+def shape_policy(policy: dict | None) -> dict | None:
+    """The board shows six things about the policy; send those, not the rest."""
+    if not policy:
+        return None
+    return {key: policy.get(key) for key in BOARD_POLICY_KEYS}
+
+
 def shape_receipt(
     receipt: dict,
     nodes: list[dict] | None = None,
@@ -204,7 +223,6 @@ def build_factory_view(
     names a finished one, so opening a recent card costs one more read
     rather than every recent card carrying its whole graph.
     """
-    from swarm import graph
     from swarm.factory_controls import status
 
     from core.db import get_engine
@@ -236,6 +254,11 @@ def build_factory_view(
             task = receipt.get("task_id")
             if not task or task not in with_plan:
                 return shape_receipt(receipt)
+            # Imported here, not at module scope: the graph module lives in
+            # the swarm package, which the agent_sessions test target does not
+            # link, and a board with no plans never needs it.
+            from swarm import graph
+
             nodes = graph.load_graph(task, session=db)
             runs = graph.node_runs(task, session=db)
             ids = {run["session_id"] for run in runs if run.get("session_id")}
@@ -249,7 +272,7 @@ def build_factory_view(
         return {
             "ok": True,
             "state": state["state"],
-            "policy": state["policy"],
+            "policy": shape_policy(state["policy"]),
             "version": state["version"],
             "actor": state["actor"],
             "admitted_count": state["admitted_count"],

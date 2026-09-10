@@ -110,7 +110,7 @@ progress:
 agents:
   # Current production selection, listed explicitly so new supported models do
   # not appear in the console or Discord command without a values change.
-  models: "luna,terra,sol,opus,sonnet,fable,spark,pi-spark"
+  models: "luna,terra,sol,astra,opus,sonnet,fable,spark,pi-spark"
   sessions:
     # Observe failed probes until exact eviction evidence releases their hold.
     probeSupervisionEnabled: false

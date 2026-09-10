@@ -186,7 +186,7 @@ describe("factory board page", () => {
     const talk = detail.querySelector("a.talk");
     const href = new URL(talk.getAttribute("href"), "https://example.test");
     expect(href.pathname).toBe("/agents");
-    expect(href.searchParams.get("model")).toBe("astra");
+    expect(href.searchParams.get("model")).toBe("spark");
     expect(href.searchParams.get("prompt")).toContain("t-1");
   });
 
@@ -201,6 +201,33 @@ describe("factory board page", () => {
     const failed = target.querySelector(".panel.failed");
     expect(failed.querySelector(".detail")).not.toBeNull();
     expect(failed.textContent).toContain("muse could not reach api.meta.ai");
+  });
+
+  test("opening a finished card without a plan fetches it with ?task=", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => board(),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const target = renderPage({ board: board(), task: null, error: false });
+
+    target.querySelector(".panel.failed .panel-head").click();
+    await tick();
+    await vi.waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith("/agents/factory?task=t-0"),
+    );
+  });
+
+  test("renders a zero spend as $0.00 rather than a blank", () => {
+    const fresh = receipt({ committed_cost_usd: 0, turns_used: 0 });
+    const target = renderPage({
+      board: board({ active: [fresh] }),
+      task: null,
+      error: false,
+    });
+    expect(target.querySelector(".panel.admitted .spec").textContent).toContain(
+      "$0.00 of $36.00",
+    );
   });
 
   test("says so when the board is unavailable", () => {
