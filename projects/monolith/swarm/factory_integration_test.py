@@ -332,12 +332,9 @@ def test_restart_retries_atomic_outcome_settlement_without_redispatch(
 
 
 def test_real_factory_turn_rejection_rolls_back_graph_dispatch_and_arming(db, policy):
-    policy["max_turns_per_task"] = 1
     policy["max_planner_turns"] = 4
     task_id = admit(policy)
     dbos = CompletedNodes()
-    # Planning has its own cap, so the single work turn is spent by implement_fix
-    # and the review node the second planner adds cannot reserve one.
     reconcile_until(
         task_id,
         policy,
@@ -347,8 +344,21 @@ def test_real_factory_turn_rejection_rolls_back_graph_dispatch_and_arming(db, po
     used = controls.task_snapshot(task_id)
     assert used["turns_used"] == 1 and used["planner_turns_used"] == 2
 
-    # The graph has cost/attempt room. The distinct factory turn cap must reject
-    # the composed reservation and roll back the graph's inserted/armed run.
+    # A crash between authorizing a start and launching its workflow leaves the
+    # reservation held. The graph has cost and attempt room, so the distinct
+    # factory start fence must reject the composed reservation and roll back the
+    # graph's inserted and armed run.
+    with Session(db) as session:
+        session.add(
+            FactoryStart(
+                task_id=task_id,
+                start_key="factory-node:crashed:1",
+                actor="crashed-reconciler",
+                model="luna",
+                max_cost_usd=1.0,
+            )
+        )
+        session.commit()
     before = graph.node_runs(task_id)
     conductor.reconcile_task(task_id, policy, dbos)
     assert graph.node_runs(task_id) == before

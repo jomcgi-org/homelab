@@ -1994,20 +1994,32 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
                 raise ValueError(f"factory outcome refused: {charged['reason']}")
     parallel = parallel_limit(policy)
     active = [r for r in runs if r["status"] in ("admitted", "dispatched", "uncertain")]
-    for run in active:
-        _submit_or_reconcile(task, run, dbos)
     if active:
-        # A submit above can settle its own run, so the free slots are read
-        # after the whole in-flight set has had its tick.
+        for run in active:
+            _submit_or_reconcile(task, run, dbos)
+        # A submit can settle its own run, so the free slots are read after the
+        # whole in-flight set has had its tick. A tick that reconciled in-flight
+        # work never also plans: it either fills a free parallel slot beside
+        # work still running, or leaves a settled graph to the next tick.
         runs = graph.node_runs(task_id)
-        active = [
+        running = [
             r for r in runs if r["status"] in ("admitted", "dispatched", "uncertain")
         ]
-    if len(active) >= parallel:
+        if not running or len(running) >= parallel:
+            return
+        if not can_start(task_id)["ok"]:
+            return
+        _dispatch_ready(
+            task,
+            graph.load_graph(task_id),
+            runs,
+            parallel - len(running),
+            fan_out=True,
+        )
         return
     permission = can_start(task_id)
     if not permission["ok"]:
-        if not active and permission["reason"] == "task_deadline":
+        if permission["reason"] == "task_deadline":
             from swarm.factory_controls import finish_task
 
             finish_task(
@@ -2024,12 +2036,6 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     # graph edits that race with reading nodes or constructing the prompt.
     insertion_revision = graph.current_version(task_id)
     nodes = graph.load_graph(task_id)
-    if active:
-        # Work is in flight, so the graph is not settled: filling the free
-        # slots from ready nodes is the only thing safe to do. Planning and
-        # review rounds wait until nothing is running, exactly as before.
-        _dispatch_ready(task, policy, nodes, runs, parallel - len(active), fan_out=True)
-        return
     planners = [
         r
         for r in runs
@@ -2125,7 +2131,7 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
         else:
             set_control("pause_task", ACTOR, task_id=task_id)
         return
-    _dispatch_ready(task, policy, nodes, runs, parallel, fan_out=False)
+    _dispatch_ready(task, nodes, runs, parallel, fan_out=False)
 
 
 def _ready_nodes(nodes: list[dict], runs: list[dict]) -> list[dict]:
@@ -2153,7 +2159,6 @@ def _free_background_slots() -> int:
 
 def _dispatch_ready(
     task: dict,
-    policy: dict,
     nodes: list[dict],
     runs: list[dict],
     slots: int,
