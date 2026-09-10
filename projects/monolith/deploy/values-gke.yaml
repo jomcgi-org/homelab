@@ -15,13 +15,15 @@ swarm:
   # Exact operator requests and original deadlines retain the existing task
   # bounds. Capacity is released only after durable guest cessation proof.
   factoryStopSupervisionEnabled: true
-  # Per-class floors on remaining quota percent (#5974). Workers spill from
-  # sol to the next pool member below 10 percent Codex; the conductor keeps
-  # drawing to zero so the last slice of the class goes to planning.
+  # Per-class floors on remaining quota percent (#5974). A floor only bites
+  # for a role whose stored factory policy carries a model_pools entry with
+  # somewhere to spill to (policy v41 has worker [sol, sonnet] and conductor
+  # [astra, spark]); a single-member pool never consults quota. Workers spill
+  # from sol below 10 percent Codex. The conductor has no floor, so it keeps
+  # drawing until the exhaustion band, leaving the last slice to planning.
   quotaFloors:
     codex:
       worker: 10
-      conductor: 0
 
 agents:
   sessions:
