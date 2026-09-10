@@ -1,0 +1,11 @@
+clusterName: monolith-pg
+environments:
+  - namespace: loom-dev
+    database: loom_dev
+    role: loom_dev
+    itemPath: vaults/k8s-homelab/items/loom-dev-db
+  - namespace: loom
+    database: loom
+    role: loom
+    itemPath: vaults/k8s-homelab/items/loom-prod-db
+imagePullItemPath: vaults/k8s-homelab/items/ghcr-read-permissions

@@ -1,0 +1,33 @@
+objectStore:
+  size: 5Gi
+ingest:
+  nodeSelector:
+    cloud.google.com/gke-nodepool: ember-bricks
+  tolerations:
+    - key: embervm.jomcgi.dev/node
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+queryApi:
+  nodeSelector:
+    cloud.google.com/gke-nodepool: ember-bricks
+  tolerations:
+    - key: embervm.jomcgi.dev/node
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+worker:
+  nodeSelector:
+    cloud.google.com/gke-nodepool: ember-bricks
+  tolerations:
+    - key: embervm.jomcgi.dev/node
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+networkPolicy:
+  extraIngress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080

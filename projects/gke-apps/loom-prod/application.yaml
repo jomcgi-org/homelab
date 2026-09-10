@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: loom-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    kargo.akuity.io/authorized-stage: kargo-loom:prod
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  sources:
+    - repoURL: ghcr.io/weave-hand/charts
+      chart: loom
+      # Bootstrap only. Kargo owns this field after the first promotion.
+      targetRevision: 0.2.0
+      helm:
+        releaseName: loom
+        valueFiles:
+          - $values/projects/loom/deploy/values.yaml
+          - $values/projects/loom/deploy/values-prod.yaml
+    - repoURL: https://github.com/jomcgi-org/homelab.git
+      targetRevision: HEAD
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: loom
+  syncPolicy:
+    # Kargo initiates sync only after dev verification, including first deploy.
+    # Configuration-only changes require an explicit ArgoCD sync.
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

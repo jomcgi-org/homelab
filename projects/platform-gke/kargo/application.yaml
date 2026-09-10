@@ -35,6 +35,7 @@ spec:
       releaseName: kargo
       valueFiles:
         - values.yaml
+        - values-gke.yaml
       ignoreMissingValueFiles: false
   destination:
     server: https://kubernetes.default.svc

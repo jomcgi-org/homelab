@@ -9,3 +9,6 @@ resources:
   - ./monolith-agents
   - ./inference
   - ./context-forge-gateway
+  - ./loom-bootstrap
+  - ./loom-dev
+  - ./loom-prod
