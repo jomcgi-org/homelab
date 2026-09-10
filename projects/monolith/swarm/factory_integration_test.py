@@ -287,7 +287,10 @@ def test_real_receipt_graph_controls_complete_string_task_plan_work_review_pr(
         "review_session_id": 104,
         "state": "ready_for_review",
     }
-    assert snapshot["turns_used"] == 5 and snapshot["unresolved_starts"] == 0
+    # Three of the five starts were conductor planning rounds. Only the two
+    # work starts count against max_turns_per_task; all five cost money.
+    assert snapshot["turns_used"] == 2 and snapshot["planner_turns_used"] == 3
+    assert snapshot["unresolved_starts"] == 0
     assert snapshot["committed_cost_usd"] == 1.25
     assert all(r["status"] == "succeeded" for r in graph.node_runs(task_id))
     db.dispose()
@@ -332,28 +335,27 @@ def test_real_factory_turn_rejection_rolls_back_graph_dispatch_and_arming(db, po
     policy["max_turns_per_task"] = 1
     task_id = admit(policy)
     dbos = CompletedNodes()
+    # Planner rounds are free, so the single work turn is spent by implement_fix
+    # and the review node the second planner adds cannot reserve one.
     reconcile_until(
         task_id,
         policy,
         dbos,
-        lambda: any(
-            n["node_key"] == "implement_fix" for n in graph.load_graph(task_id)
-        ),
+        lambda: any(n["node_key"] == "review_check" for n in graph.load_graph(task_id)),
     )
-    assert controls.task_snapshot(task_id)["turns_used"] == 1
+    used = controls.task_snapshot(task_id)
+    assert used["turns_used"] == 1 and used["planner_turns_used"] == 2
 
     # The graph has cost/attempt room. The distinct factory turn cap must reject
     # the composed reservation and roll back the graph's inserted/armed run.
     before = graph.node_runs(task_id)
     conductor.reconcile_task(task_id, policy, dbos)
     assert graph.node_runs(task_id) == before
-    work = next(
-        n for n in graph.load_graph(task_id) if n["node_key"] == "implement_fix"
-    )
+    work = next(n for n in graph.load_graph(task_id) if n["node_key"] == "review_check")
     assert work["armed_at"] is None
     snapshot = controls.task_snapshot(task_id)
     assert snapshot["turns_used"] == 1 and snapshot["task_paused"]
-    assert len(dbos.started_pins) == 1
+    assert len(dbos.started_pins) == 3
 
 
 def test_late_confirmed_result_settles_unknown_identity_without_new_vm(

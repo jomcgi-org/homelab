@@ -357,6 +357,7 @@ def _budget_evidence(task_id: str) -> dict:
             **budget,
             "graph_revision": graph.current_version(task_id, session=db),
             "turns_used": receipt["turns_used"],
+            "planner_turns_used": receipt["planner_turns_used"],
             "max_turns_per_task": policy["max_turns_per_task"],
             "deadline_at": receipt["deadline_at"],
             "new_node_max_cost_usd": policy["turn_budget_usd"],
@@ -1043,6 +1044,7 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
             "status": "uncertain",
             "reason": f"node workflow {state.status}",
             "cost_usd": None,
+            "cost_basis": "unknown",
             "session_id": run.get("session_id"),
         }
     if result["status"] == "uncertain":
@@ -1099,6 +1101,7 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                         "status": "failed",
                         "session_id": proof["session_id"],
                         "cost_usd": None,
+                        "cost_basis": "unknown",
                         "head_sha": current.get("head_sha") or result.get("head_sha"),
                         "reason": "not_invoked: exact session-owner failure before model POST",
                         "previous_outcome": _outcome(current) or result,
@@ -1120,6 +1123,7 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                         "status": "failed",
                         "session_id": cancelled,
                         "cost_usd": None,
+                        "cost_basis": "unknown",
                         "reason": "cancelled_before_dispatch: factory timeout reconciliation",
                     }
             status = result["status"]

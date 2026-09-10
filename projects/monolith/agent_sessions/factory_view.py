@@ -146,6 +146,7 @@ def shape_receipt(
             "admitted_at",
             "deadline_at",
             "turns_used",
+            "planner_turns_used",
             "committed_cost_usd",
             "unresolved_starts",
             "limits",

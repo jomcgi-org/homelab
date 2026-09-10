@@ -455,7 +455,7 @@ def add_node(
             and any(
                 run.node_key == node_key
                 and run.reserved_cost_usd is None
-                and _accounting_basis(run) != "reported"
+                and _accounting_basis(run) not in SETTLED_ACCOUNTING_BASES
                 for run in _runs(db, task_id)
             )
         ):
@@ -706,12 +706,30 @@ def budget_snapshot(task_id: str, *, session: Session | None = None) -> dict:
         }
 
 
+# A settled attempt charges its own cost rather than its whole reservation,
+# whether that cost was measured by the provider or priced from token usage.
+SETTLED_ACCOUNTING_BASES = ("reported", "list_priced")
+
+
+def _reported_cost_basis(run: SwarmNodeRun) -> str:
+    """Read the settlement evidence the node result recorded, defaulting to measured."""
+    if not run.outcome_json:
+        return "reported"
+    try:
+        outcome = json.loads(run.outcome_json)
+    except (TypeError, ValueError):
+        return "reported"
+    if not isinstance(outcome, dict):
+        return "reported"
+    return "list_priced" if outcome.get("cost_basis") == "list" else "reported"
+
+
 def _accounting_basis(run: SwarmNodeRun) -> str:
     if run.status not in TERMINAL_RUN_STATUSES:
         return "active_reservation"
     if not _valid_cost(run.cost_usd, zero=True):
         return "reserved_unknown_cost"
-    return "reported"
+    return _reported_cost_basis(run)
 
 
 def admit_dispatch(

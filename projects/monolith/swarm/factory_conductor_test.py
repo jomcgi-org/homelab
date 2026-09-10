@@ -767,13 +767,21 @@ def test_repair_does_not_replenish_factory_turn_budget(feedback_db, monkeypatch)
     from swarm import factory_controls as controls
 
     task, policy = feedback_task(max_turns=1)
+    # One work start spends the entire work cap. The planner round that follows
+    # is exempt from that cap, and it must not hand the repair a work turn back.
+    complete_feedback_node(
+        task,
+        policy,
+        "implement_once",
+        {"status": "complete", "summary": "done", "pr_number": None, "head_sha": None},
+    )
     run = complete_feedback_node(
         task,
         policy,
         "conductor_1",
         {
             "action": "add_node",
-            "node_key": "conductor_forbidden",
+            "node_key": "repair",
             "role": "implement",
             "prompt": "fix",
             "deps": [],
@@ -781,15 +789,15 @@ def test_repair_does_not_replenish_factory_turn_budget(feedback_db, monkeypatch)
         },
     )
     conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
-    conductor.reconcile_task(task["id"], policy, object())
     monkeypatch.setattr(
         conductor, "github_get", lambda *_args: {"object": {"sha": "a" * 40}}
     )
     conductor.reconcile_task(task["id"], policy, object())
     snapshot = controls.task_snapshot(task["id"])
-    assert snapshot["turns_used"] == 1 and snapshot["committed_cost_usd"] == 0.25
+    assert snapshot["turns_used"] == 1 and snapshot["planner_turns_used"] == 1
+    assert snapshot["committed_cost_usd"] == 0.5
     assert snapshot["task_paused"] and snapshot["policy"]["max_turns_per_task"] == 1
-    assert len(conductor.graph.node_runs(task["id"])) == 1
+    assert len(conductor.graph.node_runs(task["id"])) == 2
 
 
 @pytest.mark.parametrize("later_planner", [False, True])
@@ -905,7 +913,8 @@ def test_inserted_planner_decision_uses_its_own_committed_revision(
     after = controls.task_snapshot(task["id"])
     assert after["policy"] == before_receipt["policy"]
     assert after["deadline_at"] == before_receipt["deadline_at"]
-    assert after["turns_used"] == before_receipt["turns_used"] + 1
+    assert after["turns_used"] == before_receipt["turns_used"]
+    assert after["planner_turns_used"] == before_receipt["planner_turns_used"] + 1
     assert after["committed_cost_usd"] == before_receipt["committed_cost_usd"] + 0.25
 
 
@@ -1801,6 +1810,7 @@ def test_budget_projection_shares_admission_accounting_and_retry_ceiling(feedbac
     assert projection["pending_planner_max_cost_usd"] == 2
     assert (
         projection["turns_used"] == 1
+        and projection["planner_turns_used"] == 0
         and projection["max_turns_per_task"] == policy["max_turns_per_task"]
     )
     assert (
@@ -2053,7 +2063,8 @@ def test_not_invoked_settles_actual_factory_path_without_refunding_or_cleanup(
     assert run["accounted_cost_usd"] == current["committed_cost_usd"] == 2
     assert run["accounting_basis"] == "reserved_unknown_cost"
     assert current["state"] == "admitted" and current["unresolved_starts"] == 0
-    assert current["turns_used"] == before["turns_used"] == 1
+    assert current["turns_used"] == before["turns_used"] == 0
+    assert current["planner_turns_used"] == before["planner_turns_used"] == 1
     assert current["deadline_at"] == before["deadline_at"]
     assert current["policy"] == before["policy"]
     assert controls.status()["admitted_count"] == 1
@@ -2276,7 +2287,9 @@ def test_not_invoked_honors_terminal_workflow_boundary(
     else:
         assert current["unresolved_starts"] == 0
         assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "failed"
-        assert current["turns_used"] == 1 and current["committed_cost_usd"] == 2
+        assert current["turns_used"] == 0
+        assert current["planner_turns_used"] == 1
+        assert current["committed_cost_usd"] == 2
     assert s.native_snapshot() == native
 
 
@@ -2298,7 +2311,8 @@ def test_not_invoked_reconciliation_does_not_override_operating_controls(
     assert conductor.graph.node_runs(s.task["id"]) == runs
     assert len(conductor.graph.load_graph(s.task["id"])) == 1
     current = controls.task_snapshot(s.task["id"])
-    assert current["turns_used"] == 1 and current["committed_cost_usd"] == 2
+    assert current["turns_used"] == 0 and current["planner_turns_used"] == 1
+    assert current["committed_cost_usd"] == 2
     assert (
         current["task_paused"]
         if action == "pause_task"
@@ -2349,7 +2363,8 @@ def test_timeout_reconciliation_settles_both_ledgers_without_budget_credit(
     assert json.loads(runs[0]["outcome_json"])["cost_usd"] is None
     current = controls.task_snapshot(s.task["id"])
     assert current["starts"][0]["status"] == "failed"
-    assert current["turns_used"] == original["turns_used"] == 1
+    assert current["turns_used"] == original["turns_used"] == 0
+    assert current["planner_turns_used"] == original["planner_turns_used"] == 1
     assert current["deadline_at"] == original["deadline_at"]
     with Session(s.engine) as db:
         assert db.exec(select(PendingMessage)).first() is None
@@ -3427,7 +3442,7 @@ def test_expired_task_finishes_only_after_queue_attempt_reconciles(
     receipt = controls.task_snapshot(s.task["id"])
     assert receipt["state"] == "failed"
     assert receipt["deadline_at"] == deadline
-    assert receipt["turns_used"] == 1
+    assert receipt["turns_used"] == 0 and receipt["planner_turns_used"] == 1
     assert receipt["evidence"]["state"] == "task_deadline"
 
 

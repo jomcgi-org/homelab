@@ -494,3 +494,60 @@ def test_model_pools_are_normalised_and_stored_in_policy(db, policy):
 def test_policy_without_model_pools_stays_unchanged(db, policy):
     assert controls.set_control("configure", "operator", policy=policy)["ok"]
     assert "model_pools" not in controls.status()["policy"]
+
+
+def node_key(task_id, node, attempt=1):
+    return f"factory-node:{task_id}:{node}:{attempt}"
+
+
+def test_planner_starts_cost_money_but_do_not_consume_the_work_turn_cap(db, policy):
+    task = admitted(policy)
+    for index, node in enumerate(("conductor_1", "implement_fix", "conductor_2")):
+        key = node_key(task, node)
+        assert grant(task, key, cost=1.0)["ok"]
+        assert controls.record_start_outcome(
+            task, key, "succeeded", "worker", cost_usd=0.5, session_id=index + 1
+        )["ok"]
+    snapshot = controls.task_snapshot(task)
+    assert snapshot["turns_used"] == 1
+    assert snapshot["planner_turns_used"] == 2
+    assert snapshot["committed_cost_usd"] == 1.5
+    assert snapshot["limits"]["turn_limit_reached"] is False
+
+
+def test_work_starts_alone_reach_the_turn_limit_and_fence_admission(db, policy):
+    policy["max_turns_per_task"] = 2
+    task = admitted(policy)
+    for index, node in enumerate(
+        ("conductor_1", "implement_one", "conductor_2", "implement_two")
+    ):
+        key = node_key(task, node)
+        assert grant(task, key, cost=1.0)["ok"]
+        assert controls.record_start_outcome(
+            task, key, "succeeded", "worker", cost_usd=0.1, session_id=index + 1
+        )["ok"]
+    snapshot = controls.task_snapshot(task)
+    assert snapshot["turns_used"] == 2 and snapshot["planner_turns_used"] == 2
+    assert snapshot["limits"]["turn_limit_reached"] is True
+    assert grant(task, node_key(task, "implement_three"), cost=1.0) == {
+        "ok": False,
+        "reason": "turn_limit",
+    }
+    # A further planning round is still admissible, and still costs money.
+    assert grant(task, node_key(task, "conductor_3"), cost=1.0)["ok"]
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "one",
+        "factory-node:t-1:conductor_1",
+        "conductor_1",
+        "factory-node:t-1:conductor_1:x",
+    ],
+)
+def test_unparsable_start_keys_count_as_work_turns(db, policy, key):
+    task = admitted(policy)
+    assert grant(task, key)["ok"]
+    snapshot = controls.task_snapshot(task)
+    assert snapshot["turns_used"] == 1 and snapshot["planner_turns_used"] == 0

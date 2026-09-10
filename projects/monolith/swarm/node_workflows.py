@@ -219,6 +219,13 @@ def _node_prompt(
     )
 
 
+ACCOUNTING_LABELS = {
+    "provider": "reported_cost",
+    "list": "list_priced_cost",
+    "unknown": "unknown_cost",
+}
+
+
 def _result(
     status: str,
     session_id: int | None,
@@ -228,7 +235,11 @@ def _result(
     artifact: dict | None,
     value: dict | None,
     reason: str | None,
+    cost_basis: str | None = None,
 ) -> dict:
+    basis = cost_basis or ("provider" if cost_usd is not None else "unknown")
+    if cost_usd is None:
+        basis = "unknown"
     return {
         "status": status,
         "session_id": session_id,
@@ -238,7 +249,8 @@ def _result(
         "artifact": artifact,
         "value": value,
         "reason": reason,
-        "accounting": "reported_cost" if cost_usd is not None else "unknown_cost",
+        "cost_basis": basis,
+        "accounting": ACCOUNTING_LABELS[basis],
     }
 
 
@@ -256,6 +268,23 @@ def _known_cost(value: object) -> float | None:
     ):
         return None
     return float(value)
+
+
+def _settlement_cost(reported: object, listed: object) -> tuple[float | None, str]:
+    """The cost this attempt settles at, with the evidence it came from.
+
+    Codex-backed models report no provider cost, so their turn carries only the
+    list price the turn store computed from token usage. Settling at that list
+    price is closer to the truth than charging the whole reservation, and the
+    basis travels with the result so a reader can tell measured from estimated.
+    """
+    cost = _known_cost(reported)
+    if cost is not None:
+        return cost, "provider"
+    cost = _known_cost(listed)
+    if cost is not None:
+        return cost, "list"
+    return None, "unknown"
 
 
 def _decompress_diff(blob: bytes | None) -> str | None:
@@ -592,6 +621,7 @@ def execute_node(pin: dict) -> dict:
     key = _session_key(pin["task_id"], pin["node_key"], attempt)
     session_id = None
     cost = None
+    basis = "unknown"
     artifact = None
     head_sha = None
     phase = "clock"
@@ -628,6 +658,7 @@ def execute_node(pin: dict) -> dict:
                 None,
                 None,
                 f"not_started: {started['reason']}{note}",
+                cost_basis="provider",
             )
         session_id = started["session_id"]
         phase = "wait"
@@ -648,7 +679,7 @@ def execute_node(pin: dict) -> dict:
                 None,
                 "timeout: session cessation is unconfirmed; reconcile before retry",
             )
-        cost = _known_cost(turn.get("cost_usd"))
+        cost, basis = _settlement_cost(turn.get("cost_usd"), turn.get("list_cost_usd"))
         if turn.get("stop_reason") == UNKNOWN_INVOCATION:
             return _result(
                 "uncertain",
@@ -659,6 +690,7 @@ def execute_node(pin: dict) -> dict:
                 None,
                 None,
                 "unknown_invocation: reconcile before retry",
+                cost_basis=basis,
             )
         if turn.get("terminal_reason") not in CLEAN_TERMINAL_REASONS:
             return _result(
@@ -670,6 +702,7 @@ def execute_node(pin: dict) -> dict:
                 None,
                 None,
                 "terminal reason does not confirm clean completion; reconcile before retry",
+                cost_basis=basis,
             )
         phase = "artifact_read"
         artifact = _read_turn_artifact(
@@ -693,12 +726,21 @@ def execute_node(pin: dict) -> dict:
             artifact,
             artifact.get("value") if artifact else None,
             f"{phase}_failed: {type(exc).__name__}{note}",
+            cost_basis=basis,
         )
 
     reasons = []
     if cost is None:
         reasons.append("unknown_cost: consume the full admission reservation")
-    overrun = cost is not None and cost > pin["max_cost_usd"]
+    elif basis == "list":
+        ceiling = " above the admission ceiling" if cost > pin["max_cost_usd"] else ""
+        reasons.append(
+            "list_priced_cost: the provider reported no spend, so this attempt "
+            f"settles at the list price of its token usage{ceiling}"
+        )
+    # Only measured provider spend fails a delivery. A list price is an estimate,
+    # so it settles the ledger without discarding completed work.
+    overrun = basis == "provider" and cost > pin["max_cost_usd"]
     if overrun:
         reasons.append(
             "cost_exceeded: reported spend exceeds reservation; provider cutoff is not enforced"
@@ -733,6 +775,7 @@ def execute_node(pin: dict) -> dict:
         artifact,
         artifact["value"],
         "; ".join(reasons) or None,
+        cost_basis=basis,
     )
     if turn_model := turn.get("model"):
         result["provider_model"] = turn_model
@@ -817,7 +860,7 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
             or turn.stop_reason == UNKNOWN_INVOCATION
         ):
             return None
-        cost = _known_cost(turn.cost_usd)
+        cost, basis = _settlement_cost(turn.cost_usd, turn.list_cost_usd)
         provider_model = turn.model
         artifact = _evaluate_stored_artifact(
             turn.artifact_path,
@@ -833,7 +876,15 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
     reasons = []
     if cost is None:
         reasons.append("unknown_cost: consume the full admission reservation")
-    overrun = cost is not None and cost > pin["max_cost_usd"]
+    elif basis == "list":
+        ceiling = " above the admission ceiling" if cost > pin["max_cost_usd"] else ""
+        reasons.append(
+            "list_priced_cost: the provider reported no spend, so this attempt "
+            f"settles at the list price of its token usage{ceiling}"
+        )
+    # Only measured provider spend fails a delivery. A list price is an estimate,
+    # so it settles the ledger without discarding completed work.
+    overrun = basis == "provider" and cost > pin["max_cost_usd"]
     if overrun:
         reasons.append(
             "cost_exceeded: reported spend exceeds reservation; provider cutoff is not enforced"
@@ -865,6 +916,7 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
         artifact,
         artifact["value"],
         "; ".join(reasons) or None,
+        cost_basis=basis,
     )
     if provider_model:
         result["provider_model"] = provider_model

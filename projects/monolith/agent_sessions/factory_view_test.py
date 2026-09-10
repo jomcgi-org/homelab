@@ -110,6 +110,7 @@ def test_shape_receipt_joins_nodes_runs_and_sessions():
             }
         ],
         "turns_used": 1,
+        "planner_turns_used": 2,
         "committed_cost_usd": 4.0,
         "unresolved_starts": 0,
         "limits": {"deadline_expired": False},
@@ -130,6 +131,7 @@ def test_shape_receipt_joins_nodes_runs_and_sessions():
         "max_attempts": 2,
     }
     assert "repo" not in shaped["policy"]
+    assert shaped["turns_used"] == 1 and shaped["planner_turns_used"] == 2
     assert shaped["starts"][0]["session_id"] == 3
     assert "actor" not in shaped["starts"][0]
     states = {n["node_key"]: n["state"] for n in shaped["nodes"]}
