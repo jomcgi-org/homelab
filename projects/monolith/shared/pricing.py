@@ -24,6 +24,8 @@ _MODEL_ALIASES = {
     "luna": ("gpt-5.6-luna", "openai"),
     "terra": ("gpt-5.6-terra", "openai"),
     "sol": ("gpt-5.6-sol", "openai"),
+    # astra has no genai-prices entry, so it settles through the fixed table.
+    "astra": ("gpt-6-astra", "fixed"),
     "opus": ("claude-opus-5", "anthropic"),
     "sonnet": ("claude-sonnet-5", "anthropic"),
     "fable": ("claude-fable-5-1", "anthropic"),
