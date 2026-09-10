@@ -268,13 +268,28 @@ failure surface.
 
 The agent console is served at `/agents` on the private hostname as an
 inbox-first surface: rows state the ask, a run view draws the plan, decision
-records and walkthrough, a drain lane shows the queue, a VM map reads the
-control plane and is deliberately empty when it is unreachable, and the voice
-companion is a ledger-first screen the conversation drives. The route is
-grouped under the private tree behind the private ingress authentication
-policy. Session output reaches Discord only when a turn needs a human, unless
-the session is bound to a thread.
+records and walkthrough, a knowledge extraction queue lane shows the drainer's
+backlog, a VM map reads the control plane and is deliberately empty when it is
+unreachable, and the voice companion is a ledger-first screen the conversation
+drives. The route is grouped under the private tree behind the private ingress
+authentication policy. Session output reaches Discord only when a turn needs a
+human, unless the session is bound to a thread.
+
+The factory board at `/agents/factory` is the operator's view of the factory:
+a state strip, then in flight, queue and recent panels, each task drawn as its
+plan (nodes ranked by dependency, one attempt row per node with the session it
+ran in) beside its starts and stop events. It reads one board endpoint,
+`GET /api/agents/factory`, a read-only join of the factory status, plan graph,
+node runs and session summaries that sits beside `/api/agents/sessions` rather
+than under the operator-gated `/api/swarm/factory` routes, because the browser
+on the private tier carries no bearer and the board is a view, not a control.
+A card's "Discuss with the conductor" link opens the console with an Astra
+session prefilled with that task's plan, so a sync with the conductor is an
+ordinary session rather than a second chat surface. The launcher leads with a
+factory strip above the knowledge extraction queue strip.
 (see: /projects/monolith/frontend/src/routes/private/agents/+page.svelte)
+(see: /projects/monolith/frontend/src/routes/private/agents/factory/+page.svelte)
+(see: /projects/monolith/agent_sessions/factory_view.py)
 (see: /projects/monolith/agent_sessions/voice.py)
 (see: /projects/monolith/chart/values.yaml)
 

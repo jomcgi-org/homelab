@@ -194,7 +194,12 @@ export const RUN_LEXICON = {
     launcherQuestion: "What should {model} do?",
     launcherPlaceholder:
       "Describe the task. One session, or a run with a review gate.",
-    drainHeading: "luna drain",
+    factoryHeading: "factory",
+    factoryInFlight: "{count} in flight",
+    factoryQueued: "{count} queued",
+    factoryPaused: "{count} paused",
+    factoryOff: "off",
+    drainHeading: "knowledge extraction queue",
     drainRunning: "running",
     drainIdle: "idle",
     drainQueued: "{count} queued",

@@ -286,3 +286,38 @@ describe("launcher drain lane", () => {
     expect(strip.textContent).toContain("3 queued");
   });
 });
+
+describe("launcher factory lane", () => {
+  test("renders the board strip first with counts", async () => {
+    const target = await render(vi.fn(), {
+      drain: { enabled: true, running: [], due_count: 0, last: null },
+      factory: { state: "enabled", active: 1, queued: 2, paused: 0 },
+    });
+
+    const strips = target.querySelectorAll(".drain-lane");
+    const strip = target.querySelector(".factory-lane");
+    expect(strips[0]).toBe(strip);
+    expect(strip.getAttribute("href")).toBe("/agents/factory");
+    expect(strip.textContent).toContain(P.labels.factoryHeading);
+    expect(strip.textContent).toContain("1 in flight");
+    expect(strip.textContent).toContain("2 queued");
+    expect(strip.querySelector(".dot.running")).not.toBeNull();
+  });
+
+  test("shows a paused count and the state when not enabled", async () => {
+    const target = await render(vi.fn(), {
+      factory: { state: "paused", active: 1, queued: 0, paused: 1 },
+    });
+
+    const strip = target.querySelector(".factory-lane");
+    expect(strip.textContent).toContain("paused");
+    expect(strip.textContent).toContain("1 paused");
+    expect(strip.querySelector(".dot.running")).toBeNull();
+  });
+
+  test("hides the strip when the board is unknown", async () => {
+    const target = await render(vi.fn(), { factory: null });
+
+    expect(target.querySelector(".factory-lane")).toBeNull();
+  });
+});

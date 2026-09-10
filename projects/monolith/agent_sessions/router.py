@@ -295,6 +295,18 @@ def list_sessions(
     return _rows(session, status, limit)
 
 
+@router.get("/factory")
+def factory_board(task: str | None = None) -> dict:
+    """Read-only board for the private agents page: control state, policy,
+    in-flight tasks with their plan and sessions, the queue, and recent
+    outcomes. Sits beside /sessions rather than under the operator-gated
+    /api/swarm/factory routes because the browser on the private tier carries
+    no bearer, and this is a view, not a control."""
+    from agent_sessions.factory_view import build_factory_view
+
+    return build_factory_view(task)
+
+
 @router.get("/drain-lane")
 def drain_lane_status() -> dict:
     from agent.api import list_jobs, load_drainer_settings
