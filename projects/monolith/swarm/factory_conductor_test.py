@@ -768,7 +768,7 @@ def test_repair_does_not_replenish_factory_turn_budget(feedback_db, monkeypatch)
 
     task, policy = feedback_task(max_turns=1)
     # One work start spends the entire work cap. The planner round that follows
-    # is exempt from that cap, and it must not hand the repair a work turn back.
+    # answers to its own cap, and it must not hand the repair a work turn back.
     complete_feedback_node(
         task,
         policy,
@@ -3998,3 +3998,29 @@ def test_planner_add_node_review_never_falls_back(feedback_db, monkeypatch):
     )
     conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
     assert _node(task["id"], "review_fix")["model"] == "opus"
+
+
+@pytest.mark.parametrize(
+    ("chosen", "original", "expected"),
+    [
+        (None, {"cost_basis": "list", "cost_usd": 0.4}, ("unknown", "unknown_cost")),
+        (0.4, {"cost_basis": "list", "cost_usd": 0.4}, ("list", "list_priced_cost")),
+        (0.9, {"cost_basis": "list", "cost_usd": 0.4}, ("provider", "reported_cost")),
+        (
+            0.4,
+            {"cost_basis": "provider", "cost_usd": 0.4},
+            ("provider", "reported_cost"),
+        ),
+        (0.4, {}, ("provider", "reported_cost")),
+    ],
+)
+def test_cessation_settlement_writes_basis_and_label_together(
+    chosen, original, expected
+):
+    from swarm.factory_supervision import _settlement_accounting
+
+    basis, label = expected
+    assert _settlement_accounting(chosen, original) == {
+        "cost_basis": basis,
+        "accounting": label,
+    }

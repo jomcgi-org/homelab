@@ -46,6 +46,11 @@ fields are required. An example for one approved issue is:
 }
 ```
 
+`max_turns_per_task` caps delivery starts. Conductor planning rounds are capped
+separately by the optional `max_planner_turns`, which inherits the delivery cap
+when it is omitted, so an existing policy needs no edit. Planning rounds still
+draw on `task_budget_usd`.
+
 The example is documentation, not live authorization. Use the selected issue,
 current capacity and an explicitly accepted policy for an operating trial.
 Admitted tasks retain their policy even if later configuration changes.

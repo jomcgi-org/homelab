@@ -290,6 +290,8 @@ factory strip above the knowledge extraction queue strip.
 (see: /projects/monolith/frontend/src/routes/private/agents/+page.svelte)
 (see: /projects/monolith/frontend/src/routes/private/agents/factory/+page.svelte)
 (see: /projects/monolith/agent_sessions/factory_view.py)
+(see: /projects/monolith/agent_sessions/voice.py)
+(see: /projects/monolith/chart/values.yaml)
 
 A factory start reserves a ceiling and settles at the cost its node result
 reports. Codex-backed models report no provider cost, so a result falls back to
@@ -299,8 +301,9 @@ that as an accounting basis of reported or list_priced beside the reserved and
 accounted figures. Only known completions settle at a priced amount. Unknown
 execution retains its whole reservation, and a completion with no price at all
 still consumes its ceiling. The receipt counts work starts as `turns_used` and
-conductor rounds separately as `planner_turns_used`; only work starts meet
-`max_turns_per_task`.
+conductor rounds separately as `planner_turns_used`. Work starts meet
+`max_turns_per_task` and planning rounds meet `max_planner_turns`, an optional
+policy field that inherits the work cap when a policy predates it.
 (see: /projects/monolith/swarm/factory_controls.py)
 (see: /projects/monolith/swarm/node_workflows.py)
 (see: /projects/monolith/shared/pricing.py)
@@ -311,11 +314,11 @@ its token usage is recorded and priceable, so charging the ceiling overstated a
 task by more than an order of magnitude and retired it with most of its real
 budget unspent. A list price is an estimate, so it settles the ledger but never
 fails a delivery; only a provider-measured overrun does that. Counting planner
-rounds against the same cap as delivery let a task exhaust itself deciding: the
-cap exists to bound work, and `task_budget_usd` with correct pricing is what
-bounds deliberation.
-(see: /projects/monolith/agent_sessions/voice.py)
-(see: /projects/monolith/chart/values.yaml)
+rounds against the delivery cap let a task exhaust itself deciding, but the task
+budget alone is not the answer either: a planning round costs a few cents, so
+the budget would admit hundreds of them and a refused decision mints the next
+planner every tick. `max_planner_turns` bounds deliberation on its own count,
+leaving `max_turns_per_task` to bound the work.
 
 **Why.** An unconfirmed delivery error is one hold represented consistently
 across the turn, capacity reservation, routine job and health views. Capacity

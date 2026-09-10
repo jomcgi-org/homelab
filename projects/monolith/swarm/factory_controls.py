@@ -34,6 +34,7 @@ _POLICY_KEYS = {
     "generation",
     "max_tasks",
     "max_turns_per_task",
+    "max_planner_turns",
     "task_budget_usd",
     "turn_budget_usd",
     "allowed_models",
@@ -46,7 +47,7 @@ _POLICY_KEYS = {
     "task_timeout_seconds",
     "model_pools",
 }
-_OPTIONAL_POLICY_KEYS = {"reviewer_model", "model_pools"}
+_OPTIONAL_POLICY_KEYS = {"reviewer_model", "model_pools", "max_planner_turns"}
 _POOL_ROLES = {"conductor": "conductor_model", "worker": "worker_model"}
 
 
@@ -113,6 +114,14 @@ def validate_policy(policy: dict) -> dict:
         ("task_timeout_seconds", 1, 86400),
     ):
         result[key] = _integer(policy[key], key, low, high)
+    # Planning rounds are capped separately from delivery work. An absent field
+    # means a policy written before the split, so it inherits the work cap
+    # rather than forcing an operator to re-post a live policy.
+    result["max_planner_turns"] = (
+        _integer(policy["max_planner_turns"], "max_planner_turns", 1, 100)
+        if "max_planner_turns" in policy
+        else result["max_turns_per_task"]
+    )
     for key in ("task_budget_usd", "turn_budget_usd"):
         result[key] = _money(policy[key], key)
     if result["turn_budget_usd"] > result["task_budget_usd"]:
@@ -250,6 +259,15 @@ def _planner_start(row: FactoryStart) -> bool:
     return _planner_key(row.start_key)
 
 
+def planner_turn_cap(policy: dict) -> int:
+    """The planning round cap, inherited from the work cap by older policies.
+
+    A receipt pins its policy at admission, so a task admitted before
+    max_planner_turns existed still needs a bound.
+    """
+    return policy.get("max_planner_turns", policy["max_turns_per_task"])
+
+
 def _accounting(starts: list[FactoryStart]) -> dict:
     # Planner rounds read evidence and decide; they do not do the task's work.
     # Counting them against max_turns_per_task exhausts a task before it has
@@ -374,6 +392,8 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
                 "deadline_expired": _now() >= deadline,
                 "turn_limit_reached": result["turns_used"]
                 >= result["policy"]["max_turns_per_task"],
+                "planner_turn_limit_reached": result["planner_turns_used"]
+                >= planner_turn_cap(result["policy"]),
                 "budget_limit_reached": result["committed_cost_usd"]
                 >= result["policy"]["task_budget_usd"],
             },
@@ -598,18 +618,20 @@ def authorize_start(
                 return {"ok": False, "reason": "conflicting_start_pin"}
             return {"ok": True, "replayed": True, "start": _start_dict(existing)}
         budget = _accounting(starts)
+        planner = _planner_key(start_key)
         reason = None
         if any(s.status == "reserved" for s in starts):
             reason = "start_pending"
         elif model not in policy["allowed_models"]:
             reason = "model_not_allowed"
-        elif (
-            not _planner_key(start_key)
-            and budget["turns_used"] >= policy["max_turns_per_task"]
-        ):
-            # The cap bounds delivery work. Planning rounds are bounded by the
-            # task budget and the deadline, which they still consume.
+        # A planning round is cheap enough that the task budget alone would
+        # admit hundreds of them, and a refused decision can mint the next
+        # planner every tick, so deliberation is bounded on its own count.
+        elif planner and budget["planner_turns_used"] >= planner_turn_cap(policy):
+            reason = "planner_turn_limit"
+        elif not planner and budget["turns_used"] >= policy["max_turns_per_task"]:
             reason = "turn_limit"
+        # Both kinds of start still answer to the one task budget.
         elif (
             cost > policy["turn_budget_usd"]
             or budget["committed_cost_usd"] + cost > policy["task_budget_usd"]

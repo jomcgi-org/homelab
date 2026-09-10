@@ -333,9 +333,10 @@ def test_restart_retries_atomic_outcome_settlement_without_redispatch(
 
 def test_real_factory_turn_rejection_rolls_back_graph_dispatch_and_arming(db, policy):
     policy["max_turns_per_task"] = 1
+    policy["max_planner_turns"] = 4
     task_id = admit(policy)
     dbos = CompletedNodes()
-    # Planner rounds are free, so the single work turn is spent by implement_fix
+    # Planning has its own cap, so the single work turn is spent by implement_fix
     # and the review node the second planner adds cannot reserve one.
     reconcile_until(
         task_id,
