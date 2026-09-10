@@ -816,6 +816,7 @@ def reconciliation_db(tmp_path, monkeypatch):
                 admitted["artifact_path"],
                 admitted["artifact_schema"],
                 admitted["retry_context"],
+                admitted["branch"],
             ),
             "result_text": "prose does not decide completion",
             "terminal_reason": "completed",

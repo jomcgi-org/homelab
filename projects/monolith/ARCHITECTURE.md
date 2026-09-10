@@ -252,8 +252,12 @@ the engine could not open, or a settled graph with no verified delivery.
 
 The accepted plan sizes the task. Its allowance is the sum over live
 unsucceeded nodes of `max_attempts`, plus the work turns history already spent,
-plus two turns for each review round the engine may still open, and the same
-sum in money over node cost ceilings plus charged history. That allowance is
+plus what the engine may still insert on its own: a review round is a
+correction and a re-review, a fan-out wave needs one fan-in node, and each is
+reserved at the policy's `max_attempts` exactly as the inserted node will carry,
+so the insertion itself is turn-neutral. Money is the same sum over node cost
+ceilings plus charged history. Review rounds are reserved only when the plan
+holds a review node. That allowance is
 persisted on the receipt with the graph revision it came from, re-derived and
 audited on every accepted plan, add, discard and engine round, and it is the
 bound `authorize_start` and the board actually read. Policy keeps only an
@@ -262,15 +266,19 @@ plan whose derived allowance would exceed either is refused whole with
 `envelope_exceeded` and the excess named as needed against allowed, which
 reaches the planner as decision feedback so it can split the work or pause.
 
-Nodes with no dependency between them run in parallel, up to
-`max_parallel_nodes`. Each parallel implementation works on
+Nodes that can start together fan out, up to `max_parallel_nodes`. A wave is
+read from the live graph rather than from the plan as a whole: source-writing
+nodes that have never run, whose dependencies are all already on the task
+branch, and that no dependency path connects to each other. Each member works on
 `factory/<task-id>-<node key>`, a sibling of the task branch rather than a path
-below it, and an `integrate` node depending on all of them merges those
-branches into the task branch and reports the integrated head. The planner may
-name that node itself; when a plan has two or more nodes on their own branches
-and none covers them, the engine inserts `integrate_<n>` and repoints whatever
-depended on those branches at it, so every branch the engine handed out is one
-the fan-in merges and review still examines one integrated head.
+below it, and an `integrate` node depending on all of them merges those branches
+into the task branch and reports the integrated head. The planner may name that
+node itself; otherwise the engine inserts `integrate_<n>` over the wave and
+repoints whatever depended on those branches at it. A node only takes a branch
+of its own once the fan-in that will merge it exists, so a refused fan-in asks
+the planner rather than stranding work, and the branch a node first ran on is
+pinned for every later attempt. Fan-out is off entirely at a parallel limit of
+one, where the lane is the serial one it has always been.
 (see: /projects/monolith/swarm/factory_conductor.py)
 (see: /projects/monolith/swarm/graph.py)
 (see: /projects/monolith/swarm/deviations.py)
@@ -395,11 +403,14 @@ feed one integration branch per coherent slice, with the required checks at the
 integrated head. The branch is a sibling name rather than a path under the task
 branch because git cannot hold `refs/heads/factory/<id>` and a ref below it at
 the same time. Which nodes fan out is read from the dependencies the planner
-already wrote rather than from a separate marker, so the branch a node pushes
-to and the order the graph enforces can never disagree. Fan-out is off until an
-operator raises `max_parallel_nodes`, and the extra concurrent guests are gated
-on the shared session pool first, so a node the pool cannot hold stays ready
-for the next tick rather than failing (#5419, #5861).
+already wrote rather than from a separate marker, so the branch a node pushes to
+and the order the graph enforces can never disagree. Reading it as a wave rather
+than as plan-wide concurrency is what keeps a node added by a later replan off a
+branch of its own: its siblings have already run and been integrated, so it has
+nobody to run beside and works on the task branch serially. Fan-out is off until
+an operator raises `max_parallel_nodes`, and the extra concurrent guests are
+gated on the shared session pool first, so a node the pool cannot hold stays
+ready for the next tick rather than failing (#5419, #5861).
 
 **Why.** An unconfirmed delivery error is one hold represented consistently
 across the turn, capacity reservation, routine job and health views. Capacity

@@ -36,6 +36,7 @@ PLANNER_TASK_CHARS = 12_000
 REVIEW_FINDINGS_CHARS = 8_000
 MAX_PLAN_EDITS = graph.MAX_PLAN_EDITS
 LOOP_CAUSE = "factory-loop"
+FANIN_CAUSE = "factory-fanin"
 _KEY = r"^[a-z][a-z0-9_]{0,63}$"
 # correct_<n>, review_<n> and integrate_<n> are the engine's own inserted
 # rounds. A planner that could mint one could replenish a server-owned bound,
@@ -193,6 +194,24 @@ def hydration_branch(task: dict) -> str:
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             return task["base_branch"]
+        raise
+    return branch
+
+
+def branch_hydration(task: dict, branch: str, task_hydration: str) -> str:
+    """What a node checks out: its own branch when that branch already exists.
+
+    A first attempt on a fanned-out branch starts from the task branch head. A
+    retry of that node resumes its own branch, because hydrating the task
+    branch would drop everything the previous attempt pushed.
+    """
+    if branch == task_branch(task["id"]):
+        return task_hydration
+    try:
+        github_get(task["repo"], f"git/ref/heads/{quote(branch, safe='')}")
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return task_hydration
         raise
     return branch
 
@@ -498,46 +517,132 @@ def _concurrent(keys: list[str], ancestors: dict[str, set[str]]) -> list[str]:
     ]
 
 
-def _fan_out_keys(nodes: list[dict]) -> set[str]:
-    """Source-writing nodes the plan runs concurrently, so each needs its own branch.
+def _pinned_branch(node_key: str, runs: list[dict]) -> str | None:
+    """The branch this node's first attempt was dispatched on, if it ever ran.
 
-    This is read from the dependencies the planner already wrote rather than
-    from a separate marker, so the branch a node pushes to and the order the
-    graph enforces can never disagree.
+    Every later attempt reuses it. A retry that hydrated the task branch would
+    start without the work the previous attempt pushed to its own branch.
     """
-    ancestors = _ancestors(nodes)
-    keys = sorted(
+    attempts = [run for run in runs if run["node_key"] == node_key]
+    if not attempts:
+        return None
+    first = min(attempts, key=lambda run: run["attempt"])
+    branch = (first.get("pin") or {}).get("branch")
+    return branch if isinstance(branch, str) and branch else None
+
+
+def _covering_integrate(node_key: str, nodes: list[dict]) -> dict | None:
+    """The live fan-in node that will merge this node's branch, if one exists."""
+    return next(
+        (
+            node
+            for node in nodes
+            if node["node_key"].startswith("integrate_") and node_key in node["deps"]
+        ),
+        None,
+    )
+
+
+def _merged_keys(nodes: list[dict], runs: list[dict]) -> set[str]:
+    """Branches a succeeded fan-in has already merged into the task branch."""
+    succeeded = {run["node_key"] for run in runs if run["status"] == "succeeded"}
+    merged: set[str] = set()
+    for node in nodes:
+        if node["node_key"].startswith("integrate_") and node["node_key"] in succeeded:
+            merged.update(node["deps"])
+    return merged
+
+
+def _on_task_branch(
+    node_key: str, task_id: str, nodes: list[dict], runs: list[dict], merged: set[str]
+) -> bool:
+    """True when this node's work is already on the task branch.
+
+    A node that never fanned out put its work there directly. One that did is
+    on the task branch only once a fan-in merged its branch.
+    """
+    if not any(
+        run["node_key"] == node_key and run["status"] == "succeeded" for run in runs
+    ):
+        return False
+    branch = _pinned_branch(node_key, runs)
+    if branch is None or branch == task_branch(task_id):
+        return True
+    return node_key in merged
+
+
+def fan_out_wave(
+    task_id: str, nodes: list[dict], runs: list[dict], limit: int
+) -> list[str]:
+    """The next set of nodes that fan out onto their own branches, in key order.
+
+    A wave is what can start together right now: source-writing nodes that have
+    never run, whose dependencies are all already on the task branch, and which
+    no dependency path connects to each other. Reading it as a wave rather than
+    as plan-wide concurrency is what keeps a node added by a later replan off a
+    branch of its own: its siblings have already run and been integrated, so it
+    has nobody to run beside and works on the task branch serially.
+
+    Fan-out is off at a parallel limit of one, and a wave never exceeds the
+    limit; nodes past it wait for a later wave.
+    """
+    if limit <= 1:
+        return []
+    merged = _merged_keys(nodes, runs)
+    started = {run["node_key"] for run in runs}
+    candidates = sorted(
         node["node_key"]
         for node in nodes
         if node["node_key"].startswith(_BRANCHED_ROLE_PREFIXES)
+        and node["node_key"] not in started
+        and all(
+            _on_task_branch(dep, task_id, nodes, runs, merged) for dep in node["deps"]
+        )
     )
-    return set(_concurrent(keys, ancestors))
+    wave = _concurrent(candidates, _ancestors(nodes))
+    return wave[:limit] if len(wave) >= 2 else []
 
 
-def _working_branch(task_id: str, node_key: str, nodes: list[dict]) -> str:
-    """The branch this node pushes to: its own when it fans out, else the task branch."""
-    if node_key in _fan_out_keys(nodes):
-        return node_branch(task_id, node_key)
-    return task_branch(task_id)
+def _pending_fan_ins(
+    task_id: str, nodes: list[dict], runs: list[dict], limit: int
+) -> int:
+    """Fan-in nodes this graph still owes: one for a wave nothing covers yet."""
+    wave = fan_out_wave(task_id, nodes, runs, limit)
+    if not wave or all(_covering_integrate(key, nodes) is not None for key in wave):
+        return 0
+    return 1
 
 
-def _boundary(task: dict, *, review: bool = False, branch: str | None = None) -> str:
-    """State the task, its working branch, and what this node may not do.
+def _dispatch_branch(
+    task_id: str, node_key: str, nodes: list[dict], runs: list[dict]
+) -> str | None:
+    """The branch to dispatch this attempt on, or None when it must not start.
 
-    A node that fans out onto its own branch is told that branch and that the
-    task branch is where it comes back together. A node working on the task
-    branch keeps the original wording.
+    A node only works on its own branch once the fan-in that will merge that
+    branch exists in the graph, so a refused fan-in can never strand work on a
+    branch nothing reads.
     """
-    delivery = task_branch(task["id"])
-    working = branch or delivery
-    where = (
-        f"dedicated branch {delivery}"
-        if working == delivery
-        else f"dedicated branch {working}, integrated into {delivery}"
+    pinned = _pinned_branch(node_key, runs)
+    if pinned is not None:
+        return pinned
+    if not node_key.startswith(_BRANCHED_ROLE_PREFIXES):
+        return task_branch(task_id)
+    return (
+        node_branch(task_id, node_key)
+        if _covering_integrate(node_key, nodes) is not None
+        else task_branch(task_id)
     )
+
+
+def _boundary(task: dict, *, review: bool = False) -> str:
+    """State the task and what this node may not do.
+
+    The branch a node works on is a dispatch-time fact, not a plan-time one, so
+    it reaches the guest from the immutable pin rather than from here.
+    """
     return (
         f"Factory task {task['id']}, repository {task['repo']}, "
-        f"{where}, base {task['base_branch']}. "
+        f"dedicated branch factory/{task['id']}, base {task['base_branch']}. "
         "Only this task is authorized. Follow repository agent instructions. "
         "Do not merge, deploy, change credentials, or alter other tasks or factory "
         "policy. Deliver repository changes through a PR with required Linux CI. "
@@ -567,9 +672,8 @@ def _add(
     max_cost_usd: float | None = None,
     turn_timeout_seconds: int | None = None,
     expected_version: int | None = None,
-    branch: str | None = None,
 ) -> graph.GraphOp:
-    boundary = _boundary(task, review=review, branch=branch)
+    boundary = _boundary(task, review=review)
     return graph.add_node(
         task["id"],
         author_kind="conductor",
@@ -1147,8 +1251,6 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
         "node_key": key,
         "raw_node_key": raw_key,
         "kind": "gate" if review else "work",
-        # The working branch is not known until the whole batch is resolved
-        # against the live graph, so the caller rewrites this prompt once it is.
         "prompt": _boundary(task, review=review) + source["prompt"],
         "raw_prompt": source["prompt"],
         "model": model,
@@ -1166,6 +1268,36 @@ def _rounds_remaining(task_id: str, policy: dict) -> int:
 
     maximum = policy.get("max_review_rounds", DEFAULT_MAX_REVIEW_ROUNDS)
     return max(0, maximum - _review_rounds_used(task_id))
+
+
+def _planned_fan_ins(task_id: str, policy: dict, nodes: list[dict]) -> int:
+    """Fan-in nodes a graph implies, one per wave of source-writing nodes.
+
+    A plan is sized before anything runs, so its waves are read from the
+    dependency ranks: nodes with the same number of source-writing ancestors
+    become ready together. Every such rank with two or more members will fan
+    out and needs a fan-in node, and a rank already covered by a live integrate
+    node has stopped owing one.
+    """
+    from swarm.factory_controls import parallel_limit
+
+    if parallel_limit(policy) <= 1:
+        return 0
+    ancestors = _ancestors(nodes)
+    branchable = {
+        node["node_key"]
+        for node in nodes
+        if node["node_key"].startswith(_BRANCHED_ROLE_PREFIXES)
+    }
+    ranks: dict[int, list[str]] = {}
+    for key in sorted(branchable):
+        ranks.setdefault(len(ancestors.get(key, set()) & branchable), []).append(key)
+    return sum(
+        1
+        for members in ranks.values()
+        if len(members) >= 2
+        and any(_covering_integrate(key, nodes) is None for key in members)
+    )
 
 
 def _projected_nodes(prepared: list[dict], live: list[dict]) -> list[dict]:
@@ -1190,6 +1322,7 @@ def _envelope_refusal(
     projected: list[dict],
     *,
     review_rounds_remaining: int | None = None,
+    fan_ins_remaining: int | None = None,
 ) -> str | None:
     """Name what a proposed graph would overspend, or None when it fits.
 
@@ -1209,6 +1342,11 @@ def _envelope_refusal(
             if review_rounds_remaining is None
             else review_rounds_remaining
         ),
+        fan_ins_remaining=(
+            _planned_fan_ins(task_id, policy, projected)
+            if fan_ins_remaining is None
+            else fan_ins_remaining
+        ),
         graph_revision=graph.current_version(task_id),
     )
     excess = envelope_excess(allowance, policy)
@@ -1226,6 +1364,7 @@ def _record_allowance(task_id: str, policy: dict, cause: str) -> None:
         policy,
         ACTOR,
         review_rounds_remaining=_rounds_remaining(task_id, policy),
+        fan_ins_remaining=_planned_fan_ins(task_id, policy, graph.load_graph(task_id)),
         cause=cause,
     )
 
@@ -1306,22 +1445,6 @@ def _apply_decision(
             prepared, {node["node_key"] for node in live}
         )
         projected = _projected_nodes(resolved, live)
-        fan_out = _fan_out_keys(projected)
-        for edit in resolved:
-            if edit["op"] != "add_node":
-                continue
-            edit["prompt"] = (
-                _boundary(
-                    task,
-                    review=edit["role"] == "review",
-                    branch=(
-                        node_branch(task["id"], edit["node_key"])
-                        if edit["node_key"] in fan_out
-                        else task_branch(task["id"])
-                    ),
-                )
-                + edit["raw_prompt"]
-            )
         excess = _envelope_refusal(task["id"], policy, projected)
         if excess is not None:
             _reject_decision(task["id"], cause, action, "envelope_exceeded", excess)
@@ -1379,7 +1502,6 @@ def _apply_decision(
             max_cost_usd=edit["max_cost_usd"],
             turn_timeout_seconds=edit["turn_timeout_seconds"],
             expected_version=decision.get("expected_version"),
-            branch=_working_branch(task["id"], edit["node_key"], projected),
         )
         if result.ok:
             _record_allowance(task["id"], policy, cause)
@@ -1635,23 +1757,23 @@ def _insert_review_round(
     return False, result.refusal_code
 
 
-def _integration_group(nodes: list[dict]) -> list[str]:
-    """The fanned-out nodes that no integrate node already covers.
+def _integration_group(
+    task_id: str, nodes: list[dict], runs: list[dict], limit: int
+) -> list[str]:
+    """The next wave that will fan out and that no integrate node covers yet.
 
-    Two nodes with no dependency path between them push to separate branches,
-    so something has to merge them before a reviewer can look at one head. The
-    group is exactly the set that fanned out, so every branch this engine
-    handed out is a branch the fan-in merges. A planner may name that node
-    itself; when it did not, the engine inserts one.
+    The group is exactly the wave, so every branch this engine hands out is a
+    branch the fan-in merges. A planner may name that node itself; when it did
+    not, the engine inserts one before any member is dispatched.
     """
-    group = sorted(_fan_out_keys(nodes))
-    if len(group) < 2:
+    wave = fan_out_wave(task_id, nodes, runs, limit)
+    if not wave:
         return []
-    covered = set(group)
+    covered = set(wave)
     for node in nodes:
         if node["node_key"].startswith("integrate_") and covered <= set(node["deps"]):
             return []
-    return group
+    return wave
 
 
 def _integration_edits(
@@ -1771,8 +1893,12 @@ def _insert_integration(
     edits = _integration_edits(task, policy, nodes, group, key)
     if edits is None:
         return False, "integration_batch_too_large"
-    cause = f"{LOOP_CAUSE}:{key}"
-    excess = _envelope_refusal(task["id"], policy, _projected_nodes(edits, nodes))
+    cause = f"{FANIN_CAUSE}:{key}"
+    # This insertion turns the wave's reserved fan-in into a real node, so the
+    # projection must not reserve the fan-in it is inserting as well.
+    excess = _envelope_refusal(
+        task["id"], policy, _projected_nodes(edits, nodes), fan_ins_remaining=0
+    )
     if excess is not None:
         _reject_decision(task["id"], cause, "plan", "envelope_exceeded", excess)
         return False, "envelope_exceeded"
@@ -1780,7 +1906,9 @@ def _insert_integration(
         task["id"],
         author_kind="engine",
         author=ACTOR,
-        cause_kind="factory_loop",
+        # A distinct cause kind: _review_rounds_used counts factory_loop, and a
+        # fan-in must never spend one of the task's review rounds.
+        cause_kind="factory_fanin",
         cause_ref=cause,
         expected_version=expected_version,
         edits=edits,
@@ -1969,6 +2097,7 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
         parallel_limit,
         record_start_outcome,
         set_control,
+        task_allowance,
     )
 
     task = _task(task_id)
@@ -2033,6 +2162,16 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     # graph edits that race with reading nodes or constructing the prompt.
     insertion_revision = graph.current_version(task_id)
     nodes = graph.load_graph(task_id)
+    # apply_edits owns its own transaction, so a crash between an accepted edit
+    # and its allowance write leaves the stored figure behind the graph. It is
+    # low rather than high, so nothing is over-admitted, but the task would
+    # stall against a bound its plan no longer implies. Re-derive whenever the
+    # stored revision is behind. Writing the allowance inside the graph's own
+    # transaction would take the control row lock while holding the task row,
+    # the opposite order to reserve_node, so this heals it instead.
+    stored = task_allowance(task_id)
+    if stored.get("derived") and stored.get("graph_revision") != insertion_revision:
+        _record_allowance(task_id, policy, "factory-allowance:resync")
     planners = [
         r
         for r in runs
@@ -2044,17 +2183,19 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
         if not _decision_processed(task_id, cause):
             apply_decision(task, policy, latest, runs)
             return
-    # Parallel implementations push to their own branches, so the fan-in that
-    # brings them back to the task branch is inserted before anything is armed.
+    # A wave fans out onto its own branches, so the fan-in that brings them
+    # back to the task branch is inserted before any member is dispatched. A
+    # node whose fan-in does not exist never gets a branch, so a refused
+    # insertion strands nothing: it asks the planner instead.
     integration_refusal = None
-    group = _integration_group(nodes)
+    group = _integration_group(task_id, nodes, runs, parallel)
     if group:
         integrated, integration_refusal = _insert_integration(
             task, policy, nodes, runs, group, insertion_revision
         )
         if integrated:
             return
-    ready = _ready_nodes(nodes, runs)
+    ready = [] if integration_refusal else _ready_nodes(nodes, runs)
     # A review that requested changes is a bounded, mechanical correction the
     # engine owns. Only a deviation this reconciler can name reaches the
     # planner, so an open review loop never spends a planning turn.
@@ -2162,7 +2303,7 @@ def _dispatch_ready(
     *,
     fan_out: bool,
 ) -> bool:
-    """Reserve up to ``slots`` ready nodes, each on the branch its plan implies.
+    """Reserve up to ``slots`` ready nodes, each on the branch the graph implies.
 
     The first node of a settled graph dispatches exactly as it always did,
     including pausing the task when the server will not admit it. Every
@@ -2182,24 +2323,22 @@ def _dispatch_ready(
     if limit <= 0:
         return False
     hydration = hydration_branch(task)
-    branched = _fan_out_keys(nodes)
     task_id = task["id"]
     dispatched = 0
     for node in ready[:limit]:
         node_key = node["node_key"]
+        branch = _dispatch_branch(task_id, node_key, nodes, runs)
+        if branch is None:
+            continue
         attempt = sum(r["node_key"] == node_key for r in runs) + 1
         key = f"factory-node:{task_id}:{node_key}:{attempt}"
         context = {
             "repo": task["repo"],
-            "branch": (
-                node_branch(task_id, node_key)
-                if node_key in branched
-                else task_branch(task_id)
-            ),
+            "branch": branch,
             "workflow_id": key,
             "artifact_path": f".factory/{task_id}/{node_key}-{attempt}.json",
             "artifact_schema": _schema(node_key),
-            "hydration_branch": hydration,
+            "hydration_branch": branch_hydration(task, branch, hydration),
             "retry_context": json.dumps(
                 [r for r in runs if r["node_key"] == node_key], default=str
             )[-16000:],

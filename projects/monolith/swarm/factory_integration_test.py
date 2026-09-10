@@ -10,6 +10,7 @@ import copy
 from types import SimpleNamespace
 from urllib.parse import quote
 
+import httpx
 import pytest
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -101,7 +102,7 @@ def policy():
         "issue_numbers": [7],
         "generation": 0,
         "max_tasks": 1,
-        "max_turns_per_task": 12,
+        "max_turns_per_task": 30,
         "task_budget_usd": 30.0,
         "turn_budget_usd": 2.0,
         "allowed_models": ["opus", "luna"],
@@ -213,11 +214,23 @@ class CompletedNodes:
         }
 
 
-def delivery_api(monkeypatch, task_id):
+def delivery_api(monkeypatch, task_id, *, branches=None):
+    """GitHub reads for the task branch, its PR and its checks.
+
+    ``branches`` names the extra refs that exist, so a first fan-out attempt
+    reads a 404 for its own branch exactly as it would in the repository.
+    """
+
     def get(repo, suffix):
         assert repo == "owner/repo"
         if suffix.startswith("git/ref/heads/"):
-            return {"object": {"sha": HEAD}}
+            branch = suffix.removeprefix("git/ref/heads/").replace("%2F", "/")
+            if branch == f"factory/{task_id}" or branch in (branches or ()):
+                return {"object": {"sha": HEAD}}
+            response = httpx.Response(
+                404, request=httpx.Request("GET", "https://example.test/ref")
+            )
+            response.raise_for_status()
         if suffix == "pulls/21":
             return {
                 "state": "open",
@@ -702,7 +715,7 @@ def test_parallel_halves_fan_out_and_are_integrated_before_review(
     db, policy, monkeypatch
 ):
     policy["max_parallel_nodes"] = 2
-    policy["max_task_turns_hard"] = 40
+    policy["max_task_turns_hard"] = 60
     task_id = admit(policy)
     dbos = PlannedInParallel()
     delivery_api(monkeypatch, task_id)
@@ -742,9 +755,10 @@ def test_parallel_halves_fan_out_and_are_integrated_before_review(
     assert snapshot["evidence"]["state"] == "ready_for_review"
 
 
-def test_one_parallel_node_keeps_the_task_branch_and_needs_no_fan_in(
+def test_the_serial_lane_keeps_the_task_branch_and_needs_no_fan_in(
     db, policy, monkeypatch
 ):
+    assert "max_parallel_nodes" not in policy
     task_id = admit(policy)
     dbos = PlannedThenCorrected()
     delivery_api(monkeypatch, task_id)

@@ -66,9 +66,12 @@ own and defaults to 2. Those, `reviewer_model` and `model_pools` are the only
 optional fields; every other field is required.
 
 The derived allowance is `max_attempts` summed over the live nodes that have
-not succeeded, plus the work turns already spent, plus two turns for each review
-round the engine may still open; its dollar figure is the same sum over node
-`max_cost_usd` ceilings plus charged history. It is stored on the receipt as
+not succeeded, plus the work turns already spent, plus what the engine may still
+insert on its own: a review round is a correction and a re-review, a fan-out wave
+needs one fan-in node, and each is reserved at `max_attempts` exactly as the
+inserted node will carry, so the insertion is turn-neutral. Review rounds are
+reserved only when the plan holds a review node. Its dollar figure is the same
+sum over node `max_cost_usd` ceilings plus charged history. It is stored on the receipt as
 `allowance_json` with the graph revision it came from, re-derived and audited
 whenever an accepted edit changes the graph, and it is the bound work starts
 meet. A plan whose derived allowance would exceed the envelope is refused whole
@@ -111,20 +114,25 @@ called back only for a named deviation: no plan applied yet, a node that failed
 or escalated with no runnable retry, exhausted review rounds, or a settled
 graph with no verified delivery.
 
-Nodes with no dependency between them are dispatched together, up to
-`max_parallel_nodes`, and each concurrent implementation works on
+Nodes that can start together are dispatched together, up to
+`max_parallel_nodes`. That set is a wave: source-writing nodes that have never
+run, whose dependencies are all already on the task branch, and that no
+dependency path connects to each other. Each member works on
 `factory/<task-id>-<node key>`. That is a sibling of the task branch, not a path
 under it, because git cannot hold `refs/heads/factory/<task-id>` and a ref below
 it at once. An `integrate` node merges those branches into the task branch,
 resolves conflicts, runs the targeted checks and reports the integrated head;
 review then examines that head and the correction rounds work on the task
-branch. The planner may add the integrate node itself; when a plan holds two or
-more concurrent nodes on their own branches and nothing covers them, the engine
-inserts `integrate_<n>` and repoints their dependents at it, so every branch the
-engine handed out is one the fan-in merges. `integrate_<n>` is
-reserved to the engine exactly as `correct_<n>` and `review_<n>` are. Extra
-concurrent nodes are admitted only when the shared session pool has room, and a
-node the pool cannot hold stays ready for the next tick rather than failing.
+branch. The planner may add the integrate node itself; otherwise the engine
+inserts `integrate_<n>` over the wave and repoints its dependents at it, so every
+branch the engine handed out is one the fan-in merges. A node takes a branch of
+its own only once that fan-in exists, so a refused insertion asks the planner
+rather than stranding work, and the branch a node first ran on is pinned for
+every later attempt of it. `integrate_<n>` is reserved to the engine exactly as
+`correct_<n>` and `review_<n>` are. Extra concurrent nodes are admitted only
+when the shared session pool has room, and a node the pool cannot hold stays
+ready for the next tick rather than failing. At a limit of one, none of this
+applies and the lane is serial.
 
 The guest hydrates the existing task branch, or the base branch before the
 task branch exists. Source changes belong in a dedicated linked worktree on the

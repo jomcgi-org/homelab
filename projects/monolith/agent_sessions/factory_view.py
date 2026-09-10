@@ -117,11 +117,19 @@ BOARD_POLICY_KEYS = (
 )
 
 
+def _envelope(policy: dict) -> int | None:
+    """The turn envelope, read from the old fixed cap when a policy predates it."""
+    ceiling = policy.get("max_task_turns_hard")
+    return policy.get("max_turns_per_task") if ceiling is None else ceiling
+
+
 def shape_policy(policy: dict | None) -> dict | None:
-    """The board shows six things about the policy; send those, not the rest."""
+    """The board shows a few things about the policy; send those, not the rest."""
     if not policy:
         return None
-    return {key: policy.get(key) for key in BOARD_POLICY_KEYS}
+    shaped = {key: policy.get(key) for key in BOARD_POLICY_KEYS}
+    shaped["max_task_turns_hard"] = _envelope(policy)
+    return shaped
 
 
 def shape_receipt(
@@ -161,12 +169,12 @@ def shape_receipt(
             "conductor_model",
             "worker_model",
             "reviewer_model",
-            "max_task_turns_hard",
             "max_parallel_nodes",
             "task_budget_usd",
             "max_attempts",
         )
     }
+    shaped["policy"]["max_task_turns_hard"] = _envelope(policy)
     shaped["starts"] = [
         {
             "start_key": start.get("start_key"),
