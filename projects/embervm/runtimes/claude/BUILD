@@ -246,6 +246,7 @@ py_test(
     srcs = ["cleartext_lane_guard_test.py"],
     data = [
         "//projects/embervm/deploy:deploy_values",
+        "//projects/embervm/deploy:deploy_values_gke",
         "//projects/embervm/runtimes/claude/guest-init/cmd:guest_init_source",
     ],
     imports = ["."],

@@ -935,7 +935,8 @@ token (Codex ChatGPT) or an authentik service-account grant rotates in one
 place and never enters a guest. The grant Secret's data is broker-owned and
 `ignoreDifferences`d in the Application.
 
-**Grant pools** (**Built**, inert until a second account is logged in):
+**Grant pools** (**Built**, armed on the hub with `codex-cluster` and
+`codex-b` since 2026-09-10):
 a catalog entry may name `brokerGrants`, an ordered pool of grants on one
 provider, and the sidecar picks the active grant per connection from the
 broker's per-grant quota views: remaining quota in 25% bands taken from the

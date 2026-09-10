@@ -30,3 +30,12 @@ filegroup(
     srcs = ["application.yaml"],
     visibility = ["//projects/embervm/chart:__pkg__"],
 )
+
+# The hub overlay, separate from deploy_values because that one is consumed
+# through single-file $(location) expansions. Read by the cleartext lane guard
+# to tie egress pool members to the broker's registered grants.
+filegroup(
+    name = "deploy_values_gke",
+    srcs = ["values-gke.yaml"],
+    visibility = ["//projects/embervm/runtimes/claude:__pkg__"],
+)
