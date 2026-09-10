@@ -236,14 +236,18 @@ def _starts(db: Session, task_id: str) -> list[FactoryStart]:
 _START_KEY = re.compile(r"^factory-node:[^:]+:(?P<node_key>.+):[0-9]+$")
 
 
-def _planner_start(row: FactoryStart) -> bool:
+def _planner_key(start_key: str | None) -> bool:
     """True for a conductor planning round rather than a unit of task work.
 
     An unparsable key counts as work, so the turn cap can never be widened by
     a start whose shape this cannot read.
     """
-    match = _START_KEY.match(row.start_key or "")
+    match = _START_KEY.match(start_key or "")
     return bool(match) and match.group("node_key").startswith("conductor_")
+
+
+def _planner_start(row: FactoryStart) -> bool:
+    return _planner_key(row.start_key)
 
 
 def _accounting(starts: list[FactoryStart]) -> dict:
@@ -599,7 +603,12 @@ def authorize_start(
             reason = "start_pending"
         elif model not in policy["allowed_models"]:
             reason = "model_not_allowed"
-        elif budget["turns_used"] >= policy["max_turns_per_task"]:
+        elif (
+            not _planner_key(start_key)
+            and budget["turns_used"] >= policy["max_turns_per_task"]
+        ):
+            # The cap bounds delivery work. Planning rounds are bounded by the
+            # task budget and the deadline, which they still consume.
             reason = "turn_limit"
         elif (
             cost > policy["turn_budget_usd"]

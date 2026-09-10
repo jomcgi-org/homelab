@@ -182,6 +182,7 @@ def test_poll_turn_includes_rationale_and_stop_reason(monkeypatch, stop_reason):
                     "stop_reason": stop_reason,
                     "model": "luna",
                     "cost_usd": 0.25,
+                    "list_cost_usd": 0.31,
                     "usage_json": None,
                 },
             )()
@@ -203,6 +204,8 @@ def test_poll_turn_includes_rationale_and_stop_reason(monkeypatch, stop_reason):
     payload = steps.poll_turn.__wrapped__(101, 1)
 
     assert payload["stop_reason"] == stop_reason
+    # Codex turns carry no provider cost, so the list price travels with them.
+    assert payload["cost_usd"] == 0.25 and payload["list_cost_usd"] == 0.31
     assert payload["rationale"] == {
         "raw": "RATIONALE\n- path: app.py · why: fix it",
         "parse_status": "parsed",
