@@ -5005,8 +5005,8 @@ py_test(
 )
 
 py_test(
-    name = "agent_sessions_probe_supervision_test",
-    srcs = ["agent_sessions/probe_supervision_test.py"],
+    name = "agent_sessions_permit_supervision_test",
+    srcs = ["agent_sessions/permit_supervision_test.py"],
     imports = ["."],
     deps = [
         ":pkg_agent_sessions",

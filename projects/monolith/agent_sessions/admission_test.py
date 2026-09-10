@@ -139,6 +139,29 @@ def test_stale_uncertain_capacity_warning_is_rate_limited(
     )
 
 
+def test_total_limit_warns_interactive_about_stale_background_hold(
+    database, monkeypatch, caplog
+):
+    assert reserve(database, "kg-held", "kg")
+    for index in range(admission.TOTAL_LIMIT - 1):
+        assert reserve(database, f"interactive-{index}")
+    with Session(database) as db:
+        held = admission.reservation(db, "kg-held")
+        held.state = "uncertain"
+        held.created_at = datetime.now(timezone.utc) - timedelta(minutes=11)
+        held_id = held.id
+        db.add(held)
+        db.commit()
+    monkeypatch.setattr(admission, "_last_uncertain_warning_at", float("-inf"))
+    with caplog.at_level("WARNING", logger=admission.__name__):
+        assert not reserve(database, "blocked-interactive")
+    assert any(
+        f"id={held_id} tier=kg" in record.message
+        for record in caplog.records
+        if "Stale uncertain permits" in record.message
+    )
+
+
 def test_waiting_interactive_wins_next_admission(database):
     human = queued(database, "human")
     kg = queued(database, "kg", "kg")

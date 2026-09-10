@@ -14,7 +14,7 @@ import json
 import logging
 import os
 
-from sqlalchemy import or_
+from sqlalchemy import exists, or_
 from sqlmodel import Session, select
 
 from agent_sessions import admission
@@ -27,6 +27,8 @@ from agent_sessions.models import (
     ProbeObservation,
 )
 from core.db import get_engine
+from swarm.factory_models import FactoryStart
+from swarm.models import SwarmNodeRun
 
 logger = logging.getLogger(__name__)
 INTERVAL_SECONDS = 15
@@ -55,6 +57,60 @@ def _reason(audit, reason):
     audit.reason = reason
 
 
+def _general_enabled():
+    return (
+        os.getenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "false").lower()
+        == "true"
+    )
+
+
+def _factory_owned(db, agent):
+    if agent.local_session_id.startswith("factory:"):
+        return True
+    return db.exec(
+        select(
+            or_(
+                exists().where(FactoryStart.session_id == agent.id),
+                exists().where(
+                    SwarmNodeRun.session_id == agent.id,
+                    SwarmNodeRun.pin_json.isnot(None),
+                ),
+            )
+        )
+    ).one()
+
+
+def _no_guest_delivery(permit, recovery):
+    if permit.outcome not in {"delivery_error", "executor_cancelled"}:
+        raise ValueError("unrecognised_outcome")
+    if not isinstance(recovery, dict) or not recovery:
+        raise ValueError("missing_recovery")
+    dispatch_count = recovery.get("dispatch_count")
+    if type(dispatch_count) is not int or dispatch_count < 1:
+        raise ValueError("missing_dispatch_identity")
+    claim_owner = recovery.get("claim_owner")
+    if (
+        not isinstance(claim_owner, str)
+        or not claim_owner
+        or claim_owner != permit.owner
+    ):
+        raise ValueError("missing_dispatch_identity")
+    if not isinstance(recovery.get("last_dispatch_at"), str):
+        raise ValueError("missing_dispatch_identity")
+    try:
+        _timestamp = datetime.fromisoformat(
+            recovery["last_dispatch_at"].replace("Z", "+00:00")
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise ValueError("missing_dispatch_identity") from None
+    if any(
+        "guest" in str(key).lower() or "binding" in str(key).lower() for key in recovery
+    ):
+        raise ValueError("guest_delivery_evidence")
+    if recovery.get("partial_text") or recovery.get("partial_activities"):
+        raise ValueError("guest_delivery_evidence")
+
+
 def _identity(db, permit):
     """Called under the capacity lock, before any observation or settlement."""
     agent = db.exec(
@@ -66,13 +122,13 @@ def _identity(db, permit):
     if (
         agent is None
         or permit.state != "uncertain"
-        or permit.tier not in {"probe", "kg", "project"}
+        or permit.tier not in {"probe", "kg", "project", "interactive"}
         or agent.admission_tier != permit.tier
-        or agent.workflow_id is not None
-        or agent.node_key is not None
         or agent.local_session_id != permit.local_session_id
     ):
         raise ValueError("ineligible_permit")
+    if _factory_owned(db, agent):
+        raise ValueError("factory_owned")
     if (
         admission.cleanup_pending(db, agent)
         or db.exec(
@@ -85,47 +141,41 @@ def _identity(db, permit):
         select(AgentTurn).where(AgentTurn.session_id == agent.id).limit(2)
     ).all()
     turn = turns[0] if len(turns) == 1 else None
-    if agent.ember_session_id is None:
-        if len(turns) > 1 or (
-            turn is not None
-            and (turn.seq != permit.pending_seq or turn.terminal_reason != "error")
+    if (
+        turn is None
+        or turn.seq != permit.pending_seq
+        or turn.terminal_reason != "error"
+    ):
+        raise ValueError("changed_attempt")
+    if permit.tier == "probe":
+        unknown = agent.status == "failed" and turn.stop_reason == UNKNOWN_INVOCATION
+        legacy = (
+            agent.status == "warn"
+            and turn.stop_reason is None
+            and permit.outcome == "delivery_error"
+        )
+        if (
+            permit.pending_seq != 1
+            or permit.routine_job_name is not None
+            or not agent.local_session_id.startswith(SYNTHETIC_SESSION_PREFIX)
+            or not (unknown or legacy)
         ):
-            raise ValueError("changed_attempt")
+            raise ValueError("ineligible_probe")
+    elif permit.tier in {"kg", "project"} and not (
+        agent.local_session_id.startswith("_drainer-worker:")
+        or permit.routine_job_name is not None
+    ):
+        raise ValueError("ineligible_drainer")
+    if agent.ember_session_id is None:
+        if permit.tier == "probe" and not _general_enabled():
+            raise ValueError("no_guest_supervision_disabled")
         try:
-            usage = json.loads(turn.usage_json or "{}") if turn else {}
+            usage = json.loads(turn.usage_json or "{}")
         except (AttributeError, TypeError, ValueError):
             raise ValueError("malformed_recovery") from None
         if not isinstance(usage, dict):
             raise ValueError("malformed_recovery")
-        recovery = usage.get("recovery", {})
-        if not isinstance(recovery, dict):
-            raise ValueError("malformed_recovery")
-        dispatch_count = recovery.get("dispatch_count")
-        if dispatch_count not in (None, 0) or type(dispatch_count) is bool:
-            raise ValueError("guest_delivery_attempted")
-    else:
-        if len(turns) != 1 or turn.seq != permit.pending_seq:
-            raise ValueError("changed_attempt")
-        if turn.terminal_reason != "error":
-            raise ValueError("unrecognised_outcome")
-        if permit.tier == "probe":
-            unknown = (
-                agent.status == "failed" and turn.stop_reason == UNKNOWN_INVOCATION
-            )
-            legacy = (
-                agent.status == "warn"
-                and turn.stop_reason is None
-                and permit.outcome == "delivery_error"
-            )
-            if (
-                permit.pending_seq != 1
-                or permit.routine_job_name is not None
-                or not agent.local_session_id.startswith(SYNTHETIC_SESSION_PREFIX)
-                or not (unknown or legacy)
-            ):
-                raise ValueError("ineligible_probe")
-        elif permit.tier == "kg" and permit.routine_job_name is None:
-            raise ValueError("ineligible_kg_drainer")
+        _no_guest_delivery(permit, usage.get("recovery"))
     owners = (
         []
         if agent.ember_session_id is None
@@ -169,11 +219,8 @@ def _candidates():
     tiers = []
     if os.getenv("AGENT_PROBE_SUPERVISION_ENABLED", "false").lower() == "true":
         tiers.append("probe")
-    if (
-        os.getenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "false").lower()
-        == "true"
-    ):
-        tiers.extend(("kg", "project"))
+    if _general_enabled():
+        tiers.extend(("kg", "project", "interactive"))
     if not tiers:
         return []
     with Session(get_engine()) as db:
@@ -191,10 +238,17 @@ def _candidates():
                 .where(
                     AgentCapacityReservation.tier.in_(tiers),
                     AgentCapacityReservation.state == "uncertain",
-                    # Factory ownership stays with factory supervision. Its
-                    # no-guest attempts remain held until that path can prove
-                    # no delivery.
-                    AgentSession.workflow_id.is_(None),
+                    ~AgentSession.local_session_id.startswith("factory:"),
+                    ~exists().where(FactoryStart.session_id == AgentSession.id),
+                    ~exists().where(
+                        SwarmNodeRun.session_id == AgentSession.id,
+                        SwarmNodeRun.pin_json.isnot(None),
+                    ),
+                    or_(
+                        AgentCapacityReservation.tier.in_(("probe", "interactive")),
+                        AgentSession.local_session_id.startswith("_drainer-worker:"),
+                        AgentCapacityReservation.routine_job_name.isnot(None),
+                    ),
                 )
                 .order_by(
                     ProbeObservation.checked_at.asc().nulls_first(),
@@ -328,10 +382,15 @@ def _record(candidate, observed, observed_at):
                 },
                 sort_keys=True,
             )
-            # Destroyed is cessation proof only when CP supplies updated_at.
-            # Older CP responses omit that timestamp, so they cannot order the
-            # destroy after this turn and only eviction evidence is usable.
-            if observed.get("state") not in {"evicted", "destroyed"}:
+            terminal_states = {"evicted"}
+            if _general_enabled():
+                # Destroyed is trustworthy cessation proof only because
+                # nodeConfirmedDestroy: true (projects/embervm/deploy/values.yaml)
+                # makes the control plane record "destroyed" only after the
+                # owning node has itself confirmed teardown. Probe-only mode
+                # stays on eviction alone so it does not depend on that gate.
+                terminal_states.add("destroyed")
+            if observed.get("state") not in terminal_states:
                 raise ValueError("awaiting_cessation")
             last_invoke = observed.get("last_invoke_at")
             if type(last_invoke) is not int or not started <= last_invoke <= updated:
@@ -343,16 +402,6 @@ def _record(candidate, observed, observed_at):
             db.add(audit)
             return
         admission.confirm_guest_cessation(db, agent)
-        if agent.ember_lineage_id:
-            agent.prior_ember_lineage_id = agent.ember_lineage_id
-        if agent.cli_session_id:
-            agent.prior_cli_session_id = agent.cli_session_id
-        agent.ember_session_id = None
-        agent.ember_session_token = None
-        agent.ember_session_expires_at = None
-        agent.ember_lineage_id = None
-        agent.cli_session_id = None
-        db.add(agent)
         audit.reason = "guest_cessation_confirmed"
         audit.settled_at = _now()
         db.add(audit)
@@ -406,6 +455,3 @@ def start_permit_supervision_loop():
     task = asyncio.create_task(_loop(), name="agent-permit-supervision")
     task.add_done_callback(log_task_exception)
     return [task]
-
-
-start_probe_supervision_loop = start_permit_supervision_loop

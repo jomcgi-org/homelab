@@ -281,8 +281,7 @@ def reserve_start(
     )
     kg_full = tier == "kg" and sum(r.tier == "kg" for r in active) >= KG_LIMIT
     if len(active) >= TOTAL_LIMIT:
-        if background_full or kg_full:
-            _warn_stale_uncertain(active)
+        _warn_stale_uncertain(active)
         return False
     if tier != "interactive":
         if background_full:

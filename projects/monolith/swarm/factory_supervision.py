@@ -224,17 +224,40 @@ def _control_plane_cessation(view, identity):
     """Return terminal CP evidence ordered after this factory dispatch."""
     if view.get("state") not in {"evicted", "destroyed"}:
         return None
+    generation = view.get("generation")
+    started = view.get("invoke_started_at")
+    last_invoke = view.get("last_invoke_at")
     updated_at = view.get("updated_at")
     # Some legacy destroyed views have no terminal timestamp. They cannot prove
     # ordering, but may still carry the existing exact stop-completion proof.
-    if type(updated_at) is not int or updated_at < 1:
+    if (
+        any(
+            type(value) is not int or value < 1
+            for value in (started, last_invoke, updated_at)
+        )
+        or type(generation) is not int
+        or generation < 0
+    ):
+        return None
+    try:
+        expected = _precondition(view.get("stop_precondition"), identity["guest_id"])
+    except ValueError:
+        return None
+    if (
+        generation != expected["generation"]
+        or started != expected["invoke_started_at"]
+        or not started <= last_invoke <= updated_at
+    ):
         return None
     dispatched_at = int(_timestamp(identity["dispatched_at"]).timestamp() * 1000)
-    if updated_at <= dispatched_at:
-        raise ValueError("cessation_precedes_dispatch")
+    if started > dispatched_at or updated_at <= dispatched_at:
+        return None
     return {
         "session_id": identity["guest_id"],
         "state": view["state"],
+        "generation": generation,
+        "invoke_started_at": started,
+        "last_invoke_at": last_invoke,
         "updated_at": updated_at,
     }
 
@@ -346,7 +369,7 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
                 control,
                 pin,
                 session_id,
-                require_stop_due=not cessation_enabled,
+                require_stop_due=True,
             )
             intents = [
                 detail
@@ -522,6 +545,6 @@ def reconcile_uncertain_attempt(pin, session_id, original_result, workflow_statu
             ):
                 _note(pin, "node_completion_pending")
     except ValueError as exc:
-        if str(exc) != "factory_stop_not_due":
+        if not (cessation_enabled and str(exc) == "factory_stop_not_due"):
             _note(pin, "stop_evidence_or_ownership_changed")
     return False

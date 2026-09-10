@@ -282,13 +282,18 @@ the session is bound to a thread.
 across the turn, capacity reservation, routine job and health views. Capacity
 is released only by the explicit reconciliation owner after fresh authoritative
 terminal proof for the exact guest, generation, session and turn. Uncertain
-permits are settled from control-plane cessation evidence: if a guest is proven
-gone (state evicted or destroyed with terminal timestamp after the failed turn),
-or no delivery ever reached a guest, the permit is released and the session
-cleared. Factory-owned sessions use the factory's own settlement path. Why:
-avoids indefinite holds that block admission (stall on 2026-09-09).
-Factory-owned sessions with no bound guest remain held until the factory path
-can prove no delivery.
+permit cessation settlement is behind
+`agents.sessions.uncertainPermitSupervisionEnabled`, which defaults off. It
+covers kg and project drainer permits, interactive permits, and factory-owned
+project permits. When probe supervision is also enabled, it extends probes to
+destroyed and no-guest proof. A bound guest requires exact control-plane
+eviction or timestamped destruction after the failed turn. A no-guest permit
+requires durable claim evidence with no guest or binding evidence. The shared
+settler preserves the session binding, while factory-owned sessions use the
+factory settlement path. Factory attempts with no bound guest remain held until
+that path can prove no delivery. This avoids indefinite holds that block
+admission (stall on 2026-09-09).
+(see: /projects/monolith/agent_sessions/permit_supervision.py)
 
 Monolith batch work is rendered as Argo CronWorkflows in the workflows
 namespace, whose controller owns cadence, concurrency, deadlines, and history.

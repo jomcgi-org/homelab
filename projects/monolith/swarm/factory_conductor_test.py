@@ -2459,6 +2459,7 @@ def uncertain_factory(queued_factory, monkeypatch):
         "state": "running",
         "generation": 0,
         "invoke_started_at": 100,
+        "last_invoke_at": 150,
         "stop_precondition": s.precondition,
         "stop_intent": None,
         "stop_completion": None,
@@ -2759,9 +2760,7 @@ def test_evicted_guest_settles_factory_without_committed_stop_intent(
     s = uncertain_factory
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     observed_at = datetime.now(timezone.utc)
-    monkeypatch.setattr(
-        supervisor, "_now", lambda: observed_at - timedelta(seconds=119)
-    )
+    monkeypatch.setattr(supervisor, "_now", lambda: observed_at + timedelta(seconds=1))
     s.cp.update(
         state="evicted",
         updated_at=int(observed_at.timestamp() * 1000),
@@ -2794,6 +2793,94 @@ def test_evicted_guest_settles_factory_without_committed_stop_intent(
         assert (
             controls.task_snapshot(s.task["id"], session=db)["unresolved_starts"] == 0
         )
+
+
+def test_evicted_factory_guest_does_not_settle_without_new_flag(
+    uncertain_factory, monkeypatch
+):
+    from datetime import datetime, timedelta, timezone
+    from swarm import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
+    observed_at = datetime.now(timezone.utc)
+    monkeypatch.setattr(supervisor, "_now", lambda: observed_at + timedelta(seconds=1))
+    s.cp.update(
+        state="evicted",
+        updated_at=int(observed_at.timestamp() * 1000),
+    )
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert _uncertain_snapshot(s)["permits"][0]["state"] == "uncertain"
+
+
+def test_new_flag_does_not_poll_factory_before_stop_deadline(
+    uncertain_factory, monkeypatch
+):
+    from datetime import datetime, timedelta, timezone
+    from swarm import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    before_deadline = datetime.now(timezone.utc) - timedelta(seconds=119)
+    monkeypatch.setattr(supervisor, "_now", lambda: before_deadline)
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert s.calls == []
+
+
+def test_old_cessation_timestamp_falls_through_to_stop_completion(
+    uncertain_factory, monkeypatch
+):
+    from datetime import datetime, timedelta, timezone
+    from swarm import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.delenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", raising=False)
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(supervisor, "_now", lambda: now + timedelta(seconds=1))
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    s.complete()
+    dispatched_at = now - timedelta(days=1)
+    identity = {
+        "guest_id": "s-exact-factory",
+        "dispatched_at": dispatched_at.isoformat(),
+    }
+    s.cp["updated_at"] = int(dispatched_at.timestamp() * 1000)
+    assert supervisor._control_plane_cessation(s.cp, identity) is None
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert _uncertain_snapshot(s)["permits"][0]["state"] == "settled"
+
+
+def test_factory_cessation_rejects_reinvoked_guest(uncertain_factory):
+    from datetime import datetime, timedelta, timezone
+    from swarm import factory_supervision as supervisor
+
+    s = uncertain_factory
+    dispatched_at = datetime.now(timezone.utc) - timedelta(seconds=60)
+    started = int((dispatched_at + timedelta(seconds=1)).timestamp() * 1000)
+    s.cp.update(
+        state="evicted",
+        invoke_started_at=started,
+        last_invoke_at=started + 1,
+        updated_at=started + 2,
+    )
+    s.cp["stop_precondition"] = {
+        **s.precondition,
+        "invoke_started_at": started,
+    }
+    identity = {
+        "guest_id": "s-exact-factory",
+        "dispatched_at": dispatched_at.isoformat(),
+    }
+    assert supervisor._control_plane_cessation(s.cp, identity) is None
 
 
 @pytest.mark.parametrize("failure", ["permit", "graph", "start"])
