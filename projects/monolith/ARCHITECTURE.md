@@ -290,6 +290,30 @@ factory strip above the knowledge extraction queue strip.
 (see: /projects/monolith/frontend/src/routes/private/agents/+page.svelte)
 (see: /projects/monolith/frontend/src/routes/private/agents/factory/+page.svelte)
 (see: /projects/monolith/agent_sessions/factory_view.py)
+
+A factory start reserves a ceiling and settles at the cost its node result
+reports. Codex-backed models report no provider cost, so a result falls back to
+the list price the turn store computed from token usage, and every result
+carries the basis it settled on: provider, list, or unknown. The graph surfaces
+that as an accounting basis of reported or list_priced beside the reserved and
+accounted figures. Only known completions settle at a priced amount. Unknown
+execution retains its whole reservation, and a completion with no price at all
+still consumes its ceiling. The receipt counts work starts as `turns_used` and
+conductor rounds separately as `planner_turns_used`; only work starts meet
+`max_turns_per_task`.
+(see: /projects/monolith/swarm/factory_controls.py)
+(see: /projects/monolith/swarm/node_workflows.py)
+(see: /projects/monolith/shared/pricing.py)
+
+**Why.** Booking an unpriced completion at its full ceiling is the conservative
+choice when nothing is known about the spend, but a Codex turn is not unknown:
+its token usage is recorded and priceable, so charging the ceiling overstated a
+task by more than an order of magnitude and retired it with most of its real
+budget unspent. A list price is an estimate, so it settles the ledger but never
+fails a delivery; only a provider-measured overrun does that. Counting planner
+rounds against the same cap as delivery let a task exhaust itself deciding: the
+cap exists to bound work, and `task_budget_usd` with correct pricing is what
+bounds deliberation.
 (see: /projects/monolith/agent_sessions/voice.py)
 (see: /projects/monolith/chart/values.yaml)
 
