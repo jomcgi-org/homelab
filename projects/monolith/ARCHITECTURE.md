@@ -277,8 +277,11 @@ node itself; otherwise the engine inserts `integrate_<n>` over the wave and
 repoints whatever depended on those branches at it. A node only takes a branch
 of its own once the fan-in that will merge it exists, so a refused fan-in asks
 the planner rather than stranding work, and the branch a node first ran on is
-pinned for every later attempt. Fan-out is off entirely at a parallel limit of
-one, where the lane is the serial one it has always been.
+pinned for every later attempt. While a wave is open it is the only source of
+source-writing work that may start, so a node outside it waits rather than
+becoming a second writer on the task branch. Fan-out is off entirely at a
+parallel limit of one, a planner-authored integrate node included: its members
+run serially on the task branch and it merges nothing.
 (see: /projects/monolith/swarm/factory_conductor.py)
 (see: /projects/monolith/swarm/graph.py)
 (see: /projects/monolith/swarm/deviations.py)

@@ -4809,16 +4809,16 @@ def test_a_wave_takes_its_own_branches_only_once_its_fan_in_exists(feedback_db):
         "implement_alpha",
         "implement_beta",
     ]
-    # Until the fan-in is in the graph, nothing may take a branch nothing reads.
+    # Until the fan-in is in the graph neither member may start at all: its own
+    # branch would be one nothing reads, and the task branch would put two
+    # writers on one branch.
     for key in ("implement_alpha", "implement_beta"):
-        assert conductor._dispatch_branch(task["id"], key, nodes, runs) == (
-            f"factory/{task['id']}"
-        )
+        assert conductor._dispatch_branch(task["id"], key, nodes, runs, 2) is None
     conductor.reconcile_task(task["id"], policy, object())
     nodes, runs = graph_state(task["id"])
     for key in ("implement_alpha", "implement_beta"):
         assert conductor._dispatch_branch(
-            task["id"], key, nodes, runs
+            task["id"], key, nodes, runs, 2
         ) == conductor.node_branch(task["id"], key)
     # The branch is a sibling of the task branch, never a path below it: git
     # cannot hold refs/heads/factory/<id> and a child of it at once.
@@ -4897,7 +4897,7 @@ def test_a_planner_added_integrate_node_is_not_duplicated(feedback_db, monkeypat
     # A planner-named fan-in gives its wave branches exactly as an engine one does.
     nodes, runs = graph_state(task["id"])
     assert conductor._dispatch_branch(
-        task["id"], "implement_alpha", nodes, runs
+        task["id"], "implement_alpha", nodes, runs, 2
     ) == conductor.node_branch(task["id"], "implement_alpha")
 
 
@@ -5083,7 +5083,7 @@ def test_a_node_added_after_a_completed_wave_works_on_the_task_branch(
     ).ok
     nodes, runs = graph_state(task["id"])
     assert conductor.fan_out_wave(task["id"], nodes, runs, 2) == []
-    assert conductor._dispatch_branch(task["id"], "implement_late", nodes, runs) == (
+    assert conductor._dispatch_branch(task["id"], "implement_late", nodes, runs, 2) == (
         f"factory/{task['id']}"
     )
     assert conductor._integration_group(task["id"], nodes, runs, 2) == []
@@ -5106,8 +5106,11 @@ def test_a_dependant_of_a_wave_member_waits_for_the_fan_in(feedback_db):
         "implement_alpha",
         "implement_beta",
     ]
-    assert conductor._dispatch_branch(task["id"], "implement_follow", nodes, runs) == (
-        f"factory/{task['id']}"
+    # It may not start at all while the wave is open: the task branch is what
+    # the wave's fan-in will write, and its own dependency is not there yet.
+    assert (
+        conductor._dispatch_branch(task["id"], "implement_follow", nodes, runs, 2)
+        is None
     )
 
 
@@ -5350,5 +5353,150 @@ def test_a_stale_allowance_is_re_derived_on_the_next_tick(feedback_db, monkeypat
         db.commit()
     monkeypatch.setattr(conductor, "github_get", task_ref(task["id"]))
     monkeypatch.setattr(conductor, "reserve_node", lambda *_a: True)
+    conductor.reconcile_task(task["id"], policy, object())
+    assert controls.task_snapshot(task["id"])["allowance"] == derived
+
+
+def test_only_wave_members_dispatch_when_the_graph_order_disagrees(
+    feedback_db, monkeypatch
+):
+    """Graph order and wave order differ, so the queue must follow the wave.
+
+    Four independent implementations at a limit of two: the wave is the first
+    two by key, which is not the order the plan wrote them in. Dispatching the
+    graph's first two would put two writers on the task branch at once.
+    """
+    task, policy = planned_task(
+        feedback_task(max_parallel_nodes=2),
+        [
+            plan_edit("zulu", "implement"),
+            plan_edit("yankee", "implement"),
+            plan_edit("alpha", "implement"),
+            plan_edit("bravo", "implement"),
+            plan_edit(
+                "check",
+                "review",
+                [
+                    "implement_zulu",
+                    "implement_yankee",
+                    "implement_alpha",
+                    "implement_bravo",
+                ],
+            ),
+        ],
+    )
+    nodes, runs = graph_state(task["id"])
+    assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])][1:3] == [
+        "implement_zulu",
+        "implement_yankee",
+    ]
+    wave = conductor.fan_out_wave(task["id"], nodes, runs, 2)
+    assert wave == ["implement_alpha", "implement_bravo"]
+    conductor.reconcile_task(task["id"], policy, object())
+    monkeypatch.setattr(conductor, "github_get", task_ref(task["id"]))
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 3)
+    conductor.reconcile_task(task["id"], policy, object())
+    admitted = {
+        run["node_key"]: run["pin"]["branch"]
+        for run in conductor.graph.node_runs(task["id"])
+        if run["status"] == "admitted"
+    }
+    assert set(admitted) == set(wave)
+    # Every in-flight node writes a branch of its own, never one shared.
+    assert sorted(admitted.values()) == sorted(
+        conductor.node_branch(task["id"], key) for key in wave
+    )
+    assert len(set(admitted.values())) == len(admitted)
+    # The nodes outside the wave are refused a branch rather than given the
+    # task branch beside it.
+    nodes, runs = graph_state(task["id"])
+    for key in ("implement_zulu", "implement_yankee"):
+        assert conductor._dispatch_branch(task["id"], key, nodes, runs, 2) is None
+
+
+def test_a_planner_added_integrate_node_fans_nothing_out_at_a_limit_of_one(
+    feedback_db, monkeypatch
+):
+    task, policy = planned_task(
+        feedback_task(max_parallel_nodes=1),
+        [
+            plan_edit("alpha", "implement"),
+            plan_edit("beta", "implement"),
+            plan_edit("merge", "integrate", ["implement_alpha", "implement_beta"]),
+            plan_edit("check", "review", ["integrate_merge"]),
+        ],
+    )
+    monkeypatch.setattr(conductor, "github_get", task_ref(task["id"]))
+    monkeypatch.setattr(
+        conductor,
+        "_free_background_slots",
+        lambda: pytest.fail("the serial lane must not read the shared pool"),
+    )
+    nodes, runs = graph_state(task["id"])
+    # The planner named a fan-in, but the operator did not turn fan-out on, so
+    # its members run serially on the task branch and it merges nothing.
+    for key in ("implement_alpha", "implement_beta"):
+        assert conductor._dispatch_branch(task["id"], key, nodes, runs, 1) == (
+            f"factory/{task['id']}"
+        )
+    conductor.reconcile_task(task["id"], policy, object())
+    admitted = [
+        run
+        for run in conductor.graph.node_runs(task["id"])
+        if run["status"] == "admitted"
+    ]
+    assert len(admitted) == 1
+    assert admitted[0]["pin"]["branch"] == f"factory/{task['id']}"
+
+
+def test_a_split_wave_still_reserves_the_fan_in_it_will_need(feedback_db):
+    """Two nodes that fan out together carry different ancestor counts."""
+    from swarm import factory_controls as controls
+
+    task, policy = planned_task(
+        feedback_task(max_parallel_nodes=2),
+        [
+            plan_edit("scope", "investigate"),
+            plan_edit("alpha", "implement", ["investigate_scope"]),
+            plan_edit("beta", "implement", ["investigate_scope"]),
+            plan_edit("check", "review", ["implement_alpha", "implement_beta"]),
+        ],
+    )
+    # investigate_scope is not concurrent with anything, so it is not in a
+    # group; alpha and beta are, and they still owe one fan-in.
+    assert (
+        conductor._planned_fan_ins(
+            task["id"], policy, conductor.graph.load_graph(task["id"])
+        )
+        == 1
+    )
+    assert controls.task_snapshot(task["id"])["allowance"]["fan_ins_reserved"] == 1
+
+
+def test_a_stale_allowance_is_re_derived_before_a_top_up_dispatch(
+    feedback_db, monkeypatch
+):
+    import json
+    from sqlmodel import Session, select
+    from swarm import factory_controls as controls
+    from swarm.factory_models import FactoryReceipt
+
+    task, policy = parallel_plan()
+    conductor.reconcile_task(task["id"], policy, object())
+    monkeypatch.setattr(conductor, "github_get", task_ref(task["id"]))
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 0)
+    conductor.reconcile_task(task["id"], policy, object())
+    derived = controls.task_snapshot(task["id"])["allowance"]
+    with Session(feedback_db) as db:
+        row = db.exec(select(FactoryReceipt)).first()
+        row.allowance_json = json.dumps(
+            {**derived, "turns": derived["turns"] + 40, "graph_revision": 0}
+        )
+        db.add(row)
+        db.commit()
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 2)
+    monkeypatch.setattr(conductor, "_submit_or_reconcile", lambda *_a: None)
+    # One node is still in flight, so this is the top-up path. A stale-high
+    # allowance must never be what the second admission is measured against.
     conductor.reconcile_task(task["id"], policy, object())
     assert controls.task_snapshot(task["id"])["allowance"] == derived
