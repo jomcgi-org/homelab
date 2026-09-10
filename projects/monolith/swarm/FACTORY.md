@@ -129,10 +129,13 @@ branch the engine handed out is one the fan-in merges. A node takes a branch of
 its own only once that fan-in exists, so a refused insertion asks the planner
 rather than stranding work, and the branch a node first ran on is pinned for
 every later attempt of it. `integrate_<n>` is reserved to the engine exactly as
-`correct_<n>` and `review_<n>` are. Extra concurrent nodes are admitted only
-when the shared session pool has room, and a node the pool cannot hold stays
-ready for the next tick rather than failing. At a limit of one, none of this
-applies and the lane is serial.
+`correct_<n>` and `review_<n>` are. While a wave is open it is the only source
+of source-writing work that may start, so a node outside it waits its turn
+rather than writing the task branch beside the wave. Extra concurrent nodes are
+admitted only when the shared session pool has room, and a node the pool cannot
+hold stays ready for the next tick rather than failing. At a limit of one none
+of this applies and the lane is serial, a planner-authored integrate node
+included.
 
 The guest hydrates the existing task branch, or the base branch before the
 task branch exists. Source changes belong in a dedicated linked worktree on the

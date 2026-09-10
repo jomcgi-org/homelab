@@ -614,24 +614,30 @@ def _pending_fan_ins(
 
 
 def _dispatch_branch(
-    task_id: str, node_key: str, nodes: list[dict], runs: list[dict]
+    task_id: str, node_key: str, nodes: list[dict], runs: list[dict], limit: int
 ) -> str | None:
     """The branch to dispatch this attempt on, or None when it must not start.
 
-    A node only works on its own branch once the fan-in that will merge that
-    branch exists in the graph, so a refused fan-in can never strand work on a
-    branch nothing reads.
+    While a wave is open, the wave is the only source of source-writing work
+    that may start: a node outside it would be a second writer on the task
+    branch beside the wave. A wave member works on its own branch, and only
+    once the fan-in that will merge that branch is in the graph, so a refused
+    fan-in can never strand work on a branch nothing reads.
+
+    With no wave open, and so at a parallel limit of one, a source-writing node
+    has the task branch to itself and the dispatch loop admits one at a time.
     """
     pinned = _pinned_branch(node_key, runs)
     if pinned is not None:
         return pinned
     if not node_key.startswith(_BRANCHED_ROLE_PREFIXES):
         return task_branch(task_id)
-    return (
-        node_branch(task_id, node_key)
-        if _covering_integrate(node_key, nodes) is not None
-        else task_branch(task_id)
-    )
+    wave = fan_out_wave(task_id, nodes, runs, limit)
+    if not wave:
+        return task_branch(task_id)
+    if node_key not in wave or _covering_integrate(node_key, nodes) is None:
+        return None
+    return node_branch(task_id, node_key)
 
 
 def _boundary(task: dict, *, review: bool = False) -> str:
@@ -1271,30 +1277,40 @@ def _rounds_remaining(task_id: str, policy: dict) -> int:
 
 
 def _planned_fan_ins(task_id: str, policy: dict, nodes: list[dict]) -> int:
-    """Fan-in nodes a graph implies, one per wave of source-writing nodes.
+    """Fan-in nodes a graph implies, one per set that will fan out together.
 
-    A plan is sized before anything runs, so its waves are read from the
-    dependency ranks: nodes with the same number of source-writing ancestors
-    become ready together. Every such rank with two or more members will fan
-    out and needs a fan-in node, and a rank already covered by a live integrate
-    node has stopped owing one.
+    A plan is sized before anything runs, so its waves are read the same way
+    fan_out_wave reads them: source-writing nodes no dependency path connects
+    are grouped together, and every group of two or more will fan out and needs
+    a fan-in node. A group a live integrate node already covers has stopped
+    owing one. Grouping greedily can only split a set into more groups than run
+    together, so this reserves at least what the waves will cost.
     """
     from swarm.factory_controls import parallel_limit
 
     if parallel_limit(policy) <= 1:
         return 0
     ancestors = _ancestors(nodes)
-    branchable = {
+    branchable = sorted(
         node["node_key"]
         for node in nodes
         if node["node_key"].startswith(_BRANCHED_ROLE_PREFIXES)
-    }
-    ranks: dict[int, list[str]] = {}
-    for key in sorted(branchable):
-        ranks.setdefault(len(ancestors.get(key, set()) & branchable), []).append(key)
+    )
+    groups: list[list[str]] = []
+    for key in _concurrent(branchable, ancestors):
+        for members in groups:
+            if all(
+                member not in ancestors.get(key, set())
+                and key not in ancestors.get(member, set())
+                for member in members
+            ):
+                members.append(key)
+                break
+        else:
+            groups.append([key])
     return sum(
         1
-        for members in ranks.values()
+        for members in groups
         if len(members) >= 2
         and any(_covering_integrate(key, nodes) is None for key in members)
     )
@@ -1353,6 +1369,23 @@ def _envelope_refusal(
     if excess is None:
         return None
     return "envelope exceeded: " + json.dumps(excess, sort_keys=True)
+
+
+def _resync_allowance(task_id: str, policy: dict, revision: int) -> None:
+    """Re-derive a stored allowance the graph has moved past.
+
+    apply_edits owns its own transaction, so a crash between an accepted edit
+    and its allowance write leaves the stored figure at an older revision.
+    Writing the allowance inside the graph's own transaction would take the
+    control row lock while holding the task row, the opposite order to
+    reserve_node, so it is healed here instead, before anything reads it to
+    admit work.
+    """
+    from swarm.factory_controls import task_allowance
+
+    stored = task_allowance(task_id)
+    if stored.get("derived") and stored.get("graph_revision") != revision:
+        _record_allowance(task_id, policy, "factory-allowance:resync")
 
 
 def _record_allowance(task_id: str, policy: dict, cause: str) -> None:
@@ -2097,7 +2130,6 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
         parallel_limit,
         record_start_outcome,
         set_control,
-        task_allowance,
     )
 
     task = _task(task_id)
@@ -2135,12 +2167,16 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
             return
         if not can_start(task_id)["ok"]:
             return
+        # Nothing may be admitted against an allowance the graph has outgrown,
+        # so the top-up path resyncs exactly as the settled path does.
+        _resync_allowance(task_id, policy, graph.current_version(task_id))
         _dispatch_ready(
             task,
             graph.load_graph(task_id),
             runs,
             parallel - len(running),
             fan_out=True,
+            parallel=parallel,
         )
         return
     permission = can_start(task_id)
@@ -2162,16 +2198,7 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     # graph edits that race with reading nodes or constructing the prompt.
     insertion_revision = graph.current_version(task_id)
     nodes = graph.load_graph(task_id)
-    # apply_edits owns its own transaction, so a crash between an accepted edit
-    # and its allowance write leaves the stored figure behind the graph. It is
-    # low rather than high, so nothing is over-admitted, but the task would
-    # stall against a bound its plan no longer implies. Re-derive whenever the
-    # stored revision is behind. Writing the allowance inside the graph's own
-    # transaction would take the control row lock while holding the task row,
-    # the opposite order to reserve_node, so this heals it instead.
-    stored = task_allowance(task_id)
-    if stored.get("derived") and stored.get("graph_revision") != insertion_revision:
-        _record_allowance(task_id, policy, "factory-allowance:resync")
+    _resync_allowance(task_id, policy, insertion_revision)
     planners = [
         r
         for r in runs
@@ -2269,7 +2296,7 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
         else:
             set_control("pause_task", ACTOR, task_id=task_id)
         return
-    _dispatch_ready(task, nodes, runs, parallel, fan_out=False)
+    _dispatch_ready(task, nodes, runs, parallel, fan_out=False, parallel=parallel)
 
 
 def _ready_nodes(nodes: list[dict], runs: list[dict]) -> list[dict]:
@@ -2302,6 +2329,7 @@ def _dispatch_ready(
     slots: int,
     *,
     fan_out: bool,
+    parallel: int,
 ) -> bool:
     """Reserve up to ``slots`` ready nodes, each on the branch the graph implies.
 
@@ -2324,10 +2352,19 @@ def _dispatch_ready(
         return False
     hydration = hydration_branch(task)
     task_id = task["id"]
+    # The wave decides which source-writing nodes may start and in what order,
+    # so it leads the queue. Everything else keeps its graph order behind it.
+    rank = {
+        key: index
+        for index, key in enumerate(fan_out_wave(task_id, nodes, runs, parallel))
+    }
+    ordered = sorted(ready, key=lambda node: rank.get(node["node_key"], len(rank)))
     dispatched = 0
-    for node in ready[:limit]:
+    for node in ordered:
+        if dispatched >= limit:
+            break
         node_key = node["node_key"]
-        branch = _dispatch_branch(task_id, node_key, nodes, runs)
+        branch = _dispatch_branch(task_id, node_key, nodes, runs, parallel)
         if branch is None:
             continue
         attempt = sum(r["node_key"] == node_key for r in runs) + 1
