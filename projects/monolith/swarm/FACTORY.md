@@ -119,8 +119,9 @@ it at once. An `integrate` node merges those branches into the task branch,
 resolves conflicts, runs the targeted checks and reports the integrated head;
 review then examines that head and the correction rounds work on the task
 branch. The planner may add the integrate node itself; when a plan holds two or
-more concurrent implementations and nothing covers them, the engine inserts
-`integrate_<n>` and repoints their dependents at it. `integrate_<n>` is
+more concurrent nodes on their own branches and nothing covers them, the engine
+inserts `integrate_<n>` and repoints their dependents at it, so every branch the
+engine handed out is one the fan-in merges. `integrate_<n>` is
 reserved to the engine exactly as `correct_<n>` and `review_<n>` are. Extra
 concurrent nodes are admitted only when the shared session pool has room, and a
 node the pool cannot hold stays ready for the next tick rather than failing.

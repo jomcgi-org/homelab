@@ -1636,18 +1636,15 @@ def _insert_review_round(
 
 
 def _integration_group(nodes: list[dict]) -> list[str]:
-    """Concurrent implementation nodes that no integrate node already covers.
+    """The fanned-out nodes that no integrate node already covers.
 
-    Two implement nodes with no dependency path between them push to separate
-    branches, so something has to merge them before a reviewer can look at one
-    head. A planner may name that node itself; when it did not, the engine
-    inserts one.
+    Two nodes with no dependency path between them push to separate branches,
+    so something has to merge them before a reviewer can look at one head. The
+    group is exactly the set that fanned out, so every branch this engine
+    handed out is a branch the fan-in merges. A planner may name that node
+    itself; when it did not, the engine inserts one.
     """
-    ancestors = _ancestors(nodes)
-    implements = sorted(
-        node["node_key"] for node in nodes if node["node_key"].startswith("implement_")
-    )
-    group = _concurrent(implements, ancestors)
+    group = sorted(_fan_out_keys(nodes))
     if len(group) < 2:
         return []
     covered = set(group)
