@@ -281,11 +281,14 @@ the session is bound to a thread.
 **Why.** An unconfirmed delivery error is one hold represented consistently
 across the turn, capacity reservation, routine job and health views. Capacity
 is released only by the explicit reconciliation owner after fresh authoritative
-terminal proof for the exact guest, generation, session and turn. Non-routine
-uncertain reservations, such as synthetic probe sessions without a routine job,
-remain a deliberate residual gap: an operator-owned cessation caller must supply
-that exact proof to the session reconciliation owner; this lane does not invent
-an automatic release, sweeper or timeout.
+terminal proof for the exact guest, generation, session and turn. Uncertain
+permits are settled from control-plane cessation evidence: if a guest is proven
+gone (state evicted or destroyed with terminal timestamp after the failed turn),
+or no delivery ever reached a guest, the permit is released and the session
+cleared. Factory-owned sessions use the factory's own settlement path. Why:
+avoids indefinite holds that block admission (stall on 2026-09-09).
+Factory-owned sessions with no bound guest remain held until the factory path
+can prove no delivery.
 
 Monolith batch work is rendered as Argo CronWorkflows in the workflows
 namespace, whose controller owns cadence, concurrency, deadlines, and history.

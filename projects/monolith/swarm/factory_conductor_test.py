@@ -2746,6 +2746,56 @@ def test_durable_stop_reconciles_production_factory_owner_without_replay(
         )
 
 
+def test_evicted_guest_settles_factory_without_committed_stop_intent(
+    uncertain_factory, monkeypatch
+):
+    import json
+    from datetime import datetime, timedelta, timezone
+    from sqlmodel import Session, select
+    from swarm import factory_controls as controls
+    from swarm import factory_supervision as supervisor
+    from swarm.factory_models import FactoryAudit
+
+    s = uncertain_factory
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    observed_at = datetime.now(timezone.utc)
+    monkeypatch.setattr(
+        supervisor, "_now", lambda: observed_at - timedelta(seconds=119)
+    )
+    s.cp.update(
+        state="evicted",
+        updated_at=int(observed_at.timestamp() * 1000),
+    )
+
+    assert supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    after = _uncertain_snapshot(s)
+    assert after["permits"][0]["state"] == "settled"
+    assert after["permits"][0]["outcome"] == "guest_cessation_confirmed"
+    assert after["runs"][0]["status"] == "failed"
+    assert after["factory"]["starts"][0]["status"] == "failed"
+    event = after["factory"]["stop_events"][0]
+    assert event["action"] == "stop_settled"
+    assert event["cessation_confirmed"] is True
+    assert event["intervention_required"] is False
+    assert all(precondition is None for _guest, precondition in s.calls)
+    with Session(s.engine) as db:
+        rows = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == s.task["id"],
+                FactoryAudit.action.in_(("stop_intent", "stop_settled")),
+            )
+        ).all()
+        assert [row.action for row in rows] == ["stop_settled"]
+        detail = json.loads(rows[0].detail_json)
+        assert detail["identity"]["session_id"] == s.sid
+        assert detail["completion"]["updated_at"] == s.cp["updated_at"]
+        assert (
+            controls.task_snapshot(s.task["id"], session=db)["unresolved_starts"] == 0
+        )
+
+
 @pytest.mark.parametrize("failure", ["permit", "graph", "start"])
 @pytest.mark.parametrize("cleanup_claim", [False, True])
 def test_stop_settlement_rollback_retains_all_original_holds(

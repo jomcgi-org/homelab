@@ -104,6 +104,41 @@ def test_two_kg_project_and_interactive_fit_but_no_third_kg(database):
     assert not reserve(database, "next-human")
 
 
+def test_stale_uncertain_capacity_warning_is_rate_limited(
+    database, monkeypatch, caplog
+):
+    assert reserve(database, "kg-held", "kg")
+    assert reserve(database, "project", "project")
+    assert reserve(database, "probe", "probe")
+    with Session(database) as db:
+        held = admission.reservation(db, "kg-held")
+        held.state = "uncertain"
+        held.created_at = datetime.now(timezone.utc) - timedelta(minutes=11)
+        held_id = held.id
+        db.add(held)
+        db.commit()
+    clock = [100.0]
+    monkeypatch.setattr(admission.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(admission, "_last_uncertain_warning_at", float("-inf"))
+    with caplog.at_level("WARNING", logger=admission.__name__):
+        assert not reserve(database, "blocked-one", "kg")
+        assert not reserve(database, "blocked-two", "kg")
+        clock[0] += admission.UNCERTAIN_WARNING_INTERVAL_SECONDS + 1
+        assert not reserve(database, "blocked-three", "kg")
+    warnings = [
+        record.message
+        for record in caplog.records
+        if "Stale uncertain permits" in record.message
+    ]
+    assert len(warnings) == 2
+    assert all(
+        f"id={held_id}" in warning
+        and "tier=kg" in warning
+        and "age_seconds=" in warning
+        for warning in warnings
+    )
+
+
 def test_waiting_interactive_wins_next_admission(database):
     human = queued(database, "human")
     kg = queued(database, "kg", "kg")

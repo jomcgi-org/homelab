@@ -6,6 +6,9 @@ All helpers taking a Session leave commit/rollback to their domain caller.
 """
 
 from datetime import datetime, timedelta, timezone
+import logging
+import threading
+import time
 
 from sqlalchemy import exists, or_, update
 from sqlalchemy.orm import aliased
@@ -28,6 +31,42 @@ BACKGROUND_LIMIT = 3
 KG_LIMIT = 2
 TIERS = frozenset({"interactive", "project", "kg", "probe"})
 PRIORITY = {"interactive": 0, "project": 1, "kg": 2, "probe": 3}
+UNCERTAIN_STALL_SECONDS = 10 * 60
+UNCERTAIN_WARNING_INTERVAL_SECONDS = 60
+
+logger = logging.getLogger(__name__)
+_warning_lock = threading.Lock()
+_last_uncertain_warning_at = float("-inf")
+
+
+def _warn_stale_uncertain(active) -> None:
+    """Emit one process-local warning for capacity holds older than ten minutes."""
+    global _last_uncertain_warning_at
+
+    now = datetime.now(timezone.utc)
+    stalled = []
+    for row in active:
+        created_at = row.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        age = int((now - created_at).total_seconds())
+        if row.state == "uncertain" and age > UNCERTAIN_STALL_SECONDS:
+            stalled.append((row.id, row.tier, age))
+    if not stalled:
+        return
+    monotonic_now = time.monotonic()
+    with _warning_lock:
+        if (
+            monotonic_now - _last_uncertain_warning_at
+            < UNCERTAIN_WARNING_INTERVAL_SECONDS
+        ):
+            return
+        _last_uncertain_warning_at = monotonic_now
+    permits = ", ".join(
+        f"id={permit_id} tier={tier} age_seconds={age}"
+        for permit_id, tier, age in stalled
+    )
+    logger.warning("Stale uncertain permits are blocking admission: %s", permits)
 
 
 def lock_pool(db: Session) -> None:
@@ -236,14 +275,23 @@ def reserve_start(
         row.routine_job_name == routine_job_name for row in active
     ):
         return False
+    background_full = (
+        tier != "interactive"
+        and sum(r.tier != "interactive" for r in active) >= BACKGROUND_LIMIT
+    )
+    kg_full = tier == "kg" and sum(r.tier == "kg" for r in active) >= KG_LIMIT
     if len(active) >= TOTAL_LIMIT:
+        if background_full or kg_full:
+            _warn_stale_uncertain(active)
         return False
     if tier != "interactive":
-        if sum(
-            r.tier != "interactive" for r in active
-        ) >= BACKGROUND_LIMIT or _higher_priority_waiting(db, tier):
+        if background_full:
+            _warn_stale_uncertain(active)
             return False
-    if tier == "kg" and sum(r.tier == "kg" for r in active) >= KG_LIMIT:
+        if _higher_priority_waiting(db, tier):
+            return False
+    if kg_full:
+        _warn_stale_uncertain(active)
         return False
     if daily_key is not None:
         if daily_limit is None or daily_limit < 0 or daily_used < 0:

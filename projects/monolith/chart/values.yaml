@@ -114,6 +114,8 @@ agents:
   sessions:
     # Observe failed probes until exact eviction evidence releases their hold.
     probeSupervisionEnabled: false
+    # Extend cessation supervision to kg, project, and factory-owned permits.
+    uncertainPermitSupervisionEnabled: false
     # Capture exact completed results before the guest's synchronous response.
     resultReceiptsEnabled: false
     # Consume exact native receipts for active owners. Restart adoption and
