@@ -607,3 +607,149 @@ def test_exhausted_review_rounds_return_the_task_to_the_planner(
 
     deviation = json.loads(planner["prompt"].rsplit("\n", 1)[1])["deviation"]
     assert deviation["code"] == "review_rounds_exhausted"
+
+
+class PlannedInParallel(CompletedNodes):
+    """A two-branch plan, fanned in by the engine before an independent review."""
+
+    def start_workflow(self, _function, pin):
+        from swarm.node_workflows import _validate_pin
+
+        _validate_pin(pin)
+        key = pin["workflow_id"]
+        assert key not in self.results, (
+            "reconciliation dispatched an already completed workflow"
+        )
+        self.started_pins.append(copy.deepcopy(pin))
+        node = pin["node_key"]
+        if node == "conductor_1":
+            value = {
+                "action": "plan",
+                "reason": "Two independent pieces, then one review",
+                "edits": [
+                    {
+                        "action": "add_node",
+                        "reason": "Deliver the server half",
+                        "node_key": "alpha",
+                        "role": "implement",
+                        "prompt": "Implement the server half",
+                        "deps": [],
+                    },
+                    {
+                        "action": "add_node",
+                        "reason": "Deliver the client half",
+                        "node_key": "beta",
+                        "role": "implement",
+                        "prompt": "Implement the client half",
+                        "deps": [],
+                    },
+                    {
+                        "action": "add_node",
+                        "reason": "Independent review at the exact head",
+                        "node_key": "check",
+                        "role": "review",
+                        "prompt": "Independently review PR 21 at its current head",
+                        "deps": ["implement_alpha", "implement_beta"],
+                    },
+                ],
+            }
+        elif node in ("implement_alpha", "implement_beta", "integrate_1"):
+            value = {
+                "status": "complete",
+                "summary": f"{node} delivered",
+                "pr_number": 21,
+                "head_sha": HEAD,
+            }
+        elif node == "review_check":
+            value = {
+                "verdict": "approve",
+                "summary": "The integrated head covers both halves.",
+                "pr_number": 21,
+                "head_sha": HEAD,
+            }
+        elif node == "conductor_2":
+            value = {
+                "action": "finish",
+                "reason": "Independent review and required CI passed",
+                "pr_number": 21,
+            }
+        else:
+            raise AssertionError(f"unexpected workflow node {node}")
+        self.results[key] = {
+            "status": "succeeded",
+            "session_id": 100 + len(self.started_pins),
+            "attempt": pin["attempt"],
+            "cost_usd": 0.25,
+            "head_sha": HEAD,
+            "artifact": {"status": "ok", "value": value, "errors": []},
+            "value": value,
+            "reason": None,
+            "cleanup": {"status": "completed"},
+        }
+
+
+def test_parallel_halves_fan_out_and_are_integrated_before_review(
+    db, policy, monkeypatch
+):
+    policy["max_parallel_nodes"] = 2
+    policy["max_task_turns_hard"] = 40
+    task_id = admit(policy)
+    dbos = PlannedInParallel()
+    delivery_api(monkeypatch, task_id)
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 3)
+    reconcile_until(
+        task_id,
+        policy,
+        dbos,
+        lambda: controls.task_snapshot(task_id)["state"] == "succeeded",
+    )
+    started = [pin["node_key"] for pin in dbos.started_pins]
+    assert started[0] == "conductor_1"
+    # Both halves are in flight before either settles, and the engine's fan-in
+    # runs before the review the planner wrote.
+    assert set(started[1:3]) == {"implement_alpha", "implement_beta"}
+    assert started[3:] == ["integrate_1", "review_check", "conductor_2"]
+    branches = {pin["node_key"]: pin["branch"] for pin in dbos.started_pins}
+    assert branches["implement_alpha"] == f"factory/{task_id}-implement_alpha"
+    assert branches["implement_beta"] == f"factory/{task_id}-implement_beta"
+    assert branches["integrate_1"] == f"factory/{task_id}"
+    assert branches["review_check"] == f"factory/{task_id}"
+    nodes = {n["node_key"]: n for n in graph.load_graph(task_id)}
+    assert nodes["integrate_1"]["deps"] == ["implement_alpha", "implement_beta"]
+    assert nodes["review_check"]["deps"] == ["integrate_1"]
+    with Session(db) as session:
+        fan_in = session.exec(
+            select(SwarmPlanVersion).where(
+                SwarmPlanVersion.cause_ref == "factory-loop:integrate_1"
+            )
+        ).all()
+        # One add for the fan-in node, then the review's discard and re-add.
+        assert [v.op for v in fan_in] == ["add_node", "discard_node", "add_node"]
+        assert {v.author_kind for v in fan_in} == {"engine"}
+    snapshot = controls.task_snapshot(task_id)
+    assert snapshot["turns_used"] == 4 and snapshot["planner_turns_used"] == 2
+    assert snapshot["allowance"]["derived"] is True
+    assert snapshot["evidence"]["state"] == "ready_for_review"
+
+
+def test_one_parallel_node_keeps_the_task_branch_and_needs_no_fan_in(
+    db, policy, monkeypatch
+):
+    task_id = admit(policy)
+    dbos = PlannedThenCorrected()
+    delivery_api(monkeypatch, task_id)
+    monkeypatch.setattr(
+        conductor,
+        "_free_background_slots",
+        lambda: pytest.fail("the serial lane must not read the shared pool"),
+    )
+    reconcile_until(
+        task_id,
+        policy,
+        dbos,
+        lambda: controls.task_snapshot(task_id)["state"] == "succeeded",
+    )
+    assert all(pin["branch"] == f"factory/{task_id}" for pin in dbos.started_pins)
+    assert not any(
+        node["node_key"].startswith("integrate_") for node in graph.load_graph(task_id)
+    )

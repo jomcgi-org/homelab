@@ -94,7 +94,7 @@ def test_shape_receipt_joins_nodes_runs_and_sessions():
             "conductor_model": "spark",
             "worker_model": "sonnet",
             "reviewer_model": "opus",
-            "max_turns_per_task": 9,
+            "max_task_turns_hard": 9,
             "task_budget_usd": 36.0,
             "max_attempts": 2,
             "repo": "x/y",
@@ -126,7 +126,8 @@ def test_shape_receipt_joins_nodes_runs_and_sessions():
         "conductor_model": "spark",
         "worker_model": "sonnet",
         "reviewer_model": "opus",
-        "max_turns_per_task": 9,
+        "max_task_turns_hard": 9,
+        "max_parallel_nodes": None,
         "task_budget_usd": 36.0,
         "max_attempts": 2,
     }
@@ -156,7 +157,7 @@ def test_shape_policy_keeps_the_board_keys_only():
             "conductor_model": "astra",
             "worker_model": "sol",
             "reviewer_model": "opus",
-            "max_turns_per_task": 9,
+            "max_task_turns_hard": 9,
             "task_budget_usd": 36.0,
             "max_attempts": 2,
             "repo": "x/y",
@@ -170,7 +171,8 @@ def test_shape_policy_keeps_the_board_keys_only():
         "conductor_model": "astra",
         "worker_model": "sol",
         "reviewer_model": "opus",
-        "max_turns_per_task": 9,
+        "max_task_turns_hard": 9,
+        "max_parallel_nodes": None,
         "task_budget_usd": 36.0,
         "max_attempts": 2,
     }
@@ -224,7 +226,7 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
                 policy_json=(
                     '{"repo": "x/y", "generation": 4, "max_tasks": 1, '
                     '"conductor_model": "astra", "worker_model": "sol", '
-                    '"reviewer_model": "opus", "max_turns_per_task": 9, '
+                    '"reviewer_model": "opus", "max_task_turns_hard": 9, '
                     '"task_budget_usd": 36.0, "max_attempts": 2}'
                 ),
                 actor="test",

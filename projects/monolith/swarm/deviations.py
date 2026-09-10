@@ -109,6 +109,7 @@ def compute_deviations(run: dict) -> list[dict]:
 # the engine into every consumer of this pure module.
 _SETTLED = ("succeeded", "failed", "escalated", "cancelled")
 FACTORY_DEVIATION_CODES = (
+    "integration_insert_refused",
     "loop_insert_refused",
     "initial_plan",
     "review_rounds_exhausted",
@@ -126,6 +127,7 @@ def factory_deviation(
     max_review_rounds: int,
     pending_review: str | None = None,
     loop_refusal: str | None = None,
+    integration_refusal: str | None = None,
 ) -> dict:
     """Name why a factory plan needs its planner.
 
@@ -138,6 +140,13 @@ def factory_deviation(
     the very planner node it just asked for.
     """
     work = [node for node in nodes if not node["node_key"].startswith("conductor_")]
+    if integration_refusal is not None:
+        return _deviation(
+            "integration_insert_refused",
+            "run",
+            f"integration refusal: {integration_refusal}",
+            "The engine could not fan the parallel branches back in.",
+        )
     if loop_refusal is not None:
         return _deviation(
             "loop_insert_refused",

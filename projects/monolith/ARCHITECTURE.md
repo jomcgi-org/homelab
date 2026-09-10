@@ -247,8 +247,29 @@ reconciler dispatches each ready node as its own pinned unit, and a review that
 returns `changes_requested` opens a correction and re-review pair the engine
 appends itself, bounded by the policy's `max_review_rounds` (default 2). The
 planner is called back only for a named deviation: no plan applied yet, a node
-that failed or escalated with no runnable retry, review rounds spent, or a
-settled graph with no verified delivery.
+that failed or escalated with no runnable retry, review rounds spent, a fan-in
+the engine could not open, or a settled graph with no verified delivery.
+
+The accepted plan sizes the task. Its allowance is the sum over live
+unsucceeded nodes of `max_attempts`, plus the work turns history already spent,
+plus two turns for each review round the engine may still open, and the same
+sum in money over node cost ceilings plus charged history. That allowance is
+persisted on the receipt with the graph revision it came from, re-derived and
+audited on every accepted plan, add, discard and engine round, and it is the
+bound `authorize_start` and the board actually read. Policy keeps only an
+envelope, `max_task_turns_hard` beside `task_budget_usd` and the deadline. A
+plan whose derived allowance would exceed either is refused whole with
+`envelope_exceeded` and the excess named as needed against allowed, which
+reaches the planner as decision feedback so it can split the work or pause.
+
+Nodes with no dependency between them run in parallel, up to
+`max_parallel_nodes`. Each parallel implementation works on
+`factory/<task-id>-<node key>`, a sibling of the task branch rather than a path
+below it, and an `integrate` node depending on all of them merges those
+branches into the task branch and reports the integrated head. The planner may
+name that node itself; when a plan has two or more concurrent implementations
+and none covers them, the engine inserts `integrate_<n>` and repoints whatever
+depended on the branches at it, so review still examines one integrated head.
 (see: /projects/monolith/swarm/factory_conductor.py)
 (see: /projects/monolith/swarm/graph.py)
 (see: /projects/monolith/swarm/deviations.py)
@@ -351,7 +372,33 @@ rounds against the delivery cap let a task exhaust itself deciding, but the task
 budget alone is not the answer either: a planning round costs a few cents, so
 the budget would admit hundreds of them and a refused decision mints the next
 planner every tick. `max_planner_turns` bounds deliberation on its own count,
-leaving `max_turns_per_task` to bound the work.
+leaving the work bound to the plan.
+
+**Why.** A fixed `max_turns_per_task` is a guess made before anyone knows what
+the task is. It stranded a well-formed plan that needed one more node and it
+funded a trivial one at ten times its size, and neither failure told the
+planner anything. The plan is the only artifact that knows how much work there
+is, so it derives the allowance and policy keeps the envelope that plan has to
+fit inside. Refusing an over-envelope plan whole, with the excess named, is
+what makes the bound actionable: the planner can split the work into a
+follow-up task or pause for orchestration review instead of discovering the
+wall one turn at a time. `max_turns_per_task` is still accepted and read as the
+envelope, so a live policy needs no re-post (#5419).
+
+**Why.** Nodes were serial because every node pushed to the one branch
+`factory/<task-id>` and the reconciler dispatched one active run per task, not
+because the plan said they depended on each other. Giving concurrent
+implementations their own branch and fanning them back in through one integrate
+node before review is the shape #5861 point 5 asks for: parallel contributors
+feed one integration branch per coherent slice, with the required checks at the
+integrated head. The branch is a sibling name rather than a path under the task
+branch because git cannot hold `refs/heads/factory/<id>` and a ref below it at
+the same time. Which nodes fan out is read from the dependencies the planner
+already wrote rather than from a separate marker, so the branch a node pushes
+to and the order the graph enforces can never disagree. Fan-out is off until an
+operator raises `max_parallel_nodes`, and the extra concurrent guests are gated
+on the shared session pool first, so a node the pool cannot hold stays ready
+for the next tick rather than failing (#5419, #5861).
 
 **Why.** An unconfirmed delivery error is one hold represented consistently
 across the turn, capacity reservation, routine job and health views. Capacity

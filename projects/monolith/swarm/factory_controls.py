@@ -34,6 +34,8 @@ _POLICY_KEYS = {
     "generation",
     "max_tasks",
     "max_turns_per_task",
+    "max_task_turns_hard",
+    "max_parallel_nodes",
     "max_planner_turns",
     "task_budget_usd",
     "turn_budget_usd",
@@ -53,11 +55,17 @@ _OPTIONAL_POLICY_KEYS = {
     "model_pools",
     "max_planner_turns",
     "max_review_rounds",
+    "max_task_turns_hard",
+    "max_turns_per_task",
+    "max_parallel_nodes",
 }
 # Bounded review, correct and re-review rounds the engine runs on its own before
 # it asks the planner. Absent from a live policy means this default, so the
 # server gains the bound without an operator re-post.
 DEFAULT_MAX_REVIEW_ROUNDS = 2
+# Nodes the reconciler may hold in flight for one task at once. One preserves
+# the serial lane, so a policy written before fan-out existed never fans out.
+DEFAULT_MAX_PARALLEL_NODES = 1
 _POOL_ROLES = {"conductor": "conductor_model", "worker": "worker_model"}
 
 
@@ -118,19 +126,41 @@ def validate_policy(policy: dict) -> dict:
     for key, low, high in (
         ("generation", 0, 2**31 - 1),
         ("max_tasks", 1, 100),
-        ("max_turns_per_task", 1, 100),
         ("turn_timeout_seconds", 1, 43200),
         ("max_attempts", 1, 10),
         ("task_timeout_seconds", 1, 86400),
     ):
         result[key] = _integer(policy[key], key, low, high)
+    # The accepted plan sizes the task; policy keeps only the envelope it must
+    # fit inside. max_turns_per_task was the old fixed cap, so it is accepted
+    # as that envelope and a live policy needs no re-post.
+    if "max_turns_per_task" in policy:
+        result["max_turns_per_task"] = _integer(
+            policy["max_turns_per_task"], "max_turns_per_task", 1, 100
+        )
+    if "max_task_turns_hard" in policy:
+        result["max_task_turns_hard"] = _integer(
+            policy["max_task_turns_hard"], "max_task_turns_hard", 1, 500
+        )
+    elif "max_turns_per_task" in policy:
+        result["max_task_turns_hard"] = result["max_turns_per_task"]
+    else:
+        raise ValueError("policy needs max_task_turns_hard or max_turns_per_task")
+    # Absent means the serial lane this reconciler shipped with, so raising it
+    # is an explicit operator act rather than a side effect of this change.
+    result["max_parallel_nodes"] = _integer(
+        policy.get("max_parallel_nodes", DEFAULT_MAX_PARALLEL_NODES),
+        "max_parallel_nodes",
+        1,
+        8,
+    )
     # Planning rounds are capped separately from delivery work. An absent field
-    # means a policy written before the split, so it inherits the work cap
+    # means a policy written before the split, so it inherits the envelope
     # rather than forcing an operator to re-post a live policy.
     result["max_planner_turns"] = (
         _integer(policy["max_planner_turns"], "max_planner_turns", 1, 100)
         if "max_planner_turns" in policy
-        else result["max_turns_per_task"]
+        else result["max_task_turns_hard"]
     )
     result["max_review_rounds"] = _integer(
         policy.get("max_review_rounds", DEFAULT_MAX_REVIEW_ROUNDS),
@@ -275,13 +305,180 @@ def _planner_start(row: FactoryStart) -> bool:
     return _planner_key(row.start_key)
 
 
+def task_turn_ceiling(policy: dict) -> int:
+    """The work-turn envelope no accepted plan may size past.
+
+    A receipt pins its policy at admission, so a task admitted before
+    max_task_turns_hard existed reads its old fixed cap as the envelope.
+    """
+    ceiling = policy.get("max_task_turns_hard")
+    return policy["max_turns_per_task"] if ceiling is None else ceiling
+
+
+def parallel_limit(policy: dict) -> int:
+    """Nodes one task may hold in flight at once, serial unless raised."""
+    limit = policy.get("max_parallel_nodes")
+    return DEFAULT_MAX_PARALLEL_NODES if limit is None else limit
+
+
 def planner_turn_cap(policy: dict) -> int:
-    """The planning round cap, inherited from the work cap by older policies.
+    """The planning round cap, inherited from the envelope by older policies.
 
     A receipt pins its policy at admission, so a task admitted before
     max_planner_turns existed still needs a bound.
     """
-    return policy.get("max_planner_turns", policy["max_turns_per_task"])
+    cap = policy.get("max_planner_turns")
+    return task_turn_ceiling(policy) if cap is None else cap
+
+
+def allowance_from_graph(
+    nodes: list[dict],
+    runs: list[dict],
+    policy: dict,
+    *,
+    review_rounds_remaining: int,
+    graph_revision: int,
+) -> dict:
+    """Size a task from the plan it accepted, not from a fixed policy number.
+
+    Work turns are one per attempt the live graph can still spend, plus every
+    work turn history already spent, plus two prospective turns for each review
+    round the engine may still open. An attempt already spent is counted in
+    history, so its node slot is not counted again; before anything runs the
+    two readings agree. Dollars are the same shape in money: charged history
+    plus every live unsucceeded node's unspent ceiling, plus the prospective
+    rounds at the per-turn ceiling.
+
+    A discarded node stops contributing its remaining slots, and its spent
+    attempts stay in history, so discarding never refunds a consumed turn.
+    """
+    attempts: dict[str, int] = {}
+    charged: dict[str, float] = {}
+    succeeded: set[str] = set()
+    work_turns_used = 0
+    charged_total = 0.0
+    for run in runs:
+        key = run["node_key"]
+        cost = float(run["accounted_cost_usd"])
+        attempts[key] = attempts.get(key, 0) + 1
+        charged[key] = charged.get(key, 0.0) + cost
+        charged_total += cost
+        if run["status"] == "succeeded":
+            succeeded.add(key)
+        if not key.startswith("conductor_"):
+            work_turns_used += 1
+    remaining_turns = 0
+    remaining_usd = 0.0
+    for node in nodes:
+        key = node["node_key"]
+        if key in succeeded:
+            continue
+        remaining_usd += max(0.0, node["max_cost_usd"] - charged.get(key, 0.0))
+        if key.startswith("conductor_"):
+            continue
+        remaining_turns += max(0, node["max_attempts"] - attempts.get(key, 0))
+    rounds = max(0, review_rounds_remaining)
+    return {
+        "turns": work_turns_used + remaining_turns + 2 * rounds,
+        "usd": round(
+            charged_total + remaining_usd + 2 * rounds * policy["turn_budget_usd"], 6
+        ),
+        "graph_revision": graph_revision,
+        "review_rounds_reserved": rounds,
+        "derived": True,
+    }
+
+
+def derive_allowance(
+    task_id: str,
+    policy: dict,
+    *,
+    review_rounds_remaining: int,
+    session: Session | None = None,
+) -> dict:
+    """Read the live graph and size the task from it."""
+    from swarm import graph
+
+    with _read_session(session) as db:
+        return allowance_from_graph(
+            graph.load_graph(task_id, session=db),
+            graph.node_runs(task_id, session=db),
+            policy,
+            review_rounds_remaining=review_rounds_remaining,
+            graph_revision=graph.current_version(task_id, session=db),
+        )
+
+
+def envelope_excess(allowance: dict, policy: dict) -> dict | None:
+    """Name what a derived allowance overspends, or None when it fits."""
+    turns_allowed = task_turn_ceiling(policy)
+    usd_allowed = policy["task_budget_usd"]
+    if allowance["turns"] <= turns_allowed and allowance["usd"] <= usd_allowed:
+        return None
+    return {
+        "turns": {"needed": allowance["turns"], "allowed": turns_allowed},
+        "usd": {"needed": allowance["usd"], "allowed": usd_allowed},
+    }
+
+
+def _stored_allowance(row: FactoryReceipt, policy: dict) -> dict:
+    """The plan-derived allowance, or the envelope until a plan derives one.
+
+    A task admitted before this column existed, or one whose planner has not
+    produced an accepted plan yet, has nothing derived. The envelope is the
+    honest fallback: it is what the old fixed cap already meant.
+    """
+    if row.allowance_json:
+        stored = json.loads(row.allowance_json)
+        if isinstance(stored, dict) and type(stored.get("turns")) is int:
+            return stored
+    return {
+        "turns": task_turn_ceiling(policy),
+        "usd": policy["task_budget_usd"],
+        "graph_revision": None,
+        "review_rounds_reserved": 0,
+        "derived": False,
+    }
+
+
+def record_allowance(
+    task_id: str,
+    policy: dict,
+    actor: str,
+    *,
+    review_rounds_remaining: int,
+    cause: str | None = None,
+    session: Session | None = None,
+) -> dict:
+    """Recompute and persist the allowance the current graph revision implies."""
+    actor = _text(actor, "actor")
+    with _locked_session(session) as (db, _control):
+        row = _receipt(db, task_id)
+        if row is None:
+            return {"ok": False, "reason": "unknown_task"}
+        allowance = derive_allowance(
+            task_id,
+            policy,
+            review_rounds_remaining=review_rounds_remaining,
+            session=db,
+        )
+        # Acceptance refuses an over-envelope plan, so this can only clamp a
+        # graph that reached the server another way. Clamping never widens the
+        # envelope after the fact.
+        allowance["turns"] = min(allowance["turns"], task_turn_ceiling(policy))
+        allowance["usd"] = min(allowance["usd"], policy["task_budget_usd"])
+        row.allowance_json = _json(allowance)
+        row.updated_at = _now()
+        db.add(row)
+        _audit(
+            db,
+            actor,
+            "allowance_derived",
+            task_id=task_id,
+            cause=cause,
+            allowance=allowance,
+        )
+        return {"ok": True, "allowance": allowance}
 
 
 def _accounting(starts: list[FactoryStart]) -> dict:
@@ -401,13 +598,14 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
         deadline = admitted + timedelta(
             seconds=result["policy"]["task_timeout_seconds"]
         )
+        allowance = _stored_allowance(row, result["policy"])
+        result["allowance"] = allowance
         result.update(
             admitted_at=admitted.isoformat(),
             deadline_at=deadline.isoformat(),
             limits={
                 "deadline_expired": _now() >= deadline,
-                "turn_limit_reached": result["turns_used"]
-                >= result["policy"]["max_turns_per_task"],
+                "turn_limit_reached": result["turns_used"] >= allowance["turns"],
                 "planner_turn_limit_reached": result["planner_turns_used"]
                 >= planner_turn_cap(result["policy"]),
                 "budget_limit_reached": result["committed_cost_usd"]
@@ -636,7 +834,9 @@ def authorize_start(
         budget = _accounting(starts)
         planner = _planner_key(start_key)
         reason = None
-        if any(s.status == "reserved" for s in starts):
+        # One reserved start per parallel slot. At the default limit of one
+        # this is the original single-flight fence, unchanged.
+        if sum(s.status == "reserved" for s in starts) >= parallel_limit(policy):
             reason = "start_pending"
         elif model not in policy["allowed_models"]:
             reason = "model_not_allowed"
@@ -645,7 +845,12 @@ def authorize_start(
         # planner every tick, so deliberation is bounded on its own count.
         elif planner and budget["planner_turns_used"] >= planner_turn_cap(policy):
             reason = "planner_turn_limit"
-        elif not planner and budget["turns_used"] >= policy["max_turns_per_task"]:
+        # The plan sizes the work, so the bound is the derived allowance rather
+        # than a policy number. Nothing but an accepted plan edit moves it.
+        elif (
+            not planner
+            and budget["turns_used"] >= _stored_allowance(row, policy)["turns"]
+        ):
             reason = "turn_limit"
         # Both kinds of start still answer to the one task budget.
         elif (

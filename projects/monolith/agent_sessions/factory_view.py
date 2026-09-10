@@ -110,7 +110,8 @@ BOARD_POLICY_KEYS = (
     "conductor_model",
     "worker_model",
     "reviewer_model",
-    "max_turns_per_task",
+    "max_task_turns_hard",
+    "max_parallel_nodes",
     "task_budget_usd",
     "max_attempts",
 )
@@ -151,6 +152,7 @@ def shape_receipt(
             "unresolved_starts",
             "limits",
             "evidence",
+            "allowance",
         )
     }
     shaped["policy"] = {
@@ -159,7 +161,8 @@ def shape_receipt(
             "conductor_model",
             "worker_model",
             "reviewer_model",
-            "max_turns_per_task",
+            "max_task_turns_hard",
+            "max_parallel_nodes",
             "task_budget_usd",
             "max_attempts",
         )

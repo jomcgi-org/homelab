@@ -540,3 +540,25 @@ def test_factory_priority_requires_current_start_permission(
         factory_controls, "can_start", lambda *_args, **_kwargs: {"ok": allowed}
     )
     assert reserve(database, "kg", "kg") is (not allowed)
+
+
+def test_free_background_slots_reads_the_pool_without_reserving(database):
+    with Session(database) as db:
+        assert admission.free_background_slots(db) == admission.BACKGROUND_LIMIT
+    assert reserve(database, "one", tier="project")
+    assert reserve(database, "two", tier="kg")
+    with Session(database) as db:
+        assert admission.free_background_slots(db) == 1
+        # Reading twice returns the same answer: this grants nothing.
+        assert admission.free_background_slots(db) == 1
+    assert reserve(database, "three", tier="probe")
+    with Session(database) as db:
+        assert admission.free_background_slots(db) == 0
+    assert not reserve(database, "four", tier="project")
+
+
+def test_free_background_slots_respects_the_total_limit(database):
+    for index in range(admission.TOTAL_LIMIT - 1):
+        assert reserve(database, f"interactive-{index}", tier="interactive")
+    with Session(database) as db:
+        assert admission.free_background_slots(db) == 1

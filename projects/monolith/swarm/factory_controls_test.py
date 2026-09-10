@@ -1,6 +1,7 @@
 """File-backed control, reservation and stop-ordering regressions."""
 
 from concurrent.futures import ThreadPoolExecutor
+import json
 from threading import Event
 
 import pytest
@@ -645,3 +646,184 @@ def test_review_rounds_are_pinned_with_the_rest_of_the_policy(db, policy):
     policy["max_review_rounds"] = 1
     task = admitted(policy)
     assert controls.task_snapshot(task)["policy"]["max_review_rounds"] == 1
+
+
+def graph_node(node_key, *, deps=(), max_attempts=2, max_cost_usd=2.0):
+    return {
+        "node_key": node_key,
+        "deps": list(deps),
+        "max_attempts": max_attempts,
+        "max_cost_usd": max_cost_usd,
+    }
+
+
+def graph_run(node_key, *, status="succeeded", cost=0.5):
+    return {"node_key": node_key, "status": status, "accounted_cost_usd": cost}
+
+
+def test_a_three_node_plan_sizes_its_own_task(policy):
+    plan = [
+        graph_node("conductor_1", max_cost_usd=2.0),
+        graph_node("investigate_scope"),
+        graph_node("implement_fix", deps=["investigate_scope"]),
+        graph_node("review_check", deps=["implement_fix"]),
+    ]
+    allowance = controls.allowance_from_graph(
+        plan, [], policy, review_rounds_remaining=2, graph_revision=4
+    )
+    # Three work nodes of two attempts each, plus two prospective review rounds
+    # of two turns. The planner node costs money but never a work turn.
+    assert allowance["turns"] == 3 * 2 + 2 * 2
+    assert allowance["usd"] == 4 * 2.0 + 2 * 2 * policy["turn_budget_usd"]
+    assert allowance["graph_revision"] == 4 and allowance["derived"] is True
+
+
+def test_a_review_round_extends_the_allowance_by_two(policy):
+    plan = [
+        graph_node("implement_fix"),
+        graph_node("review_fix", deps=["implement_fix"]),
+    ]
+    before = controls.allowance_from_graph(
+        plan, [], policy, review_rounds_remaining=2, graph_revision=2
+    )
+    opened = controls.allowance_from_graph(
+        plan
+        + [
+            graph_node("correct_1", deps=["review_fix"]),
+            graph_node("review_1", deps=["correct_1"]),
+        ],
+        [],
+        policy,
+        review_rounds_remaining=1,
+        graph_revision=4,
+    )
+    # The round turns a two-turn prospective reserve into two real nodes of
+    # max_attempts each, so with two attempts per node it costs two more turns.
+    assert opened["turns"] - before["turns"] == 2
+
+
+def test_a_discarded_node_never_refunds_a_consumed_turn(policy):
+    runs = [
+        graph_run("implement_fix", status="failed"),
+        graph_run("implement_fix", status="failed"),
+    ]
+    live = controls.allowance_from_graph(
+        [graph_node("implement_fix"), graph_node("implement_other")],
+        runs,
+        policy,
+        review_rounds_remaining=0,
+        graph_revision=2,
+    )
+    discarded = controls.allowance_from_graph(
+        [graph_node("implement_other")],
+        runs,
+        policy,
+        review_rounds_remaining=0,
+        graph_revision=3,
+    )
+    # Both attempts stay charged as history. Discarding only drops the two
+    # remaining slots of the other node's exhausted sibling, which were zero.
+    assert live["turns"] == discarded["turns"] == 2 + 2
+    assert discarded["usd"] == 1.0 + 2.0
+
+
+def test_history_is_counted_once_when_a_node_still_has_an_attempt_left(policy):
+    allowance = controls.allowance_from_graph(
+        [graph_node("implement_fix")],
+        [graph_run("implement_fix", status="failed")],
+        policy,
+        review_rounds_remaining=0,
+        graph_revision=1,
+    )
+    assert allowance["turns"] == 2
+
+
+def test_the_envelope_names_both_excesses(policy):
+    policy = controls.validate_policy(policy)
+    fits = {"turns": 3, "usd": 5.0}
+    assert controls.envelope_excess(fits, policy) is None
+    excess = controls.envelope_excess({"turns": 9, "usd": 11.0}, policy)
+    assert excess == {
+        "turns": {"needed": 9, "allowed": 3},
+        "usd": {"needed": 11.0, "allowed": 5.0},
+    }
+
+
+def test_an_old_policy_reads_its_fixed_cap_as_the_envelope(policy):
+    resolved = controls.validate_policy(policy)
+    assert "max_task_turns_hard" not in policy
+    assert resolved["max_task_turns_hard"] == 3
+    assert controls.task_turn_ceiling(resolved) == 3
+    assert controls.parallel_limit(resolved) == 1
+    assert controls.planner_turn_cap(resolved) == 3
+
+
+def test_an_envelope_policy_needs_no_fixed_cap(policy):
+    policy.pop("max_turns_per_task")
+    policy["max_task_turns_hard"] = 40
+    resolved = controls.validate_policy(policy)
+    assert "max_turns_per_task" not in resolved
+    assert controls.task_turn_ceiling(resolved) == 40
+    assert controls.planner_turn_cap(resolved) == 40
+
+
+def test_a_policy_with_neither_turn_bound_is_refused(policy):
+    policy.pop("max_turns_per_task")
+    with pytest.raises(ValueError, match="max_task_turns_hard"):
+        controls.validate_policy(policy)
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("max_task_turns_hard", 0),
+        ("max_task_turns_hard", 501),
+        ("max_task_turns_hard", 1.0),
+        ("max_task_turns_hard", True),
+        ("max_parallel_nodes", 0),
+        ("max_parallel_nodes", 9),
+        ("max_parallel_nodes", True),
+    ],
+)
+def test_envelope_fields_are_bounded(policy, key, value):
+    policy[key] = value
+    with pytest.raises(ValueError):
+        controls.validate_policy(policy)
+
+
+def test_work_starts_meet_the_derived_allowance_not_the_envelope(db, policy):
+    policy["max_task_turns_hard"] = 50
+    task = admitted(policy)
+    # A plan that sizes the task to one work turn binds admission at one, even
+    # though the envelope would fund fifty. The graph tables live in the
+    # conductor suite, so the derived value is written here directly.
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).first()
+        row.allowance_json = json.dumps(
+            {"turns": 1, "usd": 5.0, "graph_revision": 2, "review_rounds_reserved": 0}
+        )
+        session.add(row)
+        session.commit()
+    assert controls.task_snapshot(task)["allowance"]["turns"] == 1
+    key = node_key(task, "implement_one")
+    assert grant(task, key, cost=1.0)["ok"]
+    assert controls.record_start_outcome(
+        task, key, "succeeded", "worker", cost_usd=0.1, session_id=1
+    )["ok"]
+    assert controls.task_snapshot(task)["limits"]["turn_limit_reached"] is True
+    assert grant(task, node_key(task, "implement_two"), cost=1.0) == {
+        "ok": False,
+        "reason": "turn_limit",
+    }
+
+
+def test_a_task_with_no_accepted_plan_falls_back_to_the_envelope(db, policy):
+    task = admitted(policy)
+    snapshot = controls.task_snapshot(task)
+    assert snapshot["allowance"] == {
+        "turns": 3,
+        "usd": 5.0,
+        "graph_revision": None,
+        "review_rounds_reserved": 0,
+        "derived": False,
+    }

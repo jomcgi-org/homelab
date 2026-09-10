@@ -22,7 +22,7 @@ const receipt = {
   turns_used: 3,
   committed_cost_usd: 9,
   deadline_at: "2026-09-10T17:00:00Z",
-  policy: { max_turns_per_task: 9, task_budget_usd: 36 },
+  policy: { max_task_turns_hard: 9, task_budget_usd: 36 },
   nodes: [
     {
       node_key: "conductor_1",
@@ -63,7 +63,7 @@ describe("factory board helpers", () => {
     expect(turnShare(receipt)).toBeCloseTo(1 / 3);
     expect(budgetShare({ policy: {}, committed_cost_usd: 1 })).toBe(0);
     expect(
-      turnShare({ policy: { max_turns_per_task: 2 }, turns_used: 5 }),
+      turnShare({ policy: { max_task_turns_hard: 2 }, turns_used: 5 }),
     ).toBe(1);
   });
 

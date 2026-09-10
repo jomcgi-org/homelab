@@ -37,10 +37,13 @@ REVIEW_FINDINGS_CHARS = 8_000
 MAX_PLAN_EDITS = graph.MAX_PLAN_EDITS
 LOOP_CAUSE = "factory-loop"
 _KEY = r"^[a-z][a-z0-9_]{0,63}$"
-# correct_<n> and review_<n> are the engine's own review rounds. A planner that
-# could mint one could replenish a server-owned bound by renaming a node.
-_ROUND_KEY = re.compile(r"^(?:correct|review)_[0-9]+$")
+# correct_<n>, review_<n> and integrate_<n> are the engine's own inserted
+# rounds. A planner that could mint one could replenish a server-owned bound,
+# or claim a fan-in key, by renaming a node.
+_ROUND_KEY = re.compile(r"^(?:correct|review|integrate)_[0-9]+$")
 _CORRECT_KEY = re.compile(r"^correct_[0-9]+$")
+# Roles whose nodes push source, so a fan-out gives them their own branch.
+_BRANCHED_ROLE_PREFIXES = ("implement_", "investigate_")
 
 
 class PlannerContextOverflow(ValueError):
@@ -85,7 +88,7 @@ EDIT_SCHEMA = {
         "action": {"enum": ["add_node", "discard_node"]},
         "reason": {"type": "string", "minLength": 1, "maxLength": 4000},
         "node_key": {"type": "string", "pattern": _KEY},
-        "role": {"enum": ["investigate", "implement", "review"]},
+        "role": {"enum": ["investigate", "implement", "review", "integrate"]},
         "model": {"type": "string", "pattern": r"^[a-z][a-z0-9_.-]{0,63}$"},
         "prompt": {"type": "string", "minLength": 1, "maxLength": 16000},
         "deps": {
@@ -123,7 +126,7 @@ DECISION_SCHEMA = {
             "items": EDIT_SCHEMA,
         },
         "node_key": {"type": "string", "pattern": _KEY},
-        "role": {"enum": ["investigate", "implement", "review"]},
+        "role": {"enum": ["investigate", "implement", "review", "integrate"]},
         "model": {"type": "string", "pattern": r"^[a-z][a-z0-9_.-]{0,63}$"},
         "prompt": {"type": "string", "minLength": 1, "maxLength": 16000},
         "deps": {
@@ -396,7 +399,12 @@ def _decision_evidence(task_id: str) -> list[dict]:
 
 def _budget_evidence(task_id: str) -> dict:
     """Read the graph accounting owner and immutable factory limits for context."""
-    from swarm.factory_controls import planner_turn_cap, task_snapshot
+    from swarm.factory_controls import (
+        parallel_limit,
+        planner_turn_cap,
+        task_snapshot,
+        task_turn_ceiling,
+    )
 
     with Session(get_engine()) as db:
         budget = graph.budget_snapshot(task_id, session=db)
@@ -407,8 +415,12 @@ def _budget_evidence(task_id: str) -> dict:
             "graph_revision": graph.current_version(task_id, session=db),
             "turns_used": receipt["turns_used"],
             "planner_turns_used": receipt["planner_turns_used"],
-            "max_turns_per_task": policy["max_turns_per_task"],
+            "task_turn_allowance": receipt["allowance"]["turns"],
+            "task_usd_allowance": receipt["allowance"]["usd"],
+            "allowance_derived_from_plan": receipt["allowance"]["derived"],
+            "max_task_turns_hard": task_turn_ceiling(policy),
             "max_planner_turns": planner_turn_cap(policy),
+            "max_parallel_nodes": parallel_limit(policy),
             "deadline_at": receipt["deadline_at"],
             "new_node_max_cost_usd": policy["turn_budget_usd"],
             "max_attempts": policy["max_attempts"],
@@ -424,14 +436,108 @@ def _schema(node_key: str) -> dict:
 
 
 def _is_implementation(node_key: str) -> bool:
-    """Engine correction rounds deliver source exactly as implement nodes do."""
-    return node_key.startswith("implement_") or bool(_CORRECT_KEY.fullmatch(node_key))
+    """Engine correction rounds and fan-in deliver source as implement nodes do.
+
+    Reviewer independence is judged against every node that can write the head
+    under review, so an integrate node counts as one of them.
+    """
+    return (
+        node_key.startswith("implement_")
+        or node_key.startswith("integrate_")
+        or bool(_CORRECT_KEY.fullmatch(node_key))
+    )
 
 
-def _boundary(task: dict, *, review: bool = False) -> str:
+def task_branch(task_id: str) -> str:
+    return f"factory/{task_id}"
+
+
+def node_branch(task_id: str, node_key: str) -> str:
+    """A per-node branch, named as a sibling of the task branch rather than a child.
+
+    Git cannot hold refs/heads/factory/<task-id> and
+    refs/heads/factory/<task-id>/<node key> at the same time, so a fan-out
+    branch below the task branch could never be created. The node key is
+    already constrained to lowercase words and underscores, so it is a safe
+    ref component on its own.
+    """
+    return f"factory/{task_id}-{node_key}"
+
+
+def _ancestors(nodes: list[dict]) -> dict[str, set[str]]:
+    """Every key each node transitively depends on. The graph refuses cycles."""
+    by_key = {node["node_key"]: node for node in nodes}
+    memo: dict[str, set[str]] = {}
+
+    def walk(key: str, seen: frozenset) -> set[str]:
+        if key in memo:
+            return memo[key]
+        result: set[str] = set()
+        node = by_key.get(key)
+        if node is not None and key not in seen:
+            for dep in node["deps"]:
+                result.add(dep)
+                result |= walk(dep, seen | {key})
+        memo[key] = result
+        return result
+
+    return {key: walk(key, frozenset()) for key in by_key}
+
+
+def _concurrent(keys: list[str], ancestors: dict[str, set[str]]) -> list[str]:
+    """Those keys with at least one sibling no dependency path connects to."""
+    return [
+        key
+        for key in keys
+        if any(
+            other != key
+            and other not in ancestors.get(key, ())
+            and key not in ancestors.get(other, ())
+            for other in keys
+        )
+    ]
+
+
+def _fan_out_keys(nodes: list[dict]) -> set[str]:
+    """Source-writing nodes the plan runs concurrently, so each needs its own branch.
+
+    This is read from the dependencies the planner already wrote rather than
+    from a separate marker, so the branch a node pushes to and the order the
+    graph enforces can never disagree.
+    """
+    ancestors = _ancestors(nodes)
+    keys = sorted(
+        node["node_key"]
+        for node in nodes
+        if node["node_key"].startswith(_BRANCHED_ROLE_PREFIXES)
+    )
+    return set(_concurrent(keys, ancestors))
+
+
+def _working_branch(task_id: str, node_key: str, nodes: list[dict]) -> str:
+    """The branch this node pushes to: its own when it fans out, else the task branch."""
+    if node_key in _fan_out_keys(nodes):
+        return node_branch(task_id, node_key)
+    return task_branch(task_id)
+
+
+def _boundary(task: dict, *, review: bool = False, branch: str | None = None) -> str:
+    """State the task, its working branch, and what this node may not do.
+
+    A node that fans out onto its own branch is told that branch and that the
+    task branch is where it comes back together. A node working on the task
+    branch keeps the original wording.
+    """
+    delivery = task_branch(task["id"])
+    working = branch or delivery
+    where = (
+        f"dedicated branch {delivery}"
+        if working == delivery
+        else f"dedicated branch {working}, integrated into {delivery}"
+    )
     return (
         f"Factory task {task['id']}, repository {task['repo']}, "
-        f"dedicated branch factory/{task['id']}, base {task['base_branch']}. "
+        f"{where}, base {task['base_branch']}. "
         "Only this task is authorized. Follow repository agent instructions. "
         "Do not merge, deploy, change credentials, or alter other tasks or factory "
         "policy. Deliver repository changes through a PR with required Linux CI. "
@@ -461,8 +567,9 @@ def _add(
     max_cost_usd: float | None = None,
     turn_timeout_seconds: int | None = None,
     expected_version: int | None = None,
+    branch: str | None = None,
 ) -> graph.GraphOp:
-    boundary = _boundary(task, review=review)
+    boundary = _boundary(task, review=review, branch=branch)
     return graph.add_node(
         task["id"],
         author_kind="conductor",
@@ -802,6 +909,25 @@ def planner_prompt(
         'follows it says deps: ["implement_fix"]. The server accepts either '
         "ordering and either spelling where it can resolve them without "
         "guessing, but a plan written this way never depends on that. "
+        "The plan you accept sizes this task. Its allowance is the sum over live "
+        "unsucceeded nodes of max_attempts, plus the work turns history already "
+        "spent, plus two turns for each review round the engine may still open; "
+        "its dollar allowance is the same sum over node max_cost_usd ceilings "
+        "plus charged history. Policy keeps only an envelope: max_task_turns_hard "
+        "and task_budget_usd in budget_evidence. A plan whose derived allowance "
+        "would exceed either is refused whole with refusal code "
+        "envelope_exceeded, and decision_feedback names the excess as needed "
+        "against allowed for both turns and dollars. When that happens, split "
+        "the work into a smaller plan and leave the rest to a follow-up task, or "
+        "pause for orchestration review. Do not resubmit the same plan. "
+        "Nodes with no dependency between them run in parallel, up to "
+        "max_parallel_nodes. Each parallel implementation works on its own "
+        "branch and the server inserts an integrate node depending on all of "
+        "them, which merges those branches into the task branch and reports the "
+        "integrated head; review then examines that head. You may name the "
+        "integrate node yourself with role integrate, in which case the server "
+        "inserts none. Reserved integrate_<n> keys are refused like the review "
+        "round keys. "
         "Review correction loops are owned by the server, not by you. When a review "
         "returns changes_requested the engine appends correct_<n> and review_<n> "
         "itself, up to the policy's max_review_rounds, and calls you only when those "
@@ -833,7 +959,11 @@ def planner_prompt(
         "was added: its pending planner ceiling is not yet included. When "
         "planner_turns_used appears beside turns_used, turns_used counts work "
         "turns and planner turns are reported separately; when it is absent, "
-        "turns_used counts every start including planner nodes. Each node's "
+        "turns_used counts every start including planner nodes. "
+        "task_turn_allowance is the bound work starts actually meet; it is "
+        "derived from the accepted plan, and allowance_derived_from_plan is "
+        "false while no plan has been accepted yet, when the envelope stands in "
+        "for it. Each node's "
         "max_cost_usd is ONE aggregate ceiling shared across all max_attempts; "
         "never multiply the ceiling by the attempt count. A retry receives only "
         "the unused node ceiling. Unknown usage consumes the reservation; unknown "
@@ -1017,6 +1147,8 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
         "node_key": key,
         "raw_node_key": raw_key,
         "kind": "gate" if review else "work",
+        # The working branch is not known until the whole batch is resolved
+        # against the live graph, so the caller rewrites this prompt once it is.
         "prompt": _boundary(task, review=review) + source["prompt"],
         "raw_prompt": source["prompt"],
         "model": model,
@@ -1027,6 +1159,75 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
         "turn_timeout_seconds": bounds["turn_timeout_seconds"],
         "stated_reason": stated_reason,
     }
+
+
+def _rounds_remaining(task_id: str, policy: dict) -> int:
+    from swarm.factory_controls import DEFAULT_MAX_REVIEW_ROUNDS
+
+    maximum = policy.get("max_review_rounds", DEFAULT_MAX_REVIEW_ROUNDS)
+    return max(0, maximum - _review_rounds_used(task_id))
+
+
+def _projected_nodes(prepared: list[dict], live: list[dict]) -> list[dict]:
+    """The graph these edits would leave behind, for sizing before applying it."""
+    projected = {node["node_key"]: dict(node) for node in live}
+    for edit in prepared:
+        if edit["op"] == "discard_node":
+            projected.pop(edit["node_key"], None)
+        else:
+            projected[edit["node_key"]] = {
+                "node_key": edit["node_key"],
+                "deps": list(edit["deps"]),
+                "max_cost_usd": edit["max_cost_usd"],
+                "max_attempts": edit["max_attempts"],
+            }
+    return list(projected.values())
+
+
+def _envelope_refusal(
+    task_id: str,
+    policy: dict,
+    projected: list[dict],
+    *,
+    review_rounds_remaining: int | None = None,
+) -> str | None:
+    """Name what a proposed graph would overspend, or None when it fits.
+
+    The plan sizes the task, so this is the one place the envelope is enforced:
+    an accepted plan can never derive an allowance the policy would not fund,
+    and the excess goes back to the planner as decision feedback so it can
+    split the work or pause for orchestration review.
+    """
+    from swarm.factory_controls import allowance_from_graph, envelope_excess
+
+    allowance = allowance_from_graph(
+        projected,
+        graph.node_runs(task_id),
+        policy,
+        review_rounds_remaining=(
+            _rounds_remaining(task_id, policy)
+            if review_rounds_remaining is None
+            else review_rounds_remaining
+        ),
+        graph_revision=graph.current_version(task_id),
+    )
+    excess = envelope_excess(allowance, policy)
+    if excess is None:
+        return None
+    return "envelope exceeded: " + json.dumps(excess, sort_keys=True)
+
+
+def _record_allowance(task_id: str, policy: dict, cause: str) -> None:
+    """Re-derive the task's allowance from the graph revision just applied."""
+    from swarm.factory_controls import record_allowance
+
+    record_allowance(
+        task_id,
+        policy,
+        ACTOR,
+        review_rounds_remaining=_rounds_remaining(task_id, policy),
+        cause=cause,
+    )
 
 
 def _observed_branch_head(task: dict) -> str | None:
@@ -1098,6 +1299,33 @@ def _apply_decision(
                     f"edit {index} ({item.get('node_key')}): {reason}",
                 )
                 return
+        live = graph.load_graph(task["id"])
+        # Resolve the dependency aliases apply_edits will resolve, so the
+        # concurrency read here is the concurrency the graph will store.
+        resolved = graph._resolve_batch_deps(
+            prepared, {node["node_key"] for node in live}
+        )
+        projected = _projected_nodes(resolved, live)
+        fan_out = _fan_out_keys(projected)
+        for edit in resolved:
+            if edit["op"] != "add_node":
+                continue
+            edit["prompt"] = (
+                _boundary(
+                    task,
+                    review=edit["role"] == "review",
+                    branch=(
+                        node_branch(task["id"], edit["node_key"])
+                        if edit["node_key"] in fan_out
+                        else task_branch(task["id"])
+                    ),
+                )
+                + edit["raw_prompt"]
+            )
+        excess = _envelope_refusal(task["id"], policy, projected)
+        if excess is not None:
+            _reject_decision(task["id"], cause, action, "envelope_exceeded", excess)
+            return
         result = graph.apply_edits(
             task["id"],
             author_kind="conductor",
@@ -1111,12 +1339,14 @@ def _apply_decision(
                 {
                     field: value
                     for field, value in edit.items()
-                    if field not in ("role", "raw_prompt")
+                    if field not in ("role", "raw_prompt", "raw_node_key")
                 }
-                for edit in prepared
+                for edit in resolved
             ],
         )
-        if not result.ok:
+        if result.ok:
+            _record_allowance(task["id"], policy, cause)
+        else:
             _reject_decision(
                 task["id"],
                 cause,
@@ -1129,6 +1359,11 @@ def _apply_decision(
             edit = _prepare_add(task, policy, decision)
         except _EditRefused as exc:
             _reject_decision(task["id"], cause, action, exc.code, exc.reason)
+            return
+        projected = _projected_nodes([edit], graph.load_graph(task["id"]))
+        excess = _envelope_refusal(task["id"], policy, projected)
+        if excess is not None:
+            _reject_decision(task["id"], cause, action, "envelope_exceeded", excess)
             return
         result = _add(
             task,
@@ -1144,8 +1379,11 @@ def _apply_decision(
             max_cost_usd=edit["max_cost_usd"],
             turn_timeout_seconds=edit["turn_timeout_seconds"],
             expected_version=decision.get("expected_version"),
+            branch=_working_branch(task["id"], edit["node_key"], projected),
         )
-        if not result.ok:
+        if result.ok:
+            _record_allowance(task["id"], policy, cause)
+        else:
             _reject_decision(
                 task["id"],
                 cause,
@@ -1169,7 +1407,11 @@ def _apply_decision(
             observed_branch_head=observed_head,
             activities_claim_write=False,
         )
-        if not result.ok:
+        if result.ok:
+            # A discard drops the node's remaining slots. Its spent attempts
+            # stay in history, so this never refunds a consumed turn.
+            _record_allowance(task["id"], policy, cause)
+        else:
             _reject_decision(
                 task["id"],
                 cause,
@@ -1334,6 +1576,43 @@ def _insert_review_round(
         f"after correction round {ordinal}. The previous review at head {head} "
         "requested changes. Report the head SHA you inspected and your verdict."
     )
+    edits = [
+        {
+            "op": "add_node",
+            "node_key": correct_key,
+            "kind": "work",
+            "prompt": _boundary(task) + correction,
+            "model": model,
+            "deps": [review_run["node_key"]],
+            "side_effects": True,
+            "stated_reason": (
+                f"Engine-owned correction round {ordinal} of {max_rounds}{provenance}"
+            ),
+            **bounds,
+        },
+        {
+            "op": "add_node",
+            "node_key": review_key,
+            "kind": "gate",
+            "prompt": _boundary(task, review=True) + re_review,
+            "model": reviewer,
+            "deps": [correct_key],
+            "side_effects": False,
+            "stated_reason": f"Engine-owned re-review for round {ordinal}",
+            **bounds,
+        },
+    ]
+    # This round converts two prospective turns into two real nodes, so the
+    # projection must not reserve the round it is opening as well.
+    excess = _envelope_refusal(
+        task["id"],
+        policy,
+        _projected_nodes(edits, nodes),
+        review_rounds_remaining=max(0, max_rounds - ordinal),
+    )
+    if excess is not None:
+        _reject_decision(task["id"], cause, "plan", "envelope_exceeded", excess)
+        return False, "envelope_exceeded"
     result = graph.apply_edits(
         task["id"],
         author_kind="engine",
@@ -1341,35 +1620,10 @@ def _insert_review_round(
         cause_kind="factory_loop",
         cause_ref=cause,
         expected_version=expected_version,
-        edits=[
-            {
-                "op": "add_node",
-                "node_key": correct_key,
-                "kind": "work",
-                "prompt": _boundary(task) + correction,
-                "model": model,
-                "deps": [review_run["node_key"]],
-                "side_effects": True,
-                "stated_reason": (
-                    f"Engine-owned correction round {ordinal} of "
-                    f"{max_rounds}{provenance}"
-                ),
-                **bounds,
-            },
-            {
-                "op": "add_node",
-                "node_key": review_key,
-                "kind": "gate",
-                "prompt": _boundary(task, review=True) + re_review,
-                "model": reviewer,
-                "deps": [correct_key],
-                "side_effects": False,
-                "stated_reason": f"Engine-owned re-review for round {ordinal}",
-                **bounds,
-            },
-        ],
+        edits=edits,
     )
     if result.ok:
+        _record_allowance(task["id"], policy, cause)
         return True, None
     _reject_decision(
         task["id"],
@@ -1377,6 +1631,172 @@ def _insert_review_round(
         "plan",
         result.refusal_code,
         result.detail or "engine review round refused",
+    )
+    return False, result.refusal_code
+
+
+def _integration_group(nodes: list[dict]) -> list[str]:
+    """Concurrent implementation nodes that no integrate node already covers.
+
+    Two implement nodes with no dependency path between them push to separate
+    branches, so something has to merge them before a reviewer can look at one
+    head. A planner may name that node itself; when it did not, the engine
+    inserts one.
+    """
+    ancestors = _ancestors(nodes)
+    implements = sorted(
+        node["node_key"] for node in nodes if node["node_key"].startswith("implement_")
+    )
+    group = _concurrent(implements, ancestors)
+    if len(group) < 2:
+        return []
+    covered = set(group)
+    for node in nodes:
+        if node["node_key"].startswith("integrate_") and covered <= set(node["deps"]):
+            return []
+    return group
+
+
+def _integration_edits(
+    task: dict, policy: dict, nodes: list[dict], group: list[str], key: str
+) -> list[dict] | None:
+    """Add the fan-in node and repoint everything that depended on the branches.
+
+    A review that still depended on the parallel implements directly could run
+    against one branch's head rather than the integrated one, so its dependency
+    moves to the integrate node. The graph has no edit that rewrites deps, so a
+    dependent is discarded and re-added inside the same atomic batch.
+    """
+    by_key = {node["node_key"]: node for node in nodes}
+    members = set(group)
+    dependents = [
+        node
+        for node in nodes
+        if node["node_key"] not in members
+        and not node["node_key"].startswith("conductor_")
+        and members & set(node["deps"])
+    ]
+    branches = "\n".join(
+        f"- {node_branch(task['id'], member)} carrying {member}" for member in group
+    )
+    prompt = _boundary(task) + (
+        "Integrate the parallel implementation branches for this task. Merge "
+        f"each branch below into {task_branch(task['id'])} in dependency order, "
+        "resolve every conflict, run the targeted checks the merged change "
+        f"needs, push {task_branch(task['id'])}, and report the integrated head "
+        "SHA. Do not start work these branches do not already contain:\n" + branches
+    )
+    bounds = {
+        "max_cost_usd": policy["turn_budget_usd"],
+        "max_attempts": policy["max_attempts"],
+        "turn_timeout_seconds": policy["turn_timeout_seconds"],
+    }
+    edits: list[dict] = [
+        {
+            "op": "add_node",
+            "node_key": key,
+            "kind": "work",
+            "prompt": prompt,
+            "model": select_model("worker", policy)["model"],
+            "deps": list(group),
+            "side_effects": True,
+            "stated_reason": (
+                f"Engine-owned fan-in for {len(group)} parallel implementations"
+            ),
+            **bounds,
+        }
+    ]
+    for node in dependents:
+        deps = [dep for dep in node["deps"] if dep not in members]
+        if key not in deps:
+            deps.append(key)
+        edits.append(
+            {
+                "op": "discard_node",
+                "node_key": node["node_key"],
+                "observed_branch_head": None,
+                "activities_claim_write": False,
+                "stated_reason": f"Repointing {node['node_key']} at {key}",
+            }
+        )
+        edits.append(
+            {
+                "op": "add_node",
+                "node_key": node["node_key"],
+                "kind": by_key[node["node_key"]]["kind"],
+                "prompt": by_key[node["node_key"]]["prompt"],
+                "model": by_key[node["node_key"]]["model"],
+                "deps": deps,
+                "side_effects": by_key[node["node_key"]]["side_effects"],
+                "stated_reason": f"Repointed {node['node_key']} at {key}",
+                "max_cost_usd": by_key[node["node_key"]]["max_cost_usd"],
+                "max_attempts": by_key[node["node_key"]]["max_attempts"],
+                "turn_timeout_seconds": by_key[node["node_key"]][
+                    "turn_timeout_seconds"
+                ],
+            }
+        )
+    return None if len(edits) > MAX_PLAN_EDITS else edits
+
+
+def _insert_integration(
+    task: dict,
+    policy: dict,
+    nodes: list[dict],
+    runs: list[dict],
+    group: list[str],
+    expected_version: int,
+) -> tuple[bool, str | None]:
+    """Insert this task's fan-in node, atomically, before any branch is armed.
+
+    Like the review round this records no processed cause: a refusal consumed
+    nothing and must stay retryable, and applying twice is prevented by the
+    graph's duplicate_key refusal and by _integration_group, which stops as
+    soon as an integrate node covers the group.
+    """
+    ordinal = (
+        sum(bool(re.fullmatch(r"integrate_[0-9]+", n["node_key"])) for n in nodes) + 1
+    )
+    key = f"integrate_{ordinal}"
+    touched = {run["node_key"] for run in runs}
+    members = set(group)
+    at_risk = members | {
+        node["node_key"]
+        for node in nodes
+        if members & set(node["deps"]) and not node["node_key"].startswith("conductor_")
+    }
+    # Restructuring a node the graph has already armed would refuse anyway.
+    # Naming that here keeps the refusal legible to the planner.
+    if at_risk & touched or any(
+        node["armed_at"] is not None for node in nodes if node["node_key"] in at_risk
+    ):
+        return False, "integration_after_dispatch"
+    edits = _integration_edits(task, policy, nodes, group, key)
+    if edits is None:
+        return False, "integration_batch_too_large"
+    cause = f"{LOOP_CAUSE}:{key}"
+    excess = _envelope_refusal(task["id"], policy, _projected_nodes(edits, nodes))
+    if excess is not None:
+        _reject_decision(task["id"], cause, "plan", "envelope_exceeded", excess)
+        return False, "envelope_exceeded"
+    result = graph.apply_edits(
+        task["id"],
+        author_kind="engine",
+        author=ACTOR,
+        cause_kind="factory_loop",
+        cause_ref=cause,
+        expected_version=expected_version,
+        edits=edits,
+    )
+    if result.ok:
+        _record_allowance(task["id"], policy, cause)
+        return True, None
+    _reject_decision(
+        task["id"],
+        cause,
+        "plan",
+        result.refusal_code,
+        result.detail or "engine integration node refused",
     )
     return False, result.refusal_code
 
@@ -1549,6 +1969,7 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     from swarm.factory_controls import (
         DEFAULT_MAX_REVIEW_ROUNDS,
         can_start,
+        parallel_limit,
         record_start_outcome,
         set_control,
     )
@@ -1571,14 +1992,22 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
             )
             if not charged["ok"]:
                 raise ValueError(f"factory outcome refused: {charged['reason']}")
+    parallel = parallel_limit(policy)
     active = [r for r in runs if r["status"] in ("admitted", "dispatched", "uncertain")]
+    for run in active:
+        _submit_or_reconcile(task, run, dbos)
     if active:
-        for run in active[:1]:
-            _submit_or_reconcile(task, run, dbos)
+        # A submit above can settle its own run, so the free slots are read
+        # after the whole in-flight set has had its tick.
+        runs = graph.node_runs(task_id)
+        active = [
+            r for r in runs if r["status"] in ("admitted", "dispatched", "uncertain")
+        ]
+    if len(active) >= parallel:
         return
     permission = can_start(task_id)
     if not permission["ok"]:
-        if permission["reason"] == "task_deadline":
+        if not active and permission["reason"] == "task_deadline":
             from swarm.factory_controls import finish_task
 
             finish_task(
@@ -1595,6 +2024,12 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     # graph edits that race with reading nodes or constructing the prompt.
     insertion_revision = graph.current_version(task_id)
     nodes = graph.load_graph(task_id)
+    if active:
+        # Work is in flight, so the graph is not settled: filling the free
+        # slots from ready nodes is the only thing safe to do. Planning and
+        # review rounds wait until nothing is running, exactly as before.
+        _dispatch_ready(task, policy, nodes, runs, parallel - len(active), fan_out=True)
+        return
     planners = [
         r
         for r in runs
@@ -1606,18 +2041,17 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
         if not _decision_processed(task_id, cause):
             apply_decision(task, policy, latest, runs)
             return
-    succeeded = {r["node_key"] for r in runs if r["status"] == "succeeded"}
-    escalated = {r["node_key"] for r in runs if r["status"] == "escalated"}
-    ready = [
-        n
-        for n in nodes
-        if n["node_key"] not in succeeded
-        and n["node_key"] not in escalated
-        and all(dep in succeeded for dep in n["deps"])
-        and sum(r["node_key"] == n["node_key"] for r in runs) < n["max_attempts"]
-        and sum(r["accounted_cost_usd"] for r in runs if r["node_key"] == n["node_key"])
-        < n["max_cost_usd"]
-    ]
+    # Parallel implementations push to their own branches, so the fan-in that
+    # brings them back to the task branch is inserted before anything is armed.
+    integration_refusal = None
+    group = _integration_group(nodes)
+    if group:
+        integrated, integration_refusal = _insert_integration(
+            task, policy, nodes, runs, group, insertion_revision
+        )
+        if integrated:
+            return
+    ready = _ready_nodes(nodes, runs)
     # A review that requested changes is a bounded, mechanical correction the
     # engine owns. Only a deviation this reconciler can name reaches the
     # planner, so an open review loop never spends a planning turn.
@@ -1650,6 +2084,7 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
             max_review_rounds=max_rounds,
             pending_review=None if pending is None else pending["node_key"],
             loop_refusal=loop_refusal,
+            integration_refusal=integration_refusal,
         )
         ordinal = sum(n["node_key"].startswith("conductor_") for n in nodes) + 1
         key = f"conductor_{ordinal}"
@@ -1683,25 +2118,97 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
             ),
             expected_version=insertion_revision,
         )
-        if not result.ok:
+        if result.ok:
+            # A planning round adds no work turn, but it does add a ceiling, so
+            # the stored allowance stays in step with the graph revision.
+            _record_allowance(task_id, policy, f"factory-plan:{key}")
+        else:
             set_control("pause_task", ACTOR, task_id=task_id)
         return
-    node = ready[0]
-    attempt = sum(r["node_key"] == node["node_key"] for r in runs) + 1
-    key = f"factory-node:{task_id}:{node['node_key']}:{attempt}"
-    context = {
-        "repo": task["repo"],
-        "branch": f"factory/{task_id}",
-        "workflow_id": key,
-        "artifact_path": f".factory/{task_id}/{node['node_key']}-{attempt}.json",
-        "artifact_schema": _schema(node["node_key"]),
-        "hydration_branch": hydration_branch(task),
-        "retry_context": json.dumps(
-            [r for r in runs if r["node_key"] == node["node_key"]], default=str
-        )[-16000:],
-    }
-    if not reserve_node(task_id, node["node_key"], key, context):
-        set_control("pause_task", ACTOR, task_id=task_id)
+    _dispatch_ready(task, policy, nodes, runs, parallel, fan_out=False)
+
+
+def _ready_nodes(nodes: list[dict], runs: list[dict]) -> list[dict]:
+    """Nodes whose dependencies succeeded and which still have an attempt and budget."""
+    succeeded = {r["node_key"] for r in runs if r["status"] == "succeeded"}
+    escalated = {r["node_key"] for r in runs if r["status"] == "escalated"}
+    return [
+        n
+        for n in nodes
+        if n["node_key"] not in succeeded
+        and n["node_key"] not in escalated
+        and all(dep in succeeded for dep in n["deps"])
+        and sum(r["node_key"] == n["node_key"] for r in runs) < n["max_attempts"]
+        and sum(r["accounted_cost_usd"] for r in runs if r["node_key"] == n["node_key"])
+        < n["max_cost_usd"]
+    ]
+
+
+def _free_background_slots() -> int:
+    from agent_sessions.admission import free_background_slots
+
+    with Session(get_engine()) as db:
+        return free_background_slots(db)
+
+
+def _dispatch_ready(
+    task: dict,
+    policy: dict,
+    nodes: list[dict],
+    runs: list[dict],
+    slots: int,
+    *,
+    fan_out: bool,
+) -> bool:
+    """Reserve up to ``slots`` ready nodes, each on the branch its plan implies.
+
+    The first node of a settled graph dispatches exactly as it always did,
+    including pausing the task when the server will not admit it. Every
+    additional concurrent node is gated on the shared session pool first, and a
+    node the pool or the server declines simply stays ready for the next tick.
+    """
+    from swarm.factory_controls import set_control
+
+    ready = _ready_nodes(nodes, runs)
+    if not ready or slots <= 0:
+        return False
+    solo = 0 if fan_out else 1
+    extra = max(0, slots - solo)
+    if extra:
+        extra = min(extra, _free_background_slots())
+    limit = solo + extra
+    if limit <= 0:
+        return False
+    hydration = hydration_branch(task)
+    branched = _fan_out_keys(nodes)
+    task_id = task["id"]
+    dispatched = 0
+    for node in ready[:limit]:
+        node_key = node["node_key"]
+        attempt = sum(r["node_key"] == node_key for r in runs) + 1
+        key = f"factory-node:{task_id}:{node_key}:{attempt}"
+        context = {
+            "repo": task["repo"],
+            "branch": (
+                node_branch(task_id, node_key)
+                if node_key in branched
+                else task_branch(task_id)
+            ),
+            "workflow_id": key,
+            "artifact_path": f".factory/{task_id}/{node_key}-{attempt}.json",
+            "artifact_schema": _schema(node_key),
+            "hydration_branch": hydration,
+            "retry_context": json.dumps(
+                [r for r in runs if r["node_key"] == node_key], default=str
+            )[-16000:],
+        }
+        if reserve_node(task_id, node_key, key, context):
+            dispatched += 1
+            continue
+        if dispatched == 0 and not fan_out:
+            set_control("pause_task", ACTOR, task_id=task_id)
+        break
+    return dispatched > 0
 
 
 def reserve_node(task_id: str, node_key: str, key: str, context: dict) -> bool:

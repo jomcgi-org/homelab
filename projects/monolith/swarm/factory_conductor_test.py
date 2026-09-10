@@ -398,7 +398,7 @@ def feedback_db(tmp_path, monkeypatch):
     engine.dispose()
 
 
-def feedback_task(*, max_turns=8, body="Untrusted issue text"):
+def feedback_task(*, max_turns=8, body="Untrusted issue text", **overrides):
     from swarm import factory_controls as controls
     from swarm.factory_intake import admit_next, receive_issue
 
@@ -418,6 +418,9 @@ def feedback_task(*, max_turns=8, body="Untrusted issue text"):
         "task_timeout_seconds": 3600,
         "max_attempts": 2,
     }
+    # Fields the receipt must pin, such as max_parallel_nodes, have to be in
+    # the policy before it is configured and the task admitted.
+    policy.update(overrides)
     assert controls.set_control("configure", "operator", policy=policy)["ok"]
     assert controls.set_control("enable", "operator")["ok"]
     receive_issue(
@@ -492,6 +495,45 @@ def run_feedback_node(task, node_key, value, *, head=None, status="succeeded"):
     return next(
         r for r in conductor.graph.node_runs(task["id"]) if r["node_key"] == node_key
     )
+
+
+def settle_admitted_node(task, node_key, value, *, head=None, status="succeeded"):
+    """Settle an attempt the reconciler already admitted, without re-reserving it.
+
+    The reconciler pins its own execution context, including the branch a
+    fanned-out node works on, so a test cannot rebuild that context by hand.
+    """
+    import json
+    from swarm import factory_controls as controls
+
+    run = next(
+        r
+        for r in conductor.graph.node_runs(task["id"])
+        if r["node_key"] == node_key and r["status"] == "admitted"
+    )
+    session_id = 200 + run["attempt"]
+    result = {
+        "status": status,
+        "session_id": session_id,
+        "cost_usd": 0.25,
+        "head_sha": head,
+        "value": value,
+        "artifact": {"status": "ok", "value": value},
+    }
+    assert conductor.graph.record_dispatch(
+        task["id"], node_key, run["attempt"], session_id, None
+    ).ok
+    assert conductor.graph.record_outcome(
+        task["id"], node_key, run["attempt"], status, 0.25, head, json.dumps(result)
+    ).ok
+    assert controls.record_start_outcome(
+        task["id"],
+        run["pin"]["workflow_id"],
+        status,
+        "worker",
+        cost_usd=0.25,
+        session_id=session_id,
+    )["ok"]
 
 
 def feedback_audits(engine, task_id):
@@ -803,8 +845,18 @@ def test_repair_does_not_replenish_factory_turn_budget(feedback_db, monkeypatch)
     snapshot = controls.task_snapshot(task["id"])
     assert snapshot["turns_used"] == 1 and snapshot["planner_turns_used"] == 1
     assert snapshot["committed_cost_usd"] == 0.5
-    assert snapshot["task_paused"] and snapshot["policy"]["max_turns_per_task"] == 1
+    assert snapshot["policy"]["max_turns_per_task"] == 1
     assert len(conductor.graph.node_runs(task["id"])) == 2
+    # The repair never reaches the graph: sizing it against the envelope
+    # refuses it with the excess, which is what the planner needs in order to
+    # shrink the work rather than a silently pinned task.
+    assert not any(
+        node["node_key"] == "implement_repair"
+        for node in conductor.graph.load_graph(task["id"])
+    )
+    audits = feedback_audits(feedback_db, task["id"])
+    assert [audit["refusal_code"] for audit in audits] == ["envelope_exceeded"]
+    assert '"allowed": 1' in audits[0]["reason"]
 
 
 @pytest.mark.parametrize("later_planner", [False, True])
@@ -1818,7 +1870,10 @@ def test_budget_projection_shares_admission_accounting_and_retry_ceiling(feedbac
     assert (
         projection["turns_used"] == 1
         and projection["planner_turns_used"] == 0
-        and projection["max_turns_per_task"] == policy["max_turns_per_task"]
+        and projection["max_task_turns_hard"] == policy["max_turns_per_task"]
+        and projection["task_turn_allowance"] == policy["max_turns_per_task"]
+        and projection["allowance_derived_from_plan"] is False
+        and projection["max_parallel_nodes"] == 1
     )
     assert (
         projection["deadline_at"] == controls.task_snapshot(task["id"])["deadline_at"]
@@ -4119,7 +4174,7 @@ def test_plan_action_is_a_valid_decision_and_bounds_its_edits():
 
 def test_plan_applies_a_whole_dag_under_one_expected_version(feedback_db):
     task, policy = planned_task(
-        feedback_task(),
+        feedback_task(max_turns=24),
         [
             plan_edit("scope", "investigate"),
             plan_edit("fix", "implement", ["investigate_scope"]),
@@ -4159,7 +4214,7 @@ def test_plan_applies_a_whole_dag_under_one_expected_version(feedback_db):
 )
 def test_one_bad_edit_rejects_the_whole_plan(feedback_db, bad, code):
     task, _policy = planned_task(
-        feedback_task(),
+        feedback_task(max_turns=24),
         [
             plan_edit("scope", "investigate"),
             plan_edit("fix", "implement", **bad),
@@ -4178,7 +4233,7 @@ def test_one_bad_edit_rejects_the_whole_plan(feedback_db, bad, code):
 
 def test_plan_preserves_the_reserved_conductor_and_engine_round_prefixes(feedback_db):
     task, _policy = planned_task(
-        feedback_task(),
+        feedback_task(max_turns=24),
         [
             plan_edit("scope", "investigate"),
             plan_edit("review_1", "review"),
@@ -4546,7 +4601,7 @@ def test_a_maximal_deviation_does_not_pause_a_task_that_would_otherwise_plan(
 
 def test_a_plan_lands_whichever_order_and_dep_spelling_it_uses(feedback_db):
     task, _policy = planned_task(
-        feedback_task(),
+        feedback_task(max_turns=24),
         [
             plan_edit("check", "review", ["fix"]),
             plan_edit("fix", "implement", ["investigate_scope"]),
@@ -4710,3 +4765,303 @@ def test_a_failed_node_with_an_attempt_left_retries_before_the_planner(
         for node in conductor.graph.load_graph(task["id"])
     )
     assert [r["attempt"] for r in conductor.graph.node_runs(task["id"])] == [1, 2]
+
+
+def parallel_plan(**policy_overrides):
+    """A plan whose two implementations have no dependency between them."""
+    return planned_task(
+        feedback_task(max_turns=40, **policy_overrides),
+        [
+            plan_edit("alpha", "implement"),
+            plan_edit("beta", "implement"),
+            plan_edit("check", "review", ["implement_alpha", "implement_beta"]),
+        ],
+    )
+
+
+def test_parallel_implementations_each_get_their_own_branch(feedback_db):
+    task, _policy = parallel_plan()
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    for key in ("implement_alpha", "implement_beta"):
+        branch = conductor.node_branch(task["id"], key)
+        assert nodes[key]["prompt"].startswith(conductor._boundary(task, branch=branch))
+        assert branch in nodes[key]["prompt"]
+    # The branch is a sibling of the task branch, never a path below it: git
+    # cannot hold refs/heads/factory/<id> and a child of it at once.
+    assert conductor.node_branch(task["id"], "implement_alpha") == (
+        f"factory/{task['id']}-implement_alpha"
+    )
+    assert nodes["review_check"]["prompt"].startswith(
+        conductor._boundary(task, review=True)
+    )
+
+
+def test_a_serial_plan_keeps_the_task_branch_and_its_original_boundary(feedback_db):
+    task, _policy = planned_task(
+        feedback_task(max_turns=24),
+        [
+            plan_edit("fix", "implement"),
+            plan_edit("check", "review", ["implement_fix"]),
+        ],
+    )
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert nodes["implement_fix"]["prompt"].startswith(conductor._boundary(task))
+    assert f"factory/{task['id']}-" not in nodes["implement_fix"]["prompt"]
+    assert "integrate_1" not in nodes
+
+
+def test_the_engine_fans_two_parallel_implementations_back_in(feedback_db):
+    task, policy = parallel_plan()
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert "integrate_1" in nodes
+    integrate = nodes["integrate_1"]
+    assert integrate["deps"] == ["implement_alpha", "implement_beta"]
+    assert integrate["kind"] == "work" and integrate["side_effects"]
+    assert integrate["model"] == "luna"
+    assert integrate["max_attempts"] == policy["max_attempts"]
+    assert integrate["max_cost_usd"] == policy["turn_budget_usd"]
+    for key in ("implement_alpha", "implement_beta"):
+        assert conductor.node_branch(task["id"], key) in integrate["prompt"]
+    assert f"factory/{task['id']}" in integrate["prompt"]
+    assert "report the integrated head" in integrate["prompt"]
+    # Review now examines the head integrate reports, not one branch's head.
+    assert nodes["review_check"]["deps"] == ["integrate_1"]
+    assert conductor._schema("integrate_1") is conductor.RESULT_SCHEMA
+    assert conductor._is_implementation("integrate_1")
+
+
+def test_the_fan_in_node_is_inserted_once_across_ticks(feedback_db, monkeypatch):
+    task, policy = parallel_plan()
+    conductor.reconcile_task(task["id"], policy, object())
+    version = conductor.graph.current_version(task["id"])
+    monkeypatch.setattr(conductor, "_dispatch_ready", lambda *_a, **_k: False)
+    conductor.reconcile_task(task["id"], policy, object())
+    conductor.reconcile_task(task["id"], policy, object())
+    assert conductor.graph.current_version(task["id"]) == version
+    keys = [n["node_key"] for n in conductor.graph.load_graph(task["id"])]
+    assert keys.count("integrate_1") == 1 and "integrate_2" not in keys
+
+
+def test_a_planner_added_integrate_node_is_not_duplicated(feedback_db, monkeypatch):
+    task, policy = planned_task(
+        feedback_task(max_turns=40),
+        [
+            plan_edit("alpha", "implement"),
+            plan_edit("beta", "implement"),
+            plan_edit("merge", "integrate", ["implement_alpha", "implement_beta"]),
+            plan_edit("check", "review", ["integrate_merge"]),
+        ],
+    )
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_ONE}}
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
+    assert "integrate_merge" in keys and "integrate_1" not in keys
+    assert feedback_audits(feedback_db, task["id"]) == []
+
+
+def test_the_reserved_engine_integrate_key_is_refused_to_a_planner(feedback_db):
+    task, _policy = planned_task(
+        feedback_task(max_turns=24), [plan_edit("integrate_1", "integrate")]
+    )
+    assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])] == [
+        "conductor_1"
+    ]
+    audits = feedback_audits(feedback_db, task["id"])
+    assert audits[0]["refusal_code"] == "engine_loop_key_reserved"
+
+
+def test_one_parallel_node_preserves_the_serial_dispatch_end_to_end(
+    feedback_db, monkeypatch
+):
+    task, policy = parallel_plan()
+    conductor.reconcile_task(task["id"], policy, object())
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_ONE}}
+    )
+    monkeypatch.setattr(
+        conductor,
+        "_free_background_slots",
+        lambda: pytest.fail("the serial lane must not read the shared pool"),
+    )
+    from swarm.factory_controls import parallel_limit
+
+    assert parallel_limit(policy) == 1
+    conductor.reconcile_task(task["id"], policy, object())
+    admitted = [
+        run["node_key"]
+        for run in conductor.graph.node_runs(task["id"])
+        if run["status"] == "admitted"
+    ]
+    assert len(admitted) == 1
+
+
+def test_two_parallel_nodes_are_admitted_in_one_tick_on_their_own_branches(
+    feedback_db, monkeypatch
+):
+    task, policy = parallel_plan(max_parallel_nodes=2)
+    conductor.reconcile_task(task["id"], policy, object())
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_ONE}}
+    )
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 3)
+    conductor.reconcile_task(task["id"], policy, object())
+    runs = {
+        run["node_key"]: run
+        for run in conductor.graph.node_runs(task["id"])
+        if run["status"] == "admitted"
+    }
+    assert set(runs) == {"implement_alpha", "implement_beta"}
+    for key, run in runs.items():
+        assert run["pin"]["branch"] == conductor.node_branch(task["id"], key)
+        # Each fans out from the task branch head as it stands at dispatch.
+        assert run["pin"]["hydration_branch"] == f"factory/{task['id']}"
+
+
+def test_a_refused_capacity_reservation_leaves_the_node_ready(feedback_db, monkeypatch):
+    from swarm import factory_controls as controls
+
+    task, policy = parallel_plan(max_parallel_nodes=2)
+    conductor.reconcile_task(task["id"], policy, object())
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_ONE}}
+    )
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 0)
+    conductor.reconcile_task(task["id"], policy, object())
+    admitted = [
+        run["node_key"]
+        for run in conductor.graph.node_runs(task["id"])
+        if run["status"] == "admitted"
+    ]
+    # The pool had no room for a second guest, so only the first node started.
+    # The second never failed and never paused the task.
+    assert admitted == ["implement_alpha"]
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["task_paused"] is False
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 2)
+    settle_admitted_node(
+        task,
+        "implement_alpha",
+        {
+            "status": "complete",
+            "summary": "alpha done",
+            "pr_number": 21,
+            "head_sha": HEAD_ONE,
+        },
+        head=HEAD_ONE,
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    assert any(
+        run["node_key"] == "implement_beta"
+        for run in conductor.graph.node_runs(task["id"])
+    )
+
+
+def test_the_allowance_is_derived_from_the_accepted_plan(feedback_db):
+    from swarm import factory_controls as controls
+
+    task, policy = planned_task(
+        feedback_task(max_turns=24),
+        [
+            plan_edit("scope", "investigate"),
+            plan_edit("fix", "implement", ["investigate_scope"]),
+            plan_edit("check", "review", ["implement_fix"]),
+        ],
+    )
+    allowance = controls.task_snapshot(task["id"])["allowance"]
+    # Three work nodes of two attempts, one planner work turn already spent by
+    # the fixture's conductor node, plus two prospective review rounds.
+    assert allowance["derived"] is True
+    assert allowance["turns"] == 3 * 2 + 2 * 2
+    assert allowance["graph_revision"] == conductor.graph.current_version(task["id"])
+    audits = feedback_audits(feedback_db, task["id"])
+    assert audits == []
+
+
+def test_an_engine_review_round_extends_the_allowance(feedback_db):
+    from swarm import factory_controls as controls
+
+    task, policy = reviewed_task()
+    policy["max_task_turns_hard"] = 40
+    conductor._record_allowance(task["id"], policy, "test:baseline")
+    before = controls.task_snapshot(task["id"])["allowance"]["turns"]
+    conductor.reconcile_task(task["id"], policy, object())
+    after = controls.task_snapshot(task["id"])["allowance"]["turns"]
+    assert after - before == 2
+
+
+def test_an_over_envelope_plan_is_refused_whole_with_its_excess(feedback_db):
+    from swarm import factory_controls as controls
+
+    task, policy = planned_task(
+        feedback_task(max_turns=6),
+        [
+            plan_edit("scope", "investigate"),
+            plan_edit("fix", "implement", ["investigate_scope"]),
+            plan_edit("check", "review", ["implement_fix"]),
+        ],
+    )
+    assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])] == [
+        "conductor_1"
+    ]
+    audits = feedback_audits(feedback_db, task["id"])
+    assert len(audits) == 1
+    assert audits[0]["refusal_code"] == "envelope_exceeded"
+    import json
+
+    detail = json.loads(audits[0]["reason"].split("envelope exceeded: ", 1)[1])
+    assert detail["turns"] == {"needed": 10, "allowed": 6}
+    assert detail["usd"]["allowed"] == policy["task_budget_usd"]
+    # Nothing was derived, so admission still reads the envelope.
+    assert controls.task_snapshot(task["id"])["allowance"]["derived"] is False
+    # The next planner is told exactly what to shrink.
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    feedback = node_planner_context(nodes["conductor_2"])["decision_feedback"]
+    assert feedback[0]["refusal_code"] == "envelope_exceeded"
+    assert '"needed": 10' in feedback[0]["reason"]
+
+
+def test_discarding_a_node_shrinks_the_allowance_without_refunding_history(
+    feedback_db, monkeypatch
+):
+    from swarm import factory_controls as controls
+
+    task, policy = feedback_task(max_turns=40)
+    complete_feedback_node(
+        task,
+        policy,
+        "implement_fix",
+        {
+            "status": "complete",
+            "summary": "done",
+            "pr_number": None,
+            "head_sha": None,
+        },
+        status="failed",
+    )
+    assert conductor._add(
+        task, policy, "implement_spare", "spare", [], "luna", "test:spare", "fixture"
+    ).ok
+    conductor._record_allowance(task["id"], policy, "test:baseline")
+    before = controls.task_snapshot(task["id"])["allowance"]["turns"]
+    run = complete_feedback_node(
+        task,
+        policy,
+        "conductor_1",
+        {
+            "action": "discard_node",
+            "node_key": "implement_spare",
+            "reason": "not needed",
+        },
+    )
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_ONE}}
+    )
+    conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
+    after = controls.task_snapshot(task["id"])["allowance"]
+    # The spare node's two unspent slots go; the failed attempt stays charged.
+    assert before - after["turns"] == 2
+    assert after["turns"] >= controls.task_snapshot(task["id"])["turns_used"]
