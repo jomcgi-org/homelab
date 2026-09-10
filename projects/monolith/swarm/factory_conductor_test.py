@@ -5065,3 +5065,23 @@ def test_discarding_a_node_shrinks_the_allowance_without_refunding_history(
     # The spare node's two unspent slots go; the failed attempt stays charged.
     assert before - after["turns"] == 2
     assert after["turns"] >= controls.task_snapshot(task["id"])["turns_used"]
+
+
+def test_a_fanned_out_investigation_is_merged_by_the_same_fan_in(feedback_db):
+    task, policy = planned_task(
+        feedback_task(max_turns=40),
+        [
+            plan_edit("alpha", "investigate"),
+            plan_edit("beta", "implement"),
+            plan_edit("check", "review", ["investigate_alpha", "implement_beta"]),
+        ],
+    )
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    # Both fan out, so both are told their own branch.
+    for key in ("investigate_alpha", "implement_beta"):
+        assert conductor.node_branch(task["id"], key) in nodes[key]["prompt"]
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    # Every branch the engine handed out is a branch the fan-in merges.
+    assert nodes["integrate_1"]["deps"] == ["implement_beta", "investigate_alpha"]
+    assert nodes["review_check"]["deps"] == ["integrate_1"]

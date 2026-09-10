@@ -267,9 +267,10 @@ Nodes with no dependency between them run in parallel, up to
 `factory/<task-id>-<node key>`, a sibling of the task branch rather than a path
 below it, and an `integrate` node depending on all of them merges those
 branches into the task branch and reports the integrated head. The planner may
-name that node itself; when a plan has two or more concurrent implementations
+name that node itself; when a plan has two or more nodes on their own branches
 and none covers them, the engine inserts `integrate_<n>` and repoints whatever
-depended on the branches at it, so review still examines one integrated head.
+depended on those branches at it, so every branch the engine handed out is one
+the fan-in merges and review still examines one integrated head.
 (see: /projects/monolith/swarm/factory_conductor.py)
 (see: /projects/monolith/swarm/graph.py)
 (see: /projects/monolith/swarm/deviations.py)
