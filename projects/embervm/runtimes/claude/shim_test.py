@@ -598,7 +598,7 @@ args = sys.argv[1:]
 assert args[0] == "exec"
 assert "--json" in args
 assert args[args.index("--model") + 1] == "muse-spark-1.3-contributor"
-assert args[args.index("--base-url") + 1] == "https://api.meta.ai/v1"
+assert args[args.index("--base-url") + 1] == "http://api.meta.ai/v1"
 assert "--no-session-log" not in sys.argv, "muse does not support --no-session-log with --session-id"
 for flag in (
     "--api-key-stdin",
@@ -1096,6 +1096,36 @@ def test_muse_settings_json_has_mcp_servers_when_configured(tmp_path, monkeypatc
         "mode": "required",
     }
     assert "framing" not in agents
+
+
+@pytest.mark.parametrize("probe_succeeds", [True, False])
+def test_muse_settings_json_pins_plaintext_endpoint_transport(
+    tmp_path, monkeypatch, probe_succeeds
+):
+    monkeypatch.setenv(shim.AGENT_MCP_URL_ENV, "http://agents.test:8092/mcp")
+    monkeypatch.setattr(shim, "_agent_mcp_endpoint_alive", lambda _url: probe_succeeds)
+    manager = _muse_manager(tmp_path, monkeypatch)
+
+    manager.turn("settings", model="spark")
+
+    settings = json.loads((tmp_path / "muse-settings.json").read_text())
+    assert settings["endpoint_transport"] == {
+        "base_url": "http://api.meta.ai/v1",
+        "auth": "bearer",
+    }
+    assert ("mcp_servers" in settings) is probe_succeeds
+
+
+def test_muse_base_url_argv_matches_settings_endpoint_transport(tmp_path, monkeypatch):
+    manager = _muse_manager(tmp_path, monkeypatch)
+
+    manager.turn("settings", model="spark")
+
+    args = json.loads((tmp_path / "muse-args.jsonl").read_text())
+    settings = json.loads((tmp_path / "muse-settings.json").read_text())
+    assert (
+        args[args.index("--base-url") + 1] == settings["endpoint_transport"]["base_url"]
+    )
 
 
 def test_muse_settings_json_omits_mcp_servers_when_url_unset(tmp_path, monkeypatch):
