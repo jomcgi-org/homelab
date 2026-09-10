@@ -918,3 +918,160 @@ def test_hour_scale_turn_timeout_is_admitted_and_pinned(db):
     replay = admit_dispatch(task_id, "long", dispatch_key="long-1")
     assert replay.ok and replay.pin == admitted.pin
     assert len(node_runs(task_id)) == 1
+
+
+def plan_add(node_key, deps=(), **overrides):
+    values = {
+        "op": "add_node",
+        "node_key": node_key,
+        "kind": "work",
+        "prompt": f"do {node_key}",
+        "model": "worker-model",
+        "deps": list(deps),
+        "max_cost_usd": 1.0,
+        "side_effects": False,
+        "max_attempts": 2,
+        "turn_timeout_seconds": 60,
+        "stated_reason": f"the plan needs {node_key}",
+    }
+    values.update(overrides)
+    return values
+
+
+def apply_plan(task_id, edits, expected_version=0, **overrides):
+    values = {
+        "author_kind": "conductor",
+        "author": "model",
+        "cause_kind": "factory_conductor",
+        "cause_ref": "plan-1",
+        "expected_version": expected_version,
+    }
+    values.update(overrides)
+    return graph.apply_edits(task_id, edits=edits, **values)
+
+
+def test_plan_applies_every_edit_as_its_own_chained_version(db):
+    task_id = make_task(db)
+    result = apply_plan(
+        task_id,
+        [
+            plan_add("scope"),
+            plan_add("fix", deps=["scope"]),
+            plan_add("check", deps=["fix"]),
+        ],
+    )
+    assert result.ok and result.version == 3
+    assert current_version(task_id) == 3
+    nodes = {node["node_key"]: node for node in load_graph(task_id)}
+    assert set(nodes) == {"scope", "fix", "check"}
+    assert [nodes[key]["created_in_version"] for key in ("scope", "fix", "check")] == [
+        1,
+        2,
+        3,
+    ]
+    assert nodes["check"]["deps"] == ["fix"]
+    with Session(db) as session:
+        versions = session.exec(
+            select(SwarmPlanVersion).order_by(SwarmPlanVersion.version)
+        ).all()
+        assert [v.op for v in versions] == ["add_node"] * 3
+        assert {v.cause_ref for v in versions} == {"plan-1"}
+        call = session.exec(
+            select(SwarmConductorCall).order_by(SwarmConductorCall.id.desc())
+        ).first()
+        assert call.tool == "apply_edits" and call.outcome == "applied"
+        assert (call.version_before, call.version_after) == (0, 3)
+        # The unbounded prompt body is summarised rather than copied per edit.
+        recorded = json.loads(call.args_json)["edits"]
+        assert [edit["prompt_chars"] for edit in recorded] == [8, 6, 8]
+        assert all("prompt" not in edit for edit in recorded)
+
+
+def test_one_refused_edit_leaves_no_part_of_the_plan_applied(db):
+    task_id = make_task(db)
+    result = apply_plan(
+        task_id,
+        [
+            plan_add("scope"),
+            plan_add("fix", deps=["absent"]),
+            plan_add("check", deps=["fix"]),
+        ],
+    )
+    assert not result.ok and result.refusal_code == "unknown_dep"
+    assert "edit 1 (fix)" in result.detail and "absent" in result.detail
+    assert current_version(task_id) == 0
+    assert load_graph(task_id) == []
+    with Session(db) as session:
+        # The rollback discards the staged edits, and the refusal survives it.
+        assert session.exec(select(SwarmPlanVersion)).all() == []
+        calls = session.exec(
+            select(SwarmConductorCall).order_by(SwarmConductorCall.id)
+        ).all()
+        assert [call.outcome for call in calls] == ["refused"]
+        assert calls[0].tool == "apply_edits"
+
+
+@pytest.mark.parametrize(
+    "edits, code",
+    [
+        ([plan_add("cycle", deps=["cycle"])], "unknown_dep"),
+        ([plan_add("a"), plan_add("a")], "duplicate_key"),
+        ([plan_add("a", kind="nonsense")], "invalid_kind"),
+        ([plan_add("a", max_attempts=99)], "invalid_max_attempts"),
+        ([plan_add("a", max_cost_usd=100.0)], "budget_exceeded"),
+        ([{"op": "reshape", "node_key": "a"}], "invalid_edits"),
+        ([], "invalid_edits"),
+        ([plan_add("a")] * (graph.MAX_PLAN_EDITS + 1), "invalid_edits"),
+    ],
+)
+def test_plan_preserves_every_single_edit_refusal(db, edits, code):
+    task_id = make_task(db)
+    result = apply_plan(task_id, edits)
+    assert not result.ok and result.refusal_code == code
+    assert current_version(task_id) == 0 and load_graph(task_id) == []
+
+
+def test_plan_refuses_a_stale_expected_version_without_writing(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "existing", 0).ok
+    result = apply_plan(task_id, [plan_add("late")], expected_version=0)
+    assert not result.ok and result.refusal_code == "stale_version"
+    assert current_version(task_id) == 1
+    assert [node["node_key"] for node in load_graph(task_id)] == ["existing"]
+
+
+def test_plan_discard_and_re_add_share_one_transaction(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "old", 0).ok
+    result = apply_plan(
+        task_id,
+        [
+            {
+                "op": "discard_node",
+                "node_key": "old",
+                "stated_reason": "superseded by the new plan",
+            },
+            plan_add("new"),
+        ],
+        expected_version=1,
+    )
+    assert result.ok and result.version == 3
+    assert [node["node_key"] for node in load_graph(task_id)] == ["new"]
+    assert [node["node_key"] for node in load_graph(task_id, 1)] == ["old"]
+
+
+def test_plan_discard_refusal_rolls_back_an_already_staged_add(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "armed_node", 0).ok
+    assert admit_dispatch(task_id, "armed_node", dispatch_key="k").ok
+    result = apply_plan(
+        task_id,
+        [
+            plan_add("new"),
+            {"op": "discard_node", "node_key": "armed_node", "stated_reason": "no"},
+        ],
+        expected_version=1,
+    )
+    assert not result.ok and result.refusal_code == "armed"
+    assert [node["node_key"] for node in load_graph(task_id)] == ["armed_node"]
+    assert current_version(task_id) == 1

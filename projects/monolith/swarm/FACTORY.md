@@ -6,9 +6,10 @@ durable receipt per repository/issue/generation, and admits up to the policy's
 `swarm.factoryMaxConcurrentTasks` (1 today). `max_tasks` is a concurrency,
 not a lifetime count: as tasks settle the lane keeps admitting until its
 issue list is exhausted, so it runs without an operator re-arming it.
-An Opus session in Ember plans one graph edit at a time. The server reconciles
-the mutable graph and dispatches each admitted node as an independent DBOS
-workflow with immutable inputs. Planning does not run in the monolith process.
+A planning session in Ember builds the whole graph at plan time and is called
+back only when the plan deviates. The server reconciles the mutable graph and
+dispatches each admitted node as an independent DBOS workflow with immutable
+inputs. Planning does not run in the monolith process.
 
 This slice prepares a reviewable PR. The broader factory conductor in #5784,
 shared admission across all execution surfaces, other incident feeds and
@@ -42,14 +43,19 @@ fields are required. An example for one approved issue is:
   "base_branch": "main",
   "turn_timeout_seconds": 900,
   "task_timeout_seconds": 14400,
-  "max_attempts": 2
+  "max_attempts": 2,
+  "max_review_rounds": 2
 }
 ```
 
 `max_turns_per_task` caps delivery starts. Conductor planning rounds are capped
 separately by the optional `max_planner_turns`, which inherits the delivery cap
 when it is omitted, so an existing policy needs no edit. Planning rounds still
-draw on `task_budget_usd`.
+draw on `task_budget_usd`. The optional `max_review_rounds` bounds the review
+correction rounds the engine runs on its own and defaults to 2, so a policy
+configured before the field existed keeps working and gains the bound. Those
+two, `reviewer_model` and `model_pools` are the only optional fields; every
+other field is required.
 
 The example is documentation, not live authorization. Use the selected issue,
 current capacity and an explicitly accepted policy for an operating trial.
@@ -69,6 +75,18 @@ reservation and requires reconciliation before another attempt starts.
 Missing provider usage consumes the entire reserved ceiling. This is
 conservative admission accounting, not an interruptible dollar cap on a running
 provider turn. Observed overruns prevent further admission.
+
+A planner decision is one graph edit or one `plan` whose edits apply together
+under a single expected revision, so a rejected edit rejects the whole plan and
+the graph never holds half of one. Review correction is the server's, not the
+planner's: when a review returns `changes_requested` the reconciler appends
+`correct_<n>` on the model that produced the reviewed head and `review_<n>` on
+the configured independent reviewer, up to `max_review_rounds`. Those keys are
+refused to a planner, and the rounds are counted from the version ledger, so
+discarding or renaming a correction node cannot buy another one. The planner is
+called back only for a named deviation: no plan applied yet, a node that failed
+or escalated with no runnable retry, exhausted review rounds, or a settled
+graph with no verified delivery.
 
 The guest hydrates the existing task branch, or the base branch before the
 task branch exists. Source changes belong in a dedicated linked worktree on

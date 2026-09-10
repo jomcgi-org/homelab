@@ -231,11 +231,44 @@ step record at start so replay can never see a budget move. The pinned
 `budget_usd` is enforced at node boundaries. Every structured output an agent
 makes, review verdict and rationale record alike, arrives through one typed
 artifact channel validated at ingestion; nothing structured is parsed out of
-prose. The orchestration-level mutable DAG that ADR agents/062 decided is not
-built: the workflow's Python control flow is still the graph (#5419, #4781).
+prose. For a legacy swarm run the workflow's Python control flow is still the
+graph, so the orchestration-level mutable DAG that ADR agents/062 decided
+reaches those runs only when this engine is retired (#5419, #4781).
 (see: /projects/monolith/swarm/workflows.py)
 (see: /projects/monolith/swarm/budget.py)
 (see: /projects/monolith/swarm/turn_artifact.py)
+
+The factory lane is where that mutable DAG does exist. `swarm/factory_conductor.py`
+reconciles a versioned graph outside durable replay, and `swarm/graph.py` owns
+the versions, cycle and dependency checks, protected acted nodes and immutable
+dispatch pins. The planner builds the whole DAG at plan time through one `plan`
+decision whose edits apply atomically under a single expected revision, the
+reconciler dispatches each ready node as its own pinned unit, and a review that
+returns `changes_requested` opens a correction and re-review pair the engine
+appends itself, bounded by the policy's `max_review_rounds` (default 2). The
+planner is called back only for a named deviation: no plan applied yet, a node
+that failed or escalated with no runnable retry, review rounds spent, or a
+settled graph with no verified delivery.
+(see: /projects/monolith/swarm/factory_conductor.py)
+(see: /projects/monolith/swarm/graph.py)
+(see: /projects/monolith/swarm/deviations.py)
+(see: /projects/monolith/swarm/FACTORY.md)
+
+**Why.** The bootstrap asked the planner for one graph edit at a time, so a
+single task (#5981) spent nine starts on five pieces of work: five were planner
+turns that added one node each, and a review that requested changes went back
+to the planner to restate findings the review had already written. Planning is
+the most expensive turn in the lane and the one least able to add information
+when the next step is mechanical, so both the shape and the loop moved into the
+server. A plan-time DAG lets one planner turn express the dependencies the
+graph machinery already enforced but never saw, and a bounded review loop runs
+the deterministic part with no model in it. The round bound is server policy,
+counted from the version ledger rather than from live nodes, so a planner
+cannot replenish it by renaming or discarding a correction node, and
+`correct_<n>` and `review_<n>` are refused as decision node keys for the same
+reason. Delivery stays with the planner because `verify_delivery` is the gate a
+completion claim has to pass, and an exhausted loop returns to the planner with
+the evidence instead of failing the task (#5419).
 
 Escalation is a pause, not a return. At each escalate point the workflow
 writes a `swarm.swarm_decision` row and polls it on the cadence it already
@@ -744,7 +777,7 @@ this table when the work ships or the issue closes without it.
 
 | Direction | Decided in | Tracks | State |
 | --- | --- | --- | --- |
-| The orchestration-level graph becomes a mutable DAG dispatched per node, replacing the workflow's Python control flow | section 4 | #5419 | not started |
+| The orchestration-level graph becomes a mutable DAG dispatched per node, replacing the workflow's Python control flow | section 4 | #5419 | in progress: the factory lane plans its DAG at plan time and runs engine-owned review rounds; legacy swarm runs are still `implement_then_review` |
 | One factory conductor above every per-run conductor selects and coordinates work under a versioned charter, acting on Joe's behalf | The factory conductor | #5784 | not started |
 | The charter document and its loader govern what the conductor may read, coordinate, or act on | The factory conductor | #5785 | not started |
 | Product-goal records, the factory index, and acceptance evidence drive work selection | The factory conductor | #5786 | not started |
@@ -934,6 +967,6 @@ mismatch without silently rewriting the decision record.
 | 059 | Authentik Federates MCP Identity; the Monolith Serves MCP Directly | Draft, not shipped (#3832, #3833) | deleted |
 | `agents/060` | Escalation as a Pause, Not a Return, With a Decision Row | Accepted, shipped: decision row, endpoint, `agent_run_decide`, console buttons (see: /projects/monolith/swarm/router.py) | deleted |
 | `agents/061` | The Qwen Work-Queue Drainer | Accepted, shipped; the drained sessions moved from qwen to Luna on 2026-09-01 and the `qwen-drain` kind is a legacy name (see: /projects/monolith/swarm/drainer.py) | deleted |
-| `agents/062` | A Mutable DAG Owned by an Opus Conductor, Executed Per-Node in VMs | Accepted, partially shipped: typed artifact channel and rationale records exist, the orchestration-level graph and per-node dispatch do not (#5419, #4781) | deleted |
+| `agents/062` | A Mutable DAG Owned by an Opus Conductor, Executed Per-Node in VMs | Accepted, partially shipped: typed artifact channel, rationale records, and the factory lane's plan-time graph with per-node dispatch exist; legacy swarm runs still execute `implement_then_review` (#5419, #4781) | deleted |
 | `agents/063` | The Factory Knowledge Graph Learns From Evidence Lanes | Accepted, shipped with its 2026-09-03 amendment: schema, `kg-drain` lane, feeds, report tools, recall (see: /projects/monolith/knowledge/extraction.py); #5527 tracks the program | deleted |
 | 064 | A factory conductor coordinating conductors under a charter | Proposed in PR #5792, never merged; rolled into the Direction subsection above on 2026-09-06 and the full text preserved on #5784 | not merged |

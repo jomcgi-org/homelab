@@ -433,22 +433,29 @@ def feedback_task(*, max_turns=8):
     return conductor._task(admitted["task_id"]), policy
 
 
-def complete_feedback_node(task, policy, node_key, value, *, head=None):
-    import json
-    from swarm import factory_controls as controls
-
-    model = "luna" if node_key.startswith("implement_") else "opus"
+def complete_feedback_node(
+    task, policy, node_key, value, *, head=None, deps=None, model=None, **kwargs
+):
+    model = model or ("luna" if node_key.startswith("implement_") else "opus")
     assert conductor._add(
         task,
         policy,
         node_key,
         "bounded work",
-        [],
+        list(deps or []),
         model,
         f"test:{node_key}",
         "test fixture",
         review=node_key.startswith("review_"),
     ).ok
+    return run_feedback_node(task, node_key, value, head=head, **kwargs)
+
+
+def run_feedback_node(task, node_key, value, *, head=None, status="succeeded"):
+    """Reserve and settle one attempt of a node that is already in the graph."""
+    import json
+    from swarm import factory_controls as controls
+
     workflow = f"factory-node:{task['id']}:{node_key}:1"
     context = {
         "repo": task["repo"],
@@ -462,7 +469,7 @@ def complete_feedback_node(task, policy, node_key, value, *, head=None):
     assert conductor.reserve_node(task["id"], node_key, workflow, context)
     session_id = 100 + len(controls.task_snapshot(task["id"])["starts"])
     result = {
-        "status": "succeeded",
+        "status": status,
         "session_id": session_id,
         "cost_usd": 0.25,
         "head_sha": head,
@@ -472,12 +479,12 @@ def complete_feedback_node(task, policy, node_key, value, *, head=None):
     }
     assert conductor.graph.record_dispatch(task["id"], node_key, 1, session_id, None).ok
     assert conductor.graph.record_outcome(
-        task["id"], node_key, 1, "succeeded", 0.25, head, json.dumps(result)
+        task["id"], node_key, 1, status, 0.25, head, json.dumps(result)
     ).ok
     assert controls.record_start_outcome(
         task["id"],
         workflow,
-        "succeeded",
+        status,
         "worker",
         cost_usd=0.25,
         session_id=session_id,
@@ -4024,3 +4031,427 @@ def test_cessation_settlement_writes_basis_and_label_together(
         "cost_basis": basis,
         "accounting": label,
     }
+
+
+HEAD_ONE = "a" * 40
+HEAD_TWO = "b" * 40
+
+
+def node_planner_context(node):
+    """A planner node's prompt is the boundary, then one line of JSON context."""
+    import json
+
+    return json.loads(node["prompt"].rsplit("\n", 1)[1])
+
+
+def plan_edit(node_key, role, deps=(), **overrides):
+    edit = {
+        "action": "add_node",
+        "reason": f"the plan needs {node_key}",
+        "node_key": node_key,
+        "role": role,
+        "prompt": f"Do the {role} work for {node_key}",
+        "deps": list(deps),
+    }
+    edit.update(overrides)
+    return edit
+
+
+def planned_task(feedback_task_result, edits, **decision):
+    """Run one planner node whose decision is a batched plan."""
+    task, policy = feedback_task_result
+    body = {"action": "plan", "reason": "Deliver the requested outcome", "edits": edits}
+    body.update(decision)
+    run = complete_feedback_node(task, policy, "conductor_1", body)
+    conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
+    return task, policy
+
+
+def test_plan_action_is_a_valid_decision_and_bounds_its_edits():
+    assert not schema_errors(
+        {
+            "action": "plan",
+            "reason": "Deliver the fix",
+            "edits": [plan_edit("scope", "investigate")],
+        },
+        conductor.DECISION_SCHEMA,
+    )
+    assert schema_errors(
+        {"action": "plan", "reason": "no edits", "edits": []},
+        conductor.DECISION_SCHEMA,
+    )
+    assert schema_errors(
+        {
+            "action": "plan",
+            "reason": "too many",
+            "edits": [plan_edit("scope", "investigate")]
+            * (conductor.MAX_PLAN_EDITS + 1),
+        },
+        conductor.DECISION_SCHEMA,
+    )
+    # A nested edit cannot smuggle a finish, a nested plan or a policy field.
+    assert schema_errors(
+        {
+            "action": "plan",
+            "reason": "nested",
+            "edits": [{"action": "finish", "reason": "done", "pr_number": 3}],
+        },
+        conductor.DECISION_SCHEMA,
+    )
+    assert schema_errors(
+        {
+            "action": "plan",
+            "reason": "policy",
+            "edits": [plan_edit("scope", "investigate")],
+            "max_review_rounds": 9,
+        },
+        conductor.DECISION_SCHEMA,
+    )
+    assert schema_errors(
+        {
+            "action": "plan",
+            "reason": "policy in an edit",
+            "edits": [plan_edit("scope", "investigate", max_review_rounds=9)],
+        },
+        conductor.DECISION_SCHEMA,
+    )
+
+
+def test_plan_applies_a_whole_dag_under_one_expected_version(feedback_db):
+    task, policy = planned_task(
+        feedback_task(),
+        [
+            plan_edit("scope", "investigate"),
+            plan_edit("fix", "implement", ["investigate_scope"]),
+            plan_edit("check", "review", ["implement_fix"]),
+        ],
+    )
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert set(nodes) == {
+        "conductor_1",
+        "investigate_scope",
+        "implement_fix",
+        "review_check",
+    }
+    assert [
+        nodes[key]["created_in_version"]
+        for key in ("investigate_scope", "implement_fix", "review_check")
+    ] == [2, 3, 4]
+    assert conductor.graph.current_version(task["id"]) == 4
+    assert nodes["review_check"]["deps"] == ["implement_fix"]
+    assert nodes["review_check"]["model"] == "opus"
+    assert nodes["implement_fix"]["model"] == "luna"
+    assert nodes["implement_fix"]["max_cost_usd"] == policy["turn_budget_usd"]
+    assert nodes["review_check"]["prompt"].startswith(
+        conductor._boundary(task, review=True)
+    )
+    assert feedback_audits(feedback_db, task["id"]) == []
+
+
+@pytest.mark.parametrize(
+    "bad, code",
+    [
+        ({"model": "fable"}, "model_not_allowed"),
+        ({"max_cost_usd": 99.0}, "bound_exceeds_policy"),
+        ({"max_attempts": 0}, "bound_invalid"),
+        ({"deps": ["never_added"]}, "unknown_dep"),
+    ],
+)
+def test_one_bad_edit_rejects_the_whole_plan(feedback_db, bad, code):
+    task, _policy = planned_task(
+        feedback_task(),
+        [
+            plan_edit("scope", "investigate"),
+            plan_edit("fix", "implement", **bad),
+            plan_edit("check", "review", ["implement_fix"]),
+        ],
+    )
+    assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])] == [
+        "conductor_1"
+    ]
+    assert conductor.graph.current_version(task["id"]) == 1
+    audits = feedback_audits(feedback_db, task["id"])
+    assert len(audits) == 1 and audits[0]["refusal_code"] == code
+    assert audits[0]["decision_action"] == "plan"
+    assert "edit 1" in audits[0]["reason"] and "fix" in audits[0]["reason"]
+
+
+def test_plan_preserves_the_reserved_conductor_and_engine_round_prefixes(feedback_db):
+    task, _policy = planned_task(
+        feedback_task(),
+        [
+            plan_edit("scope", "investigate"),
+            plan_edit("review_1", "review"),
+        ],
+    )
+    assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])] == [
+        "conductor_1"
+    ]
+    audits = feedback_audits(feedback_db, task["id"])
+    assert audits[0]["refusal_code"] == "engine_loop_key_reserved"
+
+
+def test_plan_refuses_a_stale_expected_version_whole(feedback_db):
+    task, policy = feedback_task()
+    run = complete_feedback_node(
+        task,
+        policy,
+        "conductor_1",
+        {
+            "action": "plan",
+            "reason": "Deliver the requested outcome",
+            "expected_version": 0,
+            "edits": [plan_edit("scope", "investigate")],
+        },
+    )
+    conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
+    assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])] == [
+        "conductor_1"
+    ]
+    assert (
+        feedback_audits(feedback_db, task["id"])[0]["refusal_code"] == "stale_version"
+    )
+
+
+def test_a_decision_cannot_set_the_server_owned_review_round_bound(feedback_db):
+    task, policy = feedback_task()
+    run = complete_feedback_node(
+        task,
+        policy,
+        "conductor_1",
+        {
+            "action": "add_node",
+            "reason": "more rounds please",
+            "node_key": "fix",
+            "role": "implement",
+            "prompt": "Fix it",
+            "deps": [],
+            "max_review_rounds": 9,
+        },
+    )
+    conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
+    audits = feedback_audits(feedback_db, task["id"])
+    assert audits[0]["refusal_code"] == "bound_exceeds_policy"
+    assert "max_review_rounds" in audits[0]["reason"]
+    assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])] == [
+        "conductor_1"
+    ]
+
+
+def reviewed_task(*, verdict="changes_requested", rounds=None, head=HEAD_ONE):
+    """One implementation and one independent review, with no planner node."""
+    task, policy = feedback_task()
+    if rounds is not None:
+        policy["max_review_rounds"] = rounds
+    complete_feedback_node(
+        task,
+        policy,
+        "implement_fix",
+        {
+            "status": "complete",
+            "summary": "Delivered the fix",
+            "pr_number": 21,
+            "head_sha": head,
+        },
+        head=head,
+    )
+    complete_feedback_node(
+        task,
+        policy,
+        "review_fix",
+        {
+            "verdict": verdict,
+            "summary": "Tighten the retry bound and add a regression test.",
+            "pr_number": 21,
+            "head_sha": head,
+        },
+        head=head,
+        deps=["implement_fix"],
+    )
+    return task, policy
+
+
+def test_changes_requested_opens_an_engine_owned_correction_round(feedback_db):
+    task, policy = reviewed_task()
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert set(nodes) == {"implement_fix", "review_fix", "correct_1", "review_1"}
+    correct = nodes["correct_1"]
+    assert correct["deps"] == ["review_fix"]
+    # The correction runs on the model that produced the reviewed head.
+    assert correct["model"] == "luna"
+    assert correct["kind"] == "work" and correct["side_effects"]
+    assert correct["max_attempts"] == policy["max_attempts"]
+    assert correct["max_cost_usd"] == policy["turn_budget_usd"]
+    assert correct["turn_timeout_seconds"] == policy["turn_timeout_seconds"]
+    assert "Tighten the retry bound and add a regression test." in correct["prompt"]
+    assert HEAD_ONE in correct["prompt"] and "21" in correct["prompt"]
+    assert correct["prompt"].startswith(conductor._boundary(task))
+    review = nodes["review_1"]
+    assert review["deps"] == ["correct_1"] and review["model"] == "opus"
+    assert review["kind"] == "gate" and not review["side_effects"]
+    assert review["prompt"].startswith(conductor._boundary(task, review=True))
+    assert conductor._schema("correct_1") is conductor.RESULT_SCHEMA
+    assert conductor._schema("review_1") is conductor.REVIEW_SCHEMA
+
+
+def test_the_correction_round_costs_no_planner_turn_and_is_applied_once(
+    feedback_db, monkeypatch
+):
+    from swarm import factory_controls as controls
+    from swarm.models import SwarmPlanVersion
+    from sqlmodel import Session, select
+
+    task, policy = reviewed_task()
+    before = controls.task_snapshot(task["id"])["turns_used"]
+    conductor.reconcile_task(task["id"], policy, object())
+    version = conductor.graph.current_version(task["id"])
+    assert controls.task_snapshot(task["id"])["turns_used"] == before
+    with Session(feedback_db) as db:
+        causes = db.exec(select(SwarmPlanVersion.cause_ref)).all()
+    assert causes.count("factory-loop:review_1") == 2
+    assert conductor._review_rounds_used(task["id"]) == 1
+    # The correction already depends on that review, so no second pair opens and
+    # the next tick dispatches the correction rather than another planner.
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_ONE}}
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    assert conductor.graph.current_version(task["id"]) == version
+    assert not any(
+        node["node_key"].startswith("conductor_")
+        for node in conductor.graph.load_graph(task["id"])
+    )
+    assert any(
+        run["node_key"] == "correct_1" for run in conductor.graph.node_runs(task["id"])
+    )
+    assert controls.task_snapshot(task["id"])["turns_used"] == before + 1
+
+
+def test_an_approving_review_inserts_no_correction_round(feedback_db):
+    task, policy = reviewed_task(verdict="approve")
+    conductor.reconcile_task(task["id"], policy, object())
+    keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
+    assert "correct_1" not in keys and "review_1" not in keys
+    # Delivery is still the planner's call, so it is asked to finish.
+    assert "conductor_1" in keys
+    assert conductor._review_rounds_used(task["id"]) == 0
+
+
+def run_correction_round(task, policy, ordinal, *, verdict, head):
+    """Settle one engine-inserted pair the way a guest would."""
+    run_feedback_node(
+        task,
+        f"correct_{ordinal}",
+        {
+            "status": "complete",
+            "summary": f"Applied round {ordinal}",
+            "pr_number": 21,
+            "head_sha": head,
+        },
+        head=head,
+    )
+    run_feedback_node(
+        task,
+        f"review_{ordinal}",
+        {
+            "verdict": verdict,
+            "summary": f"Round {ordinal} still needs work.",
+            "pr_number": 21,
+            "head_sha": head,
+        },
+        head=head,
+    )
+
+
+def test_the_round_bound_hands_an_unresolved_review_back_to_the_planner(feedback_db):
+    task, policy = reviewed_task(rounds=2)
+    conductor.reconcile_task(task["id"], policy, object())
+    run_correction_round(task, policy, 1, verdict="changes_requested", head=HEAD_TWO)
+    conductor.reconcile_task(task["id"], policy, object())
+    keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
+    assert {"correct_2", "review_2"} <= keys
+    assert not any(key.startswith("conductor_") for key in keys)
+    run_correction_round(task, policy, 2, verdict="changes_requested", head=HEAD_TWO)
+
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert "correct_3" not in nodes and "review_3" not in nodes
+    assert conductor._review_rounds_used(task["id"]) == 2
+    planner = nodes["conductor_1"]
+    deviation = node_planner_context(planner)["deviation"]
+    assert deviation["code"] == "review_rounds_exhausted"
+    assert deviation["node_key"] == "review_2"
+    assert "max_review_rounds: 2" in deviation["evidence"]
+
+
+def test_zero_review_rounds_never_opens_one(feedback_db):
+    task, policy = reviewed_task(rounds=0)
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert "correct_1" not in nodes
+    assert (
+        node_planner_context(nodes["conductor_1"])["deviation"]["code"]
+        == "review_rounds_exhausted"
+    )
+
+
+def test_absent_policy_review_rounds_uses_the_server_default(feedback_db):
+    from swarm.factory_controls import DEFAULT_MAX_REVIEW_ROUNDS
+
+    task, policy = reviewed_task()
+    assert "max_review_rounds" not in policy
+    for ordinal in range(1, DEFAULT_MAX_REVIEW_ROUNDS + 1):
+        conductor.reconcile_task(task["id"], policy, object())
+        assert conductor._review_rounds_used(task["id"]) == ordinal
+        run_correction_round(
+            task, policy, ordinal, verdict="changes_requested", head=HEAD_TWO
+        )
+    conductor.reconcile_task(task["id"], policy, object())
+    assert conductor._review_rounds_used(task["id"]) == DEFAULT_MAX_REVIEW_ROUNDS
+    assert any(
+        node["node_key"].startswith("conductor_")
+        for node in conductor.graph.load_graph(task["id"])
+    )
+
+
+def test_a_failed_node_with_no_retry_names_its_deviation_to_the_planner(feedback_db):
+    task, policy = feedback_task()
+    assert conductor._add(
+        task,
+        policy,
+        "implement_fix",
+        "bounded work",
+        [],
+        "luna",
+        "test:implement_fix",
+        "test fixture",
+        max_attempts=1,
+    ).ok
+    run_feedback_node(
+        task,
+        "implement_fix",
+        {"status": "needs_work", "summary": "no", "pr_number": None, "head_sha": None},
+        status="failed",
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    planner = next(
+        node
+        for node in conductor.graph.load_graph(task["id"])
+        if node["node_key"] == "conductor_1"
+    )
+    deviation = node_planner_context(planner)["deviation"]
+    assert deviation["code"] == "node_failed"
+    assert deviation["node_key"] == "implement_fix"
+    assert "max_attempts: 1" in deviation["evidence"]
+
+
+def test_the_first_planner_call_is_named_as_the_initial_plan(feedback_db):
+    task, policy = feedback_task()
+    conductor.reconcile_task(task["id"], policy, object())
+    planner = next(
+        node
+        for node in conductor.graph.load_graph(task["id"])
+        if node["node_key"] == "conductor_1"
+    )
+    assert node_planner_context(planner)["deviation"]["code"] == "initial_plan"
