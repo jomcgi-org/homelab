@@ -789,6 +789,15 @@ def clear_ember_bindings_by_ember_id(session: Session, ember_id: str) -> list[in
     one still populating the ACTIVE (not prior) field would make it
     invisible to that check.
 
+    A row still holding an unknown outcome keeps its binding, mirroring
+    retire_guest_cleanup: an operator destroy races the control plane's own
+    teardown, and clearing the binding under that race turns an unresolved
+    delivery into evidence that no guest was ever bound, which permit
+    supervision would then settle as no_guest_bound. Retaining it costs the
+    destroy tool nothing for a parked session, because a session holding an
+    unknown outcome is unsendable until its reconciliation owner releases it
+    either way, and the remote guest is destroyed regardless.
+
     Returns the ids of the affected AgentSession rows.
     """
     admission.lock_pool(session)
@@ -799,8 +808,10 @@ def clear_ember_bindings_by_ember_id(session: Session, ember_id: str) -> list[in
     for row in rows:
         # A stale cleanup observation must not erase the identity needed by
         # the original POST to clear its committed receipt fence.
-        if row.result_receipt_fence_id is not None or admission.cleanup_pending(
-            session, row
+        if (
+            row.result_receipt_fence_id is not None
+            or admission.cleanup_pending(session, row)
+            or has_unknown_outcome(session, row.id)
         ):
             continue
         if row.ember_lineage_id:

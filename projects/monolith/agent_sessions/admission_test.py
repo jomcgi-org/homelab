@@ -454,6 +454,53 @@ def test_binding_clear_is_not_cessation_evidence(database):
         assert store.has_unknown_outcome(db, sid)
 
 
+def test_operator_destroy_retains_a_binding_under_an_unknown_outcome(database):
+    """The exact 2026-09-09 race. monolith_agent_session_destroy reaches
+    store.clear_ember_bindings_by_ember_id through agent_sessions/mcp.py. Run
+    while the control plane is still tearing the guest down, a clear would
+    leave a row that permit supervision reads as "no guest was ever bound", so
+    the clear is refused here the way retire_guest_cleanup already refuses it.
+    """
+    sid = queued(database, "destroy-unknown")
+    assert store.claim_pending_message_for_session_sync(sid, "worker") == 1
+    assert admission.recheck(sid, 1, "worker")
+    with Session(database) as db:
+        agent = db.get(AgentSession, sid)
+        agent.ember_session_id = "guest-destroy"
+        db.add(agent)
+        db.commit()
+    store.mark_turn_error_sync(sid, 1, "lost response", "worker")
+    with Session(database) as db:
+        assert store.has_unknown_outcome(db, sid)
+        assert store.clear_ember_bindings_by_ember_id(db, "guest-destroy") == []
+        agent = db.get(AgentSession, sid)
+        assert agent.ember_session_id == "guest-destroy"
+        assert agent.prior_ember_lineage_id is None
+        assert admission.reservation(db, "destroy-unknown").state == "uncertain"
+
+
+def test_operator_destroy_still_clears_a_resolved_binding(database):
+    """The refusal is scoped to an unresolved outcome, so an ordinary destroy
+    of a parked or finished session still clears and still preserves the
+    lineage handle store.set_ember_session recorded.
+    """
+    with Session(database) as db:
+        agent = store.create_session(db, "destroy-resolved", "<guest>", "main", "luna")
+        agent.ember_session_id = "guest-resolved"
+        agent.ember_lineage_id = "lineage-resolved"
+        agent.cli_session_id = "cli-resolved"
+        db.add(agent)
+        db.commit()
+        sid = agent.id
+    with Session(database) as db:
+        assert store.clear_ember_bindings_by_ember_id(db, "guest-resolved") == [sid]
+        agent = db.get(AgentSession, sid)
+        assert agent.ember_session_id is None
+        assert agent.ember_lineage_id is None
+        assert agent.prior_ember_lineage_id == "lineage-resolved"
+        assert agent.prior_cli_session_id == "cli-resolved"
+
+
 def test_legacy_routine_identity_is_adopted_from_trusted_workflow_fields(database):
     with Session(database) as db:
         agent = store.create_session(

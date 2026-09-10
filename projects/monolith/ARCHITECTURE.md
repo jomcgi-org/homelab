@@ -287,12 +287,23 @@ permit cessation settlement is behind
 covers kg and project drainer permits, interactive permits, and factory-owned
 project permits. When probe supervision is also enabled, it extends probes to
 destroyed and no-guest proof. A bound guest requires exact control-plane
-eviction or timestamped destruction after the failed turn. A no-guest permit
-requires durable claim evidence with no guest or binding evidence. The shared
-settler preserves the session binding, while factory-owned sessions use the
-factory settlement path. Factory attempts with no bound guest remain held until
-that path can prove no delivery. This avoids indefinite holds that block
-admission (stall on 2026-09-09).
+eviction or timestamped destruction after the failed turn, and a guest that
+ceased without ever being stopped reports no stop precondition, so the factory
+path takes its identity from the committed stop intent or from the observed
+invocation ordered against the dispatch. A no-guest permit requires durable
+claim evidence with no guest, binding or residual lineage evidence, and an
+operator destroy no longer clears a binding under an unresolved outcome, so a
+cleared binding cannot masquerade as one that never existed. A drainer permit
+whose routine job row is still parked on the attempt is left to the operator
+reconciliation path, which is the only owner that re-arms that job and which
+requires the reservation to still be uncertain. The shared settler preserves
+the session binding, while factory-owned sessions use the factory settlement
+path. Factory attempts with no bound guest remain held until that path can
+prove no delivery. This avoids indefinite holds that block admission (stall on
+2026-09-09). Legacy swarm `implement_then_review` sessions stay a residual:
+they are project tier with no routine job and no factory pin, so nothing
+settles them, and covering them needs a check that their DBOS workflow is
+terminal, which this loop does not have.
 (see: /projects/monolith/agent_sessions/permit_supervision.py)
 
 Monolith batch work is rendered as Argo CronWorkflows in the workflows
