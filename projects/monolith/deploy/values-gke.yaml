@@ -29,6 +29,11 @@ agents:
   sessions:
     # Release failed probe holds after exact guest eviction is confirmed.
     probeSupervisionEnabled: true
+    # Settle uncertain permits from control-plane cessation evidence for the
+    # kg, project and interactive tiers too, and let the factory accept an
+    # already-evicted guest as proof (#5979). Flipped 2026-09-10 after the
+    # template deployed on 0.477.3.
+    uncertainPermitSupervisionEnabled: true
     # Preserve native results before their synchronous response is delivered.
     resultReceiptsEnabled: true
     resultReceiptAdoptionEnabled: true
