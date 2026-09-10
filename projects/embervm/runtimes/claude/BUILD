@@ -245,9 +245,9 @@ py_test(
     name = "cleartext_lane_guard_test",
     srcs = ["cleartext_lane_guard_test.py"],
     data = [
+        "shim.py",
         "//projects/embervm/deploy:deploy_values",
         "//projects/embervm/deploy:deploy_values_gke",
-        "shim.py",
         "//projects/embervm/runtimes/claude/guest-init/cmd:guest_init_source",
     ],
     imports = ["."],
