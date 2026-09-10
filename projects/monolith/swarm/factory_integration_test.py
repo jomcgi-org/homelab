@@ -743,12 +743,14 @@ def test_parallel_halves_fan_out_and_are_integrated_before_review(
     with Session(db) as session:
         fan_in = session.exec(
             select(SwarmPlanVersion).where(
-                SwarmPlanVersion.cause_ref == "factory-loop:integrate_1"
+                SwarmPlanVersion.cause_ref == "factory-fanin:integrate_1"
             )
         ).all()
         # One add for the fan-in node, then the review's discard and re-add.
         assert [v.op for v in fan_in] == ["add_node", "discard_node", "add_node"]
         assert {v.author_kind for v in fan_in} == {"engine"}
+        # Its own cause kind, so the fan-in never spends a review round.
+        assert {v.cause_kind for v in fan_in} == {"factory_fanin"}
     snapshot = controls.task_snapshot(task_id)
     assert snapshot["turns_used"] == 4 and snapshot["planner_turns_used"] == 2
     assert snapshot["allowance"]["derived"] is True
