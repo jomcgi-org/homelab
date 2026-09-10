@@ -44,9 +44,11 @@ export function budgetShare(receipt) {
   return Math.min(1, spent / budget);
 }
 
-/** Starts used against the policy's turn limit, as a fraction. */
+/** Starts used against the task's derived allowance, as a fraction. */
 export function turnShare(receipt) {
-  const limit = Number(receipt?.policy?.max_turns_per_task);
+  const limit = Number(
+    receipt?.allowance?.turns ?? receipt?.policy?.max_task_turns_hard,
+  );
   const used = Number(receipt?.turns_used);
   if (!(limit > 0) || !(used >= 0)) return 0;
   return Math.min(1, used / limit);

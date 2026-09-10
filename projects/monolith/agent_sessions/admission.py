@@ -322,6 +322,24 @@ def reserve_start(
     return True
 
 
+def free_background_slots(db: Session) -> int:
+    """Background starts the pool would admit right now, for schedulers that fan out.
+
+    This is a read, not a reservation: it takes no lock and grants nothing.
+    ``reserve_start`` remains the only authority, and it is still consulted
+    when the session is actually created. A scheduler uses this so it does not
+    queue more concurrent guests than the pool can hold, which turns a refusal
+    that would strand a node into one it simply retries on its next tick.
+    """
+    active = db.exec(
+        select(AgentCapacityReservation).where(
+            AgentCapacityReservation.state != "settled"
+        )
+    ).all()
+    background = sum(row.tier != "interactive" for row in active)
+    return max(0, min(BACKGROUND_LIMIT - background, TOTAL_LIMIT - len(active)))
+
+
 def bind_session(db: Session, agent: AgentSession) -> None:
     lock_pool(db)
     row = reservation(db, agent.local_session_id)

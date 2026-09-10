@@ -1162,3 +1162,82 @@ def test_reordering_never_moves_an_add_across_a_discard_of_its_key(db):
     nodes = {node["node_key"]: node for node in load_graph(task_id)}
     assert nodes["fix"]["max_cost_usd"] == 2.0
     assert nodes["fix"]["created_in_version"] == 3
+
+
+def test_a_plan_repoints_a_dependency_by_discarding_and_re_adding_it(db):
+    """The fan-in edit the factory builds: insert a node, then move a dep onto it."""
+    task_id = make_task(db)
+    assert apply_plan(
+        task_id,
+        [
+            plan_add("alpha"),
+            plan_add("beta"),
+            plan_add("check", deps=["alpha", "beta"]),
+        ],
+    ).ok
+    result = apply_plan(
+        task_id,
+        [
+            plan_add("merge", deps=["alpha", "beta"]),
+            {
+                "op": "discard_node",
+                "node_key": "check",
+                "stated_reason": "repointing check at merge",
+            },
+            plan_add("check", deps=["merge"]),
+        ],
+        expected_version=3,
+        cause_ref="factory-loop:integrate_1",
+    )
+    assert result.ok and result.version == 6
+    nodes = {node["node_key"]: node for node in load_graph(task_id)}
+    assert set(nodes) == {"alpha", "beta", "merge", "check"}
+    assert nodes["merge"]["deps"] == ["alpha", "beta"]
+    assert nodes["check"]["deps"] == ["merge"]
+    # The discard and its re-add keep their written order, and merge is added
+    # before the re-add that depends on it.
+    with Session(db) as session:
+        versions = session.exec(
+            select(SwarmPlanVersion)
+            .where(SwarmPlanVersion.cause_ref == "factory-loop:integrate_1")
+            .order_by(SwarmPlanVersion.version)
+        ).all()
+    assert [v.op for v in versions] == ["add_node", "discard_node", "add_node"]
+    assert [json.loads(v.change_json)["node_key"] for v in versions] == [
+        "merge",
+        "check",
+        "check",
+    ]
+
+
+def test_repointing_an_armed_dependency_refuses_the_whole_plan(db):
+    task_id = make_task(db)
+    assert apply_plan(
+        task_id, [plan_add("alpha"), plan_add("check", deps=["alpha"])]
+    ).ok
+    assert record_outcome(
+        task_id,
+        "alpha",
+        admit_dispatch(task_id, "alpha").attempt,
+        "succeeded",
+        0.1,
+        None,
+        "{}",
+    ).ok
+    assert admit_dispatch(task_id, "check").ok
+    result = apply_plan(
+        task_id,
+        [
+            plan_add("merge", deps=["alpha"]),
+            {
+                "op": "discard_node",
+                "node_key": "check",
+                "stated_reason": "repointing check at merge",
+            },
+            plan_add("check", deps=["merge"]),
+        ],
+        expected_version=2,
+    )
+    assert not result.ok and result.refusal_code == "armed"
+    nodes = {node["node_key"]: node for node in load_graph(task_id)}
+    assert set(nodes) == {"alpha", "check"} and nodes["check"]["deps"] == ["alpha"]

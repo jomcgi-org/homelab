@@ -162,7 +162,8 @@
         <span
           >generation {policy.generation} · {policy.max_tasks} at a time · {money(
             policy.task_budget_usd,
-          )} and {policy.max_turns_per_task} starts per task · policy v{board.version}</span
+          )} and up to {policy.max_task_turns_hard} starts per task · {policy.max_parallel_nodes ??
+            1} in parallel · policy v{board.version}</span
         >
       {/if}
       {#if board && board.ok === false}
@@ -249,8 +250,9 @@
               ><i style={`width:${pct(turnShare(receipt))}`}></i></span
             >
             <span class="num"
-              >{receipt.turns_used} of {receipt.policy
-                .max_turns_per_task}{#if receipt.planner_turns_used}
+              >{receipt.turns_used} of {receipt.allowance?.turns ??
+                receipt.policy
+                  .max_task_turns_hard}{#if receipt.planner_turns_used}
                 + {receipt.planner_turns_used} planning{/if}</span
             >
           </span>

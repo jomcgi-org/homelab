@@ -34,7 +34,8 @@ fields are required. An example for one approved issue is:
   "issue_numbers": [1234],
   "generation": 0,
   "max_tasks": 1,
-  "max_turns_per_task": 12,
+  "max_task_turns_hard": 40,
+  "max_parallel_nodes": 1,
   "task_budget_usd": 60,
   "turn_budget_usd": 5,
   "allowed_models": ["opus", "luna"],
@@ -48,14 +49,33 @@ fields are required. An example for one approved issue is:
 }
 ```
 
-`max_turns_per_task` caps delivery starts. Conductor planning rounds are capped
-separately by the optional `max_planner_turns`, which inherits the delivery cap
-when it is omitted, so an existing policy needs no edit. Planning rounds still
-draw on `task_budget_usd`. The optional `max_review_rounds` bounds the review
-correction rounds the engine runs on its own and defaults to 2, so a policy
-configured before the field existed keeps working and gains the bound. Those
-two, `reviewer_model` and `model_pools` are the only optional fields; every
-other field is required.
+The plan sizes the task and policy keeps the envelope. `max_task_turns_hard`
+and `task_budget_usd` are what an accepted plan has to fit inside; the number of
+delivery starts a task actually gets is derived from the plan the conductor
+accepted. `max_turns_per_task` was the old fixed cap and is still accepted: a
+policy that carries it and no `max_task_turns_hard` reads it as the envelope, so
+a live policy needs no re-post. A policy must carry one of the two.
+
+`max_parallel_nodes` is how many nodes one task may hold in flight at once and
+defaults to 1, so a policy written before fan-out existed stays serial until an
+operator raises it. Conductor planning rounds are capped separately by the
+optional `max_planner_turns`, which inherits the envelope when it is omitted.
+Planning rounds still draw on `task_budget_usd`. The optional
+`max_review_rounds` bounds the review correction rounds the engine runs on its
+own and defaults to 2. Those, `reviewer_model` and `model_pools` are the only
+optional fields; every other field is required.
+
+The derived allowance is `max_attempts` summed over the live nodes that have
+not succeeded, plus the work turns already spent, plus two turns for each review
+round the engine may still open; its dollar figure is the same sum over node
+`max_cost_usd` ceilings plus charged history. It is stored on the receipt as
+`allowance_json` with the graph revision it came from, re-derived and audited
+whenever an accepted edit changes the graph, and it is the bound work starts
+meet. A plan whose derived allowance would exceed the envelope is refused whole
+with `envelope_exceeded` and a detail naming needed against allowed for both
+turns and dollars, which the planner reads in `decision_feedback` and answers by
+splitting the work or pausing. Discarding a node drops its unspent slots and
+never refunds a consumed turn.
 
 The example is documentation, not live authorization. Use the selected issue,
 current capacity and an explicitly accepted policy for an operating trial.
@@ -91,9 +111,23 @@ called back only for a named deviation: no plan applied yet, a node that failed
 or escalated with no runnable retry, exhausted review rounds, or a settled
 graph with no verified delivery.
 
+Nodes with no dependency between them are dispatched together, up to
+`max_parallel_nodes`, and each concurrent implementation works on
+`factory/<task-id>-<node key>`. That is a sibling of the task branch, not a path
+under it, because git cannot hold `refs/heads/factory/<task-id>` and a ref below
+it at once. An `integrate` node merges those branches into the task branch,
+resolves conflicts, runs the targeted checks and reports the integrated head;
+review then examines that head and the correction rounds work on the task
+branch. The planner may add the integrate node itself; when a plan holds two or
+more concurrent implementations and nothing covers them, the engine inserts
+`integrate_<n>` and repoints their dependents at it. `integrate_<n>` is
+reserved to the engine exactly as `correct_<n>` and `review_<n>` are. Extra
+concurrent nodes are admitted only when the shared session pool has room, and a
+node the pool cannot hold stays ready for the next tick rather than failing.
+
 The guest hydrates the existing task branch, or the base branch before the
-task branch exists. Source changes belong in a dedicated linked worktree on
-`factory/<task-id>`. Transient typed artifacts must be written under
+task branch exists. Source changes belong in a dedicated linked worktree on the
+branch its brief names. Transient typed artifacts must be written under
 `/workspace/src/.factory/`, where the shim captures them. Current dispatch uses
 validated complete added-file diffs; the existing whole-file channel is accepted
 only when its stored path and validation metadata match the declared artifact.

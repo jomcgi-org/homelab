@@ -79,6 +79,7 @@ class FactoryReceipt(SQLModel, table=True):
     state: str = Field(default="queued")
     task_id: str | None = Field(default=None, foreign_key="swarm.swarm_task.id")
     policy_json: str | None = Field(default=None)
+    allowance_json: str | None = Field(default=None)
     task_paused: bool = Field(default=False)
     cancellation_requested: bool = Field(default=False)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
