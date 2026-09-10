@@ -46,8 +46,18 @@ _POLICY_KEYS = {
     "worker_model",
     "task_timeout_seconds",
     "model_pools",
+    "max_review_rounds",
 }
-_OPTIONAL_POLICY_KEYS = {"reviewer_model", "model_pools", "max_planner_turns"}
+_OPTIONAL_POLICY_KEYS = {
+    "reviewer_model",
+    "model_pools",
+    "max_planner_turns",
+    "max_review_rounds",
+}
+# Bounded review, correct and re-review rounds the engine runs on its own before
+# it asks the planner. Absent from a live policy means this default, so the
+# server gains the bound without an operator re-post.
+DEFAULT_MAX_REVIEW_ROUNDS = 2
 _POOL_ROLES = {"conductor": "conductor_model", "worker": "worker_model"}
 
 
@@ -121,6 +131,12 @@ def validate_policy(policy: dict) -> dict:
         _integer(policy["max_planner_turns"], "max_planner_turns", 1, 100)
         if "max_planner_turns" in policy
         else result["max_turns_per_task"]
+    )
+    result["max_review_rounds"] = _integer(
+        policy.get("max_review_rounds", DEFAULT_MAX_REVIEW_ROUNDS),
+        "max_review_rounds",
+        0,
+        10,
     )
     for key in ("task_budget_usd", "turn_budget_usd"):
         result[key] = _money(policy[key], key)

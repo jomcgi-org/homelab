@@ -35,6 +35,7 @@ from swarm.models import (
 _NODE_KINDS = ("work", "gate", "merge", "fable_escalation")
 TERMINAL_RUN_STATUSES = ("succeeded", "failed", "escalated", "cancelled")
 MAX_ATTEMPTS = 10
+MAX_PLAN_EDITS = 20
 MAX_TURN_TIMEOUT_SECONDS = 43200
 _CONTEXT_FIELDS = frozenset(
     (
@@ -58,6 +59,15 @@ class GraphOp:
     detail: str | None = None
     attempt: int | None = None
     pin: dict | None = None
+
+
+class _PlanRejected(Exception):
+    """One edit of an atomic batch was refused, so none of the batch applies."""
+
+    def __init__(self, index: int, op: GraphOp) -> None:
+        super().__init__(f"plan edit {index} refused: {op.refusal_code}")
+        self.index = index
+        self.op = op
 
 
 @contextmanager
@@ -406,123 +416,159 @@ def add_node(
         **node_fields,
     }
     with _session(session) as db:
-        task = _lock_task(db, task_id)
-        version = _current_version(db, task_id)
-        if expected_version != version:
-            return _refuse(db, task, "add_node", args, version, "stale_version")
-        error = _bounds_error(node_fields)
-        if error:
-            return _refuse(db, task, "add_node", args, version, error)
-        if task.budget_usd is not None and not _valid_cost(task.budget_usd):
-            return _refuse(db, task, "add_node", args, version, "invalid_task_budget")
-
-        live = {node.node_key: node for node in _visible_nodes(db, task_id, version)}
-        if node_key in live:
-            return _refuse(db, task, "add_node", args, version, "duplicate_key")
-        unknown = [dependency for dependency in deps if dependency not in live]
-        if unknown:
-            return _refuse(
-                db,
-                task,
-                "add_node",
-                args,
-                version,
-                "unknown_dep",
-                detail=unknown[0],
-            )
-        if _would_cycle(node_key, deps, live):
-            return _refuse(db, task, "add_node", args, version, "cycle")
-        if kind not in _NODE_KINDS:
-            return _refuse(db, task, "add_node", args, version, "invalid_kind")
-        if kind == "fable_escalation" and task.budget_usd is None:
-            return _refuse(db, task, "add_node", args, version, "fable_requires_budget")
-        # A discarded escalation does not refund the one-per-run slot. A second
-        # Fable means the plan was wrong, per ADR agents/062 decision 3.
-        if kind == "fable_escalation" and _fable_ever_created(db, task_id):
-            return _refuse(db, task, "add_node", args, version, "fable_cap")
-
-        existing = db.exec(
-            select(SwarmPlanNode).where(
-                SwarmPlanNode.task_id == task_id,
-                SwarmPlanNode.node_key == node_key,
-            )
-        ).first()
-        # Legacy runs without pinned reservations may still charge this row's
-        # ceiling. Reusing a hidden key must not rewrite their unknown cost.
-        if (
-            existing is not None
-            and existing.max_cost_usd != max_cost_usd
-            and any(
-                run.node_key == node_key
-                and run.reserved_cost_usd is None
-                and _accounting_basis(run) not in SETTLED_ACCOUNTING_BASES
-                for run in _runs(db, task_id)
-            )
-        ):
-            return _refuse(
-                db, task, "add_node", args, version, "legacy_reservation_conflict"
-            )
-        if task.budget_usd is not None and (
-            _planned_cost(db, task_id, list(live.values())) + max_cost_usd
-            > task.budget_usd
-        ):
-            return _refuse(db, task, "add_node", args, version, "budget_exceeded")
-
-        new_version = version + 1
-        db.add(
-            SwarmPlanVersion(
-                task_id=task_id,
-                version=new_version,
-                op="add_node",
-                author_kind=author_kind,
-                author=author,
-                change_json=_json(node_fields),
-                cause_kind=cause_kind,
-                cause_ref=cause_ref,
-                stated_reason=stated_reason,
-            )
+        return _add_node_locked(
+            db,
+            _lock_task(db, task_id),
+            task_id,
+            args,
+            node_fields,
+            expected_version,
+            author_kind,
+            author,
+            cause_kind,
+            cause_ref,
+            stated_reason,
         )
-        if existing is None:
-            existing = SwarmPlanNode(
-                task_id=task_id,
-                node_key=node_key,
-                kind=kind,
-                prompt=prompt,
-                model=model,
-                deps_json=_json(deps),
-                max_cost_usd=max_cost_usd,
-                side_effects=side_effects,
-                max_attempts=max_attempts,
-                turn_timeout_seconds=turn_timeout_seconds,
-                created_in_version=new_version,
-            )
-        else:
-            # Keys are unique per task, so a discarded key is re-added by
-            # reusing its row, clearing lifecycle tombstones, and advancing its
-            # creation version.
-            existing.kind = kind
-            existing.prompt = prompt
-            existing.model = model
-            existing.deps_json = _json(deps)
-            existing.max_cost_usd = max_cost_usd
-            existing.side_effects = side_effects
-            existing.max_attempts = max_attempts
-            existing.turn_timeout_seconds = turn_timeout_seconds
-            existing.created_in_version = new_version
-            existing.discarded_in_version = None
-            existing.cancelled_in_version = None
-            existing.armed_at = None
-            existing.base_artifact_sha = None
-        db.add(existing)
-        detail = "unbudgeted run" if task.budget_usd is None else None
-        return _finish(
+
+
+def _add_node_locked(
+    db: Session,
+    task: SwarmTask,
+    task_id: str,
+    args: dict[str, Any],
+    node_fields: dict[str, Any],
+    expected_version: int,
+    author_kind: str,
+    author: str,
+    cause_kind: str,
+    cause_ref: str | None,
+    stated_reason: str | None,
+) -> GraphOp:
+    """Validate and apply one add against an already locked task row."""
+    node_key = node_fields["node_key"]
+    kind = node_fields["kind"]
+    prompt = node_fields["prompt"]
+    model = node_fields["model"]
+    deps = node_fields["deps"]
+    max_cost_usd = node_fields["max_cost_usd"]
+    side_effects = node_fields["side_effects"]
+    max_attempts = node_fields["max_attempts"]
+    turn_timeout_seconds = node_fields["turn_timeout_seconds"]
+    version = _current_version(db, task_id)
+    if expected_version != version:
+        return _refuse(db, task, "add_node", args, version, "stale_version")
+    error = _bounds_error(node_fields)
+    if error:
+        return _refuse(db, task, "add_node", args, version, error)
+    if task.budget_usd is not None and not _valid_cost(task.budget_usd):
+        return _refuse(db, task, "add_node", args, version, "invalid_task_budget")
+
+    live = {node.node_key: node for node in _visible_nodes(db, task_id, version)}
+    if node_key in live:
+        return _refuse(db, task, "add_node", args, version, "duplicate_key")
+    unknown = [dependency for dependency in deps if dependency not in live]
+    if unknown:
+        return _refuse(
             db,
             task,
             "add_node",
             args,
             version,
-            GraphOp(ok=True, version=new_version, detail=detail),
+            "unknown_dep",
+            detail=unknown[0],
         )
+    if _would_cycle(node_key, deps, live):
+        return _refuse(db, task, "add_node", args, version, "cycle")
+    if kind not in _NODE_KINDS:
+        return _refuse(db, task, "add_node", args, version, "invalid_kind")
+    if kind == "fable_escalation" and task.budget_usd is None:
+        return _refuse(db, task, "add_node", args, version, "fable_requires_budget")
+    # A discarded escalation does not refund the one-per-run slot. A second
+    # Fable means the plan was wrong, per ADR agents/062 decision 3.
+    if kind == "fable_escalation" and _fable_ever_created(db, task_id):
+        return _refuse(db, task, "add_node", args, version, "fable_cap")
+
+    existing = db.exec(
+        select(SwarmPlanNode).where(
+            SwarmPlanNode.task_id == task_id,
+            SwarmPlanNode.node_key == node_key,
+        )
+    ).first()
+    # Legacy runs without pinned reservations may still charge this row's
+    # ceiling. Reusing a hidden key must not rewrite their unknown cost.
+    if (
+        existing is not None
+        and existing.max_cost_usd != max_cost_usd
+        and any(
+            run.node_key == node_key
+            and run.reserved_cost_usd is None
+            and _accounting_basis(run) not in SETTLED_ACCOUNTING_BASES
+            for run in _runs(db, task_id)
+        )
+    ):
+        return _refuse(
+            db, task, "add_node", args, version, "legacy_reservation_conflict"
+        )
+    if task.budget_usd is not None and (
+        _planned_cost(db, task_id, list(live.values())) + max_cost_usd > task.budget_usd
+    ):
+        return _refuse(db, task, "add_node", args, version, "budget_exceeded")
+
+    new_version = version + 1
+    db.add(
+        SwarmPlanVersion(
+            task_id=task_id,
+            version=new_version,
+            op="add_node",
+            author_kind=author_kind,
+            author=author,
+            change_json=_json(node_fields),
+            cause_kind=cause_kind,
+            cause_ref=cause_ref,
+            stated_reason=stated_reason,
+        )
+    )
+    if existing is None:
+        existing = SwarmPlanNode(
+            task_id=task_id,
+            node_key=node_key,
+            kind=kind,
+            prompt=prompt,
+            model=model,
+            deps_json=_json(deps),
+            max_cost_usd=max_cost_usd,
+            side_effects=side_effects,
+            max_attempts=max_attempts,
+            turn_timeout_seconds=turn_timeout_seconds,
+            created_in_version=new_version,
+        )
+    else:
+        # Keys are unique per task, so a discarded key is re-added by
+        # reusing its row, clearing lifecycle tombstones, and advancing its
+        # creation version.
+        existing.kind = kind
+        existing.prompt = prompt
+        existing.model = model
+        existing.deps_json = _json(deps)
+        existing.max_cost_usd = max_cost_usd
+        existing.side_effects = side_effects
+        existing.max_attempts = max_attempts
+        existing.turn_timeout_seconds = turn_timeout_seconds
+        existing.created_in_version = new_version
+        existing.discarded_in_version = None
+        existing.cancelled_in_version = None
+        existing.armed_at = None
+        existing.base_artifact_sha = None
+    db.add(existing)
+    detail = "unbudgeted run" if task.budget_usd is None else None
+    return _finish(
+        db,
+        task,
+        "add_node",
+        args,
+        version,
+        GraphOp(ok=True, version=new_version, detail=detail),
+    )
 
 
 def discard_node(
@@ -553,69 +599,298 @@ def discard_node(
         "activities_claim_write": activities_claim_write,
     }
     with _session(session) as db:
-        task = _lock_task(db, task_id)
-        version = _current_version(db, task_id)
-        if expected_version != version:
-            return _refuse(db, task, "discard_node", args, version, "stale_version")
-        live = {node.node_key: node for node in _visible_nodes(db, task_id, version)}
-        node = live.get(node_key)
-        if node is None:
-            return _refuse(db, task, "discard_node", args, version, "unknown_node")
-        has_run = db.exec(
-            select(SwarmNodeRun.id).where(
-                SwarmNodeRun.task_id == task_id,
-                SwarmNodeRun.node_key == node_key,
-            )
-        ).first()
-        if node.armed_at is not None or has_run is not None:
-            return _refuse(db, task, "discard_node", args, version, "armed")
-        if (
-            node.base_artifact_sha is not None
-            and observed_branch_head is not None
-            and observed_branch_head != node.base_artifact_sha
-        ):
-            return _refuse(db, task, "discard_node", args, version, "branch_moved")
-        # An agent activity claim can only force refusal. It cannot prove that
-        # discard is safe, which preserves the epistemic split in ADR agents/062
-        # decision 5.
-        if activities_claim_write:
-            return _refuse(db, task, "discard_node", args, version, "write_claimed")
-        if any(node_key in _node_deps(other) for other in live.values()):
-            return _refuse(db, task, "discard_node", args, version, "dependents")
-
-        new_version = version + 1
-        db.add(
-            SwarmPlanVersion(
-                task_id=task_id,
-                version=new_version,
-                op="discard_node",
-                author_kind=author_kind,
-                author=author,
-                change_json=_json(
-                    {
-                        "node_key": node_key,
-                        "snapshot": next(
-                            item
-                            for item in load_graph(task_id, session=db)
-                            if item["node_key"] == node_key
-                        ),
-                    }
-                ),
-                cause_kind=cause_kind,
-                cause_ref=cause_ref,
-                stated_reason=stated_reason,
-            )
+        return _discard_node_locked(
+            db,
+            _lock_task(db, task_id),
+            task_id,
+            node_key,
+            args,
+            expected_version,
+            author_kind,
+            author,
+            cause_kind,
+            cause_ref,
+            stated_reason,
+            observed_branch_head,
         )
-        node.discarded_in_version = new_version
-        db.add(node)
-        return _finish(
+
+
+def _discard_node_locked(
+    db: Session,
+    task: SwarmTask,
+    task_id: str,
+    node_key: str,
+    args: dict[str, Any],
+    expected_version: int,
+    author_kind: str,
+    author: str,
+    cause_kind: str,
+    cause_ref: str | None,
+    stated_reason: str | None,
+    observed_branch_head: str | None,
+) -> GraphOp:
+    """Validate and apply one discard against an already locked task row."""
+    activities_claim_write = bool(args.get("activities_claim_write"))
+    version = _current_version(db, task_id)
+    if expected_version != version:
+        return _refuse(db, task, "discard_node", args, version, "stale_version")
+    live = {node.node_key: node for node in _visible_nodes(db, task_id, version)}
+    node = live.get(node_key)
+    if node is None:
+        return _refuse(db, task, "discard_node", args, version, "unknown_node")
+    has_run = db.exec(
+        select(SwarmNodeRun.id).where(
+            SwarmNodeRun.task_id == task_id,
+            SwarmNodeRun.node_key == node_key,
+        )
+    ).first()
+    if node.armed_at is not None or has_run is not None:
+        return _refuse(db, task, "discard_node", args, version, "armed")
+    if (
+        node.base_artifact_sha is not None
+        and observed_branch_head is not None
+        and observed_branch_head != node.base_artifact_sha
+    ):
+        return _refuse(db, task, "discard_node", args, version, "branch_moved")
+    # An agent activity claim can only force refusal. It cannot prove that
+    # discard is safe, which preserves the epistemic split in ADR agents/062
+    # decision 5.
+    if activities_claim_write:
+        return _refuse(db, task, "discard_node", args, version, "write_claimed")
+    if any(node_key in _node_deps(other) for other in live.values()):
+        return _refuse(db, task, "discard_node", args, version, "dependents")
+
+    new_version = version + 1
+    db.add(
+        SwarmPlanVersion(
+            task_id=task_id,
+            version=new_version,
+            op="discard_node",
+            author_kind=author_kind,
+            author=author,
+            change_json=_json(
+                {
+                    "node_key": node_key,
+                    "snapshot": next(
+                        item
+                        for item in load_graph(task_id, session=db)
+                        if item["node_key"] == node_key
+                    ),
+                }
+            ),
+            cause_kind=cause_kind,
+            cause_ref=cause_ref,
+            stated_reason=stated_reason,
+        )
+    )
+    node.discarded_in_version = new_version
+    db.add(node)
+    return _finish(
+        db,
+        task,
+        "discard_node",
+        args,
+        version,
+        GraphOp(ok=True, version=new_version),
+    )
+
+
+def _plan_edit_args(edit: Any) -> Any:
+    """Record every edit field except the prompt body, which is unbounded."""
+    if not isinstance(edit, dict):
+        return _audit_value(edit)
+    recorded = {key: value for key, value in edit.items() if key != "prompt"}
+    prompt = edit.get("prompt")
+    if isinstance(prompt, str):
+        recorded["prompt_chars"] = len(prompt)
+    return recorded
+
+
+def _edits_error(edits: Any) -> str | None:
+    """Refuse a malformed batch before any row is locked or written."""
+    if not isinstance(edits, list) or not 1 <= len(edits) <= MAX_PLAN_EDITS:
+        return "invalid_edits"
+    for edit in edits:
+        if not isinstance(edit, dict) or edit.get("op") not in (
+            "add_node",
+            "discard_node",
+        ):
+            return "invalid_edits"
+        if not isinstance(edit.get("node_key"), str) or not edit["node_key"]:
+            return "invalid_edits"
+        if edit["op"] == "discard_node":
+            continue
+        if not isinstance(edit.get("prompt"), str) or not isinstance(
+            edit.get("kind"), str
+        ):
+            return "invalid_edits"
+        deps = edit.get("deps")
+        if not isinstance(deps, list) or not all(isinstance(dep, str) for dep in deps):
+            return "invalid_edits"
+    return None
+
+
+def apply_edits(
+    task_id: str,
+    *,
+    author_kind: str,
+    author: str,
+    cause_kind: str,
+    cause_ref: str | None,
+    expected_version: int,
+    edits: list[dict],
+) -> GraphOp:
+    """Apply an ordered batch of graph edits, or none of them.
+
+    Each edit becomes its own plan version under the shared cause, so history,
+    ``_historical_nodes`` and the version ledger read exactly as they do for a
+    single edit. The batch chains its own revisions: the caller supplies one
+    ``expected_version`` for the first edit and every later edit is checked
+    against the revision its predecessor produced.
+
+    This call owns its transaction rather than joining a caller's. A refused
+    edit abandons the whole batch before commit, and the refusal itself is
+    recorded afterwards in a fresh transaction, so a partially applied plan can
+    never reach the graph and a refusal can never be lost with it.
+    """
+    args = {
+        "author_kind": author_kind,
+        "author": author,
+        "cause_kind": cause_kind,
+        "cause_ref": cause_ref,
+        "expected_version": expected_version,
+        "edits": (
+            [_plan_edit_args(edit) for edit in edits]
+            if isinstance(edits, list)
+            else _audit_value(edits)
+        ),
+    }
+    rejection = _edits_error(edits)
+    detail = "plan edits are not a bounded list of graph operations"
+    if rejection is None:
+        try:
+            with Session(get_engine()) as db:
+                task = _lock_task(db, task_id)
+                version = expected_version
+                for index, edit in enumerate(edits):
+                    result = _apply_one_edit(
+                        db,
+                        task,
+                        task_id,
+                        edit,
+                        version,
+                        author_kind,
+                        author,
+                        cause_kind,
+                        cause_ref,
+                    )
+                    if not result.ok:
+                        raise _PlanRejected(index, result)
+                    version = result.version
+                applied = _finish(
+                    db,
+                    task,
+                    "apply_edits",
+                    args,
+                    expected_version,
+                    GraphOp(ok=True, version=version),
+                )
+                db.commit()
+                return applied
+        except _PlanRejected as exc:
+            # The session closed without a commit, so every edit rolled back.
+            rejection = exc.op.refusal_code or "graph_refused"
+            detail = (
+                f"edit {exc.index} ({edits[exc.index].get('node_key')}): {rejection}"
+            )
+            if exc.op.detail:
+                detail = f"{detail} ({exc.op.detail})"
+    with Session(get_engine()) as db:
+        task = _lock_task(db, task_id)
+        refused = _refuse(
             db,
             task,
-            "discard_node",
+            "apply_edits",
             args,
-            version,
-            GraphOp(ok=True, version=new_version),
+            _current_version(db, task_id),
+            rejection,
+            detail,
         )
+        db.commit()
+        return refused
+
+
+def _apply_one_edit(
+    db: Session,
+    task: SwarmTask,
+    task_id: str,
+    edit: dict,
+    expected_version: int,
+    author_kind: str,
+    author: str,
+    cause_kind: str,
+    cause_ref: str | None,
+) -> GraphOp:
+    stated_reason = edit.get("stated_reason")
+    if edit["op"] == "discard_node":
+        args = {
+            "node_key": edit["node_key"],
+            "author_kind": author_kind,
+            "author": author,
+            "cause_kind": cause_kind,
+            "cause_ref": cause_ref,
+            "stated_reason": stated_reason,
+            "expected_version": expected_version,
+            "observed_branch_head": edit.get("observed_branch_head"),
+            "activities_claim_write": bool(edit.get("activities_claim_write")),
+        }
+        return _discard_node_locked(
+            db,
+            task,
+            task_id,
+            edit["node_key"],
+            args,
+            expected_version,
+            author_kind,
+            author,
+            cause_kind,
+            cause_ref,
+            stated_reason,
+            edit.get("observed_branch_head"),
+        )
+    node_fields = {
+        "node_key": edit["node_key"],
+        "kind": edit["kind"],
+        "prompt": edit["prompt"],
+        "model": edit.get("model"),
+        "deps": list(edit["deps"]),
+        "max_cost_usd": edit.get("max_cost_usd"),
+        "side_effects": bool(edit.get("side_effects")),
+        "max_attempts": edit.get("max_attempts"),
+        "turn_timeout_seconds": edit.get("turn_timeout_seconds"),
+    }
+    args = {
+        "author_kind": author_kind,
+        "author": author,
+        "cause_kind": cause_kind,
+        "cause_ref": cause_ref,
+        "stated_reason": stated_reason,
+        "expected_version": expected_version,
+        **node_fields,
+    }
+    return _add_node_locked(
+        db,
+        task,
+        task_id,
+        args,
+        node_fields,
+        expected_version,
+        author_kind,
+        author,
+        cause_kind,
+        cause_ref,
+        stated_reason,
+    )
 
 
 def _runs(db: Session, task_id: str) -> list[SwarmNodeRun]:

@@ -103,3 +103,93 @@ def compute_deviations(run: dict) -> list[dict]:
                 )
 
     return deviations
+
+
+# swarm.graph owns the same tuple, but importing it here would drag core.db and
+# the engine into every consumer of this pure module.
+_SETTLED = ("succeeded", "failed", "escalated", "cancelled")
+FACTORY_DEVIATION_CODES = (
+    "loop_insert_refused",
+    "initial_plan",
+    "review_rounds_exhausted",
+    "node_escalated",
+    "node_failed",
+    "graph_exhausted",
+)
+
+
+def factory_deviation(
+    nodes: list[dict],
+    runs: list[dict],
+    ready: list[dict],
+    *,
+    review_rounds_used: int,
+    max_review_rounds: int,
+    pending_review: str | None = None,
+    loop_refusal: str | None = None,
+) -> dict | None:
+    """Name why a factory plan needs its planner, or None while it runs itself.
+
+    The engine owns mechanical progress: a ready node is dispatched, and a
+    review that requested changes opens a bounded correction round. Returning
+    None is the ordinary case and means no planner turn is spent. Every other
+    return is a deviation from the pinned plan that only the planner can
+    resolve, named with the graph evidence that produced it.
+    """
+    work = [node for node in nodes if not node["node_key"].startswith("conductor_")]
+    if loop_refusal is not None:
+        return _deviation(
+            "loop_insert_refused",
+            pending_review or "run",
+            f"review round refusal: {loop_refusal}",
+            "The engine could not open the next review round.",
+        )
+    if not work:
+        return _deviation(
+            "initial_plan",
+            "run",
+            f"work nodes: 0; graph nodes: {len(nodes)}",
+            "No plan has been applied to this task yet.",
+        )
+    if pending_review is not None and review_rounds_used >= max_review_rounds:
+        return _deviation(
+            "review_rounds_exhausted",
+            pending_review,
+            f"review rounds used: {review_rounds_used}; "
+            f"max_review_rounds: {max_review_rounds}",
+            f"{pending_review} requested changes after "
+            f"{review_rounds_used} engine-owned correction rounds.",
+        )
+    ready_keys = {node["node_key"] for node in ready}
+    attempts_by_node: dict[str, list[dict]] = {}
+    for run in runs:
+        attempts_by_node.setdefault(run["node_key"], []).append(run)
+    for node in work:
+        key = node["node_key"]
+        attempts = attempts_by_node.get(key) or []
+        if not attempts or key in ready_keys:
+            continue
+        if any(run["status"] == "succeeded" for run in attempts):
+            continue
+        if any(run["status"] == "escalated" for run in attempts):
+            return _deviation(
+                "node_escalated",
+                key,
+                f"attempts: {len(attempts)}",
+                f"{key} escalated to the conductor rather than delivering.",
+            )
+        if all(run["status"] in _SETTLED for run in attempts):
+            return _deviation(
+                "node_failed",
+                key,
+                f"attempts: {len(attempts)}; max_attempts: {node.get('max_attempts')}",
+                f"{key} failed and has no runnable retry.",
+            )
+    if not ready:
+        return _deviation(
+            "graph_exhausted",
+            "run",
+            f"work nodes: {len(work)}; ready nodes: 0",
+            "Every planned node settled and the task is not delivered.",
+        )
+    return None

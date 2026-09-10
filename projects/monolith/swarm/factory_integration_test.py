@@ -395,3 +395,215 @@ def test_late_confirmed_result_settles_unknown_identity_without_new_vm(
     assert run["status"] == "succeeded" and run["session_id"] == completed["session_id"]
     assert controls.task_snapshot(task_id)["unresolved_starts"] == 0
     assert len(dbos.started_pins) == 1
+
+
+class PlannedThenCorrected(CompletedNodes):
+    """One batched plan, one review that asks for changes, one engine round."""
+
+    def start_workflow(self, _function, pin):
+        from swarm.node_workflows import _validate_pin
+
+        _validate_pin(pin)
+        key = pin["workflow_id"]
+        assert key not in self.results, (
+            "reconciliation dispatched an already completed workflow"
+        )
+        self.started_pins.append(copy.deepcopy(pin))
+        node = pin["node_key"]
+        if node == "conductor_1":
+            value = {
+                "action": "plan",
+                "reason": "Implement then independently review the issue",
+                "edits": [
+                    {
+                        "action": "add_node",
+                        "reason": "Deliver the bounded fix",
+                        "node_key": "fix",
+                        "role": "implement",
+                        "prompt": "Implement the bounded fix and deliver PR 21",
+                        "deps": [],
+                    },
+                    {
+                        "action": "add_node",
+                        "reason": "Independent review at the exact head",
+                        "node_key": "check",
+                        "role": "review",
+                        "prompt": "Independently review PR 21 at its current head",
+                        "deps": ["implement_fix"],
+                    },
+                ],
+            }
+        elif node in ("implement_fix", "correct_1"):
+            value = {
+                "status": "complete",
+                "summary": f"{node} delivered",
+                "pr_number": 21,
+                "head_sha": HEAD,
+            }
+        elif node == "review_check":
+            value = {
+                "verdict": "changes_requested",
+                "summary": "Bound the retry and add the regression test.",
+                "pr_number": 21,
+                "head_sha": HEAD,
+            }
+        elif node == "review_1":
+            value = {
+                "verdict": "approve",
+                "summary": "The correction covers every finding.",
+                "pr_number": 21,
+                "head_sha": HEAD,
+            }
+        elif node == "conductor_2":
+            value = {
+                "action": "finish",
+                "reason": "Independent review and required CI passed",
+                "pr_number": 21,
+            }
+        else:
+            raise AssertionError(f"unexpected workflow node {node}")
+        self.results[key] = {
+            "status": "succeeded",
+            "session_id": 100 + len(self.started_pins),
+            "attempt": pin["attempt"],
+            "cost_usd": 0.25,
+            "head_sha": HEAD,
+            "artifact": {"status": "ok", "value": value, "errors": []},
+            "value": value,
+            "reason": None,
+            "cleanup": {"status": "completed"},
+        }
+
+
+def test_a_plan_time_dag_runs_its_review_loop_without_a_planner_turn(
+    db, policy, monkeypatch
+):
+    task_id = admit(policy)
+    dbos = PlannedThenCorrected()
+    delivery_api(monkeypatch, task_id)
+    reconcile_until(
+        task_id,
+        policy,
+        dbos,
+        lambda: controls.task_snapshot(task_id)["state"] == "succeeded",
+    )
+    # Two planner turns for five work nodes: one plan and one finish. The
+    # correction round between them is the engine's own graph edit.
+    assert [p["node_key"] for p in dbos.started_pins] == [
+        "conductor_1",
+        "implement_fix",
+        "review_check",
+        "correct_1",
+        "review_1",
+        "conductor_2",
+    ]
+    assert (
+        next(p for p in dbos.started_pins if p["node_key"] == "correct_1")["model"]
+        == "luna"
+    )
+    assert (
+        next(p for p in dbos.started_pins if p["node_key"] == "review_1")["model"]
+        == "opus"
+    )
+    correction = next(p for p in dbos.started_pins if p["node_key"] == "correct_1")
+    assert "Bound the retry and add the regression test." in correction["prompt"]
+    assert HEAD in correction["prompt"]
+    nodes = {n["node_key"]: n for n in graph.load_graph(task_id)}
+    assert nodes["correct_1"]["deps"] == ["review_check"]
+    assert nodes["review_1"]["deps"] == ["correct_1"]
+    with Session(db) as session:
+        loop = session.exec(
+            select(SwarmPlanVersion).where(
+                SwarmPlanVersion.cause_kind == "factory_loop"
+            )
+        ).all()
+        assert [v.cause_ref for v in loop] == ["factory-loop:review_1"] * 2
+        assert {v.author_kind for v in loop} == {"engine"}
+        # The plan's two edits are one atomic conductor call, chained in order.
+        planned = session.exec(
+            select(SwarmPlanVersion).where(
+                SwarmPlanVersion.cause_ref == "factory-decision:conductor_1:1"
+            )
+        ).all()
+        assert [v.version for v in planned] == [2, 3]
+    snapshot = controls.task_snapshot(task_id)
+    # Four work turns and two planner turns: the plan and the finish. The
+    # correction round between them is a graph edit, not a start.
+    assert snapshot["turns_used"] == 4 and snapshot["planner_turns_used"] == 2
+    assert snapshot["unresolved_starts"] == 0
+    assert snapshot["evidence"]["head_sha"] == HEAD
+    assert snapshot["evidence"]["state"] == "ready_for_review"
+
+
+def test_the_planner_is_not_called_while_a_review_round_is_open(
+    db, policy, monkeypatch
+):
+    task_id = admit(policy)
+    dbos = PlannedThenCorrected()
+    delivery_api(monkeypatch, task_id)
+    reconcile_until(
+        task_id,
+        policy,
+        dbos,
+        lambda: any(
+            node["node_key"] == "correct_1" for node in graph.load_graph(task_id)
+        ),
+    )
+    assert [p["node_key"] for p in dbos.started_pins] == [
+        "conductor_1",
+        "implement_fix",
+        "review_check",
+    ]
+    assert not any(
+        node["node_key"] == "conductor_2" for node in graph.load_graph(task_id)
+    )
+
+
+def test_exhausted_review_rounds_return_the_task_to_the_planner(
+    db, policy, monkeypatch
+):
+    policy["max_review_rounds"] = 0
+    task_id = admit(policy)
+
+    class NeverSatisfied(PlannedThenCorrected):
+        def start_workflow(self, function, pin):
+            if pin["node_key"] == "conductor_2":
+                self.started_pins.append(copy.deepcopy(pin))
+                self.results[pin["workflow_id"]] = {
+                    "status": "succeeded",
+                    "session_id": 900,
+                    "attempt": pin["attempt"],
+                    "cost_usd": 0.25,
+                    "head_sha": HEAD,
+                    "artifact": {"status": "ok", "value": {}, "errors": []},
+                    "value": {"action": "pause", "reason": "review is unresolved"},
+                    "reason": None,
+                    "cleanup": {"status": "completed"},
+                }
+                return
+            super().start_workflow(function, pin)
+
+    dbos = NeverSatisfied()
+    delivery_api(monkeypatch, task_id)
+    reconcile_until(
+        task_id,
+        policy,
+        dbos,
+        lambda: controls.task_snapshot(task_id)["task_paused"],
+    )
+    assert [p["node_key"] for p in dbos.started_pins] == [
+        "conductor_1",
+        "implement_fix",
+        "review_check",
+        "conductor_2",
+    ]
+    assert not any(
+        node["node_key"].startswith("correct_") for node in graph.load_graph(task_id)
+    )
+    planner = next(
+        node for node in graph.load_graph(task_id) if node["node_key"] == "conductor_2"
+    )
+    import json
+
+    deviation = json.loads(planner["prompt"].rsplit("\n", 1)[1])["deviation"]
+    assert deviation["code"] == "review_rounds_exhausted"

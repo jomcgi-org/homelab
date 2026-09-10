@@ -621,3 +621,27 @@ def test_planner_starts_answer_to_the_task_budget(db, policy):
         "ok": False,
         "reason": "budget_limit",
     }
+
+
+def test_review_rounds_default_and_bounds_are_server_owned(db, policy):
+    assert "max_review_rounds" not in policy
+    # An operator policy posted before this field existed gains the default,
+    # so the engine bound applies without a re-post.
+    assert (
+        controls.validate_policy(policy)["max_review_rounds"]
+        == controls.DEFAULT_MAX_REVIEW_ROUNDS
+    )
+    policy["max_review_rounds"] = 0
+    assert controls.validate_policy(policy)["max_review_rounds"] == 0
+    policy["max_review_rounds"] = 10
+    assert controls.validate_policy(policy)["max_review_rounds"] == 10
+    for invalid in (11, -1, 2.0, True, "2", None):
+        policy["max_review_rounds"] = invalid
+        with pytest.raises(ValueError, match="max_review_rounds"):
+            controls.validate_policy(policy)
+
+
+def test_review_rounds_are_pinned_with_the_rest_of_the_policy(db, policy):
+    policy["max_review_rounds"] = 1
+    task = admitted(policy)
+    assert controls.task_snapshot(task)["policy"]["max_review_rounds"] == 1
