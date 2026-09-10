@@ -131,73 +131,38 @@ def factory_run(node_key, status="succeeded"):
     return {"node_key": node_key, "status": status}
 
 
-def test_a_running_plan_names_no_deviation():
-    nodes = [factory_node("implement_fix"), factory_node("review_fix")]
-    result = deviations.factory_deviation(
-        nodes,
-        [factory_run("implement_fix")],
-        [factory_node("review_fix")],
-        review_rounds_used=0,
-        max_review_rounds=2,
-    )
-    assert result is None
+def deviation(nodes, runs, **kwargs):
+    values = {"review_rounds_used": 0, "max_review_rounds": 2}
+    values.update(kwargs)
+    return deviations.factory_deviation(nodes, runs, **values)
 
 
-def test_an_open_review_loop_names_no_deviation():
-    # The engine has already appended the correction pair, so the planner is
-    # not needed even though nothing is ready this instant.
-    nodes = [
-        factory_node("implement_fix"),
-        factory_node("review_fix"),
-        factory_node("correct_1", deps=["review_fix"]),
-        factory_node("review_1", deps=["correct_1"]),
-    ]
-    runs = [factory_run("implement_fix"), factory_run("review_fix")]
-    result = deviations.factory_deviation(
-        nodes,
-        runs,
-        [factory_node("correct_1", deps=["review_fix"])],
-        review_rounds_used=1,
-        max_review_rounds=2,
-    )
-    assert result is None
-
-
-def test_an_empty_graph_asks_for_the_initial_plan():
-    result = deviations.factory_deviation(
-        [factory_node("conductor_1")],
-        [factory_run("conductor_1")],
-        [],
-        review_rounds_used=0,
-        max_review_rounds=2,
-    )
+def test_every_deviation_is_named_and_known():
+    # The reconciler asks only when nothing is ready, so there is no None
+    # answer to handle and every answer is one of the declared codes.
+    result = deviation([factory_node("conductor_1")], [factory_run("conductor_1")])
     assert result["code"] == "initial_plan" and result["node_key"] == "run"
+    assert result["code"] in deviations.FACTORY_DEVIATION_CODES
 
 
 def test_exhausted_review_rounds_outrank_an_exhausted_graph():
     nodes = [factory_node("implement_fix"), factory_node("review_fix")]
     runs = [factory_run("implement_fix"), factory_run("review_fix")]
-    result = deviations.factory_deviation(
-        nodes,
-        runs,
-        [],
-        review_rounds_used=2,
-        max_review_rounds=2,
-        pending_review="review_fix",
-    )
+    result = deviation(nodes, runs, review_rounds_used=2, pending_review="review_fix")
     assert result["code"] == "review_rounds_exhausted"
     assert result["node_key"] == "review_fix"
 
 
+def test_an_unresolved_review_within_its_rounds_is_not_yet_exhausted():
+    nodes = [factory_node("implement_fix"), factory_node("review_fix")]
+    runs = [factory_run("implement_fix"), factory_run("review_fix")]
+    result = deviation(nodes, runs, review_rounds_used=1, pending_review="review_fix")
+    assert result["code"] == "graph_exhausted"
+
+
 def test_a_refused_round_is_named_before_anything_else():
-    result = deviations.factory_deviation(
-        [],
-        [],
-        [],
-        review_rounds_used=0,
-        max_review_rounds=2,
-        pending_review="review_fix",
-        loop_refusal="duplicate_key",
+    result = deviation(
+        [], [], pending_review="review_fix", loop_refusal="duplicate_key"
     )
     assert result["code"] == "loop_insert_refused"
     assert "duplicate_key" in result["evidence"]
@@ -208,33 +173,19 @@ def test_a_refused_round_is_named_before_anything_else():
 )
 def test_a_settled_node_with_no_runnable_retry_reaches_the_planner(status, code):
     nodes = [factory_node("implement_fix", max_attempts=1)]
-    result = deviations.factory_deviation(
-        nodes,
-        [factory_run("implement_fix", status)],
-        [],
-        review_rounds_used=0,
-        max_review_rounds=2,
-    )
+    result = deviation(nodes, [factory_run("implement_fix", status)])
     assert result["code"] == code and result["node_key"] == "implement_fix"
 
 
-def test_a_failed_node_that_can_still_retry_is_not_a_deviation():
+def test_a_succeeded_node_is_never_reported_as_failed():
     nodes = [factory_node("implement_fix")]
-    result = deviations.factory_deviation(
-        nodes,
-        [factory_run("implement_fix", "failed")],
-        list(nodes),
-        review_rounds_used=0,
-        max_review_rounds=2,
-    )
-    assert result is None
+    runs = [factory_run("implement_fix", "failed"), factory_run("implement_fix")]
+    assert deviation(nodes, runs)["code"] == "graph_exhausted"
 
 
 def test_a_settled_graph_without_delivery_reaches_the_planner():
     nodes = [factory_node("implement_fix"), factory_node("review_fix")]
     runs = [factory_run("implement_fix"), factory_run("review_fix")]
-    result = deviations.factory_deviation(
-        nodes, runs, [], review_rounds_used=0, max_review_rounds=2
-    )
+    result = deviation(nodes, runs)
     assert result["code"] == "graph_exhausted"
     assert set(deviations.FACTORY_DEVIATION_CODES) >= {result["code"]}

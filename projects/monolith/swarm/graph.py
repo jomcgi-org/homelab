@@ -16,6 +16,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import heapq
 import json
 import math
 from typing import Any, Iterator
@@ -706,6 +707,105 @@ def _plan_edit_args(edit: Any) -> Any:
     return recorded
 
 
+def _resolve_batch_deps(edits: list[dict], live: set[str]) -> list[dict]:
+    """Let a plan name a dependency by the key its author wrote.
+
+    A caller may rewrite an edit's ``node_key`` before it gets here, as the
+    factory does when it prefixes a decision key with its role, and it cannot
+    rewrite the deps that sibling edits already wrote. Without this a plan that
+    says ``fix`` where the server stored ``implement_fix`` would refuse whole
+    for a spelling. An alias resolves only when nothing live and nothing else
+    in the batch already answers to that exact name, and an ambiguous alias
+    resolves to nothing rather than to a guess.
+    """
+    final = {edit["node_key"] for edit in edits if edit["op"] == "add_node"}
+    alias: dict[str, str | None] = {}
+    for edit in edits:
+        raw = edit.get("raw_node_key")
+        if (
+            edit["op"] == "add_node"
+            and isinstance(raw, str)
+            and raw
+            and raw != edit["node_key"]
+            and raw not in live
+            and raw not in final
+        ):
+            alias[raw] = None if raw in alias else edit["node_key"]
+    if not alias:
+        return list(edits)
+    resolved = []
+    for edit in edits:
+        deps = edit.get("deps")
+        if edit["op"] != "add_node" or not isinstance(deps, list):
+            resolved.append(edit)
+            continue
+        resolved.append(
+            {
+                **edit,
+                "deps": [
+                    alias[dep]
+                    if dep not in live and dep not in final and alias.get(dep)
+                    else dep
+                    for dep in deps
+                ],
+            }
+        )
+    return resolved
+
+
+def _order_edits(edits: list[dict]) -> list[tuple[int, dict]]:
+    """Apply a batch in dependency order, reordering nothing else.
+
+    Each edit commits its own version before the next one runs, so an add
+    whose dependency is added later in the same batch would refuse and take
+    the plan with it. A stable topological sort accepts either ordering and
+    leaves an already ordered plan exactly as written. Edits touching the same
+    key keep their relative order, so a discard and its re-add cannot swap. A
+    batch whose edits depend on each other circularly cannot be ordered at all,
+    so it keeps the author's order and refuses through the ordinary dependency
+    check rather than through a new code.
+    """
+    indexed = list(enumerate(edits))
+    producer: dict[str, int] = {}
+    for index, edit in indexed:
+        if edit["op"] == "add_node":
+            producer.setdefault(edit["node_key"], index)
+    successors: dict[int, set[int]] = {index: set() for index, _ in indexed}
+    indegree = {index: 0 for index, _ in indexed}
+
+    def link(before: int, after: int) -> None:
+        if before != after and after not in successors[before]:
+            successors[before].add(after)
+            indegree[after] += 1
+
+    last_touch: dict[str, int] = {}
+    for index, edit in indexed:
+        key = edit["node_key"]
+        if key in last_touch:
+            link(last_touch[key], index)
+        last_touch[key] = index
+        if edit["op"] != "add_node":
+            continue
+        for dep in edit.get("deps") or []:
+            source = producer.get(dep)
+            if source is not None:
+                link(source, index)
+
+    available = [index for index, _ in indexed if indegree[index] == 0]
+    heapq.heapify(available)
+    order: list[int] = []
+    while available:
+        index = heapq.heappop(available)
+        order.append(index)
+        for successor in sorted(successors[index]):
+            indegree[successor] -= 1
+            if indegree[successor] == 0:
+                heapq.heappush(available, successor)
+    if len(order) != len(indexed):
+        return indexed
+    return [(index, edits[index]) for index in order]
+
+
 def _edits_error(edits: Any) -> str | None:
     """Refuse a malformed batch before any row is locked or written."""
     if not isinstance(edits, list) or not 1 <= len(edits) <= MAX_PLAN_EDITS:
@@ -771,8 +871,14 @@ def apply_edits(
         try:
             with Session(get_engine()) as db:
                 task = _lock_task(db, task_id)
+                live = {
+                    node.node_key
+                    for node in _visible_nodes(
+                        db, task_id, _current_version(db, task_id)
+                    )
+                }
                 version = expected_version
-                for index, edit in enumerate(edits):
+                for index, edit in _order_edits(_resolve_batch_deps(edits, live)):
                     result = _apply_one_edit(
                         db,
                         task,

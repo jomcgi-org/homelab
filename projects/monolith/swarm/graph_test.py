@@ -1075,3 +1075,90 @@ def test_plan_discard_refusal_rolls_back_an_already_staged_add(db):
     assert not result.ok and result.refusal_code == "armed"
     assert [node["node_key"] for node in load_graph(task_id)] == ["armed_node"]
     assert current_version(task_id) == 1
+
+
+def test_a_plan_edit_may_precede_the_edits_it_depends_on(db):
+    task_id = make_task(db)
+    result = apply_plan(
+        task_id,
+        [
+            plan_add("check", deps=["fix"]),
+            plan_add("fix", deps=["scope"]),
+            plan_add("scope"),
+        ],
+    )
+    assert result.ok and result.version == 3
+    nodes = {node["node_key"]: node for node in load_graph(task_id)}
+    # The batch applies in dependency order, not in the order it was written.
+    assert [nodes[key]["created_in_version"] for key in ("scope", "fix", "check")] == [
+        1,
+        2,
+        3,
+    ]
+    assert nodes["check"]["deps"] == ["fix"]
+
+
+def test_a_plan_may_name_a_dep_by_the_key_its_author_wrote(db):
+    task_id = make_task(db)
+    result = apply_plan(
+        task_id,
+        [
+            plan_add("implement_fix", raw_node_key="fix"),
+            plan_add("review_check", raw_node_key="check", deps=["fix"]),
+        ],
+    )
+    assert result.ok
+    nodes = {node["node_key"]: node for node in load_graph(task_id)}
+    assert nodes["review_check"]["deps"] == ["implement_fix"]
+
+
+def test_the_authors_key_never_shadows_a_real_node(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "fix", 0).ok
+    result = apply_plan(
+        task_id,
+        [plan_add("implement_fix", raw_node_key="fix", deps=["fix"])],
+        expected_version=1,
+    )
+    assert result.ok
+    nodes = {node["node_key"]: node for node in load_graph(task_id)}
+    # A live node answers to that exact name, so the dep is left alone.
+    assert nodes["implement_fix"]["deps"] == ["fix"]
+
+
+def test_an_ambiguous_authors_key_resolves_to_nothing(db):
+    task_id = make_task(db)
+    result = apply_plan(
+        task_id,
+        [
+            plan_add("investigate_look", raw_node_key="look"),
+            plan_add("implement_look", raw_node_key="look"),
+            plan_add("review_check", raw_node_key="check", deps=["look"]),
+        ],
+    )
+    assert not result.ok and result.refusal_code == "unknown_dep"
+    assert load_graph(task_id) == []
+
+
+def test_a_circular_batch_refuses_rather_than_reordering(db):
+    task_id = make_task(db)
+    result = apply_plan(task_id, [plan_add("a", deps=["b"]), plan_add("b", deps=["a"])])
+    assert not result.ok and result.refusal_code == "unknown_dep"
+    assert current_version(task_id) == 0 and load_graph(task_id) == []
+
+
+def test_reordering_never_moves_an_add_across_a_discard_of_its_key(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "fix", 0).ok
+    result = apply_plan(
+        task_id,
+        [
+            {"op": "discard_node", "node_key": "fix", "stated_reason": "replan"},
+            plan_add("fix", max_cost_usd=2.0),
+        ],
+        expected_version=1,
+    )
+    assert result.ok and result.version == 3
+    nodes = {node["node_key"]: node for node in load_graph(task_id)}
+    assert nodes["fix"]["max_cost_usd"] == 2.0
+    assert nodes["fix"]["created_in_version"] == 3

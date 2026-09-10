@@ -78,7 +78,10 @@ provider turn. Observed overruns prevent further admission.
 
 A planner decision is one graph edit or one `plan` whose edits apply together
 under a single expected revision, so a rejected edit rejects the whole plan and
-the graph never holds half of one. Review correction is the server's, not the
+the graph never holds half of one. Each edit becomes its own plan version under
+the shared cause, applied in dependency order rather than in the order written,
+and an edit may name a dependency by the key its author wrote where the server
+can resolve that to a role-prefixed key without guessing. Review correction is the server's, not the
 planner's: when a review returns `changes_requested` the reconciler appends
 `correct_<n>` on the model that produced the reviewed head and `review_<n>` on
 the configured independent reviewer, up to `max_review_rounds`. Those keys are

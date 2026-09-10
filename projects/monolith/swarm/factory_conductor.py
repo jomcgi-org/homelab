@@ -643,7 +643,12 @@ def _planner_run(run: dict, *, complete_summary: bool = False) -> dict:
     return result
 
 
-def _planner_context(task: dict, nodes: list[dict], runs: list[dict]) -> str:
+def _planner_context(
+    task: dict,
+    nodes: list[dict],
+    runs: list[dict],
+    deviation: dict | None = None,
+) -> str:
     ordered_runs = sorted(runs, key=lambda run: run["id"])
     projected_runs = [_planner_run(run) for run in ordered_runs]
     # These records survive collection limits, including a later negative review.
@@ -711,6 +716,13 @@ def _planner_context(task: dict, nodes: list[dict], runs: list[dict]) -> str:
     ]
     budget_evidence = _budget_evidence(task["id"])
     context = {
+        # The deviation is why this planner exists, so it is inside the object
+        # the shrink loop bounds and is never on the drop list below.
+        "deviation": (
+            None
+            if deviation is None
+            else _planner_fields(deviation, ("code", "node_key", "evidence", "text"))
+        ),
         "delivery_evidence": delivery,
         "decision_feedback": feedback,
         "budget_evidence": budget_evidence,
@@ -764,14 +776,9 @@ def planner_prompt(
     decision_revision: int | None = None,
     deviation: dict | None = None,
 ) -> str:
-    context = json.loads(_planner_context(task, nodes, runs))
+    context = json.loads(_planner_context(task, nodes, runs, deviation))
     if decision_revision is not None:
         context["graph_revision"] = decision_revision
-    context["deviation"] = (
-        None
-        if deviation is None
-        else _planner_fields(deviation, ("code", "node_key", "evidence", "text"))
-    )
     encoded = _planner_json(context)
     if len(encoded) > PLANNER_CONTEXT_CHARS:
         raise PlannerContextOverflow("factory planner evidence exceeds context limit")
@@ -787,7 +794,14 @@ def planner_prompt(
         "their deps. Every edit of a plan is applied together under one "
         "expected_version or none of it is, and one refused edit refuses the whole "
         "plan with a per-edit reason in decision_feedback. Use single add_node and "
-        "discard_node edits afterwards for a targeted repair. "
+        "discard_node edits afterwards for a targeted repair. Two rules make a "
+        "plan land: list an edit before the edits that depend on it, and name a "
+        "dep by the key the server stores, which is your node_key with its role "
+        "prefixed when you did not prefix it yourself. So an implement edit with "
+        "node_key fix is stored as implement_fix, and the review edit that "
+        'follows it says deps: ["implement_fix"]. The server accepts either '
+        "ordering and either spelling where it can resolve them without "
+        "guessing, but a plan written this way never depends on that. "
         "Review correction loops are owned by the server, not by you. When a review "
         "returns changes_requested the engine appends correct_<n> and review_<n> "
         "itself, up to the policy's max_review_rounds, and calls you only when those "
@@ -963,7 +977,8 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
     Single decisions and batched plan edits share this so a plan cannot reach
     the graph through a weaker gate than a single add_node passes.
     """
-    key = source["node_key"]
+    raw_key = source["node_key"]
+    key = raw_key
     if key.startswith("conductor_"):
         raise ValueError("conductor node prefix is reserved")
     role = source["role"]
@@ -1000,6 +1015,7 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
         "op": "add_node",
         "role": role,
         "node_key": key,
+        "raw_node_key": raw_key,
         "kind": "gate" if review else "work",
         "prompt": _boundary(task, review=review) + source["prompt"],
         "raw_prompt": source["prompt"],
@@ -1233,21 +1249,26 @@ def _correction_model(
     """The model that produced the head this review examined."""
     by_key = {node["node_key"]: node for node in nodes}
     review_node = by_key.get(review_run["node_key"]) or {}
+    candidates: list[tuple[str | None, str]] = []
     for dependency in review_node.get("deps") or []:
         node = by_key.get(dependency)
         if node is not None and _is_implementation(dependency):
-            return node["model"], ""
+            candidates.append((node.get("model"), ""))
     completed = [
         run
         for run in runs
         if _is_implementation(run["node_key"]) and run["status"] == "succeeded"
     ]
     if completed:
-        model = (max(completed, key=lambda run: run["id"]).get("pin") or {}).get(
-            "model"
+        pin = max(completed, key=lambda run: run["id"]).get("pin") or {}
+        candidates.append(
+            (pin.get("model"), ", reusing the latest implementation model")
         )
-        if model:
-            return model, ", reusing the latest implementation model"
+    # A candidate the policy no longer allows, or a node stored with no model
+    # at all, falls through to the next rather than stalling the loop.
+    for model, provenance in candidates:
+        if model and model in policy["allowed_models"]:
+            return model, provenance
     choice = select_model("worker", policy)
     return choice["model"], ", with a pool-selected worker model"
 
@@ -1259,6 +1280,7 @@ def _insert_review_round(
     runs: list[dict],
     review_run: dict,
     ordinal: int,
+    max_rounds: int,
     expected_version: int,
 ) -> tuple[bool, str | None]:
     """Append this task's next correction and re-review pair, atomically.
@@ -1266,10 +1288,18 @@ def _insert_review_round(
     The engine owns this edit. A review that requested changes has already
     named the work, so spending a planner turn to restate it is the cost the
     one-node-per-round bootstrap kept paying.
+
+    There is deliberately no processed-cause guard here. A refusal must stay
+    retryable: the round consumed nothing, so poisoning its cause would switch
+    the loop off for the rest of the task over one lost race. Applying twice is
+    prevented by the graph instead, which refuses ``duplicate_key`` for a
+    correction that already exists, and re-entry is prevented by
+    ``_pending_correction``, which stops as soon as anything depends on the
+    review. A refusal reaches the planner in the same tick as
+    ``loop_insert_refused``, and the planner turn that costs is what bounds the
+    retry against ``max_turns_per_task``.
     """
     cause = f"{LOOP_CAUSE}:review_{ordinal}"
-    if _decision_processed(task["id"], cause):
-        return False, None
     artifact = _artifact(review_run)
     head = artifact.get("head_sha") or review_run.get("head_sha")
     number = artifact.get("pr_number")
@@ -1322,7 +1352,7 @@ def _insert_review_round(
                 "side_effects": True,
                 "stated_reason": (
                     f"Engine-owned correction round {ordinal} of "
-                    f"{policy.get('max_review_rounds')}{provenance}"
+                    f"{max_rounds}{provenance}"
                 ),
                 **bounds,
             },
@@ -1597,22 +1627,30 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     loop_refusal = None
     if pending is not None and rounds_used < max_rounds:
         inserted, loop_refusal = _insert_review_round(
-            task, policy, nodes, runs, pending, rounds_used + 1, insertion_revision
+            task,
+            policy,
+            nodes,
+            runs,
+            pending,
+            rounds_used + 1,
+            max_rounds,
+            insertion_revision,
         )
         if inserted:
             return
+    # A ready node runs and an open review loop settles itself, so the planner
+    # is asked only once neither applies, and then only about a named
+    # deviation. Asking while a node is ready would re-fire the same deviation
+    # against the planner node it just inserted.
     if not ready:
         deviation = deviations.factory_deviation(
             nodes,
             runs,
-            ready,
             review_rounds_used=rounds_used,
             max_review_rounds=max_rounds,
             pending_review=None if pending is None else pending["node_key"],
             loop_refusal=loop_refusal,
         )
-        if deviation is None:
-            return
         ordinal = sum(n["node_key"].startswith("conductor_") for n in nodes) + 1
         key = f"conductor_{ordinal}"
         try:
