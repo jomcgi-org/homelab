@@ -258,3 +258,25 @@ def test_dated_claude_model_retries_without_date_suffix():
 
     assert priced is not None
     assert priced.model_ref == "claude-haiku-4-5"
+
+
+def test_astra_alias_prices_through_the_fixed_openai_table():
+    priced = price_usage(
+        "astra",
+        {
+            "input_tokens": 1_000_000,
+            "cached_input_tokens": 250_000,
+            "output_tokens": 100_000,
+        },
+    )
+
+    assert priced is not None
+    assert priced.cost_usd == 12.75
+    assert priced.source == "list"
+    assert priced.model_ref == "gpt-6-astra"
+
+
+def test_astra_and_gpt_6_astra_agree_on_the_same_usage():
+    usage = {"input_tokens": 12_000, "output_tokens": 3_000}
+
+    assert price_usage("astra", usage) == price_usage("gpt-6-astra", usage)
