@@ -928,8 +928,11 @@ credential into a request line. RAM scrubbing before snapshot is rejected
 as a mechanism to rely on; revocation at the validator is the control.
 
 Muse 1.0.3-R2198.1 was verified on 2026-09-10 to trust only its bundled
-roots. Its adapter therefore uses an `http://` base URL through the sidecar
-rather than the interception proxy's CA-backed HTTPS lane.
+roots. Its adapter therefore uses an `http://` base URL on the sidecar's
+plaintext lane rather than the CA-backed HTTPS interception lane: the guest
+to sidecar hop is a host-local vsock, the sidecar injects the credential
+there, and it originates verified TLS to Meta itself, so nothing leaves the
+brick in the clear.
 
 **Token broker** (`projects/embervm/tokenbroker/`, **Built**): the single
 owner of every mutable OAuth grant. A catalog credential marked with a broker
