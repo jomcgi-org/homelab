@@ -85,19 +85,22 @@ def test_credentials_arrive_only_by_managed_source() -> None:
     """No entry may carry an inline value; that is how one gets committed.
 
     Exactly one managed source per entry: a secretRef (a Kubernetes Secret,
-     1Password-synced) or a brokerGrant (a short-lived access token fetched
-    from the token broker, ADR 048). Both name a credential the sidecar
-    resolves at runtime; neither puts one in git. An entry naming both is
-    ambiguous and an entry naming neither can never inject, so both are
-    rejected here as well as in the chart.
+     1Password-synced), a brokerGrant (a short-lived access token fetched
+    from the token broker, ADR 048), or a brokerGrants pool of such grants
+    (#5974). Each names a credential the sidecar resolves at runtime; none
+    puts one in git. An entry naming more than one is ambiguous and an entry
+    naming none can never inject, so both are rejected here as well as in
+    the chart.
     """
     for entry in _egress_secrets():
-        sources = [k for k in ("secretRef", "brokerGrant") if entry.get(k)]
+        sources = [
+            k for k in ("secretRef", "brokerGrant", "brokerGrants") if entry.get(k)
+        ]
         assert len(sources) == 1, (
             f"egress entry {entry.get('env') or entry.get('brokerGrant')!r} names "
-            f"{sources or 'no'} credential source. Exactly one of secretRef or "
-            "brokerGrant is required; a credential must never be a literal in "
-            "values.yaml."
+            f"{sources or 'no'} credential source. Exactly one of secretRef, "
+            "brokerGrant or brokerGrants is required; a credential must never be "
+            "a literal in values.yaml."
         )
         assert "value" not in entry, (
             f"egress secret {entry.get('env')!r} carries an inline value."
