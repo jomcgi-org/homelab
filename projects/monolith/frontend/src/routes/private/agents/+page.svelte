@@ -22,6 +22,7 @@
   import { shapeStateClass } from "./dag.js";
   import { firstLine, fmtCost } from "./run-format.js";
   import { partitionRuns, relativeTime } from "./run-history.js";
+  import { laneSummary } from "./factory/factory-view.js";
   import {
     arrivalSelection,
     classifyChangedItems,
@@ -133,6 +134,8 @@
   let runs = $state([]);
   let terminalRuns = $state([]);
   let drain = $state(null);
+  let factory = $state(null);
+  let factoryLoadedAt = 0;
   let runDetail = $state(null);
   let runRequestSequence = 0;
   let detail = $state(null);
@@ -462,6 +465,20 @@
     }
   }
 
+  async function loadFactoryLane() {
+    // The board read is heavier than the drain strip's, so it refreshes on
+    // its own cadence even though it is called from the same poll.
+    if (Date.now() - factoryLoadedAt < 15000) return;
+    factoryLoadedAt = Date.now();
+    try {
+      const response = await fetch("/agents/factory");
+      if (!response.ok) return;
+      factory = laneSummary(await response.json());
+    } catch {
+      // Keep the last known factory state when the board is unavailable.
+    }
+  }
+
   async function loadDrainLane() {
     try {
       const response = await fetch("/agents/drain-lane");
@@ -763,6 +780,31 @@
     needsInputState = false;
     pendingTaskId = null;
     showNewPanel = true;
+  }
+
+  // The factory board links here with ?compose=1&model=astra&prompt=... to
+  // start a conversation with the conductor about a task, a proposal or an
+  // issue. The draft is seeded and the params dropped so a reload does not
+  // re-seed over what the operator has typed.
+  function prefillFromQuery() {
+    const params = $page.url.searchParams;
+    if (params.get("compose") !== "1") return;
+    const model = params.get("model") || "";
+    const prompt = params.get("prompt") || "";
+    newSession = {
+      ...newSession,
+      model: availableModels.includes(model) ? model : newSession.model,
+      prompt,
+    };
+    openNewPanel();
+    const next = new URLSearchParams(params);
+    next.delete("compose");
+    next.delete("model");
+    next.delete("prompt");
+    goto(withSearch($page.url.pathname, next.toString()), {
+      replaceState: true,
+      noScroll: true,
+    });
   }
 
   function openJump(query = "") {
@@ -1208,6 +1250,8 @@
 
   onMount(() => {
     loadDrainLane();
+    loadFactoryLane();
+    prefillFromQuery();
     if (startingTaskId) {
       const state = initialStartPoll(startingTaskId);
       pendingStart = state;
@@ -1340,6 +1384,7 @@
       const interval = setInterval(async () => {
         await loadSessions();
         await loadDrainLane();
+        await loadFactoryLane();
       }, 2000);
       return () => {
         stopped = true;
@@ -1351,6 +1396,7 @@
     const interval = setInterval(async () => {
       await loadSessions();
       await loadDrainLane();
+      await loadFactoryLane();
       if (selectedRunId != null)
         await loadRunDetail(selectedRunId, runRequestSequence);
       if (selectedId != null)
@@ -1929,6 +1975,7 @@
                 {branchLoading}
                 {creating}
                 {drain}
+                {factory}
                 summary={launcherRecent}
                 jumpCount={launcherJumpTotal}
                 onLoadBranches={loadBranches}
@@ -2369,6 +2416,7 @@
             {branchLoading}
             {creating}
             {drain}
+            {factory}
             summary={launcherRecent}
             jumpCount={launcherJumpTotal}
             onLoadBranches={loadBranches}

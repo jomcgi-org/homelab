@@ -16,6 +16,7 @@
     branchLoading = false,
     creating = false,
     drain = null,
+    factory = null,
     summary = {
       items: [],
       count: 0,
@@ -159,6 +160,43 @@
       </div>
     </div>
   </form>
+
+  {#if factory !== null}
+    <!-- Factory first: the strip is the doorway to the board, which carries
+         the queue, each task's plan and the sessions behind it. -->
+    <a class="drain-lane factory-lane mono" href="/agents/factory">
+      <span
+        class={`dot ${factory.active > factory.paused ? "running" : ""}`}
+        aria-hidden="true"
+      ></span>
+      <span>{P.labels.factoryHeading}</span>
+      <span aria-hidden="true">{P.punct.dot}</span>
+      <span>{factory.state === "enabled" ? "" : factory.state}</span>
+      <span
+        >{P.labels.factoryInFlight.replace(
+          "{count}",
+          String(factory.active),
+        )}</span
+      >
+      {#if factory.paused}
+        <span aria-hidden="true">{P.punct.dot}</span>
+        <span
+          >{P.labels.factoryPaused.replace(
+            "{count}",
+            String(factory.paused),
+          )}</span
+        >
+      {/if}
+      <span aria-hidden="true">{P.punct.dot}</span>
+      <span
+        >{P.labels.factoryQueued.replace(
+          "{count}",
+          String(factory.queued),
+        )}</span
+      >
+      <span class="drain-open" aria-hidden="true">&rarr;</span>
+    </a>
+  {/if}
 
   {#if drain !== null && (drain.enabled !== false || drain.due_count > 0 || drain.running?.length > 0)}
     {@const runningJob = drain.running?.[0]}
