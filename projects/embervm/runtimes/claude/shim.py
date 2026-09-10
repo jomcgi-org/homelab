@@ -3631,6 +3631,10 @@ class MuseProcess:
         Authorization header. Any auth mode that stops Muse sending one
         forwards the request uncredentialed and Meta answers 401, which reads
         like a bad META_SPARK_API_KEY rather than a settings change.
+
+        Muse telemetry does not honor endpoint_transport and otherwise calls
+        its bundled https://api.meta.ai telemetry endpoints directly. Disable
+        it so automatic traffic stays on the sidecar's plaintext guest lane.
         """
         agent_mcp_url = os.environ.get(AGENT_MCP_URL_ENV)
         if not self._mcp_probe_cached:
@@ -3640,6 +3644,7 @@ class MuseProcess:
 
         settings = {
             "schema_version": 1,
+            "telemetry": {"enabled": False},
             "endpoint_transport": {
                 "base_url": MUSE_BASE_URL,
                 "auth": "bearer",

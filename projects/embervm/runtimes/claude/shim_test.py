@@ -1113,6 +1113,7 @@ def test_muse_settings_json_pins_plaintext_endpoint_transport(
         "base_url": "http://api.meta.ai/v1",
         "auth": "bearer",
     }
+    assert settings["telemetry"] == {"enabled": False}
     assert ("mcp_servers" in settings) is probe_succeeds
 
 
