@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 import yaml
 
 BASE_URL_PATTERN = re.compile(r'"ANTHROPIC_BASE_URL"\s*:\s*"([^"]+)"')
+MUSE_BASE_URL_PATTERN = re.compile(r'^MUSE_BASE_URL\s*=\s*"([^"]+)"', re.MULTILINE)
 
 
 def _repo_path(*parts: str) -> Path:
@@ -50,6 +51,12 @@ def _guest_base_url() -> str | None:
         "projects/embervm/runtimes/claude/guest-init/cmd/main.go"
     ).read_text()
     match = BASE_URL_PATTERN.search(source)
+    return match.group(1) if match else None
+
+
+def _muse_base_url() -> str | None:
+    source = _repo_path("projects/embervm/runtimes/claude/shim.py").read_text()
+    match = MUSE_BASE_URL_PATTERN.search(source)
     return match.group(1) if match else None
 
 
@@ -92,6 +99,25 @@ def test_cleartext_base_url_has_a_credential_entry() -> None:
     assert covered[0].get("header"), (
         f"the egress entry for {host} sets no header, so nothing authenticates "
         "the request the guest sends in cleartext."
+    )
+
+
+def test_muse_cleartext_base_url_has_a_credential_entry() -> None:
+    base_url = _muse_base_url()
+    assert base_url, "shim.py sets no MUSE_BASE_URL; if it moved, follow it here"
+    if urlparse(base_url).scheme != "http":
+        return
+
+    host = urlparse(base_url).hostname
+    covered = [s for s in _egress_secrets() if host in (s.get("egressTo") or [])]
+    assert covered, (
+        f"Muse addresses {host} in CLEARTEXT ({base_url}) but no egress.secrets "
+        "entry covers it. Without one the sidecar blind-tunnels, and the whole "
+        "request, prompt included, leaves the cluster unencrypted."
+    )
+    assert covered[0].get("header"), (
+        f"the egress entry for {host} sets no header, so nothing authenticates "
+        "the request Muse sends in cleartext."
     )
 
 

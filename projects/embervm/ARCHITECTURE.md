@@ -927,6 +927,10 @@ guest-controlled placeholder can be spliced into a URL and reflect the
 credential into a request line. RAM scrubbing before snapshot is rejected
 as a mechanism to rely on; revocation at the validator is the control.
 
+Muse 1.0.3-R2198.1 was verified on 2026-09-10 to trust only its bundled
+roots. Its adapter therefore uses an `http://` base URL through the sidecar
+rather than the interception proxy's CA-backed HTTPS lane.
+
 **Token broker** (`projects/embervm/tokenbroker/`, **Built**): the single
 owner of every mutable OAuth grant. A catalog credential marked with a broker
 grant is resolved by the egress sidecar as a short-lived access token fetched

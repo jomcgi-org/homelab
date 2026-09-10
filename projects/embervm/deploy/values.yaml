@@ -604,7 +604,9 @@ egress:
       # reports the subscription quota to the token broker (#5752).
       quotaProvider: claude
     # Pi reaches Meta through the same CA-backed HTTPS proxy path as the other
-    # external providers. The guest's placeholder Authorization header opts in
+    # external providers. Muse trusts only its bundled roots, so it reaches this
+    # entry on the plaintext lane using an http:// base URL in absolute form
+    # through HTTP_PROXY. The guest's placeholder Authorization header opts in
     # to this exact catalog entry; the sidecar replaces it before originating
     # verified TLS to Meta. A missing secret key leaves the catalog entry dead,
     # so api.meta.ai is denied rather than passed through without credentials.

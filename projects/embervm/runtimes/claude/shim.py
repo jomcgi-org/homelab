@@ -3285,6 +3285,12 @@ url = %s
 
 INFERENCE_BASE_URL = "https://api.meta.ai/v1"
 
+# Muse ignores every CA environment variable and the system trust store, as
+# verified against 1.0.3-R2198.1 on 2026-09-10. Its bundled roots cannot trust
+# the HTTPS interception lane, so plaintext through the sidecar is the only
+# working path. The sidecar injects the real key, leaving no guest credential.
+MUSE_BASE_URL = "http://api.meta.ai/v1"
+
 
 MUSE_USAGE_TIMEOUT_SECONDS = 5.0
 MUSE_USAGE_MAX_PAGES = 20
@@ -3612,6 +3618,12 @@ class MuseProcess:
         knowledge graph. That couples every turn to the tier being reachable,
         so the caller gates this on the same liveness probe the pi bridge
         uses and writes no mcp_servers key at all when it fails.
+
+        Muse 1.0.3-R2198.1 was verified on 2026-09-10 to ignore every CA
+        environment variable and the system trust store, trusting only its
+        bundled roots. The endpoint pin must therefore match the plaintext
+        --base-url routed through the sidecar, which injects the real key so
+        the guest holds no credential.
         """
         agent_mcp_url = os.environ.get(AGENT_MCP_URL_ENV)
         if not self._mcp_probe_cached:
@@ -3619,7 +3631,13 @@ class MuseProcess:
                 agent_mcp_url
             )
 
-        settings = {"schema_version": 1}
+        settings = {
+            "schema_version": 1,
+            "endpoint_transport": {
+                "base_url": MUSE_BASE_URL,
+                "auth": "bearer",
+            },
+        }
         # A successful probe is cached for the adapter lifetime. A failed probe
         # is retried next turn so a brief tier outage cannot disable knowledge
         # tools for the session's full lifetime. This work is inside
@@ -3696,7 +3714,7 @@ class MuseProcess:
             "--model",
             model_name,
             "--base-url",
-            INFERENCE_BASE_URL,
+            MUSE_BASE_URL,
             "--api-key-stdin",
             "--approval-mode",
             "never",
