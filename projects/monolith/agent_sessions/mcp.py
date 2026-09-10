@@ -619,6 +619,15 @@ async def _execute_pending_message(session_id: int) -> None:
     factory_owned = str(getattr(factory_row, "local_session_id", "")).startswith(
         "factory:"
     )
+    # Mirrors run_synthetic_session's probe contract (execution_api.py): a
+    # probe-tier turn that this executor actually persisted and delivered
+    # must not park its guest just because the worker path, not the direct
+    # synthetic caller, happened to deliver it. Only set once the turn is
+    # durably persisted; an exception or a stolen claim leaves these None so
+    # the guest is retained for reconciliation, same as the direct path.
+    probe_turn_persisted = False
+    probe_ember = None
+    probe_turn = None
 
     def _abort_stolen_executor(stage: str) -> bool:
         nonlocal stolen_exit_logged
@@ -699,6 +708,7 @@ async def _execute_pending_message(session_id: int) -> None:
 
     async def _do_execute() -> None:
         nonlocal release_cause, claimed_dispatch_count
+        nonlocal probe_turn_persisted, probe_ember, probe_turn
         if _abort_stolen_executor("startup"):
             return
 
@@ -926,6 +936,10 @@ async def _execute_pending_message(session_id: int) -> None:
             return
         _clear_negative_oracle_verdict(session_id)
         await asyncio.to_thread(_delete_pending_message_sync, session_id, claimed_seq)
+        if session_row.admission_tier == "probe":
+            probe_turn_persisted = True
+            probe_ember = ember
+            probe_turn = turn
         if not ui_originated:
             await _notify_terminal(turn, summary, status, session_row)
         # This session's next message could not be claimed while this one was
@@ -950,14 +964,36 @@ async def _execute_pending_message(session_id: int) -> None:
                 await refresh_task
             except asyncio.CancelledError:
                 pass
+        outcome_unknown = True
         if not claim_stolen and not claim_released:
-            await asyncio.to_thread(
+            outcome_unknown = await asyncio.to_thread(
                 _release_pending_message_claim_sync,
                 session_id,
                 claimed_seq,
                 claim_owner,
                 release_cause,
             )
+        # Honour the probe contract (run_synthetic_session in execution_api.py)
+        # regardless of which path delivered the turn: a completed probe must
+        # not park its guest. Skip on any unknown-outcome signal, a stolen or
+        # separately released claim, or a receipt winner that keeps the guest
+        # resident until the original POST resolves.
+        if (
+            probe_turn_persisted
+            and probe_ember is not None
+            and not outcome_unknown
+            and not claim_stolen
+            and not claim_released
+            and probe_turn.native_receipt is None
+        ):
+            try:
+                await _transport.destroy_session(probe_ember.session_id)
+            except EmberSessionGone:
+                pass
+            finally:
+                await asyncio.to_thread(
+                    _clear_ember_bindings_for, probe_ember.session_id
+                )
 
 
 async def recover_zombie_session_if_needed(
