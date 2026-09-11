@@ -1977,32 +1977,19 @@ def _running_app_version() -> str:
         return ""
 
 
-def _live_executor_ids() -> set[str]:
-    """The executors this process can vouch for, empty when it cannot tell.
-
-    DBOS keeps no executor inventory, and the swarm runs on the leader replica
-    only (the swarm section of projects/monolith/chart/values.yaml), so the one
-    executor this process can speak for is its own.
-    """
-    try:
-        from dbos._utils import GlobalParams
-
-        return {GlobalParams.executor_id} if GlobalParams.executor_id else set()
-    except Exception:  # noqa: BLE001
-        logger.warning("could not read the DBOS executor id", exc_info=True)
-        return set()
-
-
 def _stranded_versions(state) -> tuple[str, str] | None:
     """Return (workflow version, running version) when no worker can run it.
 
     DBOS stamps a workflow with the application version that started it,
     recovers only workflows of the running version on startup, and dequeues a
-    versioned row only onto a worker of that same version. So a live-looking
-    row from an older version is already dead: a deploy replaced the pods that
-    owned it and nothing will ever pick it up. An unresolvable version on
-    either side returns None, because cancelling on a guess would reap a
-    healthy node.
+    versioned row only onto a worker of that same version. Since
+    runtime.node_workflow_version pins the version to the node workflow's own
+    source, a matching version means DBOS will recover this workflow itself and
+    there is nothing to settle, so equality returns None and the node is left
+    alone. Only a genuinely different version, which now means the node
+    workflow or one of its steps changed in the deploy, is stranded: nothing
+    will ever pick it up again. An unresolvable version on either side also
+    returns None, because cancelling on a guess would reap a healthy node.
     """
     running = _running_app_version()
     if not running:
@@ -2033,38 +2020,32 @@ def _last_step_epoch_ms(key: str) -> int | None:
         return None
 
 
-def _warn_if_executor_is_gone(run: dict, state, key: str) -> None:
-    """Log a PENDING workflow whose executor is gone, and do nothing else.
+def _stalled_seconds(run: dict, state, key: str) -> float | None:
+    """Seconds since the last checkpoint of a PENDING workflow that has wedged.
 
-    A version match means DBOS would recover this workflow, so no stranding
-    rule applies and cancelling on a suspicion would reap live work. The
-    warning is here to tell us whether the case happens at all before any rule
-    is written for it.
+    A PENDING workflow on the running version is one DBOS believes is
+    executing, so nothing here settles or cancels it. But a healthy node
+    checkpoints continuously, every poll and every sleep of its turn wait, so a
+    newest step older than the node's whole turn timeout means the workflow has
+    stopped making progress. That is a deviation the planner has to hear about,
+    not something the engine can mechanically repair.
+
+    Returns None when the workflow is not PENDING, when the step history cannot
+    be read, or when progress is within the timeout.
     """
     if state.status != "PENDING":
-        return
-    executor = getattr(state, "executor_id", None)
-    live = _live_executor_ids()
-    if not executor or not live or executor in live:
-        return
+        return None
     last_ms = _last_step_epoch_ms(key) or getattr(state, "created_at", None)
     if last_ms is None:
-        return
+        return None
     idle_seconds = time.time() - last_ms / 1000
     if idle_seconds <= run["pin"]["turn_timeout_seconds"]:
-        return
-    logger.warning(
-        "factory node workflow %s is PENDING on the running version under "
-        "executor %s, which is not live, with no step progress for %.0fs "
-        "(turn timeout %ss). Observation only, nothing was cancelled.",
-        key,
-        executor,
-        idle_seconds,
-        run["pin"]["turn_timeout_seconds"],
-    )
+        return None
+    return idle_seconds
 
 
-def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
+def _submit_or_reconcile(task: dict, run: dict, dbos) -> float | None:
+    """Advance one in-flight attempt. Returns its stalled seconds, if stalled."""
     from dbos import SetWorkflowID
     from swarm.factory_controls import (
         _audit,
@@ -2082,7 +2063,7 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
         pin, run.get("session_id"), dbos
     )
     if stop_waiting:
-        return
+        return None
     if stopped_session_id is not None:
         run = {**run, "session_id": stopped_session_id}
     # retrieve_workflow and handle.get_status both raise for missing IDs in
@@ -2093,16 +2074,15 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
             task["id"], key, ACTOR, model=pin["model"], max_cost_usd=pin["max_cost_usd"]
         )
         if not grant["ok"]:
-            return
+            return None
         with SetWorkflowID(key):
             dbos.start_workflow(execute_node, pin)
-        return
+        return None
     workflow_status = state.status
     if workflow_status in ("PENDING", "ENQUEUED"):
         stranded = _stranded_versions(state)
         if stranded is None:
-            _warn_if_executor_is_gone(run, state, key)
-            return
+            return _stalled_seconds(run, state, key)
         workflow_version, running_version = stranded
         # The intent is recorded before the external call, as cancel_owned
         # does, so the strand is evidenced even if the cancellation throws.
@@ -2154,7 +2134,7 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 result,
                 workflow_status,
             ):
-                return
+                return None
     with Session(get_engine()) as db:
         with _locked_session(db):
             if (
@@ -2257,6 +2237,110 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
             if not charged["ok"]:
                 raise ValueError(f"factory outcome refused: {charged['reason']}")
         db.commit()
+    return None
+
+
+def _notify_node_stalled(task_id: str, node_key: str, idle_seconds: float) -> None:
+    """One best-effort Discord warning, on the path swarm/drainer.py uses."""
+    try:
+        from agent.notify import notify
+
+        asyncio.run(
+            notify(
+                f"Factory node {node_key} on task {task_id} has made no step "
+                f"progress for {idle_seconds:.0f}s. The planner has been asked "
+                "to decide what to do.",
+                level="warn",
+            )
+        )
+    except Exception:  # noqa: BLE001 - notification is best effort
+        logger.warning(
+            "factory stall notification failed for %s on %s",
+            node_key,
+            task_id,
+            exc_info=True,
+        )
+
+
+def _raise_node_stalled(task: dict, policy: dict, run: dict, idle_seconds: float):
+    """Record a stalled node once and ask the planner what to do about it.
+
+    Once per workflow, not once per tick: the audit row is the fence, taken
+    under the control lock, so a stall that persists for hours asks the planner
+    a single time and notifies a single time. The node keeps its reservation
+    throughout, because a wedged workflow is unknown execution and the rules
+    for that are unchanged.
+
+    The planner node is added to the graph rather than dispatched here, so at a
+    parallel limit of one it waits behind the stalled node it was added for.
+    Raising the limit is what lets it run beside it.
+    """
+    from swarm.factory_controls import _audit, _locked_session, set_control
+    from swarm.factory_models import FactoryAudit
+
+    task_id = task["id"]
+    key = run["pin"]["workflow_id"]
+    with _locked_session() as (db, _control):
+        previous = db.exec(
+            select(FactoryAudit.detail_json).where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == "node_stalled",
+            )
+        ).all()
+        if any(json.loads(raw).get("workflow_id") == key for raw in previous):
+            return False
+        _audit(
+            db,
+            ACTOR,
+            "node_stalled",
+            task_id=task_id,
+            workflow_id=key,
+            node_key=run["node_key"],
+            idle_seconds=round(idle_seconds),
+            turn_timeout_seconds=run["pin"]["turn_timeout_seconds"],
+        )
+    revision = graph.current_version(task_id)
+    nodes = graph.load_graph(task_id)
+    runs = graph.node_runs(task_id)
+    deviation = deviations.factory_deviation(
+        nodes,
+        runs,
+        review_rounds_used=0,
+        max_review_rounds=0,
+        stalled_node=run["node_key"],
+    )
+    ordinal = sum(n["node_key"].startswith("conductor_") for n in nodes) + 1
+    planner_key = f"conductor_{ordinal}"
+    try:
+        prompt = planner_prompt(
+            task, nodes, runs, decision_revision=revision + 1, deviation=deviation
+        )
+    except PlannerContextOverflow:
+        logger.warning(
+            "Factory planner cannot retain required evidence within its context "
+            "bound for task %s",
+            task_id,
+        )
+        set_control("pause_task", ACTOR, task_id=task_id)
+        return True
+    choice = select_model("conductor", policy)
+    result = _add(
+        task,
+        policy,
+        planner_key,
+        prompt,
+        [],
+        choice["model"],
+        f"factory-plan:{planner_key}",
+        selection_reason(f"Reconcile task evidence after {deviation['code']}", choice),
+        expected_version=revision,
+    )
+    if result.ok:
+        _record_allowance(task_id, policy, f"factory-plan:{planner_key}")
+    else:
+        set_control("pause_task", ACTOR, task_id=task_id)
+    _notify_node_stalled(task_id, run["node_key"], idle_seconds)
+    return True
 
 
 def reconcile_task(task_id: str, policy: dict, dbos) -> None:
@@ -2289,8 +2373,16 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     parallel = parallel_limit(policy)
     active = [r for r in runs if r["status"] in ("admitted", "dispatched", "uncertain")]
     if active:
+        stalled = []
         for run in active:
-            _submit_or_reconcile(task, run, dbos)
+            idle_seconds = _submit_or_reconcile(task, run, dbos)
+            if idle_seconds is not None:
+                stalled.append((run, idle_seconds))
+        # A stalled node holds its reservation and will not settle on its own,
+        # so the planner is asked before the slot arithmetic below, which would
+        # otherwise leave a wedged task waiting for its deadline.
+        for run, idle_seconds in stalled:
+            _raise_node_stalled(task, policy, run, idle_seconds)
         # A submit can settle its own run, so the free slots are read after the
         # whole in-flight set has had its tick. A tick that reconciled in-flight
         # work never also plans: it either fills a free parallel slot beside

@@ -2599,6 +2599,123 @@ def test_a_successful_old_version_workflow_still_returns_its_result(stranded_fac
     assert json.loads(run["outcome_json"])["cost_usd"] == 1.0
 
 
+def _stalled_dbos(s, *, idle_seconds, monkeypatch):
+    """A PENDING workflow on the running version whose last step is old."""
+    import time
+
+    timeout = s.run["pin"]["turn_timeout_seconds"]
+    monkeypatch.setattr(
+        conductor,
+        "_last_step_epoch_ms",
+        lambda _key: int((time.time() - timeout - idle_seconds) * 1000),
+    )
+    return s.dbos_for("PENDING", "running-version")
+
+
+def _stall_audits(s):
+    import json
+    from sqlmodel import Session, select
+    from swarm.factory_models import FactoryAudit
+
+    with Session(s.engine) as db:
+        return [
+            json.loads(row.detail_json)
+            for row in db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == "node_stalled")
+            ).all()
+        ]
+
+
+def test_a_stalled_node_raises_one_deviation_and_one_warning(
+    stranded_factory, monkeypatch
+):
+    s = stranded_factory
+    notified = []
+    monkeypatch.setattr(
+        conductor,
+        "_notify_node_stalled",
+        lambda *args: notified.append(args),
+    )
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": "c" * 40}}
+    )
+    dbos = _stalled_dbos(s, idle_seconds=30, monkeypatch=monkeypatch)
+
+    conductor.reconcile_task(s.task["id"], s.policy, dbos)
+    conductor.reconcile_task(s.task["id"], s.policy, dbos)
+    conductor.reconcile_task(s.task["id"], s.policy, dbos)
+
+    audits = _stall_audits(s)
+    assert len(audits) == 1
+    assert audits[0]["workflow_id"] == s.key
+    assert audits[0]["node_key"] == s.run["node_key"]
+    assert audits[0]["turn_timeout_seconds"] == s.run["pin"]["turn_timeout_seconds"]
+    assert len(notified) == 1 and notified[0][1] == s.run["node_key"]
+    # The stalled node keeps its reservation; one planner node is added beside
+    # it, and no later tick adds another.
+    assert conductor.graph.node_runs(s.task["id"]) == [s.run]
+    planners = [
+        node["node_key"]
+        for node in conductor.graph.load_graph(s.task["id"])
+        if node["node_key"].startswith("conductor_")
+    ]
+    assert planners == ["conductor_1", "conductor_2"]
+    assert s.cancelled == []
+
+
+def test_a_node_checkpointing_within_its_turn_timeout_is_not_stalled(
+    stranded_factory, monkeypatch
+):
+    import time
+
+    s = stranded_factory
+    monkeypatch.setattr(
+        conductor, "_last_step_epoch_ms", lambda _key: int(time.time() * 1000)
+    )
+    conductor.reconcile_task(
+        s.task["id"], s.policy, s.dbos_for("PENDING", "running-version")
+    )
+    assert _stall_audits(s) == []
+    assert conductor.graph.node_runs(s.task["id"]) == [s.run]
+    assert [
+        node["node_key"]
+        for node in conductor.graph.load_graph(s.task["id"])
+        if node["node_key"].startswith("conductor_")
+    ] == ["conductor_1"]
+
+
+def test_an_unreadable_step_history_does_not_call_a_node_stalled(
+    stranded_factory, monkeypatch
+):
+    """A missing operation_outputs read is not evidence of a stall."""
+    s = stranded_factory
+    monkeypatch.setattr(conductor, "_last_step_epoch_ms", lambda _key: None)
+    conductor.reconcile_task(
+        s.task["id"],
+        s.policy,
+        # created_at is absent too, so nothing dates the workflow.
+        SimpleNamespace(
+            get_workflow_status=lambda _: SimpleNamespace(
+                status="PENDING", app_version="running-version"
+            ),
+            cancel_workflow=lambda *_args, **_kwargs: None,
+        ),
+    )
+    assert _stall_audits(s) == []
+
+
+def test_a_stranded_workflow_is_settled_rather_than_called_stalled(
+    stranded_factory, monkeypatch
+):
+    """Version stranding wins: the workflow is dead, not merely quiet."""
+    s = stranded_factory
+    monkeypatch.setattr(conductor, "_last_step_epoch_ms", lambda _key: 0)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos_for("PENDING", "old-version"))
+    assert _stall_audits(s) == []
+    assert s.cancelled == [(s.key, True)]
+    assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "uncertain"
+
+
 @pytest.fixture
 def uncertain_factory(queued_factory, monkeypatch):
     from datetime import datetime, timedelta, timezone
