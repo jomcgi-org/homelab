@@ -406,6 +406,14 @@ defmodule Embervm.SessionManager do
           # seam to the globally named NodeRegistry, which knows nothing about
           # the caller's fixture and answers "unregistered" for every dial. That
           # is the whole node-gone predicate answering yes.
+          #
+          # PERFORMANCE NOTE: only tests take this arm today. Production
+          # session_opts (Embervm.Application.session_opts/0) carries just the
+          # invoke watchdog margin and never injects brick_status_fun, so the
+          # batched default below is what runs. Adding brick_status_fun to
+          # production opts would SILENTLY move the reconcile sweep back to one
+          # serial GenServer.call per stuck session against NodeRegistry, at the
+          # 5s default timeout. Give this arm a batched injection instead.
           fun when is_function(fun, 1) ->
             fn dial_ids -> Map.new(dial_ids, &{&1, fun.(&1)}) end
 
@@ -857,6 +865,23 @@ defmodule Embervm.SessionManager do
 
             case SessionStore.begin_exact_destroy(state.session_store, session_id, intent) do
               {:ok, _} ->
+                # The exact-stop intent is durable at this point but was never
+                # traced, because every path that consumed it used to reach a
+                # terminal record only through the sweep, which emits its own
+                # resumed intent. Since a node-gone completion can now terminalize
+                # an exact stop straight from the continue below, the trace needs
+                # the intent HERE too: otherwise the run holds a confirm_destroy
+                # with had_vm true and no preceding begin_destroy, and
+                # destroy_intent_precedes_record reports a violation for an
+                # ordering the durable log actually honoured.
+                Embervm.SpecTrace.emit(:adoption, :begin_destroy, %{
+                  "session_id" => session_id,
+                  "vm_id" => session.vm_id,
+                  "node_id" => session.node_id,
+                  "gate" => state.node_confirmed_destroy,
+                  "resumed" => false
+                })
+
                 {:reply, {:ok, :destroying}, state, {:continue, {:do_destroy_live, session_id}}}
               {:error, _} = error -> {:reply, error, state}
             end
