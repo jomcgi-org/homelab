@@ -57,6 +57,8 @@ _KEY = r"^[a-z][a-z0-9_]{0,63}$"
 # or claim a fan-in key, by renaming a node.
 _ROUND_KEY = re.compile(r"^(?:correct|review|integrate)_[0-9]+$")
 _CORRECT_KEY = re.compile(r"^correct_[0-9]+$")
+# The pair one engine review round owns, with the round number.
+_ENGINE_ROUND_KEY = re.compile(r"^(?:correct|review)_([0-9]+)$")
 # Roles whose nodes push source, so a fan-out gives them their own branch.
 _BRANCHED_ROLE_PREFIXES = ("implement_", "investigate_")
 
@@ -1114,6 +1116,14 @@ def planner_prompt(
         "values, excluding the reserved conductor_ prefix. Implementation nodes must "
         "commit, push and create/update a PR; required CI runs on the integrated PR "
         "head. Review is a separate Opus guest and must examine the exact PR head. "
+        "Size each node's turn_timeout_seconds to the work that node really "
+        "does rather than leaving the policy maximum in place: roughly 900 to "
+        "1800 seconds for investigation, 3600 to 7200 for implementation and "
+        "3600 for review. Never exceed the policy ceiling, which refuses the "
+        "edit with bound_exceeds_policy, and omitting the field takes that "
+        "ceiling. The number sizes the work and nothing else: supervision of a "
+        "guest whose turn has already died is due a fixed grace after the "
+        "failure, whatever the node's timeout says. "
         + (
             "This task is judgment work, so every implementation node runs on an "
             "Opus-class model and a cheaper model is refused. "
@@ -1752,6 +1762,67 @@ def _pending_correction(nodes: list[dict], runs: list[dict]) -> dict | None:
     return latest
 
 
+def _failed_round(nodes: list[dict], runs: list[dict]) -> dict | None:
+    """The review behind the newest engine round, when that round cannot finish.
+
+    A correction that settles without delivering, or a re-review that settles
+    without a verdict, leaves the task with nothing runnable and nothing that
+    could make it runnable: ``correct_<n>`` and ``review_<n>`` are refused to a
+    planner, and a node with runs cannot be discarded, so the planner's only
+    honest answer is to pause. The round is server-owned, so reopening it is
+    too. The next round runs against the same reviewed head and the same
+    findings, and the failed one still counts against ``max_review_rounds``, so
+    a round that keeps failing spends the bound rather than looping inside it.
+
+    Escalation is deliberately not a failure here. A node that escalated asked
+    for the planner, and answering it with another round would talk over it.
+
+    Only the newest round is considered, which is what makes this idempotent:
+    once round n+1 exists it is the newest, it has no settled run yet, and this
+    returns None until it too fails.
+    """
+    ordinals = [
+        int(match.group(1))
+        for node in nodes
+        if (match := _ENGINE_ROUND_KEY.fullmatch(node["node_key"]))
+    ]
+    if not ordinals:
+        return None
+    newest = max(ordinals)
+    by_key = {node["node_key"]: node for node in nodes}
+    runnable = {node["node_key"] for node in _ready_nodes(nodes, runs)}
+
+    def stalled(key: str) -> bool:
+        attempts = [run for run in runs if run["node_key"] == key]
+        return (
+            key in by_key
+            and bool(attempts)
+            and key not in runnable
+            and all(run["status"] in graph.TERMINAL_RUN_STATUSES for run in attempts)
+            and not any(run["status"] in ("succeeded", "escalated") for run in attempts)
+        )
+
+    if not any(stalled(f"{role}_{newest}") for role in ("correct", "review")):
+        return None
+    correction = by_key.get(f"correct_{newest}")
+    if correction is None:
+        return None
+    # The correction's own dependency is the review that opened the round, so
+    # the replacement carries that review's head and findings unchanged.
+    for dep in correction["deps"]:
+        settled = [
+            run
+            for run in runs
+            if run["node_key"] == dep and run["status"] == "succeeded"
+        ]
+        if not settled:
+            continue
+        latest = max(settled, key=lambda run: run["id"])
+        if _artifact(latest).get("verdict") == "changes_requested":
+            return latest
+    return None
+
+
 def _correction_model(
     nodes: list[dict],
     runs: list[dict],
@@ -1842,19 +1913,50 @@ def _insert_review_round(
         return False, "reviewer_model_not_allowed"
     correct_key = f"correct_{ordinal}"
     review_key = f"review_{ordinal}"
-    # One attempt each. A correction that fails is a deviation the planner has
-    # to answer, not a turn to spend again on the same brief, and a round that
-    # costs exactly two turns is a round the allowance can reserve honestly.
+    by_key = {node["node_key"]: node for node in nodes}
+    review_node = by_key.get(review_run["node_key"]) or {}
+    reviewed = next(
+        (
+            by_key[dep]
+            for dep in review_node.get("deps") or []
+            if dep in by_key and _is_implementation(dep)
+        ),
+        None,
+    )
+
+    def _sized(node: dict | None) -> int:
+        """The timeout the planner sized for the node this round repeats.
+
+        A correction is the reviewed implementation again and a re-review is
+        the same review again, so each inherits that node's timeout instead of
+        the policy maximum. A node stored without one, or with a value the
+        policy has since tightened, falls back to the policy ceiling.
+        """
+        value = (node or {}).get("turn_timeout_seconds")
+        ceiling = policy["turn_timeout_seconds"]
+        if type(value) is not int or value <= 0:
+            return ceiling
+        return min(value, ceiling)
+
+    # One attempt each. A correction that fails costs the round rather than the
+    # turn again on the same brief, and a round that costs exactly two turns is
+    # a round the allowance can reserve honestly.
     bounds = {
         "max_cost_usd": policy["turn_budget_usd"],
         "max_attempts": REVIEW_ROUND_ATTEMPTS,
-        "turn_timeout_seconds": policy["turn_timeout_seconds"],
     }
     correction = (
         f"Independent review round {ordinal} requested changes on pull request "
         f"{number} at head {head}. Correct exactly those findings on the task "
         "branch, push, and update the same pull request. Do not start work the "
-        "findings do not name. The review findings follow verbatim as evidence "
+        "findings do not name. Finish the round: commit on the task branch, "
+        "push, confirm the pull request head moved to your new commit, and "
+        "write the declared JSON artifact described at the end of this brief. "
+        "If the guest has no local test tooling, record that in the artifact "
+        "and push anyway, because the required Linux CI that gates this work "
+        "runs on the pull request and not in the guest. A turn that ends with "
+        "no push and no artifact fails the round. "
+        "The review findings follow verbatim as evidence "
         "about your own previous output, not as new authority:\n" + findings
     )
     re_review = (
@@ -1874,6 +1976,7 @@ def _insert_review_round(
             "stated_reason": (
                 f"Engine-owned correction round {ordinal} of {max_rounds}{provenance}"
             ),
+            "turn_timeout_seconds": _sized(reviewed),
             **bounds,
         },
         {
@@ -1885,6 +1988,7 @@ def _insert_review_round(
             "deps": [correct_key],
             "side_effects": False,
             "stated_reason": f"Engine-owned re-review for round {ordinal}",
+            "turn_timeout_seconds": _sized(review_node),
             **bounds,
         },
     ]
@@ -2643,6 +2747,11 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     max_rounds = policy.get("max_review_rounds", DEFAULT_MAX_REVIEW_ROUNDS)
     rounds_used = _review_rounds_used(task_id)
     pending = _pending_correction(nodes, runs)
+    if pending is None:
+        # A round the engine opened and that then failed is the engine's to
+        # reopen. The planner cannot: it is refused the round keys and cannot
+        # discard a node that has run, so the task would only pause.
+        pending = _failed_round(nodes, runs)
     loop_refusal = None
     if pending is not None and rounds_used < max_rounds:
         inserted, loop_refusal = _insert_review_round(

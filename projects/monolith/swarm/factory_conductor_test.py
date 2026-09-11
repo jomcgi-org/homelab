@@ -3536,6 +3536,44 @@ def test_evicted_guest_settles_factory_from_the_committed_stop_intent(
     assert after["runs"][0]["status"] == "failed"
 
 
+def test_supervision_holds_until_the_computed_stop_deadline(
+    uncertain_factory, monkeypatch
+):
+    """_locked_attempt reads its deadline from _stop_deadline and nowhere else.
+
+    A deadline still ahead refuses the tick with factory_stop_not_due, which
+    makes no control-plane call and records no observation. Moving it behind
+    the clock releases exactly the same tick.
+    """
+    from datetime import datetime, timedelta, timezone
+    from swarm import factory_supervision as supervisor
+
+    s = uncertain_factory
+    monkeypatch.setattr(
+        supervisor,
+        "_stop_deadline",
+        lambda *_args: datetime.now(timezone.utc) + timedelta(hours=4),
+    )
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert s.calls == []
+    assert _uncertain_snapshot(s)["factory"]["stop_events"] == []
+
+    monkeypatch.setattr(
+        supervisor,
+        "_stop_deadline",
+        lambda *_args: datetime.now(timezone.utc) - timedelta(seconds=1),
+    )
+    assert not supervisor.reconcile_uncertain_attempt(
+        s.run["pin"], s.sid, s.result, "SUCCESS"
+    )
+    assert [guest for guest, _precondition in s.calls] == [
+        "s-exact-factory",
+        "s-exact-factory",
+    ]
+
+
 def test_evicted_guest_with_a_foreign_stop_precondition_is_refused(
     uncertain_factory, monkeypatch
 ):
@@ -5218,6 +5256,279 @@ def test_zero_review_rounds_never_opens_one(feedback_db):
         node_planner_context(nodes["conductor_1"])["deviation"]["code"]
         == "review_rounds_exhausted"
     )
+
+
+def fail_round_node(task, node_key):
+    """Settle one engine round node the way a guest that never pushed does.
+
+    Session 3723 edited five files, reported that it could not run the local
+    test tooling, and ended the turn with no commit, no push and no typed
+    artifact, so the run failed artifact_missing.
+    """
+    return run_feedback_node(
+        task,
+        node_key,
+        {
+            "status": "needs_work",
+            "summary": f"{node_key} edited files and never pushed.",
+            "pr_number": 21,
+            "head_sha": None,
+        },
+        status="failed",
+    )
+
+
+def test_a_failed_correction_opens_the_next_round_against_the_same_review(
+    feedback_db, monkeypatch
+):
+    """The live wedge: a failed correct_1 left nothing that could move the task.
+
+    _pending_correction reads the review as already answered, the planner is
+    refused correct_<n> and review_<n>, and a node with runs cannot be
+    discarded, so conductor_5 paused task t-5361e8a4 with no supported
+    task-local recovery path.
+    """
+    task, policy = reviewed_task(rounds=2)
+    conductor.reconcile_task(task["id"], policy, object())
+    fail_round_node(task, "correct_1")
+
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert {"correct_2", "review_2"} <= set(nodes)
+    assert not any(key.startswith("conductor_") for key in nodes)
+    # The replacement carries the reviewed head and findings, not the
+    # correction that never landed.
+    assert nodes["correct_2"]["deps"] == ["review_fix"]
+    assert HEAD_ONE in nodes["correct_2"]["prompt"]
+    assert "Tighten the retry bound" in nodes["correct_2"]["prompt"]
+    assert nodes["review_2"]["deps"] == ["correct_2"]
+    # The failed round is still spent against the bound.
+    assert conductor._review_rounds_used(task["id"]) == 2
+    # Once, not once per tick: the next tick dispatches the correction.
+    version = conductor.graph.current_version(task["id"])
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_ONE}}
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    assert conductor.graph.current_version(task["id"]) == version
+    assert any(
+        run["node_key"] == "correct_2" for run in conductor.graph.node_runs(task["id"])
+    )
+
+
+def test_a_re_review_that_settled_without_a_verdict_opens_the_next_round(feedback_db):
+    task, policy = reviewed_task(rounds=2)
+    conductor.reconcile_task(task["id"], policy, object())
+    run_feedback_node(
+        task,
+        "correct_1",
+        {
+            "status": "complete",
+            "summary": "Applied round 1",
+            "pr_number": 21,
+            "head_sha": HEAD_TWO,
+        },
+        head=HEAD_TWO,
+    )
+    fail_round_node(task, "review_1")
+
+    conductor.reconcile_task(task["id"], policy, object())
+    keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
+    assert {"correct_2", "review_2"} <= keys
+    assert not any(key.startswith("conductor_") for key in keys)
+
+
+def test_a_failed_final_round_reaches_the_planner_as_exhausted(feedback_db):
+    task, policy = reviewed_task(rounds=1)
+    conductor.reconcile_task(task["id"], policy, object())
+    fail_round_node(task, "correct_1")
+
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert "correct_2" not in nodes and "review_2" not in nodes
+    assert conductor._review_rounds_used(task["id"]) == 1
+    deviation = node_planner_context(nodes["conductor_1"])["deviation"]
+    assert deviation["code"] == "review_rounds_exhausted"
+    assert deviation["node_key"] == "review_fix"
+    assert "max_review_rounds: 1" in deviation["evidence"]
+
+
+def test_an_escalated_correction_is_left_to_the_planner(feedback_db):
+    """Escalation asks for the planner, so another round would talk over it."""
+    task, policy = reviewed_task(rounds=2)
+    conductor.reconcile_task(task["id"], policy, object())
+    run_feedback_node(
+        task,
+        "correct_1",
+        {
+            "status": "escalate",
+            "summary": "The findings contradict the issue.",
+            "reason": "conflicting authority",
+            "pr_number": 21,
+            "head_sha": None,
+        },
+        status="escalated",
+    )
+
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert "correct_2" not in nodes
+    deviation = node_planner_context(nodes["conductor_1"])["deviation"]
+    assert deviation["code"] == "node_escalated"
+    assert deviation["node_key"] == "correct_1"
+
+
+def test_a_discarded_round_is_not_a_failed_round(feedback_db):
+    """A round dropped before it ran leaves the review unanswered, not failed.
+
+    The ordinary changes_requested path reopens it. The failed-round path must
+    contribute nothing, or the two would race to insert the same pair.
+    """
+    task, policy = reviewed_task(rounds=2)
+    conductor.reconcile_task(task["id"], policy, object())
+    for node_key in ("review_1", "correct_1"):
+        assert conductor.graph.discard_node(
+            task["id"],
+            node_key,
+            author_kind="engine",
+            author="test",
+            cause_kind="factory_conductor",
+            cause_ref=f"test:discard:{node_key}",
+            stated_reason="test fixture",
+            expected_version=conductor.graph.current_version(task["id"]),
+        ).ok
+    nodes = conductor.graph.load_graph(task["id"])
+    runs = conductor.graph.node_runs(task["id"])
+    assert conductor._failed_round(nodes, runs) is None
+    assert conductor._pending_correction(nodes, runs)["node_key"] == "review_fix"
+
+    conductor.reconcile_task(task["id"], policy, object())
+    keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
+    assert {"correct_2", "review_2"} <= keys
+    assert not any(key.startswith("conductor_") for key in keys)
+
+
+def test_a_round_inherits_the_timeouts_the_planner_sized(feedback_db):
+    """A correction repeats the implementation and a re-review the review."""
+    task, policy = feedback_task(turn_timeout_seconds=3600, task_timeout_seconds=14400)
+    assert conductor._add(
+        task,
+        policy,
+        "implement_fix",
+        "bounded work",
+        [],
+        "luna",
+        "test:implement_fix",
+        "test fixture",
+        turn_timeout_seconds=1800,
+    ).ok
+    run_feedback_node(
+        task,
+        "implement_fix",
+        {
+            "status": "complete",
+            "summary": "Delivered the fix",
+            "pr_number": 21,
+            "head_sha": HEAD_ONE,
+        },
+        head=HEAD_ONE,
+    )
+    assert conductor._add(
+        task,
+        policy,
+        "review_fix",
+        "bounded work",
+        ["implement_fix"],
+        "opus",
+        "test:review_fix",
+        "test fixture",
+        review=True,
+        turn_timeout_seconds=900,
+    ).ok
+    run_feedback_node(
+        task,
+        "review_fix",
+        {
+            "verdict": "changes_requested",
+            "summary": "Tighten the retry bound.",
+            "pr_number": 21,
+            "head_sha": HEAD_ONE,
+        },
+        head=HEAD_ONE,
+    )
+
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert policy["turn_timeout_seconds"] == 3600
+    assert nodes["correct_1"]["turn_timeout_seconds"] == 1800
+    assert nodes["review_1"]["turn_timeout_seconds"] == 900
+    # Round 2 repeats round 1, so the sizing carries down the chain.
+    run_correction_round(task, policy, 1, verdict="changes_requested", head=HEAD_TWO)
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert nodes["correct_2"]["turn_timeout_seconds"] == 1800
+    assert nodes["review_2"]["turn_timeout_seconds"] == 900
+
+
+def test_a_round_never_widens_past_a_tightened_policy_ceiling(feedback_db):
+    task, policy = feedback_task(turn_timeout_seconds=3600, task_timeout_seconds=14400)
+    for node_key, model, deps, value in (
+        (
+            "implement_fix",
+            "luna",
+            [],
+            {
+                "status": "complete",
+                "summary": "Delivered the fix",
+                "pr_number": 21,
+                "head_sha": HEAD_ONE,
+            },
+        ),
+        (
+            "review_fix",
+            "opus",
+            ["implement_fix"],
+            {
+                "verdict": "changes_requested",
+                "summary": "Tighten the retry bound.",
+                "pr_number": 21,
+                "head_sha": HEAD_ONE,
+            },
+        ),
+    ):
+        assert conductor._add(
+            task,
+            policy,
+            node_key,
+            "bounded work",
+            deps,
+            model,
+            f"test:{node_key}",
+            "test fixture",
+            review=node_key.startswith("review_"),
+            turn_timeout_seconds=3600,
+        ).ok
+        run_feedback_node(task, node_key, value, head=HEAD_ONE)
+
+    tightened = {**policy, "turn_timeout_seconds": 600}
+    conductor.reconcile_task(task["id"], tightened, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert nodes["correct_1"]["turn_timeout_seconds"] == 600
+    assert nodes["review_1"]["turn_timeout_seconds"] == 600
+
+
+def test_the_correction_brief_states_the_completion_contract(feedback_db):
+    """Round 1 reported no commit because local test tooling was missing."""
+    task, policy = reviewed_task()
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    prompt = nodes["correct_1"]["prompt"]
+    assert "confirm the pull request head moved" in prompt
+    assert "write the declared JSON artifact" in prompt
+    assert "no push and no artifact fails the round" in prompt
+    assert "runs on the pull request and not in the guest" in prompt
+    # The schema itself still comes from node_workflows._node_prompt.
+    assert "$schema" not in prompt and "additionalProperties" not in prompt
 
 
 def test_absent_policy_review_rounds_uses_the_server_default(feedback_db):
