@@ -334,7 +334,12 @@ and one sweep excluded 272 advisory candidates as lane_full. The ceiling is now
 12, high enough to cover both lanes, and when it is not, the free part of it is
 dealt to whichever lane is furthest from its own maximum rather than reserved
 for delivery, with delivery keeping the first slot so it is never unable to
-start. The sweep names the mismatch as lane_ceiling_below_lanes. The same lanes
+start. The sweep names the mismatch as lane_ceiling_below_lanes. Twelve tasks could
+also hold every slot in the background session pool the drainers and the probes
+share, so factory dispatch now leaves a reserve there and every node is gated on
+it, the first node of a settled graph included: the factory is the only member
+of that pool whose work can simply wait for a later tick, so it is the one that
+yields. The same lanes
 also filled at one slot an hour, because a sweep takes one candidate per lane
 and the sweep clock only re-opened on the hour or on a settlement. An admission
 re-opens it too, which costs one extra sweep per admission and lets a lane fill
@@ -350,7 +355,13 @@ body back from GitHub and refuses a body that does not close its issue, naming
 the refusal so the planner can act on it. And landing, behind an `auto_merge`
 flag that defaults off, arms the merge and closes the issue against the merge
 it observes, one pull request at a time because the merge queue ejects
-everything behind a failed candidate. Landing stops at the merge: verifying the
+everything behind a failed candidate. That holder is read from GitHub as well as
+from the lane's own audits, because an operator arming a factory pull request by
+hand puts it in the same queue, and landing selects on landing state rather than
+recency so a burst of newer settlements cannot evict the armed delivery from the
+batch that observes it. An ejection is a state the lane names and re-arms once
+rather than a wedge, and a head that moves under an armed pull request takes the
+arming back off. Landing stops at the merge: verifying the
 chart write-back and the live rollout is a node that does not exist yet
 (#6002).
 

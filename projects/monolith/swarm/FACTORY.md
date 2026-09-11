@@ -86,6 +86,14 @@ running `refine` has to post a lane map to keep it running.** The advisory lane
 is opt-in on purpose, because the number that used to bound it was bounding
 delivery too.
 
+Tasks in flight also draw on the shared background session pool, which the
+drainers and the synthetic probes draw on too, so
+`swarm.factoryBackgroundReserve` (default 2) is the number of slots the factory
+will not take. The factory is the only member of that pool that can wait for
+nothing: a node the pool declines stays ready and starts on a later tick, so the
+factory is the one that yields. Every node is gated on it, the first node of a
+settled graph included.
+
 `swarm.factoryMaxConcurrentTasks` bounds the sum, and **it must be set at least
 as high as delivery plus advisory.** When it covers their sum, each lane simply
 has its own maximum. Below their sum the lanes contend for it, and the free part
@@ -588,7 +596,9 @@ does not carry a closing keyword. The refusal is named
 generic validation failure and can ask for the body to be fixed. The gate
 accepts every keyword GitHub acts on, `closes`, `fixes` and `resolves` in all
 their forms, because refusing a body that says `Fixes #123` would fail a
-delivery that does close its issue.
+delivery that does close its issue, and all three reference forms GitHub
+honours: `#123`, `owner/repo#123` and the full issue URL. Only this task's own
+issue in this task's own repository counts.
 
 ### Landing
 
@@ -603,18 +613,50 @@ has its merge armed through the GitHub auto-merge mutation with the rebase
 method, the equivalent of `gh pr merge --auto --rebase`, and the lane audits
 `merge_armed`. Exactly one factory pull request is armed at a time, because
 this repository merges through the GitHub merge queue and an ejection cascades
-across every candidate behind the one that failed. A second delivery waiting on
-the first audits `merge_deferred` once per blocking pull request and is armed on
-a later tick. A mutation GitHub refuses audits `merge_arm_refused` and is not
-retried; a GitHub read or write that fails audits `landing_error` by exception
-type and status, never by response body, at most once an hour per task, and the
-next tick retries.
+across every candidate behind the one that failed. The holder is read from the
+lane's own audits and from GitHub: before arming anything, one page of open
+pull requests is listed and any pull request on a `factory/` branch with
+auto-merge already set counts, so a pull request an operator armed by hand is
+not raced. A holder check that cannot be read arms nothing, because not knowing
+is not a licence. Every waiting delivery audits `merge_deferred`, once per
+blocking pull request, and is armed on a later tick.
 
-Later ticks observe the armed pull request. A merge audits `merged`, and the
-issue is then closed if it is still open, with one comment naming the pull
-request, audited as `issue_closed`. A pull request closed without merging audits
-`merge_arm_refused` and stops the landing there. Each step writes one audit row
-per task, and that row is the fence, so a step never runs twice.
+Selection is on landing state, never on recency: every non-advisory `succeeded`
+receipt whose landing has not reached a terminal audit, oldest first. Terminal
+is `merge_arm_refused`, which hands the pull request to a human, or
+`issue_closed`, which is the last step of a successful landing. Taking the
+newest receipts of any class instead let a burst of advisory settlements push an
+armed but unmerged delivery out of the batch, which left it never observed and
+the holder reading as absent. A delivery the lane has never touched is skipped
+once it is a week old, so turning the flag on does not stampede over history,
+but anything the lane has armed is followed to a terminal state whatever its
+age.
+
+Later ticks observe the armed pull request:
+
+| What GitHub shows | What landing does |
+|---|---|
+| merged | audits `merged`, then closes the issue |
+| closed, not merged | audits `merge_arm_refused` and stops |
+| open, head moved off the armed SHA | turns auto-merge back off, audits `merge_arm_refused` with `head_moved` |
+| open, auto-merge gone | audits `merge_ejected` and re-arms |
+| open, still armed | waits |
+
+An open pull request whose auto-merge GitHub has turned off was ejected from the
+merge queue. Watching only for a closed pull request wedged the holder forever,
+so the ejection is named and the pull request is armed again: the queue analysis
+failure class is usually transient. After two ejections the lane audits
+`merge_arm_refused`, sends one Discord warning, and leaves the pull request for
+a human, because an invalid merge commit needs a rebase no node here can do. The
+head recheck is what stops a branch that moved under an armed pull request from
+merging something no reviewer approved.
+
+A mutation GitHub refuses audits `merge_arm_refused` and is not retried; a
+GitHub read or write that fails audits `landing_error` by exception type and
+status, never by response body, at most once an hour per task, and the next tick
+retries. `merge_armed` and `merge_ejected` are counted rather than fenced,
+because a delivery can be armed, ejected and armed again; every other step
+writes one row per task and that row is its fence.
 
 Landing stops at the merge. Confirming that the chart version write-back landed
 and that the new image is live is the verify node #6002 phase 4 still owes; the
