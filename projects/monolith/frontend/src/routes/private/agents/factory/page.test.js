@@ -92,6 +92,10 @@ function board(overrides = {}) {
     version: 44,
     actor: "operator",
     admitted_count: 11,
+    lanes: {
+      delivery: { limit: 1, active: 1, queued: 1 },
+      advisory: { limit: 2, active: 0, queued: 0 },
+    },
     policy: {
       generation: 3,
       conductor_model: "spark",
@@ -157,6 +161,9 @@ describe("factory board page", () => {
     expect(labels[1]).toMatch(/^\/ Queue/);
     expect(labels[2]).toMatch(/^\/ Recent/);
     expect(target.querySelectorAll(".panel")).toHaveLength(3);
+    expect(target.querySelector(".policy-line").textContent).toContain(
+      "1/1 delivery \u00b7 0/2 advisory",
+    );
 
     const ranks = target.querySelectorAll(".panel.admitted .dag .rank");
     expect(ranks).toHaveLength(3);

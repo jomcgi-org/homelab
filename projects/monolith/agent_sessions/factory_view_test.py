@@ -221,7 +221,8 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
         ],
     )
     with Session(engine) as db:
-        assert build_factory_view(session=db)["ok"] is False
+        unavailable = build_factory_view(session=db)
+        assert unavailable["ok"] is False and unavailable["lanes"] is None
         db.add(
             FactoryControl(
                 id="factory",
@@ -259,6 +260,12 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
     assert view["queued"][0]["nodes"] == []
     assert view["active"] == [] and view["recent"] == []
     assert view["intake"]["policy"]["enabled"] is False
+    # The control row carries a bare integer max_tasks, so it is the delivery
+    # lane and the advisory lane is shut.
+    assert view["lanes"] == {
+        "delivery": {"limit": 1, "active": 0, "queued": 1},
+        "advisory": {"limit": 0, "active": 0, "queued": 0},
+    }
 
 
 def test_a_policy_pinned_before_the_envelope_still_shows_its_turn_bound():

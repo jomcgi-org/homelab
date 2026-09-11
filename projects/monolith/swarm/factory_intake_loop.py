@@ -10,6 +10,7 @@ from sqlmodel import select
 
 from swarm.factory_controls import (
     DEFAULT_TASK_CLASS,
+    LANES,
     _audit,
     receipt_task_class,
     _locked_session,
@@ -17,8 +18,9 @@ from swarm.factory_controls import (
     _read_session,
     intake_policy,
     intake_state,
+    lane_for,
 )
-from swarm.factory_intake import INTAKE_ACTOR, receive_issue
+from swarm.factory_intake import INTAKE_ACTOR, open_lanes, receive_issue
 from swarm.factory_models import FactoryAudit, FactoryReceipt
 
 logger = logging.getLogger(__name__)
@@ -56,6 +58,7 @@ _EXCLUSION_REASONS = (
     "cooldown",
     "already_received",
     "refine_disabled",
+    "lane_full",
 )
 
 
@@ -193,23 +196,30 @@ def _listing_due(now: datetime) -> bool:
         return settled is not None
 
 
-def intake_tick(policy: dict, *, generation: int) -> dict | None:
-    """Admit at most one issue the operator never named, or audit why not."""
+def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
+    """Queue at most one issue per open lane, or audit why it queued none.
+
+    The lanes are ranked and filled independently: a delivery candidate and an
+    advisory one can both enter on the same tick when both lanes have room,
+    and never more than one of either. ``lanes`` lets a caller hold one shut
+    without touching the policy.
+    """
     try:
         intake = intake_policy(policy)
         if not intake["enabled"]:
-            return None
+            return []
         now = _now()
         today = now - timedelta(hours=24)
         with _locked_session() as (db, _control):
-            busy = db.exec(
-                select(FactoryReceipt.id).where(
+            held = db.exec(
+                select(FactoryReceipt).where(
                     FactoryReceipt.generation == generation,
                     FactoryReceipt.state.in_(("queued", "admitted", "uncertain")),
                 )
-            ).first()
-            if busy is not None:
-                return None
+            ).all()
+            room = open_lanes(policy, held, lanes)
+            if not any(room.values()):
+                return []
             admitted_today = len(
                 db.exec(
                     select(FactoryAudit.id).where(
@@ -226,10 +236,10 @@ def intake_tick(policy: dict, *, generation: int) -> dict | None:
                     "max_per_day": intake["max_per_day"],
                 }
             )
-            return None
+            return []
 
         if not _listing_due(now):
-            return None
+            return []
 
         repo = policy["repo"]
         # The clock records the ATTEMPT, not the result. A sweep that fails is
@@ -257,7 +267,7 @@ def intake_tick(policy: dict, *, generation: int) -> dict | None:
                 },
             )
             logger.warning("factory intake listing failed", exc_info=True)
-            return None
+            return []
         truncated = issues_cut or pulls_cut
         linked: set[int] = set()
         for pull in pulls:
@@ -357,10 +367,15 @@ def intake_tick(policy: dict, *, generation: int) -> dict | None:
             rank_reason = (
                 RANK_LABELS[label_rank] if label_rank < len(RANK_LABELS) else "oldest"
             )
+            lane = lane_for(task_class)
+            if not room.get(lane):
+                exclude("lane_full")
+                continue
             candidates.append(
                 {
                     "issue": item,
                     "number": number,
+                    "lane": lane,
                     "task_class": task_class,
                     "class_reason": class_reason,
                     "rank_reason": rank_reason,
@@ -382,46 +397,71 @@ def intake_tick(policy: dict, *, generation: int) -> dict | None:
                     **({"truncated": True} if truncated else {}),
                 }
             )
-            return None
+            return []
 
-        chosen = candidates[0]
-        issue = chosen["issue"]
-        received = receive_issue(
-            repo,
-            chosen["number"],
-            issue.get("title"),
-            issue.get("body") or "",
-            issue.get("html_url"),
-            ACTOR,
-            generation=generation,
-            task_class=chosen["task_class"],
-        )
-        with _locked_session() as (db, _control):
-            _audit(
-                db,
-                ACTOR,
-                "intake_admitted",
-                receipt_id=received["receipt"]["id"],
-                issue_number=chosen["number"],
-                task_class=chosen["task_class"],
-                class_reason=chosen["class_reason"],
-                rank_reason=chosen["rank_reason"],
-                candidates=[
+        # One per lane, in lane-blind rank order, so the delivery lane keeps
+        # its precedence over refine while an open advisory lane is not left
+        # idle behind a delivery candidate it has nothing to do with.
+        chosen: list[dict] = []
+        taken: set[str] = set()
+        for candidate in candidates:
+            if candidate["lane"] in taken:
+                continue
+            taken.add(candidate["lane"])
+            chosen.append(candidate)
+
+        received_all = []
+        for candidate in chosen:
+            if admitted_today >= intake["max_per_day"]:
+                _idle(
                     {
-                        "number": candidate["number"],
-                        "task_class": candidate["task_class"],
-                        "rank_reason": candidate["rank_reason"],
+                        "reason": "daily_cap",
+                        "admitted_today": admitted_today,
+                        "max_per_day": intake["max_per_day"],
                     }
-                    for candidate in candidates[:CANDIDATE_EVIDENCE_LIMIT]
-                ],
-                excluded=excluded,
-                admitted_today=admitted_today + 1,
-                **({"truncated": True} if truncated else {}),
+                )
+                break
+            issue = candidate["issue"]
+            received = receive_issue(
+                repo,
+                candidate["number"],
+                issue.get("title"),
+                issue.get("body") or "",
+                issue.get("html_url"),
+                ACTOR,
+                generation=generation,
+                task_class=candidate["task_class"],
             )
-        return received
+            admitted_today += 1
+            received_all.append(received)
+            with _locked_session() as (db, _control):
+                _audit(
+                    db,
+                    ACTOR,
+                    "intake_admitted",
+                    receipt_id=received["receipt"]["id"],
+                    issue_number=candidate["number"],
+                    lane=candidate["lane"],
+                    task_class=candidate["task_class"],
+                    class_reason=candidate["class_reason"],
+                    rank_reason=candidate["rank_reason"],
+                    candidates=[
+                        {
+                            "number": other["number"],
+                            "lane": other["lane"],
+                            "task_class": other["task_class"],
+                            "rank_reason": other["rank_reason"],
+                        }
+                        for other in candidates[:CANDIDATE_EVIDENCE_LIMIT]
+                    ],
+                    excluded=excluded,
+                    admitted_today=admitted_today,
+                    **({"truncated": True} if truncated else {}),
+                )
+        return received_all
     except Exception:  # noqa: BLE001 - intake is optional and never stops the lane
         logger.exception("factory autonomous intake failed")
-        return None
+        return []
 
 
 # Re-exported so a caller reading the loop finds the board's view of it here.

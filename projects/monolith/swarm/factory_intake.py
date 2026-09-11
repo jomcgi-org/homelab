@@ -16,8 +16,13 @@ from swarm.factory_controls import (
     _snapshot,
     _text,
     DEFAULT_TASK_CLASS,
+    LANES,
     intake_policy,
+    lane_for,
+    lane_limits,
     normalize_repo,
+    receipt_task_class,
+    TASK_CLASSES,
     validate_task_class,
     validate_policy,
 )
@@ -94,14 +99,37 @@ def receive_issue(
 
 
 def concurrency_limit(policy: dict) -> int:
-    """Tasks the factory may have in flight: policy max_tasks under the chart cap."""
-    from swarm.config import factory_max_concurrent_tasks
+    """Tasks the factory may have in flight across both lanes.
 
-    return max(1, min(int(policy["max_tasks"]), factory_max_concurrent_tasks()))
+    The lanes are bounded separately, so this is only the cheap total gate a
+    caller uses to decide whether to look at all. A lane with room is what
+    actually admits, and ``admit_next`` is the authority on that.
+    """
+    return sum(lane_limits(policy).values())
 
 
-def admit_next(actor: str, *, session: Session | None = None) -> dict:
+def lane_of(row) -> str:
+    """The lane a receipt belongs to, reading a pre-class receipt as delivery."""
+    return lane_for(receipt_task_class(row))
+
+
+def open_lanes(policy: dict, rows, lanes=LANES) -> dict:
+    """Room left per lane, given the receipts already holding slots in them."""
+    limits = lane_limits(policy)
+    room = {lane: (limits[lane] if lane in lanes else 0) for lane in LANES}
+    for row in rows:
+        lane = lane_of(row)
+        room[lane] = room[lane] - 1
+    return {lane: max(0, value) for lane, value in room.items()}
+
+
+def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> dict:
     """Atomically reserve one WIP slot and pin the operator policy to a new SwarmTask.
+
+    Each lane is bounded on its own, so a full delivery lane never blocks an
+    advisory admission and the reverse. ``lanes`` narrows that further for a
+    caller holding a reason to keep one shut, and an unnamed lane admits
+    nothing rather than falling back to the policy.
 
     max_tasks bounds tasks in flight, not tasks ever admitted: an autonomous
     intake must keep admitting as tasks settle. Total spend per generation is
@@ -110,25 +138,43 @@ def admit_next(actor: str, *, session: Session | None = None) -> dict:
     to re-arm. admitted_count is kept for status only.
     """
     actor = _text(actor, "actor")
+    lanes = tuple(lane for lane in LANES if lane in lanes)
     with _locked_session(session) as (db, control):
         if control.state != "enabled":
             return {"ok": False, "reason": control.state}
         policy = validate_policy(json.loads(control.policy_json))
-        limit = concurrency_limit(policy)
+        limits = lane_limits(policy)
         active = db.exec(
             select(FactoryReceipt)
             .where(FactoryReceipt.state.in_(("admitted", "uncertain")))
             .order_by(FactoryReceipt.id)
         ).all()
-        if len(active) >= limit:
+        room = open_lanes(policy, active, lanes)
+        available = [lane for lane in lanes if room[lane] > 0]
+        if not available:
+            held = [row.task_id for row in active]
             return {
                 "ok": False,
                 "reason": "wip_limit",
-                "task_id": active[0].task_id,
-                "active_task_ids": [row.task_id for row in active],
+                "task_id": held[0] if held else None,
+                "active_task_ids": held,
                 "active": len(active),
-                "limit": limit,
+                "limit": sum(limits[lane] for lane in lanes),
+                "lanes": {
+                    lane: {
+                        "limit": limits[lane] if lane in lanes else 0,
+                        "active": sum(1 for row in active if lane_of(row) == lane),
+                    }
+                    for lane in LANES
+                },
             }
+        # A receipt written before classes existed has a NULL column and reads
+        # as the default class, which is delivery. Matching it by class alone
+        # would leave those receipts unadmittable.
+        classes = [name for name in TASK_CLASSES if lane_for(name) in available]
+        in_lane = FactoryReceipt.task_class.in_(classes)
+        if "delivery" in available:
+            in_lane = or_(in_lane, FactoryReceipt.task_class.is_(None))
         eligible = FactoryReceipt.issue_number.in_(policy["issue_numbers"])
         if intake_policy(policy)["enabled"]:
             # Intake receipts are not in the operator allowlist by construction.
@@ -141,6 +187,7 @@ def admit_next(actor: str, *, session: Session | None = None) -> dict:
                 FactoryReceipt.state == "queued",
                 FactoryReceipt.repo == policy["repo"],
                 eligible,
+                in_lane,
                 FactoryReceipt.generation == policy["generation"],
             )
             .order_by(FactoryReceipt.created_at, FactoryReceipt.id)
@@ -173,12 +220,14 @@ def admit_next(actor: str, *, session: Session | None = None) -> dict:
             "admit_next",
             task_id=task_id,
             receipt_id=row.id,
+            lane=lane_of(row),
             policy_version=control.version,
         )
         return {
             "ok": True,
             "task_id": task_id,
             "receipt_id": row.id,
+            "lane": lane_of(row),
             "policy": policy,
             "receipt": _snapshot(db, row, body=True),
         }

@@ -265,7 +265,7 @@ def test_tick_admits_up_to_the_concurrency_limit(
             {"ok": True, "task_id": "t-3", "policy": policy},
         ]
     )
-    monkeypatch.setattr(intake, "admit_next", lambda _actor: next(admitted))
+    monkeypatch.setattr(intake, "admit_next", lambda _actor, **_kwargs: next(admitted))
     reconciled = []
     monkeypatch.setattr(
         conductor,
@@ -298,7 +298,11 @@ def test_tick_at_the_limit_reconciles_without_ingesting_or_admitting(monkeypatch
     monkeypatch.setattr(
         conductor, "ingest_eligible", lambda _p: pytest.fail("at the limit")
     )
-    monkeypatch.setattr(intake, "admit_next", lambda _a: pytest.fail("at the limit"))
+    monkeypatch.setattr(
+        intake,
+        "admit_next",
+        lambda _a, **_kwargs: pytest.fail("at the limit"),
+    )
     reconciled = []
     monkeypatch.setattr(
         conductor,
@@ -342,7 +346,11 @@ def test_tick_isolates_a_failing_task_and_a_failing_ingest(monkeypatch):
         raise RuntimeError("404 on a transferred issue")
 
     monkeypatch.setattr(conductor, "ingest_eligible", ingest)
-    monkeypatch.setattr(intake, "admit_next", lambda _a: pytest.fail("ingest raised"))
+    monkeypatch.setattr(
+        intake,
+        "admit_next",
+        lambda _a, **_kwargs: pytest.fail("ingest raised"),
+    )
     conductor.tick()
     assert reconciled == ["t-poisoned", "t-healthy"]
 
@@ -6974,7 +6982,7 @@ def test_tick_ingests_the_operators_issues_before_it_discovers_one(monkeypatch):
         "intake_tick",
         lambda _p, **_kwargs: order.append("intake"),
     )
-    monkeypatch.setattr(intake, "admit_next", lambda _actor: {"ok": False})
+    monkeypatch.setattr(intake, "admit_next", lambda _actor, **_kwargs: {"ok": False})
     monkeypatch.setattr(conductor, "reconcile_task", lambda *_args: None)
     conductor.tick()
     assert order == ["ingest", "intake"]

@@ -93,6 +93,16 @@ ADVISORY_CLASSES = ("advisory-diagnosis", "advisory-triage", "refine")
 # Judgment: correctness is only assessable by reading, so the floor is Opus.
 JUDGMENT_CLASSES = ("judgment-analysis",)
 TASK_CLASSES = MACHINE_VERIFIED_CLASSES + ADVISORY_CLASSES + JUDGMENT_CLASSES
+# The two lanes a task runs in. Delivery work ends in a pull request an Opus
+# reviewer has to read, and that review is the only input the factory is
+# actually short of. Advisory work ends in a comment: it costs a cheap
+# implementer and no review at all, so it is bounded separately rather than
+# competing with delivery for one number.
+LANES = ("delivery", "advisory")
+# Absent means one delivery task and no advisory work, which is the shape a
+# policy written before lanes existed asked for. The advisory lane is opt-in:
+# an operator who wants refine running says so.
+DEFAULT_LANE_MAX_TASKS = {"delivery": 1, "advisory": 0}
 # Nodes the reconciler may hold in flight for one task at once. One preserves
 # the serial lane, so a policy written before fan-out existed never fans out.
 DEFAULT_MAX_PARALLEL_NODES = 1
@@ -157,9 +167,9 @@ def validate_policy(policy: dict) -> dict:
     result["issue_numbers"] = sorted(
         {_integer(i, "issue_number", 1, 2**31 - 1) for i in issues}
     )
+    result["max_tasks"] = _validate_max_tasks(policy["max_tasks"])
     for key, low, high in (
         ("generation", 0, 2**31 - 1),
-        ("max_tasks", 1, 100),
         ("turn_timeout_seconds", 1, 43200),
         ("max_attempts", 1, 10),
         ("task_timeout_seconds", 1, 86400),
@@ -285,6 +295,86 @@ def receipt_task_class(row) -> str:
 def is_advisory(task_class: str) -> bool:
     """Advisory work comments and never delivers, so it admits no DAG."""
     return task_class in ADVISORY_CLASSES
+
+
+def lane_for(task_class: str) -> str:
+    """The lane a class runs in. Lane follows class; it is not configurable.
+
+    A task that ends in a comment is advisory and a task that ends in a pull
+    request is delivery, and which of those a class is was already decided by
+    its verification mode. Letting an operator move a class between lanes
+    would let advisory concurrency buy delivery work that no reviewer is
+    sized for.
+    """
+    return "advisory" if is_advisory(task_class) else "delivery"
+
+
+def _validate_max_tasks(value: object) -> dict:
+    """Per-lane concurrency. A bare integer is the delivery lane, as before.
+
+    A policy posted before lanes existed carries one number, which asked for
+    that many tasks in flight and said nothing about advisory work. Reading
+    it as the delivery lane keeps exactly the capacity it asked for, and the
+    advisory lane stays shut until an operator opens it.
+    """
+    if isinstance(value, dict):
+        if not value or not set(value) <= set(LANES):
+            raise ValueError("invalid max_tasks")
+        return {
+            "delivery": _integer(
+                value.get("delivery", DEFAULT_LANE_MAX_TASKS["delivery"]),
+                "max_tasks.delivery",
+                1,
+                100,
+            ),
+            "advisory": _integer(
+                value.get("advisory", DEFAULT_LANE_MAX_TASKS["advisory"]),
+                "max_tasks.advisory",
+                0,
+                100,
+            ),
+        }
+    return {
+        "delivery": _integer(value, "max_tasks", 1, 100),
+        "advisory": DEFAULT_LANE_MAX_TASKS["advisory"],
+    }
+
+
+def lane_max_tasks(policy: dict) -> dict:
+    """What the policy asks for per lane, before the chart ceiling applies."""
+    return _validate_max_tasks(
+        policy.get("max_tasks", DEFAULT_LANE_MAX_TASKS["delivery"])
+    )
+
+
+def lane_limits(policy: dict) -> dict:
+    """Per-lane concurrency with the chart ceiling applied to the SUM.
+
+    The chart owns one number for the whole factory, so the lanes divide it
+    rather than each getting it. Delivery is served first and keeps at least
+    one slot: a ceiling an operator set below the policy must never leave the
+    delivery lane unable to start anything. Advisory takes what is left.
+    """
+    from swarm.config import factory_max_concurrent_tasks
+
+    ceiling = factory_max_concurrent_tasks()
+    wanted = lane_max_tasks(policy)
+    delivery = max(1, min(wanted["delivery"], ceiling))
+    advisory = max(0, min(wanted["advisory"], ceiling - delivery))
+    return {"delivery": delivery, "advisory": advisory}
+
+
+def lane_usage(policy: dict, receipts: list[dict]) -> dict:
+    """Per-lane limits beside what is in flight and what is waiting."""
+    limits = lane_limits(policy)
+    usage = {lane: {"limit": limits[lane], "active": 0, "queued": 0} for lane in LANES}
+    for receipt in receipts:
+        lane = lane_for(receipt.get("task_class") or DEFAULT_TASK_CLASS)
+        if receipt.get("state") in _ACTIVE:
+            usage[lane]["active"] += 1
+        elif receipt.get("state") == "queued":
+            usage[lane]["queued"] += 1
+    return usage
 
 
 def _validate_model_pools(pools: object, policy: dict) -> dict:
@@ -846,6 +936,7 @@ def status(*, session: Session | None = None) -> dict:
             "state": control.state,
             "policy": policy,
             "intake": intake_state(policy, session=db),
+            "lanes": lane_usage(policy, receipts),
             "admitted_count": control.admitted_count,
             "version": control.version,
             "actor": control.actor,

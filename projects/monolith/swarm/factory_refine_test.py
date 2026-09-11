@@ -58,6 +58,9 @@ def db(tmp_path, monkeypatch):
         session.commit()
     for module in (conductor, controls, graph):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
+    # Refine is advisory work, and the advisory lane is opt-in with a ceiling
+    # that has to hold both lanes at once.
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
     yield engine
     engine.dispose()
 
@@ -67,7 +70,7 @@ def make_task(task_class="refine"):
         "repo": "owner/repo",
         "issue_numbers": [7],
         "generation": 0,
-        "max_tasks": 1,
+        "max_tasks": {"delivery": 1, "advisory": 1},
         "max_turns_per_task": 20,
         "task_budget_usd": 30.0,
         "turn_budget_usd": 2.0,
