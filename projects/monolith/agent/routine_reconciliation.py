@@ -181,17 +181,13 @@ def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> di
             reservations[0]["tier"] if len(reservations) == 1 else None
         ),
         "reservation_job_name": (
-            reservations[0]["routine_job_name"]
-            if len(reservations) == 1
-            else None
+            reservations[0]["routine_job_name"] if len(reservations) == 1 else None
         ),
         "reservation_session_id": (
             reservations[0]["session_id"] if len(reservations) == 1 else None
         ),
         "reservation_local_session_id": (
-            reservations[0]["local_session_id"]
-            if len(reservations) == 1
-            else None
+            reservations[0]["local_session_id"] if len(reservations) == 1 else None
         ),
         "active_reservation_ids": [row["id"] for row in active_reservations],
         "extraction_version": EXTRACTION_VERSION,
