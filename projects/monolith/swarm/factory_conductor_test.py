@@ -104,6 +104,7 @@ def delivery(
     check_state="success",
     reviewer="opus",
     review_session=11,
+    body="Delivers the fix.\n\nCloses #77",
 ):
     monkeypatch.setattr(conductor, "_budget_evidence", lambda _task: {})
     head = "a" * 40
@@ -112,10 +113,12 @@ def delivery(
         "repo": "owner/repo",
         "base_branch": "main",
         "conductor_model": "opus",
+        "issue_number": 77,
     }
     pr = {
         "state": "open",
         "draft": draft,
+        "body": body,
         "head": {
             "sha": head,
             "ref": "factory/t-1",
@@ -7209,3 +7212,86 @@ def test_routing_that_cannot_be_observed_never_stops_the_tick(monkeypatch):
 
     monkeypatch.setattr(quota_guard, "observe", explode)
     conductor.observe_reviewer_routing({})
+
+
+@pytest.mark.parametrize(
+    ("body", "closes"),
+    [
+        ("Closes #77", True),
+        ("closes #77", True),
+        ("Fixes #77", True),
+        ("Resolves owner/repo#77", True),
+        ("Refs #77", False),
+        ("Closes #770", False),
+        ("Closes #7", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_close_keyword_recognises_every_keyword_github_acts_on(body, closes):
+    assert conductor.closes_issue(body, "owner/repo", 77) is closes
+
+
+def test_delivery_refuses_a_body_that_does_not_close_the_issue(monkeypatch):
+    """The #3877 defect at its source: a merged PR that left the issue open."""
+    task, runs = delivery(monkeypatch, body="Delivers the fix. Refs #77")
+    with pytest.raises(conductor.DeliveryRefused) as refusal:
+        conductor.verify_delivery(task, 3, runs, issue_number=77)
+    assert refusal.value.code == "pr_missing_close_keyword"
+
+
+def test_delivery_with_the_closing_line_still_verifies(monkeypatch):
+    task, runs = delivery(monkeypatch)
+    result = conductor.verify_delivery(task, 3, runs, issue_number=77)
+    assert result["state"] == "ready_for_review"
+
+
+def test_a_named_gate_refusal_reaches_the_planner_by_its_own_name(monkeypatch):
+    """validation_failed says nothing the planner can act on; the code does."""
+    recorded = {}
+    monkeypatch.setattr(
+        conductor,
+        "_decision_processed",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(
+        conductor,
+        "_reject_decision",
+        lambda task_id, cause, action, code, reason: recorded.update(
+            code=code, reason=reason
+        ),
+    )
+
+    def refuse(*_args, **_kwargs):
+        raise conductor.DeliveryRefused("pr_missing_close_keyword", "no closing line")
+
+    monkeypatch.setattr(conductor, "_apply_decision", refuse)
+    conductor.apply_decision(
+        {"id": "t-1"},
+        {},
+        {
+            "node_key": "conductor_1",
+            "attempt": 1,
+            "outcome_json": '{"value": {"action": "finish"}}',
+        },
+        [],
+    )
+    assert recorded == {"code": "pr_missing_close_keyword", "reason": "no closing line"}
+
+
+def test_the_delivery_boundary_demands_the_closing_line_on_every_update():
+    task = {
+        "id": "t-1",
+        "repo": "owner/repo",
+        "base_branch": "main",
+        "issue_number": 77,
+    }
+    boundary = conductor._boundary(task)
+    assert "Closes #77" in boundary
+    assert "on every update" in boundary
+    # A review node reads the same boundary, so the requirement it checks the
+    # body against is the one the implementer was given.
+    assert "Closes #77" in conductor._boundary(task, review=True)
+    # A task with no receipt issue says nothing about closing keywords rather
+    # than inventing a number.
+    assert "Closes" not in conductor._boundary({**task, "issue_number": None})
