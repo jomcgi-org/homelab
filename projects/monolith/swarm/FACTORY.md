@@ -283,12 +283,15 @@ Supervision runs only once the attempt's stop is due: an operator stop, a
 cancellation request, the turn timeout elapsed measured from dispatch, or two
 minutes after the session's own turn was recorded as failed. That last term is
 what makes the deadline track the guest instead of the policy. A turn timeout
-bounds how long a turn may run, so it is the right deadline only while the turn
-could still be running; once the turn is terminal there is nothing left to wait
-out, and the two-minute grace is there so the conductor's own native completion
-check settles the attempt first where it can. Every term is a minimum, so the
-grace only ever brings a stop forward, and an attempt whose turn is still open
-carries no failure stamp and keeps the turn-timeout deadline alone. A strand or
+bounds how long a turn may run, so it was the right deadline only for a turn
+that could still be running, and supervision never sees one:
+`read_uncertain_factory_attempt` refuses the attempt unless its turn is already
+terminal with `terminal_reason` `error`, so a live turn is out of scope upstream
+and the failure stamp is always there. Waiting out the turn timeout was
+therefore waiting for a turn that had already ended. The two-minute grace is
+there so the conductor's own native completion check settles the attempt first
+where it can. Every term is a minimum, so the grace only ever brings a stop
+forward. A strand or
 a stall caught early still holds its reservation until one of those deadlines
 passes rather than self-healing at the moment it is observed.
 
@@ -322,6 +325,19 @@ task-local recovery path at all. The replacement round carries the same reviewed
 head and findings, and the failed round still counts, so a round that keeps
 failing spends the bound instead of looping inside it. A node that escalated is
 deliberately not reopened, because escalation asked for the planner.
+
+Reopening cleans up after the round it replaces. The failed round's re-review
+never ran and never can, so it is discarded in the same atomic edit, which
+returns its attempt and its ceiling to the allowance; its correction stays,
+because it has runs and the graph refuses discarding those. A correction can
+also push and then die, so the replacement is briefed at the task branch head
+read live at insertion, with the findings still attributed to the earlier head
+the review inspected, and it falls back to that head when the branch cannot be
+read. Once a later round supersedes it, a `correct_<n>` or `review_<n>` stops
+being scanned as an open failure, or a task would be handed `node_failed` on a
+node the planner may neither add nor discard at the moment the round that
+replaced it delivered. When the bound is spent the deviation still names the
+review, and it now also names the last correction and why it delivered nothing.
 
 Each round inherits its timeouts from the nodes it repeats: the correction takes
 the reviewed implementation node's `turn_timeout_seconds` and the re-review

@@ -29,8 +29,8 @@ ACTOR = "factory:stop-supervision"
 MAX_STOP_REQUESTS = 3
 HTTP_SECONDS = 5
 COMPLETION_ALARM_SECONDS = 120
-# How long after a terminal turn the guest stop becomes due. Long enough
-# for the conductor's own native completion check to settle the attempt
+# How long after the attempt's failed turn the guest stop becomes due. Long
+# enough for the conductor's own native completion check to settle the attempt
 # first, short enough that a four-hour policy timeout never decides it.
 STOP_GRACE_SECONDS = 120
 _ACTIONS = (
@@ -94,15 +94,21 @@ def _audit(db, pin, action, **detail):
 def _stop_deadline(snapshot: dict, identity: dict, pin: dict) -> datetime:
     """When this attempt's guest stop becomes due.
 
-    The turn timeout bounds how long the turn may run, so it is the right
-    deadline only while the turn could still be running. Once the session's own
-    turn is terminal there is nothing left to wait out, and a planner that left
-    the policy maximum in place held one evicted guest for four hours before
-    supervision confirmed the cessation it could have confirmed in minutes. A
-    terminal turn is therefore due a fixed grace after the failure was
+    The turn timeout bounds how long the turn may run, so it was the right
+    deadline only for a turn that could still be running. Nothing supervision
+    sees is such a turn: read_uncertain_factory_attempt refuses the attempt
+    with factory_attempt_not_uncertain unless its turn is already terminal
+    with terminal_reason "error", so a live turn is out of scope upstream and
+    failed_turn_at is always present. Waiting out the turn timeout therefore
+    waited for a turn that had already ended, and a planner that left the
+    policy maximum in place held one evicted guest for four hours before
+    supervision confirmed a cessation it could have confirmed in minutes.
+
+    The failure stamp decides it instead, a fixed grace after the failure was
     recorded, whatever the node's timeout says. Every term is a minimum, so
-    this can only bring a stop forward: an attempt whose turn is still open
-    carries no failure stamp and keeps the turn-timeout deadline alone.
+    this can only bring a stop forward. The failed_turn_at guard is a total
+    function's floor rather than a live branch: the identity reader has
+    already guaranteed the key, and the arithmetic stays defined without it.
     """
     deadline = min(
         _timestamp(snapshot["deadline_at"]),

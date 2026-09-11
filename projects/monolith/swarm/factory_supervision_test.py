@@ -27,15 +27,25 @@ def test_a_dead_turn_is_due_a_fixed_grace_after_the_failure():
     investigate_cache was dispatched with turn_timeout_seconds at the policy
     value of 14400 and its turn died four minutes in. Supervision was refused
     factory_stop_not_due until the timeout elapsed. The failure stamp now
-    decides it instead.
+    decides it instead, and since supervision only ever sees a terminal turn,
+    this is the deadline that governs every real attempt.
     """
     assert supervisor.STOP_GRACE_SECONDS == 120
     deadline = _case(turn_timeout_seconds=14400, failed_after=240)
     assert deadline == DISPATCHED_AT + timedelta(seconds=360)
 
 
-def test_an_open_turn_keeps_its_turn_timeout_deadline():
-    """No failure stamp means the turn could still be running."""
+def test_a_missing_failure_stamp_falls_back_to_the_turn_timeout():
+    """Supervision never reaches this, and the arithmetic stays total anyway.
+
+    read_uncertain_factory_attempt (agent_sessions/reconciliation.py) refuses
+    an attempt with factory_attempt_not_uncertain unless its turn is already
+    terminal with terminal_reason "error", and it returns failed_turn_at
+    unconditionally for the attempts it does admit. A live turn is therefore
+    out of scope upstream rather than handled here. This pins the floor the
+    guard leaves behind, so a caller that ever built an identity by hand gets
+    the old deadline rather than a KeyError.
+    """
     deadline = _case(turn_timeout_seconds=14400)
     assert deadline == DISPATCHED_AT + timedelta(seconds=14400)
 
