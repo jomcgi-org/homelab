@@ -23,6 +23,7 @@ from swarm.models import SwarmTask
 
 NOW = datetime(2026, 9, 11, 12, tzinfo=timezone.utc)
 POLICY = {"repo": "owner/repo", "auto_merge": True}
+HEAD = "a" * 40
 
 
 @pytest.fixture
@@ -55,11 +56,22 @@ def db(tmp_path, monkeypatch):
         session.commit()
     monkeypatch.setattr(controls, "get_engine", lambda: engine)
     monkeypatch.setattr(landing, "_now", lambda: NOW)
+    monkeypatch.setattr(landing, "_notify_stuck", lambda *_args: None)
     yield engine
     engine.dispose()
 
 
-def delivered(db, task_id, issue_number, pr_number, *, evidence=True):
+def delivered(
+    db,
+    task_id,
+    issue_number,
+    pr_number,
+    *,
+    evidence=True,
+    task_class="bug-fix",
+    settled=None,
+    head=HEAD,
+):
     """One settled delivery: its task, its succeeded receipt and its evidence."""
     with Session(db) as session:
         session.add(
@@ -86,8 +98,9 @@ def delivered(db, task_id, issue_number, pr_number, *, evidence=True):
                 url=f"https://github.com/owner/repo/issues/{issue_number}",
                 actor="test",
                 state="succeeded",
+                task_class=task_class,
                 task_id=task_id,
-                updated_at=NOW - timedelta(minutes=5),
+                updated_at=settled or (NOW - timedelta(minutes=5)),
             )
         )
         session.flush()
@@ -104,7 +117,7 @@ def delivered(db, task_id, issue_number, pr_number, *, evidence=True):
                                 "pr_url": (
                                     f"https://github.com/owner/repo/pull/{pr_number}"
                                 ),
-                                "head_sha": "a" * 40,
+                                "head_sha": head,
                                 "state": "ready_for_review",
                             }
                             if evidence
@@ -128,39 +141,56 @@ def audits(db, action, task_id=None):
         ]
 
 
-def github(monkeypatch, *, pulls=None, issues=None):
-    """Fake the read and write boundary, and count every call it takes."""
-    calls = {"get": [], "graphql": [], "write": []}
-
-    def get(_repo, suffix):
-        calls["get"].append(suffix)
-        if suffix.startswith("pulls/"):
-            return dict((pulls or {})[int(suffix.split("/")[1])])
-        return dict((issues or {})[int(suffix.split("/")[1])])
-
-    def graphql(_query, variables):
-        calls["graphql"].append(variables)
-        return {"enablePullRequestAutoMerge": {"pullRequest": {"number": 1}}}
-
-    def write(_repo, suffix, payload, *, method="POST"):
-        calls["write"].append((method, suffix, payload))
-        return {}
-
-    monkeypatch.setattr(landing, "github_get", get)
-    monkeypatch.setattr(landing, "github_graphql", graphql)
-    monkeypatch.setattr(landing, "github_write", write)
-    return calls
-
-
-def pull(number, *, merged=False, state="open", draft=False):
+def pull(number, *, merged=False, state="open", draft=False, armed=False, head=HEAD):
     return {
         "number": number,
         "state": "closed" if merged else state,
         "draft": draft,
         "merged": merged,
         "node_id": f"PR_{number}",
+        "head": {"sha": head, "ref": f"factory/t-{number}"},
+        "auto_merge": {"merge_method": "REBASE"} if armed else None,
         "merge_commit_sha": "b" * 40 if merged else None,
     }
+
+
+def github(monkeypatch, *, pulls=None, issues=None, refuse=None):
+    """A GitHub that behaves: the mutations move the state the reads return."""
+    calls = {"get": [], "list": [], "graphql": [], "write": []}
+    pulls = {} if pulls is None else pulls
+    issues = {} if issues is None else issues
+
+    def get(_repo, suffix):
+        calls["get"].append(suffix)
+        number = int(suffix.split("/")[1])
+        source = pulls if suffix.startswith("pulls/") else issues
+        return dict(source[number])
+
+    def listing(_repo, suffix):
+        calls["list"].append(suffix)
+        return [dict(row) for row in pulls.values() if row["state"] == "open"]
+
+    def graphql(query, variables):
+        calls["graphql"].append(variables)
+        if refuse is not None:
+            refuse()
+        number = int(variables["pullRequestId"].removeprefix("PR_"))
+        arming = "enablePullRequestAutoMerge" in query
+        pulls[number] = {
+            **pulls[number],
+            "auto_merge": {"merge_method": "REBASE"} if arming else None,
+        }
+        return {}
+
+    def write(_repo, suffix, payload, *, method="POST"):
+        calls["write"].append((method, suffix, payload))
+        return {}
+
+    monkeypatch.setattr(landing, "github_get", get)
+    monkeypatch.setattr(landing, "github_list", listing)
+    monkeypatch.setattr(landing, "github_graphql", graphql)
+    monkeypatch.setattr(landing, "github_write", write)
+    return calls
 
 
 def test_landing_is_inert_without_the_flag(db, monkeypatch):
@@ -181,7 +211,7 @@ def test_landing_arms_one_merge_and_does_not_arm_it_twice(db, monkeypatch):
     landing.landing_tick(POLICY)
     assert calls["graphql"] == [{"pullRequestId": "PR_3"}]
     assert audits(db, "merge_armed", "t-1") == [
-        {"pr_number": 3, "head_sha": "a" * 40, "merge_method": "rebase"}
+        {"pr_number": 3, "head_sha": HEAD, "attempt": 1, "merge_method": "rebase"}
     ]
     # A second tick observes the armed pull request; it never arms it again.
     landing.landing_tick(POLICY)
@@ -189,23 +219,26 @@ def test_landing_arms_one_merge_and_does_not_arm_it_twice(db, monkeypatch):
     assert len(audits(db, "merge_armed")) == 1
 
 
-def test_landing_defers_a_second_delivery_while_one_is_armed(db, monkeypatch):
+def test_landing_defers_every_waiting_delivery_while_one_is_armed(db, monkeypatch):
     delivered(db, "t-1", 11, 3)
     delivered(db, "t-2", 12, 4)
-    calls = github(monkeypatch, pulls={3: pull(3), 4: pull(4)})
+    delivered(db, "t-3", 13, 5)
+    calls = github(monkeypatch, pulls={3: pull(3), 4: pull(4), 5: pull(5)})
     landing.landing_tick(POLICY)
     assert calls["graphql"] == [{"pullRequestId": "PR_3"}]
-    landing.landing_tick(POLICY)
     # The merge queue ejects everything behind a failed candidate, so exactly
-    # one factory pull request is ever armed.
-    assert calls["graphql"] == [{"pullRequestId": "PR_3"}]
-    deferred = audits(db, "merge_deferred", "t-2")
-    assert deferred == [
+    # one factory pull request is ever armed, and BOTH waiting deliveries say
+    # so rather than only the one at the front.
+    assert audits(db, "merge_deferred", "t-2") == [
         {"pr_number": 4, "blocked_by_pr": 3, "blocked_by_task_id": "t-1"}
+    ]
+    assert audits(db, "merge_deferred", "t-3") == [
+        {"pr_number": 5, "blocked_by_pr": 3, "blocked_by_task_id": "t-1"}
     ]
     # The deferral is recorded once per blocker, not once per tick.
     landing.landing_tick(POLICY)
     assert len(audits(db, "merge_deferred", "t-2")) == 1
+    assert calls["graphql"] == [{"pullRequestId": "PR_3"}]
 
 
 def test_a_merge_records_the_merge_and_closes_the_issue(db, monkeypatch):
@@ -216,8 +249,7 @@ def test_a_merge_records_the_merge_and_closes_the_issue(db, monkeypatch):
     landing.landing_tick(POLICY)
     pulls[3] = pull(3, merged=True)
     landing.landing_tick(POLICY)
-    merged = audits(db, "merged", "t-1")
-    assert merged == [
+    assert audits(db, "merged", "t-1") == [
         {
             "pr_number": 3,
             "merge_commit_sha": "b" * 40,
@@ -230,7 +262,11 @@ def test_a_merge_records_the_merge_and_closes_the_issue(db, monkeypatch):
         ("POST", "issues/11/comments", calls["write"][0][2]),
         ("PATCH", "issues/11", {"state": "closed", "state_reason": "completed"}),
     ]
-    assert "#3" in calls["write"][0][2]["body"]
+    # The comment says what was observed. It must not claim the body lacked a
+    # closing keyword, which is one cause of an open issue and not the only one.
+    body = calls["write"][0][2]["body"]
+    assert "#3" in body and "observed merge" in body
+    assert "keyword" not in body
     assert audits(db, "issue_closed", "t-1") == [
         {"issue_number": 11, "pr_number": 3, "closed_by_factory": True}
     ]
@@ -247,7 +283,6 @@ def test_an_issue_already_closed_is_recorded_without_being_rewritten(db, monkeyp
         pulls={3: pull(3, merged=True)},
         issues={11: {"number": 11, "state": "closed"}},
     )
-    landing.landing_tick(POLICY)
     landing.landing_tick(POLICY)
     assert calls["write"] == []
     assert audits(db, "issue_closed", "t-1") == [
@@ -266,7 +301,6 @@ def test_a_merge_frees_the_arming_slot_in_the_same_tick(db, monkeypatch):
     pulls[3] = pull(3, merged=True)
     landing.landing_tick(POLICY)
     assert calls["graphql"] == [{"pullRequestId": "PR_3"}, {"pullRequestId": "PR_4"}]
-    assert audits(db, "merge_deferred") == []
 
 
 def test_a_pull_request_merged_by_hand_is_never_armed(db, monkeypatch):
@@ -284,13 +318,11 @@ def test_a_pull_request_merged_by_hand_is_never_armed(db, monkeypatch):
 
 def test_a_refused_arming_is_final_and_never_retried(db, monkeypatch):
     delivered(db, "t-1", 11, 3)
-    calls = github(monkeypatch, pulls={3: pull(3)})
 
-    def refuse(_query, variables):
-        calls["graphql"].append(variables)
+    def refuse():
         raise landing.GraphQLRefused("UNPROCESSABLE", "GitHub refused the mutation")
 
-    monkeypatch.setattr(landing, "github_graphql", refuse)
+    calls = github(monkeypatch, pulls={3: pull(3)}, refuse=refuse)
     landing.landing_tick(POLICY)
     landing.landing_tick(POLICY)
     assert len(calls["graphql"]) == 1
@@ -305,7 +337,7 @@ def test_a_closed_unmerged_pull_request_stops_the_landing(db, monkeypatch):
     pulls = {3: pull(3)}
     github(monkeypatch, pulls=pulls)
     landing.landing_tick(POLICY)
-    pulls[3] = pull(3, state="closed")
+    pulls[3] = pull(3, state="closed", armed=True)
     landing.landing_tick(POLICY)
     landing.landing_tick(POLICY)
     assert audits(db, "merge_arm_refused", "t-1") == [
@@ -314,31 +346,221 @@ def test_a_closed_unmerged_pull_request_stops_the_landing(db, monkeypatch):
     assert audits(db, "merged") == []
 
 
+def test_an_ejection_releases_the_holder_and_re_arms_once(db, monkeypatch):
+    """A queue ejection leaves the pull request open with auto-merge off.
+
+    Watching only for a closed pull request wedged the holder forever: never
+    merged, never refused, and the one-at-a-time rule blocked every delivery
+    behind it for good.
+    """
+    delivered(db, "t-1", 11, 3)
+    delivered(db, "t-2", 12, 4)
+    pulls = {3: pull(3), 4: pull(4)}
+    calls = github(monkeypatch, pulls=pulls)
+    landing.landing_tick(POLICY)
+    assert calls["graphql"] == [{"pullRequestId": "PR_3"}]
+    # The queue ejected it: still open, auto-merge gone.
+    pulls[3] = {**pulls[3], "auto_merge": None}
+    landing.landing_tick(POLICY)
+    assert audits(db, "merge_ejected", "t-1") == [
+        {"pr_number": 3, "reason": "auto_merge_disabled", "attempt": 1}
+    ]
+    # The same tick re-arms it rather than handing it to a human, because a
+    # queue analysis failure is usually transient.
+    assert calls["graphql"] == [{"pullRequestId": "PR_3"}, {"pullRequestId": "PR_3"}]
+    assert len(audits(db, "merge_armed", "t-1")) == 2
+    assert audits(db, "merge_arm_refused") == []
+
+
+def test_a_second_ejection_hands_the_pull_request_to_a_human(db, monkeypatch):
+    delivered(db, "t-1", 11, 3)
+    delivered(db, "t-2", 12, 4)
+    pulls = {3: pull(3), 4: pull(4)}
+    warned = []
+    monkeypatch.setattr(
+        landing,
+        "_notify_stuck",
+        lambda task_id, number: warned.append((task_id, number)),
+    )
+    calls = github(monkeypatch, pulls=pulls)
+    landing.landing_tick(POLICY)
+    for _ in range(2):
+        pulls[3] = {**pulls[3], "auto_merge": None}
+        landing.landing_tick(POLICY)
+    assert len(audits(db, "merge_ejected", "t-1")) == 2
+    assert audits(db, "merge_arm_refused", "t-1") == [
+        {"pr_number": 3, "reason": "ejected_from_merge_queue", "ejections": 2}
+    ]
+    # One warning, not one per tick, and the queue slot is released.
+    assert warned == [("t-1", 3)]
+    landing.landing_tick(POLICY)
+    assert warned == [("t-1", 3)]
+    assert audits(db, "merge_armed", "t-2")
+
+
+def test_a_head_that_moves_under_an_armed_pull_request_is_disarmed(db, monkeypatch):
+    """What the review approved is not what would merge, so it goes to a human."""
+    delivered(db, "t-1", 11, 3)
+    pulls = {3: pull(3)}
+    calls = github(monkeypatch, pulls=pulls)
+    landing.landing_tick(POLICY)
+    pulls[3] = {**pulls[3], "head": {"sha": "c" * 40, "ref": "factory/t-3"}}
+    landing.landing_tick(POLICY)
+    assert audits(db, "merge_arm_refused", "t-1") == [
+        {
+            "pr_number": 3,
+            "reason": "head_moved",
+            "armed_head_sha": HEAD,
+            "head_sha": "c" * 40,
+        }
+    ]
+    # Auto-merge is actually turned off again, not merely recorded.
+    assert calls["graphql"][-1] == {"pullRequestId": "PR_3"}
+    assert pulls[3]["auto_merge"] is None
+    assert audits(db, "merged") == []
+
+
+def test_a_pull_request_an_operator_armed_counts_as_the_holder(db, monkeypatch):
+    """The audit trail only knows what this lane did; the queue does not care."""
+    delivered(db, "t-1", 11, 3)
+    calls = github(
+        monkeypatch,
+        pulls={3: pull(3), 9: pull(9, armed=True)},
+    )
+    landing.landing_tick(POLICY)
+    assert calls["graphql"] == []
+    assert audits(db, "merge_deferred", "t-1") == [
+        {"pr_number": 3, "blocked_by_pr": 9, "blocked_by_task_id": None}
+    ]
+
+
+def test_an_armed_pull_request_outside_the_factory_branches_is_not_a_holder(
+    db, monkeypatch
+):
+    delivered(db, "t-1", 11, 3)
+    human = pull(9, armed=True)
+    human["head"] = {"sha": "d" * 40, "ref": "fix/something"}
+    calls = github(monkeypatch, pulls={3: pull(3), 9: human})
+    landing.landing_tick(POLICY)
+    assert calls["graphql"] == [{"pullRequestId": "PR_3"}]
+    assert audits(db, "merge_deferred") == []
+
+
+def test_an_unreadable_holder_check_never_arms_a_second_pull_request(db, monkeypatch):
+    delivered(db, "t-1", 11, 3)
+    calls = github(monkeypatch, pulls={3: pull(3)})
+
+    def outage(_repo, _suffix):
+        raise httpx.HTTPStatusError(
+            "403",
+            request=httpx.Request("GET", "https://api.github.com"),
+            response=httpx.Response(403),
+        )
+
+    monkeypatch.setattr(landing, "github_list", outage)
+    landing.landing_tick(POLICY)
+    assert calls["graphql"] == []
+    assert audits(db, "landing_error", "t-1") == [
+        {"stage": "holder", "error": "HTTPStatusError", "status": 403}
+    ]
+
+
+def test_a_burst_of_newer_settlements_never_evicts_an_armed_delivery(db, monkeypatch):
+    """Selection follows landing state, never recency.
+
+    Taking the newest receipts of any class let an armed but unmerged delivery
+    fall out of the batch: never observed, never merged, the issue never
+    closed, and the holder reading as absent so a second merge was armed.
+    """
+    delivered(db, "t-1", 11, 3)
+    pulls = {3: pull(3)}
+    issues = {11: {"number": 11, "state": "open"}}
+    github(monkeypatch, pulls=pulls, issues=issues)
+    landing.landing_tick(POLICY)
+    assert audits(db, "merge_armed", "t-1")
+    # Thirty newer settlements, advisory and delivered alike, more than any
+    # batch of recent receipts would hold.
+    for index in range(30):
+        delivered(
+            db,
+            f"t-adv-{index}",
+            100 + index,
+            None,
+            evidence=False,
+            task_class="refine",
+            settled=NOW,
+        )
+    pulls[3] = pull(3, merged=True)
+    landing.landing_tick(POLICY)
+    assert audits(db, "merged", "t-1")
+    assert audits(db, "issue_closed", "t-1")
+
+
+def test_a_terminal_delivery_leaves_the_batch(db, monkeypatch):
+    delivered(db, "t-1", 11, 3)
+    delivered(db, "t-2", 12, 4)
+    pulls = {3: pull(3, merged=True), 4: pull(4)}
+    calls = github(
+        monkeypatch,
+        pulls=pulls,
+        issues={11: {"number": 11, "state": "closed"}},
+    )
+    landing.landing_tick(POLICY)
+    assert audits(db, "issue_closed", "t-1")
+    reads = len(calls["get"])
+    landing.landing_tick(POLICY)
+    # The landed delivery is not read again; only the one still working is.
+    assert [suffix for suffix in calls["get"][reads:]] == ["pulls/4"]
+
+
 def test_an_advisory_settlement_is_not_a_delivery(db, monkeypatch):
-    delivered(db, "t-1", 11, 3, evidence=False)
+    delivered(db, "t-1", 11, 3, evidence=False, task_class="refine")
     monkeypatch.setattr(
         landing,
         "github_get",
         lambda *_args: pytest.fail("landing read GitHub for an advisory task"),
+    )
+    monkeypatch.setattr(
+        landing,
+        "github_list",
+        lambda *_args: pytest.fail("landing listed GitHub for an advisory task"),
     )
     landing.landing_tick(POLICY)
     assert audits(db, "merge_armed") == []
 
 
 def test_a_settlement_older_than_the_window_is_left_alone(db, monkeypatch):
-    delivered(db, "t-1", 11, 3)
-    with Session(db) as session:
-        row = session.exec(select(FactoryReceipt)).one()
-        row.updated_at = NOW - timedelta(hours=landing.LANDING_WINDOW_HOURS + 1)
-        session.add(row)
-        session.commit()
+    delivered(
+        db,
+        "t-1",
+        11,
+        3,
+        settled=NOW - timedelta(hours=landing.LANDING_WINDOW_HOURS + 1),
+    )
     monkeypatch.setattr(
         landing,
         "github_get",
         lambda *_args: pytest.fail("landing read GitHub for a stale settlement"),
     )
+    monkeypatch.setattr(landing, "github_list", lambda *_args: [])
     landing.landing_tick(POLICY)
     assert audits(db, "merge_armed") == []
+
+
+def test_a_delivery_the_lane_already_armed_outlives_the_window(db, monkeypatch):
+    """The window keeps history out; it must never strand live work."""
+    delivered(db, "t-1", 11, 3)
+    pulls = {3: pull(3)}
+    github(monkeypatch, pulls=pulls, issues={11: {"number": 11, "state": "closed"}})
+    landing.landing_tick(POLICY)
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        row.updated_at = NOW - timedelta(hours=landing.LANDING_WINDOW_HOURS + 1)
+        session.add(row)
+        session.commit()
+    pulls[3] = pull(3, merged=True)
+    landing.landing_tick(POLICY)
+    assert audits(db, "merged", "t-1")
 
 
 def test_a_read_outage_is_audited_by_shape_and_carries_no_response_body(
@@ -354,9 +576,11 @@ def test_a_read_outage_is_audited_by_shape_and_carries_no_response_body(
         )
 
     monkeypatch.setattr(landing, "github_get", outage)
+    monkeypatch.setattr(landing, "github_list", lambda *_args: [])
     landing.landing_tick(POLICY)
-    recorded = audits(db, "landing_error", "t-1")
-    assert recorded == [{"stage": "arm", "error": "HTTPStatusError", "status": 403}]
+    assert audits(db, "landing_error", "t-1") == [
+        {"stage": "arm", "error": "HTTPStatusError", "status": 403}
+    ]
     # The next tick retries rather than giving up, and the throttle keeps the
     # audit to one row an hour while the outage lasts.
     landing.landing_tick(POLICY)
@@ -431,3 +655,9 @@ def test_writes_reach_only_the_configured_repository(monkeypatch):
     }
     with pytest.raises(ValueError, match="invalid repository"):
         landing.github_write("owner/repo/../other", "issues/11", {})
+
+
+def test_a_repeatable_action_is_never_written_through_the_once_only_fence():
+    """The fence freezes a state machine that has to move more than once."""
+    with pytest.raises(ValueError, match="repeatable"):
+        landing._record("t-1", "merge_armed", pr_number=3)
