@@ -179,7 +179,11 @@ defmodule Embervm.SessionManagerTest do
       invalidate_fun: fn _node, _ch -> :ok end,
       brick_status_fun:
         Keyword.get(opts, :brick_status_fun, fn _node ->
-          %{health: :healthy, draining: false, tombstoned: false, pod_uid: "pod-node-4"}
+          # Matches both real producers (SessionManager.brick_status/2 and
+          # NodeRegistry.brick_status_view/2), `registered` included: a stub
+          # missing a field the predicate reads tests a shape production never
+          # returns.
+          %{health: :healthy, draining: false, registered: true, tombstoned: false, pod_uid: "pod-node-4"}
         end),
       # Test-only watchdog budget (#4434); nil keeps the production formula.
       invoke_watchdog_ms: Keyword.get(opts, :invoke_watchdog_ms)
@@ -3652,9 +3656,14 @@ defmodule Embervm.SessionManagerTest do
     # The brick is replaced: it publishes no capacity facts and the registry has
     # no runtime instance for it, so no confirmation can ever arrive.
     NodeCapacity.drop(ctx.cap_table, "node-4")
+    assert [{_pid, _}] = Registry.lookup(ctx.registry, created.session_id)
 
     assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
     destroyed = wait_for_state(ctx, created.session_id, :destroyed)
+
+    # No destroy worker runs on this path, so nothing else would stop the session
+    # process. A leaked one keeps re-arming its idle timer against a terminal row.
+    assert eventually(fn -> Registry.lookup(ctx.registry, created.session_id) == [] end)
 
     # This is what the management GET renders: router session_view/2 copies state
     # and terminal_reason straight off this row.
@@ -3699,10 +3708,10 @@ defmodule Embervm.SessionManagerTest do
     assert :ok = SessionManager.reconcile(ctx.mgr)
     assert {:ok, %{state: :destroying}} = SessionStore.get(ctx.store, created.session_id)
 
-    # Now the node departs: capacity retracted and the registry ages its still
-    # registered instance out past the alarm threshold.
+    # Now the node departs for real: capacity retracted, and two-signal expiry
+    # has removed the instance from node_runtime and left a tombstone.
     NodeCapacity.drop(ctx.cap_table, "node-4")
-    Agent.update(status, fn s -> %{s | health: :unknown} end)
+    Agent.update(status, fn s -> %{s | health: :down, registered: false, tombstoned: true} end)
 
     assert :ok = SessionManager.reconcile(ctx.mgr)
     assert {:ok, session} = SessionStore.get(ctx.store, created.session_id)
@@ -3746,14 +3755,18 @@ defmodule Embervm.SessionManagerTest do
     refute log =~ "node gone"
   end
 
-  test "gated: a brick blip shorter than the alarm threshold does not complete the destroy" do
+  test "gated: a status blip on a still registered node never completes an old destroy" do
+    # The discriminating case for the predicate, and the one a health-plus-elapsed
+    # test gets wrong. NodeRegistry ages an instance to :unknown after 5s of
+    # silence and retracts its capacity row while KEEPING it registered, so a
+    # healthy brick with a brief status gap looks exactly like this. The destroy
+    # here is deliberately OLD (row stamped at 0 against the manager's 5_000_000
+    # clock, alarm threshold 100), which is precisely when an elapsed-based test
+    # would fire and record destroyed for a VM that is still running.
     ctx =
       start_stack(
         node_confirmed_destroy: true,
-        # Manager clock 5_000_000 against a row stamped at 0 leaves elapsed well
-        # inside this threshold, so the :unknown health below is a blip, not a
-        # departure.
-        destroying_alarm_ms: 10_000_000,
+        destroying_alarm_ms: 100,
         store_clock: fn -> 0 end,
         brick_status_fun: fn _node ->
           %{health: :unknown, draining: false, registered: true, tombstoned: false, pod_uid: "pod-node-4"}
@@ -3770,9 +3783,60 @@ defmodule Embervm.SessionManagerTest do
 
     NodeCapacity.drop(ctx.cap_table, "node-4")
     assert :ok = SessionManager.reconcile(ctx.mgr)
+    assert :ok = SessionManager.reconcile(ctx.mgr)
 
     assert {:ok, %{state: :destroying, terminal_reason: nil}} = SessionStore.get(ctx.store, created.session_id)
     refute :session_destroyed in op_kinds_for(ctx, created.session_id)
+
+    # Only departure from the registry terminalizes it, however long it waited.
+    assert {:ok, %{state: :destroying}} = SessionStore.get(ctx.store, created.session_id)
+  end
+
+  test "gated: an exact stop whose node departs completes as node_gone with a null completion" do
+    # The node-gone arm precedes the exact-stop replay arm in the sweep. Without
+    # that ordering an exact stop whose brick departed replays forever against a
+    # node that can never return the completion tuple it waits for, which is the
+    # same wedge this issue is about.
+    parent = self()
+    status = start_supervised!({Agent, fn -> :live end})
+
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        brick_status_fun: fn _node ->
+          case Agent.get(status, & &1) do
+            :live -> %{health: :healthy, draining: false, registered: true, tombstoned: false, pod_uid: "pod-node-4"}
+            :gone -> %{health: :unknown, draining: false, registered: false, tombstoned: false, pod_uid: nil}
+          end
+        end,
+        destroy_exact_fun: fn _ch, request ->
+          send(parent, {:exact_stop_attempted, request})
+          {:error, :unreachable}
+        end
+      )
+
+    {ctx, session, expected} = prepare_exact_stop(ctx, "wl-exact-node-gone")
+
+    # The stop is accepted against a live brick, and its teardown never confirms.
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, session.session_id, expected)
+    assert_receive {:exact_stop_attempted, _}, 1_000
+    await_no_destroy_inflight(ctx)
+    assert {:ok, %{state: :destroying}} = SessionStore.get(ctx.store, session.session_id)
+
+    # Then the brick is replaced.
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+    Agent.update(status, fn _ -> :gone end)
+
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    complete = wait_for_state(ctx, session.session_id, :destroyed)
+
+    assert complete.terminal_reason == "node_gone"
+    # No completion tuple was synthesised: the caller holding the precondition
+    # sees that departure produced no proof and decides for itself.
+    assert is_nil(complete.stop_completion)
+    assert is_nil(Embervm.SessionStopProof.completion(complete))
+    # The sweep took the node-gone arm, not another exact replay.
+    refute_received {:exact_stop_attempted, _}
   end
 
   # Both vanished tests pin the store clock BELOW the node facts' 5_000_000 so the
