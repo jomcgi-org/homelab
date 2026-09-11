@@ -128,17 +128,22 @@ def _audit_unknown(db: Session, reason: str, detail: dict) -> None:
 def evaluate(policy: dict, *, session: Session | None = None) -> dict:
     """Decide whether delivery is paused, recording each transition once.
 
-    An unknown or stale observation is not a pause. The guard exists to stop
-    the factory spending a window it can see is nearly gone, not to stop it
-    working whenever the broker is unreachable.
+    An unknown or stale observation never STARTS a pause: the guard exists to
+    stop the factory spending a window it can see is nearly gone, not to stop
+    it working whenever the broker is unreachable. It does not clear one
+    either. A lane paused on a real reading of 95 percent would otherwise
+    reopen the moment the broker went down, and spend the rest of the window
+    with nothing able to tell it to stop; the ledger holds until a reading
+    that can say otherwise arrives.
     """
     block = quota_guard_policy(policy)
     observed = reading()
     with _locked_session(session) as (db, _control):
         state = quota_guard_state(session=db)
         result = {
-            "paused": False,
-            "state": "unknown",
+            "paused": state == "paused",
+            "state": state,
+            "reading": "unknown",
             "used_percent": None,
             "pause_percent": block["claude_7d_pause_percent"],
             "resume_percent": block["claude_7d_resume_percent"],
@@ -156,6 +161,7 @@ def evaluate(policy: dict, *, session: Session | None = None) -> dict:
             return result
         used = observed["used_percent"]
         result["used_percent"] = used
+        result["reading"] = "observed"
         if state == "paused":
             if used < block["claude_7d_resume_percent"]:
                 _audit(
@@ -165,7 +171,7 @@ def evaluate(policy: dict, *, session: Session | None = None) -> dict:
                     used_percent=used,
                     resume_percent=block["claude_7d_resume_percent"],
                 )
-                result["state"] = "open"
+                result.update(paused=False, state="open")
                 return result
             result.update(paused=True, state="paused")
             return result
@@ -180,7 +186,7 @@ def evaluate(policy: dict, *, session: Session | None = None) -> dict:
             )
             result.update(paused=True, state="paused")
             return result
-        result["state"] = "open"
+        result.update(paused=False, state="open")
         return result
 
 
