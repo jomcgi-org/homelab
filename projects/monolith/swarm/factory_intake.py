@@ -16,10 +16,12 @@ from swarm.factory_controls import (
     _snapshot,
     _text,
     DEFAULT_TASK_CLASS,
+    factory_max_concurrent_tasks,
     LANES,
     intake_policy,
     lane_for,
     lane_limits,
+    lane_max_tasks,
     normalize_repo,
     receipt_task_class,
     TASK_CLASSES,
@@ -113,14 +115,73 @@ def lane_of(row) -> str:
     return lane_for(receipt_task_class(row))
 
 
+def ceiling_below_lanes(policy: dict) -> dict | None:
+    """The numbers, when the chart ceiling cannot hold both lanes at once.
+
+    None when it can. The ceiling is chart configuration and the per-lane
+    maxima are posted policy, so the two can be set against each other with
+    nothing in either place saying so.
+    """
+    wanted = lane_max_tasks(policy)
+    ceiling = factory_max_concurrent_tasks()
+    total = sum(wanted.values())
+    if ceiling >= total:
+        return None
+    return {
+        "ceiling": ceiling,
+        "delivery_max": wanted["delivery"],
+        "advisory_max": wanted["advisory"],
+        "lanes_sum": total,
+    }
+
+
 def open_lanes(policy: dict, rows, lanes=LANES) -> dict:
-    """Room left per lane, given the receipts already holding slots in them."""
-    limits = lane_limits(policy)
-    room = {lane: (limits[lane] if lane in lanes else 0) for lane in LANES}
+    """Room left per lane, given the receipts already holding slots in them.
+
+    The chart owns one ceiling for the whole factory and the policy asks for a
+    maximum per lane. When the ceiling covers their sum each lane simply has
+    its own maximum minus what it holds, and nothing here contends.
+
+    Below their sum the lanes do contend, and giving delivery its whole maximum
+    first is what starved advisory work: at a ceiling of four with lanes four
+    and eight, advisory got nothing and one sweep excluded 272 candidates as
+    lane_full. Contended, the free part of the ceiling is instead dealt one
+    slot at a time to the lane furthest from its own maximum, so a lane holding
+    nothing is never denied while another holds everything. Delivery takes the
+    first slot, because delivery is what the lane exists to do and a ceiling an
+    operator set low must never leave it unable to start anything.
+    """
+    wanted = lane_max_tasks(policy)
+    held = {lane: 0 for lane in LANES}
     for row in rows:
-        lane = lane_of(row)
-        room[lane] = room[lane] - 1
-    return {lane: max(0, value) for lane, value in room.items()}
+        held[lane_of(row)] += 1
+    headroom = {
+        lane: max(0, wanted[lane] - held[lane]) if lane in lanes else 0
+        for lane in LANES
+    }
+    free = max(0, factory_max_concurrent_tasks() - sum(held.values()))
+    if free >= sum(headroom.values()):
+        return headroom
+    room = {lane: 0 for lane in LANES}
+    for slot in range(free):
+        candidates = [lane for lane in LANES if room[lane] < headroom[lane]]
+        if not candidates:
+            break
+        if slot == 0 and "delivery" in candidates:
+            pick = "delivery"
+        else:
+            # Fullest-last, by fraction of the lane's own maximum, so the
+            # split follows what each lane actually holds rather than what it
+            # asked for. Delivery wins a tie, as it does for the first slot.
+            pick = min(
+                candidates,
+                key=lambda lane: (
+                    (held[lane] + room[lane]) / wanted[lane],
+                    LANES.index(lane),
+                ),
+            )
+        room[pick] += 1
+    return room
 
 
 def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> dict:

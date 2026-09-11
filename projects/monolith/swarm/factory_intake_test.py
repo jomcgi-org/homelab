@@ -446,3 +446,90 @@ def test_a_receipt_written_before_classes_reads_as_delivery():
 
     assert lane_of(SimpleNamespace(task_class=None)) == "delivery"
     assert lane_of(SimpleNamespace(task_class="refine")) == "advisory"
+
+
+def rows(*lanes):
+    """Receipts standing in for held slots, one per named lane."""
+    from types import SimpleNamespace
+
+    return [
+        SimpleNamespace(task_class="bug-fix" if lane == "delivery" else "refine")
+        for lane in lanes
+    ]
+
+
+def test_a_ceiling_below_the_lanes_never_starves_a_lane(db, policy, monkeypatch):
+    """The live defect: at a ceiling of 4 with lanes 4 and 8, advisory got 0.
+
+    Delivery took its whole maximum first, so a sweep excluded 272 advisory
+    candidates as lane_full while eight advisory slots sat unusable.
+    """
+    from swarm.factory_intake import ceiling_below_lanes, open_lanes
+
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
+    policy["max_tasks"] = {"delivery": 4, "advisory": 8}
+    room = open_lanes(policy, [])
+    assert 1 <= room["delivery"] <= 4
+    assert room["advisory"] >= 1
+    assert room["delivery"] + room["advisory"] == 4
+    assert ceiling_below_lanes(policy) == {
+        "ceiling": 4,
+        "delivery_max": 4,
+        "advisory_max": 8,
+        "lanes_sum": 12,
+    }
+
+
+def test_the_contended_split_follows_what_each_lane_holds(db, policy, monkeypatch):
+    from swarm.factory_intake import open_lanes
+
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
+    policy["max_tasks"] = {"delivery": 4, "advisory": 8}
+    # Advisory holding three of the four means the free slot goes to delivery,
+    # which keeps its guaranteed slot under any ceiling.
+    assert open_lanes(policy, rows("advisory", "advisory", "advisory")) == {
+        "delivery": 1,
+        "advisory": 0,
+    }
+    # A full ceiling is a full ceiling, whichever lane filled it.
+    assert open_lanes(policy, rows(*["delivery"] * 4)) == {
+        "delivery": 0,
+        "advisory": 0,
+    }
+
+
+def test_a_ceiling_that_covers_both_lanes_leaves_them_uncontended(
+    db, policy, monkeypatch
+):
+    from swarm.factory_intake import ceiling_below_lanes, open_lanes
+
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "12")
+    policy["max_tasks"] = {"delivery": 4, "advisory": 8}
+    assert ceiling_below_lanes(policy) is None
+    assert open_lanes(policy, []) == {"delivery": 4, "advisory": 8}
+    assert open_lanes(policy, rows("delivery", "advisory")) == {
+        "delivery": 3,
+        "advisory": 7,
+    }
+    # A lane the caller holds shut offers no room and frees none to the other.
+    assert open_lanes(policy, [], ("advisory",)) == {"delivery": 0, "advisory": 8}
+
+
+def test_a_contended_ceiling_still_admits_advisory_work(db, policy, monkeypatch):
+    """The split has to reach the real gate, not only the sweep's view of it.
+
+    admit_next takes the oldest queued receipt across the lanes that have room,
+    so what the old limits did was leave advisory with no room to be oldest
+    into. It is admissible now, and delivery still keeps its guaranteed slot.
+    """
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
+    policy["max_tasks"] = {"delivery": 4, "advisory": 8}
+    policy["intake"] = {"enabled": True}
+    policy["issue_numbers"] = [1, 2, 3, 4]
+    enable(policy)
+    advisory_issue(5)
+    for number in (1, 2, 3, 4):
+        issue(number)
+    first = admit_next("scheduler")
+    assert first["ok"] and first["lane"] == "advisory"
+    assert admit_next("scheduler")["lane"] == "delivery"
