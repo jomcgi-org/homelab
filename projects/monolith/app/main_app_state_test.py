@@ -186,8 +186,8 @@ class TestLifespanAppStateBotAssignment:
                 )
 
     @pytest.mark.asyncio
-    async def test_app_state_backfill_task_initialised_to_none_on_startup(self):
-        """lifespan initialises app.state.backfill_task to None at startup."""
+    async def test_app_state_backfill_state_initialised_to_none_on_startup(self):
+        """Lifespan initialises the backfill task and status on startup."""
 
         def capture_create_task(coro, **kwargs):
             if hasattr(coro, "close"):
@@ -215,4 +215,10 @@ class TestLifespanAppStateBotAssignment:
                 )
                 assert app.state.backfill_task is None, (
                     "app.state.backfill_task should be None at startup"
+                )
+                assert hasattr(app.state, "backfill_status"), (
+                    "app.state.backfill_status was not set during lifespan startup"
+                )
+                assert app.state.backfill_status is None, (
+                    "app.state.backfill_status should be None at startup"
                 )

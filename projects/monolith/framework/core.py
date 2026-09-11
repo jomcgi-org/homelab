@@ -497,6 +497,7 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
     async def lifespan(app: FastAPI):
         app.state.bot = None
         app.state.backfill_task = None
+        app.state.backfill_status = None
         app.state.singleton_tasks = []
         app.state.leader_singleton_failures = set()
         app.state.leader_singletons_dbos_launched = False
