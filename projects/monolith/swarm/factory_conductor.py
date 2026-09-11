@@ -1025,22 +1025,25 @@ def planner_prompt(
         "guessing, but a plan written this way never depends on that. "
         "The plan you accept sizes this task. Its allowance is the sum over live "
         "unsucceeded nodes of max_attempts, plus the work turns history already "
-        "spent, plus two turns for the next review round the engine may open, "
-        "reserved only while the graph holds a review node; later rounds are not "
-        "reserved up front, and the allowance grows by one round as each one is "
-        "inserted. Its dollar allowance is the same sum over node max_cost_usd "
-        "ceilings plus charged history. Policy keeps only an envelope: "
-        "max_task_turns_hard and task_budget_usd in budget_evidence. A plan or "
-        "an add_node whose derived allowance would exceed either is refused "
-        "whole with refusal code envelope_exceeded, and decision_feedback names "
-        "the excess as needed against allowed for both turns and dollars, beside "
-        "spare_turns, the turns the envelope would still fund at the graph as it "
-        "stands. When that happens, shrink the edit to what spare_turns can hold "
-        "and leave the rest to a follow-up task, or pause with the reason. Never "
-        "re-propose a refused edit unchanged: it will be refused again and the "
-        "round is spent for nothing. Add an implementation node together with "
-        "the review node that checks it, in one plan, so the graph never "
-        "exhausts its allowance between the two. "
+        "spent, plus two turns of headroom for the review round the engine may "
+        "open, held only while the graph holds a review node; later rounds are "
+        "not reserved up front, and the allowance grows by one round as each "
+        "one is inserted. That headroom bounds what you may add, not what the "
+        "engine may open: an engine round is admitted whenever its own two "
+        "nodes fit the envelope. Its dollar allowance is the same sum over node "
+        "max_cost_usd ceilings plus charged history. Policy keeps only an "
+        "envelope: max_task_turns_hard and task_budget_usd in budget_evidence. "
+        "A plan or an add_node whose derived allowance would exceed either is "
+        "refused whole with refusal code envelope_exceeded, and "
+        "decision_feedback names the excess as needed against allowed for both "
+        "turns and dollars, beside spare_turns and spare_usd, what the envelope "
+        "would still fund once the reserve your edit brings with it is counted. "
+        "When that happens, shrink the edit to fit whichever of the two is "
+        "binding and leave the rest to a follow-up task, or pause with the "
+        "reason. Never re-propose a refused edit unchanged: it will be refused "
+        "again and the round is spent for nothing. Add an implementation node "
+        "together with the review node that checks it, in one plan, so the "
+        "graph never exhausts its allowance between the two. "
         "Nodes with no dependency between them run in parallel, up to "
         "max_parallel_nodes. Each parallel implementation works on its own "
         "branch and the server inserts an integrate node depending on all of "
@@ -1356,43 +1359,50 @@ def _envelope_refusal(
     The plan sizes the task, so this is the one place the envelope is enforced:
     an accepted plan can never derive an allowance the policy would not fund,
     and the excess goes back to the planner as decision feedback so it can
-    split the work or pause for orchestration review. The refusal also carries
-    the spare turns the live graph leaves, read off the graph as it stands now
-    rather than off the projection, so the planner is told what would fit
-    instead of only that this did not.
+    split the work or pause for orchestration review.
+
+    A refusal also names what would still fit. That is the live graph read
+    under the reserve the refused edit implies, not under the reserve the live
+    graph has on its own: an edit that adds the first review node, or the first
+    wave that will need a fan-in, brings a reserve with it, and a spare figure
+    that ignored it would send the planner back with an edit that is refused
+    again. It costs a second derivation, so it is computed only once the
+    envelope has actually been exceeded.
     """
     from swarm.factory_controls import allowance_from_graph, envelope_excess
 
     runs = graph.node_runs(task_id)
     revision = graph.current_version(task_id)
-    live = graph.load_graph(task_id)
+    rounds = (
+        _rounds_remaining(task_id, policy)
+        if review_rounds_remaining is None
+        else review_rounds_remaining
+    )
+    fan_ins = (
+        _planned_fan_ins(task_id, policy, projected)
+        if fan_ins_remaining is None
+        else fan_ins_remaining
+    )
     allowance = allowance_from_graph(
         projected,
         runs,
         policy,
-        review_rounds_remaining=(
-            _rounds_remaining(task_id, policy)
-            if review_rounds_remaining is None
-            else review_rounds_remaining
-        ),
-        fan_ins_remaining=(
-            _planned_fan_ins(task_id, policy, projected)
-            if fan_ins_remaining is None
-            else fan_ins_remaining
-        ),
+        review_rounds_remaining=rounds,
+        fan_ins_remaining=fan_ins,
         graph_revision=revision,
     )
+    if envelope_excess(allowance, policy) is None:
+        return None
     accounted = allowance_from_graph(
-        live,
+        graph.load_graph(task_id),
         runs,
         policy,
-        review_rounds_remaining=_rounds_remaining(task_id, policy),
-        fan_ins_remaining=_planned_fan_ins(task_id, policy, live),
+        review_rounds_remaining=rounds,
+        fan_ins_remaining=fan_ins,
         graph_revision=revision,
+        reviewable=any(node["node_key"].startswith("review_") for node in projected),
     )
     excess = envelope_excess(allowance, policy, accounted=accounted)
-    if excess is None:
-        return None
     return "envelope exceeded: " + json.dumps(excess, sort_keys=True)
 
 
@@ -1787,13 +1797,17 @@ def _insert_review_round(
             **bounds,
         },
     ]
-    # This round converts two prospective turns into two real nodes, so the
-    # projection must not reserve the round it is opening as well.
+    # An engine insertion is checked on the nodes it really adds and on nothing
+    # else. The forward reserve is planner-side headroom for sizing the next
+    # edit, so counting it here would refuse a round the envelope can afford
+    # because of a round that may never open, which is the failure the reserve
+    # was supposed to end. The reserve is recomputed after the insertion.
     excess = _envelope_refusal(
         task["id"],
         policy,
         _projected_nodes(edits, nodes),
-        review_rounds_remaining=max(0, max_rounds - ordinal),
+        review_rounds_remaining=0,
+        fan_ins_remaining=0,
     )
     if excess is not None:
         _reject_decision(task["id"], cause, "plan", "envelope_exceeded", excess)
@@ -1957,10 +1971,14 @@ def _insert_integration(
     if edits is None:
         return False, "integration_batch_too_large"
     cause = f"{FANIN_CAUSE}:{key}"
-    # This insertion turns the wave's reserved fan-in into a real node, so the
-    # projection must not reserve the fan-in it is inserting as well.
+    # Checked on the fan-in node it really adds, like the review round: an
+    # engine insertion carries no forward reserve into its own check.
     excess = _envelope_refusal(
-        task["id"], policy, _projected_nodes(edits, nodes), fan_ins_remaining=0
+        task["id"],
+        policy,
+        _projected_nodes(edits, nodes),
+        review_rounds_remaining=0,
+        fan_ins_remaining=0,
     )
     if excess is not None:
         _reject_decision(task["id"], cause, "plan", "envelope_exceeded", excess)

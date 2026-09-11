@@ -343,6 +343,7 @@ def allowance_from_graph(
     review_rounds_remaining: int,
     fan_ins_remaining: int = 0,
     graph_revision: int,
+    reviewable: bool | None = None,
 ) -> dict:
     """Size a task from the plan it accepted, not from a fixed policy number.
 
@@ -367,6 +368,11 @@ def allowance_from_graph(
 
     A discarded node stops contributing its remaining slots, and its spent
     attempts stay in history, so discarding never refunds a consumed turn.
+
+    ``reviewable`` overrides whether these nodes could open a round at all. A
+    refusal reads the live graph under the reserve the refused edit implies, so
+    an edit that adds the first review node is sized against the round that
+    review would open rather than against a graph that has none.
     """
     attempts: dict[str, int] = {}
     charged: dict[str, float] = {}
@@ -393,7 +399,8 @@ def allowance_from_graph(
         if key.startswith("conductor_"):
             continue
         remaining_turns += max(0, node["max_attempts"] - attempts.get(key, 0))
-    reviewable = any(node["node_key"].startswith("review_") for node in nodes)
+    if reviewable is None:
+        reviewable = any(node["node_key"].startswith("review_") for node in nodes)
     rounds = min(1, max(0, review_rounds_remaining)) if reviewable else 0
     fan_ins = max(0, fan_ins_remaining)
     reserved_nodes = 2 * rounds + fan_ins
@@ -440,10 +447,11 @@ def envelope_excess(
 ) -> dict | None:
     """Name what a derived allowance overspends, or None when it fits.
 
-    ``accounted`` is what the task is already sized at, before the refused edit.
-    Given it, the refusal also carries ``spare_turns``, the turns the envelope
-    would still fund, so the planner can size a smaller edit instead of
-    re-proposing the one that was just refused.
+    ``accounted`` is what the task is already sized at, before the refused
+    edit, under the reserve that edit implies. Given it, the refusal also
+    carries ``spare_turns`` and ``spare_usd``, what the envelope would still
+    fund, so the planner can size a smaller edit against whichever of the two
+    is binding instead of re-proposing the one that was just refused.
     """
     turns_allowed = task_turn_ceiling(policy)
     usd_allowed = policy["task_budget_usd"]
@@ -455,6 +463,7 @@ def envelope_excess(
     }
     if accounted is not None:
         excess["spare_turns"] = max(0, turns_allowed - accounted["turns"])
+        excess["spare_usd"] = round(max(0.0, usd_allowed - accounted["usd"]), 6)
     return excess
 
 

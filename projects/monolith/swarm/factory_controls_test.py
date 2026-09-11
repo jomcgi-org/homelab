@@ -832,18 +832,46 @@ def test_the_envelope_names_both_excesses(policy):
     }
 
 
-def test_a_refusal_names_the_turns_that_would_still_fit(policy):
+def test_a_refusal_names_the_turns_and_dollars_that_would_still_fit(policy):
     policy = controls.validate_policy(policy)
     excess = controls.envelope_excess(
-        {"turns": 9, "usd": 1.0}, policy, accounted={"turns": 1, "usd": 1.0}
+        {"turns": 9, "usd": 1.0}, policy, accounted={"turns": 1, "usd": 1.5}
     )
-    # Three allowed against one already accounted leaves two the planner can
-    # still size an edit against.
+    # Three turns allowed against one already accounted leaves two, and five
+    # dollars against one and a half leaves three and a half, either of which
+    # the planner can size its next edit against.
     assert excess["spare_turns"] == 2
+    assert excess["spare_usd"] == 3.5
     at_the_wall = controls.envelope_excess(
-        {"turns": 9, "usd": 1.0}, policy, accounted={"turns": 4, "usd": 1.0}
+        {"turns": 9, "usd": 1.0}, policy, accounted={"turns": 4, "usd": 7.0}
     )
-    assert at_the_wall["spare_turns"] == 0
+    assert at_the_wall["spare_turns"] == 0 and at_the_wall["spare_usd"] == 0.0
+
+
+def test_a_dollar_only_refusal_still_names_both_spare_figures(policy):
+    policy = controls.validate_policy(policy)
+    # Turns fit and money does not, which is the case that reported a spare
+    # turn count and left the binding figure unnamed.
+    excess = controls.envelope_excess(
+        {"turns": 2, "usd": 11.0}, policy, accounted={"turns": 1, "usd": 4.0}
+    )
+    assert excess["turns"]["needed"] <= excess["turns"]["allowed"]
+    assert excess["spare_turns"] == 2 and excess["spare_usd"] == 1.0
+
+
+def test_a_reserve_can_be_imposed_on_a_graph_that_has_no_review_node(policy):
+    """What a refused edit implies, not what the live graph holds on its own."""
+    live = [graph_node("implement_fix")]
+    assert (
+        controls.allowance_from_graph(
+            live, [], policy, review_rounds_remaining=2, graph_revision=1
+        )["turns"]
+        == 2
+    )
+    implied = controls.allowance_from_graph(
+        live, [], policy, review_rounds_remaining=2, graph_revision=1, reviewable=True
+    )
+    assert implied["turns"] == 2 + 2 and implied["review_rounds_reserved"] == 1
 
 
 def test_an_old_policy_reads_its_fixed_cap_as_the_envelope(policy):
