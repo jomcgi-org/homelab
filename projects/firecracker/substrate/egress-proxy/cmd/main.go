@@ -1,4 +1,4 @@
-// Command egress-proxy is a tiny, dependency-free transparent egress proxy that
+// Command egress-proxy is a transparent egress proxy that
 // mediates every Firecracker guest's outbound traffic (ADR 023). The guest is
 // vsock-only: the guest init gives every DNS name a synthetic 127.0.0.0/8
 // address, REDIRECTs all outbound TCP to a loopback capture listener, recovers
@@ -115,8 +115,14 @@ func main() {
 	// lane. The CA is optional and only adds the TLS-MITM lane for guests that speak
 	// https:// to us; an empty catalog leaves the proxy a plain transparent router.
 	brokerURL := os.Getenv("EGRESS_TOKEN_BROKER_URL")
-	secrets := loadSecretsWithBroker(logger, brokerURL)
-	quotaReporter := newQuotaReporter(brokerURL, logger)
+	transport, closeBroker, err := brokerTransport(brokerURL, os.Getenv("EGRESS_TOKEN_BROKER_SPIFFE_ID"), newBrokerX509Source)
+	if err != nil {
+		logger.Error("token broker transport configuration failed", "err", err)
+		os.Exit(1)
+	}
+	defer closeBroker()
+	secrets := loadSecretsWithBrokerClient(logger, brokerURL, brokerHTTPClient(transport, 10*time.Second))
+	quotaReporter := newQuotaReporterWithClient(brokerURL, logger, brokerHTTPClient(transport, 5*time.Second))
 	var minter *caMinter
 	if caCert, caKey := os.Getenv("EGRESS_CA_CERT_FILE"), os.Getenv("EGRESS_CA_KEY_FILE"); caCert != "" && caKey != "" && len(secrets) > 0 {
 		m, err := newCAMinter(caCert, caKey)
