@@ -405,4 +405,4 @@ def test_the_judgment_floor_searches_the_implement_pool_first():
 
 def test_an_unknown_pool_role_is_refused():
     with pytest.raises(ValueError):
-        model_pool.pool_for("reviewer", policy())
+        model_pool.pool_for("planner", policy())

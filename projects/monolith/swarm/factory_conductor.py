@@ -31,6 +31,7 @@ from swarm.factory_controls import (
 from swarm.model_pool import (
     JUDGMENT_MODELS,
     judgment_floor,
+    pool_for,
     select_model,
     selection_reason,
 )
@@ -1177,8 +1178,16 @@ def planner_prompt(
 
 
 def verify_delivery(
-    task: dict, number: int, runs: list[dict], reviewer_model: str | None = None
+    task: dict, number: int, runs: list[dict], reviewers: tuple | list | None = None
 ) -> dict:
+    """Confirm an approved review of this exact head by an independent session.
+
+    ``reviewers`` is every model the policy allows review to run on, because a
+    spent Claude window routes review down the reviewer pool. Independence is
+    a property of the SESSION, never of the model: a fallback reviewer still
+    runs in its own session and never the implementer's, and that is what the
+    session check below enforces.
+    """
     pr = github_get(task["repo"], f"pulls/{number}")
     branch = f"factory/{task['id']}"
     if (
@@ -1206,13 +1215,16 @@ def verify_delivery(
         and _artifact(r).get("pr_number") == number
     ]
     review = max(reviews, key=lambda r: r["id"]) if reviews else None
+    allowed_reviewers = tuple(
+        reviewers or (task.get("reviewer_model", task["conductor_model"]),)
+    )
+    reviewer_model = (review or {}).get("pin", {}).get("model")
     if (
         review is None
         or not implementers
         or _artifact(review).get("verdict") != "approve"
         or review.get("head_sha") != head
-        or review.get("pin", {}).get("model")
-        != (reviewer_model or task.get("reviewer_model", task["conductor_model"]))
+        or reviewer_model not in allowed_reviewers
         or not review.get("session_id")
         or any(review["session_id"] == worker["session_id"] for worker in implementers)
     ):
@@ -1225,6 +1237,9 @@ def verify_delivery(
         "pr_url": pr["html_url"],
         "head_sha": head,
         "review_session_id": review["session_id"],
+        # Which model gave the approval, so an accepted delivery records who
+        # reviewed it rather than leaving that to be inferred from the date.
+        "reviewer_model": reviewer_model,
         "state": "ready_for_review",
     }
 
@@ -1318,7 +1333,11 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
             "correct_<n> and review_<n> name engine-owned review rounds",
         )
     stated_reason = source["reason"]
-    reviewer = policy.get("reviewer_model", policy["conductor_model"])
+    # The head of the reviewer pool is the planner's stated reviewer. Which
+    # member actually runs is decided at dispatch, because the Claude window
+    # moves between planning a review and running it.
+    reviewer_pool = pool_for("reviewer", policy)
+    reviewer = reviewer_pool[0]
     if "model" in source:
         model = source["model"]
     elif role == "review":
@@ -1335,10 +1354,10 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
         )
         model = choice["model"]
         stated_reason = selection_reason(stated_reason, choice)
-    if role == "review" and "model" in source and model != reviewer:
+    if role == "review" and "model" in source and model not in reviewer_pool:
         raise _EditRefused(
             "reviewer_model_mismatch",
-            "review nodes must use the configured independent reviewer model",
+            "review nodes must name a model from the configured reviewer pool",
         )
     if (
         task_class in JUDGMENT_CLASSES
@@ -1703,7 +1722,7 @@ def _apply_decision(
             task,
             decision["pr_number"],
             runs,
-            policy.get("reviewer_model", policy["conductor_model"]),
+            pool_for("reviewer", policy),
         )
         result = finish_task(task["id"], "succeeded", ACTOR, evidence=evidence)
         if not result["ok"]:
@@ -1932,7 +1951,9 @@ def _insert_review_round(
     )
     if model is None or model not in policy["allowed_models"]:
         return False, "correction_model_not_allowed"
-    reviewer = policy.get("reviewer_model", policy["conductor_model"])
+    # The pool head is what the round is planned on. Dispatch substitutes a
+    # cheaper member while the Claude window is nearly spent.
+    reviewer = pool_for("reviewer", policy)[0]
     if reviewer not in policy["allowed_models"]:
         return False, "reviewer_model_not_allowed"
     correct_key = f"correct_{ordinal}"
@@ -2926,16 +2947,52 @@ def _free_background_slots() -> int:
         return free_background_slots(db)
 
 
-def _delivery_gated(node_key: str) -> bool:
-    """Whether the Claude-window guard holds this node back.
+def _reviewer_override(
+    task_id: str, policy: dict, node: dict
+) -> tuple[bool, str | None]:
+    """The model this review attempt runs on, and whether it may run at all.
 
-    Review is the spend the guard exists to protect, and an implementation
-    node is what a review is then owed, so holding one without the other
-    would only build up work the guard is refusing to gate. A planner round, a
-    refine brief and any other role still start: they cost the cheap lane and
-    keep the task legible while delivery waits.
+    Resolved at dispatch, not when the node was planned. A plan written while
+    the Claude window was quiet can reach its review hours later with the
+    window nearly spent, so the model the planner wrote is its stated
+    preference and this is what actually runs. The node keeps the planner's
+    model; the pin records the substitution.
     """
-    return node_key.startswith("review_") or _is_implementation(node_key)
+    from swarm.factory_controls import window_high
+    from swarm.factory_quota_guard import reviewer_for
+    from swarm.factory_refine import task_class_for
+
+    task_class = task_class_for(task_id)
+    choice = reviewer_for(policy, task_class)
+    model = choice["model"]
+    if model is not None and model not in policy["allowed_models"]:
+        choice = {
+            **choice,
+            "model": None,
+            "skipped": [*choice["skipped"], {"model": model, "reason": "not_allowed"}],
+        }
+        model = None
+    if model is None:
+        # Judgment work reaches here whenever the window is spent: its floor is
+        # a capability, not a price, so it waits for Opus rather than taking
+        # the rung below it. Everything else reaches here only when the whole
+        # pool is walled. Re-audited when the window state flips, so one
+        # waiting review is a row per transition and not one per tick.
+        high = window_high()
+        _audit_once(
+            task_id,
+            f"review_waiting:{node['node_key']}:{'high' if high else 'low'}",
+            "review_waiting",
+            {
+                "node_key": node["node_key"],
+                "task_class": task_class,
+                "window_high": high,
+                "judgment": task_class in JUDGMENT_CLASSES,
+                "skipped": choice["skipped"],
+            },
+        )
+        return False, None
+    return True, None if model == node.get("model") else model
 
 
 def _dispatch_ready(
@@ -2956,16 +3013,8 @@ def _dispatch_ready(
     node the pool or the server declines simply stays ready for the next tick.
     """
     from swarm.factory_controls import set_control
-    from swarm.factory_quota_guard import delivery_paused
 
     ready = _ready_nodes(nodes, runs)
-    if ready and policy is not None and delivery_paused():
-        held = [node for node in ready if _delivery_gated(node["node_key"])]
-        ready = [node for node in ready if not _delivery_gated(node["node_key"])]
-        if held and not ready:
-            # Not a task pause: the work is fine and the window is not, so the
-            # task waits where it stands and starts on the tick that resumes.
-            return False
     if not ready or slots <= 0:
         return False
     solo = 0 if fan_out else 1
@@ -2992,6 +3041,15 @@ def _dispatch_ready(
         branch = _dispatch_branch(task_id, node_key, nodes, runs, parallel)
         if branch is None:
             continue
+        reviewer = None
+        if node_key.startswith("review_") and policy is not None:
+            may_run, reviewer = _reviewer_override(task_id, policy, node)
+            if not may_run:
+                # No reviewer has quota. The review waits where it stands and
+                # starts on the tick one does: skipping the gate is the one
+                # thing a review must never do, and pausing the task would
+                # hold the implement work that does not need a reviewer.
+                continue
         attempt = sum(r["node_key"] == node_key for r in runs) + 1
         key = f"factory-node:{task_id}:{node_key}:{attempt}"
         context = {
@@ -3005,7 +3063,8 @@ def _dispatch_ready(
                 [r for r in runs if r["node_key"] == node_key], default=str
             )[-16000:],
         }
-        if reserve_node(task_id, node_key, key, context):
+
+        if reserve_node(task_id, node_key, key, context, model=reviewer):
             dispatched += 1
             continue
         if dispatched == 0 and not fan_out:
@@ -3014,8 +3073,16 @@ def _dispatch_ready(
     return dispatched > 0
 
 
-def reserve_node(task_id: str, node_key: str, key: str, context: dict) -> bool:
-    """Atomically reserve graph attempt and factory turn under the control lock."""
+def reserve_node(
+    task_id: str, node_key: str, key: str, context: dict, *, model: str | None = None
+) -> bool:
+    """Atomically reserve graph attempt and factory turn under the control lock.
+
+    ``model`` substitutes the model for this attempt, which is how a review
+    runs on a cheaper reviewer while the Claude window is nearly spent. The
+    turn is authorized against the pin, so the substitution is what gets
+    charged and what evidence later reads.
+    """
     from swarm.factory_controls import _locked_session, authorize_start
 
     with Session(get_engine()) as db:
@@ -3043,6 +3110,7 @@ def reserve_node(task_id: str, node_key: str, key: str, context: dict) -> bool:
                 node_key,
                 dispatch_key=key,
                 execution_context=context,
+                model=model,
                 session=db,
             )
             if not admitted.ok:
@@ -3064,39 +3132,20 @@ def reserve_node(task_id: str, node_key: str, key: str, context: dict) -> bool:
     return True
 
 
-def observe_quota_guard(policy: dict) -> None:
-    """Refresh the window verdict once per tick, before anything spends a turn.
+def observe_reviewer_routing(policy: dict) -> None:
+    """Re-read the Claude window once per tick, before anything spends a turn.
 
     This runs ahead of reconciliation rather than beside admission, because a
     factory already at its concurrency limit never reaches admission and would
-    otherwise dispatch every node of every in-flight task against a verdict
-    nobody had re-read since the lane filled up.
+    otherwise dispatch every review of every in-flight task against a reading
+    nobody had refreshed since the lane filled up.
     """
-    from swarm.factory_quota_guard import evaluate
+    from swarm.factory_quota_guard import observe
 
     try:
-        evaluate(policy)
-    except Exception:  # noqa: BLE001 - a guard that cannot read never blocks
-        logger.exception("factory quota guard evaluation failed")
-
-
-def open_admission_lanes(policy: dict) -> tuple:
-    """Lanes this tick may admit into. Delivery is what the guard shuts.
-
-    Advisory work is never held: it passes no review gate, so it does not
-    spend the window the guard is protecting.
-    """
-    from swarm.factory_controls import LANES
-    from swarm.factory_quota_guard import delivery_paused
-
-    try:
-        paused = delivery_paused()
-    except Exception:  # noqa: BLE001 - a guard that cannot read never blocks
-        logger.exception("factory quota guard state unreadable")
-        return LANES
-    if not paused:
-        return LANES
-    return tuple(lane for lane in LANES if lane != "delivery")
+        observe(policy)
+    except Exception:  # noqa: BLE001 - routing that cannot be read never blocks
+        logger.exception("factory reviewer routing observation failed")
 
 
 def tick() -> None:
@@ -3118,9 +3167,9 @@ def tick() -> None:
             except Exception:  # noqa: BLE001 - per-task isolation keeps stop total
                 logger.exception("factory stop failed for task %s", task["task_id"])
         return
-    # The window verdict is refreshed before any task reconciles, because the
-    # nodes those tasks are about to start are what spends the window.
-    observe_quota_guard(snapshot["policy"])
+    # The window reading is refreshed before any task reconciles, because the
+    # review nodes those tasks are about to start are what spends it.
+    observe_reviewer_routing(snapshot["policy"])
     # Reconcile what is already in flight before admitting more, and isolate
     # each task: a task stuck on a refused outcome or a failed GitHub read
     # must not starve its neighbours of their tick, and a stale issue number
@@ -3137,9 +3186,6 @@ def tick() -> None:
     limit = concurrency_limit(snapshot["policy"])
     if len(active) >= limit:
         return
-    lanes = open_admission_lanes(snapshot["policy"])
-    if not lanes:
-        return
     try:
         from swarm.factory_intake_loop import intake_tick
 
@@ -3151,10 +3197,9 @@ def tick() -> None:
         intake_tick(
             snapshot["policy"],
             generation=snapshot["policy"].get("generation", 0),
-            lanes=lanes,
         )
         while len(active) < limit:
-            admitted = admit_next(ACTOR, lanes=lanes)
+            admitted = admit_next(ACTOR)
             if not admitted["ok"]:
                 break
             # A task admitted this tick is reconciled on the next one.

@@ -22,8 +22,12 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-ROLES = ("conductor", "worker", "implement", "refine")
-_ROLE_KEY = {"conductor": "conductor_model", "worker": "worker_model"}
+ROLES = ("conductor", "worker", "implement", "refine", "reviewer")
+_ROLE_KEY = {
+    "conductor": "conductor_model",
+    "worker": "worker_model",
+    "reviewer": "reviewer_model",
+}
 # Class pools name no policy field, so each falls back to a configured pool
 # rather than to a single model. Delivery implementation is the worker pool by
 # default, which is exactly where it ran before this existed. A refine brief is
@@ -31,6 +35,12 @@ _ROLE_KEY = {"conductor": "conductor_model", "worker": "worker_model"}
 # Codex implementer behind it; a policy that allows neither falls back to the
 # conductor pool, which is where refine ran before.
 DEFAULT_REFINE_POOL = ("spark", "sol")
+# Reviewers in preference order. Opus is the review the gate is designed
+# around; Astra is the rung below it that does not draw on the same
+# subscription. There is deliberately no third rung: Astra and Sol share one
+# Codex grant, so a Sol rung could never be reachable when Astra is walled,
+# and offering it would only make the fallback look deeper than it is.
+DEFAULT_REVIEWER_POOL = ("opus", "astra")
 # Adapter family to broker provider. Families absent here have no quota feed.
 QUOTA_PROVIDERS = {"codex": "codex", "claude": "claude"}
 # Models at or above the ADR agents/038 judgment floor. Adapter family is NOT
@@ -107,6 +117,15 @@ def pool_for(role: str, policy: dict) -> list[str]:
         allowed = policy.get("allowed_models") or []
         default = [model for model in DEFAULT_REFINE_POOL if model in allowed]
         return default or pool_for("conductor", policy)
+    if role == "reviewer":
+        allowed = policy.get("allowed_models") or []
+        default = [model for model in DEFAULT_REVIEWER_POOL if model in allowed]
+        configured = policy.get("reviewer_model") or policy.get("conductor_model")
+        # The configured reviewer always leads, so a policy that names one and
+        # no pool keeps exactly the reviewer it asked for.
+        if configured and configured not in default:
+            return [configured, *default]
+        return default or ([configured] if configured else [])
     return [policy[_ROLE_KEY[role]]]
 
 
@@ -321,6 +340,58 @@ def select_model(role: str, policy: dict, *, quota: dict | None = None) -> dict:
         "fallback_from": None,
         "skipped": skipped,
         "reason": "pool_exhausted",
+    }
+
+
+def select_reviewer(
+    policy: dict,
+    *,
+    window_high: bool,
+    judgment: bool = False,
+    quota: dict | None = None,
+) -> dict:
+    """Pick the model that will review, or None when every candidate is walled.
+
+    Two constraints stack. Provider quota walls a member the way it walls any
+    pool member. The Claude 7-day window walls the whole claude family while it
+    is nearly spent, because review is what spends it: that is the fallback,
+    and it lifts on its own when the window drops.
+
+    Judgment work has a capability floor instead of a fallback. It only ever
+    runs on an Opus-class member, so a walled Opus makes it wait rather than
+    demoting the one review nobody else can give. Waiting is also what a
+    non-judgment review does when nothing in the pool is available: review is
+    the gate, and a gate that lets itself be skipped is not one.
+    """
+    pool = pool_for("reviewer", policy)
+    if quota is None:
+        quota = quota_summary()
+    skipped: list[dict] = []
+    for model in pool:
+        if judgment and model not in JUDGMENT_MODELS:
+            skipped.append({"model": model, "reason": "below_judgment_floor"})
+            continue
+        if window_high and family_for(model) == "claude":
+            skipped.append({"model": model, "reason": "claude_window_spent"})
+            continue
+        ok, reason = availability(model, quota, "reviewer")
+        if ok:
+            return {
+                "model": model,
+                "preferred": pool[0],
+                "fallback_from": None if model == pool[0] else pool[0],
+                "skipped": skipped,
+                "reason": reason,
+                "pool": pool,
+            }
+        skipped.append({"model": model, "reason": reason})
+    return {
+        "model": None,
+        "preferred": pool[0] if pool else None,
+        "fallback_from": None,
+        "skipped": skipped,
+        "reason": "no_reviewer_available",
+        "pool": pool,
     }
 
 

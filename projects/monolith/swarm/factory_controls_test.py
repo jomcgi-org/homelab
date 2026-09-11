@@ -1243,18 +1243,24 @@ def test_an_unusable_quota_guard_is_refused(policy, block):
         controls.validate_policy(policy)
 
 
-def test_the_guard_view_reads_the_ledger_not_the_broker(db, policy):
+def test_status_carries_the_review_routing_view(db, policy):
+    """Read from the ledger, never from the broker: the board must not wait."""
     admitted(policy)
-    view = controls.quota_guard_view(policy)
-    assert view["paused"] is False and view["state"] == "open"
-    assert view["pause_percent"] == 85 and view["resume_percent"] == 75
-    assert view["used_percent"] is None and view["last_action"] is None
+    routing = controls.status()["review_routing"]
+    assert routing["action"] is None and routing["window_high"] is False
+    assert routing["pause_percent"] == 85 and routing["resume_percent"] == 75
+    assert routing["model"] is None and routing["last_action"] is None
     with Session(db) as session:
         controls._audit(
-            session, "factory:quota-guard", "quota_guard_paused", used_percent=91.0
+            session,
+            "factory:quota-guard",
+            "reviewer_fallback",
+            window_high=True,
+            used_percent=91.0,
+            model="astra",
         )
         session.commit()
-    paused = controls.quota_guard_view(policy)
-    assert paused["paused"] is True and paused["used_percent"] == 91.0
-    assert paused["last_action"] == "quota_guard_paused"
-    assert controls.quota_guard_state() == "paused"
+    routing = controls.status()["review_routing"]
+    assert routing["action"] == "reviewer_fallback" and routing["model"] == "astra"
+    assert routing["window_high"] is True and routing["used_percent"] == 91.0
+    assert routing["last_action"] == "reviewer_fallback"

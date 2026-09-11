@@ -97,40 +97,66 @@ before refine, but fills at most one candidate per lane per tick rather than
 one candidate in total. A candidate whose lane is full is counted as
 `lane_full` in the idle audit. The board shows each lane as used against limit.
 
-### The Claude window guard
+### Reviewer fallback while the Claude window is spent
 
 Every delivery task ends in an independent Opus review on the shared Claude
 subscription, and that window is the one input the factory can exhaust:
-implementation autoscales and the cheap implementers bill elsewhere. The
-optional `quota_guard` block holds delivery back before the window is gone:
+implementation autoscales and the cheap implementers bill elsewhere. The answer
+is to review on a cheaper model, not to stop delivering. The optional
+`quota_guard` block sets the thresholds:
 
 ```json
 {"quota_guard": {"claude_7d_pause_percent": 85, "claude_7d_resume_percent": 75}}
 ```
 
-Both default to those numbers, so a policy that predates the block still
-guards. Both are whole percentages between 1 and 100, and the resume threshold
-must be strictly below the pause threshold: equal thresholds are a flap, not a
-guard. Naming only one is allowed as long as the pair stays ordered.
+Both default to those numbers, so a policy that predates the block still routes.
+Both are whole percentages between 1 and 100, and the resume threshold must be
+strictly below the pause threshold: equal thresholds are a flap, not a guard.
+Naming only one is allowed as long as the pair stays ordered.
 
-While the guard is paused the lane makes no new delivery-lane admissions and
-dispatches no new `review_`, `implement_`, `correct_` or `integrate_` node.
-In-flight nodes finish, planner rounds and refine briefs still start, and the
-advisory lane is untouched. A held node is not a paused task: the work is fine
-and the window is not, so the task waits where it stands and starts on the tick
-that resumes.
+At or above the pause percent, review nodes run on the next member of
+`model_pools.reviewer` that has provider quota, default `["opus", "astra"]`.
+Opus comes back on its own once the window falls below the resume percent.
+**Nothing else changes.** Delivery admission is never held, implement nodes on
+Sol or Muse run exactly as they did, and the advisory lane is untouched.
 
-The guard reads the 7-day window the token broker already observes for the
-`claude` provider, once per tick behind a short cache. Its verdict lives in the
-audit ledger as `quota_guard_paused` and `quota_guard_resumed`, one row per
-transition, so a replica restart cannot resume the lane by forgetting and the
-board renders the state without a broker call. An unknown reading, or one older
-than an hour, never starts a pause: it audits `quota_guard_unknown` at most
-hourly and the lane keeps working, because refusing to deliver whenever a broker
-read fails turns one outage into two. It does not clear a pause either. A lane
-paused on a real reading of 95 percent would otherwise reopen the moment the
-broker went down and spend the rest of the window with nothing able to stop it,
-so the ledger holds until a reading that can say otherwise arrives.
+Reviewer independence is a property of the session a review runs in, never of
+the model it runs on. A fallback reviewer still runs in its own session and is
+still refused if that session is the implementer's, which is the check
+`verify_delivery` has always made. Delivery evidence records the model that
+approved, so an accepted PR says who reviewed it rather than leaving it to be
+inferred from the date. That model is read from the immutable dispatch pin, not
+from the review artifact, because the artifact is written by the agent and
+cannot be authority on its own identity.
+
+The model is chosen when the review is dispatched, not when it was planned. A
+plan written while the window was quiet can reach its review hours later, so
+the node keeps the model the planner asked for and the pin records what really
+ran. A retry after the window moved is a new attempt and takes a new pin.
+
+Two things never fall back:
+
+- **Judgment work waits.** `judgment-analysis` has a capability floor rather
+  than a price, so its review runs on Opus or waits for it.
+- **An empty pool waits.** When no member has quota, review waits rather than
+  falling further. Review is the gate, and a gate that lets itself be skipped
+  is not one. Astra and Sol share one Codex grant, which is why the default
+  pool stops at Astra: a Sol rung could never be reachable when Astra is
+  walled, and offering it would make the fallback look deeper than it is.
+
+A waiting review is not a paused task. The work waits where it stands and
+starts on the tick a reviewer has quota again, audited `review_waiting` once
+per node per window transition with the models it skipped and why.
+
+The routing reads the 7-day window the token broker already observes for the
+`claude` provider, once per tick behind a short cache. Transitions are audited
+`reviewer_fallback` and `reviewer_restored`, one row each, and the board renders
+the state from that ledger without a broker call. An unknown reading, or one
+older than an hour, never starts a fallback: it audits `quota_guard_unknown` at
+most hourly and review stays where it is, because downgrading every review
+whenever a broker read fails would turn one outage into two. It does not end a
+fallback either, so a fallback entered at 95 percent does not snap back to Opus
+the moment the broker goes down.
 
 ### Model pools
 
@@ -143,10 +169,11 @@ takes the first member whose provider still has quota.
 | `worker` | every other planner-added role | the `worker_model` alone |
 | `implement` | implement nodes, engine corrections, engine fan-in | the `worker` pool |
 | `refine` | the advisory briefing node | `["spark", "sol"]`, narrowed to allowed models |
+| `reviewer` | every review node, planner-added and engine-inserted | `["opus", "astra"]`, narrowed to allowed models, led by `reviewer_model` |
 
 A role pool must start with that role's own configured model, so the policy's
-stated preference is what the pool is ranked from. A class pool, `implement`
-and `refine`, names no policy field and so has no head to anchor to; its order
+stated preference is what the pool is ranked from. A class pool, `implement`,
+`refine` and `reviewer`, names no policy field and so has no head to anchor to; its order
 is the preference. Every member of every pool must appear in `allowed_models`.
 
 The `refine` default only applies to what a policy allows: a policy that allows
@@ -160,6 +187,12 @@ The judgment floor searches the `implement` pool first, then the conductor
 pool, then the conductor model, so judgment work keeps its Opus-class floor
 whichever pool routes the rest. The floor ignores quota on purpose: a
 quota-walled Opus holds judgment work rather than demoting it.
+
+The `reviewer` pool leads with the policy's own `reviewer_model` when that is
+not already in it, so a policy naming one reviewer and no pool keeps exactly
+the reviewer it asked for and gains a fallback behind it. A planner may name a
+review model only from this pool; anything else is refused as
+`reviewer_model_mismatch`.
 
 ### Shared session admission
 
@@ -500,8 +533,8 @@ validated complete added-file diffs; the existing whole-file channel is accepted
 only when its stored path and validation metadata match the declared artifact.
 
 Completion requires a non-draft PR on the exact task branch, a successful
-implementation node, the latest independent Opus review approving the current
-head, and passing repository PR status checks. GitHub is read again to verify
+implementation node, the latest independent review approving the current head
+on a model the reviewer pool allows, and passing repository PR status checks. GitHub is read again to verify
 the head and checks. Delivery evidence remains in the task audit. This lane
 does not submit a merge or a deployment.
 
