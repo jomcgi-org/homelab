@@ -50,6 +50,7 @@ type listenerConfig struct {
 	spiffeClientIDs []spiffeid.ID
 }
 type server struct {
+	githubGrants       map[string]githubGrant
 	broker             *broker.Broker
 	store              store.Store
 	adapters           map[string]provider.Adapter
@@ -88,6 +89,10 @@ func run(logger *slog.Logger) error {
 	listeners, err := configuredListeners()
 	if err != nil {
 		return err
+	}
+	githubGrants, err := configuredGitHubGrants(listeners)
+	if err != nil {
+		return fmt.Errorf("invalid GitHub App configuration: %w", err)
 	}
 	quotaProviders, err := configuredQuotaProviders()
 	if err != nil {
@@ -135,7 +140,8 @@ func run(logger *slog.Logger) error {
 		quotaProviderSet[provider] = struct{}{}
 	}
 	s := &server{
-		store: st, adapters: adapters, configs: configMap, logger: logger,
+		githubGrants: githubGrants,
+		store:        st, adapters: adapters, configs: configMap, logger: logger,
 		startWaitTimeout: loginStartWaitTimeout, quotaStore: quotaStore,
 		quotaProviders: quotaProviderSet, quotaProviderOrder: quotaProviders,
 		tokenRequests: tokenRequests,
@@ -145,6 +151,7 @@ func run(logger *slog.Logger) error {
 	plaintextMux.HandleFunc("/healthz", s.health)
 	plaintextMux.Handle("/metrics", promhttp.Handler())
 	plaintextMux.Handle("/grants/", s.grantsHandler(false, listeners.tlsListenAddr != ""))
+	plaintextMux.Handle("/github/grants/", s.githubHandler(false))
 	plaintextMux.HandleFunc("/quota", s.quota)
 	plaintextMux.HandleFunc("/quota/", s.quota)
 	plaintextServer := &http.Server{
@@ -171,6 +178,7 @@ func run(logger *slog.Logger) error {
 
 	mtlsMux := http.NewServeMux()
 	mtlsMux.Handle("/grants/", s.grantsHandler(true, true))
+	mtlsMux.Handle("/github/grants/", s.githubHandler(true))
 	mtlsMux.HandleFunc("/quota", s.quota)
 	mtlsMux.HandleFunc("/quota/", s.quota)
 	mtlsServer := &http.Server{

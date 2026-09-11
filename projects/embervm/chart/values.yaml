@@ -339,6 +339,24 @@ service:
 
 tokenBroker:
   enabled: true
+  # Bosun installation tokens. Inert until the App, SPIFFE callers and repository
+  # IDs are configured. These grants are not added to the legacy OAuth catalog.
+  githubApp:
+    enabled: false
+    appID: ""
+    installationID: ""
+    onepassword:
+      itemPath: ""
+      privateKeyField: private-key
+    # Each grant requires name, profile, repositoryIDs and allowedSpiffeIds.
+    # Profiles: planner, implementer, reviewer, review-publisher, merger.
+    # Names alone are not credentials; only explicitly allowed mTLS callers
+    # can retrieve a token. Do not authorize shared agent nodes for publishing.
+    grants: []
+    # On Cilium clusters, selectors for the trusted service callers. Include
+    # k8s:io.kubernetes.pod.namespace in every matchLabels map. SPIFFE checks
+    # still authorize the caller separately for each grant.
+    clientPodSelectors: []
   spiffe:
     # Phase 2 of ADR embervm/041: serve /token only over SPIFFE mTLS on a
     # second port. Off by default; the hub overlay flips it after this

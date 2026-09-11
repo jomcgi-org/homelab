@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 go_library(
     name = "tokenbroker_lib",
-    srcs = ["main.go"],
+    srcs = [
+        "github.go",
+        "main.go",
+    ],
     importpath = "github.com/jomcgi/homelab/projects/embervm/tokenbroker/cmd/tokenbroker",
     visibility = ["//visibility:private"],
     deps = [
@@ -11,6 +14,7 @@ go_library(
         "//projects/embervm/tokenbroker/internal/provider",
         "//projects/embervm/tokenbroker/internal/provider/authentik",
         "//projects/embervm/tokenbroker/internal/provider/codexchatgpt",
+        "//projects/embervm/tokenbroker/internal/provider/githubapp",
         "//projects/embervm/tokenbroker/internal/quota",
         "//projects/embervm/tokenbroker/internal/store",
         "@com_github_prometheus_client_golang//prometheus",
@@ -33,6 +37,7 @@ go_binary(
 go_test(
     name = "tokenbroker_test",
     srcs = [
+        "github_test.go",
         "main_test.go",
         "spiffe_test.go",
     ],
