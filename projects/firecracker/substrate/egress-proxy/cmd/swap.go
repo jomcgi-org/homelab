@@ -322,12 +322,16 @@ func better(candidate, incumbent grantBand) bool {
 }
 
 func newTokenBroker(rawURL string) *tokenBroker {
+	return newTokenBrokerWithClient(rawURL, brokerHTTPClient(nil, 10*time.Second))
+}
+
+func newTokenBrokerWithClient(rawURL string, client *http.Client) *tokenBroker {
 	if rawURL == "" {
 		return &tokenBroker{grants: make(map[string]*brokerGrantState), forced: make(map[string]time.Time)}
 	}
 	return &tokenBroker{
 		baseURL: normalizeBrokerURL(rawURL),
-		client:  &http.Client{Timeout: 10 * time.Second},
+		client:  client,
 		grants:  make(map[string]*brokerGrantState),
 		forced:  make(map[string]time.Time),
 	}
@@ -635,6 +639,10 @@ func loadSecrets(logger *slog.Logger) []secretEntry {
 }
 
 func loadSecretsWithBroker(logger *slog.Logger, brokerURL string) []secretEntry {
+	return loadSecretsWithBrokerClient(logger, brokerURL, brokerHTTPClient(nil, 10*time.Second))
+}
+
+func loadSecretsWithBrokerClient(logger *slog.Logger, brokerURL string, client *http.Client) []secretEntry {
 	raw := os.Getenv("EGRESS_SECRETS")
 	if strings.TrimSpace(raw) == "" {
 		return nil
@@ -645,7 +653,7 @@ func loadSecretsWithBroker(logger *slog.Logger, brokerURL string) []secretEntry 
 		exitFn(1)
 		return nil
 	}
-	broker := newTokenBroker(brokerURL)
+	broker := newTokenBrokerWithClient(brokerURL, client)
 	out := make([]secretEntry, 0, len(entries))
 	for _, e := range entries {
 		sources := 0

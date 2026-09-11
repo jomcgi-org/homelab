@@ -29,6 +29,10 @@ Call with `{{- include "embervm.noded.podSpec" (dict "ctx" . "sizeClass" "" "res
 */}}
 {{- define "embervm.noded.podSpec" -}}
 {{- $ctx := .ctx -}}
+{{- $brokerMTLS := and $ctx.Values.egress.enabled $ctx.Values.egress.tokenBroker.spiffe.enabled -}}
+{{- if and $brokerMTLS (not (and $ctx.Values.tokenBroker.enabled $ctx.Values.tokenBroker.spiffe.enabled)) -}}
+{{- fail "egress.tokenBroker.spiffe requires tokenBroker.enabled and tokenBroker.spiffe.enabled" -}}
+{{- end -}}
 {{- $sizeClass := .sizeClass -}}
 {{- $scratchGate := and $sizeClass $ctx.Values.scratchPrep.enabled -}}
 {{- $nodeSelector := .nodeSelector | default $ctx.Values.noded.nodeSelector -}}
@@ -541,7 +545,15 @@ containers:
       {{- end }}
       {{- if $hasBroker }}
       - name: EGRESS_TOKEN_BROKER_URL
+        {{- if $brokerMTLS }}
+        value: {{ printf "https://%s.%s.svc:%v" (include "embervm.tokenBroker.fullname" $ctx) $ctx.Release.Namespace $ctx.Values.tokenBroker.spiffe.tlsPort | quote }}
+      - name: EGRESS_TOKEN_BROKER_SPIFFE_ID
+        value: {{ printf "spiffe://%s/ns/%s/sa/%s" $ctx.Values.tokenBroker.spiffe.trustDomain $ctx.Release.Namespace (include "embervm.tokenBroker.serviceAccountName" $ctx) | quote }}
+      - name: SPIFFE_ENDPOINT_SOCKET
+        value: "unix:///spiffe-workload-api/spire-agent.sock"
+        {{- else }}
         value: {{ printf "%s.%s.svc.cluster.local:8080" (include "embervm.tokenBroker.fullname" $ctx) $ctx.Release.Namespace | quote }}
+        {{- end }}
       {{- end }}
       {{- if $ctx.Values.egress.ca.enabled }}
       # Optional TLS-MITM lane, for a guest that speaks https:// to the sidecar and
@@ -571,16 +583,29 @@ containers:
       {{- end }}
       {{- end }}
       {{- end }}
-    {{- if $ctx.Values.egress.ca.enabled }}
+    {{- if or $ctx.Values.egress.ca.enabled $brokerMTLS }}
     volumeMounts:
+      {{- if $ctx.Values.egress.ca.enabled }}
       - name: egress-ca
         mountPath: /etc/egress-ca
         readOnly: true
+      {{- end }}
+      {{- if $brokerMTLS }}
+      - name: spiffe-workload-api
+        mountPath: /spiffe-workload-api
+        readOnly: true
+      {{- end }}
     {{- end }}
     resources:
       {{- toYaml $ctx.Values.egress.resources | nindent 6 }}
 {{- end }}
 volumes:
+{{- if $brokerMTLS }}
+  - name: spiffe-workload-api
+    csi:
+      driver: csi.spiffe.io
+      readOnly: true
+{{- end }}
 {{- if and $ctx.Values.egress.enabled $ctx.Values.egress.ca.enabled }}
   - name: egress-ca
     secret:
