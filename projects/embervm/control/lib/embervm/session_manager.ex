@@ -102,6 +102,11 @@ defmodule Embervm.SessionManager do
   @create_worker_timeout_ms 130_000
   @destroy_worker_timeout_ms 30_000
   @destroy_rpc_timeout_ms 15_000
+  # Node-gone lookups run on the manager process during reconcile, so they carry
+  # a short explicit timeout rather than the 5s GenServer.call default: a busy
+  # NodeRegistry must never stall the sweep, and an unanswered lookup is no
+  # evidence of departure.
+  @brick_statuses_timeout_ms 1_000
 
   # Three consecutive bank failures fail the session and destroy its VM: a session
   # that cannot bank must not squat live capacity forever.
@@ -385,12 +390,29 @@ defmodule Embervm.SessionManager do
       |> Keyword.get(:create_concurrency, @default_create_concurrency)
       |> validate_create_concurrency!()
 
+    caller_session_opts = Keyword.get(opts, :session_opts, [])
+
     session_opts =
-      opts
-      |> Keyword.get(:session_opts, [])
+      caller_session_opts
       |> Keyword.put_new(:brick_status_fun, fn dial_id ->
         brick_status(capacity_table, dial_id)
       end)
+      |> Keyword.put_new(
+        :brick_statuses_fun,
+        case Keyword.get(caller_session_opts, :brick_status_fun) do
+          # A caller that injected the single-dial seam owns node truth for this
+          # manager, so the batched form is DERIVED from it. Installing the
+          # default batched fun over an injected single one would reach past that
+          # seam to the globally named NodeRegistry, which knows nothing about
+          # the caller's fixture and answers "unregistered" for every dial. That
+          # is the whole node-gone predicate answering yes.
+          fun when is_function(fun, 1) ->
+            fn dial_ids -> Map.new(dial_ids, &{&1, fun.(&1)}) end
+
+          _ ->
+            fn dial_ids -> brick_statuses(capacity_table, dial_ids) end
+        end
+      )
 
     state = %{
       session_store: Keyword.get(opts, :session_store, SessionStore),
@@ -595,11 +617,11 @@ defmodule Embervm.SessionManager do
         # wrote the durable destroying intent before this continue, in every
         # ordering, so the terminal record still follows its intent.
         #
-        # An exact stop (a session carrying a stop_intent) is excluded: its
-        # contract is that the terminal op is written only against a completion
-        # proof from the node, and departure is not that proof.
-        if state.node_confirmed_destroy and is_nil(Map.get(session, :stop_intent)) and
-             node_gone_for_destroy?(state, session, state.clock.()) do
+        # An exact stop is included: departure is equally final for it, and the
+        # completion tuple stays NULL rather than being synthesised, so a caller
+        # holding the stop precondition can see that no proof was produced.
+        if state.node_confirmed_destroy and
+             node_gone_for_destroy?(state, session, brick_statuses_for(state, [session])) do
           {:noreply, finish_destroy_node_gone(state, session)}
         else
           {:noreply, spawn_destroy_worker(state, session, false)}
@@ -3529,9 +3551,13 @@ defmodule Embervm.SessionManager do
         destroying_dead_instance_warned: MapSet.intersection(state.destroying_dead_instance_warned, still)
     }
 
+    # One registry lookup for the whole pass, before the reduce, so the per-session
+    # node-gone test is a map read.
+    statuses = brick_statuses_for(state, destroying)
+
     Enum.reduce(destroying, state, fn session, acc ->
       acc = maybe_alarm_destroying(acc, session, now)
-      redrive_one_destroying(acc, session, live_vms, now)
+      redrive_one_destroying(acc, session, live_vms, statuses)
     end)
   end
 
@@ -3557,7 +3583,7 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp redrive_one_destroying(state, session, live_vms, now) do
+  defp redrive_one_destroying(state, session, live_vms, statuses) do
     sid = session.session_id
 
     # Emitted per ACTING arm below, not here. Reconcile runs every few seconds
@@ -3581,6 +3607,22 @@ defmodule Embervm.SessionManager do
     cond do
       MapSet.member?(state.destroy_inflight, sid) ->
         state
+
+      # Owner has LEFT the fleet (node_gone_for_destroy?/3 states the exact
+      # predicate): no confirmation can ever arrive, so finish the destroy here
+      # rather than alarm about it forever (#6004). The redrive intent is emitted
+      # first because a CP restart puts the original begin_destroy in a different
+      # spec-trace run, and destroy_intent_precedes_record correlates within a run.
+      #
+      # This arm PRECEDES the exact-stop arm on purpose. An exact stop whose node
+      # departed can never produce the completion tuple its replay waits for, so
+      # leaving it below would wedge exactly the class of destroy this fixes. It
+      # terminalizes with stop_completion left NULL rather than synthesising a
+      # tuple: the caller reads the absent completion and decides for itself
+      # whether departure without proof is acceptable for its purpose.
+      node_gone_for_destroy?(state, session, statuses) ->
+        emit_redrive_intent.()
+        finish_destroy_node_gone(state, session)
 
       # Exact stops always replay the original durable tuple. Missing inventory,
       # a replacement VM or a new daemon boot cannot substitute a different target.
@@ -3611,15 +3653,6 @@ defmodule Embervm.SessionManager do
       session_vm_absence_confirmed?(state, session) ->
         emit_redrive_intent.()
         record_session_destroyed(state, session, "absence")
-
-      # Owner has LEFT the fleet (node_gone_for_destroy?/3 states the exact
-      # predicate): no confirmation can ever arrive, so finish the destroy here
-      # rather than alarm about it forever (#6004). The redrive intent is emitted
-      # first because a CP restart puts the original begin_destroy in a different
-      # spec-trace run, and destroy_intent_precedes_record correlates within a run.
-      node_gone_for_destroy?(state, session, now) ->
-        emit_redrive_intent.()
-        finish_destroy_node_gone(state, session)
 
       # Owner not reporting (a disconnect): leave it destroying, never terminalize on
       # a transient absence of the whole node's facts.
@@ -4031,46 +4064,40 @@ defmodule Embervm.SessionManager do
   # holding every downstream reservation bound to it. This decides when the
   # control plane may complete such a destroy on node departure instead.
   #
-  # It is deliberately NARROW: a node that is registered and healthy but slow
-  # keeps the full confirmation wait and the alarm. A node counts as gone only
-  # when BOTH of these hold:
+  # It is deliberately NARROW: a node that is registered keeps the full
+  # confirmation wait and the alarm, whatever its health. A node counts as gone
+  # only when BOTH of these hold:
   #
   #   1. it publishes no capacity facts for the session's dial, so it is not
   #      dispatchable and the control plane is receiving nothing from it, AND
-  #   2. the node registry says either
-  #      a. no runtime instance is registered for it, or its instance is
-  #         tombstoned, in which case no NodeStatus can ever arrive, or
-  #      b. it has been `:down` or `:unknown` for longer than
-  #         `destroying_alarm_ms` measured from the destroy intent
-  #         (`session.updated_at`, stamped by the `destroying` transition), so
-  #         nothing dispatchable has been observed from it since the destroy was
-  #         requested.
+  #   2. the node registry holds no runtime instance for it, or holds only a
+  #      tombstone, so no NodeStatus can ever arrive for it again.
   #
-  # (2b) reuses the alarm threshold on purpose: the same wait that decides a
-  # destroy is stuck is the wait that decides it will never be confirmed.
-  # A draining node fails (2) (it still reports healthy), and a brick blip
-  # shorter than the threshold fails (2b), so neither terminalizes anything.
-  # A brick_status lookup that fails reads as NOT gone, so the wait is
-  # fail-closed toward keeping the session.
-  defp node_gone_for_destroy?(state, session, now) do
+  # (2) is the whole test, and it is deliberately NOT a health-plus-elapsed
+  # test. NodeRegistry ages an instance to `:unknown` after `unknown_after_ms`
+  # (5s) of silence and retracts its capacity row while leaving it registered, so
+  # "unhealthy for longer than some threshold" is also satisfied by a healthy
+  # brick with a five-second status gap under a destroy that has been retrying
+  # for minutes, which would record `destroyed` for a VM still running. Only
+  # departure from the registry is sound, and it is sufficient: two-signal
+  # expiry (`expire_lapsed_instances/2`) removes a preempted brick from
+  # `node_runtime` and writes a tombstone once it is `:down` and either its
+  # registration lapsed or its stream was silent for the full down-expiry
+  # window, so this fires on its own within about 90 seconds of a real
+  # departure. A brick_status lookup that fails reads as NOT gone, so the wait
+  # is fail-closed toward keeping the session.
+  defp node_gone_for_destroy?(state, session, statuses) do
     case destroy_dial_key(state, session) do
       nil ->
         false
 
       dial ->
-        not node_reporting?(state, dial) and registry_confirms_gone?(state, dial, session, now)
+        not node_reporting?(state, dial) and registry_confirms_gone?(Map.get(statuses, dial, %{}))
     end
   end
 
-  defp registry_confirms_gone?(state, dial, session, now) do
-    status = safe_brick_status(state, dial)
-
-    cond do
-      Map.get(status, :tombstoned) == true -> true
-      Map.get(status, :registered) == false -> true
-      Map.get(status, :health) in [:down, :unknown] -> now - session.updated_at > state.destroying_alarm_ms
-      true -> false
-    end
+  defp registry_confirms_gone?(status) do
+    Map.get(status, :tombstoned) == true or Map.get(status, :registered) == false
   end
 
   # The dial the destroy would have to reach. Mirrors destroy_vm/2: current
@@ -4087,25 +4114,37 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  # brick_status_fun reaches the NodeRegistry GenServer by default, so a slow or
-  # absent registry must not crash or block the manager. An unreadable status is
-  # no evidence of departure.
-  defp safe_brick_status(state, dial) do
-    fun = Keyword.get(state.session_opts, :brick_status_fun)
+  # ONE registry round trip per reconcile pass, keyed by dial, never one per
+  # stuck session: NodeRegistry serializes every read behind its GenServer, so a
+  # per-session call would put a 5s default-timeout call on the manager for each
+  # destroying session whose node is not reporting. The default statuses fun
+  # carries its own short timeout. An unreadable status is no evidence of
+  # departure, so a failure yields %{} and the session keeps waiting.
+  defp brick_statuses_for(state, sessions) do
+    dials =
+      sessions
+      |> Enum.map(&destroy_dial_key(state, &1))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
 
-    if is_function(fun, 1) do
-      try do
-        case fun.(dial) do
-          status when is_map(status) -> status
-          _ -> %{}
-        end
-      rescue
+    case dials do
+      [] -> %{}
+      ids -> safe_brick_statuses(state, ids)
+    end
+  end
+
+  defp safe_brick_statuses(state, dials) do
+    batched = Keyword.get(state.session_opts, :brick_statuses_fun)
+
+    try do
+      case batched.(dials) do
+        statuses when is_map(statuses) -> statuses
         _ -> %{}
-      catch
-        _, _ -> %{}
       end
-    else
-      %{}
+    rescue
+      _ -> %{}
+    catch
+      _, _ -> %{}
     end
   end
 
@@ -4114,11 +4153,20 @@ defmodule Embervm.SessionManager do
   # terminal op, which keeps destroy_intent_precedes_record true. The terminal
   # reason is `node_gone` so the row and the op-log say why the confirmation was
   # waived, and the confirm_destroy record carries confirmed_by "node_gone".
+  # `stop_completion` is left untouched, so an exact stop finished here reports a
+  # NULL completion rather than a synthesised tuple.
+  #
+  # The session PROCESS must be terminated here. The request-time call site
+  # spawns no destroy worker, so without this the Embervm.Session GenServer stays
+  # in the Registry, its idle timer keeps firing :maybe_bank against a manager
+  # whose row is now terminal, and it re-arms forever: one leaked process,
+  # channel and timer per node-gone destroy. terminate_session_process/2 stops
+  # only the process; stop_session_process/3 would also dial the gone node.
   #
   # The session volume is deliberately NOT retired here: retiring dials the
   # owning node, and the predicate just established there is no owning node to
-  # dial. A workspace that outlived its brick is reclaimed by the orphan-volume
-  # pass, not by an RPC into the void.
+  # dial. A workspace that outlived its brick is reclaimed by
+  # retire_orphan_session_volumes/3, not by an RPC into the void.
   defp finish_destroy_node_gone(state, session) do
     Logger.warning("embervm session destroyed without node confirmation (node gone)",
       session_id: session.session_id,
@@ -4126,6 +4174,8 @@ defmodule Embervm.SessionManager do
       node_id: session.node_id,
       vm_id: session.vm_id
     )
+
+    terminate_session_process(state, session.session_id)
 
     state
     |> drain_relight_waiters(session.session_id, {:error, {:gone, "destroyed"}})
@@ -5146,6 +5196,41 @@ defmodule Embervm.SessionManager do
 
   defp default_delete_session_volume(channel, %DeleteVolumeRequest{} = req) do
     Embervm.Node.V1.NodeService.Stub.delete_volume(channel, req, timeout: 15_000)
+  end
+
+  # The batched form of brick_status/2: one capacity snapshot and, for the dials
+  # it cannot answer, ONE registry call carrying an explicit short timeout so a
+  # busy NodeRegistry cannot stall the SessionManager behind the 5s default.
+  defp brick_statuses(capacity_table, dial_ids) do
+    facts = NodeCapacity.all(capacity_table)
+    {dispatchable, degraded} = Enum.split_with(dial_ids, &(dial_facts(facts, &1) != nil))
+
+    from_capacity =
+      Map.new(dispatchable, fn dial_id ->
+        {dial_id, capacity_brick_status(dial_facts(facts, dial_id))}
+      end)
+
+    from_registry =
+      case degraded do
+        [] ->
+          %{}
+
+        ids ->
+          Embervm.NodeRegistry.brick_statuses(Embervm.NodeRegistry, ids, @brick_statuses_timeout_ms)
+      end
+
+    Map.merge(from_registry, from_capacity)
+  end
+
+  defp dial_facts(facts, dial_id) do
+    Enum.find(facts, fn f ->
+      Map.get(f, :instance_id) == dial_id or Map.get(f, :configured_id) == dial_id or
+        Map.get(f, :node_id) == dial_id
+    end)
+  end
+
+  defp capacity_brick_status(facts) do
+    %{health: :healthy, draining: false, registered: true, tombstoned: false, pod_uid: Map.get(facts, :pod_uid)}
   end
 
   # A capacity row is NodeRegistry's healthy, non-draining projection. Prefer it

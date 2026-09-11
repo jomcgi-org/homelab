@@ -210,10 +210,16 @@ defmodule Embervm.NodeRegistry do
     GenServer.call(server, {:brick_status, node_id})
   end
 
-  @doc "Health and drain state for several configured nodes from one registry snapshot."
-  @spec brick_statuses(GenServer.server(), [String.t()]) :: %{String.t() => map()}
-  def brick_statuses(server \\ __MODULE__, node_ids) when is_list(node_ids) do
-    GenServer.call(server, {:brick_statuses, node_ids})
+  @doc """
+  Health and drain state for several configured nodes from one registry snapshot.
+
+  `timeout` is exposed because this GenServer serializes every capacity read, so
+  a caller on a hot path (the SessionManager reconcile sweep) needs to bound its
+  wait rather than block on the 5s `GenServer.call` default.
+  """
+  @spec brick_statuses(GenServer.server(), [String.t()], timeout()) :: %{String.t() => map()}
+  def brick_statuses(server \\ __MODULE__, node_ids, timeout \\ 5_000) when is_list(node_ids) do
+    GenServer.call(server, {:brick_statuses, node_ids}, timeout)
   end
 
   @doc "Last NodeStatus time by configured node, observed against the registry's expiry clock."
