@@ -216,6 +216,13 @@ defmodule Embervm.NodeRegistryTest do
     assert NodeRegistry.brick_status(reg, "node-4").health == :down
     assert %{"node-4" => %{health: :down}, "node-missing" => %{health: :unknown}} =
              NodeRegistry.brick_statuses(reg, ["node-4", "node-missing"])
+
+    # A registered node that aged to down is not the same as a node the registry
+    # has never heard of, even though an aged-out instance also reports :unknown
+    # at the 5s mark. Callers that must decide "can a report still arrive?" read
+    # `registered`, not health.
+    assert NodeRegistry.brick_status(reg, "node-4").registered
+    refute NodeRegistry.brick_status(reg, "node-missing").registered
     assert_receive {:reassigned, "node-4"}
 
     # A further tick while still down must not re-fire reassignment.
