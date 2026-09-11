@@ -161,6 +161,7 @@ def shape_receipt(
             "limits",
             "evidence",
             "allowance",
+            "task_class",
         )
     }
     shaped["policy"] = {

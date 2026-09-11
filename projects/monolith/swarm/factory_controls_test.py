@@ -510,6 +510,30 @@ def test_policy_without_intake_gains_disabled_defaults(policy):
     assert normalized["intake"] is not controls.DEFAULT_INTAKE
 
 
+@pytest.mark.parametrize("task_class", controls.TASK_CLASSES)
+def test_validate_task_class_accepts_vocabulary(task_class):
+    assert controls.validate_task_class(task_class) == task_class
+
+
+@pytest.mark.parametrize("task_class", ["unknown", None, 7])
+def test_validate_task_class_rejects_values_outside_vocabulary(task_class):
+    with pytest.raises(ValueError, match="invalid task_class"):
+        controls.validate_task_class(task_class)
+
+
+def test_receipt_task_class_defaults_null_and_preserves_stored_value():
+    assert controls.receipt_task_class(FactoryReceipt(task_class=None)) == "bug-fix"
+    assert controls.receipt_task_class(FactoryReceipt(task_class="docs")) == "docs"
+
+
+def test_is_advisory_matches_exactly_the_advisory_classes():
+    assert {
+        task_class
+        for task_class in controls.TASK_CLASSES
+        if controls.is_advisory(task_class)
+    } == set(controls.ADVISORY_CLASSES)
+
+
 @pytest.mark.parametrize("key", ["enabled", "refine_enabled"])
 @pytest.mark.parametrize("value", [0, 1, "true", None])
 def test_intake_flags_require_bools(policy, key, value):

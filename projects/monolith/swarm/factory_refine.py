@@ -10,12 +10,12 @@ import os
 from sqlmodel import select
 
 from swarm.factory_controls import (
-    REFINE,
+    DEFAULT_TASK_CLASS,
     _audit,
     _locked_session,
     _read_session,
     finish_task,
-    receipt_kind,
+    receipt_task_class,
     set_control,
     task_snapshot,
 )
@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 ACTOR = "factory:refine"
 NODE_KEY = "refine_1"
 MAX_ATTEMPTS = 2
+TASK_CLASS = "refine"
 BRIEF_HEADING = "## Agent brief"
 READY_LABEL = "agent-ready"
 HUMAN_LABEL = "needs-human"
@@ -71,12 +72,13 @@ def refine_prompt(task: dict, receipt: dict) -> str:
     )
 
 
-def is_refine_task(task_id: str) -> bool:
+def task_class_for(task_id: str) -> str:
+    """The receipt's class, defaulting for a receipt that predates them."""
     with _read_session() as db:
         row = db.exec(
             select(FactoryReceipt).where(FactoryReceipt.task_id == task_id)
         ).first()
-        return row is not None and receipt_kind(row) == REFINE
+        return DEFAULT_TASK_CLASS if row is None else receipt_task_class(row)
 
 
 def _aware(value: datetime) -> datetime:
@@ -239,8 +241,24 @@ def reconcile(
     nodes: list[dict],
     runs: list[dict],
     expected_version: int,
+    *,
+    task_class: str = TASK_CLASS,
 ) -> None:
     from swarm import factory_conductor
+
+    if task_class != TASK_CLASS:
+        # Phase 3 fills this hook. Pausing is deliberate so an unreachable
+        # advisory class parks visibly instead of silently planning a DAG.
+        set_control("pause_task", ACTOR, task_id=task["id"])
+        with _locked_session() as (db, _control):
+            _audit(
+                db,
+                ACTOR,
+                "advisory_class_unimplemented",
+                task_id=task["id"],
+                task_class=task_class,
+            )
+        return
 
     if not nodes:
         receipt = task_snapshot(task["id"])

@@ -101,6 +101,34 @@ Delivery candidates rank before every refine candidate. Within either group,
 candidate carrying `critical` never outranks a delivery candidate without a
 rank label.
 
+Each intake receipt carries the task class that sets its verification mode,
+implementer floor, and gate (ADR agents/038 decision 5):
+
+| Class | Verification | Floor | Gate |
+|---|---|---|---|
+| `bug-fix`, `mechanical-refactor`, `docs` | machine-verified | the worker pool | independent Opus review plus required CI |
+| `advisory-diagnosis`, `advisory-triage`, `refine` | advisory | the worker pool | none, because nothing merges |
+| `judgment-analysis` | judgment | Opus or better | independent Opus review plus a human spot check |
+
+Delivery classes come from the issue's labels in this order:
+`security-finding` and `needs-thought` select `judgment-analysis`, `bug` selects
+`bug-fix`, `documentation` selects `docs`, and `todo` selects
+`mechanical-refactor`. `security-finding` remains excluded by default. An
+unclassified `agent-ready` issue defaults to `bug-fix`. A receipt written
+before classes existed also reads as `bug-fix`, so operator-posted receipts are
+unaffected.
+
+The judgment floor is a capability constraint. A quota-walled Opus holds
+judgment work instead of demoting it. The floor searches the worker pool first,
+then the conductor pool, and falls back to the conductor model when neither
+names an Opus-class member, so a policy whose pools carry no such model routes
+judgment work to its strongest configured model and says so in the node's
+stated reason. Configure an Opus-class worker pool member before enabling
+intake on a repository whose issues carry `needs-thought`. Advisory classes other than `refine` have
+no producer yet and park the task paused; phase 3 fills that hook.
+Reviewer-driven class escalation and the verdict ledger are deliberately not
+built in these phases (#3843).
+
 A refine task runs one planner-class node with at most two attempts and has no
 DAG. The node posts exactly one `## Agent brief` comment with `### Outcome`,
 `### Acceptance`, `### Files`, `### Evidence`, and `### Risks` in that order.
