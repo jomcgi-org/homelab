@@ -160,12 +160,11 @@ CI runs the example ladder twice: the full suite on the default amd64 platform,
 and an arm64 shard (`--platforms=//bazel/ocaml/platforms:linux_aarch64`, see
 `buildbuddy.yaml`; Bazel runs the test actions on an execution platform
 matching the target platform's constraints, i.e. the arm64 pool). Exec-config tools
-(ppx drivers, menhir, cppo) resolve per-arch automatically. Two deliberate
-exceptions:
+(ppx drivers, menhir, cppo) resolve per-arch automatically. C and C++
+dependencies resolve through BuildBuddy's constrained native toolchains, so
+cc_library archives are built on the same architecture as their OCaml
+consumers. One deliberate exception remains:
 
-- **cc_library-dependent examples are tagged `no-arm64`**: Bazel's C++
-  toolchain in CI targets x86_64 only. The OCaml driver itself is unaffected
-  (it uses the executor's own `gcc`/`as`/`ld`, which are native on each pool).
 - **Override genrules that stage the sysroot tar directly** (yojson's
   ocamllex run, ocaml-compiler-libs' generators) reference the _unconstrained_
   `toolchain:ocaml_compiler`: both that build action and genrules run on the

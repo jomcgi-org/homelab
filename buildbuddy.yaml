@@ -265,7 +265,31 @@ actions:
             fi
           fi
 
-          # ---- 2. images build, and the missed-chart-bump guard -----------
+          # ---- 2. native arm64 OCaml shard -------------------------------
+          # Select the aarch64 target platform on every PR and queue run. Its
+          # Arch property routes OCaml and C/C++ actions to the arm64 pool,
+          # where both toolchains compile natively. Do not filter C-dependent
+          # tests: PCRE, tree-sitter, and the C++ scanner examples are part of
+          # this shard.
+          bazel test //bazel/ocaml/... --config=ci \
+            --platforms=//bazel/ocaml/platforms:linux_aarch64 \
+            --build_tests_only \
+            --test_tag_filters=-external
+
+          # Force the two issue acceptance tests plus a C++ scanner test to
+          # execute at this head, even when their build outputs or an earlier
+          # shard result are cached. Full output provides direct CI evidence
+          # from the PCRE and tree-sitter binaries.
+          bazel test \
+            //bazel/ocaml/examples/pcre2:pcre2_test \
+            //bazel/ocaml/examples/treesitter:ts_test \
+            //bazel/ocaml/examples/treesitter_bash:ts_bash_test \
+            --config=ci \
+            --platforms=//bazel/ocaml/platforms:linux_aarch64 \
+            --cache_test_results=no \
+            --test_output=all
+
+          # ---- 3. images build, and the missed-chart-bump guard -----------
           # PR branches publish nothing. `bazel build` proves the images build
           # while --remote_download_minimal leaves the layers at rest in CAS;
           # `bazel run` would stage all ~24 images' runfiles on the runner
@@ -287,13 +311,13 @@ actions:
           # After the build, which is where the workspace is fattest.
           echo "DISK pr-checks after build:"; df -h /
 
-          # ---- 3. rendered-manifest diff PR comment -----------------------
+          # ---- 4. rendered-manifest diff PR comment -----------------------
           # Hard-fails on newly introduced duplicate env var names within a
           # container (the phantom-OutOfSync class: the API server collapses
           # duplicates on apply, so the ArgoCD diff never converges).
           ./bazel/helm/ci-diff-manifests.sh
 
-          # ---- 4. format, generators, drift auto-commit -------------------
+          # ---- 5. format, generators, drift auto-commit -------------------
           # The ci-format-bot guard skips THIS STAGE ONLY, never the run. The
           # old standalone action could `exit 0` here because that ended only
           # the format check; doing the same now would skip the tests, and the

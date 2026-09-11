@@ -31,7 +31,7 @@
 # sysroot). Their outputs are arch-independent for this ruleset's two
 # platforms: linux x86_64 and aarch64 are both little-endian LP64, so
 # libyaml's struct layouts and enum values agree. The cc_library keeps the
-# whole package in CI's cc bucket (no-arm64) regardless.
+# whole package in the C-dependent test bucket on both CI architectures.
 load("@homelab//bazel/ocaml:defs.bzl", "ocaml_binary", "ocaml_library")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
