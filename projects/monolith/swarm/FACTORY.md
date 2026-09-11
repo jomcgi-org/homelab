@@ -489,6 +489,35 @@ forward. A strand or
 a stall caught early still holds its reservation until one of those deadlines
 passes rather than self-healing at the moment it is observed.
 
+A replica lost mid-invoke used to cost the attempt outright. The rollout
+cancelled the executor watching the turn, the guest carried on working, and the
+executor recorded an unknown invocation that failed the session and left stop
+supervision to destroy a guest that was in the middle of the work. The guest
+publishes its complete native record to a result receipt before it writes the
+synchronous response, so that record outlives the observer. An invoke whose
+response is lost while the control plane still shows the guest running, with an
+invoke started and no invoke completion, is now held rather than settled: the
+turn is marked interrupted with stop reason `response_lost`, its pending row
+keeps its claim so nothing re-dispatches the prompt, and its permit keeps its
+state so nothing releases capacity the guest is still using. DBOS workflow
+recovery already brings the node back on the new replica, so the recovered
+node's next dispatch poll finishes the attempt from that receipt through the
+ordinary turn writer, and the conductor's late-completion reconciliation does
+the same before deciding the attempt has no result. The model runs once, and
+the node owner supplies the declared artifact path a hold reconstructed from
+durable rows cannot know, so a recovered attempt keeps its artifact.
+
+Neither owner ends a hold on its own judgement. A guest that has ceased, or one
+that completed its invoke without ever publishing, can no longer produce the
+evidence, so the hold becomes the ordinary unknown outcome the existing
+reconciliation settles. A guest still invoking keeps waiting. Every hold is
+bounded by the invoke budget clamped to the twelve-hour workload backstop,
+after which the claim lease settles it unknown exactly as it did before, so an
+unrecoverable hold cannot pin an admission slot indefinitely. Recovery is
+behind `agents.sessions.responseLostRecoveryEnabled`, off by default and
+dependent on `resultReceiptsEnabled`: with no receipt to adopt, a hold would
+only delay the same unknown outcome (#5938, #4322).
+
 An attempt whose workflow died mid-way has no session recorded on its run,
 because `record_dispatch` binds one only at completion. The reconciler resolves
 it by the deterministic `local_session_id`, `factory:<task>:<node>:<attempt>`,
