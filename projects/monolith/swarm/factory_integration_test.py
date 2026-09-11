@@ -357,6 +357,9 @@ def delivery_api(monkeypatch, task_id, *, branches=None):
                 },
                 "base": {"ref": "main"},
                 "html_url": "https://github.com/owner/repo/pull/21",
+                # The completion gate reads the body back and refuses a
+                # delivery that leaves its issue open.
+                "body": "Delivers the change.\n\nCloses #8",
             }
         if suffix == f"commits/{HEAD}/status":
             return {
