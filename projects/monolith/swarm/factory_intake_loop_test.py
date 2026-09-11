@@ -204,6 +204,7 @@ def test_all_exclusion_reasons_are_first_match_counts(db, monkeypatch):
         issue(12, ["agent-ready"]),
         issue(6, ["agent-ready"]),
         issue(7, ["agent-ready"]),
+        issue(9, ["agent-ready"]),
         issue(8),
     ]
     fake_pages(monkeypatch, listed, [{"title": "Fix", "body": "Fixes #12"}])
@@ -224,12 +225,23 @@ def test_all_exclusion_reasons_are_first_match_counts(db, monkeypatch):
                 FactoryReceipt(
                     repo="owner/repo",
                     issue_number=7,
-                    generation=0,
-                    title="seen",
+                    generation=4,
+                    title="delivered",
                     body="",
                     url="https://github.com/owner/repo/issues/7",
                     actor="test",
                     state="succeeded",
+                ),
+                FactoryReceipt(
+                    repo="owner/repo",
+                    issue_number=9,
+                    generation=0,
+                    title="seen",
+                    body="",
+                    url="https://github.com/owner/repo/issues/9",
+                    actor="test",
+                    state="failed",
+                    updated_at=NOW - timedelta(hours=48),
                 ),
             ]
         )
@@ -241,13 +253,14 @@ def test_all_exclusion_reasons_are_first_match_counts(db, monkeypatch):
         == []
     )
     detail = json.loads(audits(db, "intake_idle")[0].detail_json)
-    assert detail["listed"] == 8
+    assert detail["listed"] == 9
     assert detail["excluded"] == {
         "pull_request": 1,
         "not_open": 1,
         "assigned": 1,
         "excluded_label": 1,
         "linked_pr": 1,
+        "delivered": 1,
         "cooldown": 1,
         "already_received": 1,
         "refine_disabled": 1,
@@ -543,8 +556,10 @@ def test_the_same_class_twice_in_one_generation_is_refused(db, monkeypatch):
     first = intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0)
     with Session(db) as session:
         row = session.get(FactoryReceipt, first[0]["receipt"]["id"])
-        row.state = "succeeded"
-        row.updated_at = NOW
+        # Failed with its cooldown spent, not succeeded: a delivered issue is
+        # excluded before its class is ever read.
+        row.state = "failed"
+        row.updated_at = NOW - timedelta(hours=48)
         session.add(row)
         session.commit()
     release_sweep(db)
@@ -648,3 +663,96 @@ def test_a_lane_filled_during_the_github_sweep_queues_nothing(db, monkeypatch):
     )
     # Delivery queued; the advisory lane filled behind it and queues nothing.
     assert [row["receipt"]["task_class"] for row in admitted] == ["bug-fix"]
+
+
+def delivered_receipt(session, number, generation=1, **overrides):
+    values = {
+        "repo": "owner/repo",
+        "issue_number": number,
+        "generation": generation,
+        "title": "delivered",
+        "body": "",
+        "url": f"https://github.com/owner/repo/issues/{number}",
+        "actor": "test",
+        "state": "succeeded",
+        "updated_at": NOW - timedelta(days=3),
+    }
+    values.update(overrides)
+    session.add(FactoryReceipt(**values))
+    session.commit()
+
+
+def test_a_delivered_issue_is_never_admitted_again(db, monkeypatch):
+    """The #3877 defect: delivery left the issue open, so intake re-admitted it."""
+    fake_pages(monkeypatch, [issue(11, ["agent-ready"])])
+    with Session(db) as session:
+        delivered_receipt(session, 11, generation=1)
+    assert intake_loop.intake_tick(policy(), generation=2) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {"delivered": 1}
+
+
+def test_delivery_in_another_class_still_excludes_the_issue(db, monkeypatch):
+    """The exclusion is the delivery, not the class or the generation it ran in."""
+    fake_pages(monkeypatch, [issue(11, ["agent-ready"])])
+    with Session(db) as session:
+        delivered_receipt(session, 11, generation=1, task_class="docs")
+    assert intake_loop.intake_tick(policy(), generation=7) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {"delivered": 1}
+
+
+def test_a_successful_refine_is_not_a_delivery(db, monkeypatch):
+    """A refine settles succeeded when it has made the issue ready to deliver.
+
+    Reading that as a delivery would block the delivery the refine just
+    enabled, which is the whole reason receipt identity carries the class.
+    """
+    fake_pages(monkeypatch, [issue(11, ["agent-ready"])])
+    with Session(db) as session:
+        delivered_receipt(session, 11, generation=1, task_class="refine")
+    assert intake_loop.intake_tick(policy(), generation=2)[0]["ok"]
+
+
+def test_a_reopened_delivered_issue_stays_excluded(db, monkeypatch):
+    """No cheap reopen signal exists, so a moved updated_at is not a licence.
+
+    GitHub's issue listing has no reopen timestamp and updated_at moves on
+    every comment, so reading it as a reopen would re-admit an issue somebody
+    merely commented on. An operator names the issue in issue_numbers instead.
+    """
+    fake_pages(
+        monkeypatch,
+        [issue(11, ["agent-ready"], updated_at="2026-09-11T00:00:00Z")],
+    )
+    with Session(db) as session:
+        delivered_receipt(session, 11, generation=1)
+    assert intake_loop.intake_tick(policy(), generation=2) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {"delivered": 1}
+
+
+def test_a_failed_receipt_is_not_a_delivery(db, monkeypatch):
+    """Only a succeeded receipt is a delivery; a failure serves its cooldown."""
+    fake_pages(monkeypatch, [issue(11, ["agent-ready"])])
+    with Session(db) as session:
+        delivered_receipt(
+            session,
+            11,
+            generation=1,
+            state="failed",
+            updated_at=NOW - timedelta(days=3),
+        )
+    assert intake_loop.intake_tick(policy(cooldown_hours=24), generation=2)[0]["ok"]
+
+
+def test_an_issue_closed_on_github_is_never_a_candidate(db, monkeypatch):
+    """The listing asks for open issues, and selection refuses anything else.
+
+    A closed issue reaching the sweep would mean the state filter did not hold,
+    and admitting it would open a delivery task for work that is already done.
+    """
+    fake_pages(monkeypatch, [issue(11, ["agent-ready"], state="closed")])
+    assert intake_loop.intake_tick(policy(), generation=0) == []
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail["excluded"] == {"not_open": 1}
