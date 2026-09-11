@@ -33,7 +33,7 @@ describe("/public/app/notes/stats GET", () => {
 
     expect(setHeaders).toHaveBeenCalledWith({
       "cache-control":
-        "public, s-maxage=60, stale-while-revalidate=86400, stale-if-error=31536000",
+        "public, max-age=0, s-maxage=60, stale-while-revalidate=86400, stale-if-error=31536000",
       "cloudflare-cdn-cache-control":
         "public, max-age=60, stale-while-revalidate=86400, stale-if-error=31536000",
     });

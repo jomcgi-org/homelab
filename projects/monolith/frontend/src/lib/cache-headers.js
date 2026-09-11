@@ -52,10 +52,6 @@ export function cloudflareCacheHeaders(cacheControl) {
 // 60s fresh · 24h SWR (background refresh) · 1y SIE (cluster-down resilience)
 export const PAGE_CACHE_CONTROL = `public, s-maxage=60, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
 
-// /app/notes/stats: observability rollup snapshot, refreshed once a minute.
-// Mirrors _STATS_CACHE_CONTROL in home/observability/router.py, keep in sync.
-export const STATS_CACHE_CONTROL = `public, s-maxage=60, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
-
 // /health probe: deliberately the inverse of the data caches above. A 60s edge
 // cache caps origin load at ~1 req/min, but health MUST surface a real outage,
 // so there is NO stale-if-error (it would serve a stale 200 while the origin is
@@ -91,6 +87,13 @@ export const DOCS_CACHE_CONTROL = `public, s-maxage=${ONE_HOUR}, stale-while-rev
 // made the live ships map show hour-stale vessels and stranded /app/hikes on a
 // pre-deploy payload shape. The CDN still caches via `s-maxage`, and the ETag
 // makes browser revalidation a cheap 304 when nothing changed.
+
+// /app/notes/stats: observability rollup snapshot, shared for 60s at the edge.
+// NotesApp polls every 20s, so max-age=0 marks browser entries immediately stale
+// instead of accepting the zone Browser-Cache-TTL. The one-day SWR and one-year
+// SIE directives remain part of the browser and shared-cache policy.
+// Mirrors _STATS_CACHE_CONTROL in home/observability/router.py, keep in sync.
+export const STATS_CACHE_CONTROL = `public, max-age=0, s-maxage=60, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
 
 // /app/ships snapshot: AIS positions refresh every ~2 min, so 120s edge
 // freshness with a 10 min SWR window keeps the CDN serving warm data between
