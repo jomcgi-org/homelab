@@ -14,6 +14,7 @@ import logging
 import math
 import os
 import re
+import time
 from urllib.parse import quote
 
 import httpx
@@ -1959,9 +1960,114 @@ def _insert_integration(
     return False, result.refusal_code
 
 
+def _running_app_version() -> str:
+    """The running DBOS application version, or "" when it cannot be resolved.
+
+    Mirrors _current_app_version in swarm/drainer_router.py and
+    _server_app_version in swarm/router.py, including the discipline that
+    matters here: an unresolvable version means "cannot tell", never evidence
+    that a workflow is stranded.
+    """
+    try:
+        from dbos._utils import GlobalParams
+
+        return GlobalParams.app_version or ""
+    except Exception:  # noqa: BLE001
+        logger.warning("could not read the DBOS app version", exc_info=True)
+        return ""
+
+
+def _live_executor_ids() -> set[str]:
+    """The executors this process can vouch for, empty when it cannot tell.
+
+    DBOS keeps no executor inventory, and the swarm runs on the leader replica
+    only (the swarm section of projects/monolith/chart/values.yaml), so the one
+    executor this process can speak for is its own.
+    """
+    try:
+        from dbos._utils import GlobalParams
+
+        return {GlobalParams.executor_id} if GlobalParams.executor_id else set()
+    except Exception:  # noqa: BLE001
+        logger.warning("could not read the DBOS executor id", exc_info=True)
+        return set()
+
+
+def _stranded_versions(state) -> tuple[str, str] | None:
+    """Return (workflow version, running version) when no worker can run it.
+
+    DBOS stamps a workflow with the application version that started it,
+    recovers only workflows of the running version on startup, and dequeues a
+    versioned row only onto a worker of that same version. So a live-looking
+    row from an older version is already dead: a deploy replaced the pods that
+    owned it and nothing will ever pick it up. An unresolvable version on
+    either side returns None, because cancelling on a guess would reap a
+    healthy node.
+    """
+    running = _running_app_version()
+    if not running:
+        return None
+    version = getattr(state, "app_version", None) or getattr(
+        state, "application_version", None
+    )
+    if not version or version == running:
+        return None
+    return version, running
+
+
+def _last_step_epoch_ms(key: str) -> int | None:
+    """Newest dbos.operation_outputs checkpoint for one workflow, if readable."""
+    from sqlalchemy import text
+
+    try:
+        with Session(get_engine()) as db:
+            return db.execute(
+                text(
+                    "SELECT max(completed_at_epoch_ms) FROM dbos.operation_outputs "
+                    "WHERE workflow_uuid = :key"
+                ),
+                {"key": key},
+            ).scalar()
+    except Exception:  # noqa: BLE001
+        logger.warning("could not read step progress for %s", key, exc_info=True)
+        return None
+
+
+def _warn_if_executor_is_gone(run: dict, state, key: str) -> None:
+    """Log a PENDING workflow whose executor is gone, and do nothing else.
+
+    A version match means DBOS would recover this workflow, so no stranding
+    rule applies and cancelling on a suspicion would reap live work. The
+    warning is here to tell us whether the case happens at all before any rule
+    is written for it.
+    """
+    if state.status != "PENDING":
+        return
+    executor = getattr(state, "executor_id", None)
+    live = _live_executor_ids()
+    if not executor or not live or executor in live:
+        return
+    last_ms = _last_step_epoch_ms(key) or getattr(state, "created_at", None)
+    if last_ms is None:
+        return
+    idle_seconds = time.time() - last_ms / 1000
+    if idle_seconds <= run["pin"]["turn_timeout_seconds"]:
+        return
+    logger.warning(
+        "factory node workflow %s is PENDING on the running version under "
+        "executor %s, which is not live, with no step progress for %.0fs "
+        "(turn timeout %ss). Observation only, nothing was cancelled.",
+        key,
+        executor,
+        idle_seconds,
+        run["pin"]["turn_timeout_seconds"],
+    )
+
+
 def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
     from dbos import SetWorkflowID
     from swarm.factory_controls import (
+        _audit,
         _locked_session,
         authorize_start,
         record_start_outcome,
@@ -1991,14 +2097,44 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
         with SetWorkflowID(key):
             dbos.start_workflow(execute_node, pin)
         return
-    if state.status in ("PENDING", "ENQUEUED"):
-        return
-    if state.status == "SUCCESS":
+    workflow_status = state.status
+    if workflow_status in ("PENDING", "ENQUEUED"):
+        stranded = _stranded_versions(state)
+        if stranded is None:
+            _warn_if_executor_is_gone(run, state, key)
+            return
+        workflow_version, running_version = stranded
+        # The intent is recorded before the external call, as cancel_owned
+        # does, so the strand is evidenced even if the cancellation throws.
+        with _locked_session() as (db, _control):
+            _audit(
+                db,
+                ACTOR,
+                "workflow_stranded",
+                task_id=task["id"],
+                workflow_id=key,
+                workflow_version=workflow_version,
+                running_version=running_version,
+            )
+        # Cancel rather than leave it: a rollback to the old image would
+        # otherwise recover a workflow this tick has already settled.
+        dbos.cancel_workflow(key, cancel_children=True)
+        # The workflow is terminal now, so supervision may observe the real
+        # session outcome exactly as it does for any other non-success status.
+        workflow_status = "CANCELLED"
+        result = {
+            "status": "uncertain",
+            "reason": "node workflow stranded by application version change",
+            "cost_usd": None,
+            "cost_basis": "unknown",
+            "session_id": run.get("session_id"),
+        }
+    elif workflow_status == "SUCCESS":
         result = dbos.retrieve_workflow(key).get_result()
     else:
         result = {
             "status": "uncertain",
-            "reason": f"node workflow {state.status}",
+            "reason": f"node workflow {workflow_status}",
             "cost_usd": None,
             "cost_basis": "unknown",
             "session_id": run.get("session_id"),
@@ -2016,7 +2152,7 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 pin,
                 result.get("session_id") or run.get("session_id"),
                 result,
-                state.status,
+                workflow_status,
             ):
                 return
     with Session(get_engine()) as db:
