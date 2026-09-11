@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import logging
 import os
 import threading
 import time
 
 from swarm import config
-
-logger = logging.getLogger(__name__)
 
 _dbos = None
 _launched = False
@@ -58,7 +55,7 @@ def _node_workflow_members() -> tuple:
     )
 
 
-def node_workflow_version() -> str | None:
+def node_workflow_version() -> str:
     """An application version derived from the factory node workflow alone.
 
     DBOS computes its default version from the source of EVERY registered
@@ -79,8 +76,13 @@ def node_workflow_version() -> str | None:
     DBOSUnexpectedStepError rather than replaying silently, so the failure is
     loud.
 
-    Returns None when the source cannot be read, which leaves DBOS to compute
-    its own version exactly as it did before.
+    An unreadable source raises rather than falling back. Falling back is not
+    neutral: DBOS would then compute its own version, that version differs from
+    the pinned one every running node was started under, and the reconciler
+    would read every in-flight node as stranded and cancel the lot, twice over,
+    once on the deploy that could not read its source and again on the one that
+    fixes it. rules_py ships the .py files beside the compiled code, so a
+    source that cannot be read is a packaging fault worth failing launch for.
     """
     import hashlib
     import inspect
@@ -91,13 +93,13 @@ def node_workflow_version() -> str | None:
         sources = sorted(
             inspect.getsource(member) for member in _node_workflow_members()
         )
-    except Exception:  # noqa: BLE001 - an unreadable source is not a version
-        logger.warning(
-            "could not read the node workflow source, leaving DBOS to compute "
-            "its own application version",
-            exc_info=True,
-        )
-        return None
+    except Exception as error:
+        raise RuntimeError(
+            "cannot read the factory node workflow source, so the DBOS "
+            "application version cannot be pinned. Letting DBOS compute its "
+            "own would strand every in-flight node. Check that the Python "
+            "sources ship alongside the code in this image."
+        ) from error
     sources.append(GlobalParams.dbos_version)
     hasher = hashlib.md5()
     for source in sources:
@@ -119,7 +121,6 @@ def init_dbos():
             name="monolith",
             system_database_url=database_url,
             dbos_system_schema="dbos",
-            # DBOS ignores a None here and computes its own version.
             application_version=node_workflow_version(),
         )
     )

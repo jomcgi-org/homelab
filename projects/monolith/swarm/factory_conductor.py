@@ -29,6 +29,9 @@ from swarm.models import SwarmConductorCall, SwarmPlanVersion, SwarmTask
 logger = logging.getLogger(__name__)
 ACTOR = "factory:reconciler"
 TICK_SECONDS = 15
+# Process start, for the settling window stall detection waits out. Monotonic
+# because it is only ever compared against itself.
+_STARTED_AT = time.monotonic()
 DECISION_EVIDENCE_LIMIT = 20
 PLANNER_CONTEXT_CHARS = 48_000
 PLANNER_RECORD_LIMIT = 32
@@ -2002,8 +2005,19 @@ def _stranded_versions(state) -> tuple[str, str] | None:
     return version, running
 
 
-def _last_step_epoch_ms(key: str) -> int | None:
-    """Newest dbos.operation_outputs checkpoint for one workflow, if readable."""
+# A failed read of the step history, told apart from a workflow that has
+# genuinely checkpointed nothing yet. Collapsing the two let one transient
+# database error stand in as "no progress since the workflow was created",
+# which cancels a live node that is merely waiting a long time for a guest.
+UNREADABLE_STEPS = object()
+
+
+def _last_step_epoch_ms(key: str):
+    """Newest dbos.operation_outputs checkpoint for one workflow.
+
+    Returns the epoch milliseconds, None when the workflow has recorded no
+    step yet, or UNREADABLE_STEPS when the query itself failed.
+    """
     from sqlalchemy import text
 
     try:
@@ -2017,25 +2031,39 @@ def _last_step_epoch_ms(key: str) -> int | None:
             ).scalar()
     except Exception:  # noqa: BLE001
         logger.warning("could not read step progress for %s", key, exc_info=True)
-        return None
+        return UNREADABLE_STEPS
 
 
 def _stalled_seconds(run: dict, state, key: str) -> float | None:
     """Seconds since the last checkpoint of a PENDING workflow that has wedged.
 
     A PENDING workflow on the running version is one DBOS believes is
-    executing, so nothing here settles or cancels it. But a healthy node
-    checkpoints continuously, every poll and every sleep of its turn wait, so a
-    newest step older than the node's whole turn timeout means the workflow has
-    stopped making progress. That is a deviation the planner has to hear about,
-    not something the engine can mechanically repair.
+    executing, and cancelling it destroys real work, so every uncertainty here
+    resolves to leaving it alone. A healthy node checkpoints continuously,
+    every poll and every sleep of its turn wait, so a newest step older than
+    the node's whole turn timeout is the one signal that means the workflow
+    stopped making progress.
 
-    Returns None when the workflow is not PENDING, when the step history cannot
-    be read, or when progress is within the timeout.
+    Returns None when the workflow is not PENDING, when the step history could
+    not be read, when this process started too recently to tell a wedge from a
+    recovery still getting under way, or when progress is within the timeout.
     """
     if state.status != "PENDING":
         return None
-    last_ms = _last_step_epoch_ms(key) or getattr(state, "created_at", None)
+    # DBOS recovers workflows on a background thread after launch. A tick
+    # between launch and that thread's first checkpoint sees no recent step on
+    # a node DBOS is about to resume, and an outage longer than the turn
+    # timeout makes every one of them look wedged at once.
+    if time.monotonic() - _STARTED_AT < TICK_SECONDS * 2:
+        return None
+    last_ms = _last_step_epoch_ms(key)
+    if last_ms is UNREADABLE_STEPS:
+        return None
+    # No step recorded yet is a real observation: the workflow was created and
+    # has checkpointed nothing since, so its creation is when progress last
+    # happened. Only a successful read earns this fallback.
+    if last_ms is None:
+        last_ms = getattr(state, "created_at", None)
     if last_ms is None:
         return None
     idle_seconds = time.time() - last_ms / 1000
@@ -2047,7 +2075,6 @@ def _stalled_seconds(run: dict, state, key: str) -> float | None:
 def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
     from dbos import SetWorkflowID
     from swarm.factory_controls import (
-        _audit,
         _locked_session,
         authorize_start,
         record_start_outcome,
@@ -2085,25 +2112,26 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
         stranded = _stranded_versions(state)
         if stranded is not None:
             workflow_version, running_version = stranded
-            # The intent is recorded before the external call, as cancel_owned
-            # does, so the strand is evidenced even if the cancellation throws.
-            with _locked_session() as (db, _control):
-                _audit(
-                    db,
-                    ACTOR,
-                    "workflow_stranded",
-                    task_id=task["id"],
-                    workflow_id=key,
-                    workflow_version=workflow_version,
-                    running_version=running_version,
-                )
+            detail = {
+                "workflow_version": workflow_version,
+                "running_version": running_version,
+            }
+            audit_action, notify = "workflow_stranded", None
             reason = "node workflow stranded by application version change"
         else:
             idle_seconds = _stalled_seconds(run, state, key)
             if idle_seconds is None:
                 return None
-            if _audit_node_stalled(task["id"], run, key, idle_seconds):
+            detail = {
+                "node_key": run["node_key"],
+                "idle_seconds": round(idle_seconds),
+                "turn_timeout_seconds": run["pin"]["turn_timeout_seconds"],
+            }
+            audit_action = "node_stalled"
+
+            def notify() -> None:
                 _notify_node_stalled(task["id"], run["node_key"], idle_seconds)
+
             reason = (
                 "node workflow stalled: no step progress for "
                 f"{idle_seconds:.0f}s against a "
@@ -2114,6 +2142,14 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
         # a stall this is what makes the workflow terminal so supervision can
         # start at all.
         dbos.cancel_workflow(key, cancel_children=True)
+        # Audited after the cancellation, and fenced to once per workflow. The
+        # reconciler repeats this branch until the settlement takes, and an
+        # audit written first, or written unfenced, leaves one row per tick
+        # saying the same thing. Cancellation is idempotent, so ordering the
+        # audit behind it loses nothing: a cancel that raises simply has not
+        # happened yet and the next tick retries the whole branch.
+        if _audit_once(task["id"], key, audit_action, detail) and notify is not None:
+            notify()
         # The workflow is terminal now, so supervision may observe the real
         # session outcome exactly as it does for any other non-success status,
         # and a node that then fails with no retry left reaches the planner
@@ -2262,19 +2298,33 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 ),
                 None,
             )
-            nothing_to_record = current is not None and (
-                (current["status"] == "uncertain" and status == "uncertain")
-                or (
-                    current["status"],
-                    current["cost_usd"],
-                    current["head_sha"],
-                    current["outcome_json"],
-                )
-                == (
-                    status,
-                    result.get("cost_usd"),
-                    result.get("head_sha"),
-                    outcome_json,
+            # The one uncertain observation worth recording over another is a
+            # measured cost arriving where there was none. A SUCCESS workflow
+            # can return an uncertain result carrying real provider spend, and
+            # dropping it would leave the attempt accounted at its full
+            # reservation forever.
+            priced = (
+                result.get("cost_usd") is not None and current["cost_usd"] is None
+                if current is not None
+                else False
+            )
+            nothing_to_record = (
+                current is not None
+                and not priced
+                and (
+                    (current["status"] == "uncertain" and status == "uncertain")
+                    or (
+                        current["status"],
+                        current["cost_usd"],
+                        current["head_sha"],
+                        current["outcome_json"],
+                    )
+                    == (
+                        status,
+                        result.get("cost_usd"),
+                        result.get("head_sha"),
+                        outcome_json,
+                    )
                 )
             )
             if not nothing_to_record:
@@ -2328,13 +2378,13 @@ def _notify_node_stalled(task_id: str, node_key: str, idle_seconds: float) -> No
         )
 
 
-def _audit_node_stalled(task_id: str, run: dict, key: str, idle_seconds: float) -> bool:
-    """Record a stalled workflow once. True when this call wrote the row.
+def _audit_once(task_id: str, key: str, action: str, detail: dict) -> bool:
+    """Record one action for one workflow at most once. True when it wrote.
 
-    Once per workflow, not once per tick. Cancellation and settlement are
-    idempotent and the reconciler repeats them harmlessly, but the audit and
-    the Discord warning are not: a stall that somehow survives its own
-    cancellation must not warn every 15 seconds.
+    The reconciler reaches a settlement branch on every tick until the
+    settlement takes, so an unfenced audit is one row every 15 seconds saying
+    what the first already said. The fence is the audit table itself, read
+    under the control lock that the write takes.
     """
     from swarm.factory_controls import _audit, _locked_session
     from swarm.factory_models import FactoryAudit
@@ -2343,21 +2393,12 @@ def _audit_node_stalled(task_id: str, run: dict, key: str, idle_seconds: float) 
         previous = db.exec(
             select(FactoryAudit.detail_json).where(
                 FactoryAudit.task_id == task_id,
-                FactoryAudit.action == "node_stalled",
+                FactoryAudit.action == action,
             )
         ).all()
         if any(json.loads(raw).get("workflow_id") == key for raw in previous):
             return False
-        _audit(
-            db,
-            ACTOR,
-            "node_stalled",
-            task_id=task_id,
-            workflow_id=key,
-            node_key=run["node_key"],
-            idle_seconds=round(idle_seconds),
-            turn_timeout_seconds=run["pin"]["turn_timeout_seconds"],
-        )
+        _audit(db, ACTOR, action, task_id=task_id, workflow_id=key, **detail)
     return True
 
 
