@@ -315,3 +315,67 @@ def test_two_failed_attempts_fail_without_touching_github(db, monkeypatch):
     assert snapshot["state"] == "failed"
     assert snapshot["evidence"]["state"] == "refine_failed"
     assert "refine_failed" in audit_actions(db)
+
+
+def test_the_brief_is_read_from_the_comments_written_since_admission(db, monkeypatch):
+    """A busy issue must not hide the brief behind a first page of history."""
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    admitted = controls.task_snapshot(task["id"])["admitted_at"]
+    brief = {
+        "body": "## Agent brief\n### Outcome\nReady",
+        "created_at": (
+            datetime.fromisoformat(admitted) + timedelta(seconds=1)
+        ).isoformat(),
+        "html_url": "https://github.com/owner/repo/issues/7#issuecomment-9",
+        "user": {"login": "factory-bot"},
+    }
+    pages = [
+        [dict(brief, body="chatter", html_url=f"c{n}") for n in range(100)],
+        [brief],
+    ]
+    suffixes = []
+
+    def github_list(_repo, suffix):
+        suffixes.append(suffix)
+        return pages.pop(0) if pages else []
+
+    monkeypatch.setattr(
+        refine, "github_get", lambda *_args: {"labels": [{"name": "agent-ready"}]}
+    )
+    monkeypatch.setattr(refine, "github_list", github_list)
+    run = settle_attempt(
+        task,
+        "succeeded",
+        {"outcome": "agent-ready", "comment_url": brief["html_url"]},
+    )
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    assert all("since=" in suffix for suffix in suffixes)
+    assert len(suffixes) == 2
+    assert controls.task_snapshot(task["id"])["state"] == "succeeded"
+
+
+def test_a_recorded_mismatch_settles_without_re_reading_github(db, monkeypatch):
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    monkeypatch.setattr(
+        refine, "github_get", lambda *_args: {"labels": [{"name": "needs-human"}]}
+    )
+    monkeypatch.setattr(refine, "github_list", lambda *_args: [])
+    run = settle_attempt(
+        task, "succeeded", {"outcome": "agent-ready", "comment_url": "u"}
+    )
+    nodes = graph.load_graph(task["id"])
+    refine.reconcile(task, policy, nodes, [run], 1)
+    assert controls.task_snapshot(task["id"])["evidence"]["state"] == (
+        "refine_unverified"
+    )
+    # A second pass must neither re-audit the verdict nor spend another read.
+    monkeypatch.setattr(
+        refine, "github_get", lambda *_args: pytest.fail("re-read after a verdict")
+    )
+    monkeypatch.setattr(
+        refine, "github_list", lambda *_args: pytest.fail("re-read after a verdict")
+    )
+    refine.reconcile(task, policy, nodes, [run], 1)
+    assert audit_actions(db).count("refine_mismatch") == 1

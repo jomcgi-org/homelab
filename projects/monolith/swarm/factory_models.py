@@ -13,6 +13,10 @@ from sqlalchemy import BigInteger, CheckConstraint, Index, Integer, UniqueConstr
 from sqlmodel import Field, SQLModel
 
 _BIGINT = BigInteger().with_variant(Integer(), "sqlite")
+# The class a receipt written before ADR agents/038 carries. It lives here
+# rather than in factory_controls because the column default needs it and
+# this module imports nothing from the package above it.
+DEFAULT_TASK_CLASS = "bug-fix"
 
 
 class FactoryControl(SQLModel, table=True):
@@ -48,11 +52,16 @@ class FactoryReceipt(SQLModel, table=True):
 
     __tablename__ = "factory_receipt"
     __table_args__ = (
+        # The class is part of receipt identity: an issue refined to
+        # agent-ready in one generation is received again as a delivery in
+        # that same generation, so an operator never has to bump generation
+        # to let the lane act on work its own refine pass made ready.
         UniqueConstraint(
             "repo",
             "issue_number",
             "generation",
-            name="factory_receipt_repo_issue_generation_key",
+            "task_class",
+            name="factory_receipt_repo_issue_generation_class_key",
         ),
         UniqueConstraint("task_id", name="factory_receipt_task_id_key"),
         CheckConstraint("issue_number > 0", name="factory_receipt_issue_number_check"),
@@ -76,7 +85,7 @@ class FactoryReceipt(SQLModel, table=True):
     body: str
     url: str
     actor: str
-    task_class: str | None = Field(default=None)
+    task_class: str = Field(default=DEFAULT_TASK_CLASS)
     state: str = Field(default="queued")
     task_id: str | None = Field(default=None, foreign_key="swarm.swarm_task.id")
     policy_json: str | None = Field(default=None)

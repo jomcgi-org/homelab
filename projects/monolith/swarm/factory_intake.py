@@ -63,6 +63,7 @@ def receive_issue(
                 FactoryReceipt.repo == repo,
                 FactoryReceipt.issue_number == issue_number,
                 FactoryReceipt.generation == generation,
+                FactoryReceipt.task_class == task_class,
             )
         ).first()
         if existing is not None:

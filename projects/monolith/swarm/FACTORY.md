@@ -88,11 +88,22 @@ and 50, and `cooldown_hours` is between 1 and 168. `refine_enabled` allows an
 otherwise eligible issue with none of the delivery labels to enter the refine
 path. Both feature flags default off.
 
+Intake sweeps GitHub at most once an hour while it is finding nothing, and
+again immediately after any receipt settles. A tick that cannot read GitHub
+audits `intake_error` rather than failing silently. The sweep reads open issues
+and open pull requests oldest first, up to five pages of one hundred each; a
+read that hits that cap records `truncated` on the audit, so a partial sweep
+reads as partial.
+
 Intake admits at most one issue per tick and never exceeds `max_per_day` over a
 rolling 24 hours. A failed or cancelled receipt cannot be selected again until
-its cooldown expires. Assigned issues, excluded labels, issues linked from an
-open pull request, and issues already received in the current generation are
-not candidates. Intake-created receipts become admissible only while
+its cooldown expires, whatever class it settled under. Assigned issues,
+excluded labels, issues linked from an open pull request, and issues already
+received in the current generation under the same task class are not
+candidates. Scoping that last one to the class is what lets an issue a refine
+pass moved to `agent-ready` be delivered in the same generation, with no
+operator bumping `generation` to release work the lane itself made ready. The
+receipt's identity carries the class for the same reason. Intake-created receipts become admissible only while
 `intake.enabled` is true. Turning intake off therefore leaves the operator's
 `issue_numbers` allowlist exactly as it was.
 
@@ -110,7 +121,10 @@ implementer floor, and gate (ADR agents/038 decision 5):
 | `advisory-diagnosis`, `advisory-triage`, `refine` | advisory | the worker pool | none, because nothing merges |
 | `judgment-analysis` | judgment | Opus or better | independent Opus review plus a human spot check |
 
-Delivery classes come from the issue's labels in this order:
+Both intake paths classify. An issue an operator names in `issue_numbers` is
+read for its labels exactly as a discovered one is, so the judgment floor
+applies whether the lane found the work or was told to do it. Classes come from
+the issue's labels in this order:
 `security-finding` and `needs-thought` select `judgment-analysis`, `bug` selects
 `bug-fix`, `documentation` selects `docs`, and `todo` selects
 `mechanical-refactor`. `security-finding` remains excluded by default. An
@@ -146,7 +160,11 @@ granted only `pull_requests: write` and `contents: write` can push and open pull
 requests but receives 403 on refine comments and labels. That 403 becomes a
 failed refine attempt rather than silent success because settlement re-reads
 the issue. Set `FACTORY_EXECUTOR_LOGIN` to a non-empty GitHub login to require
-the verified brief comment to come from that author.
+the verified brief comment to come from that author. The chart does not set it
+today, so that check is inert until an operator does. Settlement still requires
+a `## Agent brief` comment posted at or after admission, and reads the comments
+written since then rather than only the first page, but without the login it
+accepts such a comment from any author.
 
 The derived allowance is `max_attempts` summed over the live nodes that have
 not succeeded, plus the work turns already spent, plus what the engine may still

@@ -291,7 +291,7 @@ def test_receive_issue_defaults_stores_and_validates_task_class(db):
         )
 
 
-def test_duplicate_receipt_cannot_change_task_class(db):
+def test_duplicate_receipt_of_one_class_cannot_replace_its_text(db):
     first = receive_issue(
         "owner/repo",
         5,
@@ -308,10 +308,40 @@ def test_duplicate_receipt_cannot_change_task_class(db):
         "changed",
         "https://github.com/owner/repo/issues/5",
         "poller",
-        task_class="docs",
+        task_class="refine",
     )
+    assert replay["created"] is False
     assert replay["receipt"]["id"] == first["receipt"]["id"]
-    assert replay["receipt"]["task_class"] == "refine"
+    assert replay["receipt"]["title"] == "title"
+
+
+def test_a_second_class_is_a_second_receipt_in_the_same_generation(db):
+    """A refine pass makes an issue ready, so the lane may then deliver it.
+
+    Receipt identity carries the class precisely so this does not need an
+    operator to bump the generation.
+    """
+    refined = receive_issue(
+        "owner/repo",
+        5,
+        "title",
+        "body",
+        "https://github.com/owner/repo/issues/5",
+        "poller",
+        task_class="refine",
+    )
+    delivery = receive_issue(
+        "owner/repo",
+        5,
+        "title",
+        "body",
+        "https://github.com/owner/repo/issues/5",
+        "poller",
+        task_class="bug-fix",
+    )
+    assert delivery["created"] is True
+    assert delivery["receipt"]["id"] != refined["receipt"]["id"]
+    assert delivery["receipt"]["task_class"] == "bug-fix"
 
 
 def test_intake_actor_receipt_requires_enabled_intake(db, policy):
