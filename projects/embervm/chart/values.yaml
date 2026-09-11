@@ -1797,6 +1797,11 @@ bricks:
 # field through the guest CRD or control plane.
 egress:
   enabled: false
+  tokenBroker:
+    spiffe:
+      # Stage client support before a coordinated listener/client activation.
+      # Requires tokenBroker.spiffe.enabled and SPIRE CSI on every worker node.
+      enabled: false
   # Empty here does NOT mean "all workloads": the template derives the claude
   # runtime's own name, and falls back to a sentinel that matches nothing if that
   # workload is disabled. Set this only to name a DIFFERENT consumer; the daemon

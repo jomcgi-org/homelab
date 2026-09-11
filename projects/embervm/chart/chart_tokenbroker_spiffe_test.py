@@ -100,3 +100,76 @@ def test_spiffe_client_ids_render_as_comma_separated_env_value() -> None:
     deployment = _source_document(rendered, "tokenbroker-deployment.yaml")
 
     assert '- { name: BROKER_SPIFFE_CLIENT_IDS, value: "a,b" }' in deployment
+
+
+def _egress_settings() -> list[str]:
+    return [
+        "egress.enabled=true",
+        "egress.secrets[0].header=Authorization",
+        "egress.secrets[0].brokerGrant=codex-cluster",
+        "egress.secrets[0].egressTo[0]=chatgpt.com",
+    ]
+
+
+def test_egress_defaults_preserve_plaintext_without_csi_mount() -> None:
+    rendered = _render("client-off", _egress_settings())
+    noded = _source_document(rendered, "noded-deployment.yaml")
+    assert (
+        'value: "client-off-embervm-tokenbroker.client-off.svc.cluster.local:8080"'
+        in noded
+    )
+    assert "EGRESS_TOKEN_BROKER_SPIFFE_ID" not in noded
+    assert "spiffe-workload-api" not in noded
+
+
+def test_egress_mtls_wires_daemonset_and_bricks_with_exact_broker_identity() -> None:
+    rendered = _render(
+        "client-on",
+        _egress_settings()
+        + [
+            "tokenBroker.spiffe.enabled=true",
+            "tokenBroker.spiffe.tlsPort=9443",
+            "tokenBroker.spiffe.trustDomain=custom.example",
+            "egress.tokenBroker.spiffe.enabled=true",
+            "egress.ca.enabled=true",
+            "bricks.enabled=true",
+        ],
+    )
+    nodes = [
+        doc
+        for doc in rendered.split("\n---")
+        if (
+            "# Source: embervm/templates/noded-deployment.yaml" in doc
+            or "# Source: embervm/templates/brick-deployment.yaml" in doc
+        )
+        and ("\nkind: Deployment" in doc or "\nkind: DaemonSet" in doc)
+    ]
+    assert len(nodes) >= 2
+    for node in nodes:
+        sidecar = node.split("- name: egress-proxy", 1)[1]
+        assert (
+            'value: "https://client-on-embervm-tokenbroker.client-on.svc:9443"'
+            in sidecar
+        )
+        assert (
+            'value: "spiffe://custom.example/ns/client-on/sa/client-on-embervm-tokenbroker"'
+            in sidecar
+        )
+        assert "EGRESS_TOKEN_BROKER_SPIFFE_ID" in sidecar
+        assert "unix:///spiffe-workload-api/spire-agent.sock" in sidecar
+        assert "mountPath: /spiffe-workload-api" in sidecar
+        assert "mountPath: /etc/egress-ca" in sidecar
+        assert "driver: csi.spiffe.io" in sidecar
+        assert "GITHUB_APP_PRIVATE_KEY" not in node
+
+
+def test_egress_mtls_requires_broker_listener() -> None:
+    try:
+        _render(
+            "missing-listener",
+            _egress_settings() + ["egress.tokenBroker.spiffe.enabled=true"],
+        )
+    except RuntimeError as error:
+        assert "egress.tokenBroker.spiffe requires" in str(error)
+    else:
+        raise AssertionError("accepted an mTLS client without a broker listener")
