@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import json
 import math
+import os
 import re
 from typing import Iterator
 
@@ -140,6 +141,17 @@ _POOL_ROLES = {"conductor": "conductor_model", "worker": "worker_model"}
 # to the worker pool. "refine" is the advisory briefing node and defaults to
 # Muse first, because a brief is read by a person and never merged.
 _CLASS_POOL_ROLES = ("implement", "refine")
+
+
+def factory_max_concurrent_tasks() -> int:
+    """Hard ceiling on factory tasks in flight, over both lanes together.
+
+    The chart owns it so a posted policy cannot open more lanes than the
+    platform is sized for. It lives here rather than in swarm.config because
+    the board reads it through status(), and the board deliberately links only
+    this narrow library rather than the whole swarm package.
+    """
+    return max(1, int(os.environ.get("FACTORY_MAX_CONCURRENT_TASKS", "1")))
 
 
 def _now() -> datetime:
@@ -455,8 +467,6 @@ def lane_limits(policy: dict) -> dict:
     one slot: a ceiling an operator set below the policy must never leave the
     delivery lane unable to start anything. Advisory takes what is left.
     """
-    from swarm.config import factory_max_concurrent_tasks
-
     ceiling = factory_max_concurrent_tasks()
     wanted = lane_max_tasks(policy)
     delivery = max(1, min(wanted["delivery"], ceiling))

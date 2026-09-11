@@ -16,7 +16,7 @@ without a broker call.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import timedelta, timezone
 import logging
 import time
 
@@ -119,8 +119,6 @@ def _audit_unknown(db: Session, reason: str, detail: dict) -> None:
     if last is not None:
         created = last.created_at
         if created.tzinfo is None:
-            from datetime import timezone
-
             created = created.replace(tzinfo=timezone.utc)
         if created >= cutoff:
             return
