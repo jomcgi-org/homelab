@@ -12,17 +12,18 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from sqlmodel import Session, text
 
 from core.db import get_session
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/home/observability", tags=["observability"])
+_STATS_CACHE_CONTROL = "public, s-maxage=60, stale-while-revalidate=86400"
 
 
 @router.get("/stats", tags=["stats"])
-def get_stats(session: Session = Depends(get_session)):
+def get_stats(response: Response, session: Session = Depends(get_session)):
     """Return the latest precomputed stats snapshot (ADR 004).
 
     The snapshot is refreshed by observability.stats_rollup; this read never
@@ -32,4 +33,6 @@ def get_stats(session: Session = Depends(get_session)):
     row = session.execute(
         text("SELECT payload FROM observability.stats_snapshot WHERE id = 1")
     ).first()
-    return row[0] if row else {}
+    payload = row[0] if row else {}
+    response.headers["Cache-Control"] = _STATS_CACHE_CONTROL
+    return payload
