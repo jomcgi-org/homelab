@@ -4,7 +4,6 @@ import asyncio
 import collections
 import json
 import logging
-import os
 import platform
 import re
 import secrets
@@ -19,11 +18,7 @@ import httpx
 import agent.api as agent_api
 from agent_sessions import store, voice, voice_ui
 from agent_sessions import model_family, normalize_model
-from agent_sessions.constants import (
-    CLEAN_TERMINAL_REASONS,
-    DRAINER_NODE_KEY,
-    INTERRUPTED_TERMINAL_REASONS,
-)
+from agent_sessions.constants import DRAINER_NODE_KEY
 from agent_sessions.rationale import rationale_trailer_instruction
 from agent_sessions.models import AgentSession, AgentTurn
 from agent_sessions.provider_quota import (
@@ -83,19 +78,50 @@ _negative_oracle_verdicts: dict[int, float] = {}
 # finished. It must never lengthen a failure, and on replica shutdown it has
 # only the pod's termination grace to work in.
 GUEST_STATE_TIMEOUT_SECONDS = 3.0
+# The shutdown hold competes for the session row with whatever else is winding
+# down inside the pod's thirty-second termination grace. Give up on the lock
+# rather than on the grace: an unwritten hold falls back to the lease path.
+SHUTDOWN_HOLD_LOCK_SECONDS = 2.0
+# How long the lifespan waits for in-flight executors to record their outcomes.
+INFLIGHT_DRAIN_SECONDS = 5.0
 
 
 def response_lost_recovery_enabled() -> bool:
-    return os.getenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "false").lower() == "true"
+    # One definition, in the store that owns the hold.
+    return store.response_lost_recovery_enabled()
+
+
+def invoke_in_progress(view: object) -> bool:
+    """Whether a control-plane session view shows an invoke still running.
+
+    ``invoke_started_at`` is stamped per invoke and is strictly increasing
+    (``do_record_invoke_started`` takes max(clock, previous + 1) in the control
+    plane's session store); ``last_invoke_at`` is stamped when an invoke
+    COMPLETES and is never cleared. An in-progress invoke is therefore one
+    whose start is later than the last completion, not one with no completion
+    recorded at all. Reading the absence of a completion as "in progress" is
+    true only of a guest's very first turn and false of every turn after it.
+    """
+    if not isinstance(view, dict):
+        return False
+    started = view.get("invoke_started_at")
+    finished = view.get("last_invoke_at")
+    if type(started) is not int or started < 1:
+        return False
+    if finished is not None and type(finished) is not int:
+        return False
+    return started > (finished or 0)
 
 
 async def _guest_still_invoking(guest_id: str) -> dict | None:
     """Fresh proof that this guest is still working the invoke we lost.
 
-    Running, with an invoke started and no invoke completion recorded, is the
-    exact shape of a turn whose result has not been delivered yet. Anything
-    else, including an unavailable control plane, returns None so the caller
-    stays on its ordinary failure path.
+    Running, with an invoke in progress, is the exact shape of a turn whose
+    result has not been delivered yet. Anything else, including an unavailable
+    control plane, returns None so the caller stays on its ordinary failure
+    path. The generation and the invoke stamp travel onto the hold so a later
+    owner can tell a guest still working this invoke from one that has been
+    banked, relit or invoked again since.
     """
     try:
         view = await asyncio.wait_for(
@@ -109,9 +135,7 @@ async def _guest_still_invoking(guest_id: str) -> dict | None:
         or view.get("state") != "running"
         or type(view.get("generation")) is not int
         or view["generation"] < 0
-        or type(view.get("invoke_started_at")) is not int
-        or view["invoke_started_at"] < 1
-        or view.get("last_invoke_at") is not None
+        or not invoke_in_progress(view)
     ):
         return None
     return {
@@ -709,7 +733,9 @@ async def _execute_pending_message(session_id: int) -> None:
             )
             stolen_exit_logged = True
 
-    def _record_response_lost(reason: str, state: dict) -> bool:
+    def _record_response_lost(
+        reason: str, state: dict, lock_timeout_seconds: float | None = None
+    ) -> bool:
         """Hold this attempt rather than settling it unknown.
 
         Deliberately synchronous: the shutdown caller runs inside a cancelled
@@ -730,8 +756,10 @@ async def _execute_pending_message(session_id: int) -> None:
             hold_seconds=_transport.read_timeout,
             generation=state.get("generation"),
             invoke_started_at=state.get("invoke_started_at"),
+            request_sha256=invocation_record.get("request_sha256"),
             cli_session_id=invocation_record.get("cli_session_id"),
             artifact_path=invocation_record.get("artifact_path"),
+            lock_timeout_seconds=lock_timeout_seconds,
         )
         if response_lost_held:
             logger.warning(
@@ -1074,7 +1102,9 @@ async def _execute_pending_message(session_id: int) -> None:
         # the recovering replica checks the guest.
         if executor_cancelled and _response_lost_eligible():
             try:
-                _record_response_lost("replica_shutdown", {})
+                _record_response_lost(
+                    "replica_shutdown", {}, SHUTDOWN_HOLD_LOCK_SECONDS
+                )
             except Exception:  # noqa: BLE001 - fall through to today's release.
                 logger.exception(
                     "Could not hold turn %s in session %s across shutdown",
@@ -1229,19 +1259,17 @@ async def _reconcile_zombie_sessions() -> int:
 def _adopt_response_lost_results() -> list[int]:
     """Finish held turns whose committed result has since arrived.
 
-    Only holds the executor itself wrote are finished here, because those carry
-    the exact invoke declaration. A hold the lease backstop reconstructed has no
-    declared artifact recorded, so it is left to the node owner that knows the
-    declaration, and expires into an ordinary unknown outcome if none finishes
-    it inside the bound.
+    Every lane reaches this sweep, including the drainer and interactive turns
+    that have no node workflow of their own to recover them. The sweep knows no
+    artifact declaration, so a result carrying an artifact beside a hold that
+    records no declared path is refused by the adopter and left to the owner
+    that knows it. A turn that declared no artifact, which is every lane
+    outside the factory, has nothing to lose and is finished here.
     """
     if not response_lost_recovery_enabled():
         return []
     adopted = []
     for session_id in store.find_response_lost_session_ids(5):
-        hold = store.read_response_lost_hold_sync(session_id)
-        if hold is None or hold.get("source") != "executor":
-            continue
         try:
             outcome = store.adopt_response_lost_result(session_id)
         except Exception:  # noqa: BLE001 - one session must not stop the sweep
@@ -1250,6 +1278,31 @@ def _adopt_response_lost_results() -> list[int]:
         if outcome is not None and outcome.get("status") == "adopted":
             adopted.append(session_id)
     return adopted
+
+
+async def drain_inflight_executors() -> int:
+    """Cancel in-flight turn executors so each records its hold before teardown.
+
+    uvicorn tears the event loop down on SIGTERM without cancelling these tasks
+    first, and DBOS.destroy() waits zero seconds for workflow completion, so
+    without this an executor's own cancellation handler often never runs and
+    the attempt reaches the new replica as a stale claim rather than a hold.
+    The wait is bounded well inside the pod's thirty-second termination grace;
+    an executor that does not finish in time falls back to the lease path
+    exactly as it did before.
+    """
+    tasks = [task for task in _inflight_tasks if not task.done()]
+    if not tasks:
+        return 0
+    for task in tasks:
+        task.cancel()
+    done, pending = await asyncio.wait(tasks, timeout=INFLIGHT_DRAIN_SECONDS)
+    if pending:
+        logger.warning(
+            "%d agent turn executor(s) did not record an outcome before shutdown",
+            len(pending),
+        )
+    return len(done)
 
 
 async def _sweep_orphaned_pending_messages() -> None:

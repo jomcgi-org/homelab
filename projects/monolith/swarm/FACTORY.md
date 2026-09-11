@@ -507,16 +507,31 @@ the same before deciding the attempt has no result. The model runs once, and
 the node owner supplies the declared artifact path a hold reconstructed from
 durable rows cannot know, so a recovered attempt keeps its artifact.
 
-Neither owner ends a hold on its own judgement. A guest that has ceased, or one
-that completed its invoke without ever publishing, can no longer produce the
-evidence, so the hold becomes the ordinary unknown outcome the existing
-reconciliation settles. A guest still invoking keeps waiting. Every hold is
-bounded by the invoke budget clamped to the twelve-hour workload backstop,
-after which the claim lease settles it unknown exactly as it did before, so an
-unrecoverable hold cannot pin an admission slot indefinitely. Recovery is
-behind `agents.sessions.responseLostRecoveryEnabled`, off by default and
-dependent on `resultReceiptsEnabled`: with no receipt to adopt, a hold would
-only delay the same unknown outcome (#5938, #4322).
+Neither owner ends a hold on its own judgement. A guest that has ceased, that
+completed its invoke without ever publishing, or that has moved on to another
+invoke or another generation, can no longer produce the evidence, so the hold
+becomes the ordinary unknown outcome the existing reconciliation settles. A
+guest still invoking keeps waiting. Whether a guest is still invoking is the
+order of two control-plane stamps rather than the absence of one:
+`invoke_started_at` is stamped per invoke and strictly increases, while
+`last_invoke_at` is stamped on completion and is never cleared, so an invoke is
+in progress when its start is later than the last completion. Reading a missing
+completion as "in progress" would have held a guest's first turn and no turn
+after it.
+
+Every hold is bounded by the invoke budget clamped to the twelve-hour workload
+backstop, after which the claim lease settles it unknown exactly as it did
+before. There is one hold per dispatch, ever: an attempt whose marker is
+already a hold is refused a second one, or an unrecoverable result would be
+re-held at every lease pass until the receipt's own seven-day retention and
+pin the admission slot for a week rather than twelve hours. A committed body
+that can never be adopted, one that is not a native completion, ends its hold
+at once rather than waiting out a bound that cannot change the answer.
+Recovery is behind `agents.sessions.responseLostRecoveryEnabled`, off by
+default and dependent on `resultReceiptsEnabled`: with no receipt to adopt, a
+hold would only delay the same unknown outcome. Every owner that writes,
+finishes or ends a hold reads that one flag, so off is the behaviour this lane
+had before any of this existed (#5938, #4322).
 
 An attempt whose workflow died mid-way has no session recorded on its run,
 because `record_dispatch` binds one only at completion. The reconciler resolves

@@ -145,6 +145,12 @@ class Module:
     - ``register_mcp``: register the domain's MCP tools (typically a
       side-effect import of the domain's ``@mcp.tool`` module).
     - ``startup``: awaited on every replica during private lifespan startup.
+    - ``shutdown``: awaited on every replica during private lifespan teardown,
+      after the leader singletons stop and before the tracer provider closes.
+      For domains with in-flight work that must record its own outcome before
+      the event loop goes away. Must be bounded: the pod's termination grace is
+      thirty seconds and a hook that overruns it is killed mid-write. A raising
+      hook is logged and the remaining hooks still run.
     - ``leader_start`` / ``leader_stop``: leader-elected singletons; start
       registers each background task with ``register_leader_tasks`` as soon as
       it is created, then returns the tasks it spawned for compatibility. The
@@ -168,6 +174,7 @@ class Module:
     register_public: RegisterHook | None = None
     register_mcp: Callable[[], None] | None = None
     startup: StartupHook | None = None
+    shutdown: StartupHook | None = None
     leader_start: LeaderStartHook | None = None
     leader_stop: LeaderStopHook | None = None
     register_health: dict[str, HealthCheck] | None = None
@@ -558,6 +565,16 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
         if elector_task is not None:
             elector_task.cancel()
         await stop_leader_singletons(app, modules)
+
+        # Per-module teardown runs on every replica, after the singletons stop
+        # so a sweep cannot hand out new work while a domain is draining. One
+        # domain's failure must not skip the others or block the shutdown.
+        for m in modules:
+            if m.shutdown is not None:
+                try:
+                    await m.shutdown(app)
+                except Exception:  # noqa: BLE001 - shutdown is best effort
+                    logger.exception("Module %s failed to shut down", m.name)
         backfill_task = getattr(app.state, "backfill_task", None)
         if backfill_task and not backfill_task.done():
             backfill_task.cancel()

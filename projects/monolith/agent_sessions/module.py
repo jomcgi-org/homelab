@@ -40,10 +40,24 @@ async def _leader_start(app):
     return tasks
 
 
+async def _shutdown(_app) -> None:
+    """Let in-flight turn executors record their outcome before teardown.
+
+    Runs on every replica, not only the leader: a turn executes wherever its
+    message was claimed. Bounded inside the pod's termination grace, and an
+    executor that does not finish in time is covered by the claim lease exactly
+    as it was before (#5938).
+    """
+    from agent_sessions.mcp import drain_inflight_executors
+
+    await drain_inflight_executors()
+
+
 MODULE = _Module(
     name="agent_sessions",
     register=register,
     register_mcp=_register_mcp,
+    shutdown=_shutdown,
     leader_start=_leader_start,
     register_health_advisory={"provider_quota": provider_quota_health},
 )

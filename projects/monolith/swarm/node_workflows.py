@@ -594,16 +594,21 @@ def _recover_response_lost(pin: dict, session_id: int) -> dict | None:
     workflow finishes the same attempt from that record rather than paying for
     a second model run (#5938, #4322). While the guest is still invoking and no
     result has been published, the hold simply stays and this returns waiting.
-    A guest that has ceased, or one that completed its invoke without ever
-    publishing, can no longer produce the evidence, so the hold becomes the
-    ordinary unknown outcome its reconciliation already knows how to settle.
+    A guest that has ceased, that completed its invoke without ever publishing,
+    or that has moved on to a different invoke or generation, can no longer
+    produce the evidence, so the hold becomes the ordinary unknown outcome its
+    reconciliation already knows how to settle.
     """
     from agent_sessions.api import (
         adopt_response_lost_result,
         read_response_lost_hold,
+        response_lost_recovery_enabled,
         settle_response_lost_hold,
     )
+    from agent_sessions.mcp import invoke_in_progress
 
+    if not response_lost_recovery_enabled():
+        return None
     outcome = adopt_response_lost_result(session_id, pin["artifact_path"])
     if outcome is None or outcome["status"] != "waiting":
         return outcome
@@ -613,24 +618,49 @@ def _recover_response_lost(pin: dict, session_id: int) -> dict | None:
     view = _observe_held_guest(hold["guest_id"])
     if view is None or view.get("session_id") != hold["guest_id"]:
         return outcome
-    ceased = view.get("state") in {"evicted", "destroyed"}
-    completed = type(view.get("last_invoke_at")) is int and view["last_invoke_at"] >= 1
-    if not (ceased or completed):
+    reason = None
+    if view.get("state") in {"evicted", "destroyed"}:
+        reason = "response_lost_guest_ceased"
+    elif _invocation_moved(hold, view):
+        # A different invoke stamp or a different generation means this guest
+        # is no longer running the invocation the hold is waiting for: it was
+        # banked and relit, or it has been given another turn. Either way the
+        # result of ours can no longer arrive.
+        reason = "response_lost_invocation_changed"
+    elif not invoke_in_progress(view):
+        # The guest publishes its receipt before it answers, so a completed
+        # invoke with nothing published means the callback failed rather than
+        # that the result is still on its way.
+        reason = "response_lost_unpublished"
+    if reason is None:
         return outcome
-    # The guest publishes its receipt before it answers, so a completed invoke
-    # with nothing published means the callback failed rather than that the
-    # result is still on its way. Read once more anyway, because the two
-    # observations are not taken in one transaction.
+    # Read once more: the observation and the receipt are not read in one
+    # transaction, so a result may have committed between them.
     retried = adopt_response_lost_result(session_id, pin["artifact_path"])
     if retried is None or retried["status"] != "waiting":
         return retried
-    reason = "response_lost_guest_ceased" if ceased else "response_lost_unpublished"
     if settle_response_lost_hold(session_id, reason):
         logger.warning(
             "Ended response-loss hold for session %s: %s", session_id, reason
         )
         return {"status": "settled", "reason": reason}
     return retried
+
+
+def _invocation_moved(hold: dict, view: dict) -> bool:
+    """Whether the guest has left the invocation this hold is waiting for.
+
+    Only compares what the hold actually recorded. A hold written from an
+    observation carries both the generation and the invoke stamp it saw; one
+    written during replica shutdown, or reconstructed by the lease backstop,
+    carries neither, because neither owner reads the control plane. Those are
+    bounded by the invoke-in-progress check and the hold's own expiry instead.
+    """
+    for field in ("generation", "invoke_started_at"):
+        recorded = hold.get(field)
+        if recorded is not None and view.get(field) != recorded:
+            return True
+    return False
 
 
 @DBOS.step()
@@ -966,7 +996,9 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
         raise ValueError("session_id must be a positive int when supplied")
     expected = _expected_session_identity(pin)
     key = expected["local_session_id"]
-    with Session(get_engine()) as session:
+
+    def resolve(session) -> int | None:
+        """Find this attempt's session and refuse anything that is not it."""
         owner = (
             session.get(AgentSession, session_id)
             if session_id is not None
@@ -976,26 +1008,37 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
         )
         if owner is None:
             return None
-        session_id = owner.id
         for field, value in expected.items():
             if getattr(owner, field) != value:
                 raise ValueError(f"node session ownership conflict: {field}")
+        return owner.id
+
+    with Session(get_engine()) as session:
+        resolved = resolve(session)
+    if resolved is None:
+        return None
 
     # The conductor reaches here for an attempt whose workflow is already
     # terminal, which is exactly the shape a replica loss leaves behind. Give
     # the held turn its committed result before deciding the attempt has none.
-    # Outside the read transaction above: adoption is a write through the
-    # ordinary turn writer and takes its own locks.
+    # Outside a read transaction: adoption is a write through the ordinary turn
+    # writer and takes its own locks.
     try:
-        _recover_response_lost(pin, session_id)
+        _recover_response_lost(pin, resolved)
     except Exception as exc:  # noqa: BLE001 - reconciliation observes, never fails.
         logger.warning(
             "response-loss recovery failed for session %s: %s",
-            session_id,
+            resolved,
             type(exc).__name__,
         )
 
     with Session(get_engine()) as session:
+        # Ownership is validated again here rather than carried over from the
+        # read above, so the evidence this settles on and the identity that
+        # authorizes it come from one transaction.
+        session_id = resolve(session)
+        if session_id is None or session_id != resolved:
+            return None
         # Each node attempt creates exactly one fresh session and first turn.
         # A follow-up or remaining pending message is outside that admission.
         pending = session.exec(
