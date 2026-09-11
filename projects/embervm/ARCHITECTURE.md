@@ -520,7 +520,22 @@ against them.
    Model-checked (`adoption.tla`) against control-plane and node crashes
    between any two steps: the dispatch restart wedge, forget-before-kill
    resurrection, and reap-would-wipe-fleet bug classes are excluded by
-   invariant.
+   invariant. The carve-out has its own carve-out: a destroy whose owning node
+   has LEFT the fleet completes as `destroyed` with `terminal_reason:
+   node_gone`, both at request time and from the reconcile sweep, so a session
+   stuck in `destroying` self-heals. A node counts as gone only when it
+   publishes no capacity facts for the session's dial AND the node registry
+   reports either no registered runtime instance (or a tombstoned one), or
+   `down`/`unknown` health for longer than `destroying_alarm_ms` measured from
+   the destroy intent. An exact stop is excluded, because its contract is a
+   completion proof from the node.
+
+   **Why.** A replaced brick can never send the confirmation the gate waits
+   for, so before #6004 the session sat in `destroying` forever and held every
+   downstream reservation bound to it, which is a worse failure than completing
+   a destroy whose VM demonstrably died with its node, while the predicate
+   stays narrow enough that a registered node that is merely slow keeps the
+   full confirmation wait and the alarm.
 
 6. **Single-writer for stateful is a physical fact, not a protocol.** The
    storage section explains the raw sparse file, one-writable-attach rule,
