@@ -365,6 +365,31 @@ arming back off. Landing stops at the merge: verifying the
 chart write-back and the live rollout is a node that does not exist yet
 (#6002).
 
+**Why.** An escalation is a decision, not a message. The refine lane's
+`needs-human` verdict used to end at a warning and a question, so eleven of
+them in one hour on 2026-09-11 were eleven GitHub threads a person had to open,
+read and act on by hand, and the acting was the slow half: applying a label,
+writing the reason, opening the children, closing the parent. The verdict now
+carries two to four options, each naming the concrete act and the effect that
+performs it, with the recommendation first and matching the `recommend:` line
+so the brief on GitHub and the console offer one list rather than two. That
+turns the operator's work into picking, and picking is what a keyboard and a
+row of buttons are for, which is why `/agents/escalations` exists beside the
+board and answers to `j`, `k`, `1` to `4` and `c`. The effects run server-side
+under the monolith's own GitHub credential rather than as instructions to
+another agent, because a decision a person has already made should not wait on
+a guest to be scheduled. Every write is idempotent on the receipt and option
+pair, fenced by a hidden marker in the comment and an audit row per child
+issue, because the operator who clicks twice is the operator whose first click
+looked like it did nothing. And the private tier reaches the decision endpoint
+on a Cloudflare Access identity rather than the standing bearer the rest of
+`/api/swarm/factory` wants, because the browser behind Access carries no
+bearer at all: that route is gated on an allowlist which is empty in the chart,
+so the capability arrives switched off (#6002).
+
+(see: /projects/monolith/swarm/factory_decisions.py)
+(see: /projects/monolith/frontend/src/routes/private/agents/escalations/+page.svelte)
+
 **Why.** The factory has two lanes because Opus review is the only scarce
 input it has. Implementation capacity is three spot brick nodes behind the
 autoscaler, and the implementers on the other end of it bill someone else or
