@@ -566,6 +566,44 @@ settles them, and covering them needs a check that their DBOS workflow is
 terminal, which this loop does not have.
 (see: /projects/monolith/agent_sessions/permit_supervision.py)
 
+**Why.** A lost invoke response is not a lost invocation. Every monolith
+rollout cancelled the executor watching an in-flight turn, and the guest went
+on working while the executor recorded `invocation_outcome_unknown`, failed the
+session and left supervision to destroy a guest that was mid-turn. Three
+factory attempts died that way in under an hour on 2026-09-11, which made the
+factory's own deploys its largest self-inflicted loss (#5938, #4322). The guest
+already publishes its complete native record to a result receipt before it
+writes the synchronous response, so the evidence survives the observer. What
+was missing was a state between "finished" and "unknown". A dispatch whose
+response is lost while the control plane still shows its guest running, with an
+invoke started and no invoke completion, is now held: an interrupted turn with
+stop reason `response_lost`, the pending row keeping its claim so nothing
+re-dispatches the prompt, and the permit keeping its state so nothing releases
+capacity the guest is still consuming. The recovered attempt is finished from
+the committed receipt through the ordinary turn writer, so the recovered result
+passes the same parser, diff, artifact and permit validation the synchronous
+response would have, and the model runs once. The live thirty-second claim
+stamp used to be the only thing authorizing a receipt read, and an executor
+that lost its response stops refreshing it, so the durable hold takes its place:
+it is dispatch-exact, bounded and names one receipt, and every other ownership
+condition is unchanged. A held adoption sets no guest reuse fence, because the
+fence exists so a follow-up waits for the original POST's own response and after
+a replica loss nobody is left to clear one. Holds are bounded by the invoke
+budget clamped to the twelve-hour workload backstop, and a guest that has ceased
+or that completed its invoke without publishing ends the hold early, both into
+the same unknown outcome reconciliation already handles. Replica shutdown
+writes the hold synchronously from the executor's own cancellation handler
+rather than from a lifespan hook: the pod has a thirty-second grace with no
+preStop and `DBOS.destroy()` waits zero seconds for workflow completion, so a
+hook has no way to reach the in-flight calls and a second cancellation would
+take away one more await. A replica killed outright writes no marker at all,
+so the claim lease is the backstop: a stale claim that already has an
+unconsumed committed receipt is held, and one with no receipt settles unknown
+exactly as before. Behind `agents.sessions.responseLostRecoveryEnabled`, which
+defaults off and needs `resultReceiptsEnabled`, since without a receipt a hold
+would only delay the same unknown outcome.
+(see: /projects/monolith/agent_sessions/store.py)
+
 Monolith batch work is rendered as Argo CronWorkflows in the workflows
 namespace, whose controller owns cadence, concurrency, deadlines, and history.
 Each entry runs the digest-pinned jobs image with one `jobs_main.py`
