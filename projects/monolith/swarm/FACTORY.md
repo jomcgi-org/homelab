@@ -95,6 +95,13 @@ attempt, task-turn, deadline or budget bounds. Confirmed failed artifacts feed
 bounded retry context back to the next attempt. Unknown execution retains its
 reservation and requires reconciliation before another attempt starts.
 
+A monolith deploy strands every node workflow still in flight: DBOS stamps a
+workflow with the application version that started it and neither recovers nor
+dequeues one from an older version, so the row stays live-looking forever. The
+reconciler cancels such a workflow, audits `workflow_stranded` with both
+versions, and settles the attempt as uncertain, after which the node's real
+session outcome is reconciled and the node retries within `max_attempts`.
+
 Missing provider usage consumes the entire reserved ceiling. This is
 conservative admission accounting, not an interruptible dollar cap on a running
 provider turn. Observed overruns prevent further admission.
