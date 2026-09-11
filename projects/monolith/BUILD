@@ -5225,6 +5225,21 @@ py_test(
 )
 
 py_test(
+    name = "agent_sessions_response_lost_test",
+    srcs = ["agent_sessions/response_lost_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_core",
+        ":pkg_swarm",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "chat_router_backfill_exception_test",
     srcs = ["chat/router_backfill_exception_test.py"],
     imports = ["."],
