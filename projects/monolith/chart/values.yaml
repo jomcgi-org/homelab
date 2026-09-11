@@ -1473,6 +1473,12 @@ swarm:
   factoryEnabled: false
   # Consume exact durable Ember teardown proof for stopped/expired attempts.
   factoryStopSupervisionEnabled: false
+  # Settle an attempt whose invoke was sent but whose guest was never bound, so
+  # its reservation is refunded instead of held forever: stop supervision has no
+  # guest to prove ceased there and leaves the lane slot occupied (#6025).
+  # Flipped on in a follow-up PR after review, never in the PR adding the
+  # template, so a behaviour change never rides in on a template change.
+  factoryLostBeforeGuestSettlementEnabled: false
   # Hard ceiling on factory tasks in flight at once, over BOTH lanes together.
   # The policy's per-lane max_tasks is what sizes each lane; this only stops a
   # posted policy opening more than the platform is sized for, and delivery

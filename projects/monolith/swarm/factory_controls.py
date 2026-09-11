@@ -1499,3 +1499,146 @@ def finish_task(
             evidence=evidence,
         )
         return {"ok": True, "state": outcome}
+
+
+def settle_lost_attempt(
+    task_id: str,
+    node_key: str,
+    attempt: int,
+    actor: str,
+    *,
+    session: Session | None = None,
+) -> dict:
+    """Release one attempt proven to have been lost before its guest was bound.
+
+    The operator repair for #6025, called in process from a backend pod the way
+    finish_task is. Confirm the node's DBOS workflow is terminal before calling
+    this: the reconciler only reaches the same settlement after the workflow
+    status is terminal, and this path has no DBOS handle to check it, so an
+    attempt settled while its workflow is still alive on another replica would
+    run on with nothing recording or cancelling it. Today the only alternative is cancelling the whole receipt
+    and re-admitting the task under a new generation, which throws away every
+    other attempt on it.
+
+    This applies exactly the proof the reconciler branch applies (see
+    agent_sessions/reconciliation.py inspect_lost_before_guest_factory_attempt)
+    and refuses with a ValueError naming the first failed condition when the
+    attempt is any other shape, so a bound guest, a captured receipt or a
+    settled permit is never settled by hand here. Deliberately not gated on
+    FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED: while that flag is off this
+    is the repair, and it is a human action either way. There is no HTTP route.
+    """
+    from agent_sessions.api import (
+        inspect_lost_before_guest_factory_attempt,
+        settle_lost_before_guest_factory_attempt,
+    )
+    from swarm import graph
+    from swarm.models import SwarmNodeRun
+
+    actor = _text(actor, "actor")
+    node_key = _text(node_key, "node_key")
+    _integer(attempt, "attempt", 1, 2**31 - 1)
+    with _locked_session(session) as (db, _control):
+        run = db.exec(
+            select(SwarmNodeRun)
+            .where(
+                SwarmNodeRun.task_id == task_id,
+                SwarmNodeRun.node_key == node_key,
+                SwarmNodeRun.attempt == attempt,
+            )
+            .execution_options(populate_existing=True)
+        ).one_or_none()
+        if run is None:
+            raise ValueError("unknown_attempt")
+        if run.status not in ("admitted", "dispatched", "uncertain"):
+            raise ValueError("attempt_not_active")
+        if run.cost_usd is not None:
+            raise ValueError("attempt_already_priced")
+        if db.exec(
+            select(SwarmNodeRun.id).where(
+                SwarmNodeRun.task_id == task_id,
+                SwarmNodeRun.node_key == node_key,
+                SwarmNodeRun.attempt > attempt,
+            )
+        ).first():
+            raise ValueError("newer_attempt_exists")
+        try:
+            pin = json.loads(run.pin_json or "null")
+        except (TypeError, ValueError):
+            pin = None
+        if not isinstance(pin, dict) or pin.get("workflow_id") != run.dispatch_key:
+            raise ValueError("missing_attempt_pin")
+        session_id = run.session_id
+        if session_id is None:
+            # record_dispatch binds the session only once a workflow finishes,
+            # so a workflow lost mid-way leaves none. The identity is
+            # deterministic, so resolve the exact session this attempt started.
+            from swarm.node_workflows import resolve_node_session_id
+
+            session_id = resolve_node_session_id(pin, session=db)
+        if session_id is None:
+            raise ValueError("missing_attempt_session")
+        proof, refusal = inspect_lost_before_guest_factory_attempt(db, pin, session_id)
+        if proof is None:
+            raise ValueError(refusal)
+        settle_lost_before_guest_factory_attempt(db, pin, proof)
+        result = {
+            "status": "failed",
+            "session_id": proof["session_id"],
+            "attempt": attempt,
+            "cost_usd": 0.0,
+            "cost_basis": "unknown",
+            "accounting": "unknown_cost",
+            "head_sha": run.head_sha,
+            "reason": "lost_before_guest: operator settled an attempt whose guest was never bound",
+            "previous_outcome": json.loads(run.outcome_json or "{}"),
+            "lost_before_guest": proof,
+        }
+        if run.session_id is None:
+            bound = graph.record_dispatch(
+                task_id,
+                node_key,
+                attempt,
+                proof["session_id"],
+                run.base_sha,
+                session=db,
+            )
+            if not bound.ok:
+                raise ValueError(f"dispatch_refused: {bound.refusal_code}")
+        settled = graph.record_outcome(
+            task_id,
+            node_key,
+            attempt,
+            "failed",
+            0.0,
+            run.head_sha,
+            _json(result),
+            session=db,
+        )
+        if not settled.ok:
+            raise ValueError(f"outcome_refused: {settled.refusal_code}")
+        charged = record_start_outcome(
+            task_id,
+            run.dispatch_key,
+            "failed",
+            actor,
+            cost_usd=0.0,
+            session_id=proof["session_id"],
+            reconciled=True,
+            session=db,
+        )
+        if not charged["ok"]:
+            raise ValueError(f"start_outcome_refused: {charged['reason']}")
+        _audit(
+            db,
+            actor,
+            "stop_settled",
+            task_id=task_id,
+            workflow_id=run.dispatch_key,
+            reason="lost_before_guest",
+            session_id=proof["session_id"],
+            identity=proof,
+            cessation_confirmed=True,
+            intervention_required=False,
+        )
+        return {"ok": True, "session_id": proof["session_id"], "outcome": result}

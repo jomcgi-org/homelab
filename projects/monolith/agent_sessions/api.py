@@ -11,9 +11,12 @@ from agent_sessions.reconciliation import (
     read_factory_dispatch as read_factory_dispatch,
     cancel_queued_factory_attempt as cancel_queued_factory_attempt,
     confirm_reconciled_guest_cessation as confirm_reconciled_guest_cessation,
+    inspect_lost_before_guest_factory_attempt as inspect_lost_before_guest_factory_attempt,
     lock_cessation_session as lock_cessation_session,
+    read_lost_before_guest_factory_attempt as read_lost_before_guest_factory_attempt,
     read_not_invoked_factory_attempt as read_not_invoked_factory_attempt,
     read_uncertain_factory_attempt as read_uncertain_factory_attempt,
+    settle_lost_before_guest_factory_attempt as settle_lost_before_guest_factory_attempt,
     settle_uncertain_factory_attempt as settle_uncertain_factory_attempt,
 )
 

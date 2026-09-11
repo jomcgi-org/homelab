@@ -321,6 +321,20 @@ def _task(task_id: str) -> dict:
         }
 
 
+def lost_before_guest_settlement_enabled() -> bool:
+    """Whether the reconciler may settle an attempt that never bound a guest.
+
+    Off in code. The values key that turns it on is flipped in a follow-up PR,
+    after review, so a template change and a behaviour change never ship in the
+    same commit. The operator path in swarm/factory_controls.py is deliberately
+    not gated on this: while the flag is off it is the only repair available.
+    """
+    return (
+        os.environ.get("FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED", "false").lower()
+        == "true"
+    )
+
+
 def _outcome(run: dict) -> dict:
     return json.loads(run.get("outcome_json") or "{}")
 
@@ -2505,6 +2519,7 @@ def _stalled_seconds(run: dict, state, key: str) -> float | None:
 def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
     from dbos import SetWorkflowID
     from swarm.factory_controls import (
+        _audit as _controls_audit,
         _locked_session,
         authorize_start,
         record_start_outcome,
@@ -2675,6 +2690,80 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                         "previous_outcome": _outcome(current) or result,
                         "not_invoked": proof,
                     }
+                elif lost_before_guest_settlement_enabled():
+                    # The next window along. The not-invoked proof needs a turn
+                    # that never reached its model POST; this one covers a turn
+                    # that was invoked and lost its executor before a guest was
+                    # ever bound, which stop supervision cannot settle because
+                    # there is no guest whose cessation it could prove (#6025).
+                    from agent_sessions.api import (
+                        read_lost_before_guest_factory_attempt,
+                        settle_lost_before_guest_factory_attempt,
+                    )
+
+                    lost = read_lost_before_guest_factory_attempt(
+                        db, pin, result.get("session_id") or run.get("session_id")
+                    )
+                    if lost is not None:
+                        current = next(
+                            (
+                                value
+                                for value in graph.node_runs(
+                                    task["id"], run["node_key"], session=db
+                                )
+                                if value["attempt"] == run["attempt"]
+                            ),
+                            None,
+                        )
+                        if (
+                            current is None
+                            or current["pin"] != pin
+                            or current["dispatch_key"] != key
+                            or current["session_id"] not in (None, lost["session_id"])
+                            or current["status"]
+                            not in ("admitted", "dispatched", "uncertain")
+                            or current["cost_usd"] is not None
+                        ):
+                            raise ValueError(
+                                "lost-before-guest factory attempt changed"
+                            )
+                        # Nothing ran, so the reservation is refunded rather
+                        # than consumed: this settles at a measured zero, not
+                        # at the unknown cost the other typed outcomes carry.
+                        settle_lost_before_guest_factory_attempt(db, pin, lost)
+                        result = {
+                            **result,
+                            "status": "failed",
+                            "session_id": lost["session_id"],
+                            "cost_usd": 0.0,
+                            # Vocabulary from node_workflows.ACCOUNTING_LABELS: the
+                            # cost is a known zero, not a provider figure.
+                            "cost_basis": "unknown",
+                            "accounting": "unknown_cost",
+                            "head_sha": current.get("head_sha")
+                            or result.get("head_sha"),
+                            "reason": "lost_before_guest: invoked attempt lost its executor before any guest was bound",
+                            "previous_outcome": _outcome(current) or result,
+                            "lost_before_guest": lost,
+                        }
+                        # Fenced by the settlement itself rather than by
+                        # _audit_once, which would take the control lock this
+                        # transaction already holds. The board reads stop
+                        # events by action, so the release shows up there
+                        # beside the local_identity_unconfirmed observations
+                        # supervision left behind.
+                        _controls_audit(
+                            db,
+                            ACTOR,
+                            "stop_settled",
+                            task_id=task["id"],
+                            workflow_id=key,
+                            reason="lost_before_guest",
+                            session_id=lost["session_id"],
+                            identity=lost,
+                            cessation_confirmed=True,
+                            intervention_required=False,
+                        )
             # Only a completed timeout result can trigger this repair. Session,
             # graph and factory settlement share the same transaction and locks.
             if result["status"] == "uncertain" and str(

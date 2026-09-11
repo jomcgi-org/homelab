@@ -7340,3 +7340,479 @@ def test_the_delivery_boundary_demands_the_closing_line_on_every_update():
     # A task with no receipt issue says nothing about closing keywords rather
     # than inventing a number.
     assert "Closes" not in conductor._boundary({**task, "issue_number": None})
+
+
+@pytest.fixture
+def lost_before_guest_factory(queued_factory, monkeypatch):
+    """An invoked attempt whose replica died before any guest was bound (#6025).
+
+    The shape the not-invoked proof deliberately does not cover: the turn was
+    dispatched, the executor was cancelled mid-invoke, and recovery recorded
+    the ordinary unknown outcome. The session is terminal with no binding and
+    the permit is still uncertain, so stop supervision has nothing whose
+    cessation it could prove and the lane slot stays held.
+    """
+    from sqlmodel import Session, SQLModel, select
+    from agent_sessions import admission, store
+    from agent_sessions.constants import UNKNOWN_INVOCATION
+    from agent_sessions.models import (
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from swarm import factory_controls as controls
+    from swarm import factory_supervision, node_workflows
+
+    s = queued_factory
+    SQLModel.metadata.create_all(s.engine, tables=[AgentResultReceipt.__table__])
+    for module in (admission, store, controls):
+        monkeypatch.setattr(module, "get_engine", lambda: s.engine)
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
+    monkeypatch.setenv("FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED", "true")
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("lost-before-guest settlement must not invoke or clean up")
+
+    monkeypatch.setattr(factory_supervision, "_http", unexpected)
+    monkeypatch.setattr(node_workflows, "_cleanup_node", unexpected)
+    monkeypatch.setattr(node_workflows, "_read_reconciliation_head", unexpected)
+    owner = "original-executor"
+    assert store.claim_pending_message_for_session_sync(s.sid, owner) == 1
+    assert admission.recheck(s.sid, 1, owner, "claude-runtime")
+    assert store.release_pending_message_claim_sync(
+        s.sid, 1, owner, "executor_cancelled"
+    )
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        turn = db.exec(select(AgentTurn)).one()
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        assert agent.status == "failed"
+        assert agent.ember_session_id is None and agent.cli_session_id is None
+        assert turn.stop_reason == UNKNOWN_INVOCATION and turn.cost_usd is None
+        assert permit.state == "uncertain" and permit.outcome == "executor_cancelled"
+        assert db.exec(select(PendingMessage)).first() is None
+    s.owner = owner
+    s.result = {
+        "status": "uncertain",
+        "reason": "node workflow CANCELLED",
+        "session_id": s.sid,
+        "cost_usd": None,
+        "cost_basis": "unknown",
+    }
+
+    def state(workflow):
+        assert workflow == s.run["pin"]["workflow_id"]
+        return SimpleNamespace(status="SUCCESS")
+
+    s.dbos = SimpleNamespace(
+        get_workflow_status=state,
+        retrieve_workflow=lambda _: SimpleNamespace(get_result=lambda: s.result),
+        start_workflow=unexpected,
+        cancel_workflow=unexpected,
+    )
+
+    def native_snapshot():
+        with Session(s.engine) as db:
+            return {
+                model.__tablename__: [
+                    row.model_dump() for row in db.exec(select(model))
+                ]
+                for model in (
+                    AgentSession,
+                    AgentTurn,
+                    PendingMessage,
+                    AgentCapacityReservation,
+                    AgentResultReceipt,
+                )
+            }
+
+    s.native_snapshot = native_snapshot
+    return s
+
+
+def _persist_uncertain_lost_before_guest(s):
+    import json
+    from swarm import factory_controls as controls
+
+    # The incident shape: both ledgers already carry the uncertain outcome with
+    # the session bound, which is why #6001 is not what blocks these attempts.
+    assert conductor.graph.record_dispatch(
+        s.task["id"], s.run["node_key"], 1, s.sid, None
+    ).ok
+    assert conductor.graph.record_outcome(
+        s.task["id"],
+        s.run["node_key"],
+        1,
+        "uncertain",
+        None,
+        None,
+        json.dumps(s.result),
+    ).ok
+    assert controls.record_start_outcome(
+        s.task["id"],
+        s.run["dispatch_key"],
+        "uncertain",
+        "original-reconciler",
+        session_id=s.sid,
+    )["ok"]
+    s.run = conductor.graph.node_runs(s.task["id"])[0]
+
+
+def _stop_events(s, action="stop_settled"):
+    import json
+    from sqlmodel import Session, select
+    from swarm.factory_models import FactoryAudit
+
+    with Session(s.engine) as db:
+        return [
+            json.loads(row.detail_json)
+            for row in db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == action)
+            ).all()
+        ]
+
+
+def test_lost_before_guest_proof_reads_the_exact_dispatch_identity(
+    lost_before_guest_factory,
+):
+    from sqlmodel import Session
+    from agent_sessions.api import read_lost_before_guest_factory_attempt
+
+    s = lost_before_guest_factory
+    with Session(s.engine) as db:
+        proof = read_lost_before_guest_factory_attempt(db, s.run["pin"], s.sid)
+    assert proof["session_id"] == s.sid
+    assert proof["local_session_id"] == f"factory:{s.task['id']}:{s.run['node_key']}:1"
+    assert proof["workflow_id"] == s.run["dispatch_key"]
+    assert proof["seq"] == 1 and proof["dispatch_count"] == 1
+    assert proof["claim_owner"] == s.owner
+    assert proof["permit_outcome"] == "executor_cancelled"
+    assert proof["invocation_phase"] == "lost_before_guest"
+    assert proof["cost_usd"] == 0.0
+    # Reading proves nothing and settles nothing.
+    assert s.native_snapshot() == s.native_snapshot()
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_lost_before_guest_settles_failed_and_refunds_the_reservation(
+    lost_before_guest_factory, monkeypatch, historical
+):
+    import json
+    from sqlmodel import Session, select
+    from agent_sessions.models import AgentCapacityReservation, AgentSession, AgentTurn
+    from swarm import factory_controls as controls
+
+    s = lost_before_guest_factory
+    if historical:
+        _persist_uncertain_lost_before_guest(s)
+    before = controls.task_snapshot(s.task["id"])
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    current = controls.task_snapshot(s.task["id"])
+    result = json.loads(run["outcome_json"])
+    assert run["status"] == current["starts"][0]["status"] == "failed"
+    assert run["finished_at"] is not None and run["pin"] == s.run["pin"]
+    assert run["cost_usd"] == current["starts"][0]["cost_usd"] == 0.0
+    # Nothing ran, so the reservation is refunded rather than consumed. The
+    # not-invoked path charges its full ceiling here; this one charges nothing.
+    assert run["accounted_cost_usd"] == current["committed_cost_usd"] == 0.0
+    assert run["accounting_basis"] == "reported"
+    assert current["state"] == "admitted" and current["unresolved_starts"] == 0
+    assert current["deadline_at"] == before["deadline_at"]
+    assert result["cost_basis"] == "unknown"
+    assert result["accounting"] == "unknown_cost"
+    assert result["reason"].startswith("lost_before_guest:")
+    assert result["lost_before_guest"]["claim_owner"] == s.owner
+    # The permit is released, so the lane slot comes back.
+    with Session(s.engine) as db:
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        agent = db.get(AgentSession, s.sid)
+        turn = db.exec(select(AgentTurn)).one()
+        assert permit.state == "settled" and permit.outcome == "lost_before_guest"
+        assert permit.settled_at is not None
+        # The failure record itself is immutable, and no guest was invented.
+        assert agent.status == "failed" and agent.ember_session_id is None
+        assert turn.stop_reason == "invocation_outcome_unknown"
+        assert turn.cost_usd is None
+    events = _stop_events(s)
+    assert len(events) == 1
+    assert events[0]["reason"] == "lost_before_guest"
+    assert events[0]["session_id"] == s.sid
+    assert events[0]["workflow_id"] == s.run["dispatch_key"]
+    assert events[0]["cessation_confirmed"] is True
+    assert events[0]["intervention_required"] is False
+    # A second tick neither re-settles nor writes a second stop event.
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_: {"object": {"sha": "a" * 40}}
+    )
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    assert conductor.graph.node_runs(s.task["id"])[0] == run
+    assert len(_stop_events(s)) == 1
+
+
+def test_lost_before_guest_settlement_is_inert_while_the_flag_is_off(
+    lost_before_guest_factory, monkeypatch
+):
+    from sqlmodel import Session, select
+    from agent_sessions.models import AgentCapacityReservation
+    from swarm import factory_controls as controls
+
+    s = lost_before_guest_factory
+    monkeypatch.setenv("FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED", "false")
+    _persist_uncertain_lost_before_guest(s)
+    before = controls.task_snapshot(s.task["id"])
+    native = s.native_snapshot()
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "uncertain"
+    current = controls.task_snapshot(s.task["id"])
+    assert current["starts"] == before["starts"]
+    assert current["state"] == "uncertain" and current["unresolved_starts"] == 1
+    assert _stop_events(s) == []
+    assert s.native_snapshot() == native
+    with Session(s.engine) as db:
+        assert db.exec(select(AgentCapacityReservation)).one().state == "uncertain"
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "bound_guest",
+        "cleared_binding",
+        "cli_session",
+        "cleanup",
+        "fence",
+        "receipt",
+        "workspace_loss",
+        "status_warn",
+        "turn_completed",
+        "turn_priced",
+        "turn_artifact",
+        "new_turn",
+        "new_pending",
+        "partial_text",
+        "activities",
+        "dispatch_missing",
+        "dispatch_zero",
+        "owner_mismatch",
+        "cause_mismatch",
+        "permit_settled",
+        "permit_outcome",
+        "permit_routine_job",
+        "model",
+    ],
+)
+def test_lost_before_guest_refuses_conflicting_or_insufficient_proof(
+    lost_before_guest_factory, case
+):
+    import json
+    from datetime import datetime, timedelta, timezone
+    from sqlmodel import Session, select
+    from agent_sessions.api import inspect_lost_before_guest_factory_attempt
+    from agent_sessions.models import (
+        AgentCapacityReservation,
+        AgentResultReceipt,
+        AgentSession,
+        AgentTurn,
+        PendingMessage,
+    )
+    from swarm import factory_controls as controls
+
+    s = lost_before_guest_factory
+    _persist_uncertain_lost_before_guest(s)
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        turn = db.exec(select(AgentTurn)).one()
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        usage = json.loads(turn.usage_json)
+        if case == "bound_guest":
+            agent.ember_session_id = "guest-that-was-bound"
+        elif case == "cleared_binding":
+            # The binding existed and was cleared, which is a different claim.
+            agent.prior_ember_lineage_id = "lineage-from-a-real-guest"
+        elif case == "cli_session":
+            agent.cli_session_id = "cli-transcript"
+        elif case == "cleanup":
+            agent.guest_cleanup_id = "a" * 32
+        elif case == "fence":
+            agent.result_receipt_fence_id = "a" * 32
+        elif case == "workspace_loss":
+            agent.recovery_workspace_loss = True
+        elif case == "status_warn":
+            agent.status = "warn"
+        elif case == "receipt":
+            now = datetime.now(timezone.utc)
+            db.add(
+                AgentResultReceipt(
+                    id="a" * 32,
+                    token_sha256="b" * 64,
+                    session_id=s.sid,
+                    local_session_id=agent.local_session_id,
+                    seq=1,
+                    dispatch_count=1,
+                    claim_owner=permit.owner,
+                    guest_id="guest-the-receipt-names",
+                    request_sha256="c" * 64,
+                    created_at=now,
+                    accept_until=now + timedelta(hours=13),
+                    retain_until=now + timedelta(days=7),
+                )
+            )
+        elif case == "turn_completed":
+            turn.stop_reason = "end_turn"
+        elif case == "turn_priced":
+            turn.cost_usd = 0.25
+        elif case == "turn_artifact":
+            turn.artifact_blob = b"{}"
+        elif case == "new_turn":
+            db.add(AgentTurn(session_id=s.sid, seq=2, prompt="new", result_text="new"))
+        elif case == "new_pending":
+            db.add(PendingMessage(session_id=s.sid, seq=2, message_text="new work"))
+        elif case == "partial_text":
+            usage["recovery"]["partial_text"] = "the guest streamed this"
+        elif case == "activities":
+            usage["activities"] = [{"tool": "bash"}]
+        elif case == "dispatch_missing":
+            usage["recovery"].pop("last_dispatch_at")
+        elif case == "dispatch_zero":
+            usage["recovery"]["dispatch_count"] = 0
+        elif case == "owner_mismatch":
+            usage["recovery"]["claim_owner"] = "another-executor"
+        elif case == "cause_mismatch":
+            usage["recovery"]["cause"] = "lease_expired"
+        elif case == "permit_settled":
+            permit.state = "settled"
+        elif case == "permit_outcome":
+            permit.outcome = "guest_cessation_confirmed"
+        elif case == "permit_routine_job":
+            permit.routine_job_name = "drainer-worker"
+        elif case == "model":
+            turn.model = "luna"
+        turn.usage_json = json.dumps(usage)
+        db.add_all([agent, turn, permit])
+        db.commit()
+    # Each case must fail the proof on its own, not merely leave the tick inert.
+    with Session(s.engine) as db:
+        proof, refusal = inspect_lost_before_guest_factory_attempt(
+            db, s.run["pin"], s.sid
+        )
+    assert proof is None and refusal
+    before = controls.task_snapshot(s.task["id"])
+    native = s.native_snapshot()
+    runs = conductor.graph.node_runs(s.task["id"])
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    assert conductor.graph.node_runs(s.task["id"]) == runs
+    assert controls.task_snapshot(s.task["id"])["starts"] == before["starts"]
+    assert controls.task_snapshot(s.task["id"])["state"] == "uncertain"
+    assert _stop_events(s) == []
+    assert s.native_snapshot() == native
+
+
+def test_operator_settle_lost_attempt_releases_one_attempt(
+    lost_before_guest_factory, monkeypatch
+):
+    from sqlmodel import Session, select
+    from agent_sessions.models import AgentCapacityReservation
+    from swarm import factory_controls as controls
+
+    s = lost_before_guest_factory
+    # The operator path is deliberately usable while the reconciler flag is off.
+    monkeypatch.setenv("FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED", "false")
+    _persist_uncertain_lost_before_guest(s)
+    settled = controls.settle_lost_attempt(
+        s.task["id"], s.run["node_key"], 1, "operator"
+    )
+    assert settled["ok"] and settled["session_id"] == s.sid
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    current = controls.task_snapshot(s.task["id"])
+    assert run["status"] == "failed" and run["cost_usd"] == 0.0
+    assert current["unresolved_starts"] == 0 and current["committed_cost_usd"] == 0.0
+    with Session(s.engine) as db:
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        assert permit.state == "settled" and permit.outcome == "lost_before_guest"
+    events = _stop_events(s)
+    assert len(events) == 1 and events[0]["reason"] == "lost_before_guest"
+    # The receipt is untouched, so every other attempt on the task survives.
+    assert current["state"] == "admitted"
+    with pytest.raises(ValueError, match="attempt_not_active"):
+        controls.settle_lost_attempt(s.task["id"], s.run["node_key"], 1, "operator")
+
+
+@pytest.mark.parametrize(
+    "case,expected",
+    [
+        ("bound_guest", "prior_binding_evidence"),
+        ("cleared_binding", "prior_binding_evidence"),
+        ("permit_settled", "permit_not_uncertain"),
+        ("turn_completed", "turn_not_lost_before_guest"),
+        ("status_warn", "session_not_terminal"),
+    ],
+)
+def test_operator_settle_lost_attempt_names_the_failed_condition(
+    lost_before_guest_factory, case, expected
+):
+    from sqlmodel import Session, select
+    from agent_sessions.models import AgentCapacityReservation, AgentSession, AgentTurn
+    from swarm import factory_controls as controls
+
+    s = lost_before_guest_factory
+    _persist_uncertain_lost_before_guest(s)
+    with Session(s.engine) as db:
+        agent = db.get(AgentSession, s.sid)
+        turn = db.exec(select(AgentTurn)).one()
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        if case == "bound_guest":
+            agent.ember_session_id = "guest-that-was-bound"
+        elif case == "cleared_binding":
+            agent.prior_cli_session_id = "cli-from-a-real-guest"
+        elif case == "permit_settled":
+            permit.state = "settled"
+        elif case == "turn_completed":
+            turn.stop_reason = "end_turn"
+        elif case == "status_warn":
+            agent.status = "warn"
+        db.add_all([agent, turn, permit])
+        db.commit()
+    native = s.native_snapshot()
+    runs = conductor.graph.node_runs(s.task["id"])
+    with pytest.raises(ValueError, match=expected):
+        controls.settle_lost_attempt(s.task["id"], s.run["node_key"], 1, "operator")
+    assert conductor.graph.node_runs(s.task["id"]) == runs
+    assert controls.task_snapshot(s.task["id"])["state"] == "uncertain"
+    assert _stop_events(s) == []
+    assert s.native_snapshot() == native
+
+
+def test_lost_before_guest_proof_refuses_or_raises_on_ownership(
+    lost_before_guest_factory,
+):
+    from sqlmodel import Session
+    from agent_sessions.api import inspect_lost_before_guest_factory_attempt
+
+    s = lost_before_guest_factory
+    pin = s.run["pin"]
+    with Session(s.engine) as db:
+        # No session was ever created under that identity: nothing to settle,
+        # and an absent owner is never read as proof that nothing ran.
+        missing = {**pin, "attempt": 2}
+        assert inspect_lost_before_guest_factory_attempt(db, missing, None) == (
+            None,
+            "missing_factory_owner",
+        )
+        # The identity exists but the pin describes different work. Adopting it
+        # would settle another attempt's reservation, so this raises.
+        for conflicting in (
+            {**pin, "model": "luna"},
+            {**pin, "workflow_id": "factory-node:another:conductor_1:1"},
+            {**pin, "repo": "owner/other"},
+        ):
+            with pytest.raises(ValueError, match="ownership conflict"):
+                inspect_lost_before_guest_factory_attempt(db, conflicting, s.sid)
+        # A session id that is not this attempt's owner is refused outright.
+        with pytest.raises(ValueError, match="ownership conflict"):
+            inspect_lost_before_guest_factory_attempt(db, pin, s.sid + 1)
+        for invalid in (0, -1, "1", True):
+            with pytest.raises(ValueError, match="invalid factory session identity"):
+                inspect_lost_before_guest_factory_attempt(db, pin, invalid)
+    assert s.native_snapshot() == s.native_snapshot()
