@@ -38,8 +38,8 @@ go_binary(
 go_test(
     name = "tokenbroker_test",
     srcs = [
-        "github_test.go",
         "github_canary_test.go",
+        "github_test.go",
         "main_test.go",
         "spiffe_test.go",
     ],
