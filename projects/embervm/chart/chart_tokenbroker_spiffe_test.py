@@ -138,8 +138,11 @@ def test_egress_mtls_wires_daemonset_and_bricks_with_exact_broker_identity() -> 
     nodes = [
         doc
         for doc in rendered.split("\n---")
-        if "# Source: embervm/templates/noded-deployment.yaml" in doc
-        or "# Source: embervm/templates/brick-deployment.yaml" in doc
+        if (
+            "# Source: embervm/templates/noded-deployment.yaml" in doc
+            or "# Source: embervm/templates/brick-deployment.yaml" in doc
+        )
+        and ("\nkind: Deployment" in doc or "\nkind: DaemonSet" in doc)
     ]
     assert len(nodes) >= 2
     for node in nodes:
