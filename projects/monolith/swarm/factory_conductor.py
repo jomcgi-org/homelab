@@ -3064,23 +3064,37 @@ def reserve_node(task_id: str, node_key: str, key: str, context: dict) -> bool:
     return True
 
 
-def open_admission_lanes(policy: dict) -> tuple:
-    """Lanes this tick may admit into. Delivery is what the guard shuts.
+def observe_quota_guard(policy: dict) -> None:
+    """Refresh the window verdict once per tick, before anything spends a turn.
 
-    The guard is evaluated here, once per tick, because this is the one place
-    the reconciler is already about to spend money. Advisory work is never
-    held: it passes no review gate, so it does not spend the window the guard
-    is protecting.
+    This runs ahead of reconciliation rather than beside admission, because a
+    factory already at its concurrency limit never reaches admission and would
+    otherwise dispatch every node of every in-flight task against a verdict
+    nobody had re-read since the lane filled up.
     """
-    from swarm.factory_controls import LANES
     from swarm.factory_quota_guard import evaluate
 
     try:
-        verdict = evaluate(policy)
+        evaluate(policy)
     except Exception:  # noqa: BLE001 - a guard that cannot read never blocks
         logger.exception("factory quota guard evaluation failed")
+
+
+def open_admission_lanes(policy: dict) -> tuple:
+    """Lanes this tick may admit into. Delivery is what the guard shuts.
+
+    Advisory work is never held: it passes no review gate, so it does not
+    spend the window the guard is protecting.
+    """
+    from swarm.factory_controls import LANES
+    from swarm.factory_quota_guard import delivery_paused
+
+    try:
+        paused = delivery_paused()
+    except Exception:  # noqa: BLE001 - a guard that cannot read never blocks
+        logger.exception("factory quota guard state unreadable")
         return LANES
-    if not verdict["paused"]:
+    if not paused:
         return LANES
     return tuple(lane for lane in LANES if lane != "delivery")
 
@@ -3104,6 +3118,9 @@ def tick() -> None:
             except Exception:  # noqa: BLE001 - per-task isolation keeps stop total
                 logger.exception("factory stop failed for task %s", task["task_id"])
         return
+    # The window verdict is refreshed before any task reconciles, because the
+    # nodes those tasks are about to start are what spends the window.
+    observe_quota_guard(snapshot["policy"])
     # Reconcile what is already in flight before admitting more, and isolate
     # each task: a task stuck on a refused outcome or a failed GitHub read
     # must not starve its neighbours of their tick, and a stale issue number

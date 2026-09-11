@@ -153,7 +153,7 @@ def test_autonomous_intake_receipt_flows_through_admission(db, policy, monkeypat
         lambda _repo, suffix: [] if suffix.startswith("pulls?") else [opened],
     )
     received = factory_intake_loop.intake_tick(policy, generation=0)
-    assert received["receipt"]["task_class"] == "bug-fix"
+    assert [row["receipt"]["task_class"] for row in received] == ["bug-fix"]
     admitted = admit_next("scheduler")
     assert admitted["ok"]
     assert admitted["receipt"]["issue_number"] == 8
@@ -167,6 +167,10 @@ def test_refine_intake_reconciles_one_node_and_verifies_settlement(
     from swarm import factory_intake_loop, factory_refine
 
     policy["intake"] = {"enabled": True, "refine_enabled": True}
+    # Refine is advisory work, so the advisory lane has to be open and the
+    # chart ceiling has to hold both lanes at once.
+    policy["max_tasks"] = {"delivery": 1, "advisory": 1}
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
     assert controls.set_control("configure", "operator", policy=policy)["ok"]
     assert controls.set_control("enable", "operator")["ok"]
     opened = {
@@ -184,10 +188,8 @@ def test_refine_intake_reconciles_one_node_and_verifies_settlement(
         "github_list",
         lambda _repo, suffix: [] if suffix.startswith("pulls?") else [opened],
     )
-    assert (
-        factory_intake_loop.intake_tick(policy, generation=0)["receipt"]["task_class"]
-        == "refine"
-    )
+    received = factory_intake_loop.intake_tick(policy, generation=0)
+    assert [row["receipt"]["task_class"] for row in received] == ["refine"]
     admitted = admit_next("scheduler")
     task_id = admitted["task_id"]
     task = conductor._task(task_id)

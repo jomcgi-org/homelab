@@ -7076,21 +7076,61 @@ def test_an_open_window_starts_every_ready_node(monkeypatch):
 def test_a_paused_window_shuts_the_delivery_lane_only(monkeypatch):
     import swarm.factory_quota_guard as quota_guard
 
-    monkeypatch.setattr(
-        quota_guard, "evaluate", lambda _policy: {"paused": True, "state": "paused"}
-    )
+    monkeypatch.setattr(quota_guard, "delivery_paused", lambda **_k: True)
     assert conductor.open_admission_lanes({}) == ("advisory",)
-    monkeypatch.setattr(
-        quota_guard, "evaluate", lambda _policy: {"paused": False, "state": "open"}
-    )
+    monkeypatch.setattr(quota_guard, "delivery_paused", lambda **_k: False)
     assert conductor.open_admission_lanes({}) == ("delivery", "advisory")
 
 
-def test_a_guard_that_cannot_be_evaluated_never_blocks_admission(monkeypatch):
+def test_a_guard_that_cannot_be_read_never_blocks_admission(monkeypatch):
+    import swarm.factory_quota_guard as quota_guard
+
+    def explode(**_kwargs):
+        raise RuntimeError("ledger unreadable")
+
+    monkeypatch.setattr(quota_guard, "delivery_paused", explode)
+    assert conductor.open_admission_lanes({}) == ("delivery", "advisory")
+
+
+def test_a_guard_that_cannot_be_evaluated_never_stops_the_tick(monkeypatch):
     import swarm.factory_quota_guard as quota_guard
 
     def explode(_policy):
         raise RuntimeError("broker down")
 
     monkeypatch.setattr(quota_guard, "evaluate", explode)
-    assert conductor.open_admission_lanes({}) == ("delivery", "advisory")
+    conductor.observe_quota_guard({})
+
+
+def test_the_window_is_observed_before_any_task_reconciles(monkeypatch):
+    """A factory at its limit never admits, so admission cannot be the gate."""
+    import swarm.factory_controls as controls_module
+    import swarm.factory_intake as intake
+
+    order = []
+    policy = {"max_tasks": 1}
+    monkeypatch.delenv("FACTORY_MAX_CONCURRENT_TASKS", raising=False)
+    monkeypatch.setattr(
+        controls_module,
+        "status",
+        lambda: {
+            "state": "enabled",
+            "policy": policy,
+            "active_tasks": [{"task_id": "t-1", "policy": policy}],
+        },
+    )
+    monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
+    monkeypatch.setattr(
+        conductor, "observe_quota_guard", lambda _p: order.append("guard")
+    )
+    monkeypatch.setattr(
+        conductor,
+        "reconcile_task",
+        lambda task_id, _p, _dbos: order.append(task_id),
+    )
+    monkeypatch.setattr(
+        intake, "admit_next", lambda *_a, **_k: pytest.fail("at the limit")
+    )
+    conductor.tick()
+    assert order == ["guard", "t-1"]
