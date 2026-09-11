@@ -36,6 +36,7 @@ agents:
     uncertainPermitSupervisionEnabled: true
     # Preserve native results before their synchronous response is delivered.
     resultReceiptsEnabled: true
+    responseLostRecoveryEnabled: true
     resultReceiptAdoptionEnabled: true
 
 postgres:
