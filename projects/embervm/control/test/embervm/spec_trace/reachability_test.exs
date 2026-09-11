@@ -187,10 +187,15 @@ defmodule Embervm.SpecTrace.ReachabilityTest do
         {"adoption", "confirm_destroy", %{"gate" => true, "node_confirmed" => true, "had_vm" => true}}
       ],
       fail_exempt:
-        "No emitter can produce a confirm_destroy with gate true, had_vm true and " <>
-          "node_confirmed false. The redrive site derives node_confirmed from " <>
-          "confirmed_by, whose only two callers pass \"teardown\" and \"absence\", " <>
-          "both of which map to true. The node-confirmed site sits inside " <>
+        "No emitter can produce a confirm_destroy the checker counts as a violation: " <>
+          "gate true, had_vm true, node_confirmed false and confirmed_by anything " <>
+          "other than \"node_gone\". The redrive site derives node_confirmed from " <>
+          "confirmed_by, whose callers pass \"teardown\", \"absence\" and " <>
+          "\"node_gone\". The first two map to true. The third maps to false and is " <>
+          "excluded from the violation filter on purpose (#6004): the owning node " <>
+          "left the fleet, so its VMs ceased with it and departure is the cessation " <>
+          "proof, the same role a complete live-owner report plays for \"absence\". " <>
+          "The node-confirmed site sits inside " <>
           "`if confirmed do`, so it is provably true wherever it is reached. The " <>
           "legacy site emits nil when there is no VM, and those records are " <>
           "excluded by the had_vm filter before evaluation. Every gate-on path " <>

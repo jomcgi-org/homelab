@@ -1005,6 +1005,38 @@ defmodule Embervm.SpecTrace.CheckerTest do
       assert String.contains?(verdict[:detail], "vm-destroy")
     end
 
+    test "no_destroy_before_confirm accepts node departure as the cessation proof", %{store: store} do
+      # #6004: the owning node left the fleet, so no teardown confirmation can
+      # ever arrive and node_confirmed is honestly false. That is not the thing
+      # this invariant forbids, which is a destroy recorded while a LIVE owner
+      # could still be holding the VM.
+      record = put_in(destroy_record("confirm_destroy", 100, true, false), ["vars", "confirmed_by"], "node_gone")
+      :ok = SQLite.write(store, [record])
+      verdict = destroy_verdict(Checker.run(SQLite, store), :no_destroy_before_confirm)
+
+      assert verdict[:verdict] == :pass
+      assert verdict[:coverage] > 0
+      assert String.contains?(verdict[:detail], "node_gone=1")
+    end
+
+    test "no_destroy_before_confirm still fails an unconfirmed destroy alongside a node_gone one", %{store: store} do
+      # The exclusion is scoped to the node_gone record itself: a genuinely
+      # unconfirmed destroy in the same run is still a violation.
+      gone = put_in(destroy_record("confirm_destroy", 100, true, false), ["vars", "confirmed_by"], "node_gone")
+
+      unconfirmed =
+        destroy_record("confirm_destroy", 200, true, false)
+        |> put_in(["vars", "confirmed_by"], "teardown")
+        |> put_in(["vars", "session_id"], "session-unconfirmed")
+        |> put_in(["vars", "vm_id"], "vm-unconfirmed")
+
+      :ok = SQLite.write(store, [gone, unconfirmed])
+      verdict = destroy_verdict(Checker.run(SQLite, store), :no_destroy_before_confirm)
+
+      assert verdict[:verdict] == :fail
+      assert String.contains?(verdict[:detail], "vm-unconfirmed")
+    end
+
     test "no_destroy_before_confirm is vacuous when gate is off", %{store: store} do
       :ok = SQLite.write(store, [destroy_record("confirm_destroy", 100, false, false)])
       verdict = destroy_verdict(Checker.run(SQLite, store), :no_destroy_before_confirm)
