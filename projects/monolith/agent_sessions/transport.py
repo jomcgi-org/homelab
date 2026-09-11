@@ -54,6 +54,24 @@ class _DeliveryInvocation:
     # Shared by child tasks in this delivery, but never by nested deliveries.
     # This stays true after any model POST, including a failed physical attempt.
     attempted: bool = False
+    # The identity of the LAST physical POST this delivery made. A new POST
+    # supersedes the previous receipt, so the caller that has to decide what a
+    # lost response means must look at this one and no earlier one.
+    receipt_id: str | None = None
+    guest_id: str | None = None
+    request_sha256: str | None = None
+    cli_session_id: str | None = None
+    artifact_path: str | None = None
+
+    def record(self) -> dict:
+        return {
+            "attempted": self.attempted,
+            "receipt_id": self.receipt_id,
+            "guest_id": self.guest_id,
+            "request_sha256": self.request_sha256,
+            "cli_session_id": self.cli_session_id,
+            "artifact_path": self.artifact_path,
+        }
 
 
 _delivery_invocation: ContextVar[_DeliveryInvocation | None] = ContextVar(
@@ -685,6 +703,7 @@ class ShimTransport(Protocol):
         dispatch_count: int = 0,
         admission_check: Callable[[], Awaitable[None]] | None = None,
         receipt_claim_owner: str | None = None,
+        invocation_record: dict | None = None,
     ) -> tuple[Turn, EmberSession]: ...
 
 
@@ -1097,6 +1116,7 @@ class EmberVmShimTransport:
         dispatch_count: int = 0,
         admission_check: Callable[[], Awaitable[None]] | None = None,
         receipt_claim_owner: str | None = None,
+        invocation_record: dict | None = None,
     ) -> tuple[Turn, EmberSession]:
         # Set None explicitly for unrelated deliveries, including a nested
         # delivery started in a factory callback. Always restore the caller's
@@ -1132,6 +1152,11 @@ class EmberVmShimTransport:
                 raise EmberVMTransportError(str(exc)) from exc
             raise
         finally:
+            if invocation_record is not None:
+                # The caller owns this dict, so it survives the exception that
+                # loses the response and tells that caller which physical POST
+                # it is reasoning about.
+                invocation_record.update(invocation.record())
             _delivery_invocation.reset(invocation_token)
             _delivery_admission_check.reset(token)
 
@@ -1279,6 +1304,16 @@ class EmberVmShimTransport:
                     )
                     payload["result_receipt"] = receipt
                     body = json.dumps(payload)
+                    # Publish the identity of this physical POST before it is
+                    # sent, so a caller that never sees a response can still
+                    # name the exact receipt the guest was told to publish to.
+                    delivery = _delivery_invocation.get()
+                    if delivery is not None:
+                        delivery.receipt_id = receipt["id"]
+                        delivery.guest_id = current.session_id
+                        delivery.request_sha256 = request_sha256
+                        delivery.cli_session_id = current_cli_session_id
+                        delivery.artifact_path = artifact_path
 
                 async def post() -> Turn:
                     async with httpx.AsyncClient(timeout=timeout) as client:

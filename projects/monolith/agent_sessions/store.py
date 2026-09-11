@@ -16,6 +16,8 @@ from agent_sessions.constants import (
     CLEAN_TERMINAL_REASONS,
     INTERRUPTED_TERMINAL_REASONS,
     LEGACY_QWEN_SYNTHETIC_PROMPT,
+    RESPONSE_LOST,
+    RESPONSE_LOST_BACKSTOP_SECONDS,
     SYNTHETIC_SESSION_PREFIX,
     UNKNOWN_INVOCATION,
     UNKNOWN_INVOCATION_MESSAGE,
@@ -368,6 +370,468 @@ def _retry_permission(turn: AgentTurn | None, pending: PendingMessage) -> bool:
         and pending.dispatch_count > 0
         and usage.get("retry_dispatch_count") == pending.dispatch_count
     )
+
+
+RESPONSE_LOST_MESSAGE = (
+    "The synchronous response to this turn was lost while the guest was still "
+    "working. The turn is held until its committed result is recovered, or "
+    "until the hold expires and the outcome becomes unknown."
+)
+
+
+def turn_status(turn: Turn) -> str:
+    """The session status one completed turn implies.
+
+    Shared so the executor and the response-loss recovery writer cannot drift
+    apart on what a recovered result means for the session row.
+    """
+    if turn.terminal_reason in INTERRUPTED_TERMINAL_REASONS:
+        return "recovering"
+    # permission_denials is the signal for "agent blocked waiting on user";
+    # stop_reason enum (end_turn, max_tokens, etc.) never indicates user input needed
+    if turn.permission_denials:
+        return "needs_input"
+    if turn.is_error or turn.terminal_reason not in CLEAN_TERMINAL_REASONS:
+        return "warn"
+    return "completed"
+
+
+def _hold_timestamp(value) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _response_lost_hold(
+    turn: AgentTurn | None, pending: PendingMessage, now: datetime | None = None
+) -> dict | None:
+    """The live response-loss hold this exact dispatch is under, if any.
+
+    A hold is only live while the marker turn, the claim that wrote it, and the
+    dispatch count all still agree, and only until its own bound. Anything else
+    reads as no hold, which returns every caller to the behaviour it had before
+    response-loss recovery existed.
+    """
+    if (
+        turn is None
+        or pending.claimed_by_replica is None
+        or turn.seq != pending.seq
+        or turn.terminal_reason not in INTERRUPTED_TERMINAL_REASONS
+        or turn.stop_reason != RESPONSE_LOST
+    ):
+        return None
+    try:
+        recovery = json.loads(turn.usage_json or "{}").get("recovery", {})
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(recovery, dict):
+        return None
+    hold = recovery.get("response_lost")
+    if (
+        not isinstance(hold, dict)
+        or recovery.get("claim_owner") != pending.claimed_by_replica
+        or recovery.get("dispatch_count") != pending.dispatch_count
+        or not isinstance(hold.get("receipt_id"), str)
+        or not isinstance(hold.get("guest_id"), str)
+    ):
+        return None
+    until = _hold_timestamp(hold.get("hold_until"))
+    if until is None or (now or datetime.now(timezone.utc)) >= until:
+        return None
+    return {
+        **hold,
+        "session_id": pending.session_id,
+        "seq": pending.seq,
+        "claim_owner": recovery["claim_owner"],
+        "dispatch_count": recovery["dispatch_count"],
+        "prompt": pending.message_text,
+        "model": pending.model,
+        "hold_until": until.isoformat(),
+    }
+
+
+def mark_turn_response_lost_sync(
+    session_id: int,
+    turn_seq: int,
+    claim_owner: str,
+    dispatch_count: int,
+    *,
+    receipt_id: str,
+    guest_id: str,
+    reason: str,
+    hold_seconds: float,
+    generation: int | None = None,
+    invoke_started_at: int | None = None,
+    cli_session_id: str | None = None,
+    artifact_path: str | None = None,
+) -> bool:
+    """Hold an attempt whose invoke response was lost over a working guest.
+
+    The pending row keeps its claim and the permit keeps its state, so nothing
+    re-dispatches this prompt and nothing releases the capacity the guest is
+    still consuming. The marker is an INTERRUPTED turn, the same shape the
+    preemption path already uses, so every existing reader that skips an
+    in-progress attempt keeps skipping this one. Only a committed result
+    receipt for this exact dispatch can finish it, and only inside the bound.
+
+    Returns False and writes nothing whenever the exact dispatch identity, its
+    permit, or the turn history has moved, which leaves the caller on its
+    ordinary error path.
+    """
+    if (
+        type(session_id) is not int
+        or type(turn_seq) is not int
+        or type(dispatch_count) is not int
+        or dispatch_count < 1
+        or not isinstance(claim_owner, str)
+        or not claim_owner
+        or not isinstance(receipt_id, str)
+        or not receipt_id
+        or not isinstance(guest_id, str)
+        or not guest_id
+    ):
+        return False
+    bound = min(float(hold_seconds), float(RESPONSE_LOST_BACKSTOP_SECONDS))
+    if not bound > 0:
+        return False
+    with Session(get_engine()) as session:
+        sess = _lock_session(session, session_id)
+        pending = get_pending_message(session, session_id, turn_seq)
+        if (
+            sess is None
+            or pending is None
+            or pending.claimed_by_replica != claim_owner
+            or pending.dispatch_count != dispatch_count
+            or sess.ember_session_id != guest_id
+            or sess.result_receipt_fence_id is not None
+            or has_unknown_outcome(session, session_id)
+            or admission.cleanup_pending(session, sess)
+        ):
+            return False
+        permit = admission.reservation(session, sess.local_session_id, turn_seq)
+        if (
+            permit is None
+            or permit.session_id != session_id
+            or permit.owner != claim_owner
+            or permit.state not in {"reserved", "running"}
+        ):
+            return False
+        existing = get_turn(session, session_id, turn_seq)
+        if (
+            existing is not None
+            and existing.terminal_reason not in INTERRUPTED_TERMINAL_REASONS
+        ):
+            return False
+        _write_response_lost_locked(
+            session,
+            sess,
+            pending,
+            existing,
+            reason=reason,
+            bound=bound,
+            receipt_id=receipt_id,
+            guest_id=guest_id,
+            source="executor",
+            generation=generation,
+            invoke_started_at=invoke_started_at,
+            cli_session_id=cli_session_id,
+            artifact_path=artifact_path,
+        )
+        session.commit()
+        return True
+
+
+def _write_response_lost_locked(
+    session: Session,
+    sess: AgentSession,
+    pending: PendingMessage,
+    existing: AgentTurn | None,
+    *,
+    reason: str,
+    bound: float,
+    receipt_id: str,
+    guest_id: str,
+    source: str,
+    generation: int | None = None,
+    invoke_started_at: int | None = None,
+    cli_session_id: str | None = None,
+    artifact_path: str | None = None,
+) -> None:
+    """Write the hold marker in the caller's transaction, under its locks."""
+    now = datetime.now(timezone.utc)
+    usage = _progress_usage(pending, reason)
+    usage["recovery"]["invocation_phase"] = RESPONSE_LOST
+    usage["recovery"]["response_lost"] = {
+        "reason": reason,
+        # "executor" holds carry the exact invoke declaration, so any owner may
+        # finish them. "lease_backstop" holds are reconstructed from durable
+        # rows, which do not record the declared artifact, so only an owner
+        # that knows the declaration may finish those.
+        "source": source,
+        "receipt_id": receipt_id,
+        "guest_id": guest_id,
+        "generation": generation,
+        "invoke_started_at": invoke_started_at,
+        "cli_session_id": cli_session_id,
+        "artifact_path": artifact_path,
+        "held_at": now.isoformat(),
+        "hold_until": (now + timedelta(seconds=bound)).isoformat(),
+    }
+    if existing is not None:
+        usage["prior_interruption"] = {
+            "result_text": existing.result_text,
+            "usage_json": existing.usage_json,
+        }
+        session.delete(existing)
+        session.flush()
+    create_turn(
+        session,
+        sess.id,
+        pending.seq,
+        pending.message_text,
+        "Recovering a lost turn response",
+        pending.partial_text or RESPONSE_LOST_MESSAGE,
+        terminal_reason="interrupted",
+        stop_reason=RESPONSE_LOST,
+        permission_denials=[],
+        commit_sha=None,
+        usage=usage,
+        cost_usd=None,
+        model=pending.model,
+        commit=False,
+    )
+    sess.status = "recovering"
+    sess.voice_summary = "Recovering a lost turn response"
+    sess.last_turn_at = now
+    session.add(sess)
+
+
+def _hold_lease_expired_response(
+    session: Session,
+    sess: AgentSession,
+    pending: PendingMessage,
+    existing: AgentTurn | None,
+) -> bool:
+    """Hold a stale claim that already has an unconsumed committed result.
+
+    A replica killed outright writes no marker of its own, so the lease is the
+    only thing that notices it is gone. A committed, unsuperseded receipt for
+    this exact dispatch whose response was never observed is positive evidence
+    that the guest finished the turn and the response, not the execution, was
+    lost. Settling that unknown would throw away a result the guest already
+    paid for. Without such a receipt this returns False and the ordinary
+    unknown settlement runs, so a replica killed before its guest published
+    anything behaves exactly as it does today.
+    """
+    if (
+        sess.ember_session_id is None
+        or sess.result_receipt_fence_id is not None
+        or (
+            existing is not None
+            and existing.terminal_reason not in INTERRUPTED_TERMINAL_REASONS
+        )
+        or has_unknown_outcome(session, sess.id)
+        or admission.cleanup_pending(session, sess)
+    ):
+        return False
+    permit = admission.reservation(session, sess.local_session_id, pending.seq)
+    if (
+        permit is None
+        or permit.session_id != sess.id
+        or permit.owner != pending.claimed_by_replica
+        or permit.state not in {"reserved", "running"}
+    ):
+        return False
+    receipts = session.exec(
+        select(AgentResultReceipt).where(
+            AgentResultReceipt.session_id == sess.id,
+            AgentResultReceipt.seq == pending.seq,
+            AgentResultReceipt.dispatch_count == pending.dispatch_count,
+            AgentResultReceipt.claim_owner == pending.claimed_by_replica,
+            AgentResultReceipt.guest_id == sess.ember_session_id,
+            AgentResultReceipt.local_session_id == sess.local_session_id,
+            AgentResultReceipt.superseded_at.is_(None),
+            AgentResultReceipt.response_observed_at.is_(None),
+            AgentResultReceipt.result_sha256.isnot(None),
+            AgentResultReceipt.retain_until > datetime.now(timezone.utc),
+        )
+    ).all()
+    if len(receipts) != 1:
+        return False
+    _write_response_lost_locked(
+        session,
+        sess,
+        pending,
+        existing,
+        reason="lease_expired",
+        bound=float(RESPONSE_LOST_BACKSTOP_SECONDS),
+        receipt_id=receipts[0].id,
+        guest_id=sess.ember_session_id,
+        source="lease_backstop",
+        cli_session_id=sess.cli_session_id,
+    )
+    return True
+
+
+def read_response_lost_hold_sync(session_id: int) -> dict | None:
+    """Project one session's live hold, or None when it has none."""
+    with Session(get_engine()) as session:
+        pending = session.exec(
+            select(PendingMessage)
+            .where(PendingMessage.session_id == session_id)
+            .order_by(PendingMessage.seq)
+        ).first()
+        if pending is None:
+            return None
+        return _response_lost_hold(get_turn(session, session_id, pending.seq), pending)
+
+
+def find_response_lost_session_ids(limit: int = 5) -> list[int]:
+    """A bounded batch of sessions carrying a response-loss marker.
+
+    The bound is checked per session when the hold is read, so this predicate
+    deliberately selects expired markers too: an expired one simply reads as no
+    hold and is left to the ordinary lease path.
+    """
+    with Session(get_engine()) as session:
+        return list(
+            session.exec(
+                select(PendingMessage.session_id)
+                .join(
+                    AgentTurn,
+                    and_(
+                        AgentTurn.session_id == PendingMessage.session_id,
+                        AgentTurn.seq == PendingMessage.seq,
+                    ),
+                )
+                .where(
+                    PendingMessage.claimed_by_replica.isnot(None),
+                    AgentTurn.stop_reason == RESPONSE_LOST,
+                    AgentTurn.terminal_reason.in_(INTERRUPTED_TERMINAL_REASONS),
+                )
+                .order_by(PendingMessage.session_id)
+                .limit(limit)
+            ).all()
+        )
+
+
+def settle_response_lost_hold(session_id: int, reason: str) -> bool:
+    """End a hold that can no longer be recovered, exactly as today's paths do.
+
+    Used when the guest has ceased or completed its invoke with no receipt
+    inside the bound. The attempt becomes an ordinary unknown outcome: the
+    permit stays uncertain and reconciliation owns it from there.
+    """
+    with Session(get_engine()) as session:
+        row = _lock_session(session, session_id)
+        pending = session.exec(
+            select(PendingMessage)
+            .where(PendingMessage.session_id == session_id)
+            .order_by(PendingMessage.seq)
+        ).first()
+        if row is None or pending is None:
+            return False
+        turn = get_turn(session, session_id, pending.seq)
+        if _response_lost_hold(turn, pending) is None:
+            return False
+        _finish_unknown_locked(session, row, pending, reason)
+        session.commit()
+        return True
+
+
+def adopt_response_lost_result(
+    session_id: int, artifact_path: str | None = None
+) -> dict | None:
+    """Finish a held turn from its committed receipt, with no second execution.
+
+    The receipt body is the exact native record the guest produced for this
+    physical invoke, so the ordinary turn writer persists it through the same
+    parser, diff and artifact validation the synchronous response would have
+    used. ``persist_turn_from_pending_sync`` revalidates the receipt against the
+    permit, the claim and the session inside its own transaction, so this
+    function cannot widen what counts as an adoptable result.
+
+    Returns None when the session holds nothing, ``waiting`` when the guest has
+    published no result yet, ``unusable`` when a committed body is not a native
+    completion, and ``adopted`` with the persisted turn sequence otherwise.
+    """
+    from agent_sessions import result_receipts, voice
+
+    hold = read_response_lost_hold_sync(session_id)
+    if hold is None:
+        return None
+    # A hold written by the executor carries the artifact the invoke declared.
+    # The lease backstop reconstructs its hold from durable rows, which do not
+    # record that declaration, so the node owner may supply it. A caller can
+    # only fill an absent value, never contradict the one the executor wrote.
+    if hold.get("artifact_path") is None:
+        hold["artifact_path"] = artifact_path
+    elif artifact_path is not None and hold["artifact_path"] != artifact_path:
+        return {"status": "refused", "reason": "declared artifact path changed"}
+    try:
+        captured = result_receipts.read_held_result(hold)
+    except result_receipts.ReceiptRejected as exc:
+        logger.warning(
+            "Response-loss receipt refused for session %s: %s", session_id, exc
+        )
+        return {"status": "refused", "reason": str(exc)}
+    if captured is None:
+        return {"status": "waiting", "seq": hold["seq"]}
+    try:
+        turn = parse_native_turn(
+            json.loads(captured["result_body"]),
+            hold["guest_id"],
+            hold.get("cli_session_id"),
+            hold.get("artifact_path"),
+        )
+    except (TypeError, ValueError):
+        return {"status": "unusable", "reason": "receipt body is not a native turn"}
+    if (
+        turn.terminal_reason
+        not in CLEAN_TERMINAL_REASONS | INTERRUPTED_TERMINAL_REASONS | {"error"}
+        or turn.stop_reason == UNKNOWN_INVOCATION
+    ):
+        return {
+            "status": "unusable",
+            "reason": "receipt has no native terminal outcome",
+        }
+    turn = turn._replace(
+        native_receipt={
+            **captured["provenance"],
+            "cli_session_id": hold.get("cli_session_id"),
+            "artifact_path": hold.get("artifact_path"),
+        }
+    )
+    summary = voice.extract_voice_summary(turn.result)
+    try:
+        row = persist_turn_from_pending_sync(
+            session_id,
+            hold["seq"],
+            hold["prompt"],
+            turn,
+            summary,
+            turn_status(turn),
+            turn.session_id,
+            turn.model or hold.get("model"),
+            hold["claim_owner"],
+            hold["dispatch_count"],
+        )
+    except (PendingClaimLost, SessionOutcomeUnknown) as exc:
+        logger.warning(
+            "Response-loss adoption lost its attempt for session %s: %s",
+            session_id,
+            type(exc).__name__,
+        )
+        return {"status": "refused", "reason": type(exc).__name__}
+    logger.warning(
+        "Recovered lost turn response for session %s seq %s from receipt %s",
+        session_id,
+        hold["seq"],
+        hold["receipt_id"],
+    )
+    return {"status": "adopted", "seq": row.seq, "receipt_id": hold["receipt_id"]}
 
 
 def _finish_unknown_locked(
@@ -1474,6 +1938,12 @@ def release_pending_message_claim_sync(
         ):
             return session.exec(select(_unknown_outcome_exists(session_id))).one()
         previous = get_turn(session, session_id, turn_seq)
+        if _response_lost_hold(previous, pending) is not None:
+            # A live hold already owns this attempt. Releasing it would settle
+            # the turn unknown behind a guest that is still working and would
+            # discard the receipt the recovery path is waiting for, so leave
+            # the claim, the permit and the marker exactly as they are.
+            return session.exec(select(_unknown_outcome_exists(session_id))).one()
         if _retry_permission(previous, pending):
             pending.claimed_by_replica = None
             pending.claimed_at = None
@@ -1816,10 +2286,15 @@ def reclaim_stale_claims_sync() -> int:
             if row is None or pending is None:
                 continue
             previous = get_turn(session, session_id, seq)
+            if _response_lost_hold(previous, pending, now) is not None:
+                continue
             if _retry_permission(previous, pending):
                 pending.claimed_by_replica = None
                 pending.claimed_at = None
                 session.add(pending)
+            elif _hold_lease_expired_response(session, row, pending, previous):
+                session.commit()
+                continue
             else:
                 _finish_unknown_locked(session, row, pending, "lease_expired")
             session.commit()

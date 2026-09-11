@@ -4,6 +4,7 @@ import asyncio
 import collections
 import json
 import logging
+import os
 import platform
 import re
 import secrets
@@ -78,6 +79,45 @@ HUNG_CLAIM_THRESHOLD_SECONDS = 600
 # both sends and the five-second sweep. This cache is advisory and process-local.
 NEGATIVE_ORACLE_TTL_SECONDS = 120
 _negative_oracle_verdicts: dict[int, float] = {}
+# A control-plane read taken on the error path of a turn that may already be
+# finished. It must never lengthen a failure, and on replica shutdown it has
+# only the pod's termination grace to work in.
+GUEST_STATE_TIMEOUT_SECONDS = 3.0
+
+
+def response_lost_recovery_enabled() -> bool:
+    return os.getenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "false").lower() == "true"
+
+
+async def _guest_still_invoking(guest_id: str) -> dict | None:
+    """Fresh proof that this guest is still working the invoke we lost.
+
+    Running, with an invoke started and no invoke completion recorded, is the
+    exact shape of a turn whose result has not been delivered yet. Anything
+    else, including an unavailable control plane, returns None so the caller
+    stays on its ordinary failure path.
+    """
+    try:
+        view = await asyncio.wait_for(
+            _transport.get_session(guest_id), GUEST_STATE_TIMEOUT_SECONDS
+        )
+    except Exception:  # noqa: BLE001 - an unreadable guest is not a live one.
+        return None
+    if (
+        not isinstance(view, dict)
+        or view.get("session_id") != guest_id
+        or view.get("state") != "running"
+        or type(view.get("generation")) is not int
+        or view["generation"] < 0
+        or type(view.get("invoke_started_at")) is not int
+        or view["invoke_started_at"] < 1
+        or view.get("last_invoke_at") is not None
+    ):
+        return None
+    return {
+        "generation": view["generation"],
+        "invoke_started_at": view["invoke_started_at"],
+    }
 
 
 class _ClaimStolen(RuntimeError):
@@ -285,15 +325,8 @@ def _persist_session(
 
 
 def _turn_status(turn: Turn) -> str:
-    if turn.terminal_reason in INTERRUPTED_TERMINAL_REASONS:
-        return "recovering"
-    # permission_denials is the signal for "agent blocked waiting on user";
-    # stop_reason enum (end_turn, max_tokens, etc.) never indicates user input needed
-    if turn.permission_denials:
-        return "needs_input"
-    if turn.is_error or turn.terminal_reason not in CLEAN_TERMINAL_REASONS:
-        return "warn"
-    return "completed"
+    # One definition, shared with the response-loss recovery writer in store.
+    return store.turn_status(turn)
 
 
 # Discord's hard per-message limit is 2000; leave room for a status prefix and
@@ -616,6 +649,12 @@ async def _execute_pending_message(session_id: int) -> None:
     release_cause = "observer_released"
     executor_task = asyncio.current_task()
     claimed_dispatch_count = None
+    # Filled by the transport with the identity of the last physical POST this
+    # delivery made. It outlives the exception that loses the response, so this
+    # executor can name the exact receipt the guest was told to publish to.
+    invocation_record: dict = {}
+    response_lost_held = False
+    executor_cancelled = False
     factory_owned = str(getattr(factory_row, "local_session_id", "")).startswith(
         "factory:"
     )
@@ -669,6 +708,60 @@ async def _execute_pending_message(session_id: int) -> None:
                 stage,
             )
             stolen_exit_logged = True
+
+    def _record_response_lost(reason: str, state: dict) -> bool:
+        """Hold this attempt rather than settling it unknown.
+
+        Deliberately synchronous: the shutdown caller runs inside a cancelled
+        task with only the pod's termination grace left, where scheduling one
+        more await is exactly what a second cancellation takes away.
+        """
+        nonlocal response_lost_held
+        if response_lost_held:
+            return True
+        response_lost_held = store.mark_turn_response_lost_sync(
+            session_id,
+            claimed_seq,
+            claim_owner,
+            claimed_dispatch_count,
+            receipt_id=invocation_record["receipt_id"],
+            guest_id=invocation_record["guest_id"],
+            reason=reason,
+            hold_seconds=_transport.read_timeout,
+            generation=state.get("generation"),
+            invoke_started_at=state.get("invoke_started_at"),
+            cli_session_id=invocation_record.get("cli_session_id"),
+            artifact_path=invocation_record.get("artifact_path"),
+        )
+        if response_lost_held:
+            logger.warning(
+                "Holding turn %s in session %s: invoke response lost (%s), "
+                "awaiting receipt %s",
+                claimed_seq,
+                session_id,
+                reason,
+                invocation_record["receipt_id"],
+            )
+        return response_lost_held
+
+    def _response_lost_eligible() -> bool:
+        return bool(
+            not response_lost_held
+            and response_lost_recovery_enabled()
+            and invocation_record.get("attempted")
+            and invocation_record.get("receipt_id")
+            and invocation_record.get("guest_id")
+            and claimed_dispatch_count is not None
+        )
+
+    async def _hold_response_lost(reason: str) -> bool:
+        """Hold only while the control plane still shows the guest invoking."""
+        if not _response_lost_eligible():
+            return False
+        state = await _guest_still_invoking(invocation_record["guest_id"])
+        if state is None:
+            return False
+        return await asyncio.to_thread(_record_response_lost, reason, state)
 
     async def _refresh_heartbeat() -> None:
         """Keep the claim alive while the turn runs."""
@@ -785,6 +878,7 @@ async def _execute_pending_message(session_id: int) -> None:
                 "progress_token": session_row.progress_token,
                 "agent_session_id": session_id,
                 "dispatch_count": row.dispatch_count,
+                "invocation_record": invocation_record,
             }
             from agent_sessions import result_receipts
 
@@ -898,6 +992,12 @@ async def _execute_pending_message(session_id: int) -> None:
         except Exception as exc:
             if await _abort_stolen_executor_confirmed("delivery error"):
                 return
+            # A response this executor never received is not a turn that never
+            # happened. While the control plane still shows the guest invoking
+            # for this exact dispatch, hold the attempt so its committed result
+            # can be adopted instead of the work being thrown away (#5938).
+            if await _hold_response_lost("invoke_response_lost"):
+                return
             # Terminal failure: row is deleted by mark_turn_error_sync (noqa: BLE001)
             await asyncio.to_thread(
                 _mark_turn_error_sync, session_id, claimed_seq, str(exc), claim_owner
@@ -955,6 +1055,7 @@ async def _execute_pending_message(session_id: int) -> None:
         await _do_execute()
     except asyncio.CancelledError:
         release_cause = "executor_cancelled"
+        executor_cancelled = True
         raise
     finally:
         # Cancel the refresh task
@@ -964,8 +1065,26 @@ async def _execute_pending_message(session_id: int) -> None:
                 await refresh_task
             except asyncio.CancelledError:
                 pass
+        # A replica shutdown cancels this executor while its guest keeps
+        # working. Nothing about the invocation has gone wrong, only the
+        # observer, so hold the attempt rather than recording an outcome this
+        # pod is simply no longer around to see. No control-plane read here:
+        # the pod is inside its termination grace and a second cancellation
+        # would take the await away, so the durable record is written first and
+        # the recovering replica checks the guest.
+        if executor_cancelled and _response_lost_eligible():
+            try:
+                _record_response_lost("replica_shutdown", {})
+            except Exception:  # noqa: BLE001 - fall through to today's release.
+                logger.exception(
+                    "Could not hold turn %s in session %s across shutdown",
+                    claimed_seq,
+                    session_id,
+                )
         outcome_unknown = True
-        if not claim_stolen and not claim_released:
+        if response_lost_held:
+            outcome_unknown = False
+        elif not claim_stolen and not claim_released:
             outcome_unknown = await asyncio.to_thread(
                 _release_pending_message_claim_sync,
                 session_id,
@@ -1107,13 +1226,40 @@ async def _reconcile_zombie_sessions() -> int:
     return recovered
 
 
+def _adopt_response_lost_results() -> list[int]:
+    """Finish held turns whose committed result has since arrived.
+
+    Only holds the executor itself wrote are finished here, because those carry
+    the exact invoke declaration. A hold the lease backstop reconstructed has no
+    declared artifact recorded, so it is left to the node owner that knows the
+    declaration, and expires into an ordinary unknown outcome if none finishes
+    it inside the bound.
+    """
+    if not response_lost_recovery_enabled():
+        return []
+    adopted = []
+    for session_id in store.find_response_lost_session_ids(5):
+        hold = store.read_response_lost_hold_sync(session_id)
+        if hold is None or hold.get("source") != "executor":
+            continue
+        try:
+            outcome = store.adopt_response_lost_result(session_id)
+        except Exception:  # noqa: BLE001 - one session must not stop the sweep
+            logger.exception("Response-loss adoption failed for session %s", session_id)
+            continue
+        if outcome is not None and outcome.get("status") == "adopted":
+            adopted.append(session_id)
+    return adopted
+
+
 async def _sweep_orphaned_pending_messages() -> None:
     """Pick up pending messages left behind by a crash or restart.
 
-    The sweep does two things:
+    The sweep does three things:
     1. Record expired attempts as unknown outcomes, except for exact
-       preemption retries.
-    2. Execute untouched pending messages and permitted preemption retries.
+       preemption retries and attempts held for a lost response.
+    2. Finish held attempts whose committed native result has arrived.
+    3. Execute untouched pending messages and permitted preemption retries.
     """
     while True:
         recovered = await _reconcile_zombie_sessions()
@@ -1124,6 +1270,8 @@ async def _sweep_orphaned_pending_messages() -> None:
         reclaimed = await asyncio.to_thread(_reclaim_stale_claims_sync)
         if reclaimed > 0:
             logger.info("Reclaimed %d stale claims from crashed replicas", reclaimed)
+        for session_id in await asyncio.to_thread(_adopt_response_lost_results):
+            _schedule_next_message(session_id)
         # Skip sessions paused for device login; a persisted prompt must not
         # execute until the grant is live, else the turn fails with opaque 422
         # within 5 seconds.
