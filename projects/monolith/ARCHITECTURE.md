@@ -327,6 +327,19 @@ agents/038 decision 5 gives judgment work an Opus-or-better implementer floor
 because no machine oracle can verify its correctness; quota pressure parks that
 work instead of demoting it.
 
+**Why.** The chart ceiling and the per-lane maxima are set in two places and
+neither said which was binding, so a ceiling of 4 under lanes of 4 and 8 gave
+the advisory lane nothing: the limits handed delivery its whole maximum first
+and one sweep excluded 272 advisory candidates as lane_full. The ceiling is now
+12, high enough to cover both lanes, and when it is not, the free part of it is
+dealt to whichever lane is furthest from its own maximum rather than reserved
+for delivery, with delivery keeping the first slot so it is never unable to
+start. The sweep names the mismatch as lane_ceiling_below_lanes. The same lanes
+also filled at one slot an hour, because a sweep takes one candidate per lane
+and the sweep clock only re-opened on the hour or on a settlement. An admission
+re-opens it too, which costs one extra sweep per admission and lets a lane fill
+over consecutive ticks (#6002).
+
 **Why.** Landing exists because approval was not delivery: #3877 was shipped as
 PR #6007 whose body carried no closing keyword, so the issue stayed open with
 `agent-ready` intact and the next generation's sweep admitted it again as fresh
