@@ -1,4 +1,11 @@
 import { error, json } from "@sveltejs/kit";
+// Relative (not $lib): vitest loads this module directly and its plain node
+// config does not resolve the SvelteKit $lib alias. This endpoint sits at
+// routes/public/app/notes/stats, so five ../ segments reach src/lib.
+import {
+  cloudflareCacheHeaders,
+  STATS_CACHE_CONTROL,
+} from "../../../../../lib/cache-headers.js";
 
 // The localhost fallback is the established convention across every public
 // proxy (ships/stars/notes/graph/body); prod sets API_BASE via values.yaml.
@@ -21,6 +28,6 @@ export async function GET({ fetch, setHeaders }) {
     throw error(503, "stats unavailable");
   }
 
-  setHeaders({ "cache-control": "public, max-age=15" });
+  setHeaders(cloudflareCacheHeaders(STATS_CACHE_CONTROL));
   return json(await res.json());
 }

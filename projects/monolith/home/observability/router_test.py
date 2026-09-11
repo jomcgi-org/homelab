@@ -51,7 +51,8 @@ def test_stats_returns_snapshot_payload():
         assert resp.json() == payload
         assert (
             resp.headers["cache-control"]
-            == "public, s-maxage=60, stale-while-revalidate=86400"
+            == "public, s-maxage=60, stale-while-revalidate=86400, "
+            "stale-if-error=31536000"
         )
         assert "set-cookie" not in resp.headers
     finally:
@@ -66,7 +67,8 @@ def test_stats_empty_when_no_snapshot():
         assert resp.json() == {}
         assert (
             resp.headers["cache-control"]
-            == "public, s-maxage=60, stale-while-revalidate=86400"
+            == "public, s-maxage=60, stale-while-revalidate=86400, "
+            "stale-if-error=31536000"
         )
     finally:
         _clear()
