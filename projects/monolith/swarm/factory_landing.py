@@ -13,6 +13,7 @@ and defers the rest to a later tick.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 import json
 import logging
@@ -20,10 +21,12 @@ import os
 import re
 
 import httpx
+from sqlalchemy import or_
 from sqlmodel import select
 
 from core.github import GITHUB_API
 from swarm.factory_controls import (
+    ADVISORY_CLASSES,
     _audit,
     _locked_session,
     _now,
@@ -35,21 +38,46 @@ from swarm.factory_models import FactoryAudit, FactoryReceipt
 logger = logging.getLogger(__name__)
 
 ACTOR = "factory:landing"
-# The newest settled deliveries this tick considers. Landing follows approval
-# by minutes, so a receipt that is not in this window has already landed or
-# has been left to a human, and re-reading the whole history every fifteen
-# seconds would buy nothing.
-LANDING_BATCH = 20
+# A sanity cap, not a scheduling policy. Selection already drops everything
+# that reached a terminal landing audit, so this only bounds a pathological
+# backlog; ordering is oldest first, because arming is serial and the delivery
+# that has waited longest takes the free slot.
+LANDING_BATCH = 200
+# Only for a delivery landing has never touched. Turning the flag on for the
+# first time must not stampede over every delivery in the lane's history, but
+# anything the lane has already armed is followed to a terminal state whatever
+# its age.
 LANDING_WINDOW_HOURS = 168
 LANDING_ERROR_SECONDS = 3600
+# Ejections the lane will absorb before it hands the pull request to a human.
+# A queue analysis failure is usually transient and worth one re-arm; an
+# invalid merge commit needs a rebase no node here can do, and re-arming into
+# that forever would spend the queue on a candidate that cannot pass.
+MAX_EJECTIONS = 2
 WRITE_TIMEOUT_SECONDS = 15
 RESPONSE_LIMIT_BYTES = 1_000_000
+# One page. A repository with more than this many open pull requests would
+# need paging, and the factory branch prefix is what this is looking for.
+OPEN_PULLS_PAGE = 100
+FACTORY_BRANCH_PREFIX = "factory/"
 _PR_URL = re.compile(r"/pull/([0-9]+)$")
+# Multi-row actions: a delivery can be armed, ejected and armed again, so the
+# counts are the state and a one-row-per-action fence would freeze it.
+_REPEATABLE = ("merge_armed", "merge_ejected")
 _ARM_AUTO_MERGE = """
 mutation ArmAutoMerge($pullRequestId: ID!) {
   enablePullRequestAutoMerge(
     input: {pullRequestId: $pullRequestId, mergeMethod: REBASE}
   ) {
+    pullRequest {
+      number
+    }
+  }
+}
+"""
+_DISARM_AUTO_MERGE = """
+mutation DisarmAutoMerge($pullRequestId: ID!) {
+  disablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId}) {
     pullRequest {
       number
     }
@@ -78,6 +106,13 @@ def github_get(repo: str, suffix: str) -> dict:
     here leaves tests one seam, exactly as the intake loop does.
     """
     from swarm.factory_conductor import github_get as read
+
+    return read(repo, suffix)
+
+
+def github_list(repo: str, suffix: str) -> list:
+    """Bounded list read, imported lazily for the same reason as the object read."""
+    from swarm.factory_conductor import github_list as read
 
     return read(repo, suffix)
 
@@ -147,10 +182,13 @@ def github_graphql(query: str, variables: dict) -> dict:
 def _record(task_id: str, action: str, **detail: object) -> bool:
     """Write one row of this action for this task, at most once. True when it wrote.
 
-    Every landing step happens once per task, and the reconciler reaches each
+    The once-only steps happen once per task, and the reconciler reaches each
     of them on every tick until the next one takes, so the audit table is the
-    fence as well as the record.
+    fence as well as the record. Arming and ejection are not once-only and use
+    ``_append``: their counts are what say whether the delivery holds the slot.
     """
+    if action in _REPEATABLE:
+        raise ValueError(f"{action} is a repeatable landing action")
     with _locked_session() as (db, _control):
         existing = db.exec(
             select(FactoryAudit.id).where(
@@ -162,6 +200,12 @@ def _record(task_id: str, action: str, **detail: object) -> bool:
             return False
         _audit(db, ACTOR, action, task_id=task_id, **detail)
     return True
+
+
+def _append(task_id: str, action: str, **detail: object) -> None:
+    """Add one row of a repeatable landing action."""
+    with _locked_session() as (db, _control):
+        _audit(db, ACTOR, action, task_id=task_id, **detail)
 
 
 def _error(task_id: str, stage: str, exc: Exception) -> None:
@@ -191,79 +235,195 @@ def _error(task_id: str, stage: str, exc: Exception) -> None:
     )
 
 
-def _audited(db, task_id: str, action: str) -> bool:
-    return (
-        db.exec(
-            select(FactoryAudit.id).where(
-                FactoryAudit.task_id == task_id,
-                FactoryAudit.action == action,
-            )
-        ).first()
-        is not None
-    )
+LANDING_ACTIONS = (
+    "merge_armed",
+    "merge_ejected",
+    "merge_arm_refused",
+    "merged",
+    "issue_closed",
+)
 
 
-def _delivery_pr(db, task_id: str) -> tuple[int, str | None] | None:
-    """The pull request a succeeded task delivered, from its settlement evidence.
+def _landing_state(db, task_ids: list[str]) -> dict[str, dict]:
+    """Every landing audit for these tasks, as counts, in one read."""
+    state = {
+        task_id: {action: [] for action in LANDING_ACTIONS} for task_id in task_ids
+    }
+    if not task_ids:
+        return state
+    rows = db.exec(
+        select(FactoryAudit)
+        .where(
+            FactoryAudit.task_id.in_(task_ids),
+            FactoryAudit.action.in_(LANDING_ACTIONS),
+        )
+        .order_by(FactoryAudit.id)
+    ).all()
+    for row in rows:
+        state[row.task_id][row.action].append(json.loads(row.detail_json))
+    return state
+
+
+def _delivery_prs(db, task_ids: list[str]) -> dict[str, tuple[int, str | None]]:
+    """The pull request each succeeded task delivered, from its settlement evidence.
 
     Advisory and refine tasks also settle succeeded and carry no pull request,
     so an absent ``pr_url`` is what separates a delivery from a comment.
     """
+    result: dict[str, tuple[int, str | None]] = {}
+    if not task_ids:
+        return result
     rows = db.exec(
-        select(FactoryAudit.detail_json)
+        select(FactoryAudit)
         .where(
-            FactoryAudit.task_id == task_id,
+            FactoryAudit.task_id.in_(task_ids),
             FactoryAudit.action == "finish_task",
         )
         .order_by(FactoryAudit.id.desc())
     ).all()
-    for raw in rows:
-        evidence = json.loads(raw).get("evidence") or {}
+    for row in rows:
+        if row.task_id in result:
+            continue
+        evidence = json.loads(row.detail_json).get("evidence") or {}
         url = evidence.get("pr_url")
         match = _PR_URL.search(url) if isinstance(url, str) else None
         if match is not None:
             head = evidence.get("head_sha")
-            return int(match.group(1)), head if isinstance(head, str) else None
-    return None
+            result[row.task_id] = (
+                int(match.group(1)),
+                head if isinstance(head, str) else None,
+            )
+    return result
 
 
 def _deliveries(policy: dict) -> list[dict]:
+    """Every delivery whose landing is unfinished, oldest first.
+
+    Selected on landing state, never on recency. Selecting the newest receipts
+    of any class let a burst of advisory settlements push an armed but unmerged
+    delivery out of the batch, which left it never observed, never merged, its
+    issue never closed, and the one-at-a-time holder reading as absent so a
+    second pull request was armed behind it.
+
+    Terminal is a refusal, which hands the pull request to a human, or a closed
+    issue, which is the last step of a successful landing. A merged delivery
+    whose issue is not closed yet is still live work.
+    """
     repo = policy["repo"]
     cutoff = _now() - timedelta(hours=LANDING_WINDOW_HOURS)
-    result = []
     with _read_session() as db:
+        terminal = select(FactoryAudit.task_id).where(
+            FactoryAudit.action.in_(("merge_arm_refused", "issue_closed")),
+            FactoryAudit.task_id.is_not(None),
+        )
         rows = db.exec(
             select(FactoryReceipt)
             .where(
                 FactoryReceipt.repo == repo,
                 FactoryReceipt.state == "succeeded",
                 FactoryReceipt.task_id.is_not(None),
+                FactoryReceipt.task_id.not_in(terminal),
+                # A receipt written before classes existed reads as delivery.
+                or_(
+                    FactoryReceipt.task_class.is_(None),
+                    FactoryReceipt.task_class.not_in(ADVISORY_CLASSES),
+                ),
             )
-            .order_by(FactoryReceipt.id.desc())
+            .order_by(FactoryReceipt.id)
             .limit(LANDING_BATCH)
         ).all()
-        # Oldest first among the newest batch: arming is serial, so the
-        # delivery that has waited longest takes the free slot.
-        for row in reversed(rows):
-            if _aware(row.updated_at) < cutoff:
-                continue
-            delivery = _delivery_pr(db, row.task_id)
-            if delivery is None:
-                continue
-            number, head = delivery
-            result.append(
-                {
-                    "task_id": row.task_id,
-                    "issue_number": row.issue_number,
-                    "pr_number": number,
-                    "head_sha": head,
-                    "armed": _audited(db, row.task_id, "merge_armed"),
-                    "refused": _audited(db, row.task_id, "merge_arm_refused"),
-                    "merged": _audited(db, row.task_id, "merged"),
-                    "closed": _audited(db, row.task_id, "issue_closed"),
-                }
-            )
+        task_ids = [row.task_id for row in rows]
+        prs = _delivery_prs(db, task_ids)
+        state = _landing_state(db, task_ids)
+    result = []
+    for row in rows:
+        delivery = prs.get(row.task_id)
+        if delivery is None:
+            continue
+        audits = state[row.task_id]
+        armed, ejected = audits["merge_armed"], audits["merge_ejected"]
+        touched = bool(armed or ejected or audits["merged"])
+        if not touched and _aware(row.updated_at) < cutoff:
+            continue
+        number, head = delivery
+        result.append(
+            {
+                "task_id": row.task_id,
+                "issue_number": row.issue_number,
+                "pr_number": number,
+                # The head the newest arming was measured against, so a branch
+                # that moves under an armed pull request can be caught.
+                "head_sha": armed[-1].get("head_sha") if armed else head,
+                "armed": len(armed),
+                "ejected": len(ejected),
+                "merged": bool(audits["merged"]),
+                "closed": bool(audits["issue_closed"]),
+            }
+        )
     return result
+
+
+def holding(item: dict) -> bool:
+    """Whether this delivery is the one armed pull request the lane allows."""
+    return item["armed"] > item["ejected"] and not item["merged"]
+
+
+def arm_eligible(item: dict) -> bool:
+    """Whether this delivery may take the arming slot on this tick."""
+    return (
+        not item["merged"]
+        and item["armed"] == item["ejected"]
+        and item["ejected"] < MAX_EJECTIONS
+    )
+
+
+def _armed_on_github(repo: str) -> dict | None:
+    """A factory pull request somebody else armed, so it still counts as the holder.
+
+    The audit trail only knows what this lane did. An operator arming a factory
+    pull request by hand puts it in the same queue, and a second armed
+    candidate is exactly what the one-at-a-time rule exists to prevent.
+    """
+    pulls = github_list(
+        repo, f"pulls?state=open&sort=created&direction=asc&per_page={OPEN_PULLS_PAGE}"
+    )
+    for pull in pulls:
+        if not isinstance(pull, dict) or pull.get("auto_merge") is None:
+            continue
+        ref = (pull.get("head") or {}).get("ref")
+        if isinstance(ref, str) and ref.startswith(FACTORY_BRANCH_PREFIX):
+            return {"pr_number": pull.get("number"), "task_id": None}
+    return None
+
+
+def _notify_stuck(task_id: str, number: int) -> None:
+    """One best-effort Discord warning, on the path the conductor already uses."""
+    try:
+        from agent.notify import notify
+
+        asyncio.run(
+            notify(
+                f"Factory pull request #{number} on task {task_id} was ejected "
+                f"from the merge queue {MAX_EJECTIONS} times. Auto-merge is off "
+                "and the pull request is left for a human.",
+                level="warn",
+            )
+        )
+    except Exception:  # noqa: BLE001 - notification is best effort
+        logger.warning(
+            "factory landing notification failed for task %s", task_id, exc_info=True
+        )
+
+
+def _refuse(item: dict, reason: str, **detail: object) -> None:
+    _record(
+        item["task_id"],
+        "merge_arm_refused",
+        pr_number=item["pr_number"],
+        reason=reason,
+        **detail,
+    )
+    item["refused"] = True
 
 
 def _arm(repo: str, item: dict) -> None:
@@ -277,43 +437,48 @@ def _arm(repo: str, item: dict) -> None:
             item["merged"] = True
             return
         if pr.get("state") != "open" or pr.get("draft"):
-            _record(
-                item["task_id"],
-                "merge_arm_refused",
-                pr_number=number,
-                reason="pull request is not open and ready",
-            )
-            item["refused"] = True
+            _refuse(item, "pull request is not open and ready")
             return
+        head = (pr.get("head") or {}).get("sha")
         node_id = pr.get("node_id")
         if not isinstance(node_id, str) or not node_id:
-            _record(
-                item["task_id"],
-                "merge_arm_refused",
-                pr_number=number,
-                reason="pull request has no node id",
-            )
-            item["refused"] = True
+            _refuse(item, "pull request has no node id")
             return
         github_graphql(_ARM_AUTO_MERGE, {"pullRequestId": node_id})
     except GraphQLRefused as exc:
         # A refused arming is final for this task. Retrying a mutation GitHub
         # has already declined would spend the request budget to be declined
         # again, and the refusal is on the board for an operator to read.
-        _record(item["task_id"], "merge_arm_refused", pr_number=number, reason=exc.code)
-        item["refused"] = True
+        _refuse(item, exc.code)
         return
     except (httpx.HTTPError, ValueError) as exc:
         _error(item["task_id"], "arm", exc)
         return
-    _record(
+    # The head this arming is measured against is the head GitHub has now, not
+    # the head the review approved: a branch that moved between approval and
+    # arming is caught by the next observation rather than merged quietly.
+    _append(
         item["task_id"],
         "merge_armed",
         pr_number=number,
-        head_sha=item["head_sha"],
+        head_sha=head if isinstance(head, str) else item["head_sha"],
+        attempt=item["armed"] + 1,
         merge_method="rebase",
     )
-    item["armed"] = True
+    item["armed"] += 1
+    if isinstance(head, str):
+        item["head_sha"] = head
+
+
+def _disarm(repo: str, pr: dict) -> None:
+    """Turn auto-merge off again, best effort: the audit is the real record."""
+    node_id = pr.get("node_id")
+    if not isinstance(node_id, str) or not node_id:
+        return
+    try:
+        github_graphql(_DISARM_AUTO_MERGE, {"pullRequestId": node_id})
+    except (GraphQLRefused, httpx.HTTPError, ValueError):
+        logger.warning("factory landing could not disarm pull request", exc_info=True)
 
 
 def _observe(repo: str, item: dict) -> None:
@@ -337,14 +502,40 @@ def _observe(repo: str, item: dict) -> None:
             rollout_verified=None,
         )
         item["merged"] = True
-    elif pr.get("state") == "closed":
-        _record(
-            item["task_id"],
-            "merge_arm_refused",
-            pr_number=number,
-            reason="pull request closed without merging",
-        )
-        item["refused"] = True
+        return
+    if pr.get("state") == "closed":
+        _refuse(item, "pull request closed without merging")
+        return
+    head = (pr.get("head") or {}).get("sha")
+    if isinstance(head, str) and item["head_sha"] and head != item["head_sha"]:
+        # Somebody pushed under an armed pull request. Whatever the review
+        # approved is not what would merge, so the arming comes off and the
+        # delivery goes back to a human rather than to the queue.
+        _disarm(repo, pr)
+        _refuse(item, "head_moved", armed_head_sha=item["head_sha"], head_sha=head)
+        return
+    if pr.get("auto_merge") is not None:
+        return
+    # Open, still unmerged, and GitHub has turned auto-merge off: the merge
+    # queue ejected it. Without this the holder wedged forever, because the
+    # old observation only ever looked for a closed pull request.
+    _append(
+        item["task_id"],
+        "merge_ejected",
+        pr_number=number,
+        # The queue timeline would name the ejection class, but reading it is
+        # a paged request per ejection on a budget the whole lane shares, and
+        # the re-arm is the same either way.
+        reason="auto_merge_disabled",
+        attempt=item["armed"],
+    )
+    item["ejected"] += 1
+    if item["ejected"] >= MAX_EJECTIONS:
+        # Two ejections is the signal that the queue cannot take this candidate
+        # as it stands. An invalid merge commit needs a rebase no node here can
+        # do, so it goes to a human with one warning rather than round again.
+        _refuse(item, "ejected_from_merge_queue", ejections=item["ejected"])
+        _notify_stuck(item["task_id"], number)
 
 
 def _close_issue(repo: str, item: dict) -> None:
@@ -358,9 +549,8 @@ def _close_issue(repo: str, item: dict) -> None:
                 f"issues/{issue}/comments",
                 {
                     "body": (
-                        f"Closed by the factory: pull request #{number} merged. "
-                        "The pull request body carried no closing keyword, so "
-                        "this issue is being closed against the merge instead."
+                        f"Closed by the factory against the observed merge of "
+                        f"pull request #{number}."
                     )
                 },
             )
@@ -421,30 +611,40 @@ def landing_tick(policy: dict) -> None:
         repo = policy["repo"]
         deliveries = _deliveries(policy)
         for item in deliveries:
-            if item["armed"] and not item["merged"] and not item["refused"]:
+            item["refused"] = False
+            if holding(item):
                 _observe(repo, item)
             if item["merged"] and not item["closed"]:
                 _close_issue(repo, item)
-        holder = next(
-            (
-                item
-                for item in deliveries
-                if item["armed"] and not item["merged"] and not item["refused"]
-            ),
-            None,
-        )
-        for item in deliveries:
-            if item["armed"] or item["refused"] or item["merged"]:
-                continue
-            if holder is not None:
-                _defer(item, holder)
-                return
-            _arm(repo, item)
-            if item["merged"] and not item["closed"]:
-                # Arming found it already merged by hand. Close the issue in
-                # this tick rather than holding it for another fifteen
-                # seconds behind a step that has already run.
-                _close_issue(repo, item)
+        live = [item for item in deliveries if not item["refused"]]
+        holder = next((item for item in live if holding(item)), None)
+        waiting = [item for item in live if arm_eligible(item)]
+        if not waiting:
             return
+        if holder is None:
+            # Nothing this lane armed is outstanding, but an operator may have
+            # armed a factory pull request by hand and it sits in the same
+            # queue. One list read, and only when there is something to arm.
+            try:
+                holder = _armed_on_github(repo)
+            except (httpx.HTTPError, ValueError) as exc:
+                # Not knowing whether a factory pull request is already armed
+                # is not a licence to arm a second one.
+                _error(waiting[0]["task_id"], "holder", exc)
+                return
+        if holder is not None:
+            for item in waiting:
+                _defer(item, holder)
+            return
+        first, rest = waiting[0], waiting[1:]
+        _arm(repo, first)
+        if first["merged"] and not first["closed"]:
+            # Arming found it already merged by hand. Close the issue in this
+            # tick rather than holding it for another fifteen seconds behind a
+            # step that has already run.
+            _close_issue(repo, first)
+        if holding(first):
+            for item in rest:
+                _defer(item, first)
     except Exception:  # noqa: BLE001 - landing is optional and never stops the lane
         logger.exception("factory landing failed")
