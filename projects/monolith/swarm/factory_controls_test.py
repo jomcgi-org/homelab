@@ -501,6 +501,75 @@ def test_policy_without_model_pools_stays_unchanged(db, policy):
     assert "model_pools" not in controls.status()["policy"]
 
 
+def test_policy_without_intake_gains_disabled_defaults(policy):
+    normalized = controls.validate_policy(policy)
+    assert normalized["intake"] == {
+        **controls.DEFAULT_INTAKE,
+        "exclude_labels": ["needs-human", "security-finding", "wontfix"],
+    }
+    assert normalized["intake"] is not controls.DEFAULT_INTAKE
+
+
+@pytest.mark.parametrize("key", ["enabled", "refine_enabled"])
+@pytest.mark.parametrize("value", [0, 1, "true", None])
+def test_intake_flags_require_bools(policy, key, value):
+    policy["intake"] = {key: value}
+    with pytest.raises(ValueError, match=key):
+        controls.validate_policy(policy)
+
+
+@pytest.mark.parametrize(
+    "key,value,accepted",
+    [
+        ("max_per_day", 0, False),
+        ("max_per_day", 1, True),
+        ("max_per_day", 50, True),
+        ("max_per_day", 51, False),
+        ("cooldown_hours", 0, False),
+        ("cooldown_hours", 1, True),
+        ("cooldown_hours", 168, True),
+        ("cooldown_hours", 169, False),
+    ],
+)
+def test_intake_numeric_bounds(policy, key, value, accepted):
+    policy["intake"] = {key: value}
+    if accepted:
+        assert controls.validate_policy(policy)["intake"][key] == value
+    else:
+        with pytest.raises(ValueError, match=key):
+            controls.validate_policy(policy)
+
+
+def test_intake_labels_are_bounded_deduplicated_sorted_and_disjoint(policy):
+    policy["intake"] = {"labels": ["z", "a", "z"], "exclude_labels": []}
+    assert controls.validate_policy(policy)["intake"]["labels"] == ["a", "z"]
+    policy["intake"] = {"labels": [1]}
+    with pytest.raises(ValueError, match="label"):
+        controls.validate_policy(policy)
+    policy["intake"] = {"labels": ["same"], "exclude_labels": ["same"]}
+    with pytest.raises(ValueError, match="overlap"):
+        controls.validate_policy(policy)
+
+
+def test_intake_unknown_key_is_refused(policy):
+    policy["intake"] = {"surprise": True}
+    with pytest.raises(ValueError, match="invalid intake"):
+        controls.validate_policy(policy)
+
+
+def test_status_defaults_intake_for_empty_control_policy(db):
+    assert controls.status()["intake"] == {
+        "policy": {
+            **controls.DEFAULT_INTAKE,
+            "exclude_labels": ["needs-human", "security-finding", "wontfix"],
+        },
+        "admitted_today": 0,
+        "max_per_day": 5,
+        "last_admitted": None,
+        "last_idle": None,
+    }
+
+
 def node_key(task_id, node, attempt=1):
     return f"factory-node:{task_id}:{node}:{attempt}"
 
