@@ -3,10 +3,7 @@
   import { Sticker, Marquee, Footer, Seo } from "$lib/public/components";
   import { LOCATION } from "$lib/public/seo.js";
   import HomepageRack from "./HomepageRack.svelte";
-  import {
-    buildMarquee,
-    startHomepageStatsPolling,
-  } from "./homepage-stats.js";
+  import { buildMarquee, startHomepageStatsPolling } from "./homepage-stats.js";
 
   let { data } = $props();
 
