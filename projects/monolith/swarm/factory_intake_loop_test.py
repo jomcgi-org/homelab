@@ -756,3 +756,93 @@ def test_an_issue_closed_on_github_is_never_a_candidate(db, monkeypatch):
     assert intake_loop.intake_tick(policy(), generation=0) == []
     detail = json.loads(audits(db, "intake_idle")[0].detail_json)
     assert detail["excluded"] == {"not_open": 1}
+
+
+def wide_policy(**intake):
+    return {
+        "repo": "owner/repo",
+        "max_tasks": {"delivery": 4, "advisory": 8},
+        "intake": {
+            "enabled": True,
+            "exclude_labels": [],
+            "max_per_day": 50,
+            **intake,
+        },
+    }
+
+
+def held(db, state="queued"):
+    with Session(db) as session:
+        rows = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.state == state)
+        ).all()
+        return {
+            "delivery": sum(1 for row in rows if row.task_class != "refine"),
+            "advisory": sum(1 for row in rows if row.task_class == "refine"),
+        }
+
+
+def test_a_ceiling_below_the_lanes_is_audited_once_an_hour(db, monkeypatch):
+    """Chart configuration and posted policy can be set against each other."""
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
+    intake_loop.intake_tick(wide_policy(), generation=0)
+    recorded = [
+        json.loads(row.detail_json) for row in audits(db, "lane_ceiling_below_lanes")
+    ]
+    assert recorded == [
+        {"ceiling": 4, "delivery_max": 4, "advisory_max": 8, "lanes_sum": 12}
+    ]
+    release_sweep(db)
+    fake_pages(monkeypatch, [issue(2, ["agent-ready"])])
+    intake_loop.intake_tick(wide_policy(), generation=0)
+    assert len(audits(db, "lane_ceiling_below_lanes")) == 1
+
+
+def test_a_ceiling_that_covers_both_lanes_audits_nothing(db, monkeypatch):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "12")
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
+    intake_loop.intake_tick(wide_policy(), generation=0)
+    assert audits(db, "lane_ceiling_below_lanes") == []
+
+
+def test_open_lanes_fill_over_consecutive_ticks_not_one_an_hour(db, monkeypatch):
+    """A sweep takes one candidate per lane, so the hourly clock filled at one an hour."""
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "12")
+    listed = [issue(number, ["agent-ready"]) for number in range(1, 7)] + [
+        issue(number) for number in range(10, 20)
+    ]
+    calls = fake_pages(monkeypatch, listed)
+    for _ in range(10):
+        intake_loop.intake_tick(wide_policy(refine_enabled=True), generation=0)
+    assert held(db) == {"delivery": 4, "advisory": 8}
+    # Every tick that had room swept; the clock never held one back.
+    assert len(calls) >= 16
+
+
+def test_a_sweep_that_admits_nothing_waits_out_the_hour(db, monkeypatch):
+    """The admission clause re-opens the sweep at most once per admission."""
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "12")
+    calls = fake_pages(monkeypatch, [issue(1, ["blocked"])])
+    assert (
+        intake_loop.intake_tick(wide_policy(exclude_labels=["blocked"]), generation=0)
+        == []
+    )
+    swept = len(calls)
+    assert swept
+    intake_loop.intake_tick(wide_policy(exclude_labels=["blocked"]), generation=0)
+    assert len(calls) == swept
+
+
+def test_one_admission_buys_exactly_one_extra_sweep(db, monkeypatch):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "12")
+    calls = fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
+    assert intake_loop.intake_tick(wide_policy(), generation=0)
+    first = len(calls)
+    # The admission re-opens the sweep once. That sweep finds only the issue it
+    # already received, admits nothing, and the hourly clock governs again.
+    intake_loop.intake_tick(wide_policy(), generation=0)
+    second = len(calls)
+    assert second > first
+    intake_loop.intake_tick(wide_policy(), generation=0)
+    assert len(calls) == second
