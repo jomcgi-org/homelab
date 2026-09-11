@@ -48,4 +48,9 @@ build:ci --extra_execution_platforms=@buildbuddy_toolchain//:platform
 build:ci --host_platform=@buildbuddy_toolchain//:platform
 build:ci --platforms=@buildbuddy_toolchain//:platform
 build:ci --crosstool_top=@buildbuddy_toolchain//:toolchain
-build:ci --extra_toolchains=@buildbuddy_toolchain//:cc_toolchain
+# Register the architecture-constrained C/C++ toolchains explicitly. The raw
+# cc_toolchain alias is unconstrained and can make an aarch64 target resolve on
+# the default amd64 execution platform, producing a foreign-architecture
+# archive. Both constrained registrations use the executor's native GCC.
+build:ci --extra_toolchains=@buildbuddy_toolchain//:ubuntu_cc_toolchain
+build:ci --extra_toolchains=@buildbuddy_toolchain//:ubuntu_cc_toolchain_arm64

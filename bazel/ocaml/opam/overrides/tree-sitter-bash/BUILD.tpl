@@ -6,8 +6,8 @@
 # runtime (includes = ["lib"] resolves the repo-local tree_sitter/parser.h
 # copy, kept deliberately by upstream); the OCaml binding stub (bindings.c,
 # includes only tree_sitter/api.h) rides c_srcs with the archives via
-# cc_deps. cc_library means x86_64-only in CI (the established no-arm64
-# pattern); consumers tag accordingly.
+# cc_deps. CI compiles the library with a constrained native C/C++ toolchain
+# on both x86_64 and aarch64.
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@homelab//bazel/ocaml:defs.bzl", "ocaml_library")
 

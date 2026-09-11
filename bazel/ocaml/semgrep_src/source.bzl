@@ -133,7 +133,7 @@ SEMGREP_SRC_DIRS = [
     # then ojsonnet (names parser_jsonnet.tree_sitter). All pps lines are
     # ppx_deriving.show (+ ojsonnet's ppx_profiling/ppx_deriving.ord/commons.ppx),
     # all locked; `unix` is stdlib (the lib_map resolves it). The grammar chain
-    # rides ladder_builds_cc (no-arm64) like parser_go_tree_sitter.
+    # rides ladder_builds_cc like parser_go_tree_sitter on both CI architectures.
     "languages/jsonnet/ast",
     "languages/jsonnet/tree-sitter",
     "languages/jsonnet/generic",

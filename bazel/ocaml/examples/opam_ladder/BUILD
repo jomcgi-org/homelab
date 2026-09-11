@@ -123,7 +123,7 @@ build_test(
         "@ocaml_eio//:eio_utils",
         "@ocaml_eio//:eio_unix",
         # Phase 8 wave D: the tree-sitter runtime binding chain (the bash
-        # grammar itself is exercised by examples/treesitter_bash, no-arm64).
+        # grammar itself is exercised by examples/treesitter_bash).
         "@ocaml_tsort//:tsort",
         "@ocaml_tree_sitter_core//:tree_sitter_gen",
         # Phase 8 telemetry closure: the semgrep opentelemetry fork (git
@@ -163,12 +163,10 @@ build_test(
 )
 
 # The cc_deps half of the ladder: everything here reaches a vendored C
-# library (commons links pcre + pcre2), and Bazel's C++ toolchain in CI
-# targets x86_64 only -- the established no-arm64 pattern (the OCaml driver
-# itself is per-arch native; only cc_library is restricted).
+# library (commons links pcre + pcre2), so this proves the native C/C++
+# toolchain and the OCaml driver compose on both CI architectures.
 build_test(
     name = "ladder_builds_cc",
-    tags = ["no-arm64"],
     targets = [
         "@ocaml_pcre//:pcre",
         # Phase 8 wave D: libs/commons and libs/glob from the pinned tree
@@ -249,9 +247,8 @@ build_test(
         # Phase 9 wave 7: the jsonnet source-to-generic chain + libs/ojsonnet.
         # All reach commons' pcre, and parser_jsonnet_tree_sitter links the
         # jsonnet grammar cc_library, so they live in the cc bucket exactly
-        # like parser_go_tree_sitter above (ladder_builds_cc is already
-        # no-arm64; the grammar has no aarch64 C++ toolchain in CI). The
-        # grammar repo itself is exercised end to end by
+        # like parser_go_tree_sitter above. The grammar repo itself is
+        # exercised end to end by
         # examples/treesitter_jsonnet, mirroring how go's grammar is only
         # reached via examples/treesitter_go (not added to a ladder directly).
         "@semgrep_src//:parser_jsonnet_ast",

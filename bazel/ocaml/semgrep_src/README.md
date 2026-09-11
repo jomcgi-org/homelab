@@ -188,10 +188,9 @@ external `lib/scanner.c` (+ the repo-local `lib/tree_sitter/*.h`, `includes =
 and a `tree_sitter_jsonnet` ocaml_library (`wrapped`) over the generated CST /
 Parse / Boilerplate with `lib/bindings.c` in c_srcs and the grammar +
 tree-sitter-c in cc_deps, over `@ocaml_tree_sitter_core//:tree_sitter_run`.
-The cc_library makes the whole chain x86_64-only in CI (the established
-no-arm64 pattern, the C++ toolchain targets x86_64 only): ladder_builds_cc is
-already no-arm64, and examples/treesitter_jsonnet tags `no-arm64` like
-examples/treesitter_go.
+The constrained native C/C++ toolchain builds this whole chain on both CI
+architectures. `ladder_builds_cc`, `examples/treesitter_jsonnet`, and
+`examples/treesitter_go` exercise it from their matching executor pools.
 
 ## src/configuring + internal rewriters dispatch (the atdgen-rule slice)
 

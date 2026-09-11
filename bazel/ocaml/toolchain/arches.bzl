@@ -23,7 +23,9 @@ it early gives probes and future toolchains stable labels to reference.
 
 # Fields:
 #   name    : the `platform` target name under //bazel/ocaml/platforms
-#   os, cpu : @platforms constraint labels
+#   os, cpu : @platforms constraint labels. OCaml's Linux execution platforms
+#             also declare GCC compatibility so the constrained BuildBuddy
+#             C/C++ toolchain can compile cc_deps on the same native executor.
 #   bb_arch : the BuildBuddy `Arch` execution property for pool routing. Only
 #             emitted on the platform once `enabled` is flipped, which in turn
 #             requires the pool verified via the executor probe (ADR 006), so
@@ -64,7 +66,11 @@ def declare_ocaml_platforms():
     for arch in OCAML_ARCHES:
         native.platform(
             name = arch.name,
-            constraint_values = [arch.os, arch.cpu],
+            constraint_values = [
+                arch.os,
+                arch.cpu,
+                "@bazel_tools//tools/cpp:gcc",
+            ],
             exec_properties = {"Arch": arch.bb_arch} if arch.enabled else {},
             visibility = ["//visibility:public"],
         )
