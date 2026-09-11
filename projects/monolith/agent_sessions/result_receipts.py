@@ -242,6 +242,35 @@ def _newer_work_exists(db: Session, receipt: dict) -> bool:
     )
 
 
+def _held_dispatch(db: Session, receipt: dict, now: datetime) -> bool:
+    """Whether a live response-loss hold names this exact receipt.
+
+    An executor that loses its synchronous response leaves the claim in place
+    and stops refreshing its stamp, so the thirty-second liveness window is not
+    the only thing that can authorize a read. The hold is a durable, bounded
+    record written by that same executor for that exact dispatch, and it names
+    the one receipt it is waiting for, so it authorizes reading that receipt
+    and no other. Every other ownership condition above still applies.
+    """
+    from agent_sessions import store
+
+    pending = db.exec(
+        select(PendingMessage)
+        .where(PendingMessage.session_id == receipt["session_id"])
+        .order_by(PendingMessage.seq)
+    ).first()
+    if pending is None:
+        return False
+    turn = db.exec(
+        select(AgentTurn).where(
+            AgentTurn.session_id == receipt["session_id"],
+            AgentTurn.seq == receipt["seq"],
+        )
+    ).one_or_none()
+    hold = store._response_lost_hold(turn, pending, now)
+    return hold is not None and hold["receipt_id"] == receipt["id"]
+
+
 def _active_owner(db: Session, receipt: dict) -> AgentSession:
     from agent_sessions import store
 
@@ -271,7 +300,10 @@ def _active_owner(db: Session, receipt: dict) -> AgentSession:
         or pending.claimed_by_replica != receipt["claim_owner"]
         or pending.dispatch_count != receipt["dispatch_count"]
         or pending.claimed_at is None
-        or not 0 <= (now - _aware(pending.claimed_at)).total_seconds() < 30
+        or not (
+            0 <= (now - _aware(pending.claimed_at)).total_seconds() < 30
+            or _held_dispatch(db, receipt, now)
+        )
         or store.has_unknown_outcome(db, receipt["session_id"])
         or _newer_work_exists(db, receipt)
     ):
@@ -332,6 +364,11 @@ def _result(db: Session, receipt: dict) -> dict:
     }
     provenance["receipt_id"] = receipt["id"]
     provenance["received_at"] = _aware(receipt["received_at"]).isoformat()
+    if _held_dispatch(db, receipt, _now()):
+        # Server-owned provenance, so a recovered turn reads as recovered
+        # rather than as an ordinary synchronous result. Both the poll and the
+        # writer derive it here, so they cannot disagree about one receipt.
+        provenance["response_lost_recovery"] = True
     return {
         "result_body": body,
         "result_sha256": receipt["result_sha256"],
@@ -377,6 +414,34 @@ def read_active_result(
         return _result(db, receipt)
 
 
+def read_held_result(hold: dict) -> dict | None:
+    """Read the committed result of a dispatch whose response was lost.
+
+    Identical identity and ownership checks to the live observer's poll; the
+    live claim stamp is simply replaced by the durable hold. A missing or
+    not-yet-captured body returns None so the caller keeps waiting inside its
+    bound, while changed ownership is an explicit refusal.
+    """
+    with Session(get_engine()) as db:
+        _bound_observer_transaction(db)
+        receipt = _receipt_metadata(db, hold["receipt_id"])
+        if receipt is None:
+            return None
+        _check_identity(
+            receipt,
+            hold["session_id"],
+            hold["claim_owner"],
+            hold["dispatch_count"],
+            hold["guest_id"],
+        )
+        if type(hold["seq"]) is not int or receipt["seq"] != hold["seq"]:
+            raise ReceiptRejected(409, "receipt_identity_changed")
+        _active_owner(db, receipt)
+        if receipt["result_sha256"] is None:
+            return None
+        return _result(db, receipt)
+
+
 def validate_active_result(
     db: Session,
     *,
@@ -410,7 +475,14 @@ def validate_active_result(
         raise ReceiptRejected(409, "receipt_result_changed")
     agent = _active_owner(db, receipt)
     result = _result(db, receipt)
-    if receipt["response_observed_at"] is None:
+    if receipt["response_observed_at"] is None and not _held_dispatch(
+        db, receipt, _now()
+    ):
+        # The fence exists so a follow-up dispatch waits for the original POST's
+        # own response. A hold means that POST's observer is already gone and no
+        # one is left to clear the fence, so setting one here would strand the
+        # session and its guest forever. The hold itself is the fence, and it is
+        # consumed by this same transaction deleting the pending row.
         agent.result_receipt_fence_id = receipt_id
         db.add(agent)
     return result

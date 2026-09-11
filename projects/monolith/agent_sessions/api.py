@@ -35,6 +35,27 @@ def lock_capacity_pool(session) -> None:
     _admission.lock_pool(session)
 
 
+def read_response_lost_hold(session_id: int):
+    """The live response-loss hold on one session, or None."""
+    from agent_sessions import store
+
+    return store.read_response_lost_hold_sync(session_id)
+
+
+def adopt_response_lost_result(session_id: int, artifact_path: str | None = None):
+    """Finish a held turn from its committed receipt, without re-executing it."""
+    from agent_sessions import store
+
+    return store.adopt_response_lost_result(session_id, artifact_path)
+
+
+def settle_response_lost_hold(session_id: int, reason: str) -> bool:
+    """End an unrecoverable hold as the ordinary unknown outcome it is."""
+    from agent_sessions import store
+
+    return store.settle_response_lost_hold(session_id, reason)
+
+
 def __getattr__(name: str):
     if name not in _EXECUTION_EXPORTS:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
