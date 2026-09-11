@@ -49,6 +49,7 @@ _POLICY_KEYS = {
     "task_timeout_seconds",
     "model_pools",
     "max_review_rounds",
+    "intake",
 }
 _OPTIONAL_POLICY_KEYS = {
     "reviewer_model",
@@ -58,11 +59,25 @@ _OPTIONAL_POLICY_KEYS = {
     "max_task_turns_hard",
     "max_turns_per_task",
     "max_parallel_nodes",
+    "intake",
 }
 # Bounded review, correct and re-review rounds the engine runs on its own before
 # it asks the planner. Absent from a live policy means this default, so the
 # server gains the bound without an operator re-post.
 DEFAULT_MAX_REVIEW_ROUNDS = 2
+# Autonomous intake is off until an operator turns it on. A policy that
+# predates the block reads these defaults, so the lane gains the shape
+# without gaining the behaviour.
+DEFAULT_INTAKE = {
+    "enabled": False,
+    "labels": ["agent-ready"],
+    "exclude_labels": ["needs-human", "wontfix", "security-finding"],
+    "max_per_day": 5,
+    "cooldown_hours": 24,
+    "refine_enabled": False,
+}
+DELIVER = "deliver"
+REFINE = "refine"
 # Nodes the reconciler may hold in flight for one task at once. One preserves
 # the serial lane, so a policy written before fan-out existed never fans out.
 DEFAULT_MAX_PARALLEL_NODES = 1
@@ -188,10 +203,52 @@ def validate_policy(policy: dict) -> dict:
         raise ValueError("worker model is not allowed")
     if "model_pools" in policy:
         result["model_pools"] = _validate_model_pools(policy["model_pools"], result)
+    result["intake"] = _validate_intake(policy.get("intake", {}))
     if result["turn_timeout_seconds"] > result["task_timeout_seconds"]:
         raise ValueError("turn timeout exceeds task timeout")
     result["base_branch"] = _text(policy["base_branch"], "base_branch", 256)
     return result
+
+
+def _validate_intake(value: object) -> dict:
+    if not isinstance(value, dict) or not set(value) <= set(DEFAULT_INTAKE):
+        raise ValueError("invalid intake")
+    result = {}
+    for key in ("enabled", "refine_enabled"):
+        setting = value.get(key, DEFAULT_INTAKE[key])
+        if type(setting) is not bool:
+            raise ValueError(f"invalid {key}")
+        result[key] = setting
+    for key in ("labels", "exclude_labels"):
+        labels = value.get(key, DEFAULT_INTAKE[key])
+        if not isinstance(labels, list) or len(labels) > 32:
+            raise ValueError(f"invalid {key}")
+        result[key] = sorted({_text(label, "label", 128) for label in labels})
+    result["max_per_day"] = _integer(
+        value.get("max_per_day", DEFAULT_INTAKE["max_per_day"]),
+        "max_per_day",
+        1,
+        50,
+    )
+    result["cooldown_hours"] = _integer(
+        value.get("cooldown_hours", DEFAULT_INTAKE["cooldown_hours"]),
+        "cooldown_hours",
+        1,
+        168,
+    )
+    if set(result["labels"]) & set(result["exclude_labels"]):
+        raise ValueError("intake labels overlap exclude_labels")
+    return result
+
+
+def intake_policy(policy: dict) -> dict:
+    """The intake block, defaulted, so a policy stored before it reads as off."""
+    return _validate_intake(policy.get("intake") or {})
+
+
+def receipt_kind(row) -> str:
+    """A receipt written before refine tasks existed is a delivery."""
+    return row.kind or DELIVER
 
 
 def _validate_model_pools(pools: object, policy: dict) -> dict:
@@ -595,6 +652,7 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
             "cancellation_requested",
         )
     }
+    result["kind"] = receipt_kind(row)
     result.update(
         policy=json.loads(row.policy_json) if row.policy_json else None,
         starts=[_start_dict(s) for s in starts],
@@ -686,6 +744,50 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
     return result
 
 
+def intake_state(policy: dict, *, session: Session | None = None) -> dict:
+    """What the board shows: the block, the last two audits, today's usage.
+
+    This lives beside status rather than beside the intake loop because the
+    board reads it, and the board must not link the reconciler to render a
+    policy.
+    """
+    block = intake_policy(policy)
+    cutoff = _now() - timedelta(hours=24)
+    with _read_session(session) as db:
+        admitted_today = len(
+            db.exec(
+                select(FactoryAudit.id).where(
+                    FactoryAudit.action == "intake_admitted",
+                    FactoryAudit.created_at >= cutoff,
+                )
+            ).all()
+        )
+
+        def latest(action: str) -> dict | None:
+            row = db.exec(
+                select(FactoryAudit)
+                .where(FactoryAudit.action == action)
+                .order_by(FactoryAudit.id.desc())
+            ).first()
+            if row is None:
+                return None
+            created = row.created_at
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            return {
+                "created_at": created.isoformat(),
+                "detail": json.loads(row.detail_json),
+            }
+
+        return {
+            "policy": block,
+            "admitted_today": admitted_today,
+            "max_per_day": block["max_per_day"],
+            "last_admitted": latest("intake_admitted"),
+            "last_idle": latest("intake_idle"),
+        }
+
+
 def status(*, session: Session | None = None) -> dict:
     with _read_session(session) as db:
         control = db.exec(
@@ -702,10 +804,12 @@ def status(*, session: Session | None = None) -> dict:
             }
         rows = db.exec(select(FactoryReceipt).order_by(FactoryReceipt.id)).all()
         receipts = [_snapshot(db, r) for r in rows]
+        policy = json.loads(control.policy_json)
         return {
             "ok": True,
             "state": control.state,
-            "policy": json.loads(control.policy_json),
+            "policy": policy,
+            "intake": intake_state(policy, session=db),
             "admitted_count": control.admitted_count,
             "version": control.version,
             "actor": control.actor,
