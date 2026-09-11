@@ -358,7 +358,7 @@ func TestDiscoverOverlaysUsingChart_InvalidYaml(t *testing.T) {
 	}
 }
 
-func TestGenerateLiveDiffRule(t *testing.T) {
+func TestGenerateArgoCDAppRuleEnablesLiveDiff(t *testing.T) {
 	app := &ArgoCDApplication{
 		Metadata: struct {
 			Name      string `yaml:"name"`
@@ -395,30 +395,40 @@ func TestGenerateLiveDiffRule(t *testing.T) {
 		t.Fatalf("Failed to write values.yaml: %v", err)
 	}
 
-	rule := generateLiveDiffRule(app, "overlays/prod/test", tmpDir)
+	cfg := &argoCDConfig{
+		generateManifests: true,
+		generateDiff:      true,
+	}
+	rule := generateArgoCDAppRule(app, "overlays/prod/test", tmpDir, cfg)
 
 	if rule == nil {
-		t.Fatal("generateLiveDiffRule returned nil")
+		t.Fatal("generateArgoCDAppRule returned nil")
 	}
 
-	if rule.Kind() != "sh_binary" {
-		t.Errorf("rule kind = %q, want %q", rule.Kind(), "sh_binary")
+	if rule.Kind() != "argocd_app" {
+		t.Errorf("rule kind = %q, want %q", rule.Kind(), "argocd_app")
 	}
 
-	if rule.Name() != "diff" {
-		t.Errorf("rule name = %q, want %q", rule.Name(), "diff")
+	if rule.Name() != "test-app" {
+		t.Errorf("rule name = %q, want %q", rule.Name(), "test-app")
 	}
 
-	// Check env attribute
-	env := rule.Attr("env")
-	if env == nil {
-		t.Error("env attribute is nil")
+	if got := rule.Attr("generate_diff"); got != true {
+		t.Errorf("generate_diff = %v, want true", got)
 	}
 
-	// Check data attribute contains expected files
-	data := rule.Attr("data")
-	if data == nil {
-		t.Error("data attribute is nil")
+	values, ok := rule.Attr("values_files").([]string)
+	if !ok {
+		t.Fatalf("values_files has type %T, want []string", rule.Attr("values_files"))
+	}
+	wantValues := []string{"//charts/test:values.yaml", "values.yaml"}
+	if len(values) != len(wantValues) {
+		t.Fatalf("values_files = %v, want %v", values, wantValues)
+	}
+	for i := range wantValues {
+		if values[i] != wantValues[i] {
+			t.Errorf("values_files[%d] = %q, want %q", i, values[i], wantValues[i])
+		}
 	}
 }
 

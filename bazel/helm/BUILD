@@ -5,6 +5,7 @@ load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 exports_files([
+    "argocd-live-diff.sh",
     "chart-version.sh",
     "check-missed-bump.sh",
     "helm-assert-annotations.sh",
@@ -13,6 +14,12 @@ exports_files([
     "render-manifests.sh",
     "write-back-versions.sh",
 ])
+
+sh_test(
+    name = "argocd_live_diff_test",
+    srcs = ["argocd-live-diff_test.sh"],
+    data = [":argocd-live-diff.sh"],
+)
 
 sh_test(
     name = "check_missed_bump_test",
