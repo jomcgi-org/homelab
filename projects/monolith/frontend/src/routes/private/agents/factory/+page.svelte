@@ -45,6 +45,16 @@
   const policy = $derived(board?.policy ?? null);
   const intake = $derived(board?.intake ?? null);
   const lanes = $derived(board?.lanes ?? null);
+  const guard = $derived(board?.quota_guard ?? null);
+  // Only worth a word when it is holding delivery back or has no reading at
+  // all; an open guard is the ordinary state and says nothing.
+  const guardLine = $derived(
+    guard?.paused
+      ? `delivery held: claude 7d at ${Math.round(guard.used_percent ?? 0)}% of ${guard.pause_percent}%`
+      : guard?.state === "unknown"
+        ? "quota guard: no reading"
+        : null,
+  );
   // "1/1 delivery · 0/2 advisory". A lane the policy shut is still shown, so
   // an operator reads a quiet advisory lane as closed rather than as idle.
   const laneLine = $derived(
@@ -188,6 +198,9 @@
           )} and up to {policy.max_task_turns_hard} starts per task · {policy.max_parallel_nodes ??
             1} in parallel · policy v{board.version}</span
         >
+      {/if}
+      {#if guardLine}
+        <span class="guard">{guardLine}</span>
       {/if}
       {#if intake?.policy?.enabled && intakeSeen}
         <span
@@ -595,6 +608,9 @@
     font-size: 0.72rem;
   }
   .policy-line .warn {
+    color: var(--warn);
+  }
+  .policy-line .guard {
     color: var(--warn);
   }
   .talk {

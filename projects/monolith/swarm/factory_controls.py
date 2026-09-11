@@ -51,6 +51,7 @@ _POLICY_KEYS = {
     "model_pools",
     "max_review_rounds",
     "intake",
+    "quota_guard",
 }
 _OPTIONAL_POLICY_KEYS = {
     "reviewer_model",
@@ -61,6 +62,7 @@ _OPTIONAL_POLICY_KEYS = {
     "max_turns_per_task",
     "max_parallel_nodes",
     "intake",
+    "quota_guard",
 }
 # Bounded review, correct and re-review rounds the engine runs on its own before
 # it asks the planner. Absent from a live policy means this default, so the
@@ -82,6 +84,25 @@ DEFAULT_INTAKE = {
     "close_enabled": False,
     "max_closes_per_day": 3,
 }
+# The shared Claude 7-day window, as a percentage used. Delivery work is what
+# spends it: every delivery task ends in an Opus review. Pausing at 85 and
+# resuming at 75 leaves a margin an operator can still work inside rather than
+# discovering the wall at 100, and the gap between the two is what stops the
+# lane flapping across one threshold. A policy that predates this block reads
+# these, so the guard arrives without an operator re-post.
+DEFAULT_QUOTA_GUARD = {
+    "claude_7d_pause_percent": 85,
+    "claude_7d_resume_percent": 75,
+}
+# An observation older than this says nothing about now. Unknown counts as not
+# paused: refusing to deliver because a broker read failed would turn one
+# outage into two.
+QUOTA_GUARD_MAX_AGE_SECONDS = 3600
+QUOTA_GUARD_ACTIONS = (
+    "quota_guard_paused",
+    "quota_guard_resumed",
+    "quota_guard_unknown",
+)
 # ADR agents/038 decision 5. A class carries a verification mode and a floor on
 # the implementer tier, and judgment work never routes to the cheap lane.
 # DEFAULT_TASK_CLASS is re-exported from factory_models, which owns it because
@@ -237,6 +258,7 @@ def validate_policy(policy: dict) -> dict:
     if "model_pools" in policy:
         result["model_pools"] = _validate_model_pools(policy["model_pools"], result)
     result["intake"] = _validate_intake(policy.get("intake", {}))
+    result["quota_guard"] = _validate_quota_guard(policy.get("quota_guard", {}))
     if result["turn_timeout_seconds"] > result["task_timeout_seconds"]:
         raise ValueError("turn timeout exceeds task timeout")
     result["base_branch"] = _text(policy["base_branch"], "base_branch", 256)
@@ -282,6 +304,76 @@ def _validate_intake(value: object) -> dict:
     }:
         raise ValueError("intake labels overlap exclude_labels")
     return result
+
+
+def _validate_quota_guard(value: object) -> dict:
+    if not isinstance(value, dict) or not set(value) <= set(DEFAULT_QUOTA_GUARD):
+        raise ValueError("invalid quota_guard")
+    result = {
+        key: _integer(value.get(key, DEFAULT_QUOTA_GUARD[key]), key, 1, 100)
+        for key in DEFAULT_QUOTA_GUARD
+    }
+    # Equal thresholds are a flap, not a guard: the lane would pause and resume
+    # on alternate readings of the same number.
+    if result["claude_7d_resume_percent"] >= result["claude_7d_pause_percent"]:
+        raise ValueError("quota_guard resume percent must be below pause percent")
+    return result
+
+
+def quota_guard_policy(policy: dict) -> dict:
+    """The guard block, defaulted, so a policy stored before it still guards."""
+    return _validate_quota_guard(policy.get("quota_guard") or {})
+
+
+def quota_guard_state(*, session: Session | None = None) -> str:
+    """The durable guard state: the later of the last pause and the last resume.
+
+    Read from the audit ledger rather than held in memory, so a replica that
+    restarts mid-pause does not resume the lane by forgetting.
+    """
+    with _read_session(session) as db:
+        row = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.action.in_(("quota_guard_paused", "quota_guard_resumed"))
+            )
+            .order_by(FactoryAudit.id.desc())
+        ).first()
+    return (
+        "paused" if row is not None and row.action == "quota_guard_paused" else "open"
+    )
+
+
+def quota_guard_view(policy: dict, *, session: Session | None = None) -> dict:
+    """What the board shows about the guard, without touching the broker.
+
+    The reconciler observes quota and writes the verdict to the ledger; this
+    reads the ledger. A board render must not be able to make the lane wait on
+    a token broker.
+    """
+    block = quota_guard_policy(policy)
+    with _read_session(session) as db:
+        state = quota_guard_state(session=db)
+        row = db.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.action.in_(QUOTA_GUARD_ACTIONS))
+            .order_by(FactoryAudit.id.desc())
+        ).first()
+    detail = json.loads(row.detail_json) if row is not None else {}
+    created = None
+    if row is not None:
+        created = row.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+    return {
+        "paused": state == "paused",
+        "state": state,
+        "pause_percent": block["claude_7d_pause_percent"],
+        "resume_percent": block["claude_7d_resume_percent"],
+        "used_percent": detail.get("used_percent"),
+        "last_action": row.action if row is not None else None,
+        "last_seen_at": created.isoformat() if created is not None else None,
+    }
 
 
 def intake_policy(policy: dict) -> dict:
@@ -951,6 +1043,7 @@ def status(*, session: Session | None = None) -> dict:
             "policy": policy,
             "intake": intake_state(policy, session=db),
             "lanes": lane_usage(policy, receipts),
+            "quota_guard": quota_guard_view(policy, session=db),
             "admitted_count": control.admitted_count,
             "version": control.version,
             "actor": control.actor,
