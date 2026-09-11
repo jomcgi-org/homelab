@@ -102,7 +102,7 @@ def policy():
         "issue_numbers": [7],
         "generation": 0,
         "max_tasks": 1,
-        "max_turns_per_task": 30,
+        "max_turns_per_task": 12,
         "task_budget_usd": 30.0,
         "turn_budget_usd": 2.0,
         "allowed_models": ["opus", "luna"],
@@ -715,7 +715,6 @@ def test_parallel_halves_fan_out_and_are_integrated_before_review(
     db, policy, monkeypatch
 ):
     policy["max_parallel_nodes"] = 2
-    policy["max_task_turns_hard"] = 60
     task_id = admit(policy)
     dbos = PlannedInParallel()
     delivery_api(monkeypatch, task_id)

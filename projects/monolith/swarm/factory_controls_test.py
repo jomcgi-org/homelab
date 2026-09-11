@@ -671,13 +671,51 @@ def test_a_three_node_plan_sizes_its_own_task(policy):
     allowance = controls.allowance_from_graph(
         plan, [], policy, review_rounds_remaining=2, graph_revision=4
     )
-    # Three work nodes of two attempts each, plus two prospective review rounds
-    # of a correction and a re-review at the same two attempts, which is what
-    # the engine will really insert. The planner node costs money but never a
-    # work turn.
-    assert allowance["turns"] == 3 * 2 + 2 * 2 * policy["max_attempts"]
-    assert allowance["usd"] == 4 * 2.0 + 2 * 2 * policy["turn_budget_usd"]
+    # Three work nodes of two attempts each, plus the next review round only, a
+    # correction and a re-review at one attempt each, which is what the engine
+    # will really insert. The round behind it is not reserved until this one is
+    # spent. The planner node costs money but never a work turn.
+    assert allowance["turns"] == 3 * 2 + 2
+    assert allowance["review_rounds_reserved"] == 1
+    assert allowance["usd"] == 4 * 2.0 + 2 * policy["turn_budget_usd"]
     assert allowance["graph_revision"] == 4 and allowance["derived"] is True
+
+
+def test_a_nine_turn_envelope_holds_a_three_node_plan_and_its_next_round(policy):
+    policy = controls.validate_policy(
+        {**policy, "max_turns_per_task": 9, "task_budget_usd": 30.0}
+    )
+    plan = [
+        graph_node("conductor_1", max_cost_usd=2.0),
+        graph_node("investigate_scope"),
+        graph_node("implement_fix", deps=["investigate_scope"]),
+        graph_node("review_check", deps=["implement_fix"]),
+    ]
+    allowance = controls.allowance_from_graph(
+        plan, [], policy, review_rounds_remaining=2, graph_revision=4
+    )
+    # The defect this arithmetic fixes: eight turns of eager reserve on top of
+    # six of plan needed fourteen, so the envelope refused the plan that sized
+    # it. Three nodes and the next round fit inside nine.
+    assert allowance["turns"] == 8
+    assert controls.envelope_excess(allowance, policy) is None
+
+
+def test_only_the_next_review_round_is_ever_reserved(policy):
+    plan = [
+        graph_node("implement_fix"),
+        graph_node("review_fix", deps=["implement_fix"]),
+    ]
+    for remaining in (1, 2, 5):
+        allowance = controls.allowance_from_graph(
+            plan, [], policy, review_rounds_remaining=remaining, graph_revision=1
+        )
+        assert allowance["review_rounds_reserved"] == 1
+        assert allowance["turns"] == 2 * 2 + 2
+    spent = controls.allowance_from_graph(
+        plan, [], policy, review_rounds_remaining=0, graph_revision=1
+    )
+    assert spent["review_rounds_reserved"] == 0 and spent["turns"] == 2 * 2
 
 
 def test_a_plan_with_no_review_node_reserves_no_review_round(policy):
@@ -706,7 +744,7 @@ def test_a_fan_in_is_reserved_as_the_node_the_engine_will_insert(policy):
     assert allowance["usd"] == 2 * 2.0 + policy["turn_budget_usd"]
 
 
-def test_a_review_round_is_turn_neutral_against_the_allowance(policy):
+def test_a_review_round_grows_the_allowance_by_exactly_one_round(policy):
     plan = [
         graph_node("implement_fix"),
         graph_node("review_fix", deps=["implement_fix"]),
@@ -717,17 +755,34 @@ def test_a_review_round_is_turn_neutral_against_the_allowance(policy):
     opened = controls.allowance_from_graph(
         plan
         + [
-            graph_node("correct_1", deps=["review_fix"]),
-            graph_node("review_1", deps=["correct_1"]),
+            graph_node("correct_1", deps=["review_fix"], max_attempts=1),
+            graph_node("review_1", deps=["correct_1"], max_attempts=1),
         ],
         [],
         policy,
         review_rounds_remaining=1,
         graph_revision=4,
     )
-    # The reserve is what the round will really cost, a correction and a
-    # re-review at max_attempts each, so opening one moves nothing.
-    assert opened["turns"] == before["turns"]
+    # The reserve became two real nodes and the round behind it took its place,
+    # so the task grew by one round rather than by every round at once.
+    assert opened["turns"] == before["turns"] + 2
+    last = controls.allowance_from_graph(
+        plan
+        + [
+            graph_node("correct_1", deps=["review_fix"], max_attempts=1),
+            graph_node("review_1", deps=["correct_1"], max_attempts=1),
+            graph_node("correct_2", deps=["review_1"], max_attempts=1),
+            graph_node("review_2", deps=["correct_2"], max_attempts=1),
+        ],
+        [],
+        policy,
+        review_rounds_remaining=0,
+        graph_revision=6,
+    )
+    # The last round's two nodes take the place of the two turns reserved for
+    # it and nothing is reserved behind it, so opening it moves nothing. One
+    # round of headroom is what the task ever carries unspent.
+    assert last["turns"] == opened["turns"]
 
 
 def test_a_discarded_node_never_refunds_a_consumed_turn(policy):
@@ -775,6 +830,20 @@ def test_the_envelope_names_both_excesses(policy):
         "turns": {"needed": 9, "allowed": 3},
         "usd": {"needed": 11.0, "allowed": 5.0},
     }
+
+
+def test_a_refusal_names_the_turns_that_would_still_fit(policy):
+    policy = controls.validate_policy(policy)
+    excess = controls.envelope_excess(
+        {"turns": 9, "usd": 1.0}, policy, accounted={"turns": 1, "usd": 1.0}
+    )
+    # Three allowed against one already accounted leaves two the planner can
+    # still size an edit against.
+    assert excess["spare_turns"] == 2
+    at_the_wall = controls.envelope_excess(
+        {"turns": 9, "usd": 1.0}, policy, accounted={"turns": 4, "usd": 1.0}
+    )
+    assert at_the_wall["spare_turns"] == 0
 
 
 def test_an_old_policy_reads_its_fixed_cap_as_the_envelope(policy):
