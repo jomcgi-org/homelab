@@ -1264,3 +1264,24 @@ def test_status_carries_the_review_routing_view(db, policy):
     assert routing["action"] == "reviewer_fallback" and routing["model"] == "astra"
     assert routing["window_high"] is True and routing["used_percent"] == 91.0
     assert routing["last_action"] == "reviewer_fallback"
+
+
+def test_delivery_evidence_records_the_approving_reviewer(db, policy):
+    task = admitted(policy)
+    evidence = {
+        "pr_url": "https://github.com/owner/repo/pull/3",
+        "head_sha": "a" * 40,
+        "review_session_id": 11,
+        "reviewer_model": "astra",
+        "state": "ready_for_review",
+    }
+    assert controls.finish_task(task, "succeeded", "scheduler", evidence=evidence)["ok"]
+    assert controls.task_snapshot(task)["evidence"]["reviewer_model"] == "astra"
+
+
+def test_unsupported_evidence_keys_are_still_refused(db, policy):
+    task = admitted(policy)
+    with pytest.raises(ValueError, match="unsupported task evidence"):
+        controls.finish_task(
+            task, "succeeded", "scheduler", evidence={"merged_by": "nobody"}
+        )

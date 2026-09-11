@@ -6467,7 +6467,7 @@ def test_a_refused_fan_in_never_hands_out_branches(feedback_db, monkeypatch):
     monkeypatch.setattr(
         conductor,
         "reserve_node",
-        lambda *_a: pytest.fail("a wave with no fan-in must not dispatch"),
+        lambda *_a, **_k: pytest.fail("a wave with no fan-in must not dispatch"),
     )
     conductor.reconcile_task(task["id"], policy, object())
     nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
@@ -6812,7 +6812,7 @@ def test_a_stale_allowance_is_re_derived_on_the_next_tick(feedback_db, monkeypat
         db.add(row)
         db.commit()
     monkeypatch.setattr(conductor, "github_get", task_ref(task["id"]))
-    monkeypatch.setattr(conductor, "reserve_node", lambda *_a: True)
+    monkeypatch.setattr(conductor, "reserve_node", lambda *_a, **_k: True)
     conductor.reconcile_task(task["id"], policy, object())
     assert controls.task_snapshot(task["id"])["allowance"] == derived
 
@@ -7045,7 +7045,9 @@ def _review_node(node_key, model="opus"):
     }
 
 
-def routed_dispatch(monkeypatch, node_keys, *, reviewer, models=None):
+def routed_dispatch(
+    monkeypatch, node_keys, *, reviewer, models=None, task_class="bug-fix"
+):
     """Drive _dispatch_ready over a fixed ready set and record what was pinned."""
     import swarm.factory_quota_guard as quota_guard
     import swarm.factory_refine as refine
@@ -7059,7 +7061,7 @@ def routed_dispatch(monkeypatch, node_keys, *, reviewer, models=None):
     monkeypatch.setattr(conductor, "fan_out_wave", lambda *_a: [])
     monkeypatch.setattr(conductor, "_free_background_slots", lambda: len(nodes))
     monkeypatch.setattr(conductor, "_schema", lambda _key: {})
-    monkeypatch.setattr(refine, "task_class_for", lambda _task_id: "bug-fix")
+    monkeypatch.setattr(refine, "task_class_for", lambda _task_id: task_class)
     monkeypatch.setattr(
         quota_guard,
         "reviewer_for",
@@ -7129,10 +7131,9 @@ def test_a_reviewer_the_policy_does_not_allow_waits(monkeypatch):
 
 
 def test_a_waiting_judgment_review_says_so_in_its_audit(monkeypatch):
-    import swarm.factory_refine as refine
-
-    monkeypatch.setattr(refine, "task_class_for", lambda _task_id: "judgment-analysis")
-    result = routed_dispatch(monkeypatch, ["review_1"], reviewer=None)
+    result = routed_dispatch(
+        monkeypatch, ["review_1"], reviewer=None, task_class="judgment-analysis"
+    )
     assert result.started == []
     action, detail = result.audits[0]
     assert action == "review_waiting" and detail["judgment"] is True
