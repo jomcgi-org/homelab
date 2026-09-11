@@ -44,8 +44,8 @@ lifetime to expire before declaring a permission reduction complete.
 
 Register an organization-owned App under `jomcgi-org`, with the display name
 Bosun (use an organization-qualified name if GitHub reports it unavailable).
-The name and slug have not been reserved. The required check will bind to the
-numeric App ID, not its display name.
+The organization now has `jomcgi.dev Bosun` (`jomcgi-dev-bosun`), recorded below.
+The required check will bind to the numeric App ID, not its display name.
 
 [Open the prefilled registration form](https://github.com/organizations/jomcgi-org/settings/apps/new?name=Bosun&description=Homelab%20agent%20factory&url=https%3A%2F%2Fgithub.com%2Fjomcgi-org%2Fhomelab&public=false&webhook_active=false&request_oauth_on_install=false&contents=write&issues=write&pull_requests=write&checks=write&statuses=read).
 Review the form before submitting; GitHub can ignore unsupported URL parameters.
@@ -115,13 +115,52 @@ SPIFFE identity still needs explicit authorization for the requested grant.
 
 Unlike OAuth grants, GitHub grants need no `embervm-oauth-grant-*` Secret or
 Argo ignoreDifferences entry. Never add them to `tokenBroker.grants` or egress
-`brokerGrants` pools. The current egress client does not consume this new route.
+`brokerGrants` pools. The egress client does not consume this GitHub route; its SPIFFE transport is
+for the existing OAuth and quota endpoints.
 
 On Cilium clusters, `clientPodSelectors` permits trusted callers on the TLS port
 and GitHub API egress is opened on 443. On the GKE overlay the existing Cilium
 policy is disabled, so mTLS remains mandatory. The checked-in SPIFFE listener
 default is off; enabling it also requires migrating existing token consumers
 off plaintext before their current endpoint starts refusing requests.
+
+## Migrate the existing egress client
+
+The egress proxy supports a rotating SPIFFE X509 source for all of its broker
+requests: token retrieval, forced refresh, quota reads and quota reports. It
+pins the broker's exact service-account SPIFFE ID, rejects redirects and
+origin changes, and never falls back to plaintext after a TLS failure. The
+Workload API must supply an SVID within 30 seconds or the sidecar exits.
+
+Both the DaemonSet and brick pod templates support
+`egress.tokenBroker.spiffe.enabled`, off by default. With that flag enabled,
+Helm derives the HTTPS URL from the broker Service and TLS port, derives its
+SPIFFE ID from the trust domain, namespace and broker service account, and
+mounts the SPIRE CSI socket only in the egress sidecar. This grants the noded
+service access to the existing OAuth endpoints; it grants no GitHub authority
+and does not bind an individual factory session to a role.
+
+For activation:
+
+1. Ship the client image and templates with the flags off.
+2. Verify SPIRE CSI and the noded/broker service-account registrations on every
+   worker node. Retain the noded SPIFFE ID in any explicit broker client list.
+3. Exercise a separate canary broker and client first. Enabling the existing
+   broker listener immediately disables plaintext token retrieval, so changing
+   the broker and client flags in one Helm sync is not a zero-downtime migration:
+   old clients can still be running while the broker rolls. Schedule a drained
+   cutover or introduce a parallel canary Service for a staged migration.
+4. During cutover set both `tokenBroker.spiffe.enabled=true` and
+   `egress.tokenBroker.spiffe.enabled=true`. Verify token fetch, refresh and quota
+   traffic before resuming sessions. Roll both flags back together if needed.
+
+The registered Bosun App is `jomcgi.dev Bosun` (`jomcgi-dev-bosun`), App ID
+`4913248`, installation ID `160965474`. Its key is in
+`vaults/k8s-homelab/items/bosun-gh-app`. The stored field ID is `private_key`,
+labelled `private key`, and its RSA PEM parses successfully. Verify the actual
+Operator-generated Secret key before selecting `onepassword.privateKeyField`;
+the chart's `private-key` default is not the stored field name. These identifiers
+are recorded here only; this change does not activate the App grants.
 
 ## Factory integration and GitHub enforcement
 
