@@ -52,8 +52,11 @@ defmodule Embervm.SpecTrace.Checker do
 
   7. **NoDestroyBeforeConfirm**: a gated `confirm_destroy` (`gate: true`)
      always carries `node_confirmed: true`, so the control plane records a
-     destroy only after the node confirmed it by teardown or by absence.
-     Vacuous when every confirmation took the gate-off path.
+     destroy only after the node confirmed it by teardown or by absence. The one
+     exception is `confirmed_by: "node_gone"`, where the owning node left the
+     fleet and its departure is itself the cessation proof, since no
+     confirmation can ever arrive (#6004). Vacuous when every confirmation took
+     the gate-off path.
 
   8. **EventuallyDispatched** (bounded liveness): every window of K+1
      consecutive checkpoints in which a task stays queued must contain its
@@ -198,7 +201,8 @@ defmodule Embervm.SpecTrace.Checker do
     confirmed_by_detail = fn ->
       teardown = Enum.count(confirms, &(&1["vars"]["confirmed_by"] == "teardown"))
       absence = Enum.count(confirms, &(&1["vars"]["confirmed_by"] == "absence"))
-      "confirmed_by teardown=#{teardown}, absence=#{absence}"
+      node_gone = Enum.count(confirms, &(&1["vars"]["confirmed_by"] == "node_gone"))
+      "confirmed_by teardown=#{teardown}, absence=#{absence}, node_gone=#{node_gone}"
     end
 
     cond do
@@ -221,10 +225,25 @@ defmodule Embervm.SpecTrace.Checker do
         %{invariant: :no_destroy_before_confirm, verdict: :vacuous, coverage: 0, oracle: :trace_only, detail: "#{examined_detail}; all destroy confirmations used the gate-off path"}
 
       true ->
-        violations = Enum.filter(confirms, fn record -> record["vars"]["gate"] == true and record["vars"]["node_confirmed"] != true end)
+        # `confirmed_by: "node_gone"` is NOT an unconfirmed destroy. The owning
+        # node left the fleet, so its VMs ceased with it and no teardown
+        # confirmation can ever arrive; departure is the cessation proof there,
+        # exactly as a complete report from a live owner is for "absence"
+        # (#6004). Excluding it keeps this invariant checking the thing it
+        # exists for: a destroy recorded while a LIVE owner could still be
+        # holding the VM. node_confirmed stays false on those records because
+        # the node did not confirm, and saying otherwise would make the field
+        # mean two things.
+        violations =
+          Enum.filter(confirms, fn record ->
+            vars = record["vars"]
+
+            vars["gate"] == true and vars["node_confirmed"] != true and
+              vars["confirmed_by"] != "node_gone"
+          end)
 
         if violations == [] do
-          %{invariant: :no_destroy_before_confirm, verdict: :pass, coverage: gate_on, oracle: :trace_only, detail: "#{examined_detail}; #{confirmed_by_detail.()} ; all gated destroy confirmations have node confirmation"}
+          %{invariant: :no_destroy_before_confirm, verdict: :pass, coverage: gate_on, oracle: :trace_only, detail: "#{examined_detail}; #{confirmed_by_detail.()} ; all gated destroy confirmations have node confirmation or node departure"}
         else
           record = hd(violations)
           vars = record["vars"]
