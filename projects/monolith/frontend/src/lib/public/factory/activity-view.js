@@ -571,11 +571,16 @@ export function diffLines(diff) {
  * open and stays a plain row.
  */
 export function activityRow(activity, diff) {
-  const type =
+  // A tool row is labelled "tool" and names the tool in the value column; the
+  // name used to sit in both columns, where a long one overran the label's
+  // fixed width and collided with itself. A bash row the shim recorded without
+  // its command says so rather than showing nothing.
+  const type = activity.type === "tool_use" ? "tool" : (activity.type ?? "");
+  const detail = activity.command ?? activity.file_path ?? null;
+  const what =
     activity.type === "tool_use"
-      ? (activity.name ?? "tool").toLowerCase()
-      : (activity.type ?? "");
-  const what = activity.command ?? activity.file_path ?? activity.name ?? "";
+      ? [activity.name ?? "tool", detail].filter(Boolean).join(" ")
+      : (detail ?? "(command not recorded)");
   // The turn digest has one line for every activity, so a path there is its
   // last segment; the full path stays on the row itself and in the title.
   const short = activity.file_path
