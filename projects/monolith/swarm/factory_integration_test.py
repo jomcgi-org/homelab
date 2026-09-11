@@ -131,6 +131,119 @@ def admit(policy):
     return result["task_id"]
 
 
+def test_autonomous_intake_receipt_flows_through_admission(db, policy, monkeypatch):
+    from swarm import factory_intake_loop
+
+    policy["intake"] = {"enabled": True}
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    assert controls.set_control("enable", "operator")["ok"]
+    opened = {
+        "number": 8,
+        "title": "Ready issue",
+        "body": "bounded",
+        "html_url": "https://github.com/owner/repo/issues/8",
+        "state": "open",
+        "assignees": [],
+        "labels": [{"name": "agent-ready"}],
+        "created_at": "2026-09-10T00:00:00Z",
+    }
+    monkeypatch.setattr(
+        factory_intake_loop,
+        "github_list",
+        lambda _repo, suffix: [] if suffix.startswith("pulls?") else [opened],
+    )
+    received = factory_intake_loop.intake_tick(policy, generation=0)
+    assert received["receipt"]["kind"] == "deliver"
+    admitted = admit_next("scheduler")
+    assert admitted["ok"]
+    assert admitted["receipt"]["issue_number"] == 8
+
+
+def test_refine_intake_reconciles_one_node_and_verifies_settlement(
+    db, policy, monkeypatch
+):
+    from datetime import datetime, timedelta
+    import json
+    from swarm import factory_intake_loop, factory_refine
+
+    policy["intake"] = {"enabled": True, "refine_enabled": True}
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    assert controls.set_control("enable", "operator")["ok"]
+    opened = {
+        "number": 8,
+        "title": "Needs a brief",
+        "body": "bounded",
+        "html_url": "https://github.com/owner/repo/issues/8",
+        "state": "open",
+        "assignees": [],
+        "labels": [],
+        "created_at": "2026-09-10T00:00:00Z",
+    }
+    monkeypatch.setattr(
+        factory_intake_loop,
+        "github_list",
+        lambda _repo, suffix: [] if suffix.startswith("pulls?") else [opened],
+    )
+    assert (
+        factory_intake_loop.intake_tick(policy, generation=0)["receipt"]["kind"]
+        == "refine"
+    )
+    admitted = admit_next("scheduler")
+    task_id = admitted["task_id"]
+    task = conductor._task(task_id)
+    conductor.reconcile_task(task_id, admitted["policy"], SimpleNamespace())
+    nodes = graph.load_graph(task_id)
+    assert [node["node_key"] for node in nodes] == ["refine_1"]
+    key = f"factory-node:{task_id}:refine_1:1"
+    context = {
+        "repo": task["repo"],
+        "branch": f"factory/{task_id}",
+        "workflow_id": key,
+        "artifact_path": ".factory/refine_1.json",
+        "artifact_schema": factory_refine.REFINE_SCHEMA,
+        "hydration_branch": "main",
+        "retry_context": "[]",
+    }
+    assert conductor.reserve_node(task_id, "refine_1", key, context)
+    assert graph.record_dispatch(task_id, "refine_1", 1, 101, None).ok
+    comment_url = "https://github.com/owner/repo/issues/8#issuecomment-1"
+    value = {"outcome": "agent-ready", "comment_url": comment_url}
+    assert graph.record_outcome(
+        task_id,
+        "refine_1",
+        1,
+        "succeeded",
+        0.1,
+        None,
+        json.dumps({"value": value, "cost_usd": 0.1, "session_id": 101}),
+    ).ok
+    assert controls.record_start_outcome(
+        task_id, key, "succeeded", "worker", cost_usd=0.1, session_id=101
+    )["ok"]
+    admitted_at = datetime.fromisoformat(controls.task_snapshot(task_id)["admitted_at"])
+    monkeypatch.setattr(
+        factory_refine,
+        "github_get",
+        lambda *_args: {"labels": [{"name": "agent-ready"}]},
+    )
+    monkeypatch.setattr(
+        factory_refine,
+        "github_list",
+        lambda *_args: [
+            {
+                "body": "## Agent brief\n### Outcome\nReady",
+                "created_at": (admitted_at + timedelta(seconds=1)).isoformat(),
+                "html_url": comment_url,
+                "user": {"login": "factory-bot"},
+            }
+        ],
+    )
+    conductor.reconcile_task(task_id, admitted["policy"], SimpleNamespace())
+    assert controls.task_snapshot(task_id)["evidence"]["state"] == (
+        "refine_agent_ready"
+    )
+
+
 class CompletedNodes:
     """A fake durable workflow lookup with one completion per exact workflow ID."""
 
