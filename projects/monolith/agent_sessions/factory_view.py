@@ -13,6 +13,7 @@ database; only ``build_factory_view`` touches the engine.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime, timezone
 
 from sqlmodel import Session, select
@@ -228,13 +229,21 @@ def _session_summaries(db: Session, ids: set[int]) -> dict[int, dict]:
 
 
 def build_factory_view(
-    task_id: str | None = None, *, session: Session | None = None
+    task_id: str | None = None,
+    *,
+    session: Session | None = None,
+    plan_tasks: Iterable[str] | None = None,
 ) -> dict:
     """Everything the factory board needs in one read.
 
     Plans are loaded for every in-flight task and for ``task_id`` when it
     names a finished one, so opening a recent card costs one more read
     rather than every recent card carrying its whole graph.
+
+    ``plan_tasks`` widens that set without a second pass over the board. The
+    public snapshot job (agent_sessions/factory_public.py) needs the plan for
+    every task it publishes, and asking for them one board-read at a time
+    would re-read the whole control state per task.
     """
     from swarm.factory_controls import status
 
@@ -265,6 +274,7 @@ def build_factory_view(
         with_plan = {r["task_id"] for r in active if r["task_id"]}
         if task_id:
             with_plan.add(task_id)
+        with_plan.update(plan_tasks or ())
 
         def enrich(receipt: dict) -> dict:
             task = receipt.get("task_id")

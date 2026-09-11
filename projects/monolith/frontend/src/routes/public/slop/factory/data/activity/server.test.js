@@ -32,7 +32,7 @@ const activity = {
   },
 };
 
-describe("/public/slop/factory/activity GET", () => {
+describe("/public/slop/factory/data/activity GET", () => {
   it("proxies the public agent activity endpoint unchanged", async () => {
     const setHeaders = vi.fn();
     const fetch = vi.fn().mockResolvedValue({

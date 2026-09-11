@@ -191,6 +191,7 @@
       <div class="mast-actions">
         <nav class="view-tabs" aria-label="Factory views">
           <a class="here" href="/slop/factory" aria-current="page">overview</a>
+          <a href="/slop/factory/activity">activity</a>
           <a href="/slop/factory/context">context</a>
         </nav>
         <SchemeToggle />

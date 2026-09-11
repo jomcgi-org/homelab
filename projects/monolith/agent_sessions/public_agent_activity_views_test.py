@@ -225,6 +225,72 @@ def test_public_reader_can_select_views_but_not_agent_tables(pg):
             engine.dispose()
 
 
+def test_public_reader_can_select_the_factory_snapshot_tables(pg):
+    """The public factory pages read snapshots; the factory itself stays shut.
+
+    public_reader gets SELECT on the three public_api.factory_* tables and on
+    nothing in swarm, so a public route can render a board without the public
+    tier ever being able to reach a receipt, a plan node or a turn.
+    """
+    engine = create_engine(pg.url)
+    try:
+        with Session(engine) as session:
+            session.execute(text("SET ROLE public_reader"))
+            session.execute(
+                text(
+                    "SELECT payload, snapshotted_at "
+                    "FROM public_api.factory_activity_snapshot"
+                )
+            ).all()
+            session.execute(
+                text(
+                    "SELECT issue_number, payload FROM public_api.factory_task_snapshot"
+                )
+            ).all()
+            session.execute(
+                text(
+                    "SELECT session_key, issue_number, payload "
+                    "FROM public_api.factory_session_snapshot"
+                )
+            ).all()
+    finally:
+        engine.dispose()
+
+    for query in (
+        text("SELECT id FROM swarm.factory_receipt"),
+        text("SELECT id FROM swarm.swarm_node_run"),
+        text("SELECT id FROM agent_sessions.agent_turns"),
+    ):
+        engine = create_engine(pg.url)
+        try:
+            with Session(engine) as session:
+                session.execute(text("SET ROLE public_reader"))
+                with pytest.raises(Exception) as exc:
+                    session.execute(query).all()
+                assert "permission denied" in str(exc.value).lower()
+        finally:
+            engine.dispose()
+
+
+def test_public_reader_cannot_write_the_factory_snapshot_tables(pg):
+    """SELECT only: the snapshot writer runs on the private tier, not here."""
+    engine = create_engine(pg.url)
+    try:
+        with Session(engine) as session:
+            session.execute(text("SET ROLE public_reader"))
+            with pytest.raises(Exception) as exc:
+                session.execute(
+                    text(
+                        "INSERT INTO public_api.factory_task_snapshot "
+                        "(issue_number, payload, snapshotted_at) "
+                        "VALUES (1, '{}'::jsonb, now())"
+                    )
+                )
+            assert "permission denied" in str(exc.value).lower()
+    finally:
+        engine.dispose()
+
+
 def test_local_session_view_aggregates_collector_usage(session):
     view_day = session.execute(text("SELECT CURRENT_DATE")).scalar_one()
     session.execute(

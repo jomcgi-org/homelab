@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { load } from "./+page.server.js";
 
 const payloads = {
-  "/slop/factory/activity": {
+  "/slop/factory/data/activity": {
     now: {},
     daily: [],
     local_daily: [],
@@ -31,17 +31,17 @@ describe("factory overview loader", () => {
     const result = await load({ fetch, setHeaders: vi.fn() });
 
     expect(fetch.mock.calls.map(([path]) => path)).toEqual([
-      "/slop/factory/activity",
+      "/slop/factory/data/activity",
       "/slop/factory/merges",
       "/slop/factory/facts",
     ]);
-    expect(result.activity).toEqual(payloads["/slop/factory/activity"]);
+    expect(result.activity).toEqual(payloads["/slop/factory/data/activity"]);
     expect(result.merges).toEqual(payloads["/slop/factory/merges"]);
     expect(result.facts).toEqual(payloads["/slop/factory/facts"]);
   });
 
   it.each([
-    ["/slop/factory/activity", "activity"],
+    ["/slop/factory/data/activity", "activity"],
     ["/slop/factory/merges", "merges"],
     ["/slop/factory/facts", "facts"],
   ])("keeps rendering when %s returns 503", async (failedPath, section) => {

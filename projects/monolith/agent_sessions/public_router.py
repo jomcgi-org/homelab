@@ -1,4 +1,10 @@
-"""Public, aggregate-only agent activity API."""
+"""Public, aggregate-only agent activity API, plus the read-only factory pages.
+
+The factory routes read public_api.factory_*_snapshot and nothing else. Those
+rows are built on the private side by agent_sessions/factory_public.py, because
+public_reader has no grant on the swarm or agent_sessions schemas and the
+factory code is not in the public image at all.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +26,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agents/public", tags=["agents-public"])
 
 _ACTIVITY_CACHE_CONTROL = "public, max-age=300, s-maxage=300"
+# The factory board moves on a 2-minute snapshot cadence, so a 60s shared cache
+# never serves anything the writer has not had a chance to refresh, while still
+# absorbing a burst of readers. FACTORY_ACTIVITY_CACHE_CONTROL in
+# frontend/src/lib/cache-headers.js mirrors this; keep the two in sync.
+_FACTORY_CACHE_CONTROL = "public, max-age=60, s-maxage=60"
 _DAILY_WINDOW_DAYS = 30
 _TOTALS_WINDOW_DAYS = 7
 
@@ -248,3 +259,107 @@ def get_public_agent_activity(
     for key, value in headers.items():
         response.headers[key] = value
     return payload
+
+
+_FACTORY_ACTIVITY_QUERY = text(
+    """
+    SELECT payload, snapshotted_at
+    FROM public_api.factory_activity_snapshot
+    WHERE id = 1
+    """
+)
+_FACTORY_TASK_QUERY = text(
+    """
+    SELECT payload, snapshotted_at
+    FROM public_api.factory_task_snapshot
+    WHERE issue_number = :issue_number
+    """
+)
+_FACTORY_SESSION_QUERY = text(
+    """
+    SELECT payload, snapshotted_at
+    FROM public_api.factory_session_snapshot
+    WHERE session_key = :session_key
+    """
+)
+
+
+def _payload(row: Any) -> dict:
+    """JSONB comes back decoded on psycopg; tolerate a driver that returns text."""
+    payload = _value(row, "payload")
+    if isinstance(payload, (str, bytes)):
+        payload = json.loads(payload)
+    return payload
+
+
+def _factory_etag(kind: str, payload: dict) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return f'"factory-{kind}-v1-{hashlib.sha256(encoded).hexdigest()}"'
+
+
+def _factory_response(
+    request: Request,
+    response: Response,
+    kind: str,
+    payload: dict,
+):
+    """Serve one snapshot payload with its ETag, 304-ing an unchanged read."""
+    etag = _factory_etag(kind, payload)
+    headers = {"Cache-Control": _FACTORY_CACHE_CONTROL, "ETag": etag}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    for key, value in headers.items():
+        response.headers[key] = value
+    return payload
+
+
+def _factory_row(session: Session, query, params: dict | None = None) -> Any:
+    try:
+        return session.execute(query, params or {}).first()
+    except SQLAlchemyError as exc:
+        logger.warning("public.factory_snapshot.unavailable", exc_info=exc)
+        raise HTTPException(status_code=500, detail="factory unavailable") from exc
+
+
+@router.get("/factory/activity")
+def get_public_factory_activity(
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+):
+    """The factory board: what is in flight, what is queued, what recently ran."""
+    row = _factory_row(session, _FACTORY_ACTIVITY_QUERY)
+    if row is None:
+        raise HTTPException(status_code=404, detail="no snapshot")
+    return _factory_response(request, response, "activity", _payload(row))
+
+
+@router.get("/factory/tasks/{issue_number}")
+def get_public_factory_task(
+    issue_number: int,
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+):
+    """One task's walkthrough: the brief, the plan, and every attempt's turns."""
+    row = _factory_row(session, _FACTORY_TASK_QUERY, {"issue_number": issue_number})
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown task")
+    return _factory_response(request, response, "task", _payload(row))
+
+
+# ``:path`` because a session key is factory:<task_id>:<node_key>:<attempt> and
+# a node key may itself contain colons. The key is opaque here: the snapshot
+# writer supplies it and this route only looks it up.
+@router.get("/factory/sessions/{session_key:path}")
+def get_public_factory_session(
+    session_key: str,
+    request: Request,
+    response: Response,
+    session: Session = Depends(get_session),
+):
+    """One attempt's full record: every turn with its diff, rationale and usage."""
+    row = _factory_row(session, _FACTORY_SESSION_QUERY, {"session_key": session_key})
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown session")
+    return _factory_response(request, response, "session", _payload(row))

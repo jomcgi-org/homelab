@@ -161,9 +161,17 @@ export const TRIPS_CACHE_CONTROL =
 export const CAMPSITES_SNAPSHOT_CACHE_CONTROL =
   "public, max-age=0, s-maxage=60, stale-while-revalidate=3600, stale-if-error=86400";
 
-// /slop/factory/activity: public aggregate agent activity, refreshed every 5 min.
+// /slop/factory/data/activity: public aggregate agent activity, refreshed every
+// 5 min. Moved out of /slop/factory/activity when that path became a page.
 // Mirrors _ACTIVITY_CACHE_CONTROL in agent_sessions/public_router.py.
 export const AGENT_ACTIVITY_CACHE_CONTROL = "public, max-age=300, s-maxage=300";
+
+// /slop/factory/activity pages: the factory board, one task, one session. The
+// lane moves on the order of a turn, so a minute of freshness is the most a
+// reader would notice, and the index refetches on its own while it is on
+// screen. Mirrors _FACTORY_CACHE_CONTROL in agent_sessions/public_router.py,
+// keep in sync.
+export const FACTORY_ACTIVITY_CACHE_CONTROL = "public, max-age=60, s-maxage=60";
 
 // /app/grimoire read API (the api/[...path] catch-all JSON + binary image proxy
 // and the book/read pagination proxy). The corpus is a read-only, near-static
