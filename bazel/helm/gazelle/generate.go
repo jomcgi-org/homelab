@@ -172,7 +172,7 @@ func generateRules(args language.GenerateArgs) language.GenerateResult {
 	// live diff target so hand-written and generated applications share exactly
 	// the same rendering and runfiles contract.
 	// Note: releaseName is optional in ArgoCD (defaults to app name if not specified)
-	if app.Spec.Source.Path != "" {
+	if app.Spec.Source.Path != "" && len(app.Spec.Source.Helm.ValueFiles) > 0 {
 		appRule := generateArgoCDAppRule(app, args.Rel, args.Dir, cfg)
 		if appRule != nil {
 			result.Gen = append(result.Gen, appRule)
@@ -280,6 +280,7 @@ func generateArgoCDAppRule(app *ArgoCDApplication, currentPackage string, curren
 
 	if cfg.generateDiff {
 		r.SetAttr("generate_diff", true)
+		r.SetAttr("application_name", app.Metadata.Name)
 	}
 
 	return r

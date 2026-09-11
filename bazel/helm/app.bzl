@@ -12,6 +12,7 @@ def argocd_app(
         values_files = [],
         generate_manifests = True,
         generate_diff = False,
+        application_name = None,
         generate_semgrep = True,
         semgrep_rules = ["//bazel/semgrep/rules:kubernetes_rules"],
         semgrep_exclude_rules = [],
@@ -34,6 +35,7 @@ def argocd_app(
         values_files: List of values file labels in order
         generate_manifests: If True, create render_manifests genrule (default: True)
         generate_diff: If True, create live diff rule (default: False)
+        application_name: Live ArgoCD Application name. Required with generate_diff.
         generate_semgrep: If True, create semgrep_test for rendered manifests (default: True)
         semgrep_rules: List of semgrep rule config labels for manifest scanning
         semgrep_exclude_rules: List of semgrep rule IDs to skip (e.g., ["no-privileged"])
@@ -134,11 +136,13 @@ def argocd_app(
         )
 
     if generate_diff:
-        # Live ArgoCD diff (opt-in). The runner renders the local chart first,
-        # then gives those manifests to `argocd app diff --local`.
+        if application_name == None:
+            fail("application_name is required when generate_diff is enabled")
+
+        # Live ArgoCD diff (opt-in). A local render is a pre-flight check. The
+        # ArgoCD CLI regenerates from chart sources using the live Application.
         chart_yaml = "//" + chart + ":Chart.yaml"
         diff_data_list = [
-            "application.yaml",
             chart_files,
             chart_yaml,
             "//" + chart + ":values.yaml",
@@ -160,13 +164,12 @@ def argocd_app(
                 diff_data.append(d)
 
         native.sh_binary(
-            name = "diff",
+            name = "diff" + target_suffix,
             srcs = ["//bazel/helm:argocd-live-diff.sh"],
             data = diff_data,
             env = {
-                "APPLICATION_FILE": "$(rootpath application.yaml)",
                 "ARGOCD": "$(rootpath @multitool//tools/argocd)",
-                "ARGOCD_APP_NAME": name,
+                "ARGOCD_APP_NAME": application_name,
                 "CHART_FILE": "$(rootpath {})".format(chart_yaml),
                 "HELM": "$(rootpath @multitool//tools/helm)",
                 "NAMESPACE": namespace,

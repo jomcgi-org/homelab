@@ -18,6 +18,7 @@ done
 	echo "ERROR: cannot locate $SCRIPT_REL" >&2
 	exit 1
 }
+SCRIPT=$(cd "$(dirname "$SCRIPT")" && pwd -P)/$(basename "$SCRIPT")
 [[ -x "$SCRIPT" ]] || {
 	echo "ERROR: $SCRIPT_REL is not executable" >&2
 	exit 1
@@ -46,23 +47,37 @@ EOF
 cat >"$TOOLS/argocd" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >"$CALLS/argocd.args"
-local_dir=""
-while [[ "$#" -gt 0 ]]; do
-	if [[ "$1" == "--local" ]]; then
-		local_dir="$2"
-		shift 2
-		continue
-	fi
-	shift
-done
-[[ -f "$local_dir/all.yaml" ]] || exit 90
-grep -q '^kind: ConfigMap$' "$local_dir/all.yaml" || exit 91
+printf '%s\n' "${ARGOCD_OPTS:-}" >"$CALLS/argocd.opts"
+
+# Model the exact app diff flag set supported by the pinned ArgoCD v2.13.2.
+[[ "$#" -eq 8 ]] || exit 88
+[[ "$1" == "app" && "$2" == "diff" ]] || exit 89
+[[ "$4" == "--local" ]] || exit 90
+local_dir="$5"
+[[ "$6" == "--local-repo-root" ]] || exit 91
+repo_root="$7"
+[[ "$8" == "--exit-code" ]] || exit 92
+[[ -f "$local_dir/Chart.yaml" ]] || exit 93
+[[ -f "$repo_root/projects/demo/deploy/values with space.yaml" ]] || exit 94
 exit "${ARGOCD_RC:-0}"
 EOF
 
 cat >"$TOOLS/op" <<'EOF'
 #!/usr/bin/env bash
-exit 1
+case "${1:-} ${2:-}" in
+"account list")
+	exit "${OP_ACCOUNT_RC:-1}"
+	;;
+"read op://k8s-homelab/argocd-server-auth/ACCESS_CLIENT_ID")
+	printf '%s\n' "${OP_CLIENT_ID:-client-id}"
+	;;
+"read op://k8s-homelab/argocd-server-auth/ACCESS_CLIENT_SECRET")
+	printf '%s\n' "${OP_CLIENT_SECRET:-client-secret}"
+	;;
+*)
+	exit 2
+	;;
+esac
 EOF
 chmod +x "$TOOLS/helm" "$TOOLS/argocd" "$TOOLS/op"
 
@@ -87,8 +102,33 @@ expect_line() {
 	fi
 }
 
+expect_absent_line() {
+	local description="$1" line="$2" file="$3"
+	if [[ ! -f "$file" ]]; then
+		echo "FAIL: $description, missing $file" >&2
+		failures=$((failures + 1))
+	elif ! grep -Fxq -- "$line" "$file"; then
+		echo "PASS: $description"
+	else
+		echo "FAIL: $description, found '$line' in $file" >&2
+		failures=$((failures + 1))
+	fi
+}
+
+expect_contains() {
+	local description="$1" text="$2" file="$3"
+	if grep -Fq -- "$text" "$file"; then
+		echo "PASS: $description"
+	else
+		echo "FAIL: $description, missing '$text' in $file" >&2
+		failures=$((failures + 1))
+	fi
+}
+
 run_case() {
 	local name="$1" helm_rc="$2" argocd_rc="$3"
+	local op_account_rc="${4:-1}"
+	local values_files="${5-$'projects/demo/chart/values.yaml\nprojects/demo/deploy/values with space.yaml'}"
 	local case_tmp="$TMP/$name-tmp"
 	CALLS="$TMP/$name-calls"
 	mkdir -p "$case_tmp" "$CALLS"
@@ -102,6 +142,10 @@ run_case() {
 			CALLS="$CALLS" \
 			HELM_RC="$helm_rc" \
 			ARGOCD_RC="$argocd_rc" \
+			OP_ACCOUNT_RC="$op_account_rc" \
+			OP_CLIENT_ID="client-id" \
+			OP_CLIENT_SECRET="client-secret" \
+			ARGOCD_OPTS="" \
 			HELM="../multitool/tools/helm" \
 			ARGOCD="../multitool/tools/argocd" \
 			OP="../multitool/tools/op" \
@@ -109,7 +153,7 @@ run_case() {
 			CHART_FILE="projects/demo/chart/Chart.yaml" \
 			RELEASE_NAME="demo release" \
 			NAMESPACE="demo namespace" \
-			VALUES_FILES=$'projects/demo/chart/values.yaml\nprojects/demo/deploy/values with space.yaml' \
+			VALUES_FILES="$values_files" \
 			"$SCRIPT"
 	) >"$TMP/$name.out" 2>&1
 	case_rc=$?
@@ -129,7 +173,13 @@ expect_line "chart resolves from runfiles" "$CHART" "$CALLS/helm.args"
 expect_line "spaced values path survives argument boundaries" "$OVERLAY/values with space.yaml" "$CALLS/helm.args"
 expect_line "application name survives argument boundaries" "demo app" "$CALLS/argocd.args"
 expect_line "diff requests meaningful exit codes" "--exit-code" "$CALLS/argocd.args"
-expect_line "diff exit status is one" "1" "$CALLS/argocd.args"
+expect_absent_line "diff avoids unsupported diff-exit-code flag" "--diff-exit-code" "$CALLS/argocd.args"
+expect_line "diff receives chart sources" "$CHART" "$CALLS/argocd.args"
+expect_line "diff receives the runfiles repository root" "$FAKE_RUNFILES/_main" "$CALLS/argocd.args"
+
+run_case empty_values 0 0 1 ""
+expect_equal "empty values list is safe under nounset" 0 "$case_rc"
+expect_absent_line "empty values list adds no values flag" "--values" "$CALLS/helm.args"
 
 run_case differences 0 1
 expect_equal "differences propagate exit one" 1 "$case_rc"
@@ -140,13 +190,24 @@ expect_equal "ArgoCD failures preserve their exit status" 23 "$case_rc"
 expect_line "ArgoCD failure status is reported" "ArgoCD diff failed with exit status 23" "$TMP/argocd_failure.out"
 
 run_case helm_failure 17 0
-expect_equal "Helm failures preserve their exit status" 17 "$case_rc"
+expect_equal "Helm failures map to the error exit status" 2 "$case_rc"
 if [[ -e "$CALLS/argocd.args" ]]; then
 	echo "FAIL: ArgoCD ran after Helm failed" >&2
 	failures=$((failures + 1))
 else
 	echo "PASS: ArgoCD does not run after Helm fails"
 fi
+
+run_case helm_failure_one 1 0
+expect_equal "Helm exit one is not reported as a difference" 2 "$case_rc"
+expect_line "Helm exit one is reported as a render error" "ERROR: Helm render failed with exit status 1" "$TMP/helm_failure_one.out"
+
+run_case credentials 0 0 0
+expect_equal "credentialed comparison exits zero" 0 "$case_rc"
+expect_absent_line "client id header is absent from argv" "CF-Access-Client-Id: client-id" "$CALLS/argocd.args"
+expect_absent_line "client secret header is absent from argv" "CF-Access-Client-Secret: client-secret" "$CALLS/argocd.args"
+expect_contains "client id is passed through ArgoCD options" "CF-Access-Client-Id: client-id" "$CALLS/argocd.opts"
+expect_contains "client secret is passed through ArgoCD options" "CF-Access-Client-Secret: client-secret" "$CALLS/argocd.opts"
 
 if [[ "$failures" -ne 0 ]]; then
 	echo "$failures test(s) failed" >&2

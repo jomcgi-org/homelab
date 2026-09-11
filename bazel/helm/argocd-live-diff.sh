@@ -52,7 +52,17 @@ resolve_tool() {
 helm_bin=$(resolve_tool "${HELM:-helm}" helm) || die "cannot locate the Helm CLI"
 argocd_bin=$(resolve_tool "${ARGOCD:-argocd}" argocd) || die "cannot locate the ArgoCD CLI"
 chart_file=$(resolve_runfile "$CHART_FILE") || die "cannot locate chart file: $CHART_FILE"
-chart_dir=$(dirname "$chart_file")
+chart_dir=$(cd "$(dirname "$chart_file")" && pwd -P)
+chart_file="$chart_dir/$(basename "$chart_file")"
+
+case "$chart_file" in
+*/"$CHART_FILE")
+	repo_root=${chart_file%/"$CHART_FILE"}
+	;;
+*)
+	die "cannot determine repository root from chart file: $chart_file"
+	;;
+esac
 
 values_args=()
 while IFS= read -r values_file || [[ -n "$values_file" ]]; do
@@ -67,28 +77,35 @@ render_dir=$(mktemp -d "$tmp_parent/argocd-live-diff.XXXXXX")
 trap 'rm -rf "$render_dir"' EXIT
 
 echo "Rendering local manifests for $ARGOCD_APP_NAME"
+set +e
 "$helm_bin" template "$RELEASE_NAME" "$chart_dir" \
 	--namespace "$NAMESPACE" \
-	"${values_args[@]}" >"$render_dir/all.yaml"
+	${values_args[@]+"${values_args[@]}"} >"$render_dir/all.yaml"
+helm_status=$?
+set -e
+if [[ "$helm_status" -ne 0 ]]; then
+	die "Helm render failed with exit status $helm_status"
+fi
 
-header_args=()
 op_bin=""
 if op_bin=$(resolve_tool "${OP:-op}" op 2>/dev/null) && "$op_bin" account list >/dev/null 2>&1; then
 	access_client_id=$("$op_bin" read "op://k8s-homelab/argocd-server-auth/ACCESS_CLIENT_ID" 2>/dev/null || true)
 	access_client_secret=$("$op_bin" read "op://k8s-homelab/argocd-server-auth/ACCESS_CLIENT_SECRET" 2>/dev/null || true)
 	if [[ -n "$access_client_id" && -n "$access_client_secret" ]]; then
-		header_args+=(--header "CF-Access-Client-Id: $access_client_id")
-		header_args+=(--header "CF-Access-Client-Secret: $access_client_secret")
+		# ARGOCD_OPTS is parsed by the pinned CLI before Cobra builds the command.
+		# Keep credentials out of argv, where they would be visible in `ps`.
+		access_headers="\"CF-Access-Client-Id: ${access_client_id//\"/\"\"}\",\"CF-Access-Client-Secret: ${access_client_secret//\"/\"\"}\""
+		access_headers=${access_headers//\'/\'\\\'\'}
+		export ARGOCD_OPTS="${ARGOCD_OPTS:+$ARGOCD_OPTS }--header '$access_headers'"
 	fi
 fi
 
 echo "Comparing local manifests with live ArgoCD application $ARGOCD_APP_NAME"
 set +e
 "$argocd_bin" app diff "$ARGOCD_APP_NAME" \
-	--local "$render_dir" \
-	--exit-code \
-	--diff-exit-code 1 \
-	"${header_args[@]}"
+	--local "$chart_dir" \
+	--local-repo-root "$repo_root" \
+	--exit-code
 status=$?
 set -e
 

@@ -416,6 +416,9 @@ func TestGenerateArgoCDAppRuleEnablesLiveDiff(t *testing.T) {
 	if got := rule.Attr("generate_diff"); got == nil {
 		t.Error("generate_diff is not set")
 	}
+	if got := rule.AttrString("application_name"); got != "test-app" {
+		t.Errorf("application_name = %q, want %q", got, "test-app")
+	}
 
 	values := rule.AttrStrings("values_files")
 	wantValues := []string{"//projects/test/chart:values.yaml", "values.yaml"}
