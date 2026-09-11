@@ -134,6 +134,36 @@ def pin_drainer_settings() -> dict:
         return settings
 
 
+# Every drain job runs on this model, in both the claim reservation and the
+# session it later starts. The two must agree: a reservation whose model
+# changed is refused, and a refused reservation never dispatches.
+DRAIN_MODEL = "luna"
+
+
+def provider_walled() -> tuple[bool, str]:
+    """Whether the drainer's provider is observably out of quota right now.
+
+    Claiming into a spent subscription costs the lease, the rolling daily
+    allowance and a recorded failure, and proves nothing: the turn comes back
+    saying the usage limit was hit. Deferring the claim leaves all three
+    unspent for the reset.
+
+    Only positive evidence of exhaustion defers. An unobserved, stale, or
+    already-reset provider claims exactly as it did before, because
+    model_pool.availability owns that contract and the factory routes on the
+    same reading.
+    """
+    try:
+        from swarm.model_pool import availability, quota_summary
+
+        ok, reason = availability(DRAIN_MODEL, quota_summary())
+        return (not ok), reason
+    # nosemgrep: no-broad-except-swallow
+    except Exception:  # noqa: BLE001 - an unreadable quota never stops the lane
+        logger.debug("drain provider quota unreadable", exc_info=True)
+        return False, "unreadable"
+
+
 @DBOS.step()
 def claim_drainer_job(
     ttl_secs: int,
@@ -167,6 +197,15 @@ def claim_drainer_job(
         tracer.start_as_current_span("drain.claim_job") as span,
         Session(engine) as session,
     ):
+        walled, reason = provider_walled()
+        if walled:
+            set_attributes(span, {"drain.deferred": reason})
+            logger.info(
+                "drain claim deferred: %s provider is walled (%s)",
+                DRAIN_MODEL,
+                reason,
+            )
+            return None
         lock_pool(session)
         adopt_existing(session)
         remaining_kinds = tuple(kinds)
@@ -218,7 +257,7 @@ def claim_drainer_job(
                 session,
                 local_id,
                 tier="kg" if is_kg else "project",
-                model="luna",
+                model=DRAIN_MODEL,
                 routine_job_name=job["name"],
                 **daily,
             )
@@ -1093,7 +1132,7 @@ def drain_cycle() -> dict:
                     session_id = start_agent_session(
                         local_session_id,
                         prompt,
-                        "luna",
+                        DRAIN_MODEL,
                         repo,
                         branch,
                         workflow_id,
