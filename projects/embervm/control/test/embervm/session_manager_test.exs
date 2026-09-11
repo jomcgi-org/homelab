@@ -3792,6 +3792,60 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, %{state: :destroying}} = SessionStore.get(ctx.store, created.session_id)
   end
 
+  test "gated: an exact stop finished node_gone at request time keeps the destroy ordering invariant" do
+    # The exact-stop handler writes its durable intent through begin_exact_destroy
+    # but used to emit no begin_destroy record, because every path that consumed
+    # that intent reached a terminal record through the sweep, which emits its own
+    # resumed intent. A node-gone completion terminalizes straight from the
+    # continue, so without the request-time emit the run holds a confirm_destroy
+    # with had_vm true and NO preceding intent, and the invariant reports a
+    # violation for an ordering the durable log actually honoured.
+    #
+    # The fixture sets the two node signals inconsistently on purpose: the
+    # capacity fact stays (destroy_exact recomputes identity from it and would
+    # otherwise refuse the precondition) while brick_status reports unregistered.
+    # Production cannot hold both at once, which is why this arm is hard to reach
+    # there, and is exactly why the emit has to be right rather than argued about.
+    {trace_store, writer} = start_spec_trace()
+
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        brick_status_fun: fn _node ->
+          %{health: :unknown, draining: false, registered: false, tombstoned: false, pod_uid: nil}
+        end,
+        destroy_exact_fun: fn _ch, _request -> {:error, :unreachable} end
+      )
+
+    {ctx, session, expected} = prepare_exact_stop(ctx, "wl-exact-trace")
+
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, session.session_id, expected)
+    complete = wait_for_state(ctx, session.session_id, :destroyed)
+    assert complete.terminal_reason == "node_gone"
+    assert is_nil(complete.stop_completion)
+
+    :ok = Embervm.SpecTrace.drain(writer)
+    {:ok, records} = Embervm.SpecTrace.Store.SQLite.read_window(trace_store)
+    destroy_records = Enum.filter(records, &(&1["action"] in ["begin_destroy", "confirm_destroy"]))
+
+    assert Enum.map(destroy_records, & &1["action"]) == ["begin_destroy", "confirm_destroy"]
+    [begin_destroy, confirm_destroy] = destroy_records
+    assert begin_destroy["vars"]["session_id"] == session.session_id
+    assert begin_destroy["vars"]["resumed"] == false
+    assert confirm_destroy["vars"]["confirmed_by"] == "node_gone"
+    assert confirm_destroy["vars"]["had_vm"] == true
+    assert confirm_destroy["mono"] > begin_destroy["mono"]
+
+    # The invariant itself, through the real checker, not just the record shape.
+    verdicts = Embervm.SpecTrace.Checker.run(Embervm.SpecTrace.Store.SQLite, trace_store)
+
+    for invariant <- [:destroy_intent_precedes_record, :no_destroy_before_confirm] do
+      verdict = Enum.find(verdicts, &(&1.invariant == invariant))
+      assert verdict.verdict == :pass, "#{invariant} was #{inspect(verdict.verdict)}: #{verdict.detail}"
+      assert verdict.coverage > 0
+    end
+  end
+
   test "gated: an exact stop whose node departs completes as node_gone with a null completion" do
     # The node-gone arm precedes the exact-stop replay arm in the sweep. Without
     # that ordering an exact stop whose brick departed replays forever against a
