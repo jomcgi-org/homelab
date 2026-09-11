@@ -567,6 +567,72 @@ def _await_node_turn(session_id: int, deadline: datetime, timeout: int) -> dict 
     return None
 
 
+HELD_GUEST_TIMEOUT_SECONDS = 5
+
+
+def _observe_held_guest(guest_id: str) -> dict | None:
+    """One bounded control-plane read of the guest a held turn is waiting on."""
+    from agent_sessions.transport import EmberVmShimTransport
+
+    async def request():
+        return await asyncio.wait_for(
+            EmberVmShimTransport().get_session(guest_id), HELD_GUEST_TIMEOUT_SECONDS
+        )
+
+    try:
+        view = asyncio.run(request())
+    except Exception:  # noqa: BLE001 - an unreadable guest ends nothing.
+        return None
+    return view if isinstance(view, dict) else None
+
+
+def _recover_response_lost(pin: dict, session_id: int) -> dict | None:
+    """Adopt this attempt's committed result, or end a hold that cannot recover.
+
+    A replica that dies mid-invoke loses the response, not the execution. The
+    guest finishes the turn and publishes its result receipt, so the recovered
+    workflow finishes the same attempt from that record rather than paying for
+    a second model run (#5938, #4322). While the guest is still invoking and no
+    result has been published, the hold simply stays and this returns waiting.
+    A guest that has ceased, or one that completed its invoke without ever
+    publishing, can no longer produce the evidence, so the hold becomes the
+    ordinary unknown outcome its reconciliation already knows how to settle.
+    """
+    from agent_sessions.api import (
+        adopt_response_lost_result,
+        read_response_lost_hold,
+        settle_response_lost_hold,
+    )
+
+    outcome = adopt_response_lost_result(session_id, pin["artifact_path"])
+    if outcome is None or outcome["status"] != "waiting":
+        return outcome
+    hold = read_response_lost_hold(session_id)
+    if hold is None:
+        return outcome
+    view = _observe_held_guest(hold["guest_id"])
+    if view is None or view.get("session_id") != hold["guest_id"]:
+        return outcome
+    ceased = view.get("state") in {"evicted", "destroyed"}
+    completed = type(view.get("last_invoke_at")) is int and view["last_invoke_at"] >= 1
+    if not (ceased or completed):
+        return outcome
+    # The guest publishes its receipt before it answers, so a completed invoke
+    # with nothing published means the callback failed rather than that the
+    # result is still on its way. Read once more anyway, because the two
+    # observations are not taken in one transaction.
+    retried = adopt_response_lost_result(session_id, pin["artifact_path"])
+    if retried is None or retried["status"] != "waiting":
+        return retried
+    reason = "response_lost_guest_ceased" if ceased else "response_lost_unpublished"
+    if settle_response_lost_hold(session_id, reason):
+        logger.warning(
+            "Ended response-loss hold for session %s: %s", session_id, reason
+        )
+        return {"status": "settled", "reason": reason}
+    return retried
+
+
 @DBOS.step()
 def _read_node_dispatch(pin: dict, session_id: int) -> dict:
     from agent_sessions.api import read_factory_dispatch
@@ -574,7 +640,20 @@ def _read_node_dispatch(pin: dict, session_id: int) -> dict:
     from sqlmodel import Session
 
     with Session(get_engine()) as db:
-        return read_factory_dispatch(db, pin, session_id)
+        state = read_factory_dispatch(db, pin, session_id)
+    # After the dispatch read, not before: a successful adoption deletes the
+    # pending row this step projects, and the loop must keep waiting one more
+    # interval so its next poll reads the turn that adoption just wrote. Any
+    # failure here leaves the hold exactly as it was.
+    try:
+        _recover_response_lost(pin, session_id)
+    except Exception as exc:  # noqa: BLE001 - recovery never fails a live node.
+        logger.warning(
+            "response-loss recovery failed for session %s: %s",
+            session_id,
+            type(exc).__name__,
+        )
+    return state
 
 
 def _await_dispatched_node_turn(pin: dict, session_id: int, deadline: datetime):
@@ -901,6 +980,22 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
         for field, value in expected.items():
             if getattr(owner, field) != value:
                 raise ValueError(f"node session ownership conflict: {field}")
+
+    # The conductor reaches here for an attempt whose workflow is already
+    # terminal, which is exactly the shape a replica loss leaves behind. Give
+    # the held turn its committed result before deciding the attempt has none.
+    # Outside the read transaction above: adoption is a write through the
+    # ordinary turn writer and takes its own locks.
+    try:
+        _recover_response_lost(pin, session_id)
+    except Exception as exc:  # noqa: BLE001 - reconciliation observes, never fails.
+        logger.warning(
+            "response-loss recovery failed for session %s: %s",
+            session_id,
+            type(exc).__name__,
+        )
+
+    with Session(get_engine()) as session:
         # Each node attempt creates exactly one fresh session and first turn.
         # A follow-up or remaining pending message is outside that admission.
         pending = session.exec(
