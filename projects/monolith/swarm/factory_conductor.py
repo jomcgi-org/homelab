@@ -1325,11 +1325,13 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
         model = reviewer
     else:
         # The planner left worker routing to policy. Judgment work has a
-        # capability floor; other work follows quota-aware pool order.
+        # capability floor; other work follows quota-aware pool order for the
+        # class of node this is. Implementation has its own pool so delivery
+        # can be routed without moving every other worker-role node with it.
         choice = (
             judgment_floor(policy)
             if task_class in JUDGMENT_CLASSES
-            else select_model("worker", policy)
+            else select_model("implement" if role == "implement" else "worker", policy)
         )
         model = choice["model"]
         stated_reason = selection_reason(stated_reason, choice)
@@ -1859,8 +1861,8 @@ def _correction_model(
     if task_class in JUDGMENT_CLASSES:
         choice = judgment_floor(policy)
         return choice["model"], ", with a floor-selected judgment model"
-    choice = select_model("worker", policy)
-    return choice["model"], ", with a pool-selected worker model"
+    choice = select_model("implement", policy)
+    return choice["model"], ", with a pool-selected implement model"
 
 
 def _insert_review_round(
@@ -2145,7 +2147,7 @@ def _integration_edits(
             "node_key": key,
             "kind": "work",
             "prompt": prompt,
-            "model": select_model("worker", policy)["model"],
+            "model": select_model("implement", policy)["model"],
             "deps": list(group),
             "side_effects": True,
             "stated_reason": (

@@ -22,8 +22,15 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-ROLES = ("conductor", "worker")
+ROLES = ("conductor", "worker", "implement", "refine")
 _ROLE_KEY = {"conductor": "conductor_model", "worker": "worker_model"}
+# Class pools name no policy field, so each falls back to a configured pool
+# rather than to a single model. Delivery implementation is the worker pool by
+# default, which is exactly where it ran before this existed. A refine brief is
+# read by a person and never merged, so its default leads with Muse and keeps a
+# Codex implementer behind it; a policy that allows neither falls back to the
+# conductor pool, which is where refine ran before.
+DEFAULT_REFINE_POOL = ("spark", "sol")
 # Adapter family to broker provider. Families absent here have no quota feed.
 QUOTA_PROVIDERS = {"codex": "codex", "claude": "claude"}
 # Models at or above the ADR agents/038 judgment floor. Adapter family is NOT
@@ -94,21 +101,27 @@ def pool_for(role: str, policy: dict) -> list[str]:
     pool = pools.get(role) if isinstance(pools, dict) else None
     if isinstance(pool, list) and pool:
         return [str(model) for model in pool]
+    if role == "implement":
+        return pool_for("worker", policy)
+    if role == "refine":
+        allowed = policy.get("allowed_models") or []
+        default = [model for model in DEFAULT_REFINE_POOL if model in allowed]
+        return default or pool_for("conductor", policy)
     return [policy[_ROLE_KEY[role]]]
 
 
 def judgment_floor(policy: dict, *, quota: dict | None = None) -> dict:
     """The first pool member at or above the Opus floor, worker pool first.
 
-    Falls back to the conductor pool when the worker pool names nothing at the
-    floor, and to the conductor model itself when neither does, because a
+    Falls back to the conductor pool when the implement pool names nothing at
+    the floor, and to the conductor model itself when neither does, because a
     judgment task must never run on the cheap lane just because a policy was
     written without one. Provider quota is deliberately ignored: the floor is
     a capability constraint, and a quota-walled Opus holds work instead of
     demoting it. ``quota`` is accepted only to make that contract testable.
     """
     del quota
-    worker_pool = pool_for("worker", policy)
+    worker_pool = pool_for("implement", policy)
     preferred = worker_pool[0]
     skipped: list[dict] = []
 
