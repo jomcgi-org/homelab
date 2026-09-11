@@ -122,6 +122,11 @@ agents:
     # Consume exact native receipts for active owners. Restart adoption and
     # clearing an observer fence after process loss remain separate controls.
     resultReceiptAdoptionEnabled: false
+    # Hold a turn whose invoke response was lost over a still-working guest and
+    # finish it from its committed receipt instead of settling it unknown.
+    # Requires resultReceiptsEnabled: without a receipt there is nothing to
+    # recover and the hold would only delay the same unknown outcome.
+    responseLostRecoveryEnabled: false
     # Thread-bound sessions always post into their Discord thread. For sessions
     # started elsewhere, post only turns that need a human by default.
     channelNotify: "needs-input"

@@ -189,6 +189,8 @@ spec:
               value: {{ .Values.agents.sessions.resultReceiptsEnabled | quote }}
             - name: AGENT_RESULT_RECEIPT_ADOPTION_ENABLED
               value: {{ .Values.agents.sessions.resultReceiptAdoptionEnabled | quote }}
+            - name: AGENT_RESPONSE_LOST_RECOVERY_ENABLED
+              value: {{ .Values.agents.sessions.responseLostRecoveryEnabled | default false | quote }}
             {{- with .Values.agents.drainer }}
             # Work-queue drainer. DRAINER_ENABLED is checked both by the
             # internal trigger and inside the DBOS workflow. Its job kind is a
