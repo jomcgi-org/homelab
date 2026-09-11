@@ -1443,18 +1443,16 @@ swarm:
   factoryEnabled: false
   # Consume exact durable Ember teardown proof for stopped/expired attempts.
   factoryStopSupervisionEnabled: false
-  # Hard ceiling on factory tasks in flight at once. The policy's max_tasks
-  # asks for a concurrency and this caps it, so a posted policy cannot open
-  # more lanes than the platform is sized for. Size it against
-  # agentSessions.admission above, which the factory shares with the drainer
-  # and the probes: a node that waits past its turn timeout for a permit
-  # settles uncertain and holds its slot rather than backing off. Minimum 1;
-  # zero is not a kill switch (use the factory stop control). It bounds the
-  # SUM of the policy's per-lane max_tasks, delivery and advisory together.
-  # Four, not one: the ceiling now bounds the SUM of both lanes, and at one
-  # the advisory lane could never open at all. The policy's per-lane
-  # max_tasks is what actually sizes each lane; this only stops a posted
-  # policy asking for more than the platform holds.
+  # Hard ceiling on factory tasks in flight at once, over BOTH lanes together.
+  # The policy's per-lane max_tasks is what sizes each lane; this only stops a
+  # posted policy opening more than the platform is sized for, and delivery
+  # keeps at least one slot under any ceiling. Four, not the old one, because
+  # at one the advisory lane could never open at all.
+  #
+  # Size it against agentSessions.admission above, which the factory shares
+  # with the drainer and the probes: a node that waits past its turn timeout
+  # for a permit settles uncertain and holds its slot rather than backing off.
+  # Minimum 1; zero is not a kill switch (use the factory stop control).
   factoryMaxConcurrentTasks: 4
   enabled: false
   # The cheap implementer lane and the reviewer that gates it. The reviewer is
