@@ -804,6 +804,68 @@ def _read_reconciliation_head(repo: str, branch: str) -> str | None:
     return read_branch_head.__wrapped__(repo, branch)
 
 
+def _expected_session_identity(pin: dict) -> dict:
+    """The exact identity the session of one node attempt must carry.
+
+    Shared so the two readers that resolve a session cannot drift apart on what
+    counts as the same attempt's work.
+    """
+    from agent_sessions import normalize_model
+
+    return {
+        "local_session_id": _session_key(
+            pin["task_id"], pin["node_key"], pin["attempt"]
+        ),
+        "workflow_id": pin["workflow_id"],
+        "node_key": pin["node_key"],
+        "node_attempt": pin["attempt"],
+        "repo": pin["repo"],
+        "branch": pin["hydration_branch"],
+        "model": normalize_model(pin["model"]),
+    }
+
+
+def resolve_node_session_id(pin: dict, *, session=None) -> int | None:
+    """Find one attempt's session by its deterministic local identity.
+
+    graph.record_dispatch writes SwarmNodeRun.session_id only once a workflow
+    finishes, so a workflow that dies mid-way leaves the run with no session id
+    at all. Stop supervision then refuses the attempt outright, because
+    reconcile_uncertain_attempt requires an int, and the reconciler rewrites the
+    same uncertain outcome every tick while the guest is never confirmed ceased.
+
+    The identity is deterministic, so the exact session can still be found by
+    the key the attempt started under, under the same ownership checks
+    reconcile_completed_node applies. Anything that is not that exact session
+    raises rather than being adopted.
+
+    ``session`` is required in practice rather than optional in spirit: the
+    caller reconciles against one engine and this read has to be the same one.
+    """
+    from contextlib import nullcontext
+
+    from sqlmodel import Session, select
+
+    from agent_sessions.models import AgentSession
+    from core.db import get_engine
+
+    pin = _validate_pin(pin)
+    expected = _expected_session_identity(pin)
+    owned = nullcontext(session) if session is not None else Session(get_engine())
+    with owned as db:
+        owner = db.exec(
+            select(AgentSession).where(
+                AgentSession.local_session_id == expected["local_session_id"]
+            )
+        ).first()
+        if owner is None:
+            return None
+        for field, value in expected.items():
+            if getattr(owner, field) != value:
+                raise ValueError(f"node session ownership conflict: {field}")
+        return owner.id
+
+
 def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
     """Observe late completion outside durable replay, without causing work.
 
@@ -817,23 +879,14 @@ def reconcile_completed_node(pin: dict, session_id: int | None) -> dict | None:
     """
     from sqlmodel import Session, select
 
-    from agent_sessions import normalize_model
     from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
     from core.db import get_engine
 
     pin = _validate_pin(pin)
     if session_id is not None and (not _is_int(session_id) or session_id < 1):
         raise ValueError("session_id must be a positive int when supplied")
-    key = _session_key(pin["task_id"], pin["node_key"], pin["attempt"])
-    expected = {
-        "local_session_id": key,
-        "workflow_id": pin["workflow_id"],
-        "node_key": pin["node_key"],
-        "node_attempt": pin["attempt"],
-        "repo": pin["repo"],
-        "branch": pin["hydration_branch"],
-        "model": normalize_model(pin["model"]),
-    }
+    expected = _expected_session_identity(pin)
+    key = expected["local_session_id"]
     with Session(get_engine()) as session:
         owner = (
             session.get(AgentSession, session_id)
