@@ -11,9 +11,12 @@ def factory_ceiling(monkeypatch):
     """Two lanes need a ceiling that holds both; it bounds their sum.
 
     A test that cares about the ceiling itself still sets or clears the
-    variable for its own case, and that assignment wins over this one.
+    variable for its own case, and that assignment wins over this one. The
+    background reserve is pinned to zero for the same reason: these tests fake
+    the free-slot count directly, and the reserve has its own cases below.
     """
     monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+    monkeypatch.setenv("FACTORY_BACKGROUND_RESERVE", "0")
 
 
 def test_conductor_contract_rejects_missing_action_fields_and_authority_changes():
@@ -489,6 +492,10 @@ def feedback_db(tmp_path, monkeypatch):
     monkeypatch.setattr(
         conductor, "github_get", lambda *_args: pytest.fail("unexpected GitHub read")
     )
+    # Dispatch reads the shared background pool now, the serial lane included,
+    # and this fixture holds no admission tables. A test that cares about the
+    # pool sets its own count afterwards, which wins over this one.
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 3)
     yield engine
     engine.dispose()
 
@@ -6273,11 +6280,9 @@ def test_a_parallel_limit_of_one_fans_nothing_out(feedback_db, monkeypatch):
     task, policy = parallel_plan(max_parallel_nodes=1)
     assert controls.parallel_limit(policy) == 1
     monkeypatch.setattr(conductor, "github_get", task_ref(task["id"]))
-    monkeypatch.setattr(
-        conductor,
-        "_free_background_slots",
-        lambda: pytest.fail("the serial lane must not read the shared pool"),
-    )
+    # The serial lane reads the pool too now: the factory yields the reserve to
+    # the drainers and the probes before it takes a slot of its own.
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 3)
     nodes, runs = graph_state(task["id"])
     assert conductor.fan_out_wave(task["id"], nodes, runs, 1) == []
     conductor.reconcile_task(task["id"], policy, object())
@@ -6509,6 +6514,14 @@ def test_a_refused_fan_in_never_hands_out_branches(feedback_db, monkeypatch):
     assert "stale_version" in deviation["evidence"]
 
 
+def admitted_keys(task):
+    return [
+        run["node_key"]
+        for run in conductor.graph.node_runs(task["id"])
+        if run["status"] == "admitted"
+    ]
+
+
 def test_a_refused_capacity_reservation_leaves_the_node_ready(feedback_db, monkeypatch):
     from swarm import factory_controls as controls
 
@@ -6517,15 +6530,14 @@ def test_a_refused_capacity_reservation_leaves_the_node_ready(feedback_db, monke
     monkeypatch.setattr(conductor, "github_get", task_ref(task["id"]))
     monkeypatch.setattr(conductor, "_free_background_slots", lambda: 0)
     conductor.reconcile_task(task["id"], policy, object())
-    admitted = [
-        run["node_key"]
-        for run in conductor.graph.node_runs(task["id"])
-        if run["status"] == "admitted"
-    ]
-    # The pool had no room for a second guest, so only the first node started.
-    # The second never failed and never paused the task.
-    assert admitted == ["implement_alpha"]
+    # An empty pool starts nothing at all, the first node included. Nothing
+    # failed and nothing paused: both nodes are simply still ready.
+    assert admitted_keys(task) == []
     assert controls.task_snapshot(task["id"])["task_paused"] is False
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 1)
+    conductor.reconcile_task(task["id"], policy, object())
+    # One slot starts one node. The second waits rather than failing.
+    assert admitted_keys(task) == ["implement_alpha"]
     monkeypatch.setattr(conductor, "_free_background_slots", lambda: 2)
     settle_admitted_node(
         task,
@@ -6543,6 +6555,32 @@ def test_a_refused_capacity_reservation_leaves_the_node_ready(feedback_db, monke
         run["node_key"] == "implement_beta"
         for run in conductor.graph.node_runs(task["id"])
     )
+
+
+def test_the_factory_leaves_the_shared_reserve_for_everything_else(
+    feedback_db, monkeypatch
+):
+    """The pool is shared with the drainers and the probes, which cannot wait.
+
+    A factory node the pool declines stays ready and starts on a later tick, so
+    the factory is the member that yields. At a task ceiling of twelve without
+    this, delivery could hold every background slot.
+    """
+    from swarm import factory_controls as controls
+
+    monkeypatch.setenv("FACTORY_BACKGROUND_RESERVE", "2")
+    task, policy = parallel_plan()
+    conductor.reconcile_task(task["id"], policy, object())
+    monkeypatch.setattr(conductor, "github_get", task_ref(task["id"]))
+    # Two free slots are exactly the reserve, so the factory takes neither.
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 2)
+    conductor.reconcile_task(task["id"], policy, object())
+    assert admitted_keys(task) == []
+    assert controls.task_snapshot(task["id"])["task_paused"] is False
+    # A third slot is one the factory may take, and only that one.
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 3)
+    conductor.reconcile_task(task["id"], policy, object())
+    assert admitted_keys(task) == ["implement_alpha"]
 
 
 def test_the_allowance_is_derived_from_the_accepted_plan(feedback_db):
@@ -6917,11 +6955,9 @@ def test_a_planner_added_integrate_node_fans_nothing_out_at_a_limit_of_one(
         ],
     )
     monkeypatch.setattr(conductor, "github_get", task_ref(task["id"]))
-    monkeypatch.setattr(
-        conductor,
-        "_free_background_slots",
-        lambda: pytest.fail("the serial lane must not read the shared pool"),
-    )
+    # The serial lane reads the pool too now: the factory yields the reserve to
+    # the drainers and the probes before it takes a slot of its own.
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 3)
     nodes, runs = graph_state(task["id"])
     # The planner named a fan-in, but the operator did not turn fan-out on, so
     # its members run serially on the task branch and it merges nothing.
@@ -7221,6 +7257,15 @@ def test_routing_that_cannot_be_observed_never_stops_the_tick(monkeypatch):
         ("closes #77", True),
         ("Fixes #77", True),
         ("Resolves owner/repo#77", True),
+        # The full URL closes an issue on GitHub just as the short forms do.
+        ("Closes https://github.com/owner/repo/issues/77", True),
+        ("fixed HTTPS://GITHUB.COM/owner/repo/issues/77", True),
+        # Another repository's issue 77 is not this task's issue.
+        ("Closes https://github.com/other/repo/issues/77", False),
+        # A pull request reference is not an issue reference.
+        ("Closes https://github.com/owner/repo/pull/77", False),
+        ("See https://github.com/owner/repo/issues/77", False),
+        ("Closes https://github.com/owner/repo/issues/770", False),
         ("Refs #77", False),
         ("Closes #770", False),
         ("Closes #7", False),
