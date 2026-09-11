@@ -96,6 +96,13 @@ function board(overrides = {}) {
       delivery: { limit: 1, active: 1, queued: 1 },
       advisory: { limit: 2, active: 0, queued: 0 },
     },
+    quota_guard: {
+      paused: false,
+      state: "open",
+      pause_percent: 85,
+      resume_percent: 75,
+      used_percent: 41,
+    },
     policy: {
       generation: 3,
       conductor_model: "spark",
@@ -250,6 +257,27 @@ describe("factory board page", () => {
     expect(target.querySelector(".panel.admitted .spec").textContent).toContain(
       "$0.00 of $36.00",
     );
+  });
+
+  test("says so when the claude window is holding delivery back", () => {
+    const held = board({
+      quota_guard: {
+        paused: true,
+        state: "paused",
+        pause_percent: 85,
+        resume_percent: 75,
+        used_percent: 91.4,
+      },
+    });
+    const target = renderPage({ board: held, task: null, error: false });
+    expect(target.querySelector(".policy-line").textContent).toContain(
+      "delivery held: claude 7d at 91% of 85%",
+    );
+  });
+
+  test("says nothing about an open quota guard", () => {
+    const target = renderPage({ board: board(), task: null, error: false });
+    expect(target.querySelector(".policy-line .guard")).toBeNull();
   });
 
   test("says so when the board is unavailable", () => {

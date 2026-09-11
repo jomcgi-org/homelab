@@ -2754,6 +2754,7 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
             parallel - len(running),
             fan_out=True,
             parallel=parallel,
+            policy=policy,
         )
         return
     permission = can_start(task_id)
@@ -2897,7 +2898,9 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
         else:
             set_control("pause_task", ACTOR, task_id=task_id)
         return
-    _dispatch_ready(task, nodes, runs, parallel, fan_out=False, parallel=parallel)
+    _dispatch_ready(
+        task, nodes, runs, parallel, fan_out=False, parallel=parallel, policy=policy
+    )
 
 
 def _ready_nodes(nodes: list[dict], runs: list[dict]) -> list[dict]:
@@ -2923,6 +2926,18 @@ def _free_background_slots() -> int:
         return free_background_slots(db)
 
 
+def _delivery_gated(node_key: str) -> bool:
+    """Whether the Claude-window guard holds this node back.
+
+    Review is the spend the guard exists to protect, and an implementation
+    node is what a review is then owed, so holding one without the other
+    would only build up work the guard is refusing to gate. A planner round, a
+    refine brief and any other role still start: they cost the cheap lane and
+    keep the task legible while delivery waits.
+    """
+    return node_key.startswith("review_") or _is_implementation(node_key)
+
+
 def _dispatch_ready(
     task: dict,
     nodes: list[dict],
@@ -2931,6 +2946,7 @@ def _dispatch_ready(
     *,
     fan_out: bool,
     parallel: int,
+    policy: dict | None = None,
 ) -> bool:
     """Reserve up to ``slots`` ready nodes, each on the branch the graph implies.
 
@@ -2940,8 +2956,16 @@ def _dispatch_ready(
     node the pool or the server declines simply stays ready for the next tick.
     """
     from swarm.factory_controls import set_control
+    from swarm.factory_quota_guard import delivery_paused
 
     ready = _ready_nodes(nodes, runs)
+    if ready and policy is not None and delivery_paused():
+        held = [node for node in ready if _delivery_gated(node["node_key"])]
+        ready = [node for node in ready if not _delivery_gated(node["node_key"])]
+        if held and not ready:
+            # Not a task pause: the work is fine and the window is not, so the
+            # task waits where it stands and starts on the tick that resumes.
+            return False
     if not ready or slots <= 0:
         return False
     solo = 0 if fan_out else 1
@@ -3041,10 +3065,24 @@ def reserve_node(task_id: str, node_key: str, key: str, context: dict) -> bool:
 
 
 def open_admission_lanes(policy: dict) -> tuple:
-    """Lanes this tick may admit into. Delivery is what a guard can shut."""
-    from swarm.factory_controls import LANES
+    """Lanes this tick may admit into. Delivery is what the guard shuts.
 
-    return LANES
+    The guard is evaluated here, once per tick, because this is the one place
+    the reconciler is already about to spend money. Advisory work is never
+    held: it passes no review gate, so it does not spend the window the guard
+    is protecting.
+    """
+    from swarm.factory_controls import LANES
+    from swarm.factory_quota_guard import evaluate
+
+    try:
+        verdict = evaluate(policy)
+    except Exception:  # noqa: BLE001 - a guard that cannot read never blocks
+        logger.exception("factory quota guard evaluation failed")
+        return LANES
+    if not verdict["paused"]:
+        return LANES
+    return tuple(lane for lane in LANES if lane != "delivery")
 
 
 def tick() -> None:

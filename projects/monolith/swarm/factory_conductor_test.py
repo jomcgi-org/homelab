@@ -6990,3 +6990,107 @@ def test_tick_ingests_the_operators_issues_before_it_discovers_one(monkeypatch):
     monkeypatch.setattr(conductor, "reconcile_task", lambda *_args: None)
     conductor.tick()
     assert order == ["ingest", "intake"]
+
+
+def _guard_node(node_key):
+    return {
+        "node_key": node_key,
+        "deps": [],
+        "max_attempts": 1,
+        "max_cost_usd": 1.0,
+    }
+
+
+def guard_dispatch(monkeypatch, node_keys, *, paused):
+    """Drive _dispatch_ready over a fixed ready set and record what started."""
+    import swarm.factory_quota_guard as quota_guard
+
+    nodes = [_guard_node(key) for key in node_keys]
+    monkeypatch.setattr(conductor, "_ready_nodes", lambda *_a: list(nodes))
+    monkeypatch.setattr(conductor, "hydration_branch", lambda _task: "main")
+    monkeypatch.setattr(conductor, "branch_hydration", lambda *_a: "main")
+    monkeypatch.setattr(conductor, "_dispatch_branch", lambda *_a: "factory/t-1")
+    monkeypatch.setattr(conductor, "fan_out_wave", lambda *_a: [])
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: len(nodes))
+    monkeypatch.setattr(quota_guard, "delivery_paused", lambda **_k: paused)
+    started = []
+
+    def reserve(_task_id, node_key, _key, _context):
+        started.append(node_key)
+        return True
+
+    monkeypatch.setattr(conductor, "reserve_node", reserve)
+    monkeypatch.setattr(
+        conductor,
+        "_schema",
+        lambda _key: {},
+    )
+    task = {"id": "t-1", "repo": "owner/repo"}
+    conductor._dispatch_ready(
+        task, nodes, [], len(nodes), fan_out=True, parallel=len(nodes), policy={}
+    )
+    return started
+
+
+@pytest.mark.parametrize(
+    ("node_key", "gated"),
+    [
+        ("review_1", True),
+        ("implement_fix", True),
+        ("correct_1", True),
+        ("integrate_1", True),
+        ("conductor_1", False),
+        ("refine_brief", False),
+        ("investigate_cause", False),
+    ],
+)
+def test_the_window_guard_holds_only_delivery_nodes(node_key, gated):
+    assert conductor._delivery_gated(node_key) is gated
+
+
+def test_a_paused_window_starts_no_review_or_implement_node(monkeypatch):
+    started = guard_dispatch(
+        monkeypatch, ["implement_fix", "review_1", "conductor_2"], paused=True
+    )
+    assert started == ["conductor_2"]
+
+
+def test_a_paused_window_starts_nothing_rather_than_pausing_the_task(monkeypatch):
+    import swarm.factory_controls as controls_module
+
+    monkeypatch.setattr(
+        controls_module,
+        "set_control",
+        lambda *_a, **_k: pytest.fail("a held window is not a task pause"),
+    )
+    assert guard_dispatch(monkeypatch, ["implement_fix", "review_1"], paused=True) == []
+
+
+def test_an_open_window_starts_every_ready_node(monkeypatch):
+    started = guard_dispatch(
+        monkeypatch, ["implement_fix", "review_1", "conductor_2"], paused=False
+    )
+    assert started == ["implement_fix", "review_1", "conductor_2"]
+
+
+def test_a_paused_window_shuts_the_delivery_lane_only(monkeypatch):
+    import swarm.factory_quota_guard as quota_guard
+
+    monkeypatch.setattr(
+        quota_guard, "evaluate", lambda _policy: {"paused": True, "state": "paused"}
+    )
+    assert conductor.open_admission_lanes({}) == ("advisory",)
+    monkeypatch.setattr(
+        quota_guard, "evaluate", lambda _policy: {"paused": False, "state": "open"}
+    )
+    assert conductor.open_admission_lanes({}) == ("delivery", "advisory")
+
+
+def test_a_guard_that_cannot_be_evaluated_never_blocks_admission(monkeypatch):
+    import swarm.factory_quota_guard as quota_guard
+
+    def explode(_policy):
+        raise RuntimeError("broker down")
+
+    monkeypatch.setattr(quota_guard, "evaluate", explode)
+    assert conductor.open_admission_lanes({}) == ("delivery", "advisory")

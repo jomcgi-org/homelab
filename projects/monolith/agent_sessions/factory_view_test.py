@@ -223,6 +223,7 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
     with Session(engine) as db:
         unavailable = build_factory_view(session=db)
         assert unavailable["ok"] is False and unavailable["lanes"] is None
+        assert unavailable["quota_guard"] is None
         db.add(
             FactoryControl(
                 id="factory",
@@ -262,6 +263,8 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
     assert view["intake"]["policy"]["enabled"] is False
     # The control row carries a bare integer max_tasks, so it is the delivery
     # lane and the advisory lane is shut.
+    assert view["quota_guard"]["state"] == "open"
+    assert view["quota_guard"]["pause_percent"] == 85
     assert view["lanes"] == {
         "delivery": {"limit": 1, "active": 0, "queued": 1},
         "advisory": {"limit": 0, "active": 0, "queued": 0},

@@ -1189,3 +1189,72 @@ def test_an_unusable_class_pool_is_refused(policy, pools):
     policy["model_pools"] = pools
     with pytest.raises(ValueError):
         controls.validate_policy(policy)
+
+
+def test_a_policy_without_a_quota_guard_gains_the_defaults(policy):
+    validated = controls.validate_policy(policy)
+    assert validated["quota_guard"] == {
+        "claude_7d_pause_percent": 85,
+        "claude_7d_resume_percent": 75,
+    }
+
+
+def test_the_quota_guard_thresholds_are_operator_owned(policy):
+    policy["quota_guard"] = {
+        "claude_7d_pause_percent": 95,
+        "claude_7d_resume_percent": 60,
+    }
+    assert controls.validate_policy(policy)["quota_guard"] == {
+        "claude_7d_pause_percent": 95,
+        "claude_7d_resume_percent": 60,
+    }
+
+
+def test_one_named_threshold_defaults_the_other(policy):
+    policy["quota_guard"] = {"claude_7d_resume_percent": 50}
+    assert controls.validate_policy(policy)["quota_guard"] == {
+        "claude_7d_pause_percent": 85,
+        "claude_7d_resume_percent": 50,
+    }
+
+
+def test_lowering_the_pause_below_the_default_resume_is_refused(policy):
+    """Naming one threshold cannot silently invert the pair."""
+    policy["quota_guard"] = {"claude_7d_pause_percent": 60}
+    with pytest.raises(ValueError):
+        controls.validate_policy(policy)
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"claude_7d_pause_percent": 70, "claude_7d_resume_percent": 70},
+        {"claude_7d_pause_percent": 70, "claude_7d_resume_percent": 80},
+        {"claude_7d_pause_percent": 0},
+        {"claude_7d_pause_percent": 101},
+        {"claude_7d_pause_percent": 85.5},
+        {"unknown": 1},
+        [],
+    ],
+)
+def test_an_unusable_quota_guard_is_refused(policy, block):
+    policy["quota_guard"] = block
+    with pytest.raises(ValueError):
+        controls.validate_policy(policy)
+
+
+def test_the_guard_view_reads_the_ledger_not_the_broker(db, policy):
+    admitted(policy)
+    view = controls.quota_guard_view(policy)
+    assert view["paused"] is False and view["state"] == "open"
+    assert view["pause_percent"] == 85 and view["resume_percent"] == 75
+    assert view["used_percent"] is None and view["last_action"] is None
+    with Session(db) as session:
+        controls._audit(
+            session, "factory:quota-guard", "quota_guard_paused", used_percent=91.0
+        )
+        session.commit()
+    paused = controls.quota_guard_view(policy)
+    assert paused["paused"] is True and paused["used_percent"] == 91.0
+    assert paused["last_action"] == "quota_guard_paused"
+    assert controls.quota_guard_state() == "paused"
