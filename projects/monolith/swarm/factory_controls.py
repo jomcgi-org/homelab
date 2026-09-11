@@ -906,6 +906,12 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
         )
     }
     result["task_class"] = receipt_task_class(row)
+    # The escalation document, when this receipt raised one. It is read by the
+    # board, by the decision endpoint, and by the next refine prompt when the
+    # operator asked for more, so it belongs on the one snapshot they share.
+    result["escalation"] = (
+        json.loads(row.escalation_json) if row.escalation_json else None
+    )
     result.update(
         policy=json.loads(row.policy_json) if row.policy_json else None,
         starts=[_start_dict(s) for s in starts],
@@ -1026,6 +1032,62 @@ def delivery_admissions(db, since: datetime) -> int:
                 ),
             )
         ).all()
+    )
+
+
+def escalation_view(receipt: dict) -> dict | None:
+    """One escalation as the operator page renders it, from a board snapshot.
+
+    Pure shaping over the snapshot dict so the board, the public snapshot job
+    and the tests all read the same thing without a second database pass.
+    """
+    escalation = receipt.get("escalation")
+    if not escalation:
+        return None
+    resolved = escalation.get("resolved")
+    return {
+        "receipt_id": receipt.get("id"),
+        "issue_number": receipt.get("issue_number"),
+        "title": receipt.get("title"),
+        "url": receipt.get("url"),
+        "task_class": receipt.get("task_class"),
+        "generation": receipt.get("generation"),
+        "state": receipt.get("state"),
+        "recommendation": escalation.get("recommendation"),
+        "question": escalation.get("question"),
+        "summary": escalation.get("summary"),
+        "comment_url": escalation.get("comment_url"),
+        "downgraded": bool(escalation.get("downgraded")),
+        "options": [
+            {
+                "key": option.get("key"),
+                "label": option.get("label"),
+                "effect": option.get("effect"),
+                # The detail is what the effect will do, not free text the
+                # page renders: the counts are enough for a person to see the
+                # shape of a split without carrying every child body to the
+                # browser.
+                "children": len((option.get("detail") or {}).get("children") or []),
+            }
+            for option in escalation.get("options") or []
+        ],
+        "chat": [
+            {"note": entry.get("note"), "asked_at": entry.get("asked_at")}
+            for entry in escalation.get("chat") or []
+        ],
+        "resolved": resolved,
+        "open": resolved is None,
+    }
+
+
+def escalations(receipts: list[dict]) -> list[dict]:
+    """Every escalation on the board, newest issue first, open ones first."""
+    views = [
+        view for view in (escalation_view(receipt) for receipt in receipts) if view
+    ]
+    return sorted(
+        views,
+        key=lambda view: (not view["open"], -(view["issue_number"] or 0)),
     )
 
 
