@@ -494,7 +494,7 @@
     let destroyed = false;
 
     (async () => {
-      maplibregl = (await import("maplibre-gl")).default;
+      maplibregl = await import("maplibre-gl");
       if (destroyed) return;
 
       map = new maplibregl.Map({
