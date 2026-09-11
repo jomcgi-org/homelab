@@ -11,31 +11,40 @@ polylane-k8s:
   config:
     cluster_name: homelab-hub
 
-  # Single replica is the chart's ceiling (one tunnel, one agent, no leader
-  # election), so the defaults stand. Sized per the recovery-drain convention:
-  # requests carry steady state, the memory limit carries a resync burst.
+  # Memory request equals limit in both blocks, per the cluster convention: a
+  # request below the limit lets the kernel overcommit and OOM-kill the pod
+  # under node pressure, below its own ceiling. The agent keeps upstream's
+  # 256Mi ceiling. cloudflared's working set is tens of MiB, so reserving
+  # upstream's 256Mi would waste node memory; 128Mi is twice what upstream
+  # itself requests. CPU requests are upstream's, and neither block sets a CPU
+  # limit: throttling the tunnel is worse than letting it burst.
   resources:
     requests:
-      cpu: 50m
-      memory: 128Mi
+      cpu: 100m
+      memory: 256Mi
     limits:
       memory: 256Mi
 
   tunnel:
     resources:
       requests:
-        cpu: 25m
-        memory: 64Mi
+        cpu: 50m
+        memory: 128Mi
       limits:
         memory: 128Mi
 
-  # No NetworkPolicy: the hub has no Cilium CRDs and nothing else in
-  # platform-gke enforces one. The agent is outbound-only regardless.
+  # Plain NetworkPolicy is the hub's only enforcement (no Cilium CRD), and this
+  # is a plain one. It buys ingress lockdown: the shim listens on loopback and
+  # is reachable only through the tunnel, so nothing but the ops ports should
+  # ever be dialled, and kubelet probes bypass policy. Egress stays open by
+  # upstream's own rule (`- {}`), which the agent needs for the kube API and
+  # the platform and cloudflared needs for Cloudflare's edge.
   networkPolicy:
-    enabled: false
+    enabled: true
 
-  # Prometheus is not scraping this cluster; Honeycomb gets telemetry through
-  # the otel-collector, which does not discover ServiceMonitors.
+  # Left at upstream's defaults, restated here because the ops ports exist and
+  # the absence of a scrape is a decision: nothing scrapes this cluster for
+  # Prometheus, and the otel-collector does not discover ServiceMonitors.
   metrics:
     service:
       enabled: false

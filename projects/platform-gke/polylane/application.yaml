@@ -33,9 +33,16 @@ spec:
   # The agent owns the contents of its state Secret: the chart renders it with
   # no data on purpose (the agent's RBAC is get/update/patch, never create), and
   # the agent writes its registration and the cloudflared tunnel token into it
-  # after startup. Without this exclusion selfHeal reconciles the Secret back to
-  # empty on every drift check, which de-registers the cluster and drops the
-  # tunnel until the agent re-registers.
+  # after startup.
+  #
+  # ServerSideApply is what protects those writes, not this block. The applied
+  # manifest carries no data key, so argocd-controller never enters the field
+  # ownership set for it and server-side apply prunes only fields its own
+  # manager owns. What the exclusion buys is silence: without it the
+  # structured-merge diff reports the Secret OutOfSync forever. Freezing
+  # everything under the pointer costs nothing here because the chart declares
+  # no keys under data at all. Do not drop ServerSideApply believing this block
+  # is the load-bearing half.
   ignoreDifferences:
     - group: ""
       kind: Secret

@@ -196,11 +196,33 @@ UptimeRobot checks `https://jomcgi.dev/health/otel-collector`, a direct public `
 
 **Internal observability guidance** lives in `docs/observability.md` (not published externally).
 
-(see: `projects/platform/otel-collector/values.yaml`, `projects/platform/otel-collector/values-prod.yaml`, `projects/platform/otel-collector/values-gke.yaml`, `projects/platform/kyverno/values.yaml`, `docs/observability.md`)
+**Polylane** (hub only, since 2026-09-10) is a third-party read-only view of the
+cluster's topology. `projects/platform/polylane` wraps the upstream
+`polylane-k8s` chart, vendored, and adds the `OnePasswordItem` holding the API
+key. One Deployment in the `polylane` namespace runs the agent as a native
+sidecar whose startup probe gates a `cloudflared` container, so the tunnel comes
+up only after registration lands. RBAC is enumerated `get`/`list` over 24
+resource types with no credential-bearing type among them, and `pods/log` is one
+of them, so pod log content leaves the cluster. The one write is
+`get`/`update`/`patch` pinned by `resourceNames` to the Secret the agent
+persists its registration and tunnel token into; the Application excludes that
+Secret's `data` from diffing so it does not read OutOfSync forever, and
+`ServerSideApply` is what actually keeps ArgoCD from pruning the agent's writes.
+Nothing is exposed inbound. The API key is env-injected and the 1Password
+operator does not restart consumers, so rotating it needs a `rollout restart`.
+
+(see: `projects/platform/otel-collector/values.yaml`, `projects/platform/otel-collector/values-prod.yaml`, `projects/platform/otel-collector/values-gke.yaml`, `projects/platform/kyverno/values.yaml`, `projects/platform/polylane/values.yaml`, `projects/platform-gke/polylane/application.yaml`, `docs/observability.md`)
 
 **Why.** Honeycomb quota sets the collector's admission boundary. An empty
 allowlist removes the OTLP listeners instead of relying on workloads not to send.
-The metrics pipeline cannot accept arbitrary OTLP metrics.
+The metrics pipeline cannot accept arbitrary OTLP metrics. Polylane is the first
+path out of the cluster to a third party that is not Honeycomb or Cloudflare, and
+it was taken on the shape of the grant rather than the vendor's assurances: no
+credential-bearing resource type is reachable, the agent cannot mint a Secret,
+and there is no inbound port or exported kubeconfig to revoke. Pod log content
+crossing that boundary is the cost, accepted because the alternative (dropping
+`pods/log`) diverges from the shipped chart's RBAC and would have to be
+re-diverged on every upgrade.
 
 ---
 
