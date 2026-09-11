@@ -589,7 +589,21 @@ defmodule Embervm.SessionManager do
   def handle_continue({:do_destroy_live, session_id}, state) do
     case SessionStore.get(state.session_store, session_id) do
       {:ok, %{state: :destroying} = session} ->
-        {:noreply, spawn_destroy_worker(state, session, false)}
+        # The owning node may already be gone at request time (a replaced brick,
+        # #6004). Waiting for a confirmation that can never arrive leaves the
+        # session destroying forever, so complete it here instead. The caller
+        # wrote the durable destroying intent before this continue, in every
+        # ordering, so the terminal record still follows its intent.
+        #
+        # An exact stop (a session carrying a stop_intent) is excluded: its
+        # contract is that the terminal op is written only against a completion
+        # proof from the node, and departure is not that proof.
+        if state.node_confirmed_destroy and is_nil(Map.get(session, :stop_intent)) and
+             node_gone_for_destroy?(state, session, state.clock.()) do
+          {:noreply, finish_destroy_node_gone(state, session)}
+        else
+          {:noreply, spawn_destroy_worker(state, session, false)}
+        end
 
       _ ->
         {:noreply, state}
@@ -3517,7 +3531,7 @@ defmodule Embervm.SessionManager do
 
     Enum.reduce(destroying, state, fn session, acc ->
       acc = maybe_alarm_destroying(acc, session, now)
-      redrive_one_destroying(acc, session, live_vms)
+      redrive_one_destroying(acc, session, live_vms, now)
     end)
   end
 
@@ -3543,7 +3557,7 @@ defmodule Embervm.SessionManager do
     end
   end
 
-  defp redrive_one_destroying(state, session, live_vms) do
+  defp redrive_one_destroying(state, session, live_vms, now) do
     sid = session.session_id
 
     # Emitted per ACTING arm below, not here. Reconcile runs every few seconds
@@ -3598,6 +3612,15 @@ defmodule Embervm.SessionManager do
         emit_redrive_intent.()
         record_session_destroyed(state, session, "absence")
 
+      # Owner has LEFT the fleet (node_gone_for_destroy?/3 states the exact
+      # predicate): no confirmation can ever arrive, so finish the destroy here
+      # rather than alarm about it forever (#6004). The redrive intent is emitted
+      # first because a CP restart puts the original begin_destroy in a different
+      # spec-trace run, and destroy_intent_precedes_record correlates within a run.
+      node_gone_for_destroy?(state, session, now) ->
+        emit_redrive_intent.()
+        finish_destroy_node_gone(state, session)
+
       # Owner not reporting (a disconnect): leave it destroying, never terminalize on
       # a transient absence of the whole node's facts.
       true ->
@@ -3624,13 +3647,18 @@ defmodule Embervm.SessionManager do
   end
 
   defp record_session_destroyed(state, session, confirmed_by) do
+    # The store derives terminal_reason from this payload reason, so a destroy
+    # completed on node departure is distinguishable in the session row and in
+    # the op-log from one the node confirmed.
+    reason = if confirmed_by == "node_gone", do: :node_gone, else: :destroyed
+
     reply =
       SessionStore.transition(
         state.session_store,
         session.session_id,
         :destroy,
         :session_destroyed,
-        %{reason: :destroyed},
+        %{reason: reason},
         %{}
       )
 
@@ -3994,6 +4022,115 @@ defmodule Embervm.SessionManager do
   end
 
   defp node_reporting?(_state, _node_id), do: false
+
+  # THE NODE-GONE PREDICATE (#6004).
+  #
+  # Under the node-confirmed-destroy gate a destroy reaches `destroyed` only when
+  # the owning node confirms teardown. When that node has left the fleet, no
+  # confirmation can ever arrive and the session sits in `destroying` forever,
+  # holding every downstream reservation bound to it. This decides when the
+  # control plane may complete such a destroy on node departure instead.
+  #
+  # It is deliberately NARROW: a node that is registered and healthy but slow
+  # keeps the full confirmation wait and the alarm. A node counts as gone only
+  # when BOTH of these hold:
+  #
+  #   1. it publishes no capacity facts for the session's dial, so it is not
+  #      dispatchable and the control plane is receiving nothing from it, AND
+  #   2. the node registry says either
+  #      a. no runtime instance is registered for it, or its instance is
+  #         tombstoned, in which case no NodeStatus can ever arrive, or
+  #      b. it has been `:down` or `:unknown` for longer than
+  #         `destroying_alarm_ms` measured from the destroy intent
+  #         (`session.updated_at`, stamped by the `destroying` transition), so
+  #         nothing dispatchable has been observed from it since the destroy was
+  #         requested.
+  #
+  # (2b) reuses the alarm threshold on purpose: the same wait that decides a
+  # destroy is stuck is the wait that decides it will never be confirmed.
+  # A draining node fails (2) (it still reports healthy), and a brick blip
+  # shorter than the threshold fails (2b), so neither terminalizes anything.
+  # A brick_status lookup that fails reads as NOT gone, so the wait is
+  # fail-closed toward keeping the session.
+  defp node_gone_for_destroy?(state, session, now) do
+    case destroy_dial_key(state, session) do
+      nil ->
+        false
+
+      dial ->
+        not node_reporting?(state, dial) and registry_confirms_gone?(state, dial, session, now)
+    end
+  end
+
+  defp registry_confirms_gone?(state, dial, session, now) do
+    status = safe_brick_status(state, dial)
+
+    cond do
+      Map.get(status, :tombstoned) == true -> true
+      Map.get(status, :registered) == false -> true
+      Map.get(status, :health) in [:down, :unknown] -> now - session.updated_at > state.destroying_alarm_ms
+      true -> false
+    end
+  end
+
+  # The dial the destroy would have to reach. Mirrors destroy_vm/2: current
+  # ownership first, then the placement dial the manager retained, then the bare
+  # node name. A row with no node at all has nothing to wait on, so it is not a
+  # node-gone case (the ordinary destroy path completes it).
+  defp destroy_dial_key(state, session) do
+    node_id = Map.get(session, :node_id) || Map.get(session, :volume_node_id)
+
+    cond do
+      not is_binary(node_id) -> nil
+      is_binary(Map.get(session, :vm_id)) -> session_dial(state, session.session_id, node_id, session.vm_id)
+      true -> Map.get(state.session_dials, session.session_id, node_id)
+    end
+  end
+
+  # brick_status_fun reaches the NodeRegistry GenServer by default, so a slow or
+  # absent registry must not crash or block the manager. An unreadable status is
+  # no evidence of departure.
+  defp safe_brick_status(state, dial) do
+    fun = Keyword.get(state.session_opts, :brick_status_fun)
+
+    if is_function(fun, 1) do
+      try do
+        case fun.(dial) do
+          status when is_map(status) -> status
+          _ -> %{}
+        end
+      rescue
+        _ -> %{}
+      catch
+        _, _ -> %{}
+      end
+    else
+      %{}
+    end
+  end
+
+  # Complete a destroy the owning node can never confirm. The durable destroying
+  # intent is already on the log at every call site, so this only appends the
+  # terminal op, which keeps destroy_intent_precedes_record true. The terminal
+  # reason is `node_gone` so the row and the op-log say why the confirmation was
+  # waived, and the confirm_destroy record carries confirmed_by "node_gone".
+  #
+  # The session volume is deliberately NOT retired here: retiring dials the
+  # owning node, and the predicate just established there is no owning node to
+  # dial. A workspace that outlived its brick is reclaimed by the orphan-volume
+  # pass, not by an RPC into the void.
+  defp finish_destroy_node_gone(state, session) do
+    Logger.warning("embervm session destroyed without node confirmation (node gone)",
+      session_id: session.session_id,
+      workload: session.workload,
+      node_id: session.node_id,
+      vm_id: session.vm_id
+    )
+
+    state
+    |> drain_relight_waiters(session.session_id, {:error, {:gone, "destroyed"}})
+    |> record_session_destroyed(session, "node_gone")
+  end
 
   # Absence is meaningful only in a complete report from the exact owner after
   # the lifecycle intent. A healthy sibling on the same node, an omitted field,
@@ -5026,6 +5163,7 @@ defmodule Embervm.SessionManager do
         %{
           health: :healthy,
           draining: false,
+          registered: true,
           tombstoned: false,
           pod_uid: Map.get(facts, :pod_uid)
         }

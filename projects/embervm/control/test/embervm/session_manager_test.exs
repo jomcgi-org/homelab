@@ -370,6 +370,20 @@ defmodule Embervm.SessionManagerTest do
     parked
   end
 
+  # A destroy worker reports back by message, so a test that asserts on the row
+  # right after SessionManager.destroy/2 can otherwise race the worker's result.
+  defp await_no_destroy_inflight(ctx, attempts \\ 100)
+  defp await_no_destroy_inflight(_ctx, 0), do: flunk("destroy worker never reported back")
+
+  defp await_no_destroy_inflight(ctx, attempts) do
+    if MapSet.size(:sys.get_state(ctx.mgr).destroy_inflight) == 0 do
+      :ok
+    else
+      Process.sleep(10)
+      await_no_destroy_inflight(ctx, attempts - 1)
+    end
+  end
+
   defp wait_for_state(ctx, session_id, expected, attempts \\ 100)
   defp wait_for_state(_ctx, _session_id, _expected, 0), do: flunk("session did not reach expected state")
 
@@ -3606,6 +3620,159 @@ defmodule Embervm.SessionManagerTest do
     assert hits == 1, "expected exactly one stuck-in-destroying alarm, got #{hits}"
 
     assert MapSet.member?(:sys.get_state(ctx.mgr).destroying_alarmed, created.session_id)
+  end
+
+  # #6004: under the node-confirmed gate a destroy waits for the owning node to
+  # confirm teardown, so a node that has left the fleet leaves the session in
+  # destroying forever and holds every downstream reservation bound to it. These
+  # four tests pin the exact predicate: the two ways a node counts as gone, and
+  # the two ways a node that is merely slow keeps its full wait.
+  #
+  # store_clock: fn -> 0 end puts the session row before the manager's fixed
+  # 5_000_000 clock, so elapsed-since-intent exceeds a small alarm threshold.
+  test "gated: destroy on an unregistered node completes as node_gone without a teardown RPC" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        store_clock: fn -> 0 end,
+        brick_status_fun: fn _node ->
+          %{health: :unknown, draining: false, registered: false, tombstoned: false, pod_uid: nil}
+        end,
+        destroy_fun: fn _ch, vm ->
+          send(parent, {:teardown_attempted, vm})
+          {:ok, %{teardown_confirmed: false}}
+        end
+      )
+
+    put_session_workload(ctx, "wl-node-gone")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-node-gone", "p1")
+
+    # The brick is replaced: it publishes no capacity facts and the registry has
+    # no runtime instance for it, so no confirmation can ever arrive.
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
+    destroyed = wait_for_state(ctx, created.session_id, :destroyed)
+
+    # This is what the management GET renders: router session_view/2 copies state
+    # and terminal_reason straight off this row.
+    assert destroyed.state == :destroyed
+    assert destroyed.terminal_reason == "node_gone"
+
+    # Nothing was dialled: the predicate established there is no node to dial.
+    refute_received {:teardown_attempted, _}
+
+    # The durable intent still precedes the terminal record.
+    kinds = op_kinds_for(ctx, created.session_id)
+    assert :session_destroying in kinds
+    assert :session_destroyed in kinds
+    assert index_of(kinds, :session_destroying) < index_of(kinds, :session_destroyed)
+  end
+
+  test "gated: a session already stuck in destroying is finished by the sweep once its node departs" do
+    status =
+      start_supervised!(
+        {Agent, fn -> %{health: :healthy, draining: false, registered: true, tombstoned: false, pod_uid: "pod-node-4"} end}
+      )
+
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        destroying_alarm_ms: 100,
+        store_clock: fn -> 0 end,
+        brick_status_fun: fn _node -> Agent.get(status, & &1) end,
+        destroy_fun: fn _ch, _vm -> {:ok, %{teardown_confirmed: false}} end
+      )
+
+    put_session_workload(ctx, "wl-stuck-node-gone")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-stuck-node-gone", "p1")
+    report_empty_node(ctx)
+
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
+    await_no_destroy_inflight(ctx)
+    assert {:ok, %{state: :destroying}} = SessionStore.get(ctx.store, created.session_id)
+
+    # The node is still there and merely unconfirming: the sweep must not
+    # terminalize the session.
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    assert {:ok, %{state: :destroying}} = SessionStore.get(ctx.store, created.session_id)
+
+    # Now the node departs: capacity retracted and the registry ages its still
+    # registered instance out past the alarm threshold.
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+    Agent.update(status, fn s -> %{s | health: :unknown} end)
+
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+    assert {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :destroyed
+    assert session.terminal_reason == "node_gone"
+
+    kinds = op_kinds_for(ctx, created.session_id)
+    assert index_of(kinds, :session_destroying) < index_of(kinds, :session_destroyed)
+  end
+
+  test "gated: a registered healthy node that is slow keeps the confirmation wait and still alarms" do
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        destroying_alarm_ms: 100,
+        store_clock: fn -> 0 end,
+        brick_status_fun: fn _node ->
+          %{health: :healthy, draining: false, registered: true, tombstoned: false, pod_uid: "pod-node-4"}
+        end,
+        destroy_fun: fn _ch, _vm -> {:ok, %{teardown_confirmed: false}} end
+      )
+
+    put_session_workload(ctx, "wl-slow-node")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-slow-node", "p1")
+    report_empty_node(ctx)
+
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
+    await_no_destroy_inflight(ctx)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        :ok = SessionManager.reconcile(ctx.mgr)
+        :ok = SessionManager.reconcile(ctx.mgr)
+      end)
+
+    assert {:ok, session} = SessionStore.get(ctx.store, created.session_id)
+    assert session.state == :destroying
+    assert session.terminal_reason == nil
+    refute :session_destroyed in op_kinds_for(ctx, created.session_id)
+    assert log =~ "session stuck in destroying"
+    refute log =~ "node gone"
+  end
+
+  test "gated: a brick blip shorter than the alarm threshold does not complete the destroy" do
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        # Manager clock 5_000_000 against a row stamped at 0 leaves elapsed well
+        # inside this threshold, so the :unknown health below is a blip, not a
+        # departure.
+        destroying_alarm_ms: 10_000_000,
+        store_clock: fn -> 0 end,
+        brick_status_fun: fn _node ->
+          %{health: :unknown, draining: false, registered: true, tombstoned: false, pod_uid: "pod-node-4"}
+        end,
+        destroy_fun: fn _ch, _vm -> {:ok, %{teardown_confirmed: false}} end
+      )
+
+    put_session_workload(ctx, "wl-blip")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-blip", "p1")
+    report_empty_node(ctx)
+
+    assert {:ok, :destroying} = SessionManager.destroy(ctx.mgr, created.session_id)
+    await_no_destroy_inflight(ctx)
+
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+    assert :ok = SessionManager.reconcile(ctx.mgr)
+
+    assert {:ok, %{state: :destroying, terminal_reason: nil}} = SessionStore.get(ctx.store, created.session_id)
+    refute :session_destroyed in op_kinds_for(ctx, created.session_id)
   end
 
   # Both vanished tests pin the store clock BELOW the node facts' 5_000_000 so the
