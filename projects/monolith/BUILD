@@ -4732,6 +4732,22 @@ py_test(
 )
 
 py_test(
+    name = "swarm_factory_supervision_test",
+    srcs = ["swarm/factory_supervision_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        ":pkg_auth",
+        ":pkg_swarm",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_factory_attempt_stop_test",
     srcs = ["swarm/factory_attempt_stop_test.py"],
     imports = ["."],
