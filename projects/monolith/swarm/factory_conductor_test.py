@@ -2462,6 +2462,144 @@ def test_timeout_reconciliation_rollback_preserves_queue_and_ledgers(
 
 
 @pytest.fixture
+def stranded_factory(queued_factory, monkeypatch):
+    """A queued node whose DBOS workflow outlived the image that started it."""
+    from dbos._utils import GlobalParams
+    from swarm import factory_controls as controls
+    from swarm import node_workflows as nodes
+
+    s = queued_factory
+    monkeypatch.setattr(controls, "get_engine", lambda: s.engine)
+    monkeypatch.setenv("FACTORY_STOP_SUPERVISION_ENABLED", "false")
+    monkeypatch.setattr(GlobalParams, "app_version", "running-version")
+    monkeypatch.setattr(nodes, "reconcile_completed_node", lambda *_: None)
+    s.cancelled = []
+    s.key = s.run["pin"]["workflow_id"]
+
+    def dbos_for(status, version, *, result=None):
+        return SimpleNamespace(
+            get_workflow_status=lambda _: SimpleNamespace(
+                status=status, app_version=version, executor_id="executor-gone"
+            ),
+            cancel_workflow=lambda key, cancel_children=False: s.cancelled.append(
+                (key, cancel_children)
+            ),
+            retrieve_workflow=lambda _: SimpleNamespace(get_result=lambda: result),
+        )
+
+    s.dbos_for = dbos_for
+    return s
+
+
+def _stranded_audits(s):
+    import json
+    from sqlmodel import Session, select
+    from swarm.factory_models import FactoryAudit
+
+    with Session(s.engine) as db:
+        return [
+            json.loads(row.detail_json)
+            for row in db.exec(
+                select(FactoryAudit).where(FactoryAudit.action == "workflow_stranded")
+            ).all()
+        ]
+
+
+@pytest.mark.parametrize("workflow_status", ["PENDING", "ENQUEUED"])
+def test_a_version_stranded_node_workflow_is_cancelled_and_settled_uncertain(
+    stranded_factory, workflow_status
+):
+    import json
+
+    s = stranded_factory
+    conductor._submit_or_reconcile(
+        s.task, s.run, s.dbos_for(workflow_status, "deployed-version")
+    )
+    assert s.cancelled == [(s.key, True)]
+    assert _stranded_audits(s) == [
+        {
+            "workflow_id": s.key,
+            "workflow_version": "deployed-version",
+            "running_version": "running-version",
+        }
+    ]
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    assert run["status"] == "uncertain"
+    assert (
+        json.loads(run["outcome_json"])["reason"]
+        == "node workflow stranded by application version change"
+    )
+
+
+def test_a_stranded_node_retries_once_its_real_outcome_is_reconciled(
+    stranded_factory, monkeypatch
+):
+    from swarm import node_workflows as nodes
+
+    s = stranded_factory
+    monkeypatch.setattr(
+        nodes,
+        "reconcile_completed_node",
+        lambda *_: {
+            "status": "failed",
+            "reason": "the session ended while its workflow was stranded",
+            "cost_usd": 0.5,
+            "cost_basis": "measured",
+            "session_id": s.sid,
+        },
+    )
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": "c" * 40}}
+    )
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos_for("PENDING", "old-version"))
+    assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "failed"
+    conductor.reconcile_task(
+        s.task["id"], s.policy, s.dbos_for("PENDING", "old-version")
+    )
+    assert [r["attempt"] for r in conductor.graph.node_runs(s.task["id"])] == [1, 2]
+
+
+def test_a_pending_node_workflow_on_the_running_version_is_left_alone(stranded_factory):
+    s = stranded_factory
+    conductor._submit_or_reconcile(
+        s.task, s.run, s.dbos_for("PENDING", "running-version")
+    )
+    assert s.cancelled == [] and _stranded_audits(s) == []
+    assert conductor.graph.node_runs(s.task["id"]) == [s.run]
+
+
+def test_an_unresolvable_running_version_strands_nothing(stranded_factory, monkeypatch):
+    from dbos._utils import GlobalParams
+
+    s = stranded_factory
+    monkeypatch.setattr(GlobalParams, "app_version", "")
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos_for("PENDING", "old-version"))
+    assert s.cancelled == [] and _stranded_audits(s) == []
+    assert conductor.graph.node_runs(s.task["id"]) == [s.run]
+
+
+def test_a_successful_old_version_workflow_still_returns_its_result(stranded_factory):
+    import json
+
+    s = stranded_factory
+    result = {
+        "status": "succeeded",
+        "summary": "Finished before the deploy replaced the pods.",
+        "cost_usd": 1.0,
+        "cost_basis": "measured",
+        "head_sha": "d" * 40,
+        "session_id": s.sid,
+    }
+    conductor._submit_or_reconcile(
+        s.task, s.run, s.dbos_for("SUCCESS", "old-version", result=result)
+    )
+    assert s.cancelled == [] and _stranded_audits(s) == []
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    assert run["status"] == "succeeded"
+    assert json.loads(run["outcome_json"])["cost_usd"] == 1.0
+
+
+@pytest.fixture
 def uncertain_factory(queued_factory, monkeypatch):
     from datetime import datetime, timedelta, timezone
     import copy
