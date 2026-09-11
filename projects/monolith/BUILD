@@ -4672,6 +4672,21 @@ py_test(
 )
 
 py_test(
+    name = "swarm_factory_landing_test",
+    srcs = ["swarm/factory_landing_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_swarm",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_factory_quota_guard_test",
     srcs = ["swarm/factory_quota_guard_test.py"],
     imports = ["."],
