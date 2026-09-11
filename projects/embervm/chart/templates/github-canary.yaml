@@ -1,0 +1,123 @@
+{{- if .Values.tokenBroker.githubApp.canary.enabled }}
+{{- if not (and .Values.tokenBroker.enabled .Values.tokenBroker.githubApp.enabled .Values.tokenBroker.spiffe.enabled) }}
+{{- fail "GitHub canary requires the GitHub broker and SPIFFE listener" }}
+{{- end }}
+{{- $name := printf "%.49s-github-canary" (include "embervm.fullname" .) }}
+{{- $caller := printf "spiffe://%s/ns/%s/sa/%s" .Values.tokenBroker.spiffe.trustDomain .Release.Namespace $name }}
+{{- $canary := .Values.tokenBroker.githubApp.canary }}
+{{- $allowed := false }}
+{{- $denied := false }}
+{{- if not (has $caller .Values.tokenBroker.spiffe.clientSpiffeIds) }}
+{{- fail "GitHub canary identity must be explicitly allowed by the SPIFFE listener" }}
+{{- end }}
+{{- range .Values.tokenBroker.githubApp.grants }}
+{{- if and (has $caller .allowedSpiffeIds) (ne .profile "reviewer") }}
+{{- fail "GitHub canary identity must not have a write-capable grant" }}
+{{- end }}
+{{- if eq .name $canary.grant }}
+{{- if and (eq .profile "reviewer") (has $caller .allowedSpiffeIds) (eq (len .repositoryIDs) 1) (eq (toString (first .repositoryIDs)) (toString $canary.repositoryID)) }}
+{{- $allowed = true }}
+{{- end }}
+{{- end }}
+{{- if and (eq .name $canary.deniedGrant) (eq .profile "review-publisher") (not (has $caller .allowedSpiffeIds)) }}
+{{- $denied = true }}
+{{- end }}
+{{- end }}
+{{- if not (and $allowed $denied) }}
+{{- fail "GitHub canary requires a matching single-repository reviewer grant and a denied review-publisher grant" }}
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: github-canary
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: github-canary
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 90
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: github-canary
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      {{- if .Values.imagePullSecret.enabled }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret.name }}
+      {{- end }}
+      containers:
+        - name: github-canary
+          image: "{{ .Values.tokenBroker.image.repository }}:{{ .Values.tokenBroker.image.tag }}@{{ .Values.tokenBroker.image.digest }}"
+          imagePullPolicy: {{ .Values.tokenBroker.image.pullPolicy }}
+          args: ["--github-canary"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: CANARY_BROKER_URL
+              value: {{ printf "https://%s.%s.svc:%v" (include "embervm.tokenBroker.fullname" .) .Release.Namespace .Values.tokenBroker.spiffe.tlsPort | quote }}
+            - name: CANARY_BROKER_SPIFFE_ID
+              value: {{ printf "spiffe://%s/ns/%s/sa/%s" .Values.tokenBroker.spiffe.trustDomain .Release.Namespace (include "embervm.tokenBroker.serviceAccountName" .) | quote }}
+            - { name: CANARY_GRANT, value: {{ $canary.grant | quote }} }
+            - { name: CANARY_DENIED_GRANT, value: {{ $canary.deniedGrant | quote }} }
+            - { name: CANARY_REPOSITORY_ID, value: {{ $canary.repositoryID | quote }} }
+            - { name: SPIFFE_ENDPOINT_SOCKET, value: "unix:///spiffe-workload-api/spire-agent.sock" }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          volumeMounts:
+            - { name: spiffe-workload-api, mountPath: /spiffe-workload-api, readOnly: true }
+      volumes:
+        - name: spiffe-workload-api
+          csi:
+            driver: csi.spiffe.io
+            readOnly: true
+{{- if .Values.tokenBroker.networkPolicy.enabled }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ $name }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: github-canary
+  ingress: []
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
+          rules:
+            dns: [{ matchPattern: "*" }]
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
+            {{- include "embervm.tokenBroker.selectorLabels" . | nindent 12 }}
+      toPorts: [{ ports: [{ port: {{ .Values.tokenBroker.spiffe.tlsPort | quote }}, protocol: TCP }] }]
+    - toFQDNs: [{ matchName: api.github.com }]
+      toPorts: [{ ports: [{ port: "443", protocol: TCP }] }]
+{{- end }}
+{{- end }}

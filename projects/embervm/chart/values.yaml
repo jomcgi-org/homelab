@@ -357,6 +357,13 @@ tokenBroker:
     # k8s:io.kubernetes.pod.namespace in every matchLabels map. SPIFFE checks
     # still authorize the caller separately for each grant.
     clientPodSelectors: []
+    canary:
+      # Opt-in verification Job. Requires an explicitly allowed dedicated SPIFFE
+      # identity, a reviewer grant and a publisher grant it must NOT retrieve.
+      enabled: false
+      grant: bosun-canary
+      deniedGrant: bosun-review-publisher
+      repositoryID: 847803371
   spiffe:
     # Phase 2 of ADR embervm/041: serve /token only over SPIFFE mTLS on a
     # second port. Off by default; the hub overlay flips it after this

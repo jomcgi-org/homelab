@@ -185,3 +185,66 @@ References:
 - [GitHub App JWT authentication](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app)
 - [Check runs and evidence links](https://docs.github.com/en/rest/checks/runs)
 - [Required checks and expected App source](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)
+
+## Verify a Bosun grant with the canary
+
+The broker image includes `tokenbroker --github-canary`. This mode creates no
+server, needs no App key or Kubernetes API credentials, and exits nonzero unless:
+
+1. The SPIFFE-authenticated request for the configured publisher grant returns
+   **403**. A missing grant (404), redirect, or failed connection is not evidence
+   of authorization enforcement.
+2. Its allowed grant returns a token with more than one minute remaining.
+3. GitHub's [installation-repositories endpoint](https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-app-installation) reports exactly the expected
+   single repository. It rejects both a different repository and broader access.
+
+The command uses only GET requests. It prints the repository ID and grant names
+on success, never the token or API bodies. Tokens remain in memory and expire
+normally; the canary does not revoke the broker's cached token. This verifies
+service authorization and repository scope, not session-role binding, GitHub
+branch protections, or the review publisher's evidence validation.
+
+Set `tokenBroker.githubApp.canary.enabled=true` only on an already prepared
+SPIFFE broker deployment. The Job uses a dedicated service account named
+`<release-fullname>-github-canary` (the fullname is truncated to 49 characters),
+with no Kubernetes token mount. Add its exact SPIFFE ID to the listener allowlist
+and a `reviewer` grant. Set `canary.grant`, `canary.deniedGrant` and
+`canary.repositoryID` to match those grants. The denied grant must exist and use
+`review-publisher`. Helm refuses to give the canary any write-capable grant or
+an allowed grant covering multiple repositories. The canary remains disabled
+by default.
+
+For example, a release named `bosun` in namespace `embervm` uses
+`spiffe://embervm.jomcgi.dev/ns/embervm/sa/bosun-embervm-github-canary`.
+Append that identity to `tokenBroker.spiffe.clientSpiffeIds` and add:
+
+```yaml
+# Append to tokenBroker.githubApp.grants; preserve the real publisher grant.
+- name: bosun-canary
+  profile: reviewer
+  repositoryIDs: [847803371]
+  allowedSpiffeIds:
+    - spiffe://embervm.jomcgi.dev/ns/embervm/sa/bosun-embervm-github-canary
+```
+
+The corresponding settings under `tokenBroker.githubApp` are:
+
+```yaml
+canary:
+  enabled: true
+  grant: bosun-canary
+  deniedGrant: bosun-review-publisher
+  repositoryID: 847803371
+```
+
+The Job has a 90-second deadline and does not retry. It retains completion status
+for inspection rather than deleting itself and being recreated repeatedly by
+GitOps. To rerun, remove the completed Job and let GitOps recreate it, or toggle
+its flag off and back on in deployment changes. On Cilium clusters it has scoped
+broker/DNS/GitHub egress and broker ingress; GKE relies on SPIFFE authorization.
+
+Do not enable the production broker listener just to run this test: doing so
+also disables legacy plaintext token retrieval. First perform the client
+migration or use a separate isolated broker deployment. A passing canary is a
+prerequisite for activation, not permission to require `factory/review` before a
+real review publisher exists.

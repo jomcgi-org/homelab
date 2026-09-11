@@ -4,6 +4,7 @@ go_library(
     name = "tokenbroker_lib",
     srcs = [
         "github.go",
+        "github_canary.go",
         "main.go",
     ],
     importpath = "github.com/jomcgi/homelab/projects/embervm/tokenbroker/cmd/tokenbroker",
@@ -38,6 +39,7 @@ go_test(
     name = "tokenbroker_test",
     srcs = [
         "github_test.go",
+        "github_canary_test.go",
         "main_test.go",
         "spiffe_test.go",
     ],
