@@ -86,10 +86,24 @@ running `refine` has to post a lane map to keep it running.** The advisory lane
 is opt-in on purpose, because the number that used to bound it was bounding
 delivery too.
 
-`swarm.factoryMaxConcurrentTasks` bounds the sum. Delivery is served first and
-keeps at least one slot under any ceiling, and advisory takes what is left, so
-a ceiling set below the policy narrows advisory before it narrows delivery. At
-a ceiling of 1 the advisory lane cannot open at all.
+`swarm.factoryMaxConcurrentTasks` bounds the sum, and **it must be set at least
+as high as delivery plus advisory.** When it covers their sum, each lane simply
+has its own maximum. Below their sum the lanes contend for it, and the free part
+of the ceiling is dealt one slot at a time to whichever lane is furthest from
+its own maximum, with delivery taking the first slot so it is never left unable
+to start anything. The sweep audits `lane_ceiling_below_lanes` with the ceiling,
+both maxima and their sum, at most once an hour, so an operator sees which of
+the two numbers is actually binding.
+
+Reserving delivery's whole maximum first, as the limits used to, is what starved
+advisory work: at a ceiling of 4 with lanes 4 and 8 on 2026-09-11 the advisory
+lane had zero room and one sweep excluded 272 candidates as `lane_full`. The
+chart ceiling is now 12, which covers the 4 and 8 the lane runs today, and the
+split is the safety net for a ceiling somebody sets low. At a ceiling of 1 the
+advisory lane still cannot open at all. Note that `admit_next` takes the oldest
+queued receipt across the lanes that have room, so under a contended ceiling a
+backlog of older delivery receipts can still take most of it; raising the
+ceiling, not the split, is the fix for that.
 
 Admission and intake both work per lane. A full delivery lane no longer refuses
 an advisory admission, and intake ranks candidates exactly as it did, delivery
@@ -241,9 +255,16 @@ path. `close_enabled` allows a refine verdict to close an issue and
 default 3. All three feature flags default off or, for the cap, bound a
 capability that is itself off.
 
-Intake sweeps GitHub at most once an hour while it is finding nothing, and
-again immediately after any receipt settles. A tick that cannot read GitHub
-audits `intake_error` rather than failing silently. The sweep reads open issues
+Intake sweeps GitHub at most once an hour while it is finding nothing, again
+immediately after any receipt settles, and again on the tick after it admits
+anything. That last clause is what lets a lane fill: a sweep takes at most one
+candidate per lane, so on the hourly clock alone four delivery and eight
+advisory slots filled at one slot an hour. It costs at most one extra sweep per
+admission, because the sweep stamps its own clock before reading GitHub, so a
+sweep that admits nothing leaves the newest admission behind the newest sweep
+and the hourly clock governs again. A tick with no room in any lane returns
+before it reaches the clock at all. A tick that cannot read GitHub audits
+`intake_error` rather than failing silently. The sweep reads open issues
 and open pull requests oldest first, up to five pages of one hundred each; a
 read that hits that cap records `truncated` on the audit, so a partial sweep
 reads as partial.
