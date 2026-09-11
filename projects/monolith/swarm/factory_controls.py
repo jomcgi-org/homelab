@@ -110,7 +110,15 @@ DEFAULT_MAX_PARALLEL_NODES = 1
 # that fails is a deviation the planner must answer, not a turn to spend again,
 # so a round costs exactly two turns and the reserve can say so honestly.
 REVIEW_ROUND_ATTEMPTS = 1
+# Pools whose head must be the role's own configured model, so the policy's
+# stated preference is always what a pool is ranked from.
 _POOL_ROLES = {"conductor": "conductor_model", "worker": "worker_model"}
+# Pools for a class of node rather than a configured role. They name no policy
+# field, so there is no head to anchor them to; every member still has to be
+# an allowed model. "implement" is delivery implementation work and defaults
+# to the worker pool. "refine" is the advisory briefing node and defaults to
+# Muse first, because a brief is read by a person and never merged.
+_CLASS_POOL_ROLES = ("implement", "refine")
 
 
 def _now() -> datetime:
@@ -378,8 +386,14 @@ def lane_usage(policy: dict, receipts: list[dict]) -> dict:
 
 
 def _validate_model_pools(pools: object, policy: dict) -> dict:
-    """Each pool is an ordered preference list headed by the role's own model."""
-    if not isinstance(pools, dict) or not pools or not set(pools) <= set(_POOL_ROLES):
+    """Each pool is an ordered preference list of allowed models.
+
+    A role pool is headed by that role's own configured model, so the policy's
+    stated preference is what the pool is ranked from. A class pool names no
+    policy field and so has no head to anchor; its order is the preference.
+    """
+    known = set(_POOL_ROLES) | set(_CLASS_POOL_ROLES)
+    if not isinstance(pools, dict) or not pools or not set(pools) <= known:
         raise ValueError("invalid model_pools")
     result = {}
     for role, pool in pools.items():
@@ -388,7 +402,7 @@ def _validate_model_pools(pools: object, policy: dict) -> dict:
         models = [_text(m, "model", 128) for m in pool]
         if len(set(models)) != len(models):
             raise ValueError(f"duplicate model in model_pools.{role}")
-        if models[0] != policy[_POOL_ROLES[role]]:
+        if role in _POOL_ROLES and models[0] != policy[_POOL_ROLES[role]]:
             raise ValueError(f"model_pools.{role} must start with the {role} model")
         if any(m not in policy["allowed_models"] for m in models):
             raise ValueError(f"model_pools.{role} names a model that is not allowed")

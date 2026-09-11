@@ -524,7 +524,11 @@ def reconcile(
 
     if not nodes:
         receipt = task_snapshot(task["id"])
-        choice = select_model("conductor", policy)
+        # The refine pool, not the conductor's: a brief is advisory output a
+        # person reads, so it runs on the cheap lane unless the policy says
+        # otherwise, and an unconfigured policy still lands on the conductor
+        # pool through the pool default.
+        choice = select_model("refine", policy)
         cause = f"factory-refine:{NODE_KEY}"
         result = factory_conductor._add(
             task,

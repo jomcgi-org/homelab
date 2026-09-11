@@ -345,3 +345,64 @@ def test_rollup_does_not_let_a_window_less_grant_hide_a_spent_class():
     assert merged["codex"]["headline_used_percent"] == 99.0
     only = {"codex-b": grants["codex-b"]}
     assert model_pool.rollup_grants({}, only)["codex"]["headline_used_percent"] is None
+
+
+def test_the_implement_pool_defaults_to_the_worker_pool():
+    assert model_pool.pool_for("implement", policy()) == ["sol", "sonnet"]
+
+
+def test_an_explicit_implement_pool_leaves_the_worker_pool_alone():
+    configured = policy(
+        model_pools={
+            "worker": ["sol", "sonnet"],
+            "implement": ["sonnet", "sol"],
+        }
+    )
+    assert model_pool.pool_for("implement", configured) == ["sonnet", "sol"]
+    assert model_pool.pool_for("worker", configured) == ["sol", "sonnet"]
+
+
+def test_the_refine_pool_leads_with_muse_by_default():
+    assert model_pool.pool_for("refine", policy()) == ["spark", "sol"]
+
+
+def test_a_refine_pool_falls_back_to_the_conductor_pool_when_muse_is_not_allowed():
+    narrowed = policy(
+        allowed_models=["astra", "opus"],
+        model_pools={"conductor": ["astra", "opus"]},
+    )
+    assert model_pool.pool_for("refine", narrowed) == ["astra", "opus"]
+
+
+def test_an_explicit_refine_pool_wins_over_the_default():
+    configured = policy(
+        model_pools={"conductor": ["astra", "spark"], "refine": ["sonnet", "spark"]}
+    )
+    assert model_pool.pool_for("refine", configured) == ["sonnet", "spark"]
+
+
+def test_the_refine_pool_falls_through_on_quota_exhaustion():
+    configured = policy(model_pools={"refine": ["sol", "sonnet"]})
+    choice = model_pool.select_model(
+        "refine", configured, quota={"codex": {"exhausted": True}}
+    )
+    assert choice["model"] == "sonnet" and choice["fallback_from"] == "sol"
+
+
+def test_the_judgment_floor_searches_the_implement_pool_first():
+    configured = policy(
+        model_pools={
+            "conductor": ["astra", "spark"],
+            "worker": ["sol", "sonnet"],
+            "implement": ["sonnet", "opus"],
+        }
+    )
+    choice = model_pool.judgment_floor(configured)
+    assert choice["model"] == "opus"
+    assert choice["reason"] == "judgment_floor_worker_pool"
+    assert choice["skipped"] == [{"model": "sonnet", "reason": "below_judgment_floor"}]
+
+
+def test_an_unknown_pool_role_is_refused():
+    with pytest.raises(ValueError):
+        model_pool.pool_for("reviewer", policy())

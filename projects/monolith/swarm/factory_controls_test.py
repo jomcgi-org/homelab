@@ -1156,3 +1156,36 @@ def test_status_reports_the_lane_view(db, policy, monkeypatch):
     lanes = controls.status()["lanes"]
     assert lanes["delivery"] == {"limit": 2, "active": 1, "queued": 0}
     assert lanes["advisory"] == {"limit": 1, "active": 0, "queued": 0}
+
+
+def test_class_pools_need_no_head_model(policy):
+    policy["allowed_models"] = ["opus", "luna", "sonnet"]
+    policy["model_pools"] = {
+        "implement": ["sonnet", "luna"],
+        "refine": ["luna", "sonnet"],
+    }
+    validated = controls.validate_policy(policy)
+    assert validated["model_pools"]["implement"] == ["sonnet", "luna"]
+    assert validated["model_pools"]["refine"] == ["luna", "sonnet"]
+
+
+def test_a_role_pool_still_needs_its_own_model_at_the_head(policy):
+    policy["model_pools"] = {"worker": ["opus", "luna"]}
+    with pytest.raises(ValueError):
+        controls.validate_policy(policy)
+
+
+@pytest.mark.parametrize(
+    "pools",
+    [
+        {"implement": ["astra"]},
+        {"refine": ["spark"]},
+        {"implement": ["luna", "luna"]},
+        {"planner": ["luna"]},
+        {"implement": []},
+    ],
+)
+def test_an_unusable_class_pool_is_refused(policy, pools):
+    policy["model_pools"] = pools
+    with pytest.raises(ValueError):
+        controls.validate_policy(policy)

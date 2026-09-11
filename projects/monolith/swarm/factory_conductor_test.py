@@ -4797,7 +4797,11 @@ def test_machine_verified_task_still_uses_pool_selection(feedback_db, monkeypatc
         conductor._prepare_add(task, policy, plan_edit("work", "implement"))["model"]
         == "luna"
     )
-    assert calls == [("worker", policy)]
+    # An implement node draws on the implement pool, which defaults to the
+    # worker pool; any other role stays on the worker pool itself.
+    assert calls == [("implement", policy)]
+    conductor._prepare_add(task, policy, plan_edit("look", "investigate"))
+    assert calls[1] == ("worker", policy)
 
 
 def test_planner_prompt_names_only_the_judgment_floor(feedback_db):
