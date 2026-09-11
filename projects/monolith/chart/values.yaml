@@ -1460,8 +1460,16 @@ swarm:
   # Size it against agentSessions.admission above, which the factory shares
   # with the drainer and the probes: a node that waits past its turn timeout
   # for a permit settles uncertain and holds its slot rather than backing off.
+  # Twelve tasks could hold every background permit, so factoryBackgroundReserve
+  # below is what keeps the pool from being all factory.
   # Minimum 1; zero is not a kill switch (use the factory stop control).
   factoryMaxConcurrentTasks: 12
+  # Background session slots the factory will not take, left for the qwen and
+  # knowledge drainers and the synthetic probes. The factory is the only member
+  # of that pool that can wait for nothing: a node the pool declines stays ready
+  # and starts on a later tick, so the factory is the one that yields. Zero lets
+  # the factory race everything else to the last slot.
+  factoryBackgroundReserve: 2
   enabled: false
   # The cheap implementer lane and the reviewer that gates it. The reviewer is
   # never below Opus: ADR 038 decision 5 floors anything assessable only by

@@ -171,6 +171,18 @@ def factory_max_concurrent_tasks() -> int:
     return max(1, int(os.environ.get("FACTORY_MAX_CONCURRENT_TASKS", "1")))
 
 
+def factory_background_reserve() -> int:
+    """Background session slots the factory leaves for everything else.
+
+    The factory shares one background admission pool with the qwen drainer,
+    the knowledge drainer and the synthetic probes, and none of those can wait
+    the way a factory node can: a node the pool declines simply stays ready for
+    the next tick. Raising the task ceiling to twelve without this would let
+    delivery take every slot and leave the drainer with none.
+    """
+    return max(0, int(os.environ.get("FACTORY_BACKGROUND_RESERVE", "2")))
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 

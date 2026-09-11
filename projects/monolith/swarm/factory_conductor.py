@@ -224,13 +224,19 @@ _CLOSE_KEYWORD = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
 
 
 def closes_issue(body: object, repo: str, number: int) -> bool:
-    """Whether this pull request body closes ``number`` on merge."""
+    """Whether this pull request body closes ``number`` on merge.
+
+    Three reference forms close an issue on GitHub and all three are accepted:
+    ``#123``, ``owner/repo#123``, and the full issue URL. Only this task's own
+    issue, in this task's own repository, counts.
+    """
     if not isinstance(body, str):
         return False
-    pattern = (
-        rf"(?<![A-Za-z0-9_]){_CLOSE_KEYWORD}\s*:?\s+"
-        rf"(?:{re.escape(repo)})?#{number}\b"
+    reference = (
+        rf"(?:(?:https?://github\.com/{re.escape(repo)}/issues/)|"
+        rf"(?:{re.escape(repo)})?#){number}\b"
     )
+    pattern = rf"(?<![A-Za-z0-9_]){_CLOSE_KEYWORD}\s*:?\s+{reference}"
     return re.search(pattern, body, re.IGNORECASE) is not None
 
 
@@ -3052,6 +3058,19 @@ def _free_background_slots() -> int:
         return free_background_slots(db)
 
 
+def _slot_budget() -> int:
+    """Background slots this dispatch may take, after the shared reserve.
+
+    The pool is shared with the drainers and the probes, and the factory is the
+    only member of it that can wait for nothing: a node the pool declines stays
+    ready and starts on a later tick. So the factory yields first, by a fixed
+    reserve, rather than racing everything else to the last slot.
+    """
+    from swarm.factory_controls import factory_background_reserve
+
+    return max(0, _free_background_slots() - factory_background_reserve())
+
+
 def _reviewer_override(
     task_id: str, policy: dict, node: dict
 ) -> tuple[bool, str | None]:
@@ -3115,21 +3134,23 @@ def _dispatch_ready(
 ) -> bool:
     """Reserve up to ``slots`` ready nodes, each on the branch the graph implies.
 
-    The first node of a settled graph dispatches exactly as it always did,
-    including pausing the task when the server will not admit it. Every
-    additional concurrent node is gated on the shared session pool first, and a
-    node the pool or the server declines simply stays ready for the next tick.
+    Every node, the first of a settled graph included, is gated on the shared
+    session pool less the factory's reserve, and a node the pool or the server
+    declines simply stays ready for the next tick. The first node used to skip
+    that gate; with a task ceiling of twelve that let delivery take every
+    background slot the drainers and probes also draw from.
     """
     from swarm.factory_controls import set_control
 
     ready = _ready_nodes(nodes, runs)
     if not ready or slots <= 0:
         return False
+    budget = _slot_budget()
     solo = 0 if fan_out else 1
     extra = max(0, slots - solo)
     if extra:
-        extra = min(extra, _free_background_slots())
-    limit = solo + extra
+        extra = min(extra, max(0, budget - solo))
+    limit = min(solo + extra, budget)
     if limit <= 0:
         return False
     hydration = hydration_branch(task)
