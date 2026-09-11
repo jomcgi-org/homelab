@@ -45,16 +45,18 @@
   const policy = $derived(board?.policy ?? null);
   const intake = $derived(board?.intake ?? null);
   const lanes = $derived(board?.lanes ?? null);
-  const guard = $derived(board?.quota_guard ?? null);
-  // Only worth a word when it is holding delivery back, or when the last thing
-  // the guard recorded was a reading it could not get. An open guard is the
-  // ordinary state and says nothing.
-  const guardLine = $derived(
-    guard?.paused
-      ? `delivery held: claude 7d at ${Math.round(guard.used_percent ?? 0)}% of ${guard.pause_percent}%`
-      : guard?.last_action === "quota_guard_unknown"
-        ? "quota guard: no reading"
-        : null,
+  const routing = $derived(board?.review_routing ?? null);
+  // Only worth a word when review is not on the model the policy asked for,
+  // or when the last thing recorded was a reading nobody could get. Reviewing
+  // on Opus with a quiet window is the ordinary state and says nothing.
+  const routingLine = $derived(
+    routing?.action === "review_waiting"
+      ? "review waiting: no reviewer has quota"
+      : routing?.action === "reviewer_fallback"
+        ? `review on ${routing.model}: claude 7d at ${Math.round(routing.used_percent ?? 0)}% of ${routing.pause_percent}%`
+        : routing?.last_action === "quota_guard_unknown"
+          ? "review routing: no reading"
+          : null,
   );
   // "1/1 delivery · 0/2 advisory". A lane the policy shut is still shown, so
   // an operator reads a quiet advisory lane as closed rather than as idle.
@@ -200,8 +202,8 @@
             1} in parallel · policy v{board.version}</span
         >
       {/if}
-      {#if guardLine}
-        <span class="guard">{guardLine}</span>
+      {#if routingLine}
+        <span class="guard">{routingLine}</span>
       {/if}
       {#if intake?.policy?.enabled && intakeSeen}
         <span

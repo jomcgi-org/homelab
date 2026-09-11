@@ -1119,6 +1119,7 @@ def admit_dispatch(
     *,
     dispatch_key: str | None = None,
     execution_context: dict | None = None,
+    model: str | None = None,
     session: Session | None = None,
 ) -> GraphOp:
     """Atomically reserve one bounded attempt, or replay its immutable pin.
@@ -1126,12 +1127,21 @@ def admit_dispatch(
     ``dispatch_key`` belongs to the admission command, not to the current plan
     revision. Reconciliation must reuse an existing ledger pin after a lost
     workflow checkpoint. A new command cannot bypass an active reservation.
+
+    ``model`` substitutes the model for THIS attempt, which is how a review
+    falls back to a cheaper reviewer without rewriting the plan. The node keeps
+    the model the plan asked for and the pin records what actually ran, so
+    evidence reads the pin. It is a dispatch parameter rather than part of the
+    execution context on purpose: the context is what the guest receives and
+    what replay identity is compared on, and a replay must return its original
+    pin whatever the dispatcher would choose now.
     """
     context = {} if execution_context is None else execution_context
     args = {
         "node_key": node_key,
         "dispatch_key": dispatch_key,
         "execution_context": context,
+        "model": model,
     }
     with _session(session) as db:
         task = _lock_task(db, task_id)
@@ -1221,7 +1231,7 @@ def admit_dispatch(
             "node_key": node_key,
             "attempt": attempt,
             "prompt": node.prompt,
-            "model": node.model,
+            "model": model or node.model,
             "max_cost_usd": remaining,
             "max_attempts": node.max_attempts,
             "turn_timeout_seconds": node.turn_timeout_seconds,

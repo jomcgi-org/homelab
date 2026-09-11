@@ -1,34 +1,46 @@
-"""Pause delivery work while the shared Claude 7-day window is nearly spent.
+"""Route review away from Opus while the shared Claude 7-day window is spent.
 
-Implementation capacity is elastic: brick nodes autoscale and the cheap
-implementers bill someone else. Opus review is not. Every delivery task ends
-in a review on the shared Claude subscription, so that window is the one input
-the factory can actually exhaust, and running it to zero costs the operator
-their own Claude sessions rather than only the factory's.
+Every delivery task ends in an independent Opus review on the shared Claude
+subscription, and that window is the one input the factory can exhaust:
+implementation autoscales and the cheap implementers bill someone else.
+Running it to zero costs the operator their own sessions, not only the
+factory's.
 
-The guard reads the already-observed broker quota, never a provider directly.
-It pauses delivery admissions and delivery node dispatch, leaves in-flight
-nodes alone, and leaves the advisory lane alone entirely, because advisory
-work passes no review gate. Its state lives in the audit ledger so a replica
-restart cannot resume the lane by forgetting, and so the board can render it
-without a broker call.
+The answer is to review on a cheaper model, not to stop delivering. Nothing
+here pauses admission and nothing holds an implement node: while the window is
+nearly spent, review nodes take the next member of the reviewer pool that has
+quota, and Opus comes back on its own once the window drops. Independence is a
+property of the session a review runs in, never of the model it runs on, so a
+fallback reviewer is as independent as Opus was.
+
+Two things never fall back. Judgment-class work has a capability floor rather
+than a price, so it waits for Opus. And when no member of the pool has quota,
+review waits: review is the gate, and a gate that lets itself be skipped is
+not one.
+
+State lives in the audit ledger so a replica restart cannot forget a fallback
+mid-task, and so the board can render it without a broker call.
 """
 
 from __future__ import annotations
 
 from datetime import timedelta, timezone
+import json
 import logging
 import time
 
 from sqlmodel import Session, select
 
 from swarm.factory_controls import (
+    JUDGMENT_CLASSES,
     QUOTA_GUARD_MAX_AGE_SECONDS,
     _audit,
     _locked_session,
     _now,
+    latest_verdict,
     quota_guard_policy,
-    quota_guard_state,
+    review_routing_view,
+    window_high,
 )
 from swarm.factory_models import FactoryAudit
 
@@ -125,71 +137,103 @@ def _audit_unknown(db: Session, reason: str, detail: dict) -> None:
     _audit(db, ACTOR, "quota_guard_unknown", reason=reason, **detail)
 
 
-def evaluate(policy: dict, *, session: Session | None = None) -> dict:
-    """Decide whether delivery is paused, recording each transition once.
+def _verdict_action(choice: dict) -> str:
+    if choice["model"] is None:
+        return "review_waiting"
+    return (
+        "reviewer_restored" if choice["fallback_from"] is None else "reviewer_fallback"
+    )
 
-    An unknown or stale observation never STARTS a pause: the guard exists to
-    stop the factory spending a window it can see is nearly gone, not to stop
-    it working whenever the broker is unreachable. It does not clear one
-    either. A lane paused on a real reading of 95 percent would otherwise
-    reopen the moment the broker went down, and spend the rest of the window
-    with nothing able to tell it to stop; the ledger holds until a reading
-    that can say otherwise arrives.
+
+def observe(policy: dict, *, session: Session | None = None) -> dict:
+    """Re-read the window, decide how review routes, and record any change.
+
+    Called once per tick before anything reconciles, because the review nodes
+    those tasks are about to start are what spends the window.
+
+    An unknown or stale reading never starts a fallback, because routing away
+    from Opus on a broker outage would downgrade every review for no reason we
+    can see. It does not end one either: a fallback entered at 95 percent would
+    otherwise snap back to Opus the moment the broker went down, and spend the
+    rest of the window with nothing able to say stop.
     """
+    from swarm.model_pool import select_reviewer
+
     block = quota_guard_policy(policy)
     observed = reading()
     with _locked_session(session) as (db, _control):
-        state = quota_guard_state(session=db)
-        result = {
-            "paused": state == "paused",
-            "state": state,
-            "reading": "unknown",
-            "used_percent": None,
-            "pause_percent": block["claude_7d_pause_percent"],
-            "resume_percent": block["claude_7d_resume_percent"],
-        }
+        previous = latest_verdict(db)
+        state = window_high(session=db)
+        used = None
         if observed is None:
             _audit_unknown(db, "unobserved", {})
-            return result
-        age = observed["age_seconds"]
-        if isinstance(age, float) and age > QUOTA_GUARD_MAX_AGE_SECONDS:
-            _audit_unknown(
-                db,
-                "stale",
-                {"age_seconds": age, "used_percent": observed["used_percent"]},
-            )
-            return result
-        used = observed["used_percent"]
-        result["used_percent"] = used
-        result["reading"] = "observed"
-        if state == "paused":
-            if used < block["claude_7d_resume_percent"]:
-                _audit(
+        else:
+            age = observed["age_seconds"]
+            if isinstance(age, float) and age > QUOTA_GUARD_MAX_AGE_SECONDS:
+                _audit_unknown(
                     db,
-                    ACTOR,
-                    "quota_guard_resumed",
-                    used_percent=used,
-                    resume_percent=block["claude_7d_resume_percent"],
+                    "stale",
+                    {"age_seconds": age, "used_percent": observed["used_percent"]},
                 )
-                result.update(paused=False, state="open")
-                return result
-            result.update(paused=True, state="paused")
-            return result
-        if used >= block["claude_7d_pause_percent"]:
-            _audit(
-                db,
-                ACTOR,
-                "quota_guard_paused",
-                used_percent=used,
-                pause_percent=block["claude_7d_pause_percent"],
-                resets_at=observed.get("resets_at"),
-            )
-            result.update(paused=True, state="paused")
-            return result
-        result.update(paused=False, state="open")
-        return result
+            else:
+                used = observed["used_percent"]
+                if state:
+                    state = used >= block["claude_7d_resume_percent"]
+                else:
+                    state = used >= block["claude_7d_pause_percent"]
+        choice = select_reviewer(policy, window_high=state)
+        action = _verdict_action(choice)
+        detail = {
+            "window_high": state,
+            "used_percent": used,
+            "model": choice["model"],
+            "pause_percent": block["claude_7d_pause_percent"],
+            "resume_percent": block["claude_7d_resume_percent"],
+            "skipped": choice["skipped"],
+        }
+        unchanged = (
+            previous is not None
+            and previous.action == action
+            and _detail_model(previous) == choice["model"]
+            and _detail_window(previous) == state
+        )
+        if not unchanged:
+            _audit(db, ACTOR, action, **detail)
+        return {"action": action, **detail}
 
 
-def delivery_paused(*, session: Session | None = None) -> bool:
-    """The durable verdict, for a caller that must not re-read the broker."""
-    return quota_guard_state(session=session) == "paused"
+def _detail(row: FactoryAudit) -> dict:
+    try:
+        return json.loads(row.detail_json)
+    except (TypeError, ValueError):
+        return {}
+
+
+def _detail_model(row: FactoryAudit):
+    return _detail(row).get("model")
+
+
+def _detail_window(row: FactoryAudit) -> bool:
+    return bool(_detail(row).get("window_high", False))
+
+
+def reviewer_for(
+    policy: dict, task_class: str, *, session: Session | None = None
+) -> dict:
+    """The model a review node must run on right now, or None to wait.
+
+    Reads the recorded window state rather than the broker, so every node
+    dispatched in one tick is routed by the same reading.
+    """
+    from swarm.model_pool import select_reviewer
+
+    return select_reviewer(
+        policy,
+        window_high=window_high(session=session),
+        judgment=task_class in JUDGMENT_CLASSES,
+    )
+
+
+# Re-exported so a caller that already has this module does not need to know
+# the ledger read lives beside the policy it is read against.
+routing_view = review_routing_view

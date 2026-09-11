@@ -96,7 +96,15 @@ def test_refine_schema_and_boundary_are_separate_from_delivery():
         conductor._boundary(task, review=True, refine=True)
 
 
-def delivery(monkeypatch, *, review_head=None, draft=False, check_state="success"):
+def delivery(
+    monkeypatch,
+    *,
+    review_head=None,
+    draft=False,
+    check_state="success",
+    reviewer="opus",
+    review_session=11,
+):
     monkeypatch.setattr(conductor, "_budget_evidence", lambda _task: {})
     head = "a" * 40
     task = {
@@ -148,9 +156,9 @@ def delivery(monkeypatch, *, review_head=None, draft=False, check_state="success
             "id": 2,
             "node_key": "review_fix",
             "status": "succeeded",
-            "session_id": 11,
+            "session_id": review_session,
             "head_sha": head,
-            "pin": {"model": "opus"},
+            "pin": {"model": reviewer},
             "outcome_json": json.dumps(
                 {
                     "value": {
@@ -214,8 +222,31 @@ def test_verified_delivery_returns_evidence_without_merging(monkeypatch):
         "pr_url": "https://github.com/owner/repo/pull/3",
         "head_sha": "a" * 40,
         "review_session_id": 11,
+        # The approval records which model gave it.
+        "reviewer_model": "opus",
         "state": "ready_for_review",
     }
+
+
+def test_a_fallback_reviewer_still_delivers_and_is_named_in_the_evidence(monkeypatch):
+    """Independence is the session, not the model: Astra reviewing is a review."""
+    task, runs = delivery(monkeypatch, reviewer="astra")
+    result = conductor.verify_delivery(task, 3, runs, ["opus", "astra"])
+    assert result["reviewer_model"] == "astra"
+    assert result["review_session_id"] == 11
+
+
+def test_a_reviewer_outside_the_pool_is_not_evidence(monkeypatch):
+    task, runs = delivery(monkeypatch, reviewer="luna")
+    with pytest.raises(ValueError, match="exact-head"):
+        conductor.verify_delivery(task, 3, runs, ["opus", "astra"])
+
+
+def test_a_fallback_reviewer_in_the_implementer_session_is_refused(monkeypatch):
+    """The session check is the independence check, and it does not relax."""
+    task, runs = delivery(monkeypatch, reviewer="astra", review_session=10)
+    with pytest.raises(ValueError, match="exact-head"):
+        conductor.verify_delivery(task, 3, runs, ["opus", "astra"])
 
 
 def test_durable_active_node_reconciles_before_new_planning(monkeypatch):
@@ -7004,114 +7035,108 @@ def test_tick_ingests_the_operators_issues_before_it_discovers_one(monkeypatch):
     assert order == ["ingest", "intake"]
 
 
-def _guard_node(node_key):
+def _review_node(node_key, model="opus"):
     return {
         "node_key": node_key,
         "deps": [],
+        "model": model,
         "max_attempts": 1,
         "max_cost_usd": 1.0,
     }
 
 
-def guard_dispatch(monkeypatch, node_keys, *, paused):
-    """Drive _dispatch_ready over a fixed ready set and record what started."""
+def routed_dispatch(monkeypatch, node_keys, *, reviewer, models=None):
+    """Drive _dispatch_ready over a fixed ready set and record what was pinned."""
     import swarm.factory_quota_guard as quota_guard
+    import swarm.factory_refine as refine
 
-    nodes = [_guard_node(key) for key in node_keys]
+    models = models or {}
+    nodes = [_review_node(key, models.get(key, "opus")) for key in node_keys]
     monkeypatch.setattr(conductor, "_ready_nodes", lambda *_a: list(nodes))
     monkeypatch.setattr(conductor, "hydration_branch", lambda _task: "main")
     monkeypatch.setattr(conductor, "branch_hydration", lambda *_a: "main")
     monkeypatch.setattr(conductor, "_dispatch_branch", lambda *_a: "factory/t-1")
     monkeypatch.setattr(conductor, "fan_out_wave", lambda *_a: [])
     monkeypatch.setattr(conductor, "_free_background_slots", lambda: len(nodes))
-    monkeypatch.setattr(quota_guard, "delivery_paused", lambda **_k: paused)
+    monkeypatch.setattr(conductor, "_schema", lambda _key: {})
+    monkeypatch.setattr(refine, "task_class_for", lambda _task_id: "bug-fix")
+    monkeypatch.setattr(
+        quota_guard,
+        "reviewer_for",
+        lambda _policy, _task_class, **_k: {"model": reviewer, "skipped": []},
+    )
+    import swarm.factory_controls as controls_module
+
+    monkeypatch.setattr(controls_module, "window_high", lambda **_k: True)
+    audited = []
+    monkeypatch.setattr(
+        conductor,
+        "_audit_once",
+        lambda task_id, key, action, detail: audited.append((action, detail)) or True,
+    )
     started = []
 
-    def reserve(_task_id, node_key, _key, _context):
-        started.append(node_key)
+    def reserve(_task_id, node_key, _key, _context, *, model=None):
+        started.append((node_key, model))
         return True
 
     monkeypatch.setattr(conductor, "reserve_node", reserve)
-    monkeypatch.setattr(
-        conductor,
-        "_schema",
-        lambda _key: {},
-    )
     task = {"id": "t-1", "repo": "owner/repo"}
+    policy = {"allowed_models": ["opus", "astra", "luna"]}
     conductor._dispatch_ready(
-        task, nodes, [], len(nodes), fan_out=True, parallel=len(nodes), policy={}
+        task, nodes, [], len(nodes), fan_out=True, parallel=len(nodes), policy=policy
     )
-    return started
+    return SimpleNamespace(started=started, audits=audited)
 
 
-@pytest.mark.parametrize(
-    ("node_key", "gated"),
-    [
-        ("review_1", True),
-        ("implement_fix", True),
-        ("correct_1", True),
-        ("integrate_1", True),
-        ("conductor_1", False),
-        ("refine_brief", False),
-        ("investigate_cause", False),
-    ],
-)
-def test_the_window_guard_holds_only_delivery_nodes(node_key, gated):
-    assert conductor._delivery_gated(node_key) is gated
-
-
-def test_a_paused_window_starts_no_review_or_implement_node(monkeypatch):
-    started = guard_dispatch(
-        monkeypatch, ["implement_fix", "review_1", "conductor_2"], paused=True
+def test_a_spent_window_pins_the_fallback_reviewer_on_the_attempt(monkeypatch):
+    result = routed_dispatch(
+        monkeypatch, ["implement_fix", "review_1"], reviewer="astra"
     )
-    assert started == ["conductor_2"]
+    # The implement node is untouched: only review spends the Claude window.
+    assert result.started == [("implement_fix", None), ("review_1", "astra")]
 
 
-def test_a_paused_window_starts_nothing_rather_than_pausing_the_task(monkeypatch):
+def test_a_quiet_window_pins_nothing_and_keeps_the_planned_reviewer(monkeypatch):
+    result = routed_dispatch(
+        monkeypatch, ["implement_fix", "review_1"], reviewer="opus"
+    )
+    assert result.started == [("implement_fix", None), ("review_1", None)]
+
+
+def test_a_review_with_no_available_reviewer_waits_without_holding_the_rest(
+    monkeypatch,
+):
     import swarm.factory_controls as controls_module
 
     monkeypatch.setattr(
         controls_module,
         "set_control",
-        lambda *_a, **_k: pytest.fail("a held window is not a task pause"),
+        lambda *_a, **_k: pytest.fail("a waiting review is not a paused task"),
     )
-    assert guard_dispatch(monkeypatch, ["implement_fix", "review_1"], paused=True) == []
+    result = routed_dispatch(monkeypatch, ["implement_fix", "review_1"], reviewer=None)
+    assert result.started == [("implement_fix", None)]
+    assert [action for action, _detail in result.audits] == ["review_waiting"]
 
 
-def test_an_open_window_starts_every_ready_node(monkeypatch):
-    started = guard_dispatch(
-        monkeypatch, ["implement_fix", "review_1", "conductor_2"], paused=False
-    )
-    assert started == ["implement_fix", "review_1", "conductor_2"]
+def test_a_reviewer_the_policy_does_not_allow_waits(monkeypatch):
+    result = routed_dispatch(monkeypatch, ["review_1"], reviewer="fable")
+    assert result.started == []
+    assert result.audits[0][1]["skipped"][-1] == {
+        "model": "fable",
+        "reason": "not_allowed",
+    }
 
 
-def test_a_paused_window_shuts_the_delivery_lane_only(monkeypatch):
-    import swarm.factory_quota_guard as quota_guard
+def test_a_waiting_judgment_review_says_so_in_its_audit(monkeypatch):
+    import swarm.factory_refine as refine
 
-    monkeypatch.setattr(quota_guard, "delivery_paused", lambda **_k: True)
-    assert conductor.open_admission_lanes({}) == ("advisory",)
-    monkeypatch.setattr(quota_guard, "delivery_paused", lambda **_k: False)
-    assert conductor.open_admission_lanes({}) == ("delivery", "advisory")
-
-
-def test_a_guard_that_cannot_be_read_never_blocks_admission(monkeypatch):
-    import swarm.factory_quota_guard as quota_guard
-
-    def explode(**_kwargs):
-        raise RuntimeError("ledger unreadable")
-
-    monkeypatch.setattr(quota_guard, "delivery_paused", explode)
-    assert conductor.open_admission_lanes({}) == ("delivery", "advisory")
-
-
-def test_a_guard_that_cannot_be_evaluated_never_stops_the_tick(monkeypatch):
-    import swarm.factory_quota_guard as quota_guard
-
-    def explode(_policy):
-        raise RuntimeError("broker down")
-
-    monkeypatch.setattr(quota_guard, "evaluate", explode)
-    conductor.observe_quota_guard({})
+    monkeypatch.setattr(refine, "task_class_for", lambda _task_id: "judgment-analysis")
+    result = routed_dispatch(monkeypatch, ["review_1"], reviewer=None)
+    assert result.started == []
+    action, detail = result.audits[0]
+    assert action == "review_waiting" and detail["judgment"] is True
+    assert detail["task_class"] == "judgment-analysis"
 
 
 def test_the_window_is_observed_before_any_task_reconciles(monkeypatch):
@@ -7134,7 +7159,7 @@ def test_the_window_is_observed_before_any_task_reconciles(monkeypatch):
     monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
     monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
     monkeypatch.setattr(
-        conductor, "observe_quota_guard", lambda _p: order.append("guard")
+        conductor, "observe_reviewer_routing", lambda _p: order.append("routing")
     )
     monkeypatch.setattr(
         conductor,
@@ -7145,4 +7170,14 @@ def test_the_window_is_observed_before_any_task_reconciles(monkeypatch):
         intake, "admit_next", lambda *_a, **_k: pytest.fail("at the limit")
     )
     conductor.tick()
-    assert order == ["guard", "t-1"]
+    assert order == ["routing", "t-1"]
+
+
+def test_routing_that_cannot_be_observed_never_stops_the_tick(monkeypatch):
+    import swarm.factory_quota_guard as quota_guard
+
+    def explode(_policy):
+        raise RuntimeError("broker down")
+
+    monkeypatch.setattr(quota_guard, "observe", explode)
+    conductor.observe_reviewer_routing({})

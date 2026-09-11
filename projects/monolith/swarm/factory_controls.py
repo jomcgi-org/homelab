@@ -85,23 +85,25 @@ DEFAULT_INTAKE = {
     "close_enabled": False,
     "max_closes_per_day": 3,
 }
-# The shared Claude 7-day window, as a percentage used. Delivery work is what
-# spends it: every delivery task ends in an Opus review. Pausing at 85 and
-# resuming at 75 leaves a margin an operator can still work inside rather than
-# discovering the wall at 100, and the gap between the two is what stops the
-# lane flapping across one threshold. A policy that predates this block reads
-# these, so the guard arrives without an operator re-post.
+# The shared Claude 7-day window, as a percentage used. Review is what spends
+# it: every delivery task ends in an independent Opus review. Above the pause
+# percent review routes to the next reviewer with quota, and below the resume
+# percent Opus comes back. The gap between the two stops the routing flapping
+# across one threshold, and the margin below 100 leaves an operator a window
+# they can still work inside. A policy that predates this block reads these,
+# so the routing arrives without an operator re-post.
 DEFAULT_QUOTA_GUARD = {
     "claude_7d_pause_percent": 85,
     "claude_7d_resume_percent": 75,
 }
-# An observation older than this says nothing about now. Unknown counts as not
-# paused: refusing to deliver because a broker read failed would turn one
-# outage into two.
+# An observation older than this says nothing about now, and an unknown
+# reading never starts a fallback: downgrading every review because a broker
+# read failed would turn one outage into two.
 QUOTA_GUARD_MAX_AGE_SECONDS = 3600
-QUOTA_GUARD_ACTIONS = (
-    "quota_guard_paused",
-    "quota_guard_resumed",
+REVIEWER_ROUTING_ACTIONS = (
+    "reviewer_fallback",
+    "reviewer_restored",
+    "review_waiting",
     "quota_guard_unknown",
 )
 # ADR agents/038 decision 5. A class carries a verification mode and a floor on
@@ -140,7 +142,10 @@ _POOL_ROLES = {"conductor": "conductor_model", "worker": "worker_model"}
 # an allowed model. "implement" is delivery implementation work and defaults
 # to the worker pool. "refine" is the advisory briefing node and defaults to
 # Muse first, because a brief is read by a person and never merged.
-_CLASS_POOL_ROLES = ("implement", "refine")
+# "reviewer" is the ordered fallback review runs down while the shared Claude
+# window is nearly spent; it is a class pool rather than a role pool because
+# its default need not start at the policy's own reviewer_model.
+_CLASS_POOL_ROLES = ("implement", "refine", "reviewer")
 
 
 def factory_max_concurrent_tasks() -> int:
@@ -335,57 +340,6 @@ def _validate_quota_guard(value: object) -> dict:
 def quota_guard_policy(policy: dict) -> dict:
     """The guard block, defaulted, so a policy stored before it still guards."""
     return _validate_quota_guard(policy.get("quota_guard") or {})
-
-
-def quota_guard_state(*, session: Session | None = None) -> str:
-    """The durable guard state: the later of the last pause and the last resume.
-
-    Read from the audit ledger rather than held in memory, so a replica that
-    restarts mid-pause does not resume the lane by forgetting.
-    """
-    with _read_session(session) as db:
-        row = db.exec(
-            select(FactoryAudit)
-            .where(
-                FactoryAudit.action.in_(("quota_guard_paused", "quota_guard_resumed"))
-            )
-            .order_by(FactoryAudit.id.desc())
-        ).first()
-    return (
-        "paused" if row is not None and row.action == "quota_guard_paused" else "open"
-    )
-
-
-def quota_guard_view(policy: dict, *, session: Session | None = None) -> dict:
-    """What the board shows about the guard, without touching the broker.
-
-    The reconciler observes quota and writes the verdict to the ledger; this
-    reads the ledger. A board render must not be able to make the lane wait on
-    a token broker.
-    """
-    block = quota_guard_policy(policy)
-    with _read_session(session) as db:
-        state = quota_guard_state(session=db)
-        row = db.exec(
-            select(FactoryAudit)
-            .where(FactoryAudit.action.in_(QUOTA_GUARD_ACTIONS))
-            .order_by(FactoryAudit.id.desc())
-        ).first()
-    detail = json.loads(row.detail_json) if row is not None else {}
-    created = None
-    if row is not None:
-        created = row.created_at
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
-    return {
-        "paused": state == "paused",
-        "state": state,
-        "pause_percent": block["claude_7d_pause_percent"],
-        "resume_percent": block["claude_7d_resume_percent"],
-        "used_percent": detail.get("used_percent"),
-        "last_action": row.action if row is not None else None,
-        "last_seen_at": created.isoformat() if created is not None else None,
-    }
 
 
 def intake_policy(policy: dict) -> dict:
@@ -1030,6 +984,74 @@ def intake_state(policy: dict, *, session: Session | None = None) -> dict:
         }
 
 
+# Transitions the reconciler records, newest first, when review routing
+# changes. They live here, beside the ledger, because the board reads them and
+# the board must not link the module that reaches the token broker.
+_VERDICT_ACTIONS = ("reviewer_fallback", "reviewer_restored", "review_waiting")
+
+
+def latest_verdict(session: Session | None = None):
+    """The last recorded routing decision, or None before the first tick."""
+    with _read_session(session) as db:
+        return db.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.action.in_(_VERDICT_ACTIONS))
+            .order_by(FactoryAudit.id.desc())
+        ).first()
+
+
+def window_high(*, session: Session | None = None) -> bool:
+    """Whether the 7-day window is currently counted as nearly spent.
+
+    Read from the last recorded decision rather than from a fresh observation,
+    so every node dispatched in one tick is routed by the same reading, and a
+    replica restart does not forget a fallback mid-task.
+    """
+    row = latest_verdict(session)
+    if row is None:
+        return False
+    try:
+        return bool(json.loads(row.detail_json).get("window_high", False))
+    except (TypeError, ValueError):
+        return False
+
+
+def review_routing_view(policy: dict, *, session: Session | None = None) -> dict:
+    """What the board shows about reviewer routing, read from the ledger.
+
+    The reconciler observes the window and writes the decision; this reads it.
+    A board render must not be able to make the page wait on a token broker.
+    """
+    block = quota_guard_policy(policy)
+    with _read_session(session) as db:
+        verdict = latest_verdict(db)
+        last = db.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.action.in_(REVIEWER_ROUTING_ACTIONS))
+            .order_by(FactoryAudit.id.desc())
+        ).first()
+    try:
+        detail = json.loads(verdict.detail_json) if verdict is not None else {}
+    except (TypeError, ValueError):
+        detail = {}
+    seen = None
+    if last is not None:
+        created = last.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        seen = created.isoformat()
+    return {
+        "action": verdict.action if verdict is not None else None,
+        "window_high": bool(detail.get("window_high", False)),
+        "model": detail.get("model"),
+        "used_percent": detail.get("used_percent"),
+        "pause_percent": block["claude_7d_pause_percent"],
+        "resume_percent": block["claude_7d_resume_percent"],
+        "last_action": last.action if last is not None else None,
+        "last_seen_at": seen,
+    }
+
+
 def status(*, session: Session | None = None) -> dict:
     with _read_session(session) as db:
         control = db.exec(
@@ -1053,7 +1075,7 @@ def status(*, session: Session | None = None) -> dict:
             "policy": policy,
             "intake": intake_state(policy, session=db),
             "lanes": lane_usage(policy, receipts),
-            "quota_guard": quota_guard_view(policy, session=db),
+            "review_routing": review_routing_view(policy, session=db),
             "admitted_count": control.admitted_count,
             "version": control.version,
             "actor": control.actor,

@@ -298,12 +298,16 @@ pull request is delivery, work that ends in a comment is advisory. The policy's
 `max_tasks` bounds each separately, the chart's `swarm.factoryMaxConcurrentTasks`
 bounds their sum, and intake fills at most one candidate per lane per tick, so a
 full delivery lane never starves advisory work and the reverse. A `quota_guard`
-block watches the shared Claude 7-day window and holds the delivery lane when it
-is nearly spent: no new delivery admissions and no new review, implement,
-correct or integrate nodes, while in-flight nodes finish and the advisory lane
-runs on. Its verdict is recorded once per transition in the audit ledger, so a
-replica restart cannot resume the lane by forgetting, and an unknown or stale
-reading is not a pause.
+block watches the shared Claude 7-day window and, while it is nearly spent,
+routes review down the `reviewer` pool instead of spending it: nothing is held,
+admission is untouched, and Opus returns on its own below the resume threshold.
+The model is chosen when a review is dispatched rather than when it was
+planned, so the node keeps the planner's preference and the immutable pin
+records what really ran. Judgment work waits for Opus instead of falling back,
+and so does any review when no pool member has quota, because review is the
+gate. Transitions are recorded once each in the audit ledger, so a replica
+restart cannot forget a fallback mid-task, and an unknown or stale reading
+neither starts nor ends one.
 (see: /projects/monolith/swarm/factory_conductor.py)
 (see: /projects/monolith/swarm/factory_quota_guard.py)
 (see: /projects/monolith/swarm/graph.py)
@@ -330,12 +334,18 @@ almost nothing, so a single concurrency number was rationing the wrong thing:
 it held back advisory work, which passes no review gate at all, in order to
 protect a reviewer that advisory work never calls. Splitting the bound lets
 delivery stay as narrow as review can sustain while advisory work runs at
-whatever the platform holds. The quota guard is the same reasoning applied to
-the window rather than to the count: delivery is what spends the shared Claude
-subscription, so that is what pauses when it runs low, and running it to zero
-would cost the operator their own sessions rather than only the factory's. An
-unknown reading is deliberately not a pause, because refusing to deliver
-whenever a token broker is unreachable turns one outage into two (#6002).
+whatever the platform holds. The quota guard applies the same reasoning to the
+window rather than to the count. Review is what spends the shared Claude
+subscription, and running it to zero would cost the operator their own sessions
+rather than only the factory's, so a nearly spent window buys a cheaper
+reviewer rather than stopping delivery: the work that does not need Opus was
+never the thing to hold. Independence is what a review gate is actually for,
+and that is a property of the session, so a cheaper reviewer is a weaker
+opinion rather than a weaker gate. The two things that do wait are the two
+where no substitute exists: judgment work, whose floor is a capability and not
+a price, and a pool with nothing left in it. An unknown reading neither starts
+nor ends a fallback, because reacting to an unreachable token broker in either
+direction is acting on something nobody has read (#6002).
 
 **Why.** The bootstrap asked the planner for one graph edit at a time, so a
 single task (#5981) spent nine starts on five pieces of work: five were planner

@@ -96,13 +96,14 @@ function board(overrides = {}) {
       delivery: { limit: 1, active: 1, queued: 1 },
       advisory: { limit: 2, active: 0, queued: 0 },
     },
-    quota_guard: {
-      paused: false,
-      state: "open",
+    review_routing: {
+      action: "reviewer_restored",
+      window_high: false,
+      model: "opus",
       pause_percent: 85,
       resume_percent: 75,
       used_percent: 41,
-      last_action: "quota_guard_resumed",
+      last_action: "reviewer_restored",
     },
     policy: {
       generation: 3,
@@ -260,32 +261,53 @@ describe("factory board page", () => {
     );
   });
 
-  test("says so when the claude window is holding delivery back", () => {
-    const held = board({
-      quota_guard: {
-        paused: true,
-        state: "paused",
+  test("names the fallback reviewer when the claude window is spent", () => {
+    const fallen = board({
+      review_routing: {
+        action: "reviewer_fallback",
+        window_high: true,
+        model: "astra",
         pause_percent: 85,
         resume_percent: 75,
         used_percent: 91.4,
+        last_action: "reviewer_fallback",
       },
     });
-    const target = renderPage({ board: held, task: null, error: false });
+    const target = renderPage({ board: fallen, task: null, error: false });
     expect(target.querySelector(".policy-line").textContent).toContain(
-      "delivery held: claude 7d at 91% of 85%",
+      "review on astra: claude 7d at 91% of 85%",
     );
   });
 
-  test("says nothing about an open quota guard", () => {
+  test("says so when no reviewer has quota", () => {
+    const waiting = board({
+      review_routing: {
+        action: "review_waiting",
+        window_high: true,
+        model: null,
+        pause_percent: 85,
+        resume_percent: 75,
+        used_percent: 91.4,
+        last_action: "review_waiting",
+      },
+    });
+    const target = renderPage({ board: waiting, task: null, error: false });
+    expect(target.querySelector(".policy-line .guard").textContent).toBe(
+      "review waiting: no reviewer has quota",
+    );
+  });
+
+  test("says nothing while review is on the model the policy asked for", () => {
     const target = renderPage({ board: board(), task: null, error: false });
     expect(target.querySelector(".policy-line .guard")).toBeNull();
   });
 
-  test("says so when the guard has no reading to go on", () => {
+  test("says so when the routing has no reading to go on", () => {
     const blind = board({
-      quota_guard: {
-        paused: false,
-        state: "open",
+      review_routing: {
+        action: "reviewer_restored",
+        window_high: false,
+        model: "opus",
         pause_percent: 85,
         resume_percent: 75,
         used_percent: null,
@@ -294,7 +316,7 @@ describe("factory board page", () => {
     });
     const target = renderPage({ board: blind, task: null, error: false });
     expect(target.querySelector(".policy-line .guard").textContent).toBe(
-      "quota guard: no reading",
+      "review routing: no reading",
     );
   });
 

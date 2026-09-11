@@ -1,4 +1,4 @@
-"""The Claude-window guard: pause, resume, hysteresis, and unknown readings."""
+"""Reviewer routing: fallback, restore, hysteresis, waiting, unknown readings."""
 
 from __future__ import annotations
 
@@ -19,7 +19,11 @@ from swarm.factory_models import (
 from swarm.models import SwarmTask
 
 POLICY = {
-    "quota_guard": {"claude_7d_pause_percent": 85, "claude_7d_resume_percent": 75}
+    "quota_guard": {"claude_7d_pause_percent": 85, "claude_7d_resume_percent": 75},
+    "allowed_models": ["opus", "astra", "luna"],
+    "conductor_model": "opus",
+    "reviewer_model": "opus",
+    "worker_model": "luna",
 }
 
 
@@ -86,87 +90,141 @@ def actions(db, *names):
         ]
 
 
-def test_an_open_window_leaves_delivery_running(db, monkeypatch):
+def open_quota(monkeypatch, **overrides):
+    """Every provider has room unless a test says otherwise."""
+    import swarm.model_pool as model_pool
+
+    quota = {"codex": {"headline_used_percent": 10.0, "age_seconds": 5.0}}
+    quota.update(overrides)
+    monkeypatch.setattr(model_pool, "quota_summary", lambda: quota)
+    return quota
+
+
+def test_a_quiet_window_reviews_on_opus(db, monkeypatch):
+    open_quota(monkeypatch)
     observe(monkeypatch, 40.0)
-    verdict = guard.evaluate(POLICY)
-    assert verdict == {
-        "paused": False,
-        "state": "open",
-        "reading": "observed",
-        "used_percent": 40.0,
-        "pause_percent": 85,
-        "resume_percent": 75,
-    }
-    assert actions(db, *controls.QUOTA_GUARD_ACTIONS) == []
+    verdict = guard.observe(POLICY)
+    assert verdict["action"] == "reviewer_restored"
+    assert verdict["model"] == "opus" and verdict["window_high"] is False
+    assert guard.reviewer_for(POLICY, "bug-fix")["model"] == "opus"
 
 
-def test_the_pause_threshold_pauses_once_and_stays_paused(db, monkeypatch):
-    observe(monkeypatch, 85.0)
-    assert guard.evaluate(POLICY)["paused"]
-    assert guard.evaluate(POLICY)["paused"]
-    assert actions(db, *controls.QUOTA_GUARD_ACTIONS) == ["quota_guard_paused"]
-    assert guard.delivery_paused()
-
-
-def test_between_the_thresholds_the_pause_holds(db, monkeypatch):
+def test_a_spent_window_reviews_on_the_next_pool_member(db, monkeypatch):
+    open_quota(monkeypatch)
     observe(monkeypatch, 90.0)
-    assert guard.evaluate(POLICY)["paused"]
+    verdict = guard.observe(POLICY)
+    assert verdict["action"] == "reviewer_fallback"
+    assert verdict["model"] == "astra" and verdict["window_high"] is True
+    assert verdict["used_percent"] == 90.0
+    assert guard.reviewer_for(POLICY, "bug-fix")["model"] == "astra"
+    assert actions(db, *controls.REVIEWER_ROUTING_ACTIONS) == ["reviewer_fallback"]
+
+
+def test_the_fallback_is_audited_once_not_every_tick(db, monkeypatch):
+    open_quota(monkeypatch)
+    observe(monkeypatch, 90.0)
+    for _ in range(3):
+        assert guard.observe(POLICY)["model"] == "astra"
+    assert actions(db, *controls.REVIEWER_ROUTING_ACTIONS) == ["reviewer_fallback"]
+
+
+def test_between_the_thresholds_the_fallback_holds(db, monkeypatch):
+    open_quota(monkeypatch)
+    observe(monkeypatch, 90.0)
+    assert guard.observe(POLICY)["model"] == "astra"
     observe(monkeypatch, 80.0)
-    verdict = guard.evaluate(POLICY)
-    assert verdict["paused"] and verdict["used_percent"] == 80.0
-    assert actions(db, *controls.QUOTA_GUARD_ACTIONS) == ["quota_guard_paused"]
+    verdict = guard.observe(POLICY)
+    assert verdict["model"] == "astra" and verdict["window_high"] is True
+    assert actions(db, *controls.REVIEWER_ROUTING_ACTIONS) == ["reviewer_fallback"]
 
 
-def test_below_the_resume_threshold_the_lane_reopens_once(db, monkeypatch):
+def test_below_the_resume_threshold_opus_comes_back_once(db, monkeypatch):
+    open_quota(monkeypatch)
     observe(monkeypatch, 90.0)
-    guard.evaluate(POLICY)
+    guard.observe(POLICY)
     observe(monkeypatch, 74.0)
-    assert not guard.evaluate(POLICY)["paused"]
-    assert not guard.evaluate(POLICY)["paused"]
-    assert actions(db, *controls.QUOTA_GUARD_ACTIONS) == [
-        "quota_guard_paused",
-        "quota_guard_resumed",
+    assert guard.observe(POLICY)["model"] == "opus"
+    assert guard.observe(POLICY)["model"] == "opus"
+    assert actions(db, *controls.REVIEWER_ROUTING_ACTIONS) == [
+        "reviewer_fallback",
+        "reviewer_restored",
     ]
-    assert not guard.delivery_paused()
 
 
-def test_an_unreadable_window_is_not_a_pause_and_audits_hourly(db, monkeypatch):
+def test_a_spent_window_with_no_fallback_left_waits(db, monkeypatch):
+    open_quota(monkeypatch, codex={"exhausted": True, "age_seconds": 5.0})
+    observe(monkeypatch, 90.0)
+    verdict = guard.observe(POLICY)
+    assert verdict["action"] == "review_waiting" and verdict["model"] is None
+    assert guard.reviewer_for(POLICY, "bug-fix")["model"] is None
+    assert actions(db, *controls.REVIEWER_ROUTING_ACTIONS) == ["review_waiting"]
+
+
+def test_judgment_work_waits_for_opus_rather_than_falling_back(db, monkeypatch):
+    open_quota(monkeypatch)
+    observe(monkeypatch, 90.0)
+    guard.observe(POLICY)
+    assert guard.reviewer_for(POLICY, "bug-fix")["model"] == "astra"
+    judgment = guard.reviewer_for(POLICY, "judgment-analysis")
+    assert judgment["model"] is None
+    assert {entry["model"] for entry in judgment["skipped"]} == {"opus", "astra"}
+
+
+def test_judgment_work_reviews_on_opus_while_the_window_is_quiet(db, monkeypatch):
+    open_quota(monkeypatch)
+    observe(monkeypatch, 40.0)
+    guard.observe(POLICY)
+    assert guard.reviewer_for(POLICY, "judgment-analysis")["model"] == "opus"
+
+
+def test_an_unreadable_window_never_starts_a_fallback(db, monkeypatch):
+    open_quota(monkeypatch)
     monkeypatch.setattr(guard, "reading", lambda **_kwargs: None)
     for _ in range(3):
-        verdict = guard.evaluate(POLICY)
-        assert verdict["paused"] is False and verdict["reading"] == "unknown"
+        verdict = guard.observe(POLICY)
+        assert verdict["window_high"] is False and verdict["model"] == "opus"
     assert actions(db, "quota_guard_unknown") == ["quota_guard_unknown"]
+    assert actions(db, "reviewer_restored") == ["reviewer_restored"]
+
+
+def test_an_unreadable_window_does_not_end_a_fallback(db, monkeypatch):
+    """Snapping back to Opus on a broker outage would spend the rest blind."""
+    open_quota(monkeypatch)
+    observe(monkeypatch, 95.0)
+    assert guard.observe(POLICY)["model"] == "astra"
+    monkeypatch.setattr(guard, "reading", lambda **_kwargs: None)
+    verdict = guard.observe(POLICY)
+    assert verdict["window_high"] is True and verdict["model"] == "astra"
+    assert actions(db, *controls.REVIEWER_ROUTING_ACTIONS) == [
+        "reviewer_fallback",
+        "quota_guard_unknown",
+    ]
+
+
+def test_the_unknown_audit_is_hourly(db, monkeypatch):
+    open_quota(monkeypatch)
+    monkeypatch.setattr(guard, "reading", lambda **_kwargs: None)
+    guard.observe(POLICY)
     with Session(db) as session:
-        row = session.exec(select(FactoryAudit)).one()
+        row = session.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "quota_guard_unknown")
+        ).one()
         row.created_at = controls._now().replace(tzinfo=None) - timedelta(hours=2)
         session.add(row)
         session.commit()
-    guard.evaluate(POLICY)
+    guard.observe(POLICY)
     assert actions(db, "quota_guard_unknown") == [
         "quota_guard_unknown",
         "quota_guard_unknown",
     ]
 
 
-def test_a_stale_observation_is_unknown_rather_than_a_pause(db, monkeypatch):
+def test_a_stale_observation_never_starts_a_fallback(db, monkeypatch):
+    open_quota(monkeypatch)
     observe(monkeypatch, 99.0, age=4000.0)
-    verdict = guard.evaluate(POLICY)
-    assert verdict["paused"] is False and verdict["reading"] == "unknown"
+    verdict = guard.observe(POLICY)
+    assert verdict["window_high"] is False and verdict["model"] == "opus"
     assert actions(db, "quota_guard_unknown") == ["quota_guard_unknown"]
-
-
-def test_an_unknown_reading_does_not_clear_a_latched_pause(db, monkeypatch):
-    """Reopening on a broker outage would spend the rest of the window blind."""
-    observe(monkeypatch, 95.0)
-    assert guard.evaluate(POLICY)["paused"]
-    monkeypatch.setattr(guard, "reading", lambda **_kwargs: None)
-    verdict = guard.evaluate(POLICY)
-    assert verdict["paused"] is True and verdict["reading"] == "unknown"
-    assert guard.delivery_paused()
-    assert actions(db, *controls.QUOTA_GUARD_ACTIONS) == [
-        "quota_guard_paused",
-        "quota_guard_unknown",
-    ]
 
 
 def test_a_missing_seven_day_window_reads_as_nothing(monkeypatch):
