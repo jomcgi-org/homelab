@@ -4975,6 +4975,117 @@ def run_correction_round(task, policy, ordinal, *, verdict, head):
     )
 
 
+def reviewed_after_three_turns(max_turns, *, head=HEAD_ONE):
+    """An investigate, an implement and a review that asked for changes."""
+    task, policy = feedback_task(max_turns=max_turns)
+    complete_feedback_node(
+        task,
+        policy,
+        "investigate_scope",
+        {
+            "status": "complete",
+            "summary": "scoped",
+            "pr_number": None,
+            "head_sha": None,
+        },
+    )
+    complete_feedback_node(
+        task,
+        policy,
+        "implement_fix",
+        {
+            "status": "complete",
+            "summary": "Delivered the fix",
+            "pr_number": 21,
+            "head_sha": head,
+        },
+        head=head,
+        deps=["investigate_scope"],
+    )
+    complete_feedback_node(
+        task,
+        policy,
+        "review_fix",
+        {
+            "verdict": "changes_requested",
+            "summary": "Tighten the retry bound and add a regression test.",
+            "pr_number": 21,
+            "head_sha": head,
+        },
+        head=head,
+        deps=["implement_fix"],
+    )
+    return task, policy
+
+
+def test_an_engine_round_is_admitted_on_its_own_nodes_not_on_the_next_round(
+    feedback_db,
+):
+    """The reserve is the planner's headroom, never a charge on the engine.
+
+    Three spent work turns under an envelope of six. The round this review
+    asks for costs two real nodes at one attempt each, which fits. Counting
+    the reserve for the round behind it in the same check would ask for eight
+    and refuse the first correction the loop ever tries.
+    """
+    from swarm import factory_controls as controls
+
+    task, policy = reviewed_after_three_turns(6)
+    assert controls.task_snapshot(task["id"])["turns_used"] == 3
+    conductor.reconcile_task(task["id"], policy, object())
+    keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
+    assert {"correct_1", "review_1"} <= keys
+    assert feedback_audits(feedback_db, task["id"]) == []
+    # Three spent turns, the round's two real nodes, and the reserve for the
+    # round behind it: seven against an envelope of six. The reserve bounds
+    # what the planner may add next rather than what the engine already
+    # opened, and the figure admission reads stays clamped to the envelope.
+    rounds = conductor._rounds_remaining(task["id"], policy)
+    derived = controls.derive_allowance(
+        task["id"], policy, review_rounds_remaining=rounds
+    )
+    assert rounds == 1 and derived["turns"] == 3 + 2 + 2
+    assert controls.task_snapshot(task["id"])["allowance"]["turns"] == 6
+
+
+def test_a_second_engine_round_is_refused_when_its_own_nodes_do_not_fit(feedback_db):
+    from swarm import factory_controls as controls
+
+    # Five spent turns once the first round settles, so the second round's two
+    # nodes need seven against an envelope of six.
+    task, policy = reviewed_after_three_turns(6)
+    conductor.reconcile_task(task["id"], policy, object())
+    run_correction_round(task, policy, 1, verdict="changes_requested", head=HEAD_TWO)
+    conductor.reconcile_task(task["id"], policy, object())
+    keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
+    assert "correct_2" not in keys
+    audits = feedback_audits(feedback_db, task["id"])
+    assert [audit["refusal_code"] for audit in audits] == ["envelope_exceeded"]
+    import json
+
+    detail = json.loads(audits[0]["reason"].split("envelope exceeded: ", 1)[1])
+    assert detail["turns"] == {"needed": 5 + 2, "allowed": 6}
+    # One turn of six is spare against a round that costs two, which is what
+    # the refusal tells the planner it has to work inside.
+    assert detail["spare_turns"] == 1
+    assert controls.task_snapshot(task["id"])["allowance"]["turns"] == 6
+
+
+def test_a_second_engine_round_opens_when_its_own_nodes_fit(feedback_db):
+    from swarm import factory_controls as controls
+
+    # Two turns of room over the refusing case is all the same round needs.
+    task, policy = reviewed_after_three_turns(8)
+    conductor.reconcile_task(task["id"], policy, object())
+    run_correction_round(task, policy, 1, verdict="changes_requested", head=HEAD_TWO)
+    conductor.reconcile_task(task["id"], policy, object())
+    keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
+    assert {"correct_2", "review_2"} <= keys
+    assert feedback_audits(feedback_db, task["id"]) == []
+    # Both rounds are spent, so nothing is reserved behind this one.
+    assert controls.task_snapshot(task["id"])["allowance"]["turns"] == 5 + 2
+
+
 def test_the_round_bound_hands_an_unresolved_review_back_to_the_planner(feedback_db):
     task, policy = reviewed_task(rounds=2)
     conductor.reconcile_task(task["id"], policy, object())
@@ -5922,8 +6033,11 @@ def test_a_refused_add_names_the_turns_that_would_still_fit(feedback_db):
         "allowed": 9,
     }
     # One turn is spare, so the planner is told to size a single-attempt node
-    # rather than re-proposing the two-attempt one that was just refused.
+    # rather than re-proposing the two-attempt one that was just refused. The
+    # graph already holds a review node, so the round reserve is in both
+    # readings and the spare figure is the plan-time allowance's own slack.
     assert detail["spare_turns"] == 9 - accounted == 1
+    assert detail["spare_usd"] > 0
 
 
 def test_an_engine_review_round_grows_the_allowance_by_one_round(feedback_db):
@@ -5966,9 +6080,12 @@ def test_an_over_envelope_plan_is_refused_whole_with_its_excess(feedback_db):
     detail = json.loads(audits[0]["reason"].split("envelope exceeded: ", 1)[1])
     assert detail["turns"] == {"needed": 3 * 2 + 2, "allowed": 6}
     assert detail["usd"]["allowed"] == policy["task_budget_usd"]
-    # Nothing but the planner node is live, so six of the six turns are spare
-    # and the planner is told the size the next plan has to come in under.
-    assert detail["spare_turns"] == 6
+    # Only the planner node is live, and the plan's own review node brings the
+    # two-turn round reserve with it, so four of the six turns are spare. A
+    # spare figure read off a graph with no review node would send the planner
+    # back with a six-turn plan that derives eight and is refused again.
+    assert detail["spare_turns"] == 4
+    assert detail["spare_usd"] == round(policy["task_budget_usd"] - 4.25, 6)
     # Nothing was derived, so admission still reads the envelope.
     assert controls.task_snapshot(task["id"])["allowance"]["derived"] is False
     # The next planner is told exactly what to shrink.

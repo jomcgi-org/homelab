@@ -256,10 +256,13 @@ plus what the engine may still insert on its own. Review rounds are reserved one
 at a time: the next round only, at the two turns it costs, because the engine
 inserts its correction and its re-review at one attempt each. Each inserted
 round is then counted like any other live node while the round behind it is
-reserved, so the allowance grows by one round at a time and every insertion is
-checked against the envelope as it happens. A fan-out wave reserves its one
-fan-in node at the policy's `max_attempts`, exactly as the inserted node will
-carry, so that insertion is turn-neutral. Money is the same sum over node cost
+reserved, so the allowance grows by one round at a time. A fan-out wave reserves
+its one fan-in node at the policy's `max_attempts`, exactly as the inserted node
+will carry, so that insertion is turn-neutral. Every insertion is checked
+against the envelope as it happens, and an engine insertion is checked on the
+nodes it really adds, with no forward reserve counted on top: that reserve is
+headroom for the planner's next edit, not a charge against the round the engine
+is opening. Money is the same sum over node cost
 ceilings plus charged history. Review rounds are reserved only when the plan
 holds a review node. That allowance is
 persisted on the receipt with the graph revision it came from, re-derived and
@@ -268,8 +271,9 @@ bound `authorize_start` and the board actually read. Policy keeps only an
 envelope, `max_task_turns_hard` beside `task_budget_usd` and the deadline. An
 edit whose derived allowance would exceed either is refused whole with
 `envelope_exceeded` and the excess named as needed against allowed, beside the
-spare turns the graph still leaves, which reaches the planner as decision
-feedback so it can shrink the edit, split the work, or pause.
+spare turns and dollars the graph still leaves under the reserve that edit
+implies, which reaches the planner as decision feedback so it can shrink the
+edit, split the work, or pause.
 
 Nodes that can start together fan out, up to `max_parallel_nodes`. A wave is
 read from the live graph rather than from the plan as a whole: source-writing
@@ -407,9 +411,13 @@ top of the plan, so a nine-turn envelope could not hold a three-node plan and a
 task with any history could not add a review node at all (t-5e48b6e1, #5981).
 The reserve is lazy instead, the next round only and at the two turns the engine
 really inserts, and the envelope is checked again at each insertion, which is
-the check that was doing the work all along. Naming the spare turns in the
-refusal is the other half: a planner that only hears no re-proposes the same
-edit until `max_planner_turns` pauses the task (#5419).
+the check that was doing the work all along. The same reasoning keeps the
+reserve out of the engine's own check: headroom the planner needs for sizing
+would otherwise refuse a round the envelope can afford because of a round that
+may never open. Naming the spare turns and dollars in the refusal is the other
+half, computed under the reserve the refused edit implies: a planner that only
+hears no, or that shrinks to a figure which ignored the reserve its own review
+node brings, re-proposes until `max_planner_turns` pauses the task (#5419).
 
 **Why.** Nodes were serial because every node pushed to the one branch
 `factory/<task-id>` and the reconciler dispatched one active run per task, not
