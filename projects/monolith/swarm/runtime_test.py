@@ -135,3 +135,58 @@ def test_dbos_read_maps_dbos_exception_to_503(monkeypatch):
     assert raised.value.status_code == 503
     assert raised.value.detail == "Swarm DBOS is temporarily unavailable"
     assert raised.value.__cause__ is error
+
+
+def test_init_dbos_pins_the_application_version_to_the_node_workflow(monkeypatch):
+    configs = []
+
+    monkeypatch.setattr(dbos, "DBOS", lambda config: configs.append(config) or object())
+    monkeypatch.setattr(runtime, "node_workflow_version", lambda: "pinned-version")
+
+    assert runtime.init_dbos() is not None
+    assert configs[0]["application_version"] == "pinned-version"
+
+
+def test_the_node_workflow_version_ignores_an_unrelated_workflow():
+    """A workflow this lane does not run must not move the version.
+
+    This is the whole point of pinning it. DBOS hashes every registered
+    workflow, so before this the drainer or the legacy swarm engine changing
+    would strand in-flight factory nodes.
+    """
+    from dbos._dbos import _get_or_create_dbos_registry
+
+    registry = _get_or_create_dbos_registry()
+    saved = dict(registry.workflow_info_map)
+    ours = runtime.node_workflow_version()
+    theirs = registry.compute_app_version()
+
+    @dbos.DBOS.workflow()
+    def unrelated_fixture_workflow() -> int:
+        return 1
+
+    try:
+        assert registry.compute_app_version() != theirs
+        assert runtime.node_workflow_version() == ours
+    finally:
+        registry.workflow_info_map.clear()
+        registry.workflow_info_map.update(saved)
+
+
+def test_the_node_workflow_version_changes_when_a_step_body_changes(monkeypatch):
+    from swarm import steps
+
+    before = runtime.node_workflow_version()
+
+    def poll_turn(session_id: int, after_seq: int) -> dict | None:
+        """A different body is a different durable shape."""
+        return None
+
+    monkeypatch.setattr(steps, "poll_turn", poll_turn)
+    assert runtime.node_workflow_version() != before
+
+
+def test_an_unreadable_source_leaves_dbos_to_compute_its_own_version(monkeypatch):
+    # len is a builtin, so inspect.getsource raises for it.
+    monkeypatch.setattr(runtime, "_node_workflow_members", lambda: (len,))
+    assert runtime.node_workflow_version() is None
