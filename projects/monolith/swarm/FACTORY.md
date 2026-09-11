@@ -123,6 +123,12 @@ ceased, and a node that then fails with no retry left reaches the planner
 through the ordinary deviation path rather than a planner node queued behind
 the stalled run.
 
+Settling either one as uncertain does not start stop supervision on its own.
+Supervision runs only once the attempt's stop is due: an operator stop, a
+cancellation request, or the turn timeout elapsed measured from dispatch. So a
+strand or a stall caught early holds its reservation until that timeout passes
+and self-heals there, rather than at the moment it is observed.
+
 An attempt whose workflow died mid-way has no session recorded on its run,
 because `record_dispatch` binds one only at completion. The reconciler resolves
 it by the deterministic `local_session_id`, `factory:<task>:<node>:<attempt>`,

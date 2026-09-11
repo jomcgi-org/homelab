@@ -1358,8 +1358,21 @@ def record_outcome(
                 version,
                 GraphOp(ok=True, version=version, attempt=attempt),
             )
-        if run.status in TERMINAL_RUN_STATUSES or (
-            run.status == "uncertain" and status == "uncertain"
+        # Unknown execution is recorded once and then only reconciled to a
+        # terminal result. The single exception is cost arriving where there
+        # was none: a workflow can complete and still report unknown execution
+        # while carrying real provider spend, and refusing that would leave the
+        # attempt with no measured cost to settle against when it does become
+        # terminal. It adds evidence without reopening anything.
+        priced = (
+            run.status == "uncertain"
+            and status == "uncertain"
+            and run.cost_usd is None
+            and cost_usd is not None
+        )
+        if not priced and (
+            run.status in TERMINAL_RUN_STATUSES
+            or (run.status == "uncertain" and status == "uncertain")
         ):
             return _refuse(
                 db, task, "record_outcome", args, version, "outcome_conflict"

@@ -2605,7 +2605,11 @@ def test_a_successful_old_version_workflow_still_returns_its_result(stranded_fac
 
 
 def _stalled_dbos(s, *, idle_seconds, monkeypatch):
-    """A PENDING workflow on the running version whose last step is old."""
+    """A PENDING workflow on the running version whose last step is old.
+
+    Also steps past the post-start settling window, which a test process is
+    always inside of.
+    """
     import time
 
     timeout = s.run["pin"]["turn_timeout_seconds"]
@@ -2613,6 +2617,9 @@ def _stalled_dbos(s, *, idle_seconds, monkeypatch):
         conductor,
         "_last_step_epoch_ms",
         lambda _key: int((time.time() - timeout - idle_seconds) * 1000),
+    )
+    monkeypatch.setattr(
+        conductor, "_STARTED_AT", time.monotonic() - conductor.TICK_SECONDS * 3
     )
     return s.dbos_for("PENDING", "running-version")
 
@@ -2733,24 +2740,100 @@ def test_a_node_checkpointing_within_its_turn_timeout_is_not_stalled(
     ] == ["conductor_1"]
 
 
+def _aged_pending_dbos(s, *, age_seconds):
+    """PENDING on the running version, created age_seconds ago. Never cancels."""
+    import time
+
+    return SimpleNamespace(
+        get_workflow_status=lambda _: SimpleNamespace(
+            status="PENDING",
+            app_version="running-version",
+            created_at=int((time.time() - age_seconds) * 1000),
+        ),
+        cancel_workflow=lambda *args, **kwargs: s.cancelled.append(args),
+    )
+
+
 def test_an_unreadable_step_history_does_not_call_a_node_stalled(
     stranded_factory, monkeypatch
 ):
-    """A missing operation_outputs read is not evidence of a stall."""
+    """A failed read is not evidence of a stall, even on an old workflow.
+
+    A real WorkflowStatus always carries created_at, so collapsing a failed
+    read into "no progress since creation" would cancel a live node that is
+    only waiting a long time for a guest, which is bounded by the task deadline
+    rather than by the turn timeout.
+    """
+    import time
+
     s = stranded_factory
-    monkeypatch.setattr(conductor, "_last_step_epoch_ms", lambda _key: None)
-    conductor.reconcile_task(
-        s.task["id"],
-        s.policy,
-        # created_at is absent too, so nothing dates the workflow.
-        SimpleNamespace(
-            get_workflow_status=lambda _: SimpleNamespace(
-                status="PENDING", app_version="running-version"
-            ),
-            cancel_workflow=lambda *_args, **_kwargs: None,
-        ),
+    timeout = s.run["pin"]["turn_timeout_seconds"]
+    monkeypatch.setattr(
+        conductor, "_last_step_epoch_ms", lambda _key: conductor.UNREADABLE_STEPS
     )
-    assert _stall_audits(s) == []
+    monkeypatch.setattr(
+        conductor, "_STARTED_AT", time.monotonic() - conductor.TICK_SECONDS * 3
+    )
+    conductor.reconcile_task(
+        s.task["id"], s.policy, _aged_pending_dbos(s, age_seconds=timeout * 10)
+    )
+    assert _stall_audits(s) == [] and s.cancelled == []
+    assert conductor.graph.node_runs(s.task["id"]) == [s.run]
+
+
+def test_a_workflow_that_has_checkpointed_nothing_is_dated_by_its_creation(
+    stranded_factory, monkeypatch
+):
+    """A successful read with no rows is a real observation, unlike a failure."""
+    import time
+
+    s = stranded_factory
+    timeout = s.run["pin"]["turn_timeout_seconds"]
+    monkeypatch.setattr(conductor, "_last_step_epoch_ms", lambda _key: None)
+    monkeypatch.setattr(conductor, "_notify_node_stalled", lambda *_args: None)
+    monkeypatch.setattr(
+        conductor, "_STARTED_AT", time.monotonic() - conductor.TICK_SECONDS * 3
+    )
+    conductor.reconcile_task(
+        s.task["id"], s.policy, _aged_pending_dbos(s, age_seconds=timeout * 10)
+    )
+    assert len(_stall_audits(s)) == 1
+    assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "uncertain"
+
+
+def test_no_stall_is_called_in_the_settling_window_after_process_start(
+    stranded_factory, monkeypatch
+):
+    """DBOS recovers workflows on a background thread after launch.
+
+    A tick between launch and that thread's first checkpoint sees no recent
+    step on a node DBOS is about to resume, and an outage longer than the turn
+    timeout makes every one of them look wedged at once.
+    """
+    import time
+
+    s = stranded_factory
+    timeout = s.run["pin"]["turn_timeout_seconds"]
+    monkeypatch.setattr(
+        conductor,
+        "_last_step_epoch_ms",
+        lambda _key: int((time.time() - timeout * 10) * 1000),
+    )
+    monkeypatch.setattr(conductor, "_STARTED_AT", time.monotonic())
+    conductor.reconcile_task(
+        s.task["id"], s.policy, s.dbos_for("PENDING", "running-version")
+    )
+    assert _stall_audits(s) == [] and s.cancelled == []
+
+    # Past the window the same observation is acted on.
+    monkeypatch.setattr(conductor, "_notify_node_stalled", lambda *_args: None)
+    monkeypatch.setattr(
+        conductor, "_STARTED_AT", time.monotonic() - conductor.TICK_SECONDS * 3
+    )
+    conductor.reconcile_task(
+        s.task["id"], s.policy, s.dbos_for("PENDING", "running-version")
+    )
+    assert len(_stall_audits(s)) == 1
 
 
 def test_a_stranded_workflow_is_settled_rather_than_called_stalled(
@@ -2839,6 +2922,95 @@ def test_a_session_owned_by_another_attempt_raises_rather_than_being_adopted(
         conductor._submit_or_reconcile(
             s.task, s.run, s.dbos_for("PENDING", "old-version")
         )
+
+
+def test_the_stranded_audit_is_written_once_and_after_the_cancellation(
+    stranded_factory, monkeypatch
+):
+    """A raising cancel must not leave one audit row per tick behind it."""
+    s = stranded_factory
+    failures = [RuntimeError("DBOS unavailable"), RuntimeError("DBOS unavailable")]
+
+    def cancel_workflow(key, cancel_children=False):
+        if failures:
+            raise failures.pop()
+        s.cancelled.append((key, cancel_children))
+
+    dbos = SimpleNamespace(
+        get_workflow_status=lambda _: SimpleNamespace(
+            status="PENDING", app_version="old-version"
+        ),
+        cancel_workflow=cancel_workflow,
+    )
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="DBOS unavailable"):
+            conductor._submit_or_reconcile(s.task, s.run, dbos)
+    assert _stranded_audits(s) == []
+    conductor._submit_or_reconcile(s.task, s.run, dbos)
+    assert len(_stranded_audits(s)) == 1
+    assert s.cancelled == [(s.key, True)]
+
+
+def test_a_cost_arriving_on_an_uncertain_run_is_recorded(stranded_factory, monkeypatch):
+    """The one uncertain observation worth recording over another.
+
+    A completed workflow can report unknown execution while carrying real
+    provider spend. Dropping it would leave the attempt accounted at its full
+    reservation with nothing measured to settle against.
+    """
+    import json
+    from swarm import node_workflows as nodes
+
+    s = stranded_factory
+    monkeypatch.setattr(nodes, "reconcile_completed_node", lambda *_: None)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos_for("PENDING", "old-version"))
+    assert conductor.graph.node_runs(s.task["id"])[0]["cost_usd"] is None
+
+    priced = {
+        "status": "uncertain",
+        "reason": "unknown_invocation: reconcile before retry",
+        "cost_usd": 0.25,
+        "cost_basis": "provider",
+        "session_id": s.sid,
+    }
+    conductor._submit_or_reconcile(
+        s.task, s.run, s.dbos_for("SUCCESS", "old-version", result=priced)
+    )
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    assert run["status"] == "uncertain" and run["cost_usd"] == 0.25
+    assert json.loads(run["outcome_json"])["cost_basis"] == "provider"
+
+
+def test_a_cost_less_uncertain_observation_is_not_recorded_again(
+    stranded_factory, monkeypatch
+):
+    from sqlmodel import Session, select
+    from swarm import node_workflows as nodes
+    from swarm.models import SwarmConductorCall
+
+    s = stranded_factory
+    monkeypatch.setattr(nodes, "reconcile_completed_node", lambda *_: None)
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos_for("PENDING", "old-version"))
+    unpriced = {
+        "status": "uncertain",
+        "reason": "a different unknown, still with no measured cost",
+        "cost_usd": None,
+        "cost_basis": "unknown",
+        "session_id": s.sid,
+    }
+    conductor._submit_or_reconcile(
+        s.task, s.run, s.dbos_for("SUCCESS", "old-version", result=unpriced)
+    )
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    assert run["cost_usd"] is None
+    assert "stranded by application version change" in run["outcome_json"]
+    with Session(s.engine) as db:
+        outcomes = db.exec(
+            select(SwarmConductorCall).where(
+                SwarmConductorCall.tool == "record_outcome"
+            )
+        ).all()
+    assert len(outcomes) == 1
 
 
 @pytest.fixture
