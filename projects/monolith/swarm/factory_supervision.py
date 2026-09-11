@@ -29,6 +29,10 @@ ACTOR = "factory:stop-supervision"
 MAX_STOP_REQUESTS = 3
 HTTP_SECONDS = 5
 COMPLETION_ALARM_SECONDS = 120
+# How long after a terminal turn the guest stop becomes due. Long enough
+# for the conductor's own native completion check to settle the attempt
+# first, short enough that a four-hour policy timeout never decides it.
+STOP_GRACE_SECONDS = 120
 _ACTIONS = (
     "stop_intent",
     "stop_request",
@@ -87,6 +91,35 @@ def _audit(db, pin, action, **detail):
     )
 
 
+def _stop_deadline(snapshot: dict, identity: dict, pin: dict) -> datetime:
+    """When this attempt's guest stop becomes due.
+
+    The turn timeout bounds how long the turn may run, so it is the right
+    deadline only while the turn could still be running. Once the session's own
+    turn is terminal there is nothing left to wait out, and a planner that left
+    the policy maximum in place held one evicted guest for four hours before
+    supervision confirmed the cessation it could have confirmed in minutes. A
+    terminal turn is therefore due a fixed grace after the failure was
+    recorded, whatever the node's timeout says. Every term is a minimum, so
+    this can only bring a stop forward: an attempt whose turn is still open
+    carries no failure stamp and keeps the turn-timeout deadline alone.
+    """
+    deadline = min(
+        _timestamp(snapshot["deadline_at"]),
+        _timestamp(identity["dispatched_at"])
+        + timedelta(seconds=pin["turn_timeout_seconds"]),
+    )
+    failed_turn_at = identity.get("failed_turn_at")
+    if failed_turn_at is not None:
+        deadline = min(
+            deadline,
+            _timestamp(failed_turn_at) + timedelta(seconds=STOP_GRACE_SECONDS),
+        )
+    if "task_deadline_at" in pin:
+        deadline = min(deadline, _timestamp(pin["task_deadline_at"]))
+    return deadline
+
+
 def _locked_attempt(db, control, pin, sid, *, require_stop_due=True):
     run = db.exec(
         select(SwarmNodeRun)
@@ -131,13 +164,7 @@ def _locked_attempt(db, control, pin, sid, *, require_stop_due=True):
         raise ValueError("factory_start_changed")
     identity = read_uncertain_factory_attempt(db, pin, sid)
     snapshot = controls.task_snapshot(pin["task_id"], session=db)
-    deadline = min(
-        _timestamp(snapshot["deadline_at"]),
-        _timestamp(identity["dispatched_at"])
-        + timedelta(seconds=pin["turn_timeout_seconds"]),
-    )
-    if "task_deadline_at" in pin:
-        deadline = min(deadline, _timestamp(pin["task_deadline_at"]))
+    deadline = _stop_deadline(snapshot, identity, pin)
     from swarm.factory_attempt_stop import matching_request
 
     requested = matching_request(db, pin, identity)
