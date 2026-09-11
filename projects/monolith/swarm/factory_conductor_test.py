@@ -242,6 +242,20 @@ def test_a_reviewer_outside_the_pool_is_not_evidence(monkeypatch):
         conductor.verify_delivery(task, 3, runs, ["opus", "astra"])
 
 
+def test_judgment_delivery_refuses_a_below_floor_approver(monkeypatch):
+    """Dispatch makes judgment review wait rather than fall back, so this is
+    unreachable. The completion gate refuses it anyway."""
+    task, runs = delivery(monkeypatch, reviewer="astra")
+    with pytest.raises(ValueError, match="exact-head"):
+        conductor.verify_delivery(task, 3, runs, ["opus", "astra"], judgment=True)
+
+
+def test_judgment_delivery_accepts_an_opus_approver(monkeypatch):
+    task, runs = delivery(monkeypatch, reviewer="opus")
+    result = conductor.verify_delivery(task, 3, runs, ["opus", "astra"], judgment=True)
+    assert result["reviewer_model"] == "opus"
+
+
 def test_a_fallback_reviewer_in_the_implementer_session_is_refused(monkeypatch):
     """The session check is the independence check, and it does not relax."""
     task, runs = delivery(monkeypatch, reviewer="astra", review_session=10)
@@ -4804,6 +4818,19 @@ def test_advisory_task_refuses_planner_dag_edits(feedback_db, task_class, role):
     assert exc.value.code == "advisory_task_no_dag"
 
 
+def test_judgment_task_refuses_a_named_cheap_reviewer(feedback_db):
+    """Review is not exempt from the floor: a cheaper reviewer for judgment
+    work could never run, because dispatch makes it wait for Opus."""
+    task, policy = feedback_task(
+        task_class="judgment-analysis",
+        allowed_models=["opus", "astra", "luna"],
+        model_pools={"conductor": ["opus"], "reviewer": ["opus", "astra"]},
+    )
+    with pytest.raises(conductor._EditRefused) as exc:
+        conductor._prepare_add(task, policy, plan_edit("gate", "review", model="astra"))
+    assert exc.value.code == "below_judgment_floor"
+
+
 def test_judgment_task_uses_floor_and_refuses_named_cheap_model(feedback_db):
     task, policy = feedback_task(
         task_class="judgment-analysis",
@@ -7118,7 +7145,7 @@ def test_a_review_with_no_available_reviewer_waits_without_holding_the_rest(
     )
     result = routed_dispatch(monkeypatch, ["implement_fix", "review_1"], reviewer=None)
     assert result.started == [("implement_fix", None)]
-    assert [action for action, _detail in result.audits] == ["review_waiting"]
+    assert [action for action, _detail in result.audits] == ["review_node_waiting"]
 
 
 def test_a_reviewer_the_policy_does_not_allow_waits(monkeypatch):
@@ -7136,7 +7163,7 @@ def test_a_waiting_judgment_review_says_so_in_its_audit(monkeypatch):
     )
     assert result.started == []
     action, detail = result.audits[0]
-    assert action == "review_waiting" and detail["judgment"] is True
+    assert action == "review_node_waiting" and detail["judgment"] is True
     assert detail["task_class"] == "judgment-analysis"
 
 

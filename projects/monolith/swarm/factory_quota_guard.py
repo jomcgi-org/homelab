@@ -86,12 +86,13 @@ def _window(fetched: object) -> dict | None:
         used = window.get("used_percent")
         if not isinstance(used, (int, float)) or isinstance(used, bool):
             continue
-        # The egress sidecar reports Anthropic's utilisation header, which is a
-        # fraction below one and a percentage above it. summarise() does not
-        # normalise, so read it the same way the sidecar wrote it.
-        value = float(used)
+        # Already a percentage. The egress sidecar converts Anthropic's
+        # utilisation header, a fraction, on the way in (quota.go multiplies by
+        # 100 when the value is at or below 1), so doing it again here read a
+        # real 0.9 percent as 90 and tripped the fallback at the start of every
+        # weekly window.
         return {
-            "used_percent": value * 100.0 if value <= 1.0 else value,
+            "used_percent": float(used),
             "age_seconds": (
                 float(age)
                 if isinstance(age, (int, float)) and not isinstance(age, bool)
@@ -157,10 +158,15 @@ def observe(policy: dict, *, session: Session | None = None) -> dict:
     otherwise snap back to Opus the moment the broker went down, and spend the
     rest of the window with nothing able to say stop.
     """
-    from swarm.model_pool import select_reviewer
+    from swarm.model_pool import quota_summary, select_reviewer
 
     block = quota_guard_policy(policy)
     observed = reading()
+    # Both reads happen before the lock. select_reviewer would otherwise reach
+    # the token broker from inside the factory control lock, and its own cache
+    # is thirty seconds against this module's sixty, so roughly every other
+    # tick held that lock across a five second HTTP call.
+    quota = quota_summary()
     with _locked_session(session) as (db, _control):
         previous = latest_verdict(db)
         state = window_high(session=db)
@@ -181,7 +187,7 @@ def observe(policy: dict, *, session: Session | None = None) -> dict:
                     state = used >= block["claude_7d_resume_percent"]
                 else:
                     state = used >= block["claude_7d_pause_percent"]
-        choice = select_reviewer(policy, window_high=state)
+        choice = select_reviewer(policy, window_high=state, quota=quota)
         action = _verdict_action(choice)
         detail = {
             "window_high": state,
@@ -197,7 +203,11 @@ def observe(policy: dict, *, session: Session | None = None) -> dict:
             and _detail_model(previous) == choice["model"]
             and _detail_window(previous) == state
         )
-        if not unchanged:
+        # A first tick on a quiet window has restored nothing: the ledger stays
+        # empty until something actually moves, so the board shows no routing
+        # event rather than an event that did not happen.
+        nothing_to_restore = previous is None and action == "reviewer_restored"
+        if not unchanged and not nothing_to_restore:
             _audit(db, ACTOR, action, **detail)
         return {"action": action, **detail}
 
