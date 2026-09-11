@@ -62,8 +62,63 @@ operator raises it. Conductor planning rounds are capped separately by the
 optional `max_planner_turns`, which inherits the envelope when it is omitted.
 Planning rounds still draw on `task_budget_usd`. The optional
 `max_review_rounds` bounds the review correction rounds the engine runs on its
-own and defaults to 2. Those, `reviewer_model` and `model_pools` are the only
-optional fields; every other field is required.
+own and defaults to 2. Those, `reviewer_model`, `model_pools`, and `intake` are
+the only optional fields; every other field is required.
+
+### Autonomous intake and refine
+
+The optional `intake` block is fully defaulted when an older policy does not
+carry it:
+
+```json
+{
+  "enabled": false,
+  "labels": ["agent-ready"],
+  "exclude_labels": ["needs-human", "wontfix", "security-finding"],
+  "max_per_day": 5,
+  "cooldown_hours": 24,
+  "refine_enabled": false
+}
+```
+
+`enabled` controls autonomous issue discovery. `labels` names delivery-ready
+labels and may be empty, in which case no issue is a delivery candidate.
+`exclude_labels` rejects an issue before selection. `max_per_day` is between 1
+and 50, and `cooldown_hours` is between 1 and 168. `refine_enabled` allows an
+otherwise eligible issue with none of the delivery labels to enter the refine
+path. Both feature flags default off.
+
+Intake admits at most one issue per tick and never exceeds `max_per_day` over a
+rolling 24 hours. A failed or cancelled receipt cannot be selected again until
+its cooldown expires. Assigned issues, excluded labels, issues linked from an
+open pull request, and issues already received in the current generation are
+not candidates. Intake-created receipts become admissible only while
+`intake.enabled` is true. Turning intake off therefore leaves the operator's
+`issue_numbers` allowlist exactly as it was.
+
+Delivery candidates rank before every refine candidate. Within either group,
+`critical` ranks before `bug`, then the oldest issue ranks first. A refine
+candidate carrying `critical` never outranks a delivery candidate without a
+rank label.
+
+A refine task runs one planner-class node with at most two attempts and has no
+DAG. The node posts exactly one `## Agent brief` comment with `### Outcome`,
+`### Acceptance`, `### Files`, `### Evidence`, and `### Risks` in that order.
+It applies `agent-ready` when no human decision remains. Otherwise it applies
+`needs-human`, adds a final `### Question` section, and sends exactly one warn
+notification. The server settles from a re-read of the issue label and comment,
+never from the node artifact alone. A verified `needs-human` result succeeds
+because the briefing and escalation completed. Two failed attempts settle the
+task failed and apply nothing.
+
+Before enabling `refine_enabled`, confirm the guest GitHub token has
+`issues: write` on a fine-grained token, or `repo` on a classic one. Opening a
+pull request needs `pull_requests: write` or `repo`. A fine-grained token
+granted only `pull_requests: write` and `contents: write` can push and open pull
+requests but receives 403 on refine comments and labels. That 403 becomes a
+failed refine attempt rather than silent success because settlement re-reads
+the issue. Set `FACTORY_EXECUTOR_LOGIN` to a non-empty GitHub login to require
+the verified brief comment to come from that author.
 
 The derived allowance is `max_attempts` summed over the live nodes that have
 not succeeded, plus the work turns already spent, plus what the engine may still
