@@ -15,6 +15,9 @@ swarm:
   # Exact operator requests and original deadlines retain the existing task
   # bounds. Capacity is released only after durable guest cessation proof.
   factoryStopSupervisionEnabled: true
+  # Settle attempts lost between "invoke sent" and "guest bound" (#6025):
+  # the template landed one PR earlier; this is the behaviour flip.
+  factoryLostBeforeGuestSettlementEnabled: true
   # Per-class floors on remaining quota percent (#5974). A floor only bites
   # for a role whose stored factory policy carries a model_pools entry with
   # somewhere to spill to (policy v41 has worker [sol, sonnet] and conductor
