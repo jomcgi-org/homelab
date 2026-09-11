@@ -1399,6 +1399,13 @@ defmodule Embervm.NodeRegistry do
           node_id: node_id,
           health: if(tombstone, do: :down, else: :unknown),
           draining: false,
+          # `registered` separates the two very different situations that both
+          # report health :unknown. No runtime instance means nothing can send a
+          # NodeStatus for this node at all, so a caller waiting on the node (a
+          # destroy waiting for teardown confirmation, #6004) can tell a node
+          # that left the fleet from a registered one that has merely gone quiet
+          # for a few seconds. Health alone cannot express that difference.
+          registered: false,
           tombstoned: not is_nil(tombstone),
           pod_uid: tombstone && elem(tombstone, 1).pod_uid
         }
@@ -1410,6 +1417,7 @@ defmodule Embervm.NodeRegistry do
           node_id: node_id,
           health: row.health,
           draining: Enum.any?(rows, & &1.draining),
+          registered: true,
           tombstoned: false,
           pod_uid: row.pod_uid
         }
