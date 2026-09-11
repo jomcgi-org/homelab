@@ -1,0 +1,13 @@
+apiVersion: v2
+name: polylane
+description: "Polylane's read-only Kubernetes agent behind an outbound Cloudflare Tunnel, plus the 1Password-sourced API key it registers with"
+type: application
+version: 0.1.0
+appVersion: "0.2.3"
+dependencies:
+  - name: polylane-k8s
+    repository: oci://ghcr.io/coreplanelabs/charts
+    version: "0.2.3"
+annotations:
+  org.opencontainers.image.source: "https://github.com/jomcgi/homelab"
+  org.opencontainers.image.url: "https://github.com/jomcgi/homelab"

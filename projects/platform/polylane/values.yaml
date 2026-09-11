@@ -1,0 +1,43 @@
+# Wrapper values. Everything under polylane-k8s: is the upstream chart's;
+# this chart's own templates add only the OnePasswordItem.
+polylane-k8s:
+  apiKey:
+    # The Secret the 1Password operator materialises from templates/onepassworditem.yaml.
+    existingSecret: polylane-api-key
+    # The item's field label, verbatim: the operator does not case-fold it.
+    secretKey: POLYLANE_API_KEY
+
+  # The agent's config.yaml, rendered verbatim into its ConfigMap.
+  config:
+    cluster_name: homelab-hub
+
+  # Single replica is the chart's ceiling (one tunnel, one agent, no leader
+  # election), so the defaults stand. Sized per the recovery-drain convention:
+  # requests carry steady state, the memory limit carries a resync burst.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+  tunnel:
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+
+  # No NetworkPolicy: the hub has no Cilium CRDs and nothing else in
+  # platform-gke enforces one. The agent is outbound-only regardless.
+  networkPolicy:
+    enabled: false
+
+  # Prometheus is not scraping this cluster; Honeycomb gets telemetry through
+  # the otel-collector, which does not discover ServiceMonitors.
+  metrics:
+    service:
+      enabled: false
+    serviceMonitor:
+      enabled: false

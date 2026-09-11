@@ -1,0 +1,58 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: polylane
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: shared-infrastructure
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    # ArgoCD 3.1 forces structured-merge diff for any app with
+    # ServerSideApply=true, and that path evaluates ignoreDifferences before it
+    # normalises the predicted state. The server-side path normalises after its
+    # dry run, so the state Secret exclusion below actually applies
+    # (docs/runbooks/argocd-outofsync.md, "Phantom OutOfSync from
+    # ServerSideApply").
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jomcgi-org/homelab.git
+    targetRevision: HEAD
+    path: projects/platform/polylane
+    helm:
+      releaseName: polylane-k8s
+      valueFiles:
+        - values.yaml
+      ignoreMissingValueFiles: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: polylane
+  # The agent owns the contents of its state Secret: the chart renders it with
+  # no data on purpose (the agent's RBAC is get/update/patch, never create), and
+  # the agent writes its registration and the cloudflared tunnel token into it
+  # after startup. Without this exclusion selfHeal reconciles the Secret back to
+  # empty on every drift check, which de-registers the cluster and drops the
+  # tunnel until the agent re-registers.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: polylane-k8s-state
+      jsonPointers:
+        - /data
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
