@@ -95,12 +95,26 @@ attempt, task-turn, deadline or budget bounds. Confirmed failed artifacts feed
 bounded retry context back to the next attempt. Unknown execution retains its
 reservation and requires reconciliation before another attempt starts.
 
-A monolith deploy strands every node workflow still in flight: DBOS stamps a
-workflow with the application version that started it and neither recovers nor
-dequeues one from an older version, so the row stays live-looking forever. The
-reconciler cancels such a workflow, audits `workflow_stranded` with both
-versions, and settles the attempt as uncertain, after which the node's real
-session outcome is reconciled and the node retries within `max_attempts`.
+The DBOS application version is pinned to the node workflow's own source:
+`execute_node`, the helpers that decide which steps run, and every step they
+call. DBOS otherwise derives it from every registered workflow in the process
+and neither recovers nor dequeues anything an older version started, so any
+unrelated workflow edit stranded in-flight nodes. Pinned, a deploy that leaves
+those functions alone recovers its in-flight nodes natively.
+
+Editing the node workflow or one of its steps is therefore the one deploy that
+strands in-flight nodes, and nothing can recover them. The reconciler cancels
+such a workflow, audits `workflow_stranded` with both versions, and settles the
+attempt as uncertain, after which the node's real session outcome is reconciled
+and the node retries within `max_attempts`.
+
+A node whose workflow is PENDING on the current version but whose newest
+`dbos.operation_outputs` checkpoint is older than its `turn_timeout_seconds` is
+stalled rather than stranded. A healthy node checkpoints every poll and every
+sleep, so that gap means the workflow stopped progressing. The reconciler
+audits `node_stalled` once per workflow, warns once on Discord, and raises the
+`node_stalled` deviation so the planner decides. It settles nothing: the node
+keeps its reservation, because a wedged workflow is unknown execution.
 
 Missing provider usage consumes the entire reserved ceiling. This is
 conservative admission accounting, not an interruptible dollar cap on a running
