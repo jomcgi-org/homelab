@@ -46,6 +46,10 @@ HEAD = "a" * 40
 
 @pytest.fixture
 def db(tmp_path, monkeypatch):
+    # These tests fake the free background slot count directly, so the reserve
+    # the factory leaves for the drainers and the probes is pinned out of the
+    # way here. It has its own cases in factory_conductor_test.
+    monkeypatch.setenv("FACTORY_BACKGROUND_RESERVE", "0")
     engine = create_engine(
         f"sqlite:///{tmp_path / 'factory-integration.db'}",
         execution_options={
@@ -883,11 +887,9 @@ def test_the_serial_lane_keeps_the_task_branch_and_needs_no_fan_in(
     task_id = admit(policy)
     dbos = PlannedThenCorrected()
     delivery_api(monkeypatch, task_id)
-    monkeypatch.setattr(
-        conductor,
-        "_free_background_slots",
-        lambda: pytest.fail("the serial lane must not read the shared pool"),
-    )
+    # The serial lane reads the pool too now: the factory yields the reserve to
+    # the drainers and the probes before it takes a slot of its own.
+    monkeypatch.setattr(conductor, "_free_background_slots", lambda: 3)
     reconcile_until(
         task_id,
         policy,
