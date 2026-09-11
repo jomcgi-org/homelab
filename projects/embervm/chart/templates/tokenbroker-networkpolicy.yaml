@@ -38,6 +38,14 @@ spec:
         {{- toYaml .Values.tokenBroker.githubApp.clientPodSelectors | nindent 8 }}
       toPorts: [{ ports: [{ port: {{ .Values.tokenBroker.spiffe.tlsPort | quote }}, protocol: TCP }] }]
     {{- end }}
+    {{- if .Values.tokenBroker.githubApp.canary.enabled }}
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace | quote }}
+            app.kubernetes.io/instance: {{ .Release.Name }}
+            app.kubernetes.io/component: github-canary
+      toPorts: [{ ports: [{ port: {{ .Values.tokenBroker.spiffe.tlsPort | quote }}, protocol: TCP }] }]
+    {{- end }}
     # Kubelet liveness/readiness probes originate from the node host. Once
     # ingress is default-deny they must be allowed or the pod never goes Ready.
     - fromEntities:

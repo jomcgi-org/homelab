@@ -79,7 +79,14 @@ const (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	if err := run(logger); err != nil {
+	runner := run
+	if len(os.Args) == 2 && os.Args[1] == "--github-canary" {
+		runner = runGitHubCanary
+	} else if len(os.Args) != 1 {
+		logger.Error("unknown token broker command")
+		os.Exit(1)
+	}
+	if err := runner(logger); err != nil {
 		logger.Error("token broker stopped", "err", err)
 		os.Exit(1)
 	}
