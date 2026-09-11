@@ -413,6 +413,8 @@ def test_real_receipt_graph_controls_complete_string_task_plan_work_review_pr(
         "pr_url": "https://github.com/owner/repo/pull/21",
         "head_sha": HEAD,
         "review_session_id": 104,
+        # The approval names the model that gave it, read from the pin.
+        "reviewer_model": "opus",
         "state": "ready_for_review",
     }
     # Three of the five starts were conductor planning rounds. Only the two
