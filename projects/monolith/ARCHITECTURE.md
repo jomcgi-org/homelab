@@ -293,7 +293,19 @@ source-writing work that may start, so a node outside it waits rather than
 becoming a second writer on the task branch. Fan-out is off entirely at a
 parallel limit of one, a planner-authored integrate node included: its members
 run serially on the task branch and it merges nothing.
+The lane is two lanes. A task's lane follows its class: work that ends in a
+pull request is delivery, work that ends in a comment is advisory. The policy's
+`max_tasks` bounds each separately, the chart's `swarm.factoryMaxConcurrentTasks`
+bounds their sum, and intake fills at most one candidate per lane per tick, so a
+full delivery lane never starves advisory work and the reverse. A `quota_guard`
+block watches the shared Claude 7-day window and holds the delivery lane when it
+is nearly spent: no new delivery admissions and no new review, implement,
+correct or integrate nodes, while in-flight nodes finish and the advisory lane
+runs on. Its verdict is recorded once per transition in the audit ledger, so a
+replica restart cannot resume the lane by forgetting, and an unknown or stale
+reading is not a pause.
 (see: /projects/monolith/swarm/factory_conductor.py)
+(see: /projects/monolith/swarm/factory_quota_guard.py)
 (see: /projects/monolith/swarm/graph.py)
 (see: /projects/monolith/swarm/deviations.py)
 (see: /projects/monolith/swarm/FACTORY.md)
@@ -310,6 +322,20 @@ it once and routing and audits must retain it across later policy changes. ADR
 agents/038 decision 5 gives judgment work an Opus-or-better implementer floor
 because no machine oracle can verify its correctness; quota pressure parks that
 work instead of demoting it.
+
+**Why.** The factory has two lanes because Opus review is the only scarce
+input it has. Implementation capacity is three spot brick nodes behind the
+autoscaler, and the implementers on the other end of it bill someone else or
+almost nothing, so a single concurrency number was rationing the wrong thing:
+it held back advisory work, which passes no review gate at all, in order to
+protect a reviewer that advisory work never calls. Splitting the bound lets
+delivery stay as narrow as review can sustain while advisory work runs at
+whatever the platform holds. The quota guard is the same reasoning applied to
+the window rather than to the count: delivery is what spends the shared Claude
+subscription, so that is what pauses when it runs low, and running it to zero
+would cost the operator their own sessions rather than only the factory's. An
+unknown reading is deliberately not a pause, because refusing to deliver
+whenever a token broker is unreachable turns one outage into two (#6002).
 
 **Why.** The bootstrap asked the planner for one graph edit at a time, so a
 single task (#5981) spent nine starts on five pieces of work: five were planner
