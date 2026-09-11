@@ -154,6 +154,26 @@ py_test(
 )
 
 py_test(
+    name = "chart_github_broker_test",
+    srcs = ["chart_github_broker_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
     name = "chart_sync_wave_test",
     srcs = ["chart_sync_wave_test.py"],
     data = [
