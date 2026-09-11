@@ -163,6 +163,7 @@ def shape_receipt(
             "evidence",
             "allowance",
             "task_class",
+            "escalation",
         )
     }
     shaped["policy"] = {
@@ -245,7 +246,7 @@ def build_factory_view(
     every task it publishes, and asking for them one board-read at a time
     would re-read the whole control state per task.
     """
-    from swarm.factory_controls import status
+    from swarm.factory_controls import escalations, status
 
     from core.db import get_engine
 
@@ -263,6 +264,7 @@ def build_factory_view(
                 "active": [],
                 "queued": [],
                 "recent": [],
+                "escalations": [],
             }
         receipts = state["receipts"]
         active = [r for r in receipts if r["state"] in ACTIVE_STATES]
@@ -309,6 +311,11 @@ def build_factory_view(
             "active": [enrich(r) for r in active],
             "queued": [shape_receipt(r) for r in queued],
             "recent": [enrich(r) for r in recent],
+            # Escalations come from every receipt, not from the three board
+            # buckets: a needs-human refine settles succeeded and drops out of
+            # "recent" after twelve more receipts, and the decision it is
+            # waiting on does not expire with the card.
+            "escalations": escalations(receipts),
         }
 
     if session is not None:

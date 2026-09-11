@@ -41,6 +41,15 @@ class ReceiptRequest(BaseModel):
     generation: int = Field(default=0, ge=0)
 
 
+class DecisionRequest(BaseModel):
+    """One operator answer to one escalation: pick an option, or ask for more."""
+
+    model_config = ConfigDict(extra="forbid")
+    option_key: str | None = Field(default=None, max_length=32)
+    action: str | None = None
+    note: str | None = Field(default=None, max_length=4000)
+
+
 @router.get("")
 def factory_status(principal: Principal = Depends(operator)) -> dict:
     from swarm import graph
@@ -121,6 +130,48 @@ def factory_control(
     # A persisted stop means admission is fenced. Active descendants are
     # separately reported as unconfirmed until cancellation is reconciled.
     return result
+
+
+@router.get("/escalations")
+def factory_escalations(principal: Principal = Depends(operator)) -> dict:
+    """Every escalation the lane has raised, open ones first."""
+    from swarm.factory_controls import escalations, status
+
+    state = status()
+    if not state.get("ok"):
+        return {"ok": False, "reason": state.get("reason"), "escalations": []}
+    return {"ok": True, "escalations": escalations(state["receipts"])}
+
+
+@router.post("/decisions/{receipt_id}")
+def factory_decision(
+    receipt_id: int,
+    body: DecisionRequest,
+    principal: Principal = Depends(operator),
+) -> dict:
+    """Answer one escalation. Either pick an option, or ask for another brief.
+
+    The same operator gate as /control, because an option applies labels,
+    comments, child issues and closes to the repository under the monolith's
+    own credential. A decision is a write, not a view.
+    """
+    from swarm.factory_decisions import DecisionError, apply_decision, request_chat
+
+    chat = body.action == "chat"
+    if body.action is not None and not chat:
+        raise HTTPException(422, "the only supported action is chat")
+    if chat == bool(body.option_key):
+        raise HTTPException(422, "supply exactly one of option_key or action=chat")
+    try:
+        if chat:
+            if not (body.note or "").strip():
+                raise HTTPException(422, "a chat request needs a note")
+            return request_chat(receipt_id, body.note or "", principal.subject)
+        return apply_decision(
+            receipt_id, body.option_key or "", principal.subject, body.note
+        )
+    except DecisionError as exc:
+        raise HTTPException(exc.status, exc.reason) from exc
 
 
 @router.post("/issues")
