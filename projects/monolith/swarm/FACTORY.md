@@ -125,9 +125,12 @@ The guard reads the 7-day window the token broker already observes for the
 audit ledger as `quota_guard_paused` and `quota_guard_resumed`, one row per
 transition, so a replica restart cannot resume the lane by forgetting and the
 board renders the state without a broker call. An unknown reading, or one older
-than an hour, is **not** a pause: it audits `quota_guard_unknown` at most hourly
-and the lane keeps working, because refusing to deliver whenever a broker read
-fails turns one outage into two.
+than an hour, never starts a pause: it audits `quota_guard_unknown` at most
+hourly and the lane keeps working, because refusing to deliver whenever a broker
+read fails turns one outage into two. It does not clear a pause either. A lane
+paused on a real reading of 95 percent would otherwise reopen the moment the
+broker went down and spend the rest of the window with nothing able to stop it,
+so the ledger holds until a reading that can say otherwise arrives.
 
 ### Model pools
 

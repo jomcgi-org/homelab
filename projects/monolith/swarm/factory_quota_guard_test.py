@@ -92,6 +92,7 @@ def test_an_open_window_leaves_delivery_running(db, monkeypatch):
     assert verdict == {
         "paused": False,
         "state": "open",
+        "reading": "observed",
         "used_percent": 40.0,
         "pause_percent": 85,
         "resume_percent": 75,
@@ -133,7 +134,7 @@ def test_an_unreadable_window_is_not_a_pause_and_audits_hourly(db, monkeypatch):
     monkeypatch.setattr(guard, "reading", lambda **_kwargs: None)
     for _ in range(3):
         verdict = guard.evaluate(POLICY)
-        assert verdict["paused"] is False and verdict["state"] == "unknown"
+        assert verdict["paused"] is False and verdict["reading"] == "unknown"
     assert actions(db, "quota_guard_unknown") == ["quota_guard_unknown"]
     with Session(db) as session:
         row = session.exec(select(FactoryAudit)).one()
@@ -150,8 +151,22 @@ def test_an_unreadable_window_is_not_a_pause_and_audits_hourly(db, monkeypatch):
 def test_a_stale_observation_is_unknown_rather_than_a_pause(db, monkeypatch):
     observe(monkeypatch, 99.0, age=4000.0)
     verdict = guard.evaluate(POLICY)
-    assert verdict["paused"] is False and verdict["state"] == "unknown"
+    assert verdict["paused"] is False and verdict["reading"] == "unknown"
     assert actions(db, "quota_guard_unknown") == ["quota_guard_unknown"]
+
+
+def test_an_unknown_reading_does_not_clear_a_latched_pause(db, monkeypatch):
+    """Reopening on a broker outage would spend the rest of the window blind."""
+    observe(monkeypatch, 95.0)
+    assert guard.evaluate(POLICY)["paused"]
+    monkeypatch.setattr(guard, "reading", lambda **_kwargs: None)
+    verdict = guard.evaluate(POLICY)
+    assert verdict["paused"] is True and verdict["reading"] == "unknown"
+    assert guard.delivery_paused()
+    assert actions(db, *controls.QUOTA_GUARD_ACTIONS) == [
+        "quota_guard_paused",
+        "quota_guard_unknown",
+    ]
 
 
 def test_a_missing_seven_day_window_reads_as_nothing(monkeypatch):
