@@ -74,6 +74,11 @@
   const stateWord = $derived(
     board?.state ?? (unavailable ? "unavailable" : "loading"),
   );
+  // Escalations waiting on a person. Shown on the tab rather than as a stats
+  // cell: it is a thing to go and do, not a thing about this board.
+  const waiting = $derived(
+    (board?.escalations ?? []).filter((item) => item.open).length,
+  );
 
   async function refresh() {
     try {
@@ -153,6 +158,9 @@
     <header class="masthead">
       <nav class="view-tabs" aria-label="Agents views">
         <a class="here" href="/agents/factory" aria-current="page">factory</a>
+        <a href="/agents/escalations"
+          >escalations{waiting ? ` (${waiting})` : ""}</a
+        >
         <a href="/agents">sessions</a>
         <a href="/agents/drain">knowledge extraction queue</a>
       </nav>
