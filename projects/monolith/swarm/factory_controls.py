@@ -76,8 +76,16 @@ DEFAULT_INTAKE = {
     "cooldown_hours": 24,
     "refine_enabled": False,
 }
-DELIVER = "deliver"
-REFINE = "refine"
+# ADR agents/038 decision 5. A class carries a verification mode and a floor on
+# the implementer tier, and judgment work never routes to the cheap lane.
+DEFAULT_TASK_CLASS = "bug-fix"
+# Machine-verified: an objective done condition a machine checks.
+MACHINE_VERIFIED_CLASSES = ("bug-fix", "mechanical-refactor", "docs")
+# Advisory: the output is a comment or a digest. No PR, no review gate.
+ADVISORY_CLASSES = ("advisory-diagnosis", "advisory-triage", "refine")
+# Judgment: correctness is only assessable by reading, so the floor is Opus.
+JUDGMENT_CLASSES = ("judgment-analysis",)
+TASK_CLASSES = MACHINE_VERIFIED_CLASSES + ADVISORY_CLASSES + JUDGMENT_CLASSES
 # Nodes the reconciler may hold in flight for one task at once. One preserves
 # the serial lane, so a policy written before fan-out existed never fans out.
 DEFAULT_MAX_PARALLEL_NODES = 1
@@ -246,9 +254,20 @@ def intake_policy(policy: dict) -> dict:
     return _validate_intake(policy.get("intake") or {})
 
 
-def receipt_kind(row) -> str:
-    """A receipt written before refine tasks existed is a delivery."""
-    return row.kind or DELIVER
+def validate_task_class(value: object) -> str:
+    if value not in TASK_CLASSES:
+        raise ValueError("invalid task_class")
+    return value
+
+
+def receipt_task_class(row) -> str:
+    """A receipt written before classes existed is an ordinary bug fix."""
+    return row.task_class or DEFAULT_TASK_CLASS
+
+
+def is_advisory(task_class: str) -> bool:
+    """Advisory work comments and never delivers, so it admits no DAG."""
+    return task_class in ADVISORY_CLASSES
 
 
 def _validate_model_pools(pools: object, policy: dict) -> dict:
@@ -652,7 +671,7 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
             "cancellation_requested",
         )
     }
-    result["kind"] = receipt_kind(row)
+    result["task_class"] = receipt_task_class(row)
     result.update(
         policy=json.loads(row.policy_json) if row.policy_json else None,
         starts=[_start_dict(s) for s in starts],

@@ -153,7 +153,7 @@ def test_autonomous_intake_receipt_flows_through_admission(db, policy, monkeypat
         lambda _repo, suffix: [] if suffix.startswith("pulls?") else [opened],
     )
     received = factory_intake_loop.intake_tick(policy, generation=0)
-    assert received["receipt"]["kind"] == "deliver"
+    assert received["receipt"]["task_class"] == "bug-fix"
     admitted = admit_next("scheduler")
     assert admitted["ok"]
     assert admitted["receipt"]["issue_number"] == 8
@@ -185,7 +185,7 @@ def test_refine_intake_reconciles_one_node_and_verifies_settlement(
         lambda _repo, suffix: [] if suffix.startswith("pulls?") else [opened],
     )
     assert (
-        factory_intake_loop.intake_tick(policy, generation=0)["receipt"]["kind"]
+        factory_intake_loop.intake_tick(policy, generation=0)["receipt"]["task_class"]
         == "refine"
     )
     admitted = admit_next("scheduler")

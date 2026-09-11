@@ -15,10 +15,10 @@ from swarm.factory_controls import (
     _now,
     _snapshot,
     _text,
-    DELIVER,
-    REFINE,
+    DEFAULT_TASK_CLASS,
     intake_policy,
     normalize_repo,
+    validate_task_class,
     validate_policy,
 )
 from swarm.factory_models import FactoryReceipt
@@ -36,7 +36,7 @@ def receive_issue(
     actor: str,
     *,
     generation: int = 0,
-    kind: str = DELIVER,
+    task_class: str = DEFAULT_TASK_CLASS,
     session: Session | None = None,
 ) -> dict:
     """Store one bounded issue snapshot. A duplicate can never replace its text.
@@ -48,8 +48,7 @@ def receive_issue(
     issue_number = _integer(issue_number, "issue_number", 1, 2**31 - 1)
     generation = _integer(generation, "generation", 0, 2**31 - 1)
     actor = _text(actor, "actor")
-    if kind not in (DELIVER, REFINE):
-        raise ValueError("invalid kind")
+    task_class = validate_task_class(task_class)
     title = _text(title, "title", 512)
     if not isinstance(body, str) or len(body) > 65536:
         raise ValueError("invalid body")
@@ -76,7 +75,7 @@ def receive_issue(
             body=body,
             url=url,
             actor=actor,
-            kind=kind,
+            task_class=task_class,
         )
         db.add(row)
         db.flush()
@@ -88,7 +87,7 @@ def receive_issue(
             repo=repo,
             issue_number=issue_number,
             generation=generation,
-            kind=kind,
+            task_class=task_class,
         )
         return {"ok": True, "created": True, "receipt": _snapshot(db, row)}
 

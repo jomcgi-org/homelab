@@ -23,7 +23,17 @@ from sqlmodel import Session, select
 from core.db import get_engine
 from core.github import GITHUB_API
 from swarm import deviations, graph, runtime
-from swarm.model_pool import select_model, selection_reason
+from swarm.factory_controls import (
+    DEFAULT_TASK_CLASS,
+    JUDGMENT_CLASSES,
+    is_advisory,
+)
+from swarm.model_pool import (
+    JUDGMENT_MODELS,
+    judgment_floor,
+    select_model,
+    selection_reason,
+)
 from swarm.models import SwarmConductorCall, SwarmPlanVersion, SwarmTask
 
 logger = logging.getLogger(__name__)
@@ -1022,6 +1032,7 @@ def planner_prompt(
     nodes: list[dict],
     runs: list[dict],
     *,
+    task_class: str = DEFAULT_TASK_CLASS,
     decision_revision: int | None = None,
     deviation: dict | None = None,
 ) -> str:
@@ -1093,7 +1104,13 @@ def planner_prompt(
         "values, excluding the reserved conductor_ prefix. Implementation nodes must "
         "commit, push and create/update a PR; required CI runs on the integrated PR "
         "head. Review is a separate Opus guest and must examine the exact PR head. "
-        "Do not merge, deploy, alter credentials, modify other tasks, or expand "
+        + (
+            "This task is judgment work, so every implementation node runs on an "
+            "Opus-class model and a cheaper model is refused. "
+            if task_class in JUDGMENT_CLASSES
+            else ""
+        )
+        + "Do not merge, deploy, alter credentials, modify other tasks, or expand "
         "policy. Complete only when the requested outcome has a PR with passing "
         "required checks and an independent approving review at the same head. "
         "A failed or uncertain attempt is evidence, never permission to retry "
@@ -1260,12 +1277,13 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
     the graph through a weaker gate than a single add_node passes.
     """
     raw_key = source["node_key"]
-    from swarm.factory_refine import is_refine_task
+    from swarm.factory_refine import task_class_for
 
-    if is_refine_task(task["id"]):
+    task_class = task_class_for(task["id"])
+    if is_advisory(task_class):
         raise _EditRefused(
-            "refine_task_no_dag",
-            "a refine task admits one refine node and no plan graph",
+            "advisory_task_no_dag",
+            "an advisory task delivers a comment and admits no plan graph",
         )
     key = raw_key
     if key.startswith("conductor_"):
@@ -1286,15 +1304,29 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
     elif role == "review":
         model = reviewer
     else:
-        # The planner left worker routing to policy: honour the pool order
-        # and skip providers with positive evidence of exhausted quota.
-        choice = select_model("worker", policy)
+        # The planner left worker routing to policy. Judgment work has a
+        # capability floor; other work follows quota-aware pool order.
+        choice = (
+            judgment_floor(policy)
+            if task_class in JUDGMENT_CLASSES
+            else select_model("worker", policy)
+        )
         model = choice["model"]
         stated_reason = selection_reason(stated_reason, choice)
     if role == "review" and "model" in source and model != reviewer:
         raise _EditRefused(
             "reviewer_model_mismatch",
             "review nodes must use the configured independent reviewer model",
+        )
+    if (
+        task_class in JUDGMENT_CLASSES
+        and role != "review"
+        and "model" in source
+        and model not in JUDGMENT_MODELS
+    ):
+        raise _EditRefused(
+            "below_judgment_floor",
+            "judgment work requires an Opus-class implementer",
         )
     if model not in policy["allowed_models"]:
         raise _EditRefused("model_not_allowed", "model is not allowed")
@@ -2608,10 +2640,18 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     if not ready:
         from swarm import factory_refine
 
-        if factory_refine.is_refine_task(task_id):
-            # A refine task has no plan: the server admits its one node and
+        task_class = factory_refine.task_class_for(task_id)
+        if is_advisory(task_class):
+            # Advisory work has no plan: the server admits its one node and
             # settles on a re-read of the issue, never on the artifact.
-            factory_refine.reconcile(task, policy, nodes, runs, insertion_revision)
+            factory_refine.reconcile(
+                task,
+                policy,
+                nodes,
+                runs,
+                insertion_revision,
+                task_class=task_class,
+            )
             return
         deviation = deviations.factory_deviation(
             nodes,
@@ -2629,6 +2669,7 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
                 task,
                 nodes,
                 runs,
+                task_class=task_class,
                 decision_revision=insertion_revision + 1,
                 deviation=deviation,
             )

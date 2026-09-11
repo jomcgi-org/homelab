@@ -88,6 +88,7 @@ def test_shape_receipt_joins_nodes_runs_and_sessions():
         "title": "probes park their guest",
         "url": "https://github.com/x/y/issues/5980",
         "state": "admitted",
+        "task_class": "docs",
         "task_id": "t-1",
         "task_paused": False,
         "cancellation_requested": False,
@@ -134,6 +135,7 @@ def test_shape_receipt_joins_nodes_runs_and_sessions():
     }
     assert "repo" not in shaped["policy"]
     assert shaped["turns_used"] == 1 and shaped["planner_turns_used"] == 2
+    assert shaped["task_class"] == "docs"
     assert shaped["starts"][0]["session_id"] == 3
     assert "actor" not in shaped["starts"][0]
     states = {n["node_key"]: n["state"] for n in shaped["nodes"]}

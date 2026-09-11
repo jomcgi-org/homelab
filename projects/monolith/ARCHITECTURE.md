@@ -303,7 +303,11 @@ daily limit. Issues that are not ready can take a separate refine-or-escalate
 path: one bounded node writes a structured brief, and the server trusts only
 the label and comment it re-reads from GitHub. This makes readiness evidence an
 observable issue state and keeps an unresolved human decision from entering the
-delivery DAG (#6002).
+delivery DAG (#6002). The receipt stores the task class because intake decides
+it once and routing and audits must retain it across later policy changes. ADR
+agents/038 decision 5 gives judgment work an Opus-or-better implementer floor
+because no machine oracle can verify its correctness; quota pressure parks that
+work instead of demoting it.
 
 **Why.** The bootstrap asked the planner for one graph edit at a time, so a
 single task (#5981) spent nine starts on five pieces of work: five were planner

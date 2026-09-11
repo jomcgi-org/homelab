@@ -101,6 +101,29 @@ def audits(db, action):
         ).all()
 
 
+@pytest.mark.parametrize(
+    ("labels", "refine", "expected"),
+    [
+        ({"security-finding"}, False, ("judgment-analysis", "label security-finding")),
+        ({"needs-thought"}, False, ("judgment-analysis", "label needs-thought")),
+        ({"bug"}, False, ("bug-fix", "label bug")),
+        ({"documentation"}, False, ("docs", "label documentation")),
+        ({"todo"}, False, ("mechanical-refactor", "label todo")),
+        ({"unrecognised"}, False, ("bug-fix", "default")),
+        ({"bug"}, True, ("refine", "refine candidate")),
+    ],
+)
+def test_derive_task_class(labels, refine, expected):
+    assert intake_loop.derive_task_class(labels, refine=refine) == expected
+
+
+def test_derive_task_class_uses_label_precedence():
+    assert intake_loop.derive_task_class({"needs-thought", "bug"}, refine=False) == (
+        "judgment-analysis",
+        "label needs-thought",
+    )
+
+
 def test_disabled_intake_has_no_github_or_audit(db, monkeypatch):
     monkeypatch.setattr(
         intake_loop,
@@ -141,7 +164,7 @@ def test_ranking_prefers_delivery_label_rank_then_age(db, monkeypatch):
         generation=0,
     )
     assert result["receipt"]["issue_number"] == 3
-    assert result["receipt"]["kind"] == "deliver"
+    assert result["receipt"]["task_class"] == "bug-fix"
 
 
 def test_delivery_without_rank_beats_critical_refine(db, monkeypatch):
@@ -270,6 +293,25 @@ def test_exactly_one_admission_and_bounded_evidence(db, monkeypatch):
     assert detail["excluded"] == {}
 
 
+def test_admission_and_audit_carry_derived_class(db, monkeypatch):
+    fake_pages(
+        monkeypatch,
+        [
+            issue(1, ["agent-ready", "documentation"]),
+            issue(2, ["agent-ready", "todo"]),
+        ],
+    )
+    result = intake_loop.intake_tick(policy(), generation=0)
+    assert result["receipt"]["task_class"] == "docs"
+    detail = json.loads(audits(db, "intake_admitted")[0].detail_json)
+    assert detail["task_class"] == "docs"
+    assert detail["class_reason"] == "label documentation"
+    assert [candidate["task_class"] for candidate in detail["candidates"]] == [
+        "docs",
+        "mechanical-refactor",
+    ]
+
+
 def test_idle_audit_is_hourly(db, monkeypatch):
     fake_pages(monkeypatch, [])
     assert intake_loop.intake_tick(policy(), generation=0) is None
@@ -284,16 +326,16 @@ def test_idle_audit_is_hourly(db, monkeypatch):
     assert len(audits(db, "intake_idle")) == 2
 
 
-def test_refine_enabled_sets_kind_while_labelled_stays_delivery(db, monkeypatch):
+def test_refine_enabled_sets_class_while_labelled_stays_delivery(db, monkeypatch):
     fake_pages(monkeypatch, [issue(1)])
     refined = intake_loop.intake_tick(policy(refine_enabled=True), generation=0)
-    assert refined["receipt"]["kind"] == "refine"
+    assert refined["receipt"]["task_class"] == "refine"
     with Session(db) as session:
         session.exec(select(FactoryReceipt)).one().state = "succeeded"
         session.commit()
     fake_pages(monkeypatch, [issue(2, ["agent-ready"])])
     delivered = intake_loop.intake_tick(policy(refine_enabled=True), generation=0)
-    assert delivered["receipt"]["kind"] == "deliver"
+    assert delivered["receipt"]["task_class"] == "bug-fix"
 
 
 def test_intake_state_reports_policy_usage_and_latest_audits(db):

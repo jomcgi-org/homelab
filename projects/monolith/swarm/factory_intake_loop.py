@@ -9,8 +9,7 @@ import re
 from sqlmodel import select
 
 from swarm.factory_controls import (
-    DELIVER,
-    REFINE,
+    DEFAULT_TASK_CLASS,
     _audit,
     _locked_session,
     _now,
@@ -29,6 +28,17 @@ MAX_PAGES = 5
 CANDIDATE_EVIDENCE_LIMIT = 20
 IDLE_AUDIT_SECONDS = 3600
 RANK_LABELS = ("critical", "bug")
+# ADR agents/038 decision 5, read off the issue's own labels. A refine
+# candidate is advisory whatever else it carries, because it delivers a
+# comment rather than a change. security-finding is excluded by default, but
+# this mapping applies when an operator removes it from the exclusions.
+CLASS_LABELS = (
+    ("security-finding", "judgment-analysis"),
+    ("needs-thought", "judgment-analysis"),
+    ("bug", "bug-fix"),
+    ("documentation", "docs"),
+    ("todo", "mechanical-refactor"),
+)
 _EXCLUSION_REASONS = (
     "pull_request",
     "not_open",
@@ -76,6 +86,16 @@ def _label_names(issue: dict) -> set[str]:
         if isinstance(name, str):
             names.add(name.lower())
     return names
+
+
+def derive_task_class(labels: set[str], *, refine: bool) -> tuple[str, str]:
+    """The class and the stated reason it was chosen."""
+    if refine:
+        return "refine", "refine candidate"
+    for name, task_class in CLASS_LABELS:
+        if name in labels:
+            return task_class, f"label {name}"
+    return DEFAULT_TASK_CLASS, "default"
 
 
 def _created_rank(issue: dict) -> float:
@@ -224,7 +244,8 @@ def intake_tick(policy: dict, *, generation: int) -> dict | None:
             if type(number) is not int or not 1 <= number <= 2**31 - 1:
                 exclude("not_open")
                 continue
-            kind = DELIVER if delivery else REFINE
+            refine = not delivery
+            task_class, class_reason = derive_task_class(labels, refine=refine)
             label_rank = next(
                 (index for index, label in enumerate(RANK_LABELS) if label in labels),
                 len(RANK_LABELS),
@@ -236,10 +257,11 @@ def intake_tick(policy: dict, *, generation: int) -> dict | None:
                 {
                     "issue": item,
                     "number": number,
-                    "kind": kind,
+                    "task_class": task_class,
+                    "class_reason": class_reason,
                     "rank_reason": rank_reason,
                     "sort": (
-                        0 if kind == DELIVER else 1,
+                        1 if refine else 0,
                         label_rank,
                         _created_rank(item),
                         number,
@@ -262,7 +284,7 @@ def intake_tick(policy: dict, *, generation: int) -> dict | None:
             issue.get("html_url"),
             ACTOR,
             generation=generation,
-            kind=chosen["kind"],
+            task_class=chosen["task_class"],
         )
         with _locked_session() as (db, _control):
             _audit(
@@ -271,12 +293,13 @@ def intake_tick(policy: dict, *, generation: int) -> dict | None:
                 "intake_admitted",
                 receipt_id=received["receipt"]["id"],
                 issue_number=chosen["number"],
-                kind=chosen["kind"],
+                task_class=chosen["task_class"],
+                class_reason=chosen["class_reason"],
                 rank_reason=chosen["rank_reason"],
                 candidates=[
                     {
                         "number": candidate["number"],
-                        "kind": candidate["kind"],
+                        "task_class": candidate["task_class"],
                         "rank_reason": candidate["rank_reason"],
                     }
                     for candidate in candidates[:CANDIDATE_EVIDENCE_LIMIT]
@@ -291,4 +314,11 @@ def intake_tick(policy: dict, *, generation: int) -> dict | None:
 
 
 # Re-exported so a caller reading the loop finds the board's view of it here.
-__all__ = ["intake_tick", "intake_state", "github_list", "ACTOR"]
+__all__ = [
+    "ACTOR",
+    "CLASS_LABELS",
+    "derive_task_class",
+    "github_list",
+    "intake_state",
+    "intake_tick",
+]

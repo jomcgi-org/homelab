@@ -425,7 +425,13 @@ def feedback_db(tmp_path, monkeypatch):
     engine.dispose()
 
 
-def feedback_task(*, max_turns=18, body="Untrusted issue text", **overrides):
+def feedback_task(
+    *,
+    max_turns=18,
+    body="Untrusted issue text",
+    task_class="bug-fix",
+    **overrides,
+):
     from swarm import factory_controls as controls
     from swarm.factory_intake import admit_next, receive_issue
 
@@ -457,6 +463,7 @@ def feedback_task(*, max_turns=18, body="Untrusted issue text", **overrides):
         body,
         "https://github.com/owner/repo/issues/7",
         "poller",
+        task_class=task_class,
     )
     admitted = admit_next("scheduler")
     assert admitted["ok"]
@@ -4691,22 +4698,70 @@ def plan_edit(node_key, role, deps=(), **overrides):
     return edit
 
 
+@pytest.mark.parametrize(
+    "task_class", ["advisory-diagnosis", "advisory-triage", "refine"]
+)
 @pytest.mark.parametrize("role", ["investigate", "implement", "review"])
-def test_refine_task_refuses_planner_dag_edits(feedback_db, role):
-    from sqlmodel import Session, select
-    from swarm.factory_models import FactoryReceipt
-
-    task, policy = feedback_task()
-    with Session(feedback_db) as db:
-        receipt = db.exec(
-            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
-        ).one()
-        receipt.kind = "refine"
-        db.add(receipt)
-        db.commit()
+def test_advisory_task_refuses_planner_dag_edits(feedback_db, task_class, role):
+    task, policy = feedback_task(task_class=task_class)
     with pytest.raises(conductor._EditRefused) as exc:
         conductor._prepare_add(task, policy, plan_edit("work", role))
-    assert exc.value.code == "refine_task_no_dag"
+    assert exc.value.code == "advisory_task_no_dag"
+
+
+def test_judgment_task_uses_floor_and_refuses_named_cheap_model(feedback_db):
+    task, policy = feedback_task(
+        task_class="judgment-analysis",
+        model_pools={"conductor": ["opus"], "worker": ["luna", "opus"]},
+    )
+    prepared = conductor._prepare_add(task, policy, plan_edit("work", "implement"))
+    assert prepared["model"] == "opus"
+    assert "model fallback luna -> opus" in prepared["stated_reason"]
+    with pytest.raises(conductor._EditRefused) as exc:
+        conductor._prepare_add(
+            task,
+            policy,
+            plan_edit("named", "implement", model="luna"),
+        )
+    assert exc.value.code == "below_judgment_floor"
+
+
+def test_machine_verified_task_still_uses_pool_selection(feedback_db, monkeypatch):
+    task, policy = feedback_task(task_class="bug-fix")
+    calls = []
+
+    def choose(role, selected_policy):
+        calls.append((role, selected_policy))
+        return {
+            "model": "luna",
+            "preferred": "luna",
+            "fallback_from": None,
+            "skipped": [],
+            "reason": "test",
+        }
+
+    monkeypatch.setattr(conductor, "select_model", choose)
+    assert (
+        conductor._prepare_add(task, policy, plan_edit("work", "implement"))["model"]
+        == "luna"
+    )
+    assert calls == [("worker", policy)]
+
+
+def test_planner_prompt_names_only_the_judgment_floor(feedback_db):
+    task, _policy = feedback_task()
+    judgment = conductor.planner_prompt(task, [], [], task_class="judgment-analysis")
+    machine = conductor.planner_prompt(task, [], [], task_class="bug-fix")
+    sentence = "every implementation node runs on an Opus-class model"
+    assert sentence in judgment
+    assert sentence not in machine
+
+
+def test_reconcile_passes_receipt_class_to_planner_prompt(feedback_db):
+    task, policy = feedback_task(task_class="judgment-analysis")
+    conductor.reconcile_task(task["id"], policy, object())
+    planner = conductor.graph.load_graph(task["id"])[0]
+    assert "every implementation node runs on an Opus-class model" in planner["prompt"]
 
 
 def planned_task(feedback_task_result, edits, **decision):

@@ -76,7 +76,7 @@ class FactoryReceipt(SQLModel, table=True):
     body: str
     url: str
     actor: str
-    kind: str | None = Field(default=None)
+    task_class: str | None = Field(default=None)
     state: str = Field(default="queued")
     task_id: str | None = Field(default=None, foreign_key="swarm.swarm_task.id")
     policy_json: str | None = Field(default=None)

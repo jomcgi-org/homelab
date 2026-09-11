@@ -1,6 +1,7 @@
 """Durable GitHub identity, WIP and restart admission regressions."""
 
 from concurrent.futures import ThreadPoolExecutor
+import json
 from threading import Barrier
 
 import pytest
@@ -257,9 +258,9 @@ def test_url_must_identify_the_same_issue(db):
     assert controls.status()["receipts"] == []
 
 
-def test_receive_issue_defaults_stores_and_validates_kind(db):
-    assert issue()["receipt"]["kind"] == "deliver"
-    assert issue(2, generation=1)["receipt"]["kind"] == "deliver"
+def test_receive_issue_defaults_stores_and_validates_task_class(db):
+    assert issue()["receipt"]["task_class"] == "bug-fix"
+    assert issue(2, generation=1)["receipt"]["task_class"] == "bug-fix"
     refined = receive_issue(
         "owner/repo",
         3,
@@ -267,10 +268,18 @@ def test_receive_issue_defaults_stores_and_validates_kind(db):
         "body",
         "https://github.com/owner/repo/issues/3",
         "poller",
-        kind="refine",
+        task_class="refine",
     )
-    assert refined["receipt"]["kind"] == "refine"
-    with pytest.raises(ValueError, match="invalid kind"):
+    assert refined["receipt"]["task_class"] == "refine"
+    with Session(db) as session:
+        audit = session.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.action == "receive_issue")
+            .order_by(FactoryAudit.id.desc())
+        ).first()
+    detail = json.loads(audit.detail_json)
+    assert detail["task_class"] == "refine" and "kind" not in detail
+    with pytest.raises(ValueError, match="invalid task_class"):
         receive_issue(
             "owner/repo",
             4,
@@ -278,11 +287,11 @@ def test_receive_issue_defaults_stores_and_validates_kind(db):
             "body",
             "https://github.com/owner/repo/issues/4",
             "poller",
-            kind="other",
+            task_class="other",
         )
 
 
-def test_duplicate_receipt_cannot_change_kind(db):
+def test_duplicate_receipt_cannot_change_task_class(db):
     first = receive_issue(
         "owner/repo",
         5,
@@ -290,7 +299,7 @@ def test_duplicate_receipt_cannot_change_kind(db):
         "body",
         "https://github.com/owner/repo/issues/5",
         "poller",
-        kind="refine",
+        task_class="refine",
     )
     replay = receive_issue(
         "owner/repo",
@@ -299,10 +308,10 @@ def test_duplicate_receipt_cannot_change_kind(db):
         "changed",
         "https://github.com/owner/repo/issues/5",
         "poller",
-        kind="deliver",
+        task_class="docs",
     )
     assert replay["receipt"]["id"] == first["receipt"]["id"]
-    assert replay["receipt"]["kind"] == "refine"
+    assert replay["receipt"]["task_class"] == "refine"
 
 
 def test_intake_actor_receipt_requires_enabled_intake(db, policy):

@@ -73,6 +73,44 @@ def test_missing_pools_use_the_single_role_model():
     assert choice["reason"] == "single_member_pool"
 
 
+def test_judgment_floor_picks_first_qualified_worker_pool_member():
+    selected = model_pool.judgment_floor(
+        policy(model_pools={"worker": ["sol", "opus", "fable"]})
+    )
+    assert selected["model"] == "opus"
+    assert selected["reason"] == "judgment_floor_worker_pool"
+
+
+def test_judgment_floor_falls_back_to_conductor_pool():
+    selected = model_pool.judgment_floor(
+        policy(
+            model_pools={"worker": ["sol", "sonnet"], "conductor": ["astra", "fable"]}
+        )
+    )
+    assert selected["model"] == "fable"
+    assert selected["reason"] == "judgment_floor_conductor_pool"
+
+
+def test_judgment_floor_falls_back_to_conductor_model():
+    selected = model_pool.judgment_floor(
+        policy(
+            conductor_model="opus",
+            model_pools={"worker": ["sol"], "conductor": ["astra"]},
+        )
+    )
+    assert selected["model"] == "opus"
+    assert selected["reason"] == "judgment_floor_conductor_model"
+
+
+def test_judgment_floor_ignores_provider_quota_walls():
+    selected = model_pool.judgment_floor(
+        policy(model_pools={"worker": ["opus", "sol"]}),
+        quota={"claude": {"exhausted": True}},
+    )
+    assert selected["model"] == "opus"
+    assert selected["reason"] == "judgment_floor_worker_pool"
+
+
 def test_review_is_not_a_pooled_role():
     with pytest.raises(ValueError):
         model_pool.select_model("review", policy(), quota={})
