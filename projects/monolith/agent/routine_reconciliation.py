@@ -1,4 +1,4 @@
-"""Explicit operator reconciliation of ceased KG attempts, never automatic retry.
+"""Explicit operator reconciliation of ceased routine attempts.
 
 The trusted caller obtains fresh authoritative Ember GET evidence and archives
 positive exact cessation evidence. A parked/evicted label alone is insufficient.
@@ -22,6 +22,7 @@ from agent_sessions.api import (
     lock_capacity_pool,
     lock_cessation_session,
 )
+from agent_sessions.constants import DRAINER_NODE_KEY
 from core.db import get_engine
 from knowledge.api import EXTRACTION_VERSION
 from shared.invocation_outcomes import UNKNOWN_INVOCATION
@@ -89,45 +90,56 @@ def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> di
         f"SELECT id FROM {_table(db, 'agent_sessions', 'agent_sessions')} WHERE ember_session_id=:guest ORDER BY id LIMIT 2",
         {"guest": agent["ember_session_id"]},
     )
+    routine_kind = job["routine_kind"]
+    if routine_kind not in {KG_NODE_KEY, DRAINER_NODE_KEY}:
+        raise ValueError("Unsupported routine kind")
     latest_routine = _rows(
         db,
         f"SELECT id FROM {_table(db, 'agent_sessions', 'agent_sessions')} WHERE node_key=:kind AND local_session_id=workflow_id||:suffix ORDER BY id DESC LIMIT 1",
-        {"kind": KG_NODE_KEY, "suffix": ":kg-drain:" + job_name},
+        {"kind": routine_kind, "suffix": f":{routine_kind}:" + job_name},
     )
     payload = _payload(job["payload"])
     raw = None
     provenance = []
-    if job_name == "kg-repo-diff":
-        if payload.get("mode") != "repo-diff":
-            raise ValueError("Scout payload identity mismatch")
-    else:
-        raw_id = payload.get("raw_id")
-        if not isinstance(raw_id, str) or job_name != "kg:" + raw_id:
-            raise ValueError("Raw payload identity mismatch")
-        raws = _rows(
-            db,
-            f"SELECT id,raw_id,source,content_hash,extra FROM {_table(db, 'knowledge', 'raw_inputs')} WHERE raw_id=:id",
-            {"id": raw_id},
-        )
-        if len(raws) != 1:
-            raise ValueError("Exact raw input is missing")
-        raw = raws[0]
-        extra = _payload(raw["extra"] or {})
-        raw["extra"] = extra
-        provenance = _rows(
-            db,
-            f"SELECT * FROM {_table(db, 'knowledge', 'atom_raw_provenance')} WHERE raw_fk=:id AND gardener_version=:version ORDER BY id LIMIT 1001",
-            {"id": raw["id"], "version": EXTRACTION_VERSION},
-        )
-        if len(provenance) >= 1001:
-            raise ValueError("Provenance exceeds the reconciliation bound")
+    if routine_kind == KG_NODE_KEY:
+        if job_name == "kg-repo-diff":
+            if payload.get("mode") != "repo-diff":
+                raise ValueError("Scout payload identity mismatch")
+        else:
+            raw_id = payload.get("raw_id")
+            if not isinstance(raw_id, str) or job_name != "kg:" + raw_id:
+                raise ValueError("Raw payload identity mismatch")
+            raws = _rows(
+                db,
+                f"SELECT id,raw_id,source,content_hash,extra FROM {_table(db, 'knowledge', 'raw_inputs')} WHERE raw_id=:id",
+                {"id": raw_id},
+            )
+            if len(raws) != 1:
+                raise ValueError("Exact raw input is missing")
+            raw = raws[0]
+            extra = _payload(raw["extra"] or {})
+            raw["extra"] = extra
+            provenance = _rows(
+                db,
+                f"SELECT * FROM {_table(db, 'knowledge', 'atom_raw_provenance')} WHERE raw_fk=:id AND gardener_version=:version ORDER BY id LIMIT 1001",
+                {"id": raw["id"], "version": EXTRACTION_VERSION},
+            )
+            if len(provenance) >= 1001:
+                raise ValueError("Provenance exceeds the reconciliation bound")
     latest = turns[-1]
     reservations = _rows(
         db,
-        f"SELECT state,outcome,pending_seq FROM "
+        f"SELECT id,state,outcome,pending_seq,tier,routine_job_name,session_id,"
+        "local_session_id FROM "
         f"{_table(db, 'agent_sessions', 'capacity_reservations')} "
         "WHERE session_id=:id AND pending_seq=:seq",
         {"id": session_id, "seq": latest["seq"]},
+    )
+    active_reservations = _rows(
+        db,
+        f"SELECT id FROM {_table(db, 'agent_sessions', 'capacity_reservations')} "
+        "WHERE session_id=:id AND state!='settled' ORDER BY id LIMIT 3",
+        {"id": session_id},
     )
     state = {
         "job_name": job_name,
@@ -163,6 +175,25 @@ def read_reconciliation_state(db: Session, job_name: str, session_id: int) -> di
         "reservation_outcome": (
             reservations[0]["outcome"] if len(reservations) == 1 else None
         ),
+        "reservation_id": reservations[0]["id"] if len(reservations) == 1 else None,
+        "reservation_count": len(reservations),
+        "reservation_tier": (
+            reservations[0]["tier"] if len(reservations) == 1 else None
+        ),
+        "reservation_job_name": (
+            reservations[0]["routine_job_name"]
+            if len(reservations) == 1
+            else None
+        ),
+        "reservation_session_id": (
+            reservations[0]["session_id"] if len(reservations) == 1 else None
+        ),
+        "reservation_local_session_id": (
+            reservations[0]["local_session_id"]
+            if len(reservations) == 1
+            else None
+        ),
+        "active_reservation_ids": [row["id"] for row in active_reservations],
         "extraction_version": EXTRACTION_VERSION,
         "raw_sha256": _sha(raw),
         "provenance_sha256": _sha(provenance),
@@ -227,9 +258,23 @@ def _reconcile(db, request):
         state["latest_stop_reason"] == UNKNOWN_INVOCATION
         and state["session_status"] == "failed"
     )
+    routine_kind = state["routine_kind"]
+    # Historical KG attempts can predate durable permit rows. The qwen path is
+    # added specifically to settle a held project permit, so require that exact
+    # permit and no other active permit before the shared settlement operation.
+    qwen_permit = (
+        state["reservation_count"] == 1
+        and state["reservation_state"] == "uncertain"
+        and state["reservation_tier"] == "project"
+        and state["reservation_job_name"] == request["job_name"]
+        and state["reservation_session_id"] == agent["id"]
+        and state["reservation_local_session_id"] == state["local_session_id"]
+        and state["active_reservation_ids"] == [state["reservation_id"]]
+        and state["latest_turn_seq"] == 1
+    )
     if (
         state["job_status"] != UNKNOWN_INVOCATION
-        or state["routine_kind"] != "kg-drain"
+        or routine_kind not in {KG_NODE_KEY, DRAINER_NODE_KEY}
         or state["binding_session_ids"] != [agent["id"]]
         or state["latest_routine_session_id"] != agent["id"]
         or state["next_run_at"] is not None
@@ -238,12 +283,13 @@ def _reconcile(db, request):
         or not (
             unknown_hold or (delivery_error_hold and state["session_status"] == "warn")
         )
-        or state["node_key"] != KG_NODE_KEY
+        or state["node_key"] != routine_kind
         or state["pending"]
         or state["latest_terminal_reason"] != "error"
         or not (state["last_summary"] or "").startswith(f"session_id={agent['id']}:")
         or agent["local_session_id"]
-        != f"{agent['workflow_id']}:kg-drain:{request['job_name']}"
+        != f"{agent['workflow_id']}:{routine_kind}:{request['job_name']}"
+        or (routine_kind == DRAINER_NODE_KEY and not qwen_permit)
         or len(state["workflow"]) != 1
         or state["workflow"][0]["name"] != "drain_cycle"
         or state["workflow"][0]["status"] not in {"SUCCESS", "ERROR", "CANCELLED"}
@@ -264,7 +310,7 @@ def _reconcile(db, request):
         raise ValueError("This held attempt was already reconciled")
     # Lock the raw against the existing atomic extraction writer before checking
     # its evidence again. The operator never changes raw/provenance records.
-    if request["job_name"] != "kg-repo-diff":
+    if routine_kind == KG_NODE_KEY and request["job_name"] != "kg-repo-diff":
         raw_table = _table(db, "knowledge", "raw_inputs")
         db.execute(
             text(f"SELECT id FROM {raw_table} WHERE raw_id=:raw{lock}"),
@@ -273,9 +319,11 @@ def _reconcile(db, request):
         if read_reconciliation_state(db, request["job_name"], agent["id"]) != state:
             raise ValueError("Provenance changed during reconciliation")
     if request["disposition"] == "rearm":
-        if state["provenance_count"] or state["extraction_passes"] != 0:
+        if routine_kind == KG_NODE_KEY and (
+            state["provenance_count"] or state["extraction_passes"] != 0
+        ):
             raise ValueError("Rearm requires an unprocessed raw or unchanged scout")
-    elif not state["applied_count"]:
+    elif routine_kind == KG_NODE_KEY and not state["applied_count"]:
         raise ValueError("Retain-applied requires existing extraction provenance")
     if (
         not 0
@@ -362,6 +410,8 @@ def reconcile_held_job(
     completion and never substitutes for cessation evidence.
     It is not accepted from guest/model output. Identical lost-response replays
     return the durable result, even after the ordinary job has run or disappeared.
+    For KG jobs, retain_applied is additionally backed by extraction provenance.
+    For qwen-drain jobs it remains the operator-selected no-rearm disposition.
     """
     if (
         type(session_id) is not int
