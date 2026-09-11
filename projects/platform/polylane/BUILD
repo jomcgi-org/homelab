@@ -11,12 +11,17 @@ argocd_app(
     name = "polylane",
     chart = "projects/platform/polylane",
     chart_files = ":chart",
-    # The Application lives in projects/platform-gke/polylane, so there is no
-    # application.yaml here to render manifests or scan against.
+    # The render genrule hard-codes application.yaml into its srcs, and this
+    # Application lives in projects/platform-gke/polylane, so there is nothing
+    # here for it to render. The semgrep scan reads the chart, not the
+    # Application, so it stays on.
     generate_manifests = False,
-    generate_semgrep = False,
     namespace = "polylane",
     release_name = "polylane-k8s",
+    # cloudflared runs runAsNonRoot with a read-only root filesystem and
+    # upstream gives it one mount, the state Secret. It writes nothing to /tmp,
+    # so the emptyDir the rule asks for would be dead weight.
+    semgrep_exclude_rules = ["require-tmp-emptydir"],
     tags = [
         "helm",
         "template",

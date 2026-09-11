@@ -220,6 +220,19 @@ the monolith progress port and frontend, the public frontend, searxng, the
 embeddings service, and the agents MCP port; #5320). Adding an entry there
 is a security decision, not tuning.
 
+**One agent egresses to a third party.** The Polylane agent
+(`projects/platform/polylane/`, hub only) holds a cluster-wide read: `get` and
+`list`, no `watch` and no wildcards, over 24 resource types including
+`pods/log`, `configmaps`, `serviceaccounts` and all four RBAC kinds. No
+credential-bearing type appears in any rule, and its single write is
+`get`/`update`/`patch` pinned by `resourceNames` to the one Secret it persists
+its registration into, so it cannot mint a Secret. It reaches the vendor over
+its own outbound `cloudflared`, so there is no inbound port and no exported
+kubeconfig; revocation is deleting the Application or the API key. Pod log
+content leaves the cluster on this path. Its `NetworkPolicy` is on and is
+ingress-only by upstream's own rule: egress is `- {}`, which is what the tunnel
+and the kube API need.
+
 **Host-level exceptions, all named** (`kubectl get pods -A -o json`,
 filtered for `privileged`, `hostNetwork`, `hostPID`, and uid 0):
 
@@ -237,7 +250,7 @@ The egress sidecar in every brick pod is the model the rest should follow:
 uid 65532, `readOnlyRootFilesystem`, all capabilities dropped, holding the
 credentials noded never sees.
 
-(see: `projects/platform/cloudflare-gateway/`, `projects/platform-gke/tailscale/`, `projects/firecracker/substrate/egress-proxy/`, `projects/*/deploy/values-gke.yaml`)
+(see: `projects/platform/cloudflare-gateway/`, `projects/platform-gke/tailscale/`, `projects/firecracker/substrate/egress-proxy/`, `projects/platform/polylane/values.yaml`, `projects/*/deploy/values-gke.yaml`)
 
 **Why.** The former tunnel operator reimplemented routing while production
 ran a static tunnel configuration, so Envoy Gateway took over in-cluster

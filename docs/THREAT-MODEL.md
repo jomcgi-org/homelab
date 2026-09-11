@@ -37,7 +37,9 @@ graph LR
         MCP --> MONO["Monolith"]
         MONO --> EVM["EmberVM<br/>untrusted code in<br/>Firecracker VMs"]
         PUB --> EVM
+        POLY["Polylane agent<br/>cluster-wide read<br/>get/list, no secrets"]
     end
+    POLY -- "outbound tunnel;<br/>topology and pod logs" --> PL["Polylane<br/>(third party)"]
 ```
 
 | Surface | Untrusted input | Deep model |
@@ -47,6 +49,7 @@ graph LR
 | MCP gateway | Agents, including prompt-injected ones | [monolith STPA, security lens](../projects/monolith/STPA.md) |
 | EmberVM | Untrusted code, by design | [embervm STPA, security lens](../projects/embervm/STPA.md) |
 | Supply chain and CI | PRs, dependencies, base images | None yet |
+| Polylane agent | None inbound; it reads the cluster and sends out | None yet |
 | Cluster baseline | Everything above sits on it | [security.md](security.md) |
 
 ## Open findings
