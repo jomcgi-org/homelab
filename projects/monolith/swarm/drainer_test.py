@@ -2657,3 +2657,44 @@ def test_cycle_retries_stranded_drainer_claims_and_leaves_factory_rows(
         untouched = db.get(AgentSession, factory_sid)
         assert untouched.ember_session_id == "guest-factory"
         assert untouched.guest_cleanup_id is not None
+
+
+def test_provider_walled_is_only_positive_evidence(monkeypatch):
+    import swarm.model_pool as model_pool
+
+    monkeypatch.setattr(model_pool, "quota_summary", lambda: {})
+    assert drainer.provider_walled() == (False, "unobserved")
+    monkeypatch.setattr(
+        model_pool,
+        "quota_summary",
+        lambda: {"codex": {"exhausted": True, "age_seconds": 30.0}},
+    )
+    assert drainer.provider_walled() == (True, "exhausted")
+    monkeypatch.setattr(
+        model_pool,
+        "quota_summary",
+        lambda: {"codex": {"exhausted": True, "age_seconds": 4000.0}},
+    )
+    walled, reason = drainer.provider_walled()
+    assert walled is False and reason.startswith("stale_observation")
+
+
+def test_an_unreadable_quota_never_defers_a_claim(monkeypatch):
+    import swarm.model_pool as model_pool
+
+    def explode():
+        raise RuntimeError("broker down")
+
+    monkeypatch.setattr(model_pool, "quota_summary", explode)
+    assert drainer.provider_walled() == (False, "unreadable")
+
+
+def test_a_walled_provider_defers_the_claim_without_spending_a_lease(
+    admission_database, monkeypatch
+):
+    _queued_job(admission_database, "kg-one")
+    monkeypatch.setattr(drainer, "provider_walled", lambda: (True, "exhausted"))
+    assert _admitted_claim("wf-walled") is None
+    monkeypatch.setattr(drainer, "provider_walled", lambda: (False, "available"))
+    claimed = _admitted_claim("wf-open")
+    assert claimed is not None and claimed["name"] == "kg-one"
