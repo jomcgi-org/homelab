@@ -6,6 +6,16 @@ from swarm import factory_conductor as conductor
 from swarm.turn_artifact import schema_errors
 
 
+@pytest.fixture(autouse=True)
+def factory_ceiling(monkeypatch):
+    """Two lanes need a ceiling that holds both; it bounds their sum.
+
+    A test that cares about the ceiling itself still sets or clears the
+    variable for its own case, and that assignment wins over this one.
+    """
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+
+
 def test_conductor_contract_rejects_missing_action_fields_and_authority_changes():
     assert schema_errors(
         {"action": "add_node", "reason": "do work"}, conductor.DECISION_SCHEMA
@@ -449,7 +459,9 @@ def feedback_task(
         "repo": "owner/repo",
         "issue_numbers": [7],
         "generation": 0,
-        "max_tasks": 1,
+        # Both lanes open: this helper admits advisory classes too, and the
+        # advisory lane is opt-in.
+        "max_tasks": {"delivery": 1, "advisory": 1},
         "max_turns_per_task": max_turns,
         "task_budget_usd": 30.0,
         "turn_budget_usd": 2.0,
