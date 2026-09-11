@@ -384,8 +384,8 @@ func TestGenerateArgoCDAppRuleEnablesLiveDiff(t *testing.T) {
 			} `yaml:"destination"`
 		}{},
 	}
-	app.Spec.Source.Path = "charts/test"
-	app.Spec.Source.Helm.ValueFiles = []string{"../overlays/prod/test/values.yaml"}
+	app.Spec.Source.Path = "projects/test/chart"
+	app.Spec.Source.Helm.ValueFiles = []string{"../deploy/values.yaml"}
 	app.Spec.Destination.Namespace = "test-ns"
 
 	// Create temp dir with values.yaml
@@ -399,7 +399,7 @@ func TestGenerateArgoCDAppRuleEnablesLiveDiff(t *testing.T) {
 		generateManifests: true,
 		generateDiff:      true,
 	}
-	rule := generateArgoCDAppRule(app, "overlays/prod/test", tmpDir, cfg)
+	rule := generateArgoCDAppRule(app, "projects/test/deploy", tmpDir, cfg)
 
 	if rule == nil {
 		t.Fatal("generateArgoCDAppRule returned nil")
@@ -418,7 +418,7 @@ func TestGenerateArgoCDAppRuleEnablesLiveDiff(t *testing.T) {
 	}
 
 	values := rule.AttrStrings("values_files")
-	wantValues := []string{"//charts/test:values.yaml", "values.yaml"}
+	wantValues := []string{"//projects/test/chart:values.yaml", "values.yaml"}
 	if len(values) != len(wantValues) {
 		t.Fatalf("values_files = %v, want %v", values, wantValues)
 	}
