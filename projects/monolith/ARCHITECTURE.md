@@ -576,32 +576,50 @@ already publishes its complete native record to a result receipt before it
 writes the synchronous response, so the evidence survives the observer. What
 was missing was a state between "finished" and "unknown". A dispatch whose
 response is lost while the control plane still shows its guest running, with an
-invoke started and no invoke completion, is now held: an interrupted turn with
-stop reason `response_lost`, the pending row keeping its claim so nothing
-re-dispatches the prompt, and the permit keeping its state so nothing releases
-capacity the guest is still consuming. The recovered attempt is finished from
+invoke still in progress, is now held: an interrupted turn with stop reason
+`response_lost`, the pending row keeping its claim so nothing re-dispatches the
+prompt, and the permit keeping its state so nothing releases capacity the guest
+is still consuming. In progress is the order of two stamps, not the absence of
+one: `invoke_started_at` is stamped per invoke and strictly increases, while
+`last_invoke_at` is stamped on completion and is never cleared, so an invoke is
+running when its start is later than the last completion. Treating a missing
+completion as "still running" would have held a guest's first turn and no turn
+after it, and would have settled every held second turn unknown on the
+recovering owner's first look. Both stamps and the generation travel onto the
+hold, so a later owner can tell a guest still working this invocation from one
+that was banked and relit or handed another turn. The recovered attempt is finished from
 the committed receipt through the ordinary turn writer, so the recovered result
 passes the same parser, diff, artifact and permit validation the synchronous
 response would have, and the model runs once. The live thirty-second claim
 stamp used to be the only thing authorizing a receipt read, and an executor
 that lost its response stops refreshing it, so the durable hold takes its place:
-it is dispatch-exact, bounded and names one receipt, and every other ownership
-condition is unchanged. A held adoption sets no guest reuse fence, because the
+it is dispatch-exact, bounded, names one receipt and carries the digest of the
+request that receipt was minted against, and every other ownership condition is
+unchanged. A held adoption sets no guest reuse fence, because the
 fence exists so a follow-up waits for the original POST's own response and after
 a replica loss nobody is left to clear one. Holds are bounded by the invoke
-budget clamped to the twelve-hour workload backstop, and a guest that has ceased
-or that completed its invoke without publishing ends the hold early, both into
-the same unknown outcome reconciliation already handles. Replica shutdown
-writes the hold synchronously from the executor's own cancellation handler
-rather than from a lifespan hook: the pod has a thirty-second grace with no
-preStop and `DBOS.destroy()` waits zero seconds for workflow completion, so a
-hook has no way to reach the in-flight calls and a second cancellation would
-take away one more await. A replica killed outright writes no marker at all,
-so the claim lease is the backstop: a stale claim that already has an
-unconsumed committed receipt is held, and one with no receipt settles unknown
-exactly as before. Behind `agents.sessions.responseLostRecoveryEnabled`, which
+budget clamped to the twelve-hour workload backstop, and a guest that has ceased,
+that completed its invoke without publishing, or that has moved to another
+invocation ends the hold early, all into the same unknown outcome reconciliation
+already handles. A committed body that can never be adopted ends its hold at
+once, because a receipt body is immutable and waiting out the bound cannot
+change the answer. There is one hold per dispatch, ever: re-holding an expired
+marker would replace the twelve-hour bound with the receipt's own seven-day
+retention. The lifespan now cancels in-flight executors on shutdown and waits
+a bounded five seconds for each to record its own outcome, because uvicorn
+tears the loop down without cancelling them and `DBOS.destroy()` waits zero
+seconds for workflow completion, so the handler that writes the hold often
+never ran. The hold itself is still written synchronously from that handler,
+with a two-second lock timeout: inside a thirty-second termination grace,
+giving up on a row lock is better than giving up on the grace. A replica killed
+outright writes no marker at all, so the claim lease is the backstop: a stale
+claim that already has an unconsumed committed receipt is held, and one with no
+receipt settles unknown exactly as before. Behind `agents.sessions.responseLostRecoveryEnabled`, which
 defaults off and needs `resultReceiptsEnabled`, since without a receipt a hold
-would only delay the same unknown outcome.
+would only delay the same unknown outcome. Every owner that writes, finishes or
+ends a hold reads that one flag, including the lease backstop and the node
+recovery, so off is byte-for-byte the behaviour that preceded this whatever the
+receipt flags say.
 (see: /projects/monolith/agent_sessions/store.py)
 
 Monolith batch work is rendered as Argo CronWorkflows in the workflows

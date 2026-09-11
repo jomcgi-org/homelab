@@ -436,6 +436,14 @@ def read_held_result(hold: dict) -> dict | None:
         )
         if type(hold["seq"]) is not int or receipt["seq"] != hold["seq"]:
             raise ReceiptRejected(409, "receipt_identity_changed")
+        # The same request check the live poll makes. A hold the lease backstop
+        # reconstructed has no record of the request body, so it carries no
+        # digest and selects its receipt by the full dispatch identity instead.
+        if (
+            hold.get("request_sha256") is not None
+            and receipt["request_sha256"] != hold["request_sha256"]
+        ):
+            raise ReceiptRejected(409, "receipt_request_changed")
         _active_owner(db, receipt)
         if receipt["result_sha256"] is None:
             return None

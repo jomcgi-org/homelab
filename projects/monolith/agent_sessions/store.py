@@ -4,6 +4,7 @@ import base64
 import binascii
 import json
 import logging
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -372,6 +373,16 @@ def _retry_permission(turn: AgentTurn | None, pending: PendingMessage) -> bool:
     )
 
 
+def response_lost_recovery_enabled() -> bool:
+    """The one read of the response-loss control, shared by every owner.
+
+    Every path that writes, finishes or ends a hold consults this, so the flag
+    off is byte-for-byte the behaviour this repository had before response-loss
+    recovery existed, whatever the receipt flags say.
+    """
+    return os.getenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "false").lower() == "true"
+
+
 RESPONSE_LOST_MESSAGE = (
     "The synchronous response to this turn was lost while the guest was still "
     "working. The turn is held until its committed result is recovered, or "
@@ -464,8 +475,10 @@ def mark_turn_response_lost_sync(
     hold_seconds: float,
     generation: int | None = None,
     invoke_started_at: int | None = None,
+    request_sha256: str | None = None,
     cli_session_id: str | None = None,
     artifact_path: str | None = None,
+    lock_timeout_seconds: float | None = None,
 ) -> bool:
     """Hold an attempt whose invoke response was lost over a working guest.
 
@@ -491,12 +504,35 @@ def mark_turn_response_lost_sync(
         or not receipt_id
         or not isinstance(guest_id, str)
         or not guest_id
+        # Either the writer observed the control plane and recorded both the
+        # generation and the invoke stamp it saw, or it observed nothing and
+        # records neither. A half-identity would let a later owner believe it
+        # had pinned an invocation it never saw.
+        or (generation is None) != (invoke_started_at is None)
+        or (
+            generation is not None
+            and (
+                type(generation) is not int
+                or generation < 0
+                or type(invoke_started_at) is not int
+                or invoke_started_at < 1
+            )
+        )
     ):
         return False
     bound = min(float(hold_seconds), float(RESPONSE_LOST_BACKSTOP_SECONDS))
-    if not bound > 0:
+    if not response_lost_recovery_enabled() or not bound > 0:
         return False
     with Session(get_engine()) as session:
+        if lock_timeout_seconds is not None and (
+            session.get_bind().dialect.name == "postgresql"
+        ):
+            # The shutdown caller has the pod's termination grace and nothing
+            # more. Waiting out a row lock there loses the hold and the turn
+            # with it, so give up on the lock rather than on the grace.
+            session.execute(
+                text(f"SET LOCAL lock_timeout = '{int(lock_timeout_seconds * 1000)}ms'")
+            )
         sess = _lock_session(session, session_id)
         pending = get_pending_message(session, session_id, turn_seq)
         if (
@@ -535,6 +571,7 @@ def mark_turn_response_lost_sync(
             guest_id=guest_id,
             source="executor",
             generation=generation,
+            request_sha256=request_sha256,
             invoke_started_at=invoke_started_at,
             cli_session_id=cli_session_id,
             artifact_path=artifact_path,
@@ -556,6 +593,7 @@ def _write_response_lost_locked(
     source: str,
     generation: int | None = None,
     invoke_started_at: int | None = None,
+    request_sha256: str | None = None,
     cli_session_id: str | None = None,
     artifact_path: str | None = None,
 ) -> None:
@@ -574,6 +612,13 @@ def _write_response_lost_locked(
         "guest_id": guest_id,
         "generation": generation,
         "invoke_started_at": invoke_started_at,
+        # The digest of the exact request body this dispatch posted, excluding
+        # the receipt credential. The reader compares it to the one the receipt
+        # was minted against, so a receipt minted for a different request can
+        # never finish this turn. Absent on a hold the lease backstop
+        # reconstructed, which has no record of the request and instead selects
+        # its receipt by the full dispatch identity.
+        "request_sha256": request_sha256,
         "cli_session_id": cli_session_id,
         "artifact_path": artifact_path,
         "held_at": now.isoformat(),
@@ -624,14 +669,24 @@ def _hold_lease_expired_response(
     paid for. Without such a receipt this returns False and the ordinary
     unknown settlement runs, so a replica killed before its guest published
     anything behaves exactly as it does today.
+
+    One hold per dispatch, ever: an attempt whose marker is already a
+    response-loss hold is refused here, so an expired hold settles unknown at
+    the lease rather than being held again until the receipt's own retention.
     """
     if (
-        sess.ember_session_id is None
+        not response_lost_recovery_enabled()
+        or sess.ember_session_id is None
         or sess.result_receipt_fence_id is not None
         or (
             existing is not None
             and existing.terminal_reason not in INTERRUPTED_TERMINAL_REASONS
         )
+        # One hold per dispatch, ever. Re-holding an expired marker would make
+        # the bound meaningless: an unusable or unreachable result would be
+        # held again at every lease pass until the receipt's own seven-day
+        # retention, pinning the permit for a week rather than twelve hours.
+        or (existing is not None and existing.stop_reason == RESPONSE_LOST)
         or has_unknown_outcome(session, sess.id)
         or admission.cleanup_pending(session, sess)
     ):
@@ -754,11 +809,15 @@ def adopt_response_lost_result(
     function cannot widen what counts as an adoptable result.
 
     Returns None when the session holds nothing, ``waiting`` when the guest has
-    published no result yet, ``unusable`` when a committed body is not a native
-    completion, and ``adopted`` with the persisted turn sequence otherwise.
+    published no result yet, ``settled`` when a committed body can never be
+    adopted and the hold has become an ordinary unknown outcome, ``refused``
+    when ownership moved under the read, and ``adopted`` with the persisted
+    turn sequence otherwise.
     """
     from agent_sessions import result_receipts, voice
 
+    if not response_lost_recovery_enabled():
+        return None
     hold = read_response_lost_hold_sync(session_id)
     if hold is None:
         return None
@@ -780,23 +839,42 @@ def adopt_response_lost_result(
     if captured is None:
         return {"status": "waiting", "seq": hold["seq"]}
     try:
+        body = json.loads(captured["result_body"])
         turn = parse_native_turn(
-            json.loads(captured["result_body"]),
+            body,
             hold["guest_id"],
             hold.get("cli_session_id"),
             hold.get("artifact_path"),
         )
     except (TypeError, ValueError):
-        return {"status": "unusable", "reason": "receipt body is not a native turn"}
-    if (
+        body, turn = None, None
+    unusable = None
+    if turn is None:
+        unusable = "receipt body is not a native turn"
+    elif (
         turn.terminal_reason
         not in CLEAN_TERMINAL_REASONS | INTERRUPTED_TERMINAL_REASONS | {"error"}
         or turn.stop_reason == UNKNOWN_INVOCATION
     ):
-        return {
-            "status": "unusable",
-            "reason": "receipt has no native terminal outcome",
-        }
+        unusable = "receipt has no native terminal outcome"
+    if unusable is not None:
+        # A receipt body is immutable, so a body that cannot be adopted now can
+        # never be adopted. Waiting out the bound would only pin the permit for
+        # twelve hours before reaching the same place, so end the hold as the
+        # ordinary unknown outcome immediately.
+        logger.warning(
+            "Response-loss receipt unusable for session %s: %s", session_id, unusable
+        )
+        if settle_response_lost_hold(session_id, "response_lost_unusable_result"):
+            return {"status": "settled", "reason": unusable}
+        return {"status": "refused", "reason": unusable}
+    if hold.get("artifact_path") is None and isinstance(body.get("artifact"), dict):
+        # The guest only captures an artifact when the invoke declared one, so
+        # a body carrying an artifact beside a hold with no declaration means
+        # this reader does not know the declaration and would silently drop the
+        # artifact. The owner that knows it adopts instead; the bound still
+        # applies if none does.
+        return {"status": "refused", "reason": "declared artifact path unknown"}
     turn = turn._replace(
         native_receipt={
             **captured["provenance"],

@@ -35,6 +35,13 @@ def lock_capacity_pool(session) -> None:
     _admission.lock_pool(session)
 
 
+def response_lost_recovery_enabled() -> bool:
+    """Whether response-loss recovery is enabled for this process."""
+    from agent_sessions import store
+
+    return store.response_lost_recovery_enabled()
+
+
 def read_response_lost_hold(session_id: int):
     """The live response-loss hold on one session, or None."""
     from agent_sessions import store

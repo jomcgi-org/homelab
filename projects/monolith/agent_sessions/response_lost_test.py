@@ -186,7 +186,12 @@ def fake_http(monkeypatch, post_handler, guest_state=None):
     return requests
 
 
-def working_guest(sid, generation=0, started=1788874047685, last=None):
+STARTED_AT = 1788874047685
+
+
+def working_guest(sid, generation=0, started=STARTED_AT, last=None):
+    """A control-plane view of a guest with an invoke still in progress."""
+
     def view():
         return {
             "session_id": f"guest-{sid}",
@@ -618,8 +623,8 @@ def test_lease_backstop_holds_only_a_stale_claim_with_an_unconsumed_result(
     assert store.reclaim_stale_claims_sync() == 0
     held = assert_held(database, other, "lease_expired")
     assert hold_of(other)["source"] == "lease_backstop"
-    # A hold the backstop reconstructed carries no declared artifact, so the
-    # sweep leaves it for the owner that knows the declaration.
+    # This result carries an artifact and the hold records no declaration, so
+    # the sweep refuses rather than adopting it without one.
     assert mcp._adopt_response_lost_results() == []
     assert snapshot(database, other) == held
     assert store.adopt_response_lost_result(other, ARTIFACT_PATH)["status"] == "adopted"
@@ -641,3 +646,217 @@ def test_the_sweep_finishes_executor_written_holds(database, monkeypatch):
     assert [row["state"] for row in after["permits"]] == ["settled"]
     assert len(requests) == 1
     assert mcp._adopt_response_lost_results() == []
+
+
+def test_recovery_disabled_leaves_every_owner_on_todays_behaviour(
+    database, monkeypatch
+):
+    """The flag off is the whole machinery off, whatever the receipt flags say."""
+    from swarm import node_workflows
+
+    record = native_record(artifact=False)
+    sid, _requests = lose_the_response(database, monkeypatch, record=record)
+    held = assert_held(database, sid, "invoke_response_lost")
+    monkeypatch.setenv("AGENT_RESPONSE_LOST_RECOVERY_ENABLED", "false")
+
+    assert store.adopt_response_lost_result(sid) is None
+    assert mcp._adopt_response_lost_results() == []
+    assert node_workflows._recover_response_lost({"artifact_path": None}, sid) is None
+    assert snapshot(database, sid) == held
+
+    # The lease backstop is off too, so a stale claim with an unconsumed
+    # receipt settles unknown exactly as it did before this change.
+    other = queue(database, "disabled-backstop")
+    owner = "killed-replica"
+    assert store.claim_pending_message_for_session_sync(other, owner) == 1
+    assert admission.recheck(other, 1, owner)
+    receipt = result_receipts.prepare_receipt(
+        other, owner, 1, f"guest-{other}", b'{"message":"request"}'
+    )
+    result_receipts.capture_result(
+        receipt["id"], receipt["token"], json.dumps(record).encode()
+    )
+    age_claim(database, other)
+    assert store.reclaim_stale_claims_sync() == 1
+    assert_unknown(database, other)
+
+
+def test_an_expired_hold_is_never_held_again_and_settles_unknown(database, monkeypatch):
+    """One hold per dispatch: the twelve-hour bound has to actually bound it."""
+    record = native_record(artifact=False)
+    sid, _requests = lose_the_response(database, monkeypatch, record=record)
+    assert_held(database, sid, "invoke_response_lost")
+    expire_hold(database, sid)
+    age_claim(database, sid)
+    # The receipt is still committed and unconsumed, which is exactly what the
+    # lease backstop looks for, but the attempt has already had its hold.
+    assert store.reclaim_stale_claims_sync() == 1
+    assert_unknown(database, sid)
+    assert store.find_response_lost_session_ids() == []
+
+
+def test_a_committed_body_that_can_never_be_adopted_settles_unknown(
+    database, monkeypatch
+):
+    sid, requests = lose_the_response(database, monkeypatch)
+    assert_held(database, sid, "invoke_response_lost")
+    receipt = json.loads(requests[0].content)["result_receipt"]
+    # A committed receipt whose body carries no native terminal outcome can
+    # never become one, so waiting out the bound would only pin the permit.
+    result_receipts.capture_result(
+        receipt["id"],
+        receipt["token"],
+        json.dumps({"result": "", "terminal_reason": None}).encode(),
+    )
+    outcome = store.adopt_response_lost_result(sid, ARTIFACT_PATH)
+    assert outcome["status"] == "settled"
+    assert_unknown(database, sid)
+
+
+def test_the_sweep_finishes_a_lease_backstop_hold_for_a_lane_with_no_artifact(
+    database, monkeypatch
+):
+    """A drainer or chat turn has no node workflow to recover it."""
+    record = native_record(artifact=False)
+    sid = queue(database, "kg-lease-backstop", tier="kg")
+    owner = "killed-replica"
+    assert store.claim_pending_message_for_session_sync(sid, owner) == 1
+    assert admission.recheck(sid, 1, owner)
+    receipt = result_receipts.prepare_receipt(
+        sid, owner, 1, f"guest-{sid}", b'{"message":"request"}'
+    )
+    result_receipts.capture_result(
+        receipt["id"], receipt["token"], json.dumps(record).encode()
+    )
+    age_claim(database, sid)
+    assert store.reclaim_stale_claims_sync() == 0
+    assert hold_of(sid)["source"] == "lease_backstop"
+    assert mcp._adopt_response_lost_results() == [sid]
+    after = snapshot(database, sid)
+    assert after["pending"] == []
+    assert after["turns"][0]["terminal_reason"] == "end_turn"
+    assert after["turns"][0]["result_text"] == record["result"]
+    assert [row["state"] for row in after["permits"]] == ["settled"]
+
+
+def test_a_second_turn_is_held_even_though_the_guest_has_a_last_invoke(
+    database, monkeypatch
+):
+    """last_invoke_at is never cleared, so only the stamps' order says invoking."""
+    from swarm import node_workflows
+
+    record = native_record(artifact=False)
+    sid = queue(database, "multi-turn-project")
+    first = native_record(cost=0.5, artifact=False)
+
+    async def first_handler(request):
+        return httpx.Response(200, json=first, request=request)
+
+    fake_http(monkeypatch, first_handler)
+    asyncio.run(asyncio.wait_for(mcp._execute_pending_message(sid), 10))
+    with Session(database) as db:
+        assert store.get_turn(db, sid, 1).terminal_reason == "end_turn"
+        store.create_pending_message(db, sid, "second turn", "luna")
+
+    # Turn one completed, so the guest carries a last_invoke_at from it. The
+    # second invoke starts after that stamp and is the one whose response is
+    # lost.
+    async def second_handler(request):
+        raise httpx.ReadError("original response lost", request=request)
+
+    requests = fake_http(
+        monkeypatch,
+        second_handler,
+        working_guest(sid, started=STARTED_AT + 5, last=STARTED_AT),
+    )
+    asyncio.run(asyncio.wait_for(mcp._execute_pending_message(sid), 10))
+    state = snapshot(database, sid)
+    assert len(state["pending"]) == 1 and state["pending"][0]["seq"] == 2
+    second = [row for row in state["turns"] if row["seq"] == 2][0]
+    assert second["stop_reason"] == RESPONSE_LOST
+    hold = hold_of(sid)
+    assert hold["seq"] == 2
+    assert hold["invoke_started_at"] == STARTED_AT + 5
+
+    # The node owner reads the same shape and must not settle it either.
+    monkeypatch.setattr(
+        node_workflows,
+        "_observe_held_guest",
+        lambda guest: working_guest(sid, started=STARTED_AT + 5, last=STARTED_AT)(),
+    )
+    assert node_workflows._recover_response_lost({"artifact_path": None}, sid) == {
+        "status": "waiting",
+        "seq": 2,
+    }
+    receipt = json.loads(requests[0].content)["result_receipt"]
+    result_receipts.capture_result(
+        receipt["id"], receipt["token"], json.dumps(record).encode()
+    )
+    assert store.adopt_response_lost_result(sid)["status"] == "adopted"
+    with Session(database) as db:
+        assert store.get_turn(db, sid, 2).terminal_reason == "end_turn"
+        assert store.get_turn(db, sid, 1).cost_usd == 0.5
+    assert len(requests) == 1
+
+
+def test_a_guest_that_moved_to_another_invocation_settles_unknown(
+    database, monkeypatch
+):
+    from swarm import node_workflows
+
+    sid, _requests = lose_the_response(database, monkeypatch)
+    assert_held(database, sid, "invoke_response_lost")
+    # Banked and relit: the generation moved while the invoke stamp did not, so
+    # the process that was running our invoke is gone.
+    monkeypatch.setattr(
+        node_workflows,
+        "_observe_held_guest",
+        lambda guest: working_guest(sid, generation=1)(),
+    )
+    assert node_workflows._recover_response_lost(
+        {"artifact_path": ARTIFACT_PATH}, sid
+    ) == {
+        "status": "settled",
+        "reason": "response_lost_invocation_changed",
+    }
+    assert_unknown(database, sid)
+
+
+def test_a_receipt_minted_for_another_request_cannot_finish_a_hold(
+    database, monkeypatch
+):
+    record = native_record()
+    sid, requests = lose_the_response(database, monkeypatch, record=record)
+    held = assert_held(database, sid, "invoke_response_lost")
+    hold = hold_of(sid)
+    assert hold["request_sha256"]
+    with pytest.raises(
+        result_receipts.ReceiptRejected, match="receipt_request_changed"
+    ):
+        result_receipts.read_held_result({**hold, "request_sha256": "0" * 64})
+    assert snapshot(database, sid) == held
+    assert store.adopt_response_lost_result(sid, ARTIFACT_PATH)["status"] == "adopted"
+    assert len(requests) == 1
+
+
+def test_the_lifespan_drains_in_flight_executors(database, monkeypatch):
+    sid = queue(database)
+    posted = asyncio.Event()
+
+    async def handler(_request):
+        posted.set()
+        await asyncio.Event().wait()
+
+    fake_http(monkeypatch, handler)
+
+    async def run():
+        # The same registration _schedule_next_message performs.
+        task = asyncio.create_task(mcp._execute_pending_message(sid))
+        mcp._inflight_tasks.add(task)
+        task.add_done_callback(mcp._inflight_tasks.discard)
+        await asyncio.wait_for(posted.wait(), 5)
+        assert await mcp.drain_inflight_executors() == 1
+        assert await mcp.drain_inflight_executors() == 0
+
+    asyncio.run(asyncio.wait_for(run(), 15))
+    assert_held(database, sid, "replica_shutdown")
