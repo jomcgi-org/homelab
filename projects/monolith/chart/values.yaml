@@ -1504,6 +1504,12 @@ swarm:
   # and starts on a later tick, so the factory is the one that yields. Zero lets
   # the factory race everything else to the last slot.
   factoryBackgroundReserve: 2
+  # Comma separated emails allowed to answer a factory escalation from the
+  # private agents page, matched against the address Cloudflare Access
+  # verified at the edge. Empty means nobody, so the decision buttons 403
+  # until an operator lists themselves. A caller holding a standing operator
+  # bearer uses /api/swarm/factory/decisions instead and ignores this.
+  factoryOperatorEmails: ""
   enabled: false
   # The cheap implementer lane and the reviewer that gates it. The reviewer is
   # never below Opus: ADR 038 decision 5 floors anything assessable only by

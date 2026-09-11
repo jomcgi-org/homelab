@@ -307,6 +307,71 @@ def factory_board(task: str | None = None) -> dict:
     return build_factory_view(task)
 
 
+class FactoryDecisionBody(BaseModel):
+    option_key: str | None = None
+    action: str | None = None
+    note: str | None = None
+
+
+def factory_decider(request: Request) -> str:
+    """Who is allowed to answer an escalation from the private tier browser.
+
+    The operator-gated /api/swarm/factory routes want a standing bearer, and
+    the browser behind Cloudflare Access does not carry one: that is why the
+    board next door is a view rather than a control. A decision IS a control,
+    so it needs an identity, and the only one the browser has is the email
+    Access verified at the edge and injected as a header.
+
+    So this trusts that header, and only for an address an operator listed in
+    FACTORY_OPERATOR_EMAILS. The allowlist is empty by default, which makes
+    this route inert until somebody sets it: the capability arrives switched
+    off, the same way landing and closing did. Agents with a real bearer keep
+    using POST /api/swarm/factory/decisions/{id} and never reach here.
+    """
+    allowed = {
+        entry.strip().lower()
+        for entry in os.environ.get("FACTORY_OPERATOR_EMAILS", "").split(",")
+        if entry.strip()
+    }
+    email = (request.headers.get("Cf-Access-Authenticated-User-Email") or "").strip()
+    if not allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="no factory operator emails are configured",
+        )
+    if not email or email.lower() not in allowed:
+        raise HTTPException(status_code=403, detail="not a factory operator")
+    return email
+
+
+@router.post("/factory/decisions/{receipt_id}")
+def factory_decision(
+    receipt_id: int, body: FactoryDecisionBody, request: Request
+) -> dict:
+    """Answer one factory escalation from the private agents page."""
+    from swarm.factory_decisions import DecisionError, apply_decision, request_chat
+
+    actor = factory_decider(request)
+    chat = body.action == "chat"
+    if body.action is not None and not chat:
+        raise HTTPException(status_code=422, detail="the only supported action is chat")
+    if chat == bool(body.option_key):
+        raise HTTPException(
+            status_code=422,
+            detail="supply exactly one of option_key or action=chat",
+        )
+    try:
+        if chat:
+            if not (body.note or "").strip():
+                raise HTTPException(
+                    status_code=422, detail="a chat request needs a note"
+                )
+            return request_chat(receipt_id, body.note or "", actor)
+        return apply_decision(receipt_id, body.option_key or "", actor, body.note)
+    except DecisionError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.reason) from exc
+
+
 @router.get("/drain-lane")
 def drain_lane_status() -> dict:
     from agent.api import list_jobs, load_drainer_settings

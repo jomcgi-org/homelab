@@ -2250,3 +2250,70 @@ def test_unknown_outcome_detail_retains_evidence_and_rejects_all_send_boundaries
     session.expire_all()
     assert len(session.exec(select(PendingMessage)).all()) == 1
     assert session.get(AgentSession, session_id).status == "failed"
+
+
+def test_factory_decisions_are_inert_without_a_configured_operator(client, monkeypatch):
+    """The capability arrives switched off: an empty allowlist refuses everyone."""
+    monkeypatch.delenv("FACTORY_OPERATOR_EMAILS", raising=False)
+    response = client.post(
+        "/api/agents/factory/decisions/1",
+        json={"option_key": "close"},
+        headers={"Cf-Access-Authenticated-User-Email": "joe@example.test"},
+    )
+    assert response.status_code == 403
+    assert "no factory operator emails" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"Cf-Access-Authenticated-User-Email": ""},
+        {"Cf-Access-Authenticated-User-Email": "someone@example.test"},
+    ],
+)
+def test_factory_decisions_refuse_anyone_not_on_the_allowlist(
+    client, monkeypatch, headers
+):
+    monkeypatch.setenv("FACTORY_OPERATOR_EMAILS", "joe@example.test")
+    response = client.post(
+        "/api/agents/factory/decisions/1",
+        json={"option_key": "close"},
+        headers=headers,
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "not a factory operator"
+
+
+def test_factory_decisions_apply_for_a_listed_operator(client, monkeypatch):
+    from swarm import factory_decisions
+
+    monkeypatch.setenv(
+        "FACTORY_OPERATOR_EMAILS", "other@example.test, Joe@Example.test"
+    )
+    seen = {}
+
+    def apply_decision(receipt_id, option_key, actor, note=None):
+        seen.update(receipt_id=receipt_id, option_key=option_key, actor=actor)
+        return {"ok": True, "applied": True, "resolution": {}}
+
+    monkeypatch.setattr(factory_decisions, "apply_decision", apply_decision)
+    response = client.post(
+        "/api/agents/factory/decisions/9",
+        json={"option_key": "close"},
+        headers={"Cf-Access-Authenticated-User-Email": "joe@example.test"},
+    )
+    assert response.status_code == 200
+    assert seen == {"receipt_id": 9, "option_key": "close", "actor": "joe@example.test"}
+
+
+def test_factory_decisions_need_exactly_one_of_an_option_or_a_chat(client, monkeypatch):
+    monkeypatch.setenv("FACTORY_OPERATOR_EMAILS", "joe@example.test")
+    headers = {"Cf-Access-Authenticated-User-Email": "joe@example.test"}
+    for body in ({}, {"option_key": "close", "action": "chat", "note": "x"}):
+        assert (
+            client.post(
+                "/api/agents/factory/decisions/1", json=body, headers=headers
+            ).status_code
+            == 422
+        )

@@ -4550,6 +4550,8 @@ py_test(
     deps = [
         ":pkg_agent_sessions",
         ":pkg_core",
+        # The factory decision route hands the work to swarm.factory_decisions.
+        ":pkg_swarm",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
@@ -4705,6 +4707,21 @@ py_test(
 py_test(
     name = "swarm_factory_refine_test",
     srcs = ["swarm/factory_refine_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_swarm",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "swarm_factory_decisions_test",
+    srcs = ["swarm/factory_decisions_test.py"],
     imports = ["."],
     deps = [
         ":pkg_auth",
