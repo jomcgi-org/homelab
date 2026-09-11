@@ -369,3 +369,80 @@ def test_allowlisted_receipt_is_admitted_regardless_of_intake(
     issue(1)
     enable(policy)
     assert admit_next("scheduler")["ok"]
+
+
+def advisory_issue(number, *, repo="owner/repo", generation=0):
+    return receive_issue(
+        repo,
+        number,
+        f"advisory {number}",
+        "body",
+        f"https://github.com/{repo}/issues/{number}",
+        "factory:intake",
+        generation=generation,
+        task_class="refine",
+    )
+
+
+def test_a_full_delivery_lane_does_not_block_an_advisory_admission(
+    db, policy, monkeypatch
+):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+    policy["max_tasks"] = {"delivery": 1, "advisory": 1}
+    policy["intake"] = {"enabled": True}
+    enable(policy)
+    issue(1)
+    issue(2)
+    advisory_issue(3)
+    first = admit_next("scheduler")
+    assert first["ok"] and first["lane"] == "delivery"
+    second = admit_next("scheduler")
+    assert second["ok"] and second["lane"] == "advisory"
+    third = admit_next("scheduler")
+    assert third["reason"] == "wip_limit"
+    assert third["lanes"] == {
+        "delivery": {"limit": 1, "active": 1},
+        "advisory": {"limit": 1, "active": 1},
+    }
+
+
+def test_a_shut_advisory_lane_never_admits_advisory_work(db, policy, monkeypatch):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+    policy["max_tasks"] = 2
+    policy["intake"] = {"enabled": True}
+    enable(policy)
+    advisory_issue(3)
+    assert admit_next("scheduler")["reason"] == "no_eligible_issue"
+
+
+def test_the_caller_can_hold_one_lane_shut(db, policy, monkeypatch):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "3")
+    policy["max_tasks"] = {"delivery": 2, "advisory": 1}
+    policy["intake"] = {"enabled": True}
+    enable(policy)
+    issue(1)
+    advisory_issue(3)
+    held = admit_next("scheduler", lanes=("advisory",))
+    assert held["ok"] and held["lane"] == "advisory"
+    assert admit_next("scheduler", lanes=("advisory",))["reason"] == "wip_limit"
+    opened = admit_next("scheduler")
+    assert opened["ok"] and opened["lane"] == "delivery"
+
+
+def test_no_lane_at_all_admits_nothing_and_names_no_task(db, policy, monkeypatch):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
+    policy["max_tasks"] = {"delivery": 1, "advisory": 1}
+    enable(policy)
+    issue(1)
+    refused = admit_next("scheduler", lanes=())
+    assert refused["reason"] == "wip_limit"
+    assert refused["task_id"] is None and refused["limit"] == 0
+
+
+def test_a_receipt_written_before_classes_reads_as_delivery():
+    """The column is NOT NULL now, but rows predating it read as bug-fix."""
+    from swarm.factory_intake import lane_of
+    from types import SimpleNamespace
+
+    assert lane_of(SimpleNamespace(task_class=None)) == "delivery"
+    assert lane_of(SimpleNamespace(task_class="refine")) == "advisory"

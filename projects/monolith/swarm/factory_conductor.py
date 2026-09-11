@@ -3038,6 +3038,13 @@ def reserve_node(task_id: str, node_key: str, key: str, context: dict) -> bool:
     return True
 
 
+def open_admission_lanes(policy: dict) -> tuple:
+    """Lanes this tick may admit into. Delivery is what a guard can shut."""
+    from swarm.factory_controls import LANES
+
+    return LANES
+
+
 def tick() -> None:
     from swarm.factory_controls import status
     from swarm.factory_intake import admit_next
@@ -3073,6 +3080,9 @@ def tick() -> None:
     limit = concurrency_limit(snapshot["policy"])
     if len(active) >= limit:
         return
+    lanes = open_admission_lanes(snapshot["policy"])
+    if not lanes:
+        return
     try:
         from swarm.factory_intake_loop import intake_tick
 
@@ -3082,10 +3092,12 @@ def tick() -> None:
         # the discovery and leave an explicitly requested issue waiting.
         ingest_eligible(snapshot["policy"])
         intake_tick(
-            snapshot["policy"], generation=snapshot["policy"].get("generation", 0)
+            snapshot["policy"],
+            generation=snapshot["policy"].get("generation", 0),
+            lanes=lanes,
         )
         while len(active) < limit:
-            admitted = admit_next(ACTOR)
+            admitted = admit_next(ACTOR, lanes=lanes)
             if not admitted["ok"]:
                 break
             # A task admitted this tick is reconciled on the next one.

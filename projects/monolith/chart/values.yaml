@@ -1451,7 +1451,11 @@ swarm:
   # settles uncertain and holds its slot rather than backing off. Minimum 1;
   # zero is not a kill switch (use the factory stop control). It bounds the
   # SUM of the policy's per-lane max_tasks, delivery and advisory together.
-  factoryMaxConcurrentTasks: 1
+  # Four, not one: the ceiling now bounds the SUM of both lanes, and at one
+  # the advisory lane could never open at all. The policy's per-lane
+  # max_tasks is what actually sizes each lane; this only stops a posted
+  # policy asking for more than the platform holds.
+  factoryMaxConcurrentTasks: 4
   enabled: false
   # The cheap implementer lane and the reviewer that gates it. The reviewer is
   # never below Opus: ADR 038 decision 5 floors anything assessable only by

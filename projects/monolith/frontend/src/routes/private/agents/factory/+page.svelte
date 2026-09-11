@@ -44,6 +44,17 @@
   const recent = $derived(board?.recent ?? []);
   const policy = $derived(board?.policy ?? null);
   const intake = $derived(board?.intake ?? null);
+  const lanes = $derived(board?.lanes ?? null);
+  // "1/1 delivery · 0/2 advisory". A lane the policy shut is still shown, so
+  // an operator reads a quiet advisory lane as closed rather than as idle.
+  const laneLine = $derived(
+    lanes
+      ? ["delivery", "advisory"]
+          .filter((lane) => lanes[lane])
+          .map((lane) => `${lanes[lane].active}/${lanes[lane].limit} ${lane}`)
+          .join(" · ")
+      : "lanes unknown",
+  );
   const intakeSeen = $derived(
     intake?.last_admitted?.created_at ?? intake?.last_idle?.created_at ?? null,
   );
@@ -172,7 +183,7 @@
     <p class="policy-line">
       {#if policy}
         <span
-          >generation {policy.generation} · {policy.max_tasks} at a time · {money(
+          >generation {policy.generation} · {laneLine} · {money(
             policy.task_budget_usd,
           )} and up to {policy.max_task_turns_hard} starts per task · {policy.max_parallel_nodes ??
             1} in parallel · policy v{board.version}</span

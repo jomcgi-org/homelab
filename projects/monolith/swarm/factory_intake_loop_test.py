@@ -55,6 +55,9 @@ def db(tmp_path, monkeypatch):
     # intake_state reads the clock from factory_controls, where it lives
     # so the board can render the block without linking the reconciler.
     monkeypatch.setattr(controls, "_now", lambda: NOW)
+    # Both lanes open: the ceiling bounds their sum, so at one the advisory
+    # lane could never hold anything.
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "2")
     yield engine
     engine.dispose()
 
@@ -62,6 +65,7 @@ def db(tmp_path, monkeypatch):
 def policy(**intake):
     return {
         "repo": "owner/repo",
+        "max_tasks": {"delivery": 1, "advisory": 1},
         "intake": {"enabled": True, "exclude_labels": [], **intake},
     }
 
@@ -146,7 +150,7 @@ def test_disabled_intake_has_no_github_or_audit(db, monkeypatch):
         "github_list",
         lambda *_args: pytest.fail("disabled intake made a GitHub call"),
     )
-    assert intake_loop.intake_tick({"repo": "owner/repo"}, generation=0) is None
+    assert intake_loop.intake_tick({"repo": "owner/repo"}, generation=0) == []
     assert audits(db, "intake_idle") == []
 
 
@@ -167,7 +171,7 @@ def test_current_generation_work_blocks_intake(db, monkeypatch, state):
             )
         )
         session.commit()
-    assert intake_loop.intake_tick(policy(), generation=3) is None
+    assert intake_loop.intake_tick(policy(), generation=3) == []
 
 
 def test_ranking_prefers_delivery_label_rank_then_age(db, monkeypatch):
@@ -179,8 +183,8 @@ def test_ranking_prefers_delivery_label_rank_then_age(db, monkeypatch):
         policy(labels=["agent-ready", "bug", "critical"], refine_enabled=True),
         generation=0,
     )
-    assert result["receipt"]["issue_number"] == 3
-    assert result["receipt"]["task_class"] == "bug-fix"
+    assert result[0]["receipt"]["issue_number"] == 3
+    assert result[0]["receipt"]["task_class"] == "bug-fix"
 
 
 def test_delivery_without_rank_beats_critical_refine(db, monkeypatch):
@@ -188,7 +192,7 @@ def test_delivery_without_rank_beats_critical_refine(db, monkeypatch):
     result = intake_loop.intake_tick(
         policy(labels=["agent-ready"], refine_enabled=True), generation=0
     )
-    assert result["receipt"]["issue_number"] == 2
+    assert result[0]["receipt"]["issue_number"] == 2
 
 
 def test_all_exclusion_reasons_are_first_match_counts(db, monkeypatch):
@@ -234,7 +238,7 @@ def test_all_exclusion_reasons_are_first_match_counts(db, monkeypatch):
         intake_loop.intake_tick(
             policy(exclude_labels=["blocked"], refine_enabled=False), generation=0
         )
-        is None
+        == []
     )
     detail = json.loads(audits(db, "intake_idle")[0].detail_json)
     assert detail["listed"] == 8
@@ -267,7 +271,7 @@ def test_expired_cooldown_is_admissible(db, monkeypatch):
             )
         )
         session.commit()
-    assert intake_loop.intake_tick(policy(cooldown_hours=24), generation=0)["ok"]
+    assert intake_loop.intake_tick(policy(cooldown_hours=24), generation=0)[0]["ok"]
 
 
 def test_daily_cap_and_expiry(db, monkeypatch):
@@ -284,7 +288,7 @@ def test_daily_cap_and_expiry(db, monkeypatch):
             ]
         )
         session.commit()
-    assert intake_loop.intake_tick(policy(max_per_day=2), generation=0) is None
+    assert intake_loop.intake_tick(policy(max_per_day=2), generation=0) == []
     assert calls == []
     detail = json.loads(audits(db, "intake_idle")[0].detail_json)
     assert detail == {"admitted_today": 2, "max_per_day": 2, "reason": "daily_cap"}
@@ -295,13 +299,13 @@ def test_daily_cap_and_expiry(db, monkeypatch):
             row.created_at = NOW - timedelta(hours=25)
             session.add(row)
         session.commit()
-    assert intake_loop.intake_tick(policy(max_per_day=2), generation=0)["ok"]
+    assert intake_loop.intake_tick(policy(max_per_day=2), generation=0)[0]["ok"]
 
 
 def test_exactly_one_admission_and_bounded_evidence(db, monkeypatch):
     fake_pages(monkeypatch, [issue(n, ["agent-ready"]) for n in range(1, 26)])
     result = intake_loop.intake_tick(policy(), generation=0)
-    assert result["created"]
+    assert result[0]["created"]
     with Session(db) as session:
         assert len(session.exec(select(FactoryReceipt)).all()) == 1
     detail = json.loads(audits(db, "intake_admitted")[0].detail_json)
@@ -318,7 +322,7 @@ def test_admission_and_audit_carry_derived_class(db, monkeypatch):
         ],
     )
     result = intake_loop.intake_tick(policy(), generation=0)
-    assert result["receipt"]["task_class"] == "docs"
+    assert result[0]["receipt"]["task_class"] == "docs"
     detail = json.loads(audits(db, "intake_admitted")[0].detail_json)
     assert detail["task_class"] == "docs"
     assert detail["class_reason"] == "label documentation"
@@ -330,8 +334,8 @@ def test_admission_and_audit_carry_derived_class(db, monkeypatch):
 
 def test_idle_audit_is_hourly(db, monkeypatch):
     fake_pages(monkeypatch, [])
-    assert intake_loop.intake_tick(policy(), generation=0) is None
-    assert intake_loop.intake_tick(policy(), generation=0) is None
+    assert intake_loop.intake_tick(policy(), generation=0) == []
+    assert intake_loop.intake_tick(policy(), generation=0) == []
     assert len(audits(db, "intake_idle")) == 1
     with Session(db) as session:
         row = session.exec(
@@ -341,20 +345,20 @@ def test_idle_audit_is_hourly(db, monkeypatch):
         session.add(row)
         session.commit()
     release_sweep(db)
-    assert intake_loop.intake_tick(policy(), generation=0) is None
+    assert intake_loop.intake_tick(policy(), generation=0) == []
     assert len(audits(db, "intake_idle")) == 2
 
 
 def test_refine_enabled_sets_class_while_labelled_stays_delivery(db, monkeypatch):
     fake_pages(monkeypatch, [issue(1)])
     refined = intake_loop.intake_tick(policy(refine_enabled=True), generation=0)
-    assert refined["receipt"]["task_class"] == "refine"
+    assert refined[0]["receipt"]["task_class"] == "refine"
     with Session(db) as session:
         session.exec(select(FactoryReceipt)).one().state = "succeeded"
         session.commit()
     fake_pages(monkeypatch, [issue(2, ["agent-ready"])])
     delivered = intake_loop.intake_tick(policy(refine_enabled=True), generation=0)
-    assert delivered["receipt"]["task_class"] == "bug-fix"
+    assert delivered[0]["receipt"]["task_class"] == "bug-fix"
 
 
 def test_intake_state_reports_policy_usage_and_latest_audits(db):
@@ -386,18 +390,18 @@ def test_intake_state_reports_policy_usage_and_latest_audits(db):
 def test_a_quiet_lane_sweeps_github_at_most_once_an_hour(db, monkeypatch):
     """The tick runs every 15 seconds; the sweep must not."""
     calls = fake_pages(monkeypatch, [])
-    assert intake_loop.intake_tick(policy(), generation=0) is None
+    assert intake_loop.intake_tick(policy(), generation=0) == []
     first = len(calls)
     assert first > 0
-    assert intake_loop.intake_tick(policy(), generation=0) is None
-    assert intake_loop.intake_tick(policy(), generation=0) is None
+    assert intake_loop.intake_tick(policy(), generation=0) == []
+    assert intake_loop.intake_tick(policy(), generation=0) == []
     assert len(calls) == first
     assert len(audits(db, "intake_idle")) == 1
 
 
 def test_an_hour_later_the_sweep_runs_again(db, monkeypatch):
     calls = fake_pages(monkeypatch, [])
-    assert intake_loop.intake_tick(policy(), generation=0) is None
+    assert intake_loop.intake_tick(policy(), generation=0) == []
     swept = len(calls)
     with Session(db) as session:
         row = session.exec(
@@ -407,7 +411,7 @@ def test_an_hour_later_the_sweep_runs_again(db, monkeypatch):
         session.add(row)
         session.commit()
     release_sweep(db)
-    assert intake_loop.intake_tick(policy(), generation=0) is None
+    assert intake_loop.intake_tick(policy(), generation=0) == []
     assert len(calls) > swept
     assert len(audits(db, "intake_idle")) == 2
 
@@ -425,16 +429,16 @@ def test_the_daily_cap_does_not_blind_the_sweep_for_an_hour(db, monkeypatch):
             )
         )
         session.commit()
-    assert intake_loop.intake_tick(policy(max_per_day=1), generation=0) is None
+    assert intake_loop.intake_tick(policy(max_per_day=1), generation=0) == []
     assert calls == []
     # The cap is what refused, so the next tick with room still sweeps.
-    assert intake_loop.intake_tick(policy(max_per_day=5), generation=0) is None
+    assert intake_loop.intake_tick(policy(max_per_day=5), generation=0) == []
     assert calls != []
 
 
 def test_a_settlement_releases_the_sweep_immediately(db, monkeypatch):
     calls = fake_pages(monkeypatch, [])
-    assert intake_loop.intake_tick(policy(), generation=0) is None
+    assert intake_loop.intake_tick(policy(), generation=0) == []
     swept = len(calls)
     with Session(db) as session:
         marked = session.exec(
@@ -454,7 +458,7 @@ def test_a_settlement_releases_the_sweep_immediately(db, monkeypatch):
             )
         )
         session.commit()
-    assert intake_loop.intake_tick(policy(), generation=0) is None
+    assert intake_loop.intake_tick(policy(), generation=0) == []
     assert len(calls) > swept
 
 
@@ -466,13 +470,13 @@ def test_a_github_failure_is_audited_not_only_logged(db, monkeypatch):
         raise RuntimeError("403 rate limited")
 
     monkeypatch.setattr(intake_loop, "github_list", boom)
-    assert intake_loop.intake_tick(policy(), generation=0) is None
+    assert intake_loop.intake_tick(policy(), generation=0) == []
     # A failed sweep still spends the clock, so the next tick does not retry
     # a rate limit every fifteen seconds.
-    assert intake_loop.intake_tick(policy(), generation=0) is None
+    assert intake_loop.intake_tick(policy(), generation=0) == []
     assert len(calls) == 1
     release_sweep(db)
-    assert intake_loop.intake_tick(policy(), generation=0) is None
+    assert intake_loop.intake_tick(policy(), generation=0) == []
     rows = audits(db, "intake_error")
     assert len(rows) == 1
     detail = json.loads(rows[0].detail_json)
@@ -487,7 +491,7 @@ def test_a_truncated_sweep_says_so(db, monkeypatch):
         return [] if suffix.startswith("pulls?") else list(full)
 
     monkeypatch.setattr(intake_loop, "github_list", github_list)
-    assert intake_loop.intake_tick(policy(refine_enabled=False), generation=0) is None
+    assert intake_loop.intake_tick(policy(refine_enabled=False), generation=0) == []
     detail = json.loads(audits(db, "intake_idle")[0].detail_json)
     assert detail["truncated"] is True
 
@@ -507,7 +511,7 @@ def test_an_unreadable_created_at_sorts_last(db, monkeypatch):
         ],
     )
     result = intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0)
-    assert result["receipt"]["issue_number"] == 2
+    assert result[0]["receipt"]["issue_number"] == 2
 
 
 def test_a_refined_issue_is_delivered_in_the_same_generation(db, monkeypatch):
@@ -516,9 +520,9 @@ def test_a_refined_issue_is_delivered_in_the_same_generation(db, monkeypatch):
     refined = intake_loop.intake_tick(
         policy(labels=["agent-ready"], refine_enabled=True), generation=0
     )
-    assert refined["receipt"]["task_class"] == "refine"
+    assert refined[0]["receipt"]["task_class"] == "refine"
     with Session(db) as session:
-        row = session.get(FactoryReceipt, refined["receipt"]["id"])
+        row = session.get(FactoryReceipt, refined[0]["receipt"]["id"])
         row.state = "succeeded"
         row.updated_at = NOW
         session.add(row)
@@ -529,30 +533,30 @@ def test_a_refined_issue_is_delivered_in_the_same_generation(db, monkeypatch):
     delivered = intake_loop.intake_tick(
         policy(labels=["agent-ready"], refine_enabled=True), generation=0
     )
-    assert delivered is not None
-    assert delivered["receipt"]["task_class"] == "bug-fix"
-    assert delivered["receipt"]["id"] != refined["receipt"]["id"]
+    assert delivered
+    assert delivered[0]["receipt"]["task_class"] == "bug-fix"
+    assert delivered[0]["receipt"]["id"] != refined[0]["receipt"]["id"]
 
 
 def test_the_same_class_twice_in_one_generation_is_refused(db, monkeypatch):
     fake_pages(monkeypatch, [issue(9, ["agent-ready"])])
     first = intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0)
     with Session(db) as session:
-        row = session.get(FactoryReceipt, first["receipt"]["id"])
+        row = session.get(FactoryReceipt, first[0]["receipt"]["id"])
         row.state = "succeeded"
         row.updated_at = NOW
         session.add(row)
         session.commit()
     release_sweep(db)
     fake_pages(monkeypatch, [issue(9, ["agent-ready"])])
-    assert intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0) is None
+    assert intake_loop.intake_tick(policy(labels=["agent-ready"]), generation=0) == []
     detail = json.loads(audits(db, "intake_idle")[0].detail_json)
     assert detail["excluded"]["already_received"] == 1
 
 
 def test_a_malformed_entry_is_not_a_closed_issue(db, monkeypatch):
     fake_pages(monkeypatch, ["not an object", issue(2, state="closed")])
-    assert intake_loop.intake_tick(policy(), generation=0) is None
+    assert intake_loop.intake_tick(policy(), generation=0) == []
     detail = json.loads(audits(db, "intake_idle")[0].detail_json)
     assert detail["excluded"] == {"malformed": 1, "not_open": 1}
 
@@ -561,3 +565,53 @@ def test_the_intake_actor_is_the_one_admission_keys_on():
     from swarm.factory_intake import INTAKE_ACTOR
 
     assert intake_loop.ACTOR == INTAKE_ACTOR
+
+
+def test_one_candidate_per_lane_enters_on_the_same_tick(db, monkeypatch):
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"]), issue(2), issue(3)])
+    admitted = intake_loop.intake_tick(
+        policy(labels=["agent-ready"], refine_enabled=True), generation=0
+    )
+    assert [row["receipt"]["task_class"] for row in admitted] == ["bug-fix", "refine"]
+    assert [row["receipt"]["issue_number"] for row in admitted] == [1, 2]
+    with Session(db) as session:
+        assert len(session.exec(select(FactoryReceipt)).all()) == 2
+
+
+def test_a_full_lane_is_skipped_and_counted(db, monkeypatch):
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"]), issue(2)])
+    first = intake_loop.intake_tick(
+        policy(labels=["agent-ready"], refine_enabled=True), generation=0
+    )
+    assert len(first) == 2
+    release_sweep(db)
+    fake_pages(monkeypatch, [issue(3, ["agent-ready"]), issue(4)])
+    assert (
+        intake_loop.intake_tick(
+            policy(labels=["agent-ready"], refine_enabled=True), generation=0
+        )
+        == []
+    )
+
+
+def test_a_shut_lane_leaves_the_other_one_working(db, monkeypatch):
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"]), issue(2)])
+    admitted = intake_loop.intake_tick(
+        policy(labels=["agent-ready"], refine_enabled=True),
+        generation=0,
+        lanes=("advisory",),
+    )
+    assert [row["receipt"]["task_class"] for row in admitted] == ["refine"]
+    detail = json.loads(audits(db, "intake_admitted")[0].detail_json)
+    assert detail["lane"] == "advisory"
+    assert detail["excluded"]["lane_full"] == 1
+
+
+def test_the_daily_cap_stops_the_second_lane_mid_tick(db, monkeypatch):
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"]), issue(2)])
+    admitted = intake_loop.intake_tick(
+        policy(labels=["agent-ready"], refine_enabled=True, max_per_day=1),
+        generation=0,
+    )
+    assert [row["receipt"]["task_class"] for row in admitted] == ["bug-fix"]
+    assert json.loads(audits(db, "intake_idle")[0].detail_json)["reason"] == "daily_cap"

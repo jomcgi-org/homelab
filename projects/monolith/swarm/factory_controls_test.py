@@ -1060,3 +1060,99 @@ def test_the_close_flags_default_off_and_bound_the_cap():
             intake_policy({"intake": {"max_closes_per_day": bad}})
     with pytest.raises(ValueError):
         intake_policy({"intake": {"close_enabled": "yes"}})
+
+
+def test_an_integer_max_tasks_reads_as_the_delivery_lane(policy):
+    policy["max_tasks"] = 3
+    validated = controls.validate_policy(policy)
+    assert validated["max_tasks"] == {"delivery": 3, "advisory": 0}
+
+
+def test_per_lane_max_tasks_round_trips(policy):
+    policy["max_tasks"] = {"delivery": 2, "advisory": 5}
+    validated = controls.validate_policy(policy)
+    assert validated["max_tasks"] == {"delivery": 2, "advisory": 5}
+
+
+def test_a_lane_map_defaults_the_lane_it_omits(policy):
+    policy["max_tasks"] = {"advisory": 4}
+    assert controls.validate_policy(policy)["max_tasks"] == {
+        "delivery": 1,
+        "advisory": 4,
+    }
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {},
+        {"delivery": 0},
+        {"delivery": 1, "advisory": -1},
+        {"delivery": 1, "review": 1},
+        {"delivery": True},
+        {"advisory": 1.5},
+    ],
+)
+def test_an_unusable_lane_map_is_refused(policy, value):
+    policy["max_tasks"] = value
+    with pytest.raises(ValueError):
+        controls.validate_policy(policy)
+
+
+@pytest.mark.parametrize(
+    ("task_class", "lane"),
+    [
+        ("bug-fix", "delivery"),
+        ("mechanical-refactor", "delivery"),
+        ("docs", "delivery"),
+        ("judgment-analysis", "delivery"),
+        ("refine", "advisory"),
+        ("advisory-diagnosis", "advisory"),
+        ("advisory-triage", "advisory"),
+    ],
+)
+def test_lane_follows_class(task_class, lane):
+    assert controls.lane_for(task_class) == lane
+
+
+def test_the_chart_ceiling_bounds_the_sum_of_both_lanes(monkeypatch):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "3")
+    assert controls.lane_limits({"max_tasks": {"delivery": 2, "advisory": 4}}) == {
+        "delivery": 2,
+        "advisory": 1,
+    }
+
+
+def test_a_ceiling_of_one_still_leaves_delivery_a_slot(monkeypatch):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "1")
+    assert controls.lane_limits({"max_tasks": {"delivery": 5, "advisory": 5}}) == {
+        "delivery": 1,
+        "advisory": 0,
+    }
+
+
+def test_lane_usage_counts_in_flight_and_waiting_receipts(monkeypatch):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
+    receipts = [
+        {"state": "admitted", "task_class": "bug-fix"},
+        {"state": "uncertain", "task_class": "docs"},
+        {"state": "queued", "task_class": "judgment-analysis"},
+        {"state": "admitted", "task_class": "refine"},
+        {"state": "succeeded", "task_class": "refine"},
+        # A receipt written before classes existed reads as delivery.
+        {"state": "queued", "task_class": None},
+    ]
+    usage = controls.lane_usage({"max_tasks": {"delivery": 2, "advisory": 2}}, receipts)
+    assert usage == {
+        "delivery": {"limit": 2, "active": 2, "queued": 2},
+        "advisory": {"limit": 2, "active": 1, "queued": 0},
+    }
+
+
+def test_status_reports_the_lane_view(db, policy, monkeypatch):
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
+    policy["max_tasks"] = {"delivery": 2, "advisory": 1}
+    admitted(policy)
+    lanes = controls.status()["lanes"]
+    assert lanes["delivery"] == {"limit": 2, "active": 1, "queued": 0}
+    assert lanes["advisory"] == {"limit": 1, "active": 0, "queued": 0}
