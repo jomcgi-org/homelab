@@ -46,12 +46,13 @@
   const intake = $derived(board?.intake ?? null);
   const lanes = $derived(board?.lanes ?? null);
   const guard = $derived(board?.quota_guard ?? null);
-  // Only worth a word when it is holding delivery back or has no reading at
-  // all; an open guard is the ordinary state and says nothing.
+  // Only worth a word when it is holding delivery back, or when the last thing
+  // the guard recorded was a reading it could not get. An open guard is the
+  // ordinary state and says nothing.
   const guardLine = $derived(
     guard?.paused
       ? `delivery held: claude 7d at ${Math.round(guard.used_percent ?? 0)}% of ${guard.pause_percent}%`
-      : guard?.state === "unknown"
+      : guard?.last_action === "quota_guard_unknown"
         ? "quota guard: no reading"
         : null,
   );
