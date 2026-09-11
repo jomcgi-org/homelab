@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import re
+
 from swarm.budget import effective_budget
 
 
@@ -108,6 +111,10 @@ def compute_deviations(run: dict) -> list[dict]:
 # swarm.graph owns the same tuple, but importing it here would drag core.db and
 # the engine into every consumer of this pure module.
 _SETTLED = ("succeeded", "failed", "escalated", "cancelled")
+# swarm.factory_conductor owns the same pattern, for the same reason the
+# settled tuple is duplicated: this module stays free of the engine.
+_ENGINE_ROUND_KEY = re.compile(r"^(?:correct|review)_([0-9]+)$")
+FAILED_CORRECTION_REASON_CHARS = 200
 FACTORY_DEVIATION_CODES = (
     "integration_insert_refused",
     "loop_insert_refused",
@@ -117,6 +124,42 @@ FACTORY_DEVIATION_CODES = (
     "node_failed",
     "graph_exhausted",
 )
+
+
+def _engine_round(node_key: str) -> int | None:
+    match = _ENGINE_ROUND_KEY.fullmatch(node_key)
+    return None if match is None else int(match.group(1))
+
+
+def _failed_correction(nodes: list[dict], runs: list[dict]) -> dict | None:
+    """The newest engine correction that settled without ever delivering.
+
+    Read for the planner's benefit, not for control flow. When the round bound
+    is spent the deviation names the review, which says nothing about why the
+    last round produced no new head; this supplies that.
+    """
+    rounds = [
+        ordinal
+        for node in nodes
+        if (ordinal := _engine_round(node["node_key"])) is not None
+    ]
+    if not rounds:
+        return None
+    key = f"correct_{max(rounds)}"
+    attempts = [run for run in runs if run["node_key"] == key]
+    if not attempts or any(run["status"] == "succeeded" for run in attempts):
+        return None
+    if not all(run["status"] in _SETTLED for run in attempts):
+        return None
+    latest = max(attempts, key=lambda run: run["id"])
+    try:
+        outcome = json.loads(latest["outcome_json"] or "{}")
+    except (TypeError, ValueError):
+        outcome = {}
+    reason = outcome.get("reason")
+    if not isinstance(reason, str) or not reason:
+        reason = latest["status"]
+    return {"node_key": key, "reason": reason[:FAILED_CORRECTION_REASON_CHARS]}
 
 
 def factory_deviation(
@@ -162,19 +205,47 @@ def factory_deviation(
             "No plan has been applied to this task yet.",
         )
     if pending_review is not None and review_rounds_used >= max_review_rounds:
+        failed = _failed_correction(work, runs)
+        text = (
+            f"{pending_review} requested changes after "
+            f"{review_rounds_used} engine-owned correction rounds."
+        )
+        if failed is not None:
+            # Without this the planner reads an exhausted loop as "the reviewer
+            # kept objecting" when the last round never produced a head to
+            # object to.
+            text += (
+                f" The last correction {failed['node_key']} delivered nothing: "
+                f"{failed['reason']}."
+            )
         return _deviation(
             "review_rounds_exhausted",
             pending_review,
             f"review rounds used: {review_rounds_used}; "
             f"max_review_rounds: {max_review_rounds}",
-            f"{pending_review} requested changes after "
-            f"{review_rounds_used} engine-owned correction rounds.",
+            text,
         )
     attempts_by_node: dict[str, list[dict]] = {}
     for run in runs:
         attempts_by_node.setdefault(run["node_key"], []).append(run)
+    # A correct_<n> or review_<n> that a later engine round replaced is history,
+    # not an open failure. The engine reopens a failed round against the same
+    # review, so the round that failed keeps its runs for good, and naming it
+    # here would hand the planner a node key it may not add and a node it may
+    # not discard, at the very moment the round that replaced it delivered.
+    newest_round = max(
+        (
+            ordinal
+            for node in work
+            if (ordinal := _engine_round(node["node_key"])) is not None
+        ),
+        default=0,
+    )
     for node in work:
         key = node["node_key"]
+        ordinal = _engine_round(key)
+        if ordinal is not None and ordinal < newest_round:
+            continue
         attempts = attempts_by_node.get(key) or []
         if not attempts or any(run["status"] == "succeeded" for run in attempts):
             continue
