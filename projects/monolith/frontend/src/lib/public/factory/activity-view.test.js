@@ -625,13 +625,18 @@ describe("activityRow", () => {
     });
   });
 
-  it("names a tool call by its tool", () => {
+  it("labels a tool call as tool and names the tool in the value column", () => {
     expect(
       activityRow(
         { type: "tool_use", name: "Read", file_path: "one.py" },
         DIFF,
       ),
-    ).toEqual({ type: "read", what: "one.py", short: "one.py", hunk: null });
+    ).toEqual({
+      type: "tool",
+      what: "Read one.py",
+      short: "one.py",
+      hunk: null,
+    });
   });
 
   it("shortens a path to its last segment for the digest line", () => {
@@ -701,5 +706,29 @@ describe("sessionHref", () => {
     expect(sessionHref(5980, "verify:delivery", 1)).toBe(
       "/slop/factory/activity/5980/verify%3Adelivery/1",
     );
+  });
+});
+
+describe("activityRow labels", () => {
+  it("labels a tool row as tool and names the tool once, in the value column", () => {
+    const row = activityRow({ type: "tool_use", name: "read_skill" }, null);
+    expect(row.type).toBe("tool");
+    expect(row.what).toBe("read_skill");
+  });
+
+  it("keeps a tool's path beside its name", () => {
+    const row = activityRow(
+      { type: "tool_use", name: "Read", file_path: "a/b/c.py" },
+      null,
+    );
+    expect(row.what).toBe("Read a/b/c.py");
+    expect(row.short).toBe("c.py");
+  });
+
+  it("says when a bash command was not recorded", () => {
+    expect(activityRow({ type: "bash" }, null).what).toBe(
+      "(command not recorded)",
+    );
+    expect(activityRow({ type: "bash", command: "ci" }, null).what).toBe("ci");
   });
 });
