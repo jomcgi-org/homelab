@@ -432,24 +432,52 @@ def _record(candidate, observed, observed_at):
                 raise ValueError("observation_unavailable")
             if observed.get("session_id") != candidate["guest_id"]:
                 raise ValueError("guest_mismatch")
-            fields = ("generation", "invoke_started_at", "updated_at")
+            # A guest that never completed an invoke carries NULL stamps: the
+            # control plane initialises both nil and only the invoke path sets
+            # them. A guest parked after a 409 on invoke is exactly that, and
+            # every invocation-bounding check below reads an int, so such a
+            # guest could never settle and held its admission slot forever
+            # (#6004). Recognise it only when BOTH stamps are null AND the
+            # observed state is already terminal. A live guest with null stamps
+            # proves no cessation, and a SINGLE null stamp is a malformed
+            # observation rather than a never-invoked one, so both stay
+            # rejected. Generation, updated_at ordering and cessation_precedes_turn
+            # are still enforced below: what is skipped is only the bounding of
+            # an invocation that demonstrably never happened.
+            never_invoked = (
+                observed.get("state") in {"evicted", "destroyed"}
+                and observed.get("invoke_started_at") is None
+                and observed.get("last_invoke_at") is None
+            )
+            fields = ("generation", "updated_at")
+            if not never_invoked:
+                fields = ("generation", "invoke_started_at", "updated_at")
             if any(type(observed.get(k)) is not int or observed[k] < 0 for k in fields):
                 raise ValueError("malformed_identity")
-            generation, started, updated = (observed[k] for k in fields)
+            generation, updated = observed["generation"], observed["updated_at"]
+            started = None if never_invoked else observed["invoke_started_at"]
             # Control-plane milliseconds ordered against a monolith-side
             # timestamp. The gap asserted is an invocation's own length, which
             # is far larger than plausible skew between the two clocks.
-            if started > int(_aware(turn.created_at).timestamp() * 1000):
+            if not never_invoked and started > int(
+                _aware(turn.created_at).timestamp() * 1000
+            ):
                 raise ValueError("invoke_after_failed_turn")
             # Idle banking increments generation on the same session. It does
             # not change invoke_started_at. Reject regressions and new invokes.
-            if audit.generation is not None and (
-                generation < audit.generation or started != audit.invoke_started_at
-            ):
+            if audit.generation is not None and generation < audit.generation:
                 raise ValueError("invocation_changed")
             if (
-                audit.cp_updated_at is not None and updated < audit.cp_updated_at
-            ) or not (started <= updated <= int(observed_at.timestamp() * 1000)):
+                audit.generation is not None
+                and not never_invoked
+                and started != audit.invoke_started_at
+            ):
+                raise ValueError("invocation_changed")
+            if (audit.cp_updated_at is not None and updated < audit.cp_updated_at) or (
+                updated > int(observed_at.timestamp() * 1000)
+            ):
+                raise ValueError("reordered_observation")
+            if not never_invoked and started > updated:
                 raise ValueError("reordered_observation")
             audit.generation = generation
             audit.invoke_started_at = started
@@ -481,9 +509,13 @@ def _record(candidate, observed, observed_at):
                 terminal_states.add("destroyed")
             if observed.get("state") not in terminal_states:
                 raise ValueError("awaiting_cessation")
-            last_invoke = observed.get("last_invoke_at")
-            if type(last_invoke) is not int or not started <= last_invoke <= updated:
-                raise ValueError("missing_invoke_completion")
+            if not never_invoked:
+                last_invoke = observed.get("last_invoke_at")
+                if (
+                    type(last_invoke) is not int
+                    or not started <= last_invoke <= updated
+                ):
+                    raise ValueError("missing_invoke_completion")
             # The same cross-clock comparison in the other direction: the gap
             # from recording the failure to the guest ceasing is an eviction or
             # teardown, again far larger than plausible skew.
