@@ -1333,6 +1333,26 @@ agentSessions:
   # explicit null override, `agentSessions:` with no body, which gives
   # "nil pointer evaluating interface {}.piWorkload".
   piWorkload: ""
+  # Shared execution permits (agent_sessions/admission.py). The code defaults
+  # are 4/3/2, the numbers the pool shipped with when one brick held every
+  # guest. Implementation capacity is now three spot brick nodes behind the
+  # autoscaler and the scarce input is Opus review, so the pool is sized for
+  # the background lanes rather than against them.
+  #
+  # total bounds every tier at once, background bounds the non-interactive
+  # tiers under it (factory nodes, the work-queue drainer, synthetic probes),
+  # and kg bounds the knowledge-graph tier under background. A narrower total
+  # clamps the two inner numbers, so they can never exceed it by a typo.
+  #
+  # These numbers must stay at or below what EmberVM will actually create:
+  # claudeRuntimeWorkload cap and session.maxSessions, and piRuntimeWorkload
+  # likewise, in projects/embervm/chart/values.yaml. Above those a permit is
+  # granted and the guest create takes a session_cap 429, which fails the turn
+  # instead of making it wait.
+  admission:
+    total: 16
+    background: 12
+    kg: 2
 
 # EmberVM R4 scratch-postgres consumer (ADR embervm/001, D-R4.PR-11.1). When
 # enabled the monolith exposes SCRATCH_POSTGRES_DSN so agent run_code python runs
@@ -1425,12 +1445,12 @@ swarm:
   factoryStopSupervisionEnabled: false
   # Hard ceiling on factory tasks in flight at once. The policy's max_tasks
   # asks for a concurrency and this caps it, so a posted policy cannot open
-  # more lanes than the platform is sized for. Size it against the session
-  # admission constants in agent_sessions/admission.py (TOTAL_LIMIT 4,
-  # BACKGROUND_LIMIT 3, shared with the drainer): a node that waits past its
-  # turn timeout for a permit settles uncertain and holds its slot rather
-  # than backing off. Minimum 1; zero is not a kill switch (use the factory
-  # stop control).
+  # more lanes than the platform is sized for. Size it against
+  # agentSessions.admission above, which the factory shares with the drainer
+  # and the probes: a node that waits past its turn timeout for a permit
+  # settles uncertain and holds its slot rather than backing off. Minimum 1;
+  # zero is not a kill switch (use the factory stop control). It bounds the
+  # SUM of the policy's per-lane max_tasks, delivery and advisory together.
   factoryMaxConcurrentTasks: 1
   enabled: false
   # The cheap implementer lane and the reviewer that gates it. The reviewer is
