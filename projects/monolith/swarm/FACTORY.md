@@ -100,7 +100,11 @@ The DBOS application version is pinned to the node workflow's own source:
 call. DBOS otherwise derives it from every registered workflow in the process
 and neither recovers nor dequeues anything an older version started, so any
 unrelated workflow edit stranded in-flight nodes. Pinned, a deploy that leaves
-those functions alone recovers its in-flight nodes natively.
+those functions alone recovers its in-flight nodes natively. The cost is that
+another workflow changed in a deploy now keeps its version and is recovered
+against its recorded steps, which DBOS refuses loudly with
+`DBOSUnexpectedStepError`, and a loud refusal beats the silent PENDING strand
+this replaces.
 
 Editing the node workflow or one of its steps is therefore the one deploy that
 strands in-flight nodes, and nothing can recover them. The reconciler cancels
@@ -111,10 +115,21 @@ and the node retries within `max_attempts`.
 A node whose workflow is PENDING on the current version but whose newest
 `dbos.operation_outputs` checkpoint is older than its `turn_timeout_seconds` is
 stalled rather than stranded. A healthy node checkpoints every poll and every
-sleep, so that gap means the workflow stopped progressing. The reconciler
-audits `node_stalled` once per workflow, warns once on Discord, and raises the
-`node_stalled` deviation so the planner decides. It settles nothing: the node
-keeps its reservation, because a wedged workflow is unknown execution.
+sleep, so that gap means the workflow stopped progressing. It is settled exactly
+like a stranded one: `node_stalled` audited once per workflow, one Discord
+warning, the workflow cancelled, and the attempt settled uncertain. Cancelling
+is what makes the workflow terminal so stop supervision can confirm the guest
+ceased, and a node that then fails with no retry left reaches the planner
+through the ordinary deviation path rather than a planner node queued behind
+the stalled run.
+
+An attempt whose workflow died mid-way has no session recorded on its run,
+because `record_dispatch` binds one only at completion. The reconciler resolves
+it by the deterministic `local_session_id`, `factory:<task>:<node>:<attempt>`,
+under the same ownership checks `reconcile_completed_node` applies, and binds
+it, so supervision can start. A repeated observation of unknown execution
+records nothing: the first uncertain outcome stands until reconciliation makes
+it terminal.
 
 Missing provider usage consumes the entire reserved ceiling. This is
 conservative admission accounting, not an interruptible dollar cap on a running
