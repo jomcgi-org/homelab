@@ -132,7 +132,7 @@ def seed(
                 ),
                 {
                     "name": routine_job_name,
-                    "kind": "kg-drain" if tier == "kg" else "docfix",
+                    "kind": "kg-drain" if tier == "kg" else "qwen-drain",
                     "status": UNKNOWN_INVOCATION if job_held else "ok",
                     "summary": f"session_id={agent.id}: lost response",
                     "next_run_at": None if job_held else at,
@@ -478,10 +478,9 @@ def test_held_routine_job_permit_is_left_to_the_operator_path(
     unknown_invocation, next_run_at NULL, a "session_id=<id>: " summary and no
     lock holder. Only agent/routine_reconciliation.py re-arms that row, and its
     delivery_error_hold predicate requires the reservation to still be
-    uncertain, so settling here would strand the job forever. That path also
-    refuses any routine_kind other than kg-drain, so the project row here has
-    no owner able to re-arm it at all (#5983); refusing is still correct,
-    because settling would remove the last evidence it is held.
+    uncertain, so settling here would strand the job forever. The operator path
+    owns both supported drainer kinds, and settling here would remove its exact
+    permit evidence before it can apply the requested job disposition.
     """
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(database, f"held-{tier}", tier=tier, job_held=True)
@@ -493,7 +492,7 @@ def test_held_routine_job_permit_is_left_to_the_operator_path(
                 "FROM routine_jobs"
             )
         ).one()
-        assert row.routine_kind == ("kg-drain" if tier == "kg" else "docfix")
+        assert row.routine_kind == ("kg-drain" if tier == "kg" else "qwen-drain")
         assert row.last_status == UNKNOWN_INVOCATION
         assert row.next_run_at is None
         permit = db.get(AgentCapacityReservation, pid)

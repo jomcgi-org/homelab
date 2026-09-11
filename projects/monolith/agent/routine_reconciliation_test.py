@@ -1,4 +1,4 @@
-"""File-backed integration tests for explicit KG cessation reconciliation."""
+"""File-backed integration tests for explicit routine cessation reconciliation."""
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import text
 from sqlmodel import Session, SQLModel, create_engine, select
 
+from agent import routine_jobs
 from agent import routine_reconciliation as reconciliation
 from agent.routine_reconciliation_models import RoutineReconciliation
 from agent_sessions import admission, store
@@ -54,6 +55,7 @@ def database(tmp_path, monkeypatch):
             db.execute(text(sql))
         db.commit()
     monkeypatch.setattr(reconciliation, "get_engine", lambda: engine)
+    monkeypatch.setattr(routine_jobs, "get_engine", lambda: engine)
     yield engine
     engine.dispose()
 
@@ -180,6 +182,205 @@ def held(
         "cessation": proof,
         "disposition": "retain_applied" if applied else "rearm",
     }, state
+
+
+def held_qwen(engine):
+    """Create the project-tier row shape written by the real hold operation."""
+    name = "docfix:0123456789abcdef"
+    with Session(engine) as db:
+        agent = AgentSession(
+            local_session_id="cycle:qwen-drain:" + name,
+            workspace="guest",
+            branch="main",
+            workflow_id="cycle",
+            node_key="qwen-drain",
+            admission_tier="project",
+            status="failed",
+            model="luna",
+            ember_session_id="qwen-guest",
+            ember_lineage_id="qwen-lineage",
+            ember_session_token="private-token",
+            cli_session_id="qwen-cli",
+        )
+        db.add(agent)
+        db.flush()
+        sid = agent.id
+        db.add(
+            AgentTurn(
+                session_id=sid,
+                seq=1,
+                prompt="bounded docfix",
+                result_text="partial result",
+                terminal_reason="error",
+                created_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+                stop_reason=UNKNOWN_INVOCATION,
+            )
+        )
+        db.add(
+            AgentCapacityReservation(
+                local_session_id=agent.local_session_id,
+                pending_seq=1,
+                session_id=sid,
+                tier="project",
+                routine_job_name=name,
+                state="uncertain",
+                outcome=UNKNOWN_INVOCATION,
+                owner="drainer",
+            )
+        )
+        db.execute(
+            text(
+                "INSERT INTO routine_jobs VALUES "
+                "(:name,'qwen-drain',NULL,CURRENT_TIMESTAMP,NULL,NULL,NULL,"
+                "'drainer','2000-01-01',2100,:payload,'knowledge.extraction',"
+                "'old-created')"
+            ),
+            {
+                "name": name,
+                "payload": json.dumps(
+                    {
+                        "prompt": "bounded docfix",
+                        "repo": "jomcgi-org/homelab",
+                        "branch": "main",
+                    }
+                ),
+            },
+        )
+        db.execute(
+            text(
+                "INSERT INTO workflow_status VALUES "
+                "('cycle','drain_cycle','SUCCESS','version')"
+            )
+        )
+        db.commit()
+
+    assert routine_jobs.hold_job_for_unknown_outcome(
+        name, sid, "reconcile before retry"
+    )
+    with Session(engine) as db:
+        state = reconciliation.read_reconciliation_state(db, name, sid)
+        row = db.execute(
+            text(
+                "SELECT last_status,next_run_at,locked_by,locked_at,last_summary "
+                "FROM routine_jobs WHERE name=:name"
+            ),
+            {"name": name},
+        ).one()
+        assert row.last_status == UNKNOWN_INVOCATION
+        assert row.next_run_at is None
+        assert row.locked_by is None and row.locked_at is None
+        assert row.last_summary.startswith(f"session_id={sid}:")
+    now = datetime.now(timezone.utc)
+    return {
+        "reconciliation_key": "operator-qwen-1",
+        "actor": "human:operator",
+        "job_name": name,
+        "session_id": sid,
+        "expected_state_sha256": state["state_sha256"],
+        "cessation": {
+            "session_id": "qwen-guest",
+            "state": "parked",
+            "generation": 3,
+            "observed_at": now.isoformat(),
+            "updated_at": int((now - timedelta(seconds=10)).timestamp() * 1000),
+            "last_invoke_at": int(
+                (now - timedelta(seconds=20)).timestamp() * 1000
+            ),
+            "evidence_sha256": "b" * 64,
+        },
+        "disposition": "rearm",
+    }, state
+
+
+def test_qwen_docfix_rearm_settles_exact_permit_and_is_replay_safe(database):
+    request, before = held_qwen(database)
+
+    result = reconciliation.reconcile_held_job(**request)
+    assert result["disposition"] == "rearm"
+    assert result["original_outcome"] == UNKNOWN_INVOCATION
+    assert result["next_run_at"]
+    assert reconciliation.reconcile_held_job(**request) == result
+
+    with Session(database) as db:
+        after = reconciliation.read_reconciliation_state(
+            db, request["job_name"], request["session_id"]
+        )
+        assert after["job_status"] == "reconciled_unknown"
+        assert after["next_run_at"] is not None
+        assert after["payload_sha256"] == before["payload_sha256"]
+        assert after["turns_sha256"] == before["turns_sha256"]
+        agent = db.get(AgentSession, request["session_id"])
+        assert agent.status == "failed" and agent.ember_session_id is None
+        permit = db.get(AgentCapacityReservation, before["reservation_id"])
+        assert permit.state == "settled"
+        assert permit.outcome == "guest_cessation_confirmed"
+        assert len(db.exec(select(RoutineReconciliation)).all()) == 1
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    ["missing", "stale", "guest", "expected_state", "permit", "kind"],
+)
+def test_qwen_docfix_refuses_incomplete_or_mismatched_evidence(database, invalid):
+    request, before = held_qwen(database)
+    if invalid == "missing":
+        del request["cessation"]["generation"]
+    elif invalid == "stale":
+        old = datetime.now(timezone.utc) - timedelta(minutes=5)
+        request["cessation"]["observed_at"] = old.isoformat()
+        request["cessation"]["updated_at"] = int(old.timestamp() * 1000)
+        request["cessation"]["last_invoke_at"] = int(
+            (old - timedelta(seconds=1)).timestamp() * 1000
+        )
+    elif invalid == "guest":
+        request["cessation"]["session_id"] = "different-guest"
+    elif invalid == "expected_state":
+        request["expected_state_sha256"] = "c" * 64
+    elif invalid == "permit":
+        with Session(database) as db:
+            permit = db.get(AgentCapacityReservation, before["reservation_id"])
+            permit.routine_job_name = "docfix:different"
+            db.add(permit)
+            db.commit()
+            changed = reconciliation.read_reconciliation_state(
+                db, request["job_name"], request["session_id"]
+            )
+            request["expected_state_sha256"] = changed["state_sha256"]
+    else:
+        with Session(database) as db:
+            db.execute(text("UPDATE routine_jobs SET routine_kind='unsupported'"))
+            db.commit()
+
+    with pytest.raises(ValueError):
+        reconciliation.reconcile_held_job(**request)
+
+    with Session(database) as db:
+        row = db.execute(
+            text("SELECT last_status,next_run_at FROM routine_jobs")
+        ).one()
+        assert row.last_status == UNKNOWN_INVOCATION
+        assert row.next_run_at is None
+        permit = db.get(AgentCapacityReservation, before["reservation_id"])
+        assert permit.state == "uncertain"
+        assert db.exec(select(RoutineReconciliation)).first() is None
+        assert db.get(AgentSession, request["session_id"]).ember_session_id == (
+            "qwen-guest"
+        )
+
+
+def test_qwen_docfix_retain_applied_settles_without_rearming(database):
+    request, before = held_qwen(database)
+    request["disposition"] = "retain_applied"
+
+    result = reconciliation.reconcile_held_job(**request)
+
+    assert result["disposition"] == "retain_applied"
+    assert result["next_run_at"] is None
+    with Session(database) as db:
+        permit = db.get(AgentCapacityReservation, before["reservation_id"])
+        assert permit.state == "settled"
+        assert permit.outcome == "guest_cessation_confirmed"
+        assert db.execute(text("SELECT next_run_at FROM routine_jobs")).scalar() is None
 
 
 @pytest.mark.parametrize("completion_recorded", [True, False])
