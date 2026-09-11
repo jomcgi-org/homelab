@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
 
 from swarm import config
+
+logger = logging.getLogger(__name__)
 
 _dbos = None
 _launched = False
@@ -27,6 +30,81 @@ def _enabled() -> bool:
     return config.enabled() or drainer_enabled()
 
 
+def _node_workflow_members() -> tuple:
+    """The functions that define a factory node workflow's durable shape.
+
+    DBOS records each step by its position in the workflow, so recovery is only
+    safe when the body and the steps around those positions are unchanged.
+    That means execute_node itself, the workflow-level helpers that decide
+    which steps run and how many times, and every step they call. Pure helpers
+    that only shape a step's arguments are deliberately absent: a replay
+    returns the recorded output, so they cannot move a checkpoint.
+    """
+    from swarm import node_workflows, steps
+
+    return (
+        node_workflows.execute_node,
+        node_workflows._await_node_turn,
+        node_workflows._await_dispatched_node_turn,
+        node_workflows._reconciled_identity,
+        node_workflows._start_node_session,
+        node_workflows._reconcile_session,
+        node_workflows._read_turn_artifact,
+        node_workflows._read_node_dispatch,
+        node_workflows._cleanup_node,
+        steps.observe_clock,
+        steps.poll_turn,
+        steps.read_branch_head,
+    )
+
+
+def node_workflow_version() -> str | None:
+    """An application version derived from the factory node workflow alone.
+
+    DBOS computes its default version from the source of EVERY registered
+    workflow (compute_app_version in dbos/_dbos.py), so editing any workflow in
+    this process changes the version, and DBOS then neither recovers nor
+    dequeues anything the previous version started. That stranded in-flight
+    factory nodes on deploys that never touched them.
+
+    The node workflow is the one whose in-flight runs have to survive a deploy,
+    so the version is computed from its own durable shape instead. The
+    construction follows DBOS: MD5 over the member sources in sorted order,
+    with the DBOS package version mixed in last so a library upgrade still
+    changes the version.
+
+    The trade is deliberate. Every other workflow in the process now keeps its
+    version across a deploy that changed it, so a changed body can be recovered
+    against recorded steps. DBOS detects that as a step mismatch and raises
+    DBOSUnexpectedStepError rather than replaying silently, so the failure is
+    loud.
+
+    Returns None when the source cannot be read, which leaves DBOS to compute
+    its own version exactly as it did before.
+    """
+    import hashlib
+    import inspect
+
+    from dbos._utils import GlobalParams
+
+    try:
+        sources = sorted(
+            inspect.getsource(member) for member in _node_workflow_members()
+        )
+    except Exception:  # noqa: BLE001 - an unreadable source is not a version
+        logger.warning(
+            "could not read the node workflow source, leaving DBOS to compute "
+            "its own application version",
+            exc_info=True,
+        )
+        return None
+    sources.append(GlobalParams.dbos_version)
+    hasher = hashlib.md5()
+    for source in sources:
+        hasher.update(source.encode("utf-8"))
+    return hasher.hexdigest()
+
+
 def init_dbos():
     global _dbos
     if _dbos is not None or not _enabled():
@@ -41,6 +119,8 @@ def init_dbos():
             name="monolith",
             system_database_url=database_url,
             dbos_system_schema="dbos",
+            # DBOS ignores a None here and computes its own version.
+            application_version=node_workflow_version(),
         )
     )
     return _dbos
