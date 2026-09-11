@@ -576,7 +576,7 @@
     let destroyed = false;
 
     (async () => {
-      maplibregl = (await import("maplibre-gl")).default;
+      maplibregl = await import("maplibre-gl");
       if (destroyed) return;
 
       // Seed the initial viewport from the SSR snapshot so the map's first paint

@@ -169,7 +169,7 @@
     let cleanup = () => {};
 
     (async () => {
-      maplibre = (await import("maplibre-gl")).default;
+      maplibre = await import("maplibre-gl");
       if (destroyed) return;
 
       const b = bounds();
