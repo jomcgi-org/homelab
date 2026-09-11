@@ -49,6 +49,11 @@ def test_stats_returns_snapshot_payload():
         resp = TestClient(app).get("/api/home/observability/stats")
         assert resp.status_code == 200
         assert resp.json() == payload
+        assert (
+            resp.headers["cache-control"]
+            == "public, s-maxage=60, stale-while-revalidate=86400"
+        )
+        assert "set-cookie" not in resp.headers
     finally:
         _clear()
 
@@ -59,5 +64,23 @@ def test_stats_empty_when_no_snapshot():
         resp = TestClient(app).get("/api/home/observability/stats")
         assert resp.status_code == 200
         assert resp.json() == {}
+        assert (
+            resp.headers["cache-control"]
+            == "public, s-maxage=60, stale-while-revalidate=86400"
+        )
+    finally:
+        _clear()
+
+
+def test_stats_failure_is_not_publicly_cacheable():
+    session = MagicMock()
+    session.execute.side_effect = RuntimeError("snapshot unavailable")
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        resp = TestClient(app, raise_server_exceptions=False).get(
+            "/api/home/observability/stats"
+        )
+        assert resp.status_code == 500
+        assert "cache-control" not in resp.headers
     finally:
         _clear()
