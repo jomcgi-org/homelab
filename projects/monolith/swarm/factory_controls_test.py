@@ -1046,3 +1046,17 @@ def test_a_task_with_no_accepted_plan_falls_back_to_the_envelope(db, policy):
         "fan_ins_reserved": 0,
         "derived": False,
     }
+
+
+def test_the_close_flags_default_off_and_bound_the_cap():
+    from swarm.factory_controls import DEFAULT_INTAKE, intake_policy
+
+    block = intake_policy({})
+    assert block["close_enabled"] is False
+    assert block["max_closes_per_day"] == DEFAULT_INTAKE["max_closes_per_day"] == 3
+    assert intake_policy({"intake": {"close_enabled": True}})["close_enabled"] is True
+    for bad in (0, 51, "3", True, None):
+        with pytest.raises(ValueError):
+            intake_policy({"intake": {"max_closes_per_day": bad}})
+    with pytest.raises(ValueError):
+        intake_policy({"intake": {"close_enabled": "yes"}})
