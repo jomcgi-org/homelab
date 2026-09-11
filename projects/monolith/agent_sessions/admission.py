@@ -7,6 +7,7 @@ All helpers taking a Session leave commit/rollback to their domain caller.
 
 from datetime import datetime, timedelta, timezone
 import logging
+import os
 import threading
 import time
 
@@ -26,9 +27,13 @@ from agent_sessions.models import (
 )
 from core.db import get_engine
 
-TOTAL_LIMIT = 4
-BACKGROUND_LIMIT = 3
-KG_LIMIT = 2
+# Code defaults, kept at the numbers this pool shipped with so a process
+# started with no environment behaves exactly as it did. The chart raises
+# them: implementation capacity is three spot brick nodes with an autoscaler
+# behind it, and the scarce input is Opus review rather than guests.
+DEFAULT_TOTAL_LIMIT = 4
+DEFAULT_BACKGROUND_LIMIT = 3
+DEFAULT_KG_LIMIT = 2
 TIERS = frozenset({"interactive", "project", "kg", "probe"})
 PRIORITY = {"interactive": 0, "project": 1, "kg": 2, "probe": 3}
 UNCERTAIN_STALL_SECONDS = 10 * 60
@@ -37,6 +42,46 @@ UNCERTAIN_WARNING_INTERVAL_SECONDS = 60
 logger = logging.getLogger(__name__)
 _warning_lock = threading.Lock()
 _last_uncertain_warning_at = float("-inf")
+
+
+def _limit(name: str, default: int) -> int:
+    """One admission bound, read from the environment on every check.
+
+    Read per call rather than at import so a chart edit takes effect on the
+    next pod without the module caching the old number, and so a test can
+    set one without reloading the module. A malformed or non-positive value
+    keeps the code default: an admission pool that fails open because an
+    operator typed a letter is worse than one that ignores the typo.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("ignoring malformed %s=%r; using %d", name, raw, default)
+        return default
+    if value < 1:
+        logger.warning("ignoring non-positive %s=%d; using %d", name, value, default)
+        return default
+    return value
+
+
+def total_limit() -> int:
+    """Sessions of every tier the pool may hold at once."""
+    return _limit("AGENT_ADMISSION_TOTAL", DEFAULT_TOTAL_LIMIT)
+
+
+def background_limit() -> int:
+    """Non-interactive sessions the pool may hold at once, under the total."""
+    return min(
+        _limit("AGENT_ADMISSION_BACKGROUND", DEFAULT_BACKGROUND_LIMIT), total_limit()
+    )
+
+
+def kg_limit() -> int:
+    """Knowledge-graph sessions the pool may hold at once, under background."""
+    return min(_limit("AGENT_ADMISSION_KG", DEFAULT_KG_LIMIT), background_limit())
 
 
 def _warn_stale_uncertain(active) -> None:
@@ -277,10 +322,10 @@ def reserve_start(
         return False
     background_full = (
         tier != "interactive"
-        and sum(r.tier != "interactive" for r in active) >= BACKGROUND_LIMIT
+        and sum(r.tier != "interactive" for r in active) >= background_limit()
     )
-    kg_full = tier == "kg" and sum(r.tier == "kg" for r in active) >= KG_LIMIT
-    if len(active) >= TOTAL_LIMIT:
+    kg_full = tier == "kg" and sum(r.tier == "kg" for r in active) >= kg_limit()
+    if len(active) >= total_limit():
         _warn_stale_uncertain(active)
         return False
     if tier != "interactive":
@@ -337,7 +382,7 @@ def free_background_slots(db: Session) -> int:
         )
     ).all()
     background = sum(row.tier != "interactive" for row in active)
-    return max(0, min(BACKGROUND_LIMIT - background, TOTAL_LIMIT - len(active)))
+    return max(0, min(background_limit() - background, total_limit() - len(active)))
 
 
 def bind_session(db: Session, agent: AgentSession) -> None:

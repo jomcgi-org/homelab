@@ -143,7 +143,7 @@ def test_total_limit_warns_interactive_about_stale_background_hold(
     database, monkeypatch, caplog
 ):
     assert reserve(database, "kg-held", "kg")
-    for index in range(admission.TOTAL_LIMIT - 1):
+    for index in range(admission.total_limit() - 1):
         assert reserve(database, f"interactive-{index}")
     with Session(database) as db:
         held = admission.reservation(db, "kg-held")
@@ -544,7 +544,7 @@ def test_factory_priority_requires_current_start_permission(
 
 def test_free_background_slots_reads_the_pool_without_reserving(database):
     with Session(database) as db:
-        assert admission.free_background_slots(db) == admission.BACKGROUND_LIMIT
+        assert admission.free_background_slots(db) == admission.background_limit()
     assert reserve(database, "one", tier="project")
     assert reserve(database, "two", tier="kg")
     with Session(database) as db:
@@ -558,7 +558,62 @@ def test_free_background_slots_reads_the_pool_without_reserving(database):
 
 
 def test_free_background_slots_respects_the_total_limit(database):
-    for index in range(admission.TOTAL_LIMIT - 1):
+    for index in range(admission.total_limit() - 1):
         assert reserve(database, f"interactive-{index}", tier="interactive")
     with Session(database) as db:
         assert admission.free_background_slots(db) == 1
+
+
+def test_admission_limits_default_to_the_shipped_numbers(monkeypatch):
+    for name in (
+        "AGENT_ADMISSION_TOTAL",
+        "AGENT_ADMISSION_BACKGROUND",
+        "AGENT_ADMISSION_KG",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    assert admission.total_limit() == 4
+    assert admission.background_limit() == 3
+    assert admission.kg_limit() == 2
+
+
+def test_admission_limits_read_the_environment(monkeypatch):
+    monkeypatch.setenv("AGENT_ADMISSION_TOTAL", "16")
+    monkeypatch.setenv("AGENT_ADMISSION_BACKGROUND", "12")
+    monkeypatch.setenv("AGENT_ADMISSION_KG", "2")
+    assert admission.total_limit() == 16
+    assert admission.background_limit() == 12
+    assert admission.kg_limit() == 2
+
+
+@pytest.mark.parametrize("value", ["", "   ", "many", "0", "-3"])
+def test_admission_limits_ignore_an_unusable_value(monkeypatch, value):
+    monkeypatch.setenv("AGENT_ADMISSION_TOTAL", value)
+    assert admission.total_limit() == 4
+
+
+def test_a_narrower_total_bounds_the_inner_limits(monkeypatch):
+    monkeypatch.setenv("AGENT_ADMISSION_TOTAL", "2")
+    monkeypatch.setenv("AGENT_ADMISSION_BACKGROUND", "12")
+    monkeypatch.setenv("AGENT_ADMISSION_KG", "9")
+    assert admission.background_limit() == 2
+    assert admission.kg_limit() == 2
+
+
+def test_a_raised_total_admits_more_background_sessions(database, monkeypatch):
+    monkeypatch.setenv("AGENT_ADMISSION_TOTAL", "16")
+    monkeypatch.setenv("AGENT_ADMISSION_BACKGROUND", "12")
+    monkeypatch.setenv("AGENT_ADMISSION_KG", "2")
+    for index in range(12):
+        assert reserve(database, f"project-{index}", tier="project")
+    assert not reserve(database, "project-over", tier="project")
+    assert reserve(database, "interactive-one")
+
+
+def test_a_raised_background_limit_still_bounds_the_kg_tier(database, monkeypatch):
+    monkeypatch.setenv("AGENT_ADMISSION_TOTAL", "16")
+    monkeypatch.setenv("AGENT_ADMISSION_BACKGROUND", "12")
+    monkeypatch.setenv("AGENT_ADMISSION_KG", "2")
+    assert reserve(database, "kg-one", tier="kg")
+    assert reserve(database, "kg-two", tier="kg")
+    assert not reserve(database, "kg-three", tier="kg")
+    assert reserve(database, "project-one", tier="project")

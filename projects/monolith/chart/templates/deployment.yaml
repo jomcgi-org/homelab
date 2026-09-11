@@ -162,6 +162,17 @@ spec:
             - name: AGENT_PI_WORKLOAD
               value: {{ .Values.agentSessions.piWorkload | quote }}
             {{- end }}
+            {{- with (.Values.agentSessions | default dict).admission }}
+            # Shared execution permits. Read per check in admission.py, so
+            # these are the live bounds on the next pod rather than values
+            # frozen at import.
+            - name: AGENT_ADMISSION_TOTAL
+              value: {{ .total | quote }}
+            - name: AGENT_ADMISSION_BACKGROUND
+              value: {{ .background | quote }}
+            - name: AGENT_ADMISSION_KG
+              value: {{ .kg | quote }}
+            {{- end }}
             {{- if .Values.agents }}
             # Offered model catalogue for the console picker and the Discord
             # /agent command (issue #4859). Comma-separated subset of
