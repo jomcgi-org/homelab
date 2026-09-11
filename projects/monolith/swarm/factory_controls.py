@@ -66,6 +66,10 @@ DEFAULT_MAX_REVIEW_ROUNDS = 2
 # Nodes the reconciler may hold in flight for one task at once. One preserves
 # the serial lane, so a policy written before fan-out existed never fans out.
 DEFAULT_MAX_PARALLEL_NODES = 1
+# Attempts the engine gives each node of a review round it inserts. A correction
+# that fails is a deviation the planner must answer, not a turn to spend again,
+# so a round costs exactly two turns and the reserve can say so honestly.
+REVIEW_ROUND_ATTEMPTS = 1
 _POOL_ROLES = {"conductor": "conductor_model", "worker": "worker_model"}
 
 
@@ -344,17 +348,22 @@ def allowance_from_graph(
 
     Work turns are one per attempt the live graph can still spend, plus every
     work turn history already spent, plus the nodes the engine may still insert
-    on its own: a review round is a correction and a re-review, and a fan-in is
-    one node, each carrying the policy's ``max_attempts`` exactly as the
-    inserted node will. Reserving what the insertion actually costs is what
-    makes the insertion turn-neutral, since the reserve falls away as the real
-    nodes appear. Review rounds are reserved only when the plan holds a review
-    node that could open one.
+    on its own. Review rounds are reserved lazily: only the next one, and at the
+    two turns it really costs, a correction and a re-review each inserted at
+    ``REVIEW_ROUND_ATTEMPTS``. Reserving every remaining round up front priced a
+    loop the task would probably never open, and it made a modest envelope
+    unable to hold its own plan. The allowance instead grows by one round at a
+    time, as each round is inserted and the next one is reserved behind it, and
+    every insertion is checked against the envelope as it happens. A fan-in is
+    one node at the policy's ``max_attempts``, exactly as the inserted node will
+    carry, so a fan-in stays turn-neutral. Review rounds are reserved only when
+    the plan holds a review node that could open one.
 
     An attempt already spent is counted in history, so its node slot is not
     counted again; before anything runs the two readings agree. Dollars are the
     same shape in money: charged history plus every live unsucceeded node's
-    unspent ceiling, plus the prospective insertions at the per-turn ceiling.
+    unspent ceiling, plus the same prospective insertions, each at one per-turn
+    ceiling because a node's ceiling is shared across its attempts.
 
     A discarded node stops contributing its remaining slots, and its spent
     attempts stay in history, so discarding never refunds a consumed turn.
@@ -385,12 +394,14 @@ def allowance_from_graph(
             continue
         remaining_turns += max(0, node["max_attempts"] - attempts.get(key, 0))
     reviewable = any(node["node_key"].startswith("review_") for node in nodes)
-    rounds = max(0, review_rounds_remaining) if reviewable else 0
+    rounds = min(1, max(0, review_rounds_remaining)) if reviewable else 0
     fan_ins = max(0, fan_ins_remaining)
     reserved_nodes = 2 * rounds + fan_ins
-    attempts_each = policy["max_attempts"]
+    reserved_turns = (
+        2 * rounds * REVIEW_ROUND_ATTEMPTS + fan_ins * policy["max_attempts"]
+    )
     return {
-        "turns": work_turns_used + remaining_turns + reserved_nodes * attempts_each,
+        "turns": work_turns_used + remaining_turns + reserved_turns,
         "usd": round(
             charged_total + remaining_usd + reserved_nodes * policy["turn_budget_usd"],
             6,
@@ -424,16 +435,27 @@ def derive_allowance(
         )
 
 
-def envelope_excess(allowance: dict, policy: dict) -> dict | None:
-    """Name what a derived allowance overspends, or None when it fits."""
+def envelope_excess(
+    allowance: dict, policy: dict, *, accounted: dict | None = None
+) -> dict | None:
+    """Name what a derived allowance overspends, or None when it fits.
+
+    ``accounted`` is what the task is already sized at, before the refused edit.
+    Given it, the refusal also carries ``spare_turns``, the turns the envelope
+    would still fund, so the planner can size a smaller edit instead of
+    re-proposing the one that was just refused.
+    """
     turns_allowed = task_turn_ceiling(policy)
     usd_allowed = policy["task_budget_usd"]
     if allowance["turns"] <= turns_allowed and allowance["usd"] <= usd_allowed:
         return None
-    return {
+    excess = {
         "turns": {"needed": allowance["turns"], "allowed": turns_allowed},
         "usd": {"needed": allowance["usd"], "allowed": usd_allowed},
     }
+    if accounted is not None:
+        excess["spare_turns"] = max(0, turns_allowed - accounted["turns"])
+    return excess
 
 
 def _stored_allowance(row: FactoryReceipt, policy: dict) -> dict:

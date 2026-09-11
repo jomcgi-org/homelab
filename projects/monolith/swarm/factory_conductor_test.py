@@ -398,7 +398,7 @@ def feedback_db(tmp_path, monkeypatch):
     engine.dispose()
 
 
-def feedback_task(*, max_turns=24, body="Untrusted issue text", **overrides):
+def feedback_task(*, max_turns=18, body="Untrusted issue text", **overrides):
     from swarm import factory_controls as controls
     from swarm.factory_intake import admit_next, receive_issue
 
@@ -4888,13 +4888,17 @@ def test_changes_requested_opens_an_engine_owned_correction_round(feedback_db):
     # The correction runs on the model that produced the reviewed head.
     assert correct["model"] == "luna"
     assert correct["kind"] == "work" and correct["side_effects"]
-    assert correct["max_attempts"] == policy["max_attempts"]
+    # One attempt: a correction that fails is a deviation for the planner, not
+    # a turn to spend again, which is what lets the allowance reserve a round
+    # at the two turns it really costs.
+    assert correct["max_attempts"] == 1
     assert correct["max_cost_usd"] == policy["turn_budget_usd"]
     assert correct["turn_timeout_seconds"] == policy["turn_timeout_seconds"]
     assert "Tighten the retry bound and add a regression test." in correct["prompt"]
     assert HEAD_ONE in correct["prompt"] and "21" in correct["prompt"]
     assert correct["prompt"].startswith(conductor._boundary(task))
     review = nodes["review_1"]
+    assert review["max_attempts"] == 1
     assert review["deps"] == ["correct_1"] and review["model"] == "opus"
     assert review["kind"] == "gate" and not review["side_effects"]
     assert review["prompt"].startswith(conductor._boundary(task, review=True))
@@ -5754,11 +5758,13 @@ def test_the_allowance_is_derived_from_the_accepted_plan(feedback_db):
         ],
     )
     allowance = controls.task_snapshot(task["id"])["allowance"]
-    # Three work nodes of two attempts, and two review rounds the engine may
-    # still open, each a correction and a re-review of two attempts. The
-    # planner node costs money but never a work turn.
+    # Three work nodes of two attempts, and the next review round only: one
+    # correction and one re-review at a single attempt each. The round behind
+    # it is reserved when this one is spent. The planner node costs money but
+    # never a work turn.
     assert allowance["derived"] is True
-    assert allowance["turns"] == 3 * 2 + 2 * 2 * policy["max_attempts"]
+    assert allowance["turns"] == 3 * 2 + 2
+    assert allowance["review_rounds_reserved"] == 1
     assert allowance["fan_ins_reserved"] == 0
     assert allowance["graph_revision"] == conductor.graph.current_version(task["id"])
     assert feedback_audits(feedback_db, task["id"]) == []
@@ -5770,7 +5776,9 @@ def test_a_plan_that_fans_out_reserves_its_fan_in_up_front(feedback_db):
     task, policy = parallel_plan()
     allowance = controls.task_snapshot(task["id"])["allowance"]
     assert allowance["fan_ins_reserved"] == 1
-    assert allowance["turns"] == 2 * 2 + 1 * 2 + (1 + 2 * 2) * policy["max_attempts"]
+    # Two implementations and a review at two attempts, the fan-in the wave
+    # will need at the same two, and the next review round at one attempt each.
+    assert allowance["turns"] == 2 * 2 + 1 * 2 + policy["max_attempts"] + 2
     before = allowance["turns"]
     conductor.reconcile_task(task["id"], policy, object())
     # The reserve became the real fan-in node, so the insertion cost no turns.
@@ -5781,9 +5789,9 @@ def test_a_plan_that_fans_out_reserves_its_fan_in_up_front(feedback_db):
 def test_an_at_envelope_plan_that_fans_out_is_refused_up_front(feedback_db):
     from swarm import factory_controls as controls
 
-    # Exactly the turns the three nodes and two review rounds need, with
+    # Exactly the turns the three nodes and the next review round need, with
     # nothing left for the fan-in the wave will require.
-    envelope = 2 * 2 + 1 * 2 + 2 * 2 * 2
+    envelope = 2 * 2 + 1 * 2 + 2
     task, policy = parallel_plan(max_turns=envelope)
     assert [n["node_key"] for n in conductor.graph.load_graph(task["id"])] == [
         "conductor_1"
@@ -5800,7 +5808,125 @@ def test_an_at_envelope_plan_that_fans_out_is_refused_up_front(feedback_db):
     assert controls.task_snapshot(task["id"])["allowance"]["derived"] is False
 
 
-def test_an_engine_review_round_is_turn_neutral(feedback_db):
+def test_a_nine_turn_envelope_still_takes_a_review_after_three_spent_turns(
+    feedback_db,
+):
+    """The live defect (t-5e48b6e1, #5981): a task with history could not be reviewed.
+
+    Nine turns, two attempts, two review rounds. An investigate, a failed
+    implement and a succeeded reconcile had spent three work turns when the
+    planner proposed the one review node the delivery gate needs. Reserving
+    both remaining rounds at two nodes of two attempts each asked for thirteen
+    turns against nine, so the add was refused, and the planner kept proposing
+    it until the planner round cap paused the task.
+    """
+    from swarm import factory_controls as controls
+
+    task, policy = planned_task(
+        feedback_task(max_turns=9),
+        [
+            plan_edit("scope", "investigate"),
+            plan_edit("fix", "implement", ["investigate_scope"]),
+            plan_edit("check", "review", ["implement_fix"]),
+        ],
+    )
+    # Three nodes of two attempts and the next round at one attempt each.
+    assert controls.task_snapshot(task["id"])["allowance"]["turns"] == 3 * 2 + 2
+    run_feedback_node(
+        task,
+        "investigate_scope",
+        {
+            "status": "complete",
+            "summary": "scoped",
+            "pr_number": None,
+            "head_sha": None,
+        },
+    )
+    run_feedback_node(
+        task,
+        "implement_fix",
+        {"status": "needs_work", "summary": "no", "pr_number": None, "head_sha": None},
+        status="failed",
+    )
+    complete_feedback_node(
+        task,
+        policy,
+        "implement_reconcile",
+        {
+            "status": "complete",
+            "summary": "fixed",
+            "pr_number": 21,
+            "head_sha": HEAD_ONE,
+        },
+        head=HEAD_ONE,
+        deps=["investigate_scope"],
+    )
+    run = complete_feedback_node(
+        task,
+        policy,
+        "conductor_2",
+        {
+            "action": "add_node",
+            "node_key": "reconcile",
+            "role": "review",
+            "prompt": "Review the reconciled head",
+            "deps": ["implement_reconcile"],
+            "reason": "the delivery gate needs a review of the reconciled head",
+            "max_attempts": 1,
+        },
+    )
+    conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
+    keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
+    assert "review_reconcile" in keys
+    assert feedback_audits(feedback_db, task["id"]) == []
+    # Three work turns of history, the implement slot and the review node the
+    # plan already held, the review just added, and the next round behind it.
+    assert controls.task_snapshot(task["id"])["allowance"]["turns"] == 3 + 3 + 1 + 2
+
+
+def test_a_refused_add_names_the_turns_that_would_still_fit(feedback_db):
+    from swarm import factory_controls as controls
+
+    task, policy = planned_task(
+        feedback_task(max_turns=9),
+        [
+            plan_edit("scope", "investigate"),
+            plan_edit("fix", "implement", ["investigate_scope"]),
+            plan_edit("check", "review", ["implement_fix"]),
+        ],
+    )
+    accounted = controls.task_snapshot(task["id"])["allowance"]["turns"]
+    run = complete_feedback_node(
+        task,
+        policy,
+        "conductor_2",
+        {
+            "action": "add_node",
+            "node_key": "extra",
+            "role": "implement",
+            "prompt": "More work than the envelope holds",
+            "deps": ["implement_fix"],
+            "reason": "one node too many",
+        },
+    )
+    conductor.apply_decision(task, policy, run, conductor.graph.node_runs(task["id"]))
+    keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
+    assert "implement_extra" not in keys
+    audits = feedback_audits(feedback_db, task["id"])
+    assert [audit["refusal_code"] for audit in audits] == ["envelope_exceeded"]
+    import json
+
+    detail = json.loads(audits[0]["reason"].split("envelope exceeded: ", 1)[1])
+    assert detail["turns"] == {
+        "needed": accounted + policy["max_attempts"],
+        "allowed": 9,
+    }
+    # One turn is spare, so the planner is told to size a single-attempt node
+    # rather than re-proposing the two-attempt one that was just refused.
+    assert detail["spare_turns"] == 9 - accounted == 1
+
+
+def test_an_engine_review_round_grows_the_allowance_by_one_round(feedback_db):
     from swarm import factory_controls as controls
 
     task, policy = reviewed_task()
@@ -5808,10 +5934,14 @@ def test_an_engine_review_round_is_turn_neutral(feedback_db):
     before = controls.task_snapshot(task["id"])["allowance"]
     conductor.reconcile_task(task["id"], policy, object())
     after = controls.task_snapshot(task["id"])["allowance"]
-    # The round turns a reserve of one correction and one re-review into those
-    # two real nodes, so what the task may spend does not move.
-    assert before["review_rounds_reserved"] - after["review_rounds_reserved"] == 1
-    assert after["turns"] == before["turns"]
+    # The reserve became one real correction and one real re-review, and the
+    # round behind it took the reserve's place, so the task grew by exactly one
+    # round rather than having paid for every round at plan time.
+    assert before["review_rounds_reserved"] == after["review_rounds_reserved"] == 1
+    assert after["turns"] == before["turns"] + 2
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert nodes["correct_1"]["max_attempts"] == 1
+    assert nodes["review_1"]["max_attempts"] == 1
 
 
 def test_an_over_envelope_plan_is_refused_whole_with_its_excess(feedback_db):
@@ -5834,8 +5964,11 @@ def test_an_over_envelope_plan_is_refused_whole_with_its_excess(feedback_db):
     import json
 
     detail = json.loads(audits[0]["reason"].split("envelope exceeded: ", 1)[1])
-    assert detail["turns"] == {"needed": 3 * 2 + 2 * 2 * 2, "allowed": 6}
+    assert detail["turns"] == {"needed": 3 * 2 + 2, "allowed": 6}
     assert detail["usd"]["allowed"] == policy["task_budget_usd"]
+    # Nothing but the planner node is live, so six of the six turns are spare
+    # and the planner is told the size the next plan has to come in under.
+    assert detail["spare_turns"] == 6
     # Nothing was derived, so admission still reads the envelope.
     assert controls.task_snapshot(task["id"])["allowance"]["derived"] is False
     # The next planner is told exactly what to shrink.
@@ -5843,7 +5976,7 @@ def test_an_over_envelope_plan_is_refused_whole_with_its_excess(feedback_db):
     nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
     feedback = node_planner_context(nodes["conductor_2"])["decision_feedback"]
     assert feedback[0]["refusal_code"] == "envelope_exceeded"
-    assert '"needed": 14' in feedback[0]["reason"]
+    assert '"needed": 8' in feedback[0]["reason"]
 
 
 def test_discarding_a_node_shrinks_the_allowance_without_refunding_history(

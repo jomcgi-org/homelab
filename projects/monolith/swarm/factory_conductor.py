@@ -1025,15 +1025,22 @@ def planner_prompt(
         "guessing, but a plan written this way never depends on that. "
         "The plan you accept sizes this task. Its allowance is the sum over live "
         "unsucceeded nodes of max_attempts, plus the work turns history already "
-        "spent, plus two turns for each review round the engine may still open; "
-        "its dollar allowance is the same sum over node max_cost_usd ceilings "
-        "plus charged history. Policy keeps only an envelope: max_task_turns_hard "
-        "and task_budget_usd in budget_evidence. A plan whose derived allowance "
-        "would exceed either is refused whole with refusal code "
-        "envelope_exceeded, and decision_feedback names the excess as needed "
-        "against allowed for both turns and dollars. When that happens, split "
-        "the work into a smaller plan and leave the rest to a follow-up task, or "
-        "pause for orchestration review. Do not resubmit the same plan. "
+        "spent, plus two turns for the next review round the engine may open, "
+        "reserved only while the graph holds a review node; later rounds are not "
+        "reserved up front, and the allowance grows by one round as each one is "
+        "inserted. Its dollar allowance is the same sum over node max_cost_usd "
+        "ceilings plus charged history. Policy keeps only an envelope: "
+        "max_task_turns_hard and task_budget_usd in budget_evidence. A plan or "
+        "an add_node whose derived allowance would exceed either is refused "
+        "whole with refusal code envelope_exceeded, and decision_feedback names "
+        "the excess as needed against allowed for both turns and dollars, beside "
+        "spare_turns, the turns the envelope would still fund at the graph as it "
+        "stands. When that happens, shrink the edit to what spare_turns can hold "
+        "and leave the rest to a follow-up task, or pause with the reason. Never "
+        "re-propose a refused edit unchanged: it will be refused again and the "
+        "round is spent for nothing. Add an implementation node together with "
+        "the review node that checks it, in one plan, so the graph never "
+        "exhausts its allowance between the two. "
         "Nodes with no dependency between them run in parallel, up to "
         "max_parallel_nodes. Each parallel implementation works on its own "
         "branch and the server inserts an integrate node depending on all of "
@@ -1349,13 +1356,19 @@ def _envelope_refusal(
     The plan sizes the task, so this is the one place the envelope is enforced:
     an accepted plan can never derive an allowance the policy would not fund,
     and the excess goes back to the planner as decision feedback so it can
-    split the work or pause for orchestration review.
+    split the work or pause for orchestration review. The refusal also carries
+    the spare turns the live graph leaves, read off the graph as it stands now
+    rather than off the projection, so the planner is told what would fit
+    instead of only that this did not.
     """
     from swarm.factory_controls import allowance_from_graph, envelope_excess
 
+    runs = graph.node_runs(task_id)
+    revision = graph.current_version(task_id)
+    live = graph.load_graph(task_id)
     allowance = allowance_from_graph(
         projected,
-        graph.node_runs(task_id),
+        runs,
         policy,
         review_rounds_remaining=(
             _rounds_remaining(task_id, policy)
@@ -1367,9 +1380,17 @@ def _envelope_refusal(
             if fan_ins_remaining is None
             else fan_ins_remaining
         ),
-        graph_revision=graph.current_version(task_id),
+        graph_revision=revision,
     )
-    excess = envelope_excess(allowance, policy)
+    accounted = allowance_from_graph(
+        live,
+        runs,
+        policy,
+        review_rounds_remaining=_rounds_remaining(task_id, policy),
+        fan_ins_remaining=_planned_fan_ins(task_id, policy, live),
+        graph_revision=revision,
+    )
+    excess = envelope_excess(allowance, policy, accounted=accounted)
     if excess is None:
         return None
     return "envelope exceeded: " + json.dumps(excess, sort_keys=True)
@@ -1700,6 +1721,8 @@ def _insert_review_round(
     ``loop_insert_refused``, and the planner turn that costs is what bounds the
     retry against ``max_turns_per_task``.
     """
+    from swarm.factory_controls import REVIEW_ROUND_ATTEMPTS
+
     cause = f"{LOOP_CAUSE}:review_{ordinal}"
     artifact = _artifact(review_run)
     head = artifact.get("head_sha") or review_run.get("head_sha")
@@ -1718,9 +1741,12 @@ def _insert_review_round(
         return False, "reviewer_model_not_allowed"
     correct_key = f"correct_{ordinal}"
     review_key = f"review_{ordinal}"
+    # One attempt each. A correction that fails is a deviation the planner has
+    # to answer, not a turn to spend again on the same brief, and a round that
+    # costs exactly two turns is a round the allowance can reserve honestly.
     bounds = {
         "max_cost_usd": policy["turn_budget_usd"],
-        "max_attempts": policy["max_attempts"],
+        "max_attempts": REVIEW_ROUND_ATTEMPTS,
         "turn_timeout_seconds": policy["turn_timeout_seconds"],
     }
     correction = (
