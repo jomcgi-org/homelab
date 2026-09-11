@@ -102,6 +102,7 @@ function board(overrides = {}) {
       pause_percent: 85,
       resume_percent: 75,
       used_percent: 41,
+      last_action: "quota_guard_resumed",
     },
     policy: {
       generation: 3,
@@ -278,6 +279,23 @@ describe("factory board page", () => {
   test("says nothing about an open quota guard", () => {
     const target = renderPage({ board: board(), task: null, error: false });
     expect(target.querySelector(".policy-line .guard")).toBeNull();
+  });
+
+  test("says so when the guard has no reading to go on", () => {
+    const blind = board({
+      quota_guard: {
+        paused: false,
+        state: "open",
+        pause_percent: 85,
+        resume_percent: 75,
+        used_percent: null,
+        last_action: "quota_guard_unknown",
+      },
+    });
+    const target = renderPage({ board: blind, task: null, error: false });
+    expect(target.querySelector(".policy-line .guard").textContent).toBe(
+      "quota guard: no reading",
+    );
   });
 
   test("says so when the board is unavailable", () => {
