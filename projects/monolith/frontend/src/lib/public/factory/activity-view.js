@@ -565,6 +565,37 @@ export function diffLines(diff) {
   });
 }
 
+// The Codex runtime does not record the command a worker asked for. It records
+// its own shell wrapper around a quoted argv: `/bin/sh -lc '"git" "remote"
+// "-v"'`, and inside a double-quoted wrapper each argv quote arrives escaped.
+// The wrapper is the runtime's business, not the reader's.
+const SHELL_WRAPPER = /^\/bin\/(?:ba)?sh -lc (['"])([\s\S]*)\1$/;
+// An inner string that is nothing but double-quoted tokens, and the tokens.
+const ARGV_LINE = /^"(?:[^"\\]|\\.)*"(?: +"(?:[^"\\]|\\.)*")*$/;
+const ARGV_TOKEN = /"((?:[^"\\]|\\.)*)"/g;
+
+/**
+ * A command as a reader would have typed it. Only the two wrapper shapes above
+ * are unwrapped, and only an inner string that is entirely quoted argv words is
+ * rejoined: a heredoc or a shell line with its own quoting comes back as it
+ * went in, minus the wrapper. Never throws, because the string is worker output
+ * and a malformed one still has to render.
+ */
+export function prettyCommand(command) {
+  // Worker output, so the shape is not guaranteed: anything that is not a
+  // string is named rather than thrown over.
+  if (typeof command !== "string")
+    return command == null ? "" : String(command);
+  const wrapper = SHELL_WRAPPER.exec(command);
+  if (!wrapper) return command;
+  const inner = wrapper[2];
+  const argv = wrapper[1] === '"' ? inner.replace(/\\"/g, '"') : inner;
+  if (!ARGV_LINE.test(argv)) return inner;
+  return [...argv.matchAll(ARGV_TOKEN)]
+    .map((token) => token[1].replace(/\\(.)/g, "$1"))
+    .join(" ");
+}
+
 /**
  * One activity row. An edit or a write points at a file, so it can open that
  * file's hunk out of the turn diff; a command or a tool call has nothing to
@@ -576,7 +607,10 @@ export function activityRow(activity, diff) {
   // fixed width and collided with itself. A bash row the shim recorded without
   // its command says so rather than showing nothing.
   const type = activity.type === "tool_use" ? "tool" : (activity.type ?? "");
-  const detail = activity.command ?? activity.file_path ?? null;
+  const detail =
+    activity.command != null
+      ? prettyCommand(activity.command)
+      : (activity.file_path ?? null);
   const what =
     activity.type === "tool_use"
       ? [activity.name ?? "tool", detail].filter(Boolean).join(" ")
@@ -589,6 +623,62 @@ export function activityRow(activity, diff) {
   const opens = activity.type === "edit" || activity.type === "write";
   const hunk = opens ? hunkFor(diff, activity.file_path) : null;
   return { type, what, short, hunk };
+}
+
+// The digest on the task page names kinds in the vocabulary the rows already
+// use, in the order a reader cares about them, and shows only the first few.
+// 80 characters is about what the column holds at 0.72rem mono.
+const DIGEST_ROWS = 4;
+const DIGEST_WIDTH = 80;
+const KIND_ORDER = ["edit", "write", "command", "read", "tool call"];
+// The one tool call worth naming by what it did rather than by what it is.
+const READ_TOOL = /read/i;
+
+function digestKind(activity) {
+  if (activity.type === "edit") return "edit";
+  if (activity.type === "write") return "write";
+  if (activity.type === "bash") return "command";
+  if (activity.type === "tool_use") {
+    return READ_TOOL.test(activity.name ?? "") ? "read" : "tool call";
+  }
+  return activity.type || "activity";
+}
+
+/**
+ * One digest row is one line. A heredoc's newlines would otherwise break the
+ * column, and anything past the width ends in a single ellipsis.
+ */
+function oneLine(text, width = DIGEST_WIDTH) {
+  const flat = (text ?? "").replace(/\s+/g, " ").trim();
+  return flat.length <= width ? flat : `${flat.slice(0, width - 1)}…`;
+}
+
+/**
+ * What a turn did, counted, plus its first few rows and how many are left. A
+ * Codex-runtime turn records over a hundred activities, and the task page used
+ * to print every one of them on one dotted line. The list itself belongs on the
+ * session record; the task page gets this.
+ */
+export function activitySummary(activities, limit = DIGEST_ROWS) {
+  const all = activities ?? [];
+  const tally = new Map();
+  for (const activity of all) {
+    const kind = digestKind(activity);
+    tally.set(kind, (tally.get(kind) ?? 0) + 1);
+  }
+  // A kind the vocabulary does not know sorts last rather than disappearing.
+  const rank = (kind) => {
+    const at = KIND_ORDER.indexOf(kind);
+    return at < 0 ? KIND_ORDER.length : at;
+  };
+  const counts = [...tally.entries()]
+    .map(([kind, count]) => ({ kind, count }))
+    .sort((a, b) => rank(a.kind) - rank(b.kind));
+  const shown = all.slice(0, Math.max(0, limit)).map((activity) => {
+    const row = activityRow(activity, null);
+    return { type: row.type, text: oneLine(row.short), title: row.what };
+  });
+  return { counts, shown, hidden: all.length - shown.length };
 }
 
 /** The grey line under a turn: what it cost, what it wrote, how it ended. */

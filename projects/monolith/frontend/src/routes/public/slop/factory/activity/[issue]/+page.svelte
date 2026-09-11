@@ -3,7 +3,7 @@
   import { invalidateAll, replaceState } from "$app/navigation";
   import { SchemeToggle, Seo } from "$lib/public/components";
   import {
-    activityRow,
+    activitySummary,
     attemptMark,
     attemptWord,
     briefRuns,
@@ -356,6 +356,13 @@
             {@const number = index + 1}
             {@const open = openStep === number}
             {@const turns = step.attempt.turns ?? []}
+            {@const session = step.attempt.session_key
+              ? sessionHref(
+                  task.issue_number,
+                  step.node.node_key,
+                  step.attempt.attempt,
+                )
+              : null}
             <li
               class:open
               class:hot={hotNode === step.node.node_key}
@@ -395,14 +402,8 @@
                 id={`transcript-${number}`}
                 hidden={!open}
               >
-                {#if step.attempt.session_key}
-                  <a
-                    class="more"
-                    href={sessionHref(
-                      task.issue_number,
-                      step.node.node_key,
-                      step.attempt.attempt,
-                    )}
+                {#if session}
+                  <a class="more" href={session}
                     >full session: every turn, each edit's hunk, the patch ›</a
                   >
                 {/if}
@@ -416,12 +417,33 @@
                         "ask",
                       )}
                       {#if turn.activities?.length}
-                        <p class="did">
-                          {#each turn.activities as activity, actIndex (actIndex)}
-                            {@const row = activityRow(activity, null)}
-                            <span title={row.what}>{row.type} {row.short}</span>
-                          {/each}
-                        </p>
+                        {@const digest = activitySummary(turn.activities)}
+                        <div class="digest">
+                          <p class="did">
+                            {#each digest.counts as count (count.kind)}
+                              <span>{plural(count.count, count.kind)}</span>
+                            {/each}
+                          </p>
+                          <ul class="did-rows">
+                            {#each digest.shown as row, rowIndex (rowIndex)}
+                              <li title={row.title}>
+                                <span class="ty">{row.type}</span>
+                                <span class="what">{row.text}</span>
+                              </li>
+                            {/each}
+                          </ul>
+                          {#if digest.hidden > 0}
+                            {#if session}
+                              <a class="more" href={session}
+                                >and {digest.hidden} more in the session ›</a
+                              >
+                            {:else}
+                              <!-- A span, not a paragraph: `.turn p` would win
+                                   the font size back off `.more`. -->
+                              <span class="more">and {digest.hidden} more</span>
+                            {/if}
+                          {/if}
+                        </div>
                       {/if}
                       {@render long(
                         turn.result_text,

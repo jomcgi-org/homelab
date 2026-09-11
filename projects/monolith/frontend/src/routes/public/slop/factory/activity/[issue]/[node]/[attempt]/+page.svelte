@@ -18,9 +18,16 @@
   let { data } = $props();
 
   // Every disclosure on this page is keyed by turn and row, so one record of
-  // what is open serves the hunks, the patches and the long prompts alike. The
-  // page is a finished record, so nothing here refetches.
+  // what is open serves the hunks, the patches, the long prompts and the long
+  // activity lists alike. The page is a finished record, so nothing here
+  // refetches.
   let opened = $state({});
+
+  // The list stays complete here, because this is the record: the task page is
+  // the place that summarises. But a Codex-runtime turn records over a hundred
+  // commands, so the tail of one opens on a toggle rather than pushing the
+  // reply off the screen.
+  const ACTS_CLIP = 12;
 
   const session = $derived(data.session ?? {});
   const policy = $derived(data.policy ?? {});
@@ -151,8 +158,12 @@
               <div class="body">
                 {@render long(turn.prompt, `ask-${turn.seq}`, "ask")}
                 {#if turn.activities?.length}
-                  <ul class="acts">
-                    {#each turn.activities as activity, index (index)}
+                  {@const actsKey = `acts-${turn.seq}`}
+                  {@const all = turn.activities}
+                  <!-- A prefix, never a filter: row N is the same activity
+                       open or closed, so its hunk key survives expansion. -->
+                  <ul class="acts" id={actsKey}>
+                    {#each opened[actsKey] ? all : all.slice(0, ACTS_CLIP) as activity, index (index)}
                       {@const row = activityRow(activity, turn.diff)}
                       {@const hunkKey = `hunk-${turn.seq}-${index}`}
                       <li class:open={opened[hunkKey]}>
@@ -189,6 +200,18 @@
                       </li>
                     {/each}
                   </ul>
+                  {#if all.length > ACTS_CLIP}
+                    <button
+                      class="more-tog acts-tog"
+                      type="button"
+                      aria-expanded={Boolean(opened[actsKey])}
+                      aria-controls={actsKey}
+                      onclick={() => toggle(actsKey)}
+                      >{opened[actsKey]
+                        ? "hide −"
+                        : `show all (${all.length}) +`}</button
+                    >
+                  {/if}
                 {/if}
                 {@render long(turn.result_text, `say-${turn.seq}`, "")}
                 {#if turn.rationale?.raw}
