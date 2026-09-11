@@ -227,6 +227,10 @@ carry it:
 }
 ```
 
+`auto_merge` is a separate top-level policy field rather than part of this
+block, because it governs what the lane does after a delivery is approved
+rather than what it takes in. It is optional and defaults to `false`.
+
 `enabled` controls autonomous issue discovery. `labels` names delivery-ready
 labels and may be empty, in which case no issue is a delivery candidate.
 `exclude_labels` rejects an issue before selection. `max_per_day` is between 1
@@ -247,9 +251,24 @@ reads as partial.
 Intake admits at most one issue per tick and never exceeds `max_per_day` over a
 rolling 24 hours. A failed or cancelled receipt cannot be selected again until
 its cooldown expires, whatever class it settled under. Assigned issues,
-excluded labels, issues linked from an open pull request, and issues already
-received in the current generation under the same task class are not
-candidates. Scoping that last one to the class is what lets an issue a refine
+excluded labels, issues linked from an open pull request, issues already
+delivered, and issues already received in the current generation under the same
+task class are not candidates.
+
+An issue with a `succeeded` receipt in any generation and any class is excluded
+as `delivered` and is never admitted again. The lane's own labels are not
+evidence that work is outstanding: #3877 shipped as PR #6007, the pull request
+body carried no closing keyword, the issue stayed open with `agent-ready`
+intact, and the next generation's sweep read it as fresh work. The exclusion is
+unconditional, including for an issue a human reopened. GitHub's issue listing
+carries no reopen timestamp and `updated_at` moves on every comment, label and
+edit, so it cannot tell a reopen from a comment, and establishing the difference
+would cost one events read per candidate on a request budget the whole lane
+shares. An operator who wants a delivered issue worked again names it in the
+policy `issue_numbers` allowlist under a new generation, which writes the
+receipt directly and never consults this sweep. Issues closed on GitHub are
+excluded as `not_open`, which the open-issues listing already implies and
+selection asserts independently. Scoping that last one to the class is what lets an issue a refine
 pass moved to `agent-ready` be delivered in the same generation, with no
 operator bumping `generation` to release work the lane itself made ready. The
 receipt's identity carries the class for the same reason. Intake-created receipts become admissible only while
@@ -537,8 +556,49 @@ only when its stored path and validation metadata match the declared artifact.
 Completion requires a non-draft PR on the exact task branch, a successful
 implementation node, the latest independent review approving the current head
 on a model the reviewer pool allows, and passing repository PR status checks. GitHub is read again to verify
-the head and checks. Delivery evidence remains in the task audit. This lane
-does not submit a merge or a deployment.
+the head and checks. Delivery evidence remains in the task audit.
+
+The pull request body must close the task's issue. Every delivery node's
+boundary states the required `Closes #<issue>` line and says to keep it on
+every update to the pull request, engine correction rounds included, and the
+completion gate reads the body back from GitHub and refuses a delivery that
+does not carry a closing keyword. The refusal is named
+`pr_missing_close_keyword`, so the planner reads what is wrong instead of a
+generic validation failure and can ask for the body to be fixed. The gate
+accepts every keyword GitHub acts on, `closes`, `fixes` and `resolves` in all
+their forms, because refusing a body that says `Fixes #123` would fail a
+delivery that does close its issue.
+
+### Landing
+
+Landing is off unless the policy sets `auto_merge` to `true`, and only the
+value `true` counts: a policy written before the flag existed, or one carrying
+anything else, lands nothing. It is the first factory step that writes to the
+repository rather than reading it, so the process needs a GitHub token with
+write access to pull requests and issues before the flag is worth turning on.
+
+With the flag on, a task that settled `succeeded` with pull request evidence
+has its merge armed through the GitHub auto-merge mutation with the rebase
+method, the equivalent of `gh pr merge --auto --rebase`, and the lane audits
+`merge_armed`. Exactly one factory pull request is armed at a time, because
+this repository merges through the GitHub merge queue and an ejection cascades
+across every candidate behind the one that failed. A second delivery waiting on
+the first audits `merge_deferred` once per blocking pull request and is armed on
+a later tick. A mutation GitHub refuses audits `merge_arm_refused` and is not
+retried; a GitHub read or write that fails audits `landing_error` by exception
+type and status, never by response body, at most once an hour per task, and the
+next tick retries.
+
+Later ticks observe the armed pull request. A merge audits `merged`, and the
+issue is then closed if it is still open, with one comment naming the pull
+request, audited as `issue_closed`. A pull request closed without merging audits
+`merge_arm_refused` and stops the landing there. Each step writes one audit row
+per task, and that row is the fence, so a step never runs twice.
+
+Landing stops at the merge. Confirming that the chart version write-back landed
+and that the new image is live is the verify node #6002 phase 4 still owes; the
+`merged` audit carries a `rollout_verified` field that is null until that node
+exists.
 
 ## Controls and uncertainty
 
