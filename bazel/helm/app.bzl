@@ -134,13 +134,16 @@ def argocd_app(
         )
 
     if generate_diff:
-        # Live ArgoCD diff (opt-in)
-        # Deduplicate data entries (same colocated label issue as render_manifests)
+        # Live ArgoCD diff (opt-in). The runner renders the local chart first,
+        # then gives those manifests to `argocd app diff --local`.
+        chart_yaml = "//" + chart + ":Chart.yaml"
         diff_data_list = [
             "application.yaml",
-            "//" + chart + ":Chart.yaml",
+            chart_files,
+            chart_yaml,
             "//" + chart + ":values.yaml",
             "@multitool//tools/argocd",
+            "@multitool//tools/helm",
             "@multitool//tools/op",
         ] + values_files
         diff_pkg = native.package_name()
@@ -160,4 +163,20 @@ def argocd_app(
             name = "diff",
             srcs = ["//bazel/helm:argocd-live-diff.sh"],
             data = diff_data,
+            env = {
+                "APPLICATION_FILE": "$(rootpath application.yaml)",
+                "ARGOCD": "$(rootpath @multitool//tools/argocd)",
+                "ARGOCD_APP_NAME": name,
+                "CHART_FILE": "$(rootpath {})".format(chart_yaml),
+                "HELM": "$(rootpath @multitool//tools/helm)",
+                "NAMESPACE": namespace,
+                "OP": "$(rootpath @multitool//tools/op)",
+                "RELEASE_NAME": release_name,
+                # Newlines preserve values-file ordering without breaking paths
+                # that contain spaces. The runner resolves each path separately.
+                "VALUES_FILES": "\n".join([
+                    "$(rootpath {})".format(vf)
+                    for vf in values_files
+                ]),
+            },
         )
