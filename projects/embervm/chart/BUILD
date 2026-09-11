@@ -330,3 +330,9 @@ semgrep_test(
     srcs = ["chart_tokenbroker_spiffe_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )
+
+semgrep_test(
+    name = "chart_github_broker_test_semgrep_test",
+    srcs = ["chart_github_broker_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
