@@ -12,6 +12,7 @@ from swarm.factory_controls import (
     DEFAULT_TASK_CLASS,
     LANES,
     _audit,
+    is_advisory,
     receipt_task_class,
     _locked_session,
     _now,
@@ -55,6 +56,7 @@ _EXCLUSION_REASONS = (
     "assigned",
     "excluded_label",
     "linked_pr",
+    "delivered",
     "cooldown",
     "already_received",
     "refine_disabled",
@@ -334,6 +336,32 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             number = item.get("number")
             rows = by_number.get(number, []) if type(number) is int else []
             latest = rows[0] if rows else None
+            # A delivered issue is done, whatever generation delivered it and
+            # whatever the issue's own labels still say. The defect this
+            # closes is exactly that: #3877 shipped as PR #6007, the body
+            # carried no closing keyword so the issue stayed open with
+            # agent-ready, and the next generation admitted it again.
+            #
+            # Advisory classes are not deliveries. A refine pass settles
+            # succeeded when it has written a brief and moved the labels, and
+            # reading that as delivered would block the very delivery the
+            # refine just made possible.
+            #
+            # The exclusion is unconditional, including for an issue a human
+            # reopened. GitHub's issue listing carries created_at, updated_at
+            # and closed_at but no reopen timestamp, and updated_at moves on
+            # every comment, label and edit, so it cannot tell a reopen from a
+            # comment. Establishing the difference would cost one events read
+            # per candidate on a request budget the whole lane shares. An
+            # operator who wants a delivered issue worked again names it in
+            # the policy issue_numbers allowlist under a new generation, which
+            # writes its receipt directly and never consults this sweep.
+            if any(
+                row.state == "succeeded" and not is_advisory(receipt_task_class(row))
+                for row in rows
+            ):
+                exclude("delivered")
+                continue
             if (
                 latest is not None
                 and latest.state in ("failed", "cancelled")
