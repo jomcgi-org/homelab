@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from chat.backfill import run_backfill
+from chat.backfill import BackfillProgress, run_backfill
 from chat.store import SaveResult
 
 
@@ -102,6 +102,45 @@ async def test_backfills_messages_from_channel(
     assert batch[0]["content"] == "hello"
     assert batch[1]["discord_message_id"] == "2"
     assert batch[1]["content"] == "world"
+
+
+@pytest.mark.asyncio
+@patch("chat.backfill._flush_batch", new_callable=AsyncMock)
+@patch("chat.backfill.download_image_attachments", new_callable=AsyncMock)
+async def test_channel_filter_limits_processing_and_reports_progress(
+    mock_download, mock_flush
+):
+    """Only selected channel IDs are visited and batch totals are reported."""
+    mock_download.return_value = []
+    mock_flush.side_effect = [
+        SaveResult(stored=45, skipped=5),
+        SaveResult(stored=1, skipped=0),
+    ]
+    ignored = _make_channel(
+        "ignored", "101", [_make_discord_message(1, "not requested")]
+    )
+    selected = _make_channel(
+        "selected",
+        "202",
+        [_make_discord_message(i, f"msg-{i}") for i in range(51)],
+    )
+    bot = _make_bot([_make_guild([ignored, selected])])
+    updates = []
+
+    result = await run_backfill(bot, channel_ids=["202"], on_progress=updates.append)
+
+    ignored.history.assert_not_called()
+    selected.history.assert_called_once_with(limit=None, oldest_first=True)
+    assert mock_flush.call_count == 2
+    assert result == BackfillProgress(
+        channels_total=1,
+        channels_completed=1,
+        messages_stored=46,
+        messages_skipped=5,
+    )
+    assert updates[0] == BackfillProgress(channels_total=1)
+    assert any(update.messages_stored == 45 for update in updates)
+    assert updates[-1] == result
 
 
 @pytest.mark.asyncio
