@@ -525,17 +525,21 @@ against them.
    node_gone`, both at request time and from the reconcile sweep, so a session
    stuck in `destroying` self-heals. A node counts as gone only when it
    publishes no capacity facts for the session's dial AND the node registry
-   reports either no registered runtime instance (or a tombstoned one), or
-   `down`/`unknown` health for longer than `destroying_alarm_ms` measured from
-   the destroy intent. An exact stop is excluded, because its contract is a
-   completion proof from the node.
+   holds no runtime instance for it, or holds only a tombstone. Health is
+   deliberately not part of the test. An exact stop is included, and
+   terminalizes with its `stop_completion` left null rather than a synthesised
+   tuple, so a caller holding the stop precondition can see that departure
+   produced no proof and decide for itself whether that is acceptable.
 
    **Why.** A replaced brick can never send the confirmation the gate waits
    for, so before #6004 the session sat in `destroying` forever and held every
    downstream reservation bound to it, which is a worse failure than completing
-   a destroy whose VM demonstrably died with its node, while the predicate
-   stays narrow enough that a registered node that is merely slow keeps the
-   full confirmation wait and the alarm.
+   a destroy whose VM demonstrably died with its node; departure from the
+   registry is the only sound signal for that, because the registry ages an
+   instance to `unknown` and retracts its capacity row after five seconds of
+   silence, so any "unhealthy for longer than a threshold" test would also fire
+   on a healthy brick with a brief status gap under a destroy that had been
+   retrying for minutes, and record `destroyed` for a VM still running.
 
 6. **Single-writer for stateful is a physical fact, not a protocol.** The
    storage section explains the raw sparse file, one-writable-attach rule,
