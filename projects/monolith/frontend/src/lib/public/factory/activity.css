@@ -420,6 +420,27 @@
   margin: 0;
 }
 
+/* A brief paragraph that is only a markdown heading reads as a label, not as a
+   level in the page outline, so it takes the section label's type and stays a
+   paragraph. */
+.factory-page.activity-page .brief p.h {
+  margin: 1.2em 0 0.5em;
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.factory-page.activity-page .brief p.h:first-child {
+  margin-top: 0;
+}
+
+.factory-page.activity-page .brief b {
+  font-weight: 600;
+}
+
 .factory-page.activity-page .brief.lede {
   margin-top: 0.4em;
   color: var(--ink-2);
@@ -503,11 +524,13 @@
   overflow-x: auto;
 }
 
+/* The figure carries its own width and height in pixels, so it renders at the
+   size it was laid out at rather than stretching to the column. Nothing scales
+   it in either direction: .fig scrolls sideways when a plan is wider. */
 .factory-page.activity-page .fig svg {
   display: block;
-  width: auto;
-  min-width: 30em;
-  max-width: 100%;
+  /* No max-width: a long chain (nine nodes on a real task laid out at ~2600px)
+     must scroll inside .fig at 1:1, not shrink to a third and lose its labels. */
   height: auto;
   color: var(--ink);
   font-family: var(--font-code);
@@ -1046,6 +1069,25 @@
 .factory-page.activity-page .rec .meta a.sha:hover,
 .factory-page.activity-page .turn .meta a.sha:hover {
   border-bottom-color: var(--accent-ink);
+  color: var(--accent-ink);
+}
+
+/* The toggle on a clipped prompt or reply: the same mono mark the step and
+   activity toggles use, inline at the end of the text it opens. */
+.factory-page.activity-page .more-tog {
+  margin-left: 0.5em;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--ink-3);
+  font-family: var(--font-code);
+  font-size: 0.72em;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.factory-page.activity-page .more-tog:hover,
+.factory-page.activity-page .more-tog:focus-visible {
   color: var(--accent-ink);
 }
 

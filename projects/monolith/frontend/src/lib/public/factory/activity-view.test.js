@@ -3,6 +3,8 @@ import {
   activityRow,
   attemptMark,
   attemptWord,
+  briefRuns,
+  clip,
   commitUrl,
   diffLines,
   diffStat,
@@ -444,12 +446,121 @@ describe("planLayout", () => {
     });
   });
 
+  it("widens every box to the longest node key in the plan", () => {
+    const nodes = [
+      { node_key: "conductor_1", deps: [], state: "done", attempts: [] },
+      {
+        node_key: "implement_fix_probe_worker_destroy",
+        deps: ["conductor_1"],
+        state: "done",
+        attempts: [],
+      },
+    ];
+    const layout = planLayout(nodes);
+    expect(layout.nodes.map((box) => box.width)).toEqual([245, 245]);
+    expect(layout.nodes[1].label).toBe("implement_fix_probe_worker_destroy");
+    expect(layout.nodes[1].x).toBe(305);
+    expect(layout.width).toBe(566);
+  });
+
+  it("truncates a key too long for the widest box and keeps the key itself", () => {
+    const key = "implement".repeat(7);
+    const layout = planLayout([
+      { node_key: key, deps: [], state: "done", attempts: [] },
+    ]);
+    expect(key).toHaveLength(63);
+    expect(layout.nodes[0].width).toBe(300);
+    expect(layout.nodes[0].label).toHaveLength(42);
+    expect(layout.nodes[0].label.endsWith("\u2026")).toBe(true);
+    expect(layout.nodes[0].node.node_key).toBe(key);
+  });
+
   it("does not recurse forever on a dependency cycle", () => {
     const nodes = [
       { node_key: "a", deps: ["b"], state: "done", attempts: [] },
       { node_key: "b", deps: ["a"], state: "done", attempts: [] },
     ];
     expect(() => planLayout(nodes)).not.toThrow();
+  });
+});
+
+describe("clip", () => {
+  it("leaves short text alone", () => {
+    expect(clip("a short prompt")).toEqual({
+      head: "a short prompt",
+      rest: "",
+      clipped: false,
+    });
+  });
+
+  it("does not clip text of exactly the limit", () => {
+    const text = "x".repeat(600);
+    expect(clip(text).clipped).toBe(false);
+    expect(clip("abcde", 5).clipped).toBe(false);
+  });
+
+  it("cuts on the last whitespace before the limit", () => {
+    const text = `${"word ".repeat(200)}tail`;
+    const cut = clip(text);
+    expect(cut.clipped).toBe(true);
+    expect(cut.head.length).toBeLessThanOrEqual(600);
+    expect(cut.head.endsWith("word")).toBe(true);
+    expect(cut.head + cut.rest).toBe(text);
+  });
+
+  it("cuts at the limit when one token runs past it", () => {
+    const text = "x".repeat(900);
+    const cut = clip(text);
+    expect(cut.head).toHaveLength(600);
+    expect(cut.rest).toHaveLength(300);
+  });
+
+  it("takes a limit and tolerates no text at all", () => {
+    // Seven characters reach into "two", so the cut falls back to the
+    // whitespace before it rather than splitting the word.
+    expect(clip("one two three", 7)).toEqual({
+      head: "one",
+      rest: " two three",
+      clipped: true,
+    });
+    expect(clip(null)).toEqual({ head: "", rest: "", clipped: false });
+  });
+});
+
+describe("briefRuns", () => {
+  it("turns a markdown heading paragraph into one heading run", () => {
+    expect(briefRuns("## What happened")).toEqual([
+      { text: "What happened", heading: true },
+    ]);
+    expect(briefRuns("###### Fix")).toEqual([{ text: "Fix", heading: true }]);
+  });
+
+  it("marks inline code spans", () => {
+    expect(
+      briefRuns("parked sessions count toward `session.maxSessions`"),
+    ).toEqual([
+      { text: "parked sessions count toward " },
+      { text: "session.maxSessions", code: true },
+    ]);
+  });
+
+  it("marks bold spans", () => {
+    expect(briefRuns("left their guests **parked** with no id")).toEqual([
+      { text: "left their guests " },
+      { text: "parked", strong: true },
+      { text: " with no id" },
+    ]);
+  });
+
+  it("leaves every other markdown as plain text", () => {
+    expect(briefRuns("a [link](x) and *one star* and # not a heading")).toEqual(
+      [{ text: "a [link](x) and *one star* and # not a heading" }],
+    );
+  });
+
+  it("returns nothing for an empty paragraph", () => {
+    expect(briefRuns("")).toEqual([]);
+    expect(briefRuns(null)).toEqual([]);
   });
 });
 

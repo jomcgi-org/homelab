@@ -161,7 +161,7 @@
             class:running={data.board.state === "enabled"}
             class:queued={data.board.state !== "enabled"}
           ></span>
-          {data.board.state}
+          {data.unavailable ? "unavailable" : data.board.state}
           {#if policy.generation != null}<small>gen {policy.generation}</small
             >{/if}
         </div>
@@ -196,8 +196,10 @@
       <p class="sec-label">
         / In flight
         <span class="win"
-          >as of {isoClock(data.board.snapshotted_at) || "unknown"} UTC · {book
-            .live.length} running, {book.queued.length} queued</span
+          >{data.board.snapshotted_at
+            ? `as of ${isoClock(data.board.snapshotted_at)} UTC`
+            : "no snapshot yet"} · {book.live.length} running, {book.queued
+            .length} queued</span
         >
       </p>
       <ul class="rows">
@@ -222,7 +224,11 @@
     <section class="panel">
       <p class="sec-label">
         / Completed
-        <span class="win">last {book.done.length}, newest first</span>
+        <span class="win"
+          >{book.done.length
+            ? `last ${book.done.length}, newest first`
+            : "nothing yet"}</span
+        >
       </p>
       <ul class="rows">
         {@render ledgerHead()}

@@ -3,6 +3,7 @@
   import {
     activityRow,
     attemptWord,
+    clip,
     commitUrl,
     diffLines,
     plural,
@@ -17,8 +18,8 @@
   let { data } = $props();
 
   // Every disclosure on this page is keyed by turn and row, so one record of
-  // what is open serves the hunks and the patches alike. The page is a finished
-  // record, so nothing here refetches.
+  // what is open serves the hunks, the patches and the long prompts alike. The
+  // page is a finished record, so nothing here refetches.
   let opened = $state({});
 
   const session = $derived(data.session ?? {});
@@ -53,6 +54,23 @@
     data.attempt.attempt,
   )}
 />
+
+{#snippet long(text, key, cls)}
+  {@const cut = clip(text ?? "")}
+  <p class={cls || undefined}>
+    {cut.clipped && !opened[key]
+      ? cut.head
+      : (text ?? "")}{#if cut.clipped}<button
+        class="more-tog"
+        type="button"
+        aria-expanded={Boolean(opened[key])}
+        onclick={() => toggle(key)}
+        >{opened[key]
+          ? "hide −"
+          : `show all (${(text ?? "").length} chars) +`}</button
+      >{/if}
+  </p>
+{/snippet}
 
 <main class="td factory-page activity-page">
   <div class="frame">
@@ -131,7 +149,7 @@
             <li>
               <span class="tn">{turn.seq}</span>
               <div class="body">
-                <p class="ask">{turn.prompt}</p>
+                {@render long(turn.prompt, `ask-${turn.seq}`, "ask")}
                 {#if turn.activities?.length}
                   <ul class="acts">
                     {#each turn.activities as activity, index (index)}
@@ -172,7 +190,7 @@
                     {/each}
                   </ul>
                 {/if}
-                <p>{turn.result_text}</p>
+                {@render long(turn.result_text, `say-${turn.seq}`, "")}
                 {#if turn.rationale?.raw}
                   <p class="why">{turn.rationale.raw}</p>
                 {/if}

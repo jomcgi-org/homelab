@@ -6,6 +6,8 @@
     activityRow,
     attemptMark,
     attemptWord,
+    briefRuns,
+    clip,
     commitUrl,
     isoClock,
     isoDay,
@@ -31,6 +33,12 @@
   // The figure and the step list point at each other through the node key
   // rather than through the DOM, so hovering either one lights both.
   let hotNode = $state(null);
+  // One record of which long prompts and replies have been opened, keyed by
+  // turn. Collapsed is the default: a conductor brief is thousands of
+  // characters and would otherwise bury every reply under it.
+  let openText = $state({});
+
+  const toggleText = (key) => (openText[key] = !openText[key]);
 
   const REFRESH_MS = 60_000;
 
@@ -127,6 +135,23 @@
   path={`/slop/factory/activity/${task.issue_number}`}
 />
 
+{#snippet long(text, key, cls)}
+  {@const cut = clip(text ?? "")}
+  <p class={cls || undefined}>
+    {cut.clipped && !openText[key]
+      ? cut.head
+      : (text ?? "")}{#if cut.clipped}<button
+        class="more-tog"
+        type="button"
+        aria-expanded={Boolean(openText[key])}
+        onclick={() => toggleText(key)}
+        >{openText[key]
+          ? "hide −"
+          : `show all (${(text ?? "").length} chars) +`}</button
+      >{/if}
+  </p>
+{/snippet}
+
 <main class="td factory-page activity-page">
   <div class="frame">
     <header class="masthead">
@@ -168,7 +193,17 @@
         {#if task.brief?.length}
           <div class="brief">
             {#each task.brief as paragraph, index (index)}
-              <p>{paragraph}</p>
+              {@const runs = briefRuns(paragraph)}
+              {#if runs.length === 1 && runs[0].heading}
+                <p class="h">{runs[0].text}</p>
+              {:else}
+                <p>
+                  {#each runs as run, runIndex (runIndex)}{#if run.code}<span
+                        class="code">{run.text}</span
+                      >{:else if run.strong}<b>{run.text}</b
+                      >{:else}{run.text}{/if}{/each}
+                </p>
+              {/if}
             {/each}
           </div>
         {/if}
@@ -236,6 +271,8 @@
         <div class="fig">
           <svg
             viewBox={`0 0 ${layout.width} ${layout.height}`}
+            width={layout.width}
+            height={layout.height}
             role="group"
             aria-label={`Plan: ${plural(layout.nodes.length, "node")} in ${plural(layout.stages, "stage")}`}
           >
@@ -269,6 +306,7 @@
                 onclick={() => openAndScroll(box.step + 1)}
                 onkeydown={(event) => nodeKeyDown(event, box.step + 1)}
               >
+                <title>{box.node.node_key}</title>
                 <rect
                   class="box"
                   x={box.x}
@@ -276,9 +314,7 @@
                   width={box.width}
                   height={box.height}
                 />
-                <text class="l" x={box.x + 10} y={box.y + 18}
-                  >{box.node.node_key}</text
-                >
+                <text class="l" x={box.x + 10} y={box.y + 18}>{box.label}</text>
                 <text class="s" x={box.x + 10} y={box.y + 33}
                   >{box.node.model} · {nodeWord(box.node.state)}</text
                 >
@@ -374,7 +410,11 @@
                   {#each turns as turn, turnIndex (`${turn.seq}-${turnIndex}`)}
                     <div class="turn">
                       <span class="tn">{turn.seq}</span>
-                      <p class="ask">{turn.prompt}</p>
+                      {@render long(
+                        turn.prompt,
+                        `ask-${number}-${turn.seq}`,
+                        "ask",
+                      )}
                       {#if turn.activities?.length}
                         <p class="did">
                           {#each turn.activities as activity, actIndex (actIndex)}
@@ -383,7 +423,11 @@
                           {/each}
                         </p>
                       {/if}
-                      <p>{turn.result_text}</p>
+                      {@render long(
+                        turn.result_text,
+                        `say-${number}-${turn.seq}`,
+                        "",
+                      )}
                       <p class="meta">
                         {money(turn.cost_usd)}{#if turn.commit_sha}
                           · commit <a
