@@ -2477,13 +2477,18 @@ def stranded_factory(queued_factory, monkeypatch):
     s.key = s.run["pin"]["workflow_id"]
 
     def dbos_for(status, version, *, result=None):
+        """A DBOS whose cancel really makes the workflow terminal, as DBOS does."""
+        state = {"status": status}
+
+        def cancel_workflow(key, cancel_children=False):
+            s.cancelled.append((key, cancel_children))
+            state["status"] = "CANCELLED"
+
         return SimpleNamespace(
             get_workflow_status=lambda _: SimpleNamespace(
-                status=status, app_version=version, executor_id="executor-gone"
+                status=state["status"], app_version=version
             ),
-            cancel_workflow=lambda key, cancel_children=False: s.cancelled.append(
-                (key, cancel_children)
-            ),
+            cancel_workflow=cancel_workflow,
             retrieve_workflow=lambda _: SimpleNamespace(get_result=lambda: result),
         )
 
@@ -2626,18 +2631,23 @@ def _stall_audits(s):
         ]
 
 
-def test_a_stalled_node_raises_one_deviation_and_one_warning(
+def test_a_stalled_node_is_cancelled_and_settled_uncertain_once(
     stranded_factory, monkeypatch
 ):
+    """Three ticks, one cancellation, one audit, one warning, one outcome.
+
+    The planner is not consulted here. The settled node reaches it through the
+    ordinary deviation path once it has no runnable retry, which is what keeps
+    this working at the default parallel limit of one.
+    """
+    import json
+    from sqlmodel import Session, select
+    from swarm.models import SwarmConductorCall
+
     s = stranded_factory
     notified = []
     monkeypatch.setattr(
-        conductor,
-        "_notify_node_stalled",
-        lambda *args: notified.append(args),
-    )
-    monkeypatch.setattr(
-        conductor, "github_get", lambda *_args: {"object": {"sha": "c" * 40}}
+        conductor, "_notify_node_stalled", lambda *args: notified.append(args)
     )
     dbos = _stalled_dbos(s, idle_seconds=30, monkeypatch=monkeypatch)
 
@@ -2651,16 +2661,55 @@ def test_a_stalled_node_raises_one_deviation_and_one_warning(
     assert audits[0]["node_key"] == s.run["node_key"]
     assert audits[0]["turn_timeout_seconds"] == s.run["pin"]["turn_timeout_seconds"]
     assert len(notified) == 1 and notified[0][1] == s.run["node_key"]
-    # The stalled node keeps its reservation; one planner node is added beside
-    # it, and no later tick adds another.
-    assert conductor.graph.node_runs(s.task["id"]) == [s.run]
-    planners = [
+    assert s.cancelled == [(s.key, True)]
+
+    runs = conductor.graph.node_runs(s.task["id"])
+    assert len(runs) == 1 and runs[0]["status"] == "uncertain"
+    assert "node workflow stalled" in json.loads(runs[0]["outcome_json"])["reason"]
+    # No planner node was inserted by the stall handler.
+    assert [
         node["node_key"]
         for node in conductor.graph.load_graph(s.task["id"])
         if node["node_key"].startswith("conductor_")
-    ]
-    assert planners == ["conductor_1", "conductor_2"]
-    assert s.cancelled == []
+    ] == ["conductor_1"]
+    # The settlement is recorded once, not once per tick.
+    with Session(s.engine) as db:
+        outcomes = db.exec(
+            select(SwarmConductorCall).where(
+                SwarmConductorCall.tool == "record_outcome"
+            )
+        ).all()
+    assert len(outcomes) == 1
+
+
+def test_a_settled_stalled_node_reaches_the_planner_by_the_ordinary_path(
+    stranded_factory, monkeypatch
+):
+    """The deviation the planner sees is the existing one for a settled node."""
+    s = stranded_factory
+    monkeypatch.setattr(conductor, "_notify_node_stalled", lambda *_args: None)
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": "c" * 40}}
+    )
+    dbos = _stalled_dbos(s, idle_seconds=30, monkeypatch=monkeypatch)
+    conductor.reconcile_task(s.task["id"], s.policy, dbos)
+    assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "uncertain"
+
+    # An uncertain run holds its reservation, so nothing is planned while it
+    # stands. Reconciling it to a terminal failure is what frees the graph.
+    import json
+
+    settled = json.dumps({"status": "failed", "cost_usd": 0.5, "session_id": s.sid})
+    assert conductor.graph.record_outcome(
+        s.task["id"], s.run["node_key"], s.run["attempt"], "failed", 0.5, None, settled
+    ).ok
+    conductor.reconcile_task(s.task["id"], s.policy, dbos)
+    assert [
+        node["node_key"]
+        for node in conductor.graph.load_graph(s.task["id"])
+        if node["node_key"].startswith("conductor_")
+    ] == ["conductor_1"]
+    assert [r["attempt"] for r in conductor.graph.node_runs(s.task["id"])] == [1, 2]
 
 
 def test_a_node_checkpointing_within_its_turn_timeout_is_not_stalled(
@@ -2714,6 +2763,82 @@ def test_a_stranded_workflow_is_settled_rather_than_called_stalled(
     assert _stall_audits(s) == []
     assert s.cancelled == [(s.key, True)]
     assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "uncertain"
+
+
+def test_a_session_less_uncertain_run_resolves_its_session_for_supervision(
+    stranded_factory, monkeypatch
+):
+    """record_dispatch binds a session only at completion, so resolve it here.
+
+    Without this the attempt is handed to supervision as None, refused at its
+    int guard, and the guest is never confirmed ceased.
+    """
+    from swarm import factory_supervision
+
+    s = stranded_factory
+    seen = []
+    monkeypatch.setattr(
+        factory_supervision,
+        "reconcile_uncertain_attempt",
+        lambda _pin, session_id, _result, status: (
+            seen.append((session_id, status)) or False
+        ),
+    )
+    assert s.run["session_id"] is None
+    conductor._submit_or_reconcile(s.task, s.run, s.dbos_for("PENDING", "old-version"))
+    assert seen == [(s.sid, "CANCELLED")]
+    # The resolved session is bound to the run, so the next tick reads it
+    # directly rather than resolving again.
+    assert conductor.graph.node_runs(s.task["id"])[0]["session_id"] == s.sid
+
+
+def test_an_unresolvable_session_records_one_outcome_not_one_per_tick(
+    stranded_factory, monkeypatch
+):
+    from sqlmodel import Session, select
+    from agent_sessions.models import AgentSession, PendingMessage
+    from swarm.models import SwarmConductorCall
+
+    s = stranded_factory
+    with Session(s.engine) as db:
+        db.delete(db.exec(select(PendingMessage)).one())
+        db.delete(db.get(AgentSession, s.sid))
+        db.commit()
+    dbos = s.dbos_for("PENDING", "old-version")
+
+    conductor.reconcile_task(s.task["id"], s.policy, dbos)
+    conductor.reconcile_task(s.task["id"], s.policy, dbos)
+    conductor.reconcile_task(s.task["id"], s.policy, dbos)
+
+    runs = conductor.graph.node_runs(s.task["id"])
+    assert len(runs) == 1 and runs[0]["status"] == "uncertain"
+    assert runs[0]["session_id"] is None
+    with Session(s.engine) as db:
+        outcomes = db.exec(
+            select(SwarmConductorCall).where(
+                SwarmConductorCall.tool == "record_outcome"
+            )
+        ).all()
+    assert len(outcomes) == 1
+
+
+def test_a_session_owned_by_another_attempt_raises_rather_than_being_adopted(
+    stranded_factory,
+):
+    """The key is deterministic, so a mismatch on it is a real conflict."""
+    from sqlmodel import Session
+    from agent_sessions.models import AgentSession
+
+    s = stranded_factory
+    with Session(s.engine) as db:
+        owner = db.get(AgentSession, s.sid)
+        owner.node_attempt = 2
+        db.add(owner)
+        db.commit()
+    with pytest.raises(ValueError, match="node session ownership conflict"):
+        conductor._submit_or_reconcile(
+            s.task, s.run, s.dbos_for("PENDING", "old-version")
+        )
 
 
 @pytest.fixture

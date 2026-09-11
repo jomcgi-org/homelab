@@ -111,7 +111,6 @@ _SETTLED = ("succeeded", "failed", "escalated", "cancelled")
 FACTORY_DEVIATION_CODES = (
     "integration_insert_refused",
     "loop_insert_refused",
-    "node_stalled",
     "initial_plan",
     "review_rounds_exhausted",
     "node_escalated",
@@ -129,7 +128,6 @@ def factory_deviation(
     pending_review: str | None = None,
     loop_refusal: str | None = None,
     integration_refusal: str | None = None,
-    stalled_node: str | None = None,
 ) -> dict:
     """Name why a factory plan needs its planner.
 
@@ -140,11 +138,6 @@ def factory_deviation(
     and no None return: a node that could still retry would be ready, and a
     deviation that could fire while a node is ready would fire again against
     the very planner node it just asked for.
-
-    ``stalled_node`` is the one input that describes work still in flight. A
-    wedged node makes no progress on its own, so waiting for it to settle is
-    waiting for its task deadline, and the reconciler that observed the stall
-    is the only thing that can name it.
     """
     work = [node for node in nodes if not node["node_key"].startswith("conductor_")]
     if integration_refusal is not None:
@@ -160,14 +153,6 @@ def factory_deviation(
             pending_review or "run",
             f"review round refusal: {loop_refusal}",
             "The engine could not open the next review round.",
-        )
-    if stalled_node is not None:
-        return _deviation(
-            "node_stalled",
-            stalled_node,
-            f"stalled node: {stalled_node}",
-            f"{stalled_node} is dispatched but its workflow has stopped "
-            "checkpointing steps.",
         )
     if not work:
         return _deviation(
