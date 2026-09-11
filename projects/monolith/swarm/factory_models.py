@@ -90,6 +90,10 @@ class FactoryReceipt(SQLModel, table=True):
     task_id: str | None = Field(default=None, foreign_key="swarm.swarm_task.id")
     policy_json: str | None = Field(default=None)
     allowance_json: str | None = Field(default=None)
+    # The escalation document a needs-human refine leaves behind: the question,
+    # the recommendation, the options a person may pick from, and once someone
+    # picks, the resolution. Null on every receipt that never escalated.
+    escalation_json: str | None = Field(default=None)
     task_paused: bool = Field(default=False)
     cancellation_requested: bool = Field(default=False)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

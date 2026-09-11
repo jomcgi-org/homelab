@@ -168,6 +168,50 @@ def audit_actions(db):
     return [row.action for row in audit_rows(db)]
 
 
+def options(first="split"):
+    """A valid option list whose head matches ``first``'s recommendation."""
+    head = {
+        "deliver": {
+            "key": "deliver",
+            "label": "Deliver the /invoke path first",
+            "effect": "agent-ready",
+            "detail": {"scope": "Only the /invoke path."},
+        },
+        "close": {
+            "key": "close",
+            "label": "Close as superseded by #5656",
+            "effect": "close",
+            "detail": {"reason": "not_planned", "comment": "Superseded."},
+        },
+        "split": {
+            "key": "split",
+            "label": "Split the console out of the API",
+            "effect": "split",
+            "detail": {"children": [{"title": "Console", "body": "The console."}]},
+        },
+        "defer": {
+            "key": "defer",
+            "label": "Defer until the hub migration lands",
+            "effect": "defer",
+            "detail": {"comment": "After the hub migration."},
+        },
+    }[first]
+    return [head, {"key": "hold", "label": "Leave it open", "effect": "hold"}]
+
+
+def human_artifact(comment_url, recommendation="split", **extra):
+    artifact = {
+        "outcome": "needs-human",
+        "comment_url": comment_url,
+        "question": "Which compatibility target is required?",
+        "recommendation": recommendation,
+        "summary": "The scope is two features wearing one issue number.",
+        "options": options(recommendation),
+    }
+    artifact.update(extra)
+    return artifact
+
+
 def test_empty_refine_graph_adds_one_conductor_pool_node(db):
     task, policy = make_task()
     node = add_refine_node(task, policy)
@@ -267,12 +311,7 @@ def test_needs_human_notifies_once(db, monkeypatch):
     run = settle_attempt(
         task,
         "succeeded",
-        {
-            "outcome": "needs-human",
-            "comment_url": comment["html_url"],
-            "question": "Which compatibility target is required?",
-            "recommendation": "split",
-        },
+        human_artifact(comment["html_url"]),
     )
     nodes = graph.load_graph(task["id"])
     refine.reconcile(task, policy, nodes, [run], 1)
@@ -296,12 +335,7 @@ def test_notify_failure_still_settles(db, monkeypatch):
     run = settle_attempt(
         task,
         "succeeded",
-        {
-            "outcome": "needs-human",
-            "comment_url": comment["html_url"],
-            "question": "Choose one target",
-            "recommendation": "defer",
-        },
+        human_artifact(comment["html_url"], "defer", question="Choose one target"),
     )
     refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
     assert controls.task_snapshot(task["id"])["state"] == "succeeded"
@@ -637,3 +671,144 @@ def test_the_prompt_offers_closing_only_when_it_is_available():
     shut = refine.refine_prompt(task, receipt, closing=False)
     assert "Closing is switched off for this run" in shut
     assert "recommend: close" in shut
+
+
+def test_needs_human_stores_the_options_on_the_receipt(db, monkeypatch):
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task, "needs-human")
+    run = settle_attempt(task, "succeeded", human_artifact(comment["html_url"]))
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    escalation = controls.task_snapshot(task["id"])["escalation"]
+    assert escalation["recommendation"] == "split"
+    assert escalation["summary"].startswith("The scope is two features")
+    assert [option["key"] for option in escalation["options"]] == ["split", "hold"]
+    assert escalation["resolved"] is None
+    settled = [row for row in audit_rows(db) if row.action == "refine_settled"]
+    assert json.loads(settled[0].detail_json)["options"] == [
+        {"key": "split", "effect": "split"},
+        {"key": "hold", "effect": "hold"},
+    ]
+
+
+def test_the_notification_links_the_escalations_view(db, monkeypatch):
+    from agent import notify as notify_module
+
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task, "needs-human")
+    sent = []
+
+    async def notify(text, *, level):
+        sent.append(text)
+
+    monkeypatch.setattr(notify_module, "notify", notify)
+    run = settle_attempt(task, "succeeded", human_artifact(comment["html_url"]))
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    assert refine.ESCALATIONS_URL in sent[0]
+
+
+def test_needs_human_without_options_is_refused(db, monkeypatch):
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task, "needs-human")
+    artifact = human_artifact(comment["html_url"])
+    del artifact["options"]
+    run = settle_attempt(task, "succeeded", artifact)
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    assert controls.task_snapshot(task["id"])["evidence"]["state"] == (
+        "refine_unverified"
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "reason"),
+    [
+        (lambda opts: opts[:1], "two to four"),
+        (lambda opts: opts * 3, "two to four"),
+        (lambda opts: [opts[1], opts[0]], "not what"),
+        (lambda opts: [dict(opts[0]), dict(opts[0])], "repeats an option key"),
+        (lambda opts: [{**opts[0], "key": "NOT A KEY"}, opts[1]], "no usable key"),
+        (lambda opts: [{**opts[0], "label": ""}, opts[1]], "no usable label"),
+        (lambda opts: [{**opts[0], "effect": "delete"}, opts[1]], "no known effect"),
+        (
+            lambda opts: [
+                {"key": "c", "label": "Close it", "effect": "close", "detail": {}},
+                opts[1],
+            ],
+            "closes with no reason",
+        ),
+        (
+            lambda opts: [
+                {"key": "d", "label": "Wait", "effect": "defer", "detail": {}},
+                opts[1],
+            ],
+            "no wait condition",
+        ),
+        (
+            lambda opts: [{**opts[0], "detail": {"children": []}}, opts[1]],
+            "splits into no children",
+        ),
+    ],
+)
+def test_the_server_refuses_a_malformed_option_list(db, monkeypatch, mutate, reason):
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task, "needs-human")
+    artifact = human_artifact(comment["html_url"])
+    artifact["options"] = mutate(artifact["options"])
+    # The close and defer heads above are still what `recommend:` names, so
+    # each case fails on the one thing it is testing rather than on order.
+    if artifact["options"] and artifact["options"][0]["effect"] == "close":
+        artifact["recommendation"] = "close"
+    if artifact["options"] and artifact["options"][0]["effect"] == "defer":
+        artifact["recommendation"] = "defer"
+    run = settle_attempt(task, "succeeded", artifact)
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    evidence = controls.task_snapshot(task["id"])["evidence"]
+    assert evidence["state"] == "refine_unverified"
+    assert reason in evidence["reason"]
+
+
+def test_a_downgraded_close_still_carries_decidable_options(db, monkeypatch):
+    task, policy = closing_task(monkeypatch, close_enabled=False)
+    add_refine_node(task, policy)
+    comment = closed_github(monkeypatch, task, "needs-human", state="open")
+    run = settle_attempt(
+        task,
+        "succeeded",
+        {
+            "outcome": "reject",
+            "comment_url": comment["html_url"],
+            "evidence": "duplicate of #12",
+            "recommendation": "close",
+        },
+    )
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    escalation = controls.task_snapshot(task["id"])["escalation"]
+    assert escalation["downgraded"] is True
+    assert [option["effect"] for option in escalation["options"]] == ["close", "hold"]
+    assert escalation["options"][0]["detail"]["reason"] == "not_planned"
+
+
+def test_the_prompt_asks_for_concrete_option_labels():
+    task = {"id": "t-1", "repo": "owner/repo"}
+    receipt = {"issue_number": 7, "url": "u", "title": "t", "body": "b"}
+    text = refine.refine_prompt(task, receipt, closing=True)
+    assert "Close as superseded by #5656" in text
+    assert "numbered list" in text
+    assert "Never a bare verb" in text
+
+
+def test_an_operator_question_reaches_the_next_prompt():
+    task = {"id": "t-1", "repo": "owner/repo"}
+    receipt = {
+        "issue_number": 7,
+        "url": "u",
+        "title": "t",
+        "body": "b",
+        "escalation": {"chat": [{"note": "Does this cover the friends tier too?"}]},
+    }
+    text = refine.refine_prompt(task, receipt, closing=True)
+    assert "Does this cover the friends tier too?" in text
+    assert "asked for more before deciding" in text

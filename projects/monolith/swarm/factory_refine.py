@@ -7,6 +7,7 @@ import json
 from datetime import datetime, timezone
 import logging
 import os
+import re
 from urllib.parse import quote
 
 from sqlmodel import select
@@ -62,10 +63,65 @@ OUTCOME_LABEL = {
     STALE_OUTCOME: "stale",
 }
 RECOMMENDATIONS = ("deliver", "close", "split", "defer")
+# What an option does when an operator picks it. Every effect except `hold`
+# writes to GitHub, and `hold` exists so "leave it exactly as it is" is a
+# choice a person can record rather than a tab they close.
+OPTION_EFFECTS = ("agent-ready", "close", "split", "defer", "hold")
+# The recommendation line and the first option say the same thing in two
+# places, so settlement checks they agree rather than trusting either alone.
+RECOMMENDED_EFFECT = {
+    "deliver": "agent-ready",
+    "close": "close",
+    "split": "split",
+    "defer": "defer",
+}
+MIN_OPTIONS = 2
+MAX_OPTIONS = 4
+MAX_SPLIT_CHILDREN = 5
+CLOSE_REASONS = ("not_planned", "completed")
+DEFER_LABEL = "needs-thought"
 # An issue carrying one of these, or any milestone, is never closed by the
 # lane. Triage on work someone has already prioritised or flagged as a
 # security finding is a judgment call that belongs to a person.
 PROTECTED_LABELS = ("critical", "security-finding")
+
+OPTION_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["key", "label", "effect"],
+    "properties": {
+        "key": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"},
+        "label": {"type": "string", "minLength": 1, "maxLength": 120},
+        "effect": {"enum": list(OPTION_EFFECTS)},
+        "detail": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "scope": {"type": "string", "maxLength": 2000},
+                "reason": {"enum": list(CLOSE_REASONS)},
+                "comment": {"type": "string", "maxLength": 2000},
+                "children": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": MAX_SPLIT_CHILDREN,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["title", "body"],
+                        "properties": {
+                            "title": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256,
+                            },
+                            "body": {"type": "string", "maxLength": 8000},
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
 
 REFINE_SCHEMA = {
     "type": "object",
@@ -76,6 +132,13 @@ REFINE_SCHEMA = {
         "comment_url": {"type": "string", "minLength": 1, "maxLength": 512},
         "question": {"type": "string", "maxLength": 4000},
         "recommendation": {"enum": list(RECOMMENDATIONS)},
+        "summary": {"type": "string", "maxLength": 2000},
+        "options": {
+            "type": "array",
+            "minItems": MIN_OPTIONS,
+            "maxItems": MAX_OPTIONS,
+            "items": OPTION_SCHEMA,
+        },
         "evidence": {"type": "string", "maxLength": 2000},
     },
 }
@@ -111,7 +174,8 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
         f"Brief repository {task['repo']} issue #{receipt['issue_number']} at "
         f"{receipt['url']}.\n\n"
         f"Title: {receipt['title']}\n\nIssue body:\n{body}\n\n"
-        "Read the issue and the repository, then post EXACTLY ONE issue comment "
+        + _chat_prompt(receipt)
+        + "Read the issue and the repository, then post EXACTLY ONE issue comment "
         f"whose first line is `{BRIEF_HEADING}`. Include `### Outcome`, "
         "`### Acceptance`, `### Files`, `### Evidence`, and `### Risks` in that "
         "order.\n\n"
@@ -121,8 +185,12 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
         "`needs-human` when value, scope, or staleness is unclear. Apply the "
         "`needs-human` label and make the LAST section `### Decision needed`, "
         "holding one line of the form `recommend: deliver` (or `close`, "
-        "`split`, `defer`) followed by the single specific question a person "
-        "must answer.\n"
+        "`split`, `defer`), then the single specific question a person must "
+        "answer, then the same options you return in the artifact as a "
+        "numbered list, the recommended one first, each line reading "
+        "`1. <label>`. A reader on GitHub decides from that list, and an "
+        "operator decides from the same list on the console, so the two must "
+        "say the same thing.\n"
         + triage
         + "\nThe bar for closing is evidence a reader can check, not a "
         "judgement you formed. If you are in any doubt, choose `needs-human` "
@@ -137,10 +205,70 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
         "`gh label create` and `gh issue close --reason not_planned`. "
         '`gh auth status` reporting "not logged in" is expected and is not a '
         "problem.\n\n"
-        "Return the typed artifact. `question` and `recommendation` are "
-        "required for `needs-human` and omitted otherwise. `evidence` is "
+        "Return the typed artifact. `question`, `recommendation`, `summary` "
+        "and `options` are required for `needs-human` and omitted otherwise. "
+        "`summary` is the `### Outcome` paragraph verbatim. `evidence` is "
         "required for `reject` and `stale`, and is the same citation your "
-        "brief section gives."
+        "brief section gives.\n\n" + _options_prompt()
+    )
+
+
+def _chat_prompt(receipt: dict) -> str:
+    """The operator's unanswered question, when this brief was asked for again.
+
+    An escalation the operator answered with "needs more chat" re-queues the
+    same receipt, so the next brief is written knowing exactly what was not
+    answered the first time. Without this the re-run would produce the same
+    brief and the loop would not converge.
+    """
+    escalation = receipt.get("escalation") or {}
+    chat = escalation.get("chat") or []
+    if not chat:
+        return ""
+    note = str((chat[-1] or {}).get("note") or "").strip()
+    if not note:
+        return ""
+    return (
+        "An operator read your previous brief on this issue and asked for "
+        "more before deciding. Answer this directly in `### Outcome`, and let "
+        "it shape your verdict and your options:\n"
+        f"{_bounded_planner_text(note, 2000)}\n\n"
+    )
+
+
+def _options_prompt() -> str:
+    """How to write the options, which is the half that decides whether a
+    person can act on the escalation in one click.
+
+    The labels are what an operator reads under time pressure, so the prompt
+    asks for the concrete act ("Close as superseded by #5656") rather than the
+    verb the effect already names. A screen of buttons reading close, defer,
+    hold tells a reader nothing the effect field did not.
+    """
+    return (
+        "`options` is two to four things a person could decide, ordered with "
+        "the recommendation FIRST. Its effect must match your `recommend:` "
+        "line: deliver means `agent-ready`, close means `close`, split means "
+        "`split`, defer means `defer`.\n"
+        "Each option is `{key, label, effect, detail}`.\n"
+        "`key` is a short slug, lowercase letters, digits and hyphens.\n"
+        "`label` is what the button says, and it must name the concrete act "
+        'with the specifics in it: "Deliver the /invoke path first", "Close '
+        'as superseded by #5656", "Split the operator UI out of the API". '
+        'Never a bare verb such as "close" or "defer": the effect field '
+        "already says that, and a label that only repeats it gives the person "
+        "deciding nothing to decide on.\n"
+        "`effect` is one of `agent-ready`, `close`, `split`, `defer`, "
+        "`hold`.\n"
+        "`detail` carries what that effect needs: `agent-ready` takes an "
+        "optional `scope` note posted as a comment; `close` takes `reason` "
+        "(`not_planned` or `completed`) and a `comment` saying why; `split` "
+        "takes `children`, one to five `{title, body}` issues to open before "
+        "the parent closes; `defer` takes a `comment` naming the condition "
+        "that would make this worth doing; `hold` takes nothing and leaves "
+        "the issue exactly as it is.\n"
+        "Always include one option that is not the recommendation, so the "
+        "person deciding has a real alternative rather than a confirmation."
     )
 
 
@@ -263,6 +391,83 @@ def _comments_since(repo: str, number: int, admitted: datetime) -> list:
     return collected
 
 
+ESCALATIONS_URL = "https://private.jomcgi.dev/agents/escalations"
+
+
+def downgrade_options(artifact: dict) -> list[dict]:
+    """The options a close verdict carries once the server refuses the close.
+
+    A downgraded `reject` or `stale` never wrote options: the node reached a
+    verdict it was allowed to act on, and the server is what turned it into an
+    escalation. Synthesising them here is what keeps every escalation
+    decidable in one click rather than leaving the downgraded ones as a
+    question with no buttons under it.
+    """
+    evidence = (artifact.get("evidence") or "").strip()
+    first = evidence.splitlines()[0][:100] if evidence else "the cited evidence"
+    return [
+        {
+            "key": "close",
+            "label": f"Close it: {first}",
+            "effect": "close",
+            "detail": {
+                "reason": "not_planned",
+                "comment": evidence[:2000] or "Closed on the refine pass evidence.",
+            },
+        },
+        {
+            "key": "hold",
+            "label": "Leave it open and decide later",
+            "effect": "hold",
+            "detail": {},
+        },
+    ]
+
+
+def _escalation_document(artifact: dict, comment_url: str, downgraded: bool) -> dict:
+    options = artifact.get("options")
+    if not isinstance(options, list) or not options:
+        options = downgrade_options(artifact)
+    return {
+        "recommendation": artifact.get("recommendation")
+        or ("close" if downgraded else "defer"),
+        "question": (
+            artifact.get("question") or artifact.get("evidence") or ""
+        ).strip(),
+        "summary": (artifact.get("summary") or "").strip(),
+        "options": options,
+        "comment_url": comment_url,
+        "downgraded": downgraded,
+        "resolved": None,
+    }
+
+
+def _record_escalation(
+    task_id: str, artifact: dict, comment_url: str, *, downgraded: bool
+) -> dict:
+    """Write the escalation document onto the receipt, once.
+
+    Settlement is reached again on every tick until it takes, so this is
+    written only when the receipt carries nothing yet. Re-writing it would
+    discard a resolution an operator had already recorded against an
+    escalation whose task settlement was still deferred.
+    """
+    document = _escalation_document(artifact, comment_url, downgraded)
+    with _locked_session() as (db, _control):
+        row = db.exec(
+            select(FactoryReceipt)
+            .where(FactoryReceipt.task_id == task_id)
+            .execution_options(populate_existing=True)
+        ).first()
+        if row is None:
+            return document
+        if row.escalation_json:
+            return json.loads(row.escalation_json)
+        row.escalation_json = json.dumps(document)
+        db.add(row)
+    return document
+
+
 def _notify_once(
     task_id: str, repo: str, number: int, question: str, recommendation: str
 ) -> None:
@@ -288,7 +493,8 @@ def _notify_once(
         asyncio.run(
             notify(
                 f"Factory refine needs a human on {repo}#{number}"
-                f" (recommend: {recommendation}): {question[:500]}",
+                f" (recommend: {recommendation}): {question[:500]}\n"
+                f"Decide at {ESCALATIONS_URL}",
                 level="warn",
             )
         )
@@ -304,6 +510,85 @@ def _notify_once(
             )
 
 
+_OPTION_KEY = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+
+
+def _verify_option(option: object, index: int) -> str | None:
+    """One option's shape, checked by the server rather than by the schema.
+
+    The schema goes to the guest so it writes the right thing; this runs on
+    what came back, because the artifact is a claim until the server has
+    checked it. Each effect is checked on the fields it will actually use at
+    apply time, so an operator never clicks a button whose effect has nothing
+    to act with.
+    """
+    where = f"option {index + 1}"
+    if not isinstance(option, dict):
+        return f"{where} is not an object"
+    unknown = set(option) - {"key", "label", "effect", "detail"}
+    if unknown:
+        return f"{where} carries unsupported fields"
+    key, label = option.get("key"), option.get("label")
+    if not isinstance(key, str) or not _OPTION_KEY.fullmatch(key):
+        return f"{where} has no usable key"
+    if not isinstance(label, str) or not label.strip() or len(label) > 120:
+        return f"{where} has no usable label"
+    effect = option.get("effect")
+    if effect not in OPTION_EFFECTS:
+        return f"{where} names no known effect"
+    detail = option.get("detail")
+    if detail is None:
+        detail = {}
+    if not isinstance(detail, dict):
+        return f"{where} detail is not an object"
+    if effect == "close" and detail.get("reason") not in CLOSE_REASONS:
+        return f"{where} closes with no reason"
+    if effect == "defer" and not str(detail.get("comment") or "").strip():
+        return f"{where} defers with no wait condition"
+    if effect == "split":
+        children = detail.get("children")
+        if not isinstance(children, list) or not 1 <= len(children) <= (
+            MAX_SPLIT_CHILDREN
+        ):
+            return f"{where} splits into no children"
+        for child in children:
+            if not isinstance(child, dict):
+                return f"{where} has a child that is not an object"
+            title = child.get("title")
+            if not isinstance(title, str) or not title.strip():
+                return f"{where} has a child with no title"
+            if not isinstance(child.get("body", ""), str):
+                return f"{where} has a child with a non-text body"
+    return None
+
+
+def _verify_options(artifact: dict, recommendation: str) -> str | None:
+    """The option list a needs-human escalation must carry, or why it does not.
+
+    The first option is the recommendation. Keeping them in agreement is what
+    lets the operator page render one primary button and the GitHub reader see
+    the same choice as item one, from a single source.
+    """
+    options = artifact.get("options")
+    if not isinstance(options, list):
+        return "needs-human carries no options"
+    if not MIN_OPTIONS <= len(options) <= MAX_OPTIONS:
+        return f"needs-human carries {len(options)} options, not two to four"
+    for index, option in enumerate(options):
+        invalid = _verify_option(option, index)
+        if invalid is not None:
+            return invalid
+    keys = [option["key"] for option in options]
+    if len(set(keys)) != len(keys):
+        return "needs-human repeats an option key"
+    if options[0]["effect"] != RECOMMENDED_EFFECT[recommendation]:
+        return (
+            f"the first option is {options[0]['effect']}, which is not what "
+            f"recommend: {recommendation} asks for"
+        )
+    return None
+
+
 def _verify_artifact(artifact: dict, outcome: str) -> str | None:
     """The fields each verdict must carry, or the reason it does not."""
     question = artifact.get("question")
@@ -314,7 +599,7 @@ def _verify_artifact(artifact: dict, outcome: str) -> str | None:
             return "needs-human carries no question"
         if recommendation not in RECOMMENDATIONS:
             return "needs-human carries no recommendation"
-        return None
+        return _verify_options(artifact, recommendation)
     if outcome in CLOSING_OUTCOMES:
         if not isinstance(evidence, str) or not evidence.strip():
             return f"{outcome} cites no evidence"
@@ -442,13 +727,20 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
                 "recommendation": artifact.get("recommendation"),
             },
         )
+    escalation = None
     if effective == HUMAN_LABEL:
+        escalation = _record_escalation(
+            task["id"],
+            artifact,
+            match["html_url"],
+            downgraded=downgrade is not None,
+        )
         _notify_once(
             task["id"],
             repo,
             number,
-            (artifact.get("question") or artifact.get("evidence") or "").strip(),
-            artifact.get("recommendation") or "close",
+            escalation["question"],
+            escalation["recommendation"],
         )
     if effective in CLOSING_OUTCOMES:
         _audit_once(
@@ -494,6 +786,15 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
             outcome=effective,
             claimed=outcome,
             comment_url=match["html_url"],
+            # The options go in the audit as well as on the receipt: the
+            # receipt holds the live document a decision mutates, and the
+            # audit holds what was offered at the moment the escalation was
+            # raised, which is what an operator reads back afterwards.
+            recommendation=escalation["recommendation"] if escalation else None,
+            options=[
+                {"key": option["key"], "effect": option["effect"]}
+                for option in (escalation or {}).get("options") or []
+            ],
         )
 
 
