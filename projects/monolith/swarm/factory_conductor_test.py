@@ -490,7 +490,9 @@ def complete_feedback_node(
     return run_feedback_node(task, node_key, value, head=head, **kwargs)
 
 
-def run_feedback_node(task, node_key, value, *, head=None, status="succeeded"):
+def run_feedback_node(
+    task, node_key, value, *, head=None, status="succeeded", reason=None
+):
     """Reserve and settle one attempt of a node that is already in the graph."""
     import json
     from swarm import factory_controls as controls
@@ -516,6 +518,8 @@ def run_feedback_node(task, node_key, value, *, head=None, status="succeeded"):
         "artifact": {"status": "ok", "value": value},
         "cleanup": {"status": "completed"},
     }
+    if reason is not None:
+        result["reason"] = reason
     assert conductor.graph.record_dispatch(task["id"], node_key, 1, session_id, None).ok
     assert conductor.graph.record_outcome(
         task["id"], node_key, 1, status, 0.25, head, json.dumps(result)
@@ -5275,6 +5279,7 @@ def fail_round_node(task, node_key):
             "head_sha": None,
         },
         status="failed",
+        reason="artifact_missing: the turn ended with no typed artifact",
     )
 
 
@@ -5288,6 +5293,9 @@ def test_a_failed_correction_opens_the_next_round_against_the_same_review(
     discarded, so conductor_5 paused task t-5361e8a4 with no supported
     task-local recovery path.
     """
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_ONE}}
+    )
     task, policy = reviewed_task(rounds=2)
     conductor.reconcile_task(task["id"], policy, object())
     fail_round_node(task, "correct_1")
@@ -5306,9 +5314,6 @@ def test_a_failed_correction_opens_the_next_round_against_the_same_review(
     assert conductor._review_rounds_used(task["id"]) == 2
     # Once, not once per tick: the next tick dispatches the correction.
     version = conductor.graph.current_version(task["id"])
-    monkeypatch.setattr(
-        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_ONE}}
-    )
     conductor.reconcile_task(task["id"], policy, object())
     assert conductor.graph.current_version(task["id"]) == version
     assert any(
@@ -5316,7 +5321,192 @@ def test_a_failed_correction_opens_the_next_round_against_the_same_review(
     )
 
 
-def test_a_re_review_that_settled_without_a_verdict_opens_the_next_round(feedback_db):
+def test_a_delivered_reopened_round_does_not_name_the_failed_one(
+    feedback_db, monkeypatch
+):
+    """The failure that paused t-5361e8a4, now at the moment work is delivered.
+
+    correct_1 keeps its failed run for good, because the graph refuses
+    discarding a node that has run. Scanning it as an open failure would hand
+    the planner node_failed on a key it may not add and a node it may not
+    discard, exactly the prompt shape that produced "no supported task-local
+    recovery path".
+    """
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_ONE}}
+    )
+    task, policy = reviewed_task(rounds=2)
+    conductor.reconcile_task(task["id"], policy, object())
+    fail_round_node(task, "correct_1")
+    conductor.reconcile_task(task["id"], policy, object())
+    run_correction_round(task, policy, 2, verdict="approve", head=HEAD_TWO)
+
+    nodes = conductor.graph.load_graph(task["id"])
+    runs = conductor.graph.node_runs(task["id"])
+    assert any(node["node_key"] == "correct_1" for node in nodes)
+    deviation = conductor.deviations.factory_deviation(
+        nodes,
+        runs,
+        review_rounds_used=2,
+        max_review_rounds=2,
+        pending_review=None,
+    )
+    assert deviation["code"] == "graph_exhausted"
+
+    conductor.reconcile_task(task["id"], policy, object())
+    planner = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    assert node_planner_context(planner["conductor_1"])["deviation"] == deviation
+
+
+def test_the_newest_round_is_still_scanned_when_it_fails(feedback_db, monkeypatch):
+    """Only a superseded round is skipped, never the one that is current."""
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_ONE}}
+    )
+    task, policy = reviewed_task(rounds=2)
+    conductor.reconcile_task(task["id"], policy, object())
+    fail_round_node(task, "correct_1")
+    conductor.reconcile_task(task["id"], policy, object())
+    run_feedback_node(
+        task,
+        "correct_2",
+        {
+            "status": "complete",
+            "summary": "Applied round 2",
+            "pr_number": 21,
+            "head_sha": HEAD_TWO,
+        },
+        head=HEAD_TWO,
+    )
+    fail_round_node(task, "review_2")
+
+    deviation = conductor.deviations.factory_deviation(
+        conductor.graph.load_graph(task["id"]),
+        conductor.graph.node_runs(task["id"]),
+        review_rounds_used=2,
+        max_review_rounds=2,
+        pending_review=None,
+    )
+    assert deviation["code"] == "node_failed"
+    assert deviation["node_key"] == "review_2"
+
+
+def test_an_exhausted_loop_names_the_correction_that_delivered_nothing(
+    feedback_db, monkeypatch
+):
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_ONE}}
+    )
+    task, policy = reviewed_task(rounds=1)
+    conductor.reconcile_task(task["id"], policy, object())
+    fail_round_node(task, "correct_1")
+
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    deviation = node_planner_context(nodes["conductor_1"])["deviation"]
+    assert deviation["code"] == "review_rounds_exhausted"
+    assert deviation["node_key"] == "review_fix"
+    assert "correct_1 delivered nothing" in deviation["text"]
+    assert "artifact_missing" in deviation["text"]
+
+
+def test_an_exhausted_loop_on_a_delivering_round_names_no_correction(feedback_db):
+    """The ordinary bound: every round delivered and the reviewer kept objecting."""
+    task, policy = reviewed_task(rounds=1)
+    conductor.reconcile_task(task["id"], policy, object())
+    run_correction_round(task, policy, 1, verdict="changes_requested", head=HEAD_TWO)
+
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    deviation = node_planner_context(nodes["conductor_1"])["deviation"]
+    assert deviation["code"] == "review_rounds_exhausted"
+    assert "delivered nothing" not in deviation["text"]
+
+
+def test_a_reopened_round_is_briefed_at_the_live_task_branch_head(
+    feedback_db, monkeypatch
+):
+    """A correction can push and then die, so the branch outruns the findings."""
+    task, policy = reviewed_task(rounds=2)
+    conductor.reconcile_task(task["id"], policy, object())
+    fail_round_node(task, "correct_1")
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_TWO}}
+    )
+
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    prompt = nodes["correct_2"]["prompt"]
+    assert f"at head {HEAD_ONE}" in prompt
+    assert f"has since moved to {HEAD_TWO}" in prompt
+    assert "did not complete" in prompt
+    # The re-review still names the head the findings were written against.
+    assert HEAD_ONE in nodes["review_2"]["prompt"]
+
+
+def test_a_reopened_round_falls_back_to_the_reviewed_head(feedback_db, monkeypatch):
+    """An unreadable branch is absent evidence, not a reason to refuse a round."""
+    import httpx
+
+    task, policy = reviewed_task(rounds=2)
+    conductor.reconcile_task(task["id"], policy, object())
+    fail_round_node(task, "correct_1")
+
+    def unreachable(*_args):
+        raise httpx.ConnectError("github unreachable")
+
+    monkeypatch.setattr(conductor, "github_get", unreachable)
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = {n["node_key"]: n for n in conductor.graph.load_graph(task["id"])}
+    prompt = nodes["correct_2"]["prompt"]
+    assert f"at head {HEAD_ONE}" in prompt
+    assert "has since moved" not in prompt
+
+
+def test_an_unrun_re_review_leaves_with_the_round_it_belonged_to(
+    feedback_db, monkeypatch
+):
+    """review_1 can never run once correct_1 failed, so it stops being funded."""
+    from swarm import factory_controls as controls
+
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_ONE}}
+    )
+    task, policy = reviewed_task(rounds=2)
+    conductor.reconcile_task(task["id"], policy, object())
+    before = controls.task_snapshot(task["id"])["allowance"]
+    fail_round_node(task, "correct_1")
+
+    conductor.reconcile_task(task["id"], policy, object())
+    keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
+    assert "review_1" not in keys
+    assert {"correct_1", "correct_2", "review_2"} <= keys
+    after = controls.task_snapshot(task["id"])["allowance"]
+    # Three work turns spent (implement_fix, review_fix, correct_1), two slots
+    # left in the live graph (correct_2, review_2), and no reserve because both
+    # rounds are now spent. correct_1 stays live but has no attempt left, so it
+    # contributes nothing. With review_1 still live it would be six.
+    assert before["turns"] == 6
+    assert after["turns"] == 5
+
+
+def test_a_delivering_round_keeps_its_re_review(feedback_db):
+    """The ordinary path discards nothing: review_1 produced the verdict."""
+    task, policy = reviewed_task(rounds=2)
+    conductor.reconcile_task(task["id"], policy, object())
+    run_correction_round(task, policy, 1, verdict="changes_requested", head=HEAD_TWO)
+
+    conductor.reconcile_task(task["id"], policy, object())
+    keys = {n["node_key"] for n in conductor.graph.load_graph(task["id"])}
+    assert {"correct_1", "review_1", "correct_2", "review_2"} <= keys
+
+
+def test_a_re_review_that_settled_without_a_verdict_opens_the_next_round(
+    feedback_db, monkeypatch
+):
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_TWO}}
+    )
     task, policy = reviewed_task(rounds=2)
     conductor.reconcile_task(task["id"], policy, object())
     run_feedback_node(

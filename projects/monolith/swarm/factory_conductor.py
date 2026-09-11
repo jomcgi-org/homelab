@@ -1872,12 +1872,21 @@ def _insert_review_round(
     ordinal: int,
     max_rounds: int,
     expected_version: int,
+    *,
+    reopened: bool = False,
 ) -> tuple[bool, str | None]:
     """Append this task's next correction and re-review pair, atomically.
 
     The engine owns this edit. A review that requested changes has already
     named the work, so spending a planner turn to restate it is the cost the
     one-node-per-round bootstrap kept paying.
+
+    ``reopened`` says this round replaces one that failed rather than answering
+    a fresh verdict. The previous round's re-review never ran in that case, so
+    it is discarded in the same batch: it holds an attempt and a ceiling in the
+    derived allowance that nothing can ever spend. Its correction is not,
+    because it has runs and the graph refuses discarding those, which is the
+    whole reason this reopening is server-owned.
 
     There is deliberately no processed-cause guard here. A refusal must stay
     retryable: the round consumed nothing, so poisoning its cause would switch
@@ -1893,7 +1902,20 @@ def _insert_review_round(
 
     cause = f"{LOOP_CAUSE}:review_{ordinal}"
     artifact = _artifact(review_run)
-    head = artifact.get("head_sha") or review_run.get("head_sha")
+    reviewed_head = artifact.get("head_sha") or review_run.get("head_sha")
+    head = reviewed_head
+    if reopened:
+        # A correction that died may still have pushed first, so the findings
+        # and the branch no longer describe the same tree. The brief names both
+        # rather than sending the replacement at a head that has moved under
+        # it. An unreadable branch is absent evidence: fall back to the head
+        # the review actually inspected.
+        try:
+            observed = _observed_branch_head(task)
+        except httpx.HTTPError:
+            observed = None
+        if observed:
+            head = observed
     number = artifact.get("pr_number")
     findings = artifact.get("summary")
     findings = _bounded_planner_text(
@@ -1945,10 +1967,20 @@ def _insert_review_round(
         "max_cost_usd": policy["turn_budget_usd"],
         "max_attempts": REVIEW_ROUND_ATTEMPTS,
     }
+    moved = (
+        ""
+        if head == reviewed_head
+        else (
+            f" An earlier correction round for these findings did not complete, "
+            f"and the task branch head has since moved to {head}, so read the "
+            f"branch as it stands before correcting it."
+        )
+    )
     correction = (
         f"Independent review round {ordinal} requested changes on pull request "
-        f"{number} at head {head}. Correct exactly those findings on the task "
-        "branch, push, and update the same pull request. Do not start work the "
+        f"{number} at head {reviewed_head}." + moved + " Correct exactly those "
+        "findings on the task branch, push, and update the same pull request. "
+        "Do not start work the "
         "findings do not name. Finish the round: commit on the task branch, "
         "push, confirm the pull request head moved to your new commit, and "
         "write the declared JSON artifact described at the end of this brief. "
@@ -1961,10 +1993,35 @@ def _insert_review_round(
     )
     re_review = (
         f"Independently review pull request {number} at its exact current head "
-        f"after correction round {ordinal}. The previous review at head {head} "
-        "requested changes. Report the head SHA you inspected and your verdict."
+        f"after correction round {ordinal}. The previous review at head "
+        f"{reviewed_head} requested changes. Report the head SHA you inspected "
+        "and your verdict."
     )
-    edits = [
+    # The re-review the failed round never got to run holds an attempt and a
+    # ceiling the allowance can never spend, so it leaves with the round it
+    # belonged to. Anything with a run, or with a dependent, stays: the graph
+    # refuses those discards and one refusal refuses the whole batch.
+    stale_review = f"review_{ordinal - 1}"
+    superseded = (
+        [
+            {
+                "op": "discard_node",
+                "node_key": stale_review,
+                "stated_reason": (
+                    f"Engine round {ordinal - 1} re-review superseded by round "
+                    f"{ordinal}; its correction never delivered a head to review"
+                ),
+            }
+        ]
+        if (
+            reopened
+            and stale_review in {node["node_key"] for node in nodes}
+            and not any(run["node_key"] == stale_review for run in runs)
+            and not any(stale_review in node["deps"] for node in nodes)
+        )
+        else []
+    )
+    edits = superseded + [
         {
             "op": "add_node",
             "node_key": correct_key,
@@ -2747,11 +2804,13 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     max_rounds = policy.get("max_review_rounds", DEFAULT_MAX_REVIEW_ROUNDS)
     rounds_used = _review_rounds_used(task_id)
     pending = _pending_correction(nodes, runs)
+    reopened = False
     if pending is None:
         # A round the engine opened and that then failed is the engine's to
         # reopen. The planner cannot: it is refused the round keys and cannot
         # discard a node that has run, so the task would only pause.
         pending = _failed_round(nodes, runs)
+        reopened = pending is not None
     loop_refusal = None
     if pending is not None and rounds_used < max_rounds:
         inserted, loop_refusal = _insert_review_round(
@@ -2763,6 +2822,7 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
             rounds_used + 1,
             max_rounds,
             insertion_revision,
+            reopened=reopened,
         )
         if inserted:
             return
