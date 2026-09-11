@@ -17,12 +17,12 @@ from sqlmodel import Session, select
 
 from agent.routine_reconciliation_models import RoutineReconciliation
 from agent_sessions.api import (
+    DRAINER_NODE_KEY,
     KG_NODE_KEY,
     confirm_reconciled_guest_cessation,
     lock_capacity_pool,
     lock_cessation_session,
 )
-from agent_sessions.constants import DRAINER_NODE_KEY
 from core.db import get_engine
 from knowledge.api import EXTRACTION_VERSION
 from shared.invocation_outcomes import UNKNOWN_INVOCATION
