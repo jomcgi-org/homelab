@@ -1344,12 +1344,13 @@ agentSessions:
   # and kg bounds the knowledge-graph tier under background. A narrower total
   # clamps the two inner numbers, so they can never exceed it by a typo.
   #
-  # These numbers must stay at or below what EmberVM will actually create:
-  # claudeRuntimeWorkload concurrency cap and session.maxSessions in
-  # projects/embervm/deploy/values.yaml, raised to 12 and 24 alongside this.
-  # Above those a permit is granted and the guest create takes a session_cap
-  # 429, which fails the turn instead of making it wait, so the guest cap has
-  # to sit above the permit cap rather than below it.
+  # total must stay at or below what EmberVM will actually create:
+  # claudeRuntimeWorkload concurrency cap in projects/embervm/deploy/values.yaml,
+  # raised to 16 alongside this, with session.maxSessions at 24. It is TOTAL
+  # that has to fit, not background: every model family except pi lands on
+  # claude-runtime, so an interactive permit reaches the same workload. Above
+  # the cap a permit is granted and the guest create takes a workload_cap
+  # denial, which fails the turn instead of making it wait.
   admission:
     total: 16
     background: 12
@@ -1485,14 +1486,19 @@ swarm:
   # Per-class, per-role floors on REMAINING quota percent (#5974). A role
   # below its floor is walled for that class and spills through its model
   # pool while a role with a lower floor keeps drawing, so the last slice of
-  # a class goes to the role ranked highest. Only the pooled factory roles
-  # read this, conductor and worker: review never substitutes and the
-  # drainer does not route through the pool. A role whose pool has one
-  # member never consults quota, so a floor needs a model_pools entry with
-  # somewhere to spill to. Empty applies no floors.
+  # a class goes to the role ranked highest. Every pooled factory role reads
+  # this: conductor, worker, the implement and refine class pools, and
+  # reviewer, which now substitutes down model_pools.reviewer while the shared
+  # Claude window is nearly spent. A "reviewer" floor is therefore live and
+  # walls review the way a worker floor walls implementation, except that
+  # review waits rather than falling past the end of its pool. The work-queue
+  # drainer still does not route through a pool, but it reads the same
+  # availability to defer a claim instead of spending it on a walled provider.
+  # A role whose pool has one member never consults quota, so a floor needs a
+  # model_pools entry with somewhere to spill to. Empty applies no floors.
   #   quotaFloors:
   #     codex: {worker: 10, conductor: 0}
-  #     claude: {worker: 15}
+  #     claude: {worker: 15, reviewer: 5}
   quotaFloors: {}
 
 # Grimoire: D&D campaign manager ingest pipeline (private tier only; spec

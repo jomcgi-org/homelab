@@ -107,6 +107,8 @@ def test_a_quiet_window_reviews_on_opus(db, monkeypatch):
     assert verdict["action"] == "reviewer_restored"
     assert verdict["model"] == "opus" and verdict["window_high"] is False
     assert guard.reviewer_for(POLICY, "bug-fix")["model"] == "opus"
+    # Opus reviewing a quiet window is the ordinary state, not an event.
+    assert actions(db, *controls.REVIEWER_ROUTING_ACTIONS) == []
 
 
 def test_a_spent_window_reviews_on_the_next_pool_member(db, monkeypatch):
@@ -184,7 +186,8 @@ def test_an_unreadable_window_never_starts_a_fallback(db, monkeypatch):
         verdict = guard.observe(POLICY)
         assert verdict["window_high"] is False and verdict["model"] == "opus"
     assert actions(db, "quota_guard_unknown") == ["quota_guard_unknown"]
-    assert actions(db, "reviewer_restored") == ["reviewer_restored"]
+    # Nothing had fallen back, so nothing is restored.
+    assert actions(db, "reviewer_restored") == []
 
 
 def test_an_unreadable_window_does_not_end_a_fallback(db, monkeypatch):
@@ -249,7 +252,10 @@ def test_an_unobserved_provider_reads_as_nothing():
     assert guard._window(None) is None
 
 
-def test_a_fractional_utilisation_is_read_as_a_percentage():
+def test_a_sub_one_percent_reading_is_not_re_normalised():
+    """The sidecar already converted the fraction; doing it again read 0.86
+    percent of the weekly window as 86 percent and tripped the fallback on the
+    first day of every window."""
     observed = guard._window(
         {
             "providers": {
@@ -261,7 +267,15 @@ def test_a_fractional_utilisation_is_read_as_a_percentage():
             }
         }
     )
-    assert observed["used_percent"] == pytest.approx(86.0)
+    assert observed["used_percent"] == pytest.approx(0.86)
+
+
+def test_a_quiet_window_at_a_fraction_of_a_percent_keeps_opus(db, monkeypatch):
+    open_quota(monkeypatch)
+    observe(monkeypatch, 0.9)
+    verdict = guard.observe(POLICY)
+    assert verdict["model"] == "opus" and verdict["window_high"] is False
+    assert actions(db, *controls.REVIEWER_ROUTING_ACTIONS) == []
 
 
 def test_an_expired_window_is_ignored():

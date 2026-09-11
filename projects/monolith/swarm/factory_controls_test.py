@@ -1134,13 +1134,13 @@ def test_a_ceiling_of_one_still_leaves_delivery_a_slot(monkeypatch):
 def test_lane_usage_counts_in_flight_and_waiting_receipts(monkeypatch):
     monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
     receipts = [
-        {"state": "admitted", "task_class": "bug-fix"},
-        {"state": "uncertain", "task_class": "docs"},
-        {"state": "queued", "task_class": "judgment-analysis"},
-        {"state": "admitted", "task_class": "refine"},
-        {"state": "succeeded", "task_class": "refine"},
+        {"state": "admitted", "task_class": "bug-fix", "generation": 0},
+        {"state": "uncertain", "task_class": "docs", "generation": 0},
+        {"state": "queued", "task_class": "judgment-analysis", "generation": 0},
+        {"state": "admitted", "task_class": "refine", "generation": 0},
+        {"state": "succeeded", "task_class": "refine", "generation": 0},
         # A receipt written before classes existed reads as delivery.
-        {"state": "queued", "task_class": None},
+        {"state": "queued", "task_class": None, "generation": 0},
     ]
     usage = controls.lane_usage({"max_tasks": {"delivery": 2, "advisory": 2}}, receipts)
     assert usage == {
@@ -1285,3 +1285,22 @@ def test_unsupported_evidence_keys_are_still_refused(db, policy):
         controls.finish_task(
             task, "succeeded", "scheduler", evidence={"merged_by": "nobody"}
         )
+
+
+def test_lane_usage_ignores_other_generations(monkeypatch):
+    """A receipt from a spent generation can never be admitted again, so
+    counting it showed a lane as fuller than anything could make it."""
+    monkeypatch.setenv("FACTORY_MAX_CONCURRENT_TASKS", "4")
+    receipts = [
+        {"state": "admitted", "task_class": "bug-fix", "generation": 2},
+        {"state": "queued", "task_class": "refine", "generation": 2},
+        {"state": "admitted", "task_class": "bug-fix", "generation": 1},
+        {"state": "queued", "task_class": "refine", "generation": 0},
+    ]
+    usage = controls.lane_usage(
+        {"generation": 2, "max_tasks": {"delivery": 2, "advisory": 2}}, receipts
+    )
+    assert usage == {
+        "delivery": {"limit": 2, "active": 1, "queued": 0},
+        "advisory": {"limit": 2, "active": 0, "queued": 1},
+    }

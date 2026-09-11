@@ -412,6 +412,21 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
 
         received_all = []
         for candidate in chosen:
+            # Re-read the lane under the lock. The room that picked this
+            # candidate was measured before a GitHub sweep that takes seconds,
+            # and another replica may have filled the lane in between. admit_next
+            # is still the real gate; this only stops the lane queueing receipts
+            # it already knows it cannot admit.
+            with _locked_session() as (db, _control):
+                held = db.exec(
+                    select(FactoryReceipt).where(
+                        FactoryReceipt.generation == generation,
+                        FactoryReceipt.state.in_(("queued", "admitted", "uncertain")),
+                    )
+                ).all()
+                room = open_lanes(policy, held, lanes)
+            if not room.get(candidate["lane"]):
+                continue
             if admitted_today >= intake["max_per_day"]:
                 _idle(
                     {

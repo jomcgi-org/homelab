@@ -100,12 +100,18 @@ DEFAULT_QUOTA_GUARD = {
 # reading never starts a fallback: downgrading every review because a broker
 # read failed would turn one outage into two.
 QUOTA_GUARD_MAX_AGE_SECONDS = 3600
+# Lane-wide routing, which is what the board renders. The per-node wait is
+# deliberately NOT here: it is one task's node, recorded against that task, and
+# reading it as the lane's verdict would say "no reviewer has quota" while
+# another review was running.
 REVIEWER_ROUTING_ACTIONS = (
     "reviewer_fallback",
     "reviewer_restored",
     "review_waiting",
     "quota_guard_unknown",
 )
+# One review node that cannot start yet, audited against its task.
+REVIEW_NODE_WAITING_ACTION = "review_node_waiting"
 # ADR agents/038 decision 5. A class carries a verification mode and a floor on
 # the implementer tier, and judgment work never routes to the cheap lane.
 # DEFAULT_TASK_CLASS is re-exported from factory_models, which owns it because
@@ -429,10 +435,18 @@ def lane_limits(policy: dict) -> dict:
 
 
 def lane_usage(policy: dict, receipts: list[dict]) -> dict:
-    """Per-lane limits beside what is in flight and what is waiting."""
+    """Per-lane limits beside what is in flight and what is waiting.
+
+    Scoped to the policy's own generation. Receipts from an earlier generation
+    are history: they can no longer be admitted, so counting them showed a lane
+    as fuller than anything could make it.
+    """
     limits = lane_limits(policy)
+    generation = policy.get("generation", 0)
     usage = {lane: {"limit": limits[lane], "active": 0, "queued": 0} for lane in LANES}
     for receipt in receipts:
+        if receipt.get("generation") != generation:
+            continue
         lane = lane_for(receipt.get("task_class") or DEFAULT_TASK_CLASS)
         if receipt.get("state") in _ACTIVE:
             usage[lane]["active"] += 1

@@ -1241,3 +1241,33 @@ def test_repointing_an_armed_dependency_refuses_the_whole_plan(db):
     assert not result.ok and result.refusal_code == "armed"
     nodes = {node["node_key"]: node for node in load_graph(task_id)}
     assert set(nodes) == {"alpha", "check"} and nodes["check"]["deps"] == ["alpha"]
+
+
+def test_a_dispatched_model_pins_the_attempt_without_touching_the_node(db):
+    """The plan keeps the model it asked for; the pin records what ran."""
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0).ok
+    context = {"repo": "org/repo", "branch": "factory/work", "workflow_id": "flow"}
+    first = admit_dispatch(
+        task_id, "one", dispatch_key="one-1", execution_context=context, model="astra"
+    )
+    assert first.ok and first.pin["model"] == "astra"
+    node = next(n for n in load_graph(task_id) if n["node_key"] == "one")
+    assert node["model"] == "worker-model"
+
+
+def test_a_replay_keeps_its_original_pinned_model(db):
+    """A replay is the same attempt, so the dispatcher's current choice cannot
+    change what it already ran on."""
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0).ok
+    context = {"repo": "org/repo", "branch": "factory/work", "workflow_id": "flow"}
+    first = admit_dispatch(
+        task_id, "one", dispatch_key="one-1", execution_context=context
+    )
+    assert first.ok and first.pin["model"] == "worker-model"
+    replay = admit_dispatch(
+        task_id, "one", dispatch_key="one-1", execution_context=context, model="astra"
+    )
+    assert replay.ok and replay.pin["model"] == "worker-model"
+    assert len(node_runs(task_id)) == 1

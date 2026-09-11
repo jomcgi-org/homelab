@@ -837,13 +837,15 @@ claudeRuntimeWorkload:
   # /var/lib/embervm/scratch on node-1/2/3 rather than on node-4.
   persistenceEnabled: true
   # Raised from the chart's 4 and 8 for the factory's two lanes. The monolith
-  # grants 16 shared execution permits with 12 for the background tiers
-  # (agentSessions.admission), and a permit the guest cap then refuses is
-  # worse than one that waits: the create takes a session_cap 429, which fails
-  # the turn instead of queueing it. So the guest cap has to sit ABOVE the
-  # permit cap, not below it.
+  # grants agentSessions.admission.total permits, 16, and a permit the guest
+  # cap then refuses is worse than one that waits: the create takes a
+  # workload_cap denial and fails the turn instead of queueing it. So the guest
+  # cap has to sit at or above the TOTAL permit count, not above the 12 that
+  # bounds only the background tiers. Every model family except pi lands on
+  # this workload (agent_sessions/__init__.py DEFAULT_WORKLOAD), so all 16
+  # permits can arrive here, interactive sessions included.
   #
-  # cap bounds NEW session VMs at create time. Twelve of them is 48 GiB from
+  # cap bounds NEW session VMs at create time. Sixteen of them is 64 GiB from
   # creates at memMib 4096, spread over three spot brick nodes at
   # noded.maxLiveVMs 16 each, so no single node is asked for more than the
   # placement gate would give it anyway. Rejoin still admits a parked session
@@ -852,11 +854,11 @@ claudeRuntimeWorkload:
   #
   # maxSessions counts live plus banked and is what actually bounds the
   # snapshot dir: 24 x ~4 GiB is 96 GiB worst case, held down in practice by
-  # the one-hour banked TTL that reaps abandoned and parked sessions alike.
-  # Keep it at twice cap so a full set of creates can still bank without
-  # locking the workload out, which is the failure that cap 1 / maxSessions 2
-  # produced during the original validation.
-  cap: 12
+  # the one-hour banked TTL that reaps abandoned and parked sessions alike. It
+  # stays above cap so a burst of creates can still bank without locking the
+  # workload out, which is the failure that cap 1 / maxSessions 2 produced
+  # during the original validation.
+  cap: 16
   session:
     maxSessions: 24
 

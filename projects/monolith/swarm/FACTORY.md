@@ -203,12 +203,13 @@ non-interactive tiers under it, and `kg` under that. The code defaults are
 4/3/2 and the chart sets 16/12/2. A narrower `total` clamps the two inner
 numbers.
 
-These must stay at or below what EmberVM will actually create for the session
-workload: `claudeRuntimeWorkload` concurrency `cap` and `session.maxSessions`
-in `projects/embervm/deploy/values.yaml`, 12 and 24. Above those, a granted
-permit meets a `session_cap` 429 at guest create, which fails the turn rather
-than making it wait, so the guest cap sits above the permit cap rather than
-below it.
+`total` must stay at or below what EmberVM will actually create for the session
+workload: `claudeRuntimeWorkload` concurrency `cap` in
+`projects/embervm/deploy/values.yaml`, 16, with `session.maxSessions` at 24. It
+is `total` that has to fit rather than `background`, because every model family
+except pi lands on `claude-runtime`, so an interactive permit reaches the same
+workload. Above the cap a granted permit meets a `workload_cap` denial at guest
+create, which fails the turn rather than making it wait.
 
 ### Autonomous intake and refine
 

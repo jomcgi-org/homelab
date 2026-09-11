@@ -615,3 +615,36 @@ def test_the_daily_cap_stops_the_second_lane_mid_tick(db, monkeypatch):
     )
     assert [row["receipt"]["task_class"] for row in admitted] == ["bug-fix"]
     assert json.loads(audits(db, "intake_idle")[0].detail_json)["reason"] == "daily_cap"
+
+
+def test_a_lane_filled_during_the_github_sweep_queues_nothing(db, monkeypatch):
+    """The room that picked a candidate was measured before a sweep that takes
+    seconds. Another replica can fill the lane in between."""
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"]), issue(2)])
+    real_receive = intake_loop.receive_issue
+
+    def fill_then_receive(*args, **kwargs):
+        # Stand in for the replica that admitted while the sweep was running.
+        with Session(db) as session:
+            session.add(
+                FactoryReceipt(
+                    repo="owner/repo",
+                    issue_number=99,
+                    generation=0,
+                    title="taken",
+                    body="body",
+                    url="https://github.com/owner/repo/issues/99",
+                    actor=intake_loop.ACTOR,
+                    task_class="refine",
+                    state="admitted",
+                )
+            )
+            session.commit()
+        return real_receive(*args, **kwargs)
+
+    monkeypatch.setattr(intake_loop, "receive_issue", fill_then_receive)
+    admitted = intake_loop.intake_tick(
+        policy(labels=["agent-ready"], refine_enabled=True), generation=0
+    )
+    # Delivery queued; the advisory lane filled behind it and queues nothing.
+    assert [row["receipt"]["task_class"] for row in admitted] == ["bug-fix"]

@@ -1178,7 +1178,12 @@ def planner_prompt(
 
 
 def verify_delivery(
-    task: dict, number: int, runs: list[dict], reviewers: tuple | list | None = None
+    task: dict,
+    number: int,
+    runs: list[dict],
+    reviewers: tuple | list | None = None,
+    *,
+    judgment: bool = False,
 ) -> dict:
     """Confirm an approved review of this exact head by an independent session.
 
@@ -1187,6 +1192,11 @@ def verify_delivery(
     a property of the SESSION, never of the model: a fallback reviewer still
     runs in its own session and never the implementer's, and that is what the
     session check below enforces.
+
+    ``judgment`` narrows that to the Opus-class floor. Dispatch already makes
+    judgment review wait rather than fall back, so a below-floor approval
+    should be unreachable; the gate refuses it anyway, because a completion
+    gate that trusts an upstream check is not a gate.
     """
     pr = github_get(task["repo"], f"pulls/{number}")
     branch = f"factory/{task['id']}"
@@ -1218,6 +1228,10 @@ def verify_delivery(
     allowed_reviewers = tuple(
         reviewers or (task.get("reviewer_model", task["conductor_model"]),)
     )
+    if judgment:
+        allowed_reviewers = tuple(
+            model for model in allowed_reviewers if model in JUDGMENT_MODELS
+        )
     reviewer_model = (review or {}).get("pin", {}).get("model")
     if (
         review is None
@@ -1359,15 +1373,17 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
             "reviewer_model_mismatch",
             "review nodes must name a model from the configured reviewer pool",
         )
+    # Review is not exempt. Judgment work needs an Opus-class reviewer as much
+    # as an Opus-class implementer, and dispatch makes it wait rather than fall
+    # back, so a plan that names a cheaper reviewer for it could never run.
     if (
         task_class in JUDGMENT_CLASSES
-        and role != "review"
         and "model" in source
         and model not in JUDGMENT_MODELS
     ):
         raise _EditRefused(
             "below_judgment_floor",
-            "judgment work requires an Opus-class implementer",
+            "judgment work requires an Opus-class implementer and reviewer",
         )
     if model not in policy["allowed_models"]:
         raise _EditRefused("model_not_allowed", "model is not allowed")
@@ -1718,11 +1734,14 @@ def _apply_decision(
                 result.detail or "graph operation refused",
             )
     elif action == "finish":
+        from swarm.factory_refine import task_class_for
+
         evidence = verify_delivery(
             task,
             decision["pr_number"],
             runs,
             pool_for("reviewer", policy),
+            judgment=task_class_for(task["id"]) in JUDGMENT_CLASSES,
         )
         result = finish_task(task["id"], "succeeded", ACTOR, evidence=evidence)
         if not result["ok"]:
@@ -2982,7 +3001,10 @@ def _reviewer_override(
         _audit_once(
             task_id,
             f"review_waiting:{node['node_key']}:{'high' if high else 'low'}",
-            "review_waiting",
+            # Not review_waiting: that action is the lane-wide routing verdict
+            # the board reads, and one task's node waiting must not overwrite
+            # it while another reviewer is happily working.
+            "review_node_waiting",
             {
                 "node_key": node["node_key"],
                 "task_class": task_class,
