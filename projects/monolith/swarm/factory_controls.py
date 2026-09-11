@@ -1394,6 +1394,10 @@ def finish_task(
             "pr_url",
             "head_sha",
             "review_session_id",
+            # Which model approved. A spent Claude window routes review down
+            # the reviewer pool, so an accepted delivery has to say who gave
+            # the approval rather than leaving it inferred from the date.
+            "reviewer_model",
             "state",
             "reason",
         }:
