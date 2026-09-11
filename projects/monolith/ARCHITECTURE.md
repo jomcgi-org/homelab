@@ -327,6 +327,20 @@ agents/038 decision 5 gives judgment work an Opus-or-better implementer floor
 because no machine oracle can verify its correctness; quota pressure parks that
 work instead of demoting it.
 
+**Why.** Landing exists because approval was not delivery: #3877 was shipped as
+PR #6007 whose body carried no closing keyword, so the issue stayed open with
+`agent-ready` intact and the next generation's sweep admitted it again as fresh
+work. The fix is three separate facts rather than one. Intake excludes any issue
+with a succeeded receipt, so the lane's own delivery record is what says work is
+done and the issue's labels are not. The delivery gate reads the pull request
+body back from GitHub and refuses a body that does not close its issue, naming
+the refusal so the planner can act on it. And landing, behind an `auto_merge`
+flag that defaults off, arms the merge and closes the issue against the merge
+it observes, one pull request at a time because the merge queue ejects
+everything behind a failed candidate. Landing stops at the merge: verifying the
+chart write-back and the live rollout is a node that does not exist yet
+(#6002).
+
 **Why.** The factory has two lanes because Opus review is the only scarce
 input it has. Implementation capacity is three spot brick nodes behind the
 autoscaler, and the implementers on the other end of it bill someone else or
