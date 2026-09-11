@@ -21,7 +21,12 @@ from swarm.factory_controls import (
     intake_state,
     lane_for,
 )
-from swarm.factory_intake import INTAKE_ACTOR, open_lanes, receive_issue
+from swarm.factory_intake import (
+    INTAKE_ACTOR,
+    ceiling_below_lanes,
+    open_lanes,
+    receive_issue,
+)
 from swarm.factory_models import FactoryAudit, FactoryReceipt
 
 logger = logging.getLogger(__name__)
@@ -181,6 +186,17 @@ def _listing_due(now: datetime) -> bool:
     that as a sweep would leave the lane blind for an hour after the cap
     cleared. A settlement recorded in the same second as the sweep re-opens
     it: one extra sweep costs two requests, a missed one costs an hour.
+
+    An admission re-opens it too, and that is what lets a lane fill. A sweep
+    takes at most one candidate per lane, so at four delivery and eight
+    advisory slots the hourly clock filled the lanes at one slot an hour. When
+    the newest admission is at or after the newest sweep, the previous sweep
+    found work and there may be more, so the next tick sweeps again. It costs
+    at most one extra sweep per admission: the sweep stamps its own clock
+    before reading GitHub, so a sweep that admits nothing leaves the newest
+    admission behind the newest sweep and the hourly clock governs again. The
+    caller has already established that a lane has room; a tick with none
+    returns before reaching this.
     """
     with _read_session() as db:
         last = _latest(db, "intake_swept")
@@ -188,6 +204,9 @@ def _listing_due(now: datetime) -> bool:
             return True
         marked = _aware(last.created_at)
         if marked < now - timedelta(seconds=IDLE_AUDIT_SECONDS):
+            return True
+        admitted = _latest(db, "intake_admitted")
+        if admitted is not None and _aware(admitted.created_at) >= marked:
             return True
         settled = db.exec(
             select(FactoryReceipt.id).where(
@@ -210,6 +229,13 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
         intake = intake_policy(policy)
         if not intake["enabled"]:
             return []
+        # The ceiling is chart configuration and the lane maxima are posted
+        # policy, so neither says the other is the binding constraint. Name it
+        # here, throttled, rather than leaving an operator to infer it from a
+        # lane that never opens.
+        shortfall = ceiling_below_lanes(policy)
+        if shortfall is not None:
+            _throttled("lane_ceiling_below_lanes", shortfall)
         now = _now()
         today = now - timedelta(hours=24)
         with _locked_session() as (db, _control):
