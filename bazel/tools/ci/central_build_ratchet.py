@@ -27,9 +27,7 @@ import sys
 from typing import Sequence
 
 CENTRAL_BUILD = "projects/monolith/BUILD"
-_GAZELLE_EXCLUDE = re.compile(
-    r"^\s*#\s*gazelle:exclude(?:\s+(?P<pattern>\S+))?\s*$"
-)
+_GAZELLE_EXCLUDE = re.compile(r"^\s*#\s*gazelle:exclude(?:\s+(?P<pattern>\S+))?\s*$")
 
 
 class RatchetError(RuntimeError):
@@ -89,9 +87,7 @@ def _string_values(
         return (_StringValue(node.value, node.lineno),)
     if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
         return tuple(
-            value
-            for item in node.elts
-            for value in _string_values(item, variables)
+            value for item in node.elts for value in _string_values(item, variables)
         )
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         return _string_values(node.left, variables) + _string_values(
@@ -292,9 +288,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        additions = check_repository(
-            _repository_root(), args.base_ref, args.head_ref
-        )
+        additions = check_repository(_repository_root(), args.base_ref, args.head_ref)
     except RatchetError as error:
         print(f"ERROR: central BUILD ratchet could not run: {error}", file=sys.stderr)
         return 2

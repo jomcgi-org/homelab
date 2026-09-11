@@ -31,9 +31,7 @@ def _assert_allowed(candidate: str) -> None:
 
 def _assert_rejected(candidate: str, kind: str, value: str) -> None:
     additions = ratchet.new_findings(LEGACY, candidate)
-    assert [(finding.kind, finding.value) for finding in additions] == [
-        (kind, value)
-    ]
+    assert [(finding.kind, finding.value) for finding in additions] == [(kind, value)]
 
 
 def test_unchanged_legacy_content_is_grandfathered():
@@ -91,9 +89,7 @@ def test_new_central_package_glob_is_rejected():
 
 def test_same_count_package_glob_replacement_is_rejected():
     _assert_rejected(
-        LEGACY.replace(
-            '        "auth/**/*.py",\n', '        "chat/**/*.py",\n'
-        ),
+        LEGACY.replace('        "auth/**/*.py",\n', '        "chat/**/*.py",\n'),
         "package glob",
         "chat/**/*.py",
     )
@@ -122,14 +118,10 @@ def test_legitimate_package_local_build_content_is_allowed():
     }
 
     assert ratchet.scan_central_build(local_content)
-    assert ratchet.new_findings(
-        LEGACY, candidate_files[ratchet.CENTRAL_BUILD]
-    ) == []
+    assert ratchet.new_findings(LEGACY, candidate_files[ratchet.CENTRAL_BUILD]) == []
 
 
-def test_missing_base_reference_fails_with_actionable_diagnostic(
-    tmp_path, monkeypatch
-):
+def test_missing_base_reference_fails_with_actionable_diagnostic(tmp_path, monkeypatch):
     def failed_git(*args, **_kwargs):
         return subprocess.CompletedProcess(
             args=args,
