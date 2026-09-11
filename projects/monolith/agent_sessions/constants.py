@@ -29,3 +29,17 @@ UNKNOWN_INVOCATION_MESSAGE = (
     "This session has an unknown invocation outcome. Reconcile the guest and any "
     "remote side effects, then start a new session. Sending again cannot resume it."
 )
+
+# A physical invoke whose synchronous response was lost while its guest kept
+# working. The turn did not end, so this marker is INTERRUPTED rather than
+# terminal: the pending row keeps its claim, the permit is not released, and
+# the committed result receipt is adopted instead of the turn being executed a
+# second time (#5938, #4322). A hold that produces no receipt inside its bound
+# falls back to the ordinary unknown-outcome settlement.
+RESPONSE_LOST = "response_lost"
+
+# The agent workload runtime backstop (twelve hours, the same ceiling
+# INVOKE_READ_TIMEOUT and MAX_PIN_TIMEOUT_SECONDS are sized against). A
+# response-lost hold can never outlive it, whatever a node's own turn timeout
+# says, so an unrecoverable hold cannot pin an admission slot indefinitely.
+RESPONSE_LOST_BACKSTOP_SECONDS = 12 * 60 * 60
