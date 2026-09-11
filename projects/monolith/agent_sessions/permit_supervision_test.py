@@ -723,6 +723,55 @@ def test_reordered_or_different_invocation_refuses(database, field):
     assert before(database, pid)[0]["state"] == "uncertain"
 
 
+def test_never_invoked_terminal_guest_settles(database, monkeypatch):
+    """A guest that went terminal without ever invoking settles (#6004).
+
+    The control plane initialises both invoke stamps nil and only the invoke
+    path sets them, so a guest parked after a 409 on invoke carries nulls
+    forever. Every invocation-bounding check reads an int, so before this the
+    permit could never settle and held one background admission slot
+    indefinitely. `destroyed` is the state the control-plane node-gone
+    completion produces, so general mode is on, as it is in production.
+    """
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(database)
+    sweep(proof(state="destroyed", invoke_started_at=None, last_invoke_at=None))
+    after = before(database, pid)
+    assert after[0]["state"] == "settled"
+    assert after[0]["outcome"] == "guest_cessation_confirmed"
+    with Session(database) as db:
+        audit = db.get(ProbeObservation, pid)
+        assert audit.reason == "guest_cessation_confirmed"
+        assert json.loads(audit.evidence_json)["invoke_started_at"] is None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"invoke_started_at": None},
+        {"last_invoke_at": None},
+    ],
+)
+def test_terminal_guest_with_one_null_invoke_stamp_still_refuses(
+    database, monkeypatch, change
+):
+    """One null stamp is a malformed observation, not a never-invoked guest."""
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(database)
+    original = before(database, pid)
+    sweep(proof(state="destroyed", **change))
+    assert before(database, pid) == original
+
+
+def test_never_invoked_guest_that_is_not_terminal_still_refuses(database, monkeypatch):
+    """Null stamps on a LIVE guest prove no cessation."""
+    monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
+    pid = seed(database)
+    original = before(database, pid)
+    sweep(proof(state="running", invoke_started_at=None, last_invoke_at=None))
+    assert before(database, pid) == original
+
+
 def test_new_invoke_after_failed_turn_refuses_even_first_observation(database):
     pid = seed(database)
     now = int(datetime.now(timezone.utc).timestamp() * 1000)
