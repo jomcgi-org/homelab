@@ -2,10 +2,11 @@
 
 The first autonomous lane reads explicitly selected GitHub issues, records one
 durable receipt per repository/issue/generation, and admits up to the policy's
-`max_tasks` tasks at a time, capped by the chart's
-`swarm.factoryMaxConcurrentTasks` (1 today). `max_tasks` is a concurrency,
-not a lifetime count: as tasks settle the lane keeps admitting until its
-issue list is exhausted, so it runs without an operator re-arming it.
+per-lane `max_tasks` at a time, with the chart's
+`swarm.factoryMaxConcurrentTasks` (4 today) bounding the sum of the two lanes.
+`max_tasks` is a concurrency, not a lifetime count: as tasks settle the lane
+keeps admitting until its issue list is exhausted, so it runs without an
+operator re-arming it.
 A planning session in Ember builds the whole graph at plan time and is called
 back only when the plan deviates. The server reconciles the mutable graph and
 dispatches each admitted node as an independent DBOS workflow with immutable
@@ -33,7 +34,7 @@ fields are required. An example for one approved issue is:
   "repo": "jomcgi-org/homelab",
   "issue_numbers": [1234],
   "generation": 0,
-  "max_tasks": 1,
+  "max_tasks": {"delivery": 1, "advisory": 1},
   "max_task_turns_hard": 40,
   "max_parallel_nodes": 1,
   "task_budget_usd": 60,
@@ -62,8 +63,115 @@ operator raises it. Conductor planning rounds are capped separately by the
 optional `max_planner_turns`, which inherits the envelope when it is omitted.
 Planning rounds still draw on `task_budget_usd`. The optional
 `max_review_rounds` bounds the review correction rounds the engine runs on its
-own and defaults to 2. Those, `reviewer_model`, `model_pools`, and `intake` are
-the only optional fields; every other field is required.
+own and defaults to 2. Those, `reviewer_model`, `model_pools`, `quota_guard`,
+and `intake` are the only optional fields; every other field is required.
+
+### Two lanes
+
+A task runs in one of two lanes and its lane follows its class, which is not
+configurable. Work that ends in a pull request is delivery: `bug-fix`,
+`mechanical-refactor`, `docs`, `judgment-analysis`. Work that ends in a comment
+is advisory: `refine`, `advisory-diagnosis`, `advisory-triage`.
+
+`max_tasks` bounds each lane on its own:
+
+```json
+{"max_tasks": {"delivery": 1, "advisory": 2}}
+```
+
+A bare integer is still accepted and reads as the delivery lane, which is the
+capacity it always asked for, so a live policy needs no re-post. In that shape
+the advisory lane is 0 and no advisory task is admitted at all: **an operator
+running `refine` has to post a lane map to keep it running.** The advisory lane
+is opt-in on purpose, because the number that used to bound it was bounding
+delivery too.
+
+`swarm.factoryMaxConcurrentTasks` bounds the sum. Delivery is served first and
+keeps at least one slot under any ceiling, and advisory takes what is left, so
+a ceiling set below the policy narrows advisory before it narrows delivery. At
+a ceiling of 1 the advisory lane cannot open at all.
+
+Admission and intake both work per lane. A full delivery lane no longer refuses
+an advisory admission, and intake ranks candidates exactly as it did, delivery
+before refine, but fills at most one candidate per lane per tick rather than
+one candidate in total. A candidate whose lane is full is counted as
+`lane_full` in the idle audit. The board shows each lane as used against limit.
+
+### The Claude window guard
+
+Every delivery task ends in an independent Opus review on the shared Claude
+subscription, and that window is the one input the factory can exhaust:
+implementation autoscales and the cheap implementers bill elsewhere. The
+optional `quota_guard` block holds delivery back before the window is gone:
+
+```json
+{"quota_guard": {"claude_7d_pause_percent": 85, "claude_7d_resume_percent": 75}}
+```
+
+Both default to those numbers, so a policy that predates the block still
+guards. Both are whole percentages between 1 and 100, and the resume threshold
+must be strictly below the pause threshold: equal thresholds are a flap, not a
+guard. Naming only one is allowed as long as the pair stays ordered.
+
+While the guard is paused the lane makes no new delivery-lane admissions and
+dispatches no new `review_`, `implement_`, `correct_` or `integrate_` node.
+In-flight nodes finish, planner rounds and refine briefs still start, and the
+advisory lane is untouched. A held node is not a paused task: the work is fine
+and the window is not, so the task waits where it stands and starts on the tick
+that resumes.
+
+The guard reads the 7-day window the token broker already observes for the
+`claude` provider, once per tick behind a short cache. Its verdict lives in the
+audit ledger as `quota_guard_paused` and `quota_guard_resumed`, one row per
+transition, so a replica restart cannot resume the lane by forgetting and the
+board renders the state without a broker call. An unknown reading, or one older
+than an hour, is **not** a pause: it audits `quota_guard_unknown` at most hourly
+and the lane keeps working, because refusing to deliver whenever a broker read
+fails turns one outage into two.
+
+### Model pools
+
+`model_pools` carries up to four ordered preference lists, and `select_model`
+takes the first member whose provider still has quota.
+
+| Pool | Routes | Default |
+|---|---|---|
+| `conductor` | planner rounds | the `conductor_model` alone |
+| `worker` | every other planner-added role | the `worker_model` alone |
+| `implement` | implement nodes, engine corrections, engine fan-in | the `worker` pool |
+| `refine` | the advisory briefing node | `["spark", "sol"]`, narrowed to allowed models |
+
+A role pool must start with that role's own configured model, so the policy's
+stated preference is what the pool is ranked from. A class pool, `implement`
+and `refine`, names no policy field and so has no head to anchor to; its order
+is the preference. Every member of every pool must appear in `allowed_models`.
+
+The `refine` default only applies to what a policy allows: a policy that allows
+neither `spark` nor `sol` falls back to the conductor pool, which is where
+refine ran before class pools existed. `spark` needs no separate guest profile,
+because the Muse family lands on the same `claude-runtime` session workload as
+Claude and Codex; its plaintext egress lane and endpoint transport pin are
+guest-side and already shipped (#5978).
+
+The judgment floor searches the `implement` pool first, then the conductor
+pool, then the conductor model, so judgment work keeps its Opus-class floor
+whichever pool routes the rest. The floor ignores quota on purpose: a
+quota-walled Opus holds judgment work rather than demoting it.
+
+### Shared session admission
+
+Factory nodes draw execution permits from the same pool as the work-queue
+drainer and the synthetic probes. The bounds are chart values under
+`agentSessions.admission`: `total` over every tier, `background` over the
+non-interactive tiers under it, and `kg` under that. The code defaults are
+4/3/2 and the chart sets 16/12/2. A narrower `total` clamps the two inner
+numbers.
+
+These must stay at or below what EmberVM will actually create for the session
+workloads, `claudeRuntimeWorkload` and `piRuntimeWorkload` `cap` and
+`session.maxSessions` in `projects/embervm/chart/values.yaml`. Above those, a
+granted permit meets a `session_cap` 429 at guest create, which fails the turn
+rather than making it wait.
 
 ### Autonomous intake and refine
 
@@ -136,9 +244,9 @@ before classes existed also reads as `bug-fix`, so operator-posted receipts are
 unaffected.
 
 The judgment floor is a capability constraint. A quota-walled Opus holds
-judgment work instead of demoting it. The floor searches the worker pool first,
-then the conductor pool, and falls back to the conductor model when neither
-names an Opus-class member, so a policy whose pools carry no such model routes
+judgment work instead of demoting it. The floor searches the implement pool
+first, then the conductor pool, and falls back to the conductor model when
+neither names an Opus-class member, so a policy whose pools carry no such model routes
 judgment work to its strongest configured model and says so in the node's
 stated reason. Configure an Opus-class worker pool member before enabling
 intake on a repository whose issues carry `needs-thought`. Advisory classes other than `refine` have
