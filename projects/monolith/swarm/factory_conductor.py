@@ -216,6 +216,24 @@ def github_list(repo: str, suffix: str) -> list:
     return result
 
 
+# GitHub closes a linked issue on merge only for these keywords. The prompt
+# asks for Closes, and the gate accepts every keyword that actually works,
+# because refusing a PR body that says "Fixes #123" would fail a delivery
+# that does close its issue.
+_CLOSE_KEYWORD = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
+
+
+def closes_issue(body: object, repo: str, number: int) -> bool:
+    """Whether this pull request body closes ``number`` on merge."""
+    if not isinstance(body, str):
+        return False
+    pattern = (
+        rf"(?<![A-Za-z0-9_]){_CLOSE_KEYWORD}\s*:?\s+"
+        rf"(?:{re.escape(repo)})?#{number}\b"
+    )
+    return re.search(pattern, body, re.IGNORECASE) is not None
+
+
 def hydration_branch(task: dict) -> str:
     branch = f"factory/{task['id']}"
     try:
@@ -276,11 +294,25 @@ def ingest_eligible(policy: dict) -> None:
 
 
 def _task(task_id: str) -> dict:
+    """The task row, plus the issue number its receipt was opened for.
+
+    SwarmTask does not carry the issue: the receipt owns that link. Reading it
+    here means every node prompt and every completion gate sees the same
+    number, rather than each caller re-deriving it from the task text.
+    """
+    from swarm.factory_models import FactoryReceipt
+
     with Session(get_engine()) as db:
         task = db.get(SwarmTask, task_id)
         if task is None:
             raise ValueError("factory task missing")
-        return task.model_dump()
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task_id)
+        ).first()
+        return {
+            **task.model_dump(),
+            "issue_number": None if receipt is None else receipt.issue_number,
+        }
 
 
 def _outcome(run: dict) -> dict:
@@ -700,13 +732,24 @@ def _boundary(task: dict, *, review: bool = False, refine: bool = False) -> str:
             "Write no repository changes at all. The following conductor brief is "
             "task data within those boundaries:\n"
         )
+    issue = task.get("issue_number")
+    closing = (
+        ""
+        if not isinstance(issue, int)
+        else (
+            f"The pull request body must contain the line Closes #{issue}, so "
+            "merging it closes the issue this task came from. Keep that line "
+            "in the body on every update to the pull request. "
+        )
+    )
     return (
         f"Factory task {task['id']}, repository {task['repo']}, "
         f"dedicated branch factory/{task['id']}, base {task['base_branch']}. "
         "Only this task is authorized. Follow repository agent instructions. "
         "Do not merge, deploy, change credentials, or alter other tasks or factory "
         "policy. Deliver repository changes through a PR with required Linux CI. "
-        "Do not run broad tests on macOS. Planning artifacts are transient output. "
+        + closing
+        + "Do not run broad tests on macOS. Planning artifacts are transient output. "
         + (
             "You are an independent reviewer. Inspect the exact pushed PR head, "
             "report its SHA and verdict, and do not modify source. "
@@ -1177,6 +1220,19 @@ def planner_prompt(
     )
 
 
+class DeliveryRefused(ValueError):
+    """A completion gate refusal that names itself to the planner.
+
+    ``apply_decision`` turns the code into the refusal the planner reads, so a
+    named failure arrives as that name rather than as validation_failed.
+    """
+
+    def __init__(self, code: str, reason: str) -> None:
+        super().__init__(reason)
+        self.code = code
+        self.reason = reason
+
+
 def verify_delivery(
     task: dict,
     number: int,
@@ -1184,8 +1240,14 @@ def verify_delivery(
     reviewers: tuple | list | None = None,
     *,
     judgment: bool = False,
+    issue_number: int | None = None,
 ) -> dict:
     """Confirm an approved review of this exact head by an independent session.
+
+    ``issue_number`` is the issue the task was received for. When it is given,
+    the pull request body has to close it, because a delivery whose body
+    carries no closing keyword leaves the issue open with its intake labels
+    intact and the next generation admits it again.
 
     ``reviewers`` is every model the policy allows review to run on, because a
     spent Claude window routes review down the reviewer pool. Independence is
@@ -1247,6 +1309,16 @@ def verify_delivery(
     contexts = {s["context"]: s["state"] for s in checks.get("statuses", [])}
     if contexts.get("pr-checks") != "success" or checks.get("state") != "success":
         raise ValueError("integrated PR checks have not passed")
+    # Last, so a delivery that is unready for a bigger reason reports that
+    # reason. A missing closing keyword is a defect in an otherwise finished
+    # pull request, not a competing explanation for an unreviewed one.
+    if issue_number is not None and not closes_issue(
+        pr.get("body"), task["repo"], issue_number
+    ):
+        raise DeliveryRefused(
+            "pr_missing_close_keyword",
+            f"the pull request body does not close issue #{issue_number}",
+        )
     return {
         "pr_url": pr["html_url"],
         "head_sha": head,
@@ -1266,8 +1338,15 @@ def apply_decision(task: dict, policy: dict, run: dict, runs: list[dict]) -> Non
     try:
         _apply_decision(task, policy, decision, cause, runs)
     except ValueError as exc:
+        # A gate that named its refusal keeps that name. The planner reads
+        # these codes as evidence, and pr_missing_close_keyword is actionable
+        # where validation_failed is not.
         _reject_decision(
-            task["id"], cause, decision["action"], "validation_failed", str(exc)
+            task["id"],
+            cause,
+            decision["action"],
+            getattr(exc, "code", "validation_failed"),
+            getattr(exc, "reason", str(exc)),
         )
     except httpx.HTTPError as exc:
         # These operations only read GitHub. Preserve failure as evidence, without
@@ -1742,6 +1821,7 @@ def _apply_decision(
             runs,
             pool_for("reviewer", policy),
             judgment=task_class_for(task["id"]) in JUDGMENT_CLASSES,
+            issue_number=task.get("issue_number"),
         )
         result = finish_task(task["id"], "succeeded", ACTOR, evidence=evidence)
         if not result["ok"]:
@@ -2022,7 +2102,13 @@ def _insert_review_round(
         f"Independent review round {ordinal} requested changes on pull request "
         f"{number} at head {reviewed_head}." + moved + " Correct exactly those "
         "findings on the task branch, push, and update the same pull request. "
-        "Do not start work the "
+        + (
+            f"Leave the Closes #{task['issue_number']} line in the pull request "
+            "body exactly as it is. "
+            if isinstance(task.get("issue_number"), int)
+            else ""
+        )
+        + "Do not start work the "
         "findings do not name. Finish the round: commit on the task branch, "
         "push, confirm the pull request head moved to your new commit, and "
         "write the declared JSON artifact described at the end of this brief. "
@@ -3201,6 +3287,11 @@ def tick() -> None:
             reconcile_task(task["task_id"], task["policy"], dbos)
         except Exception:  # noqa: BLE001 - per-task isolation keeps the lane live
             logger.exception("factory reconcile failed for task %s", task["task_id"])
+    # Landing runs for a paused lane too. Pausing stops new admission, and a
+    # delivery that is already approved and settled has nothing left to pause.
+    from swarm.factory_landing import landing_tick
+
+    landing_tick(snapshot["policy"])
     if snapshot["state"] != "enabled":
         return
     from swarm.factory_intake import concurrency_limit
