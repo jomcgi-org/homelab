@@ -19,7 +19,10 @@ from core.db import get_session
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/home/observability", tags=["observability"])
-_STATS_CACHE_CONTROL = "public, s-maxage=60, stale-while-revalidate=86400"
+_STATS_CACHE_CONTROL = (
+    "public, s-maxage=60, stale-while-revalidate=86400, "
+    "stale-if-error=31536000"
+)
 
 
 @router.get("/stats", tags=["stats"])

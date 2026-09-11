@@ -52,6 +52,10 @@ export function cloudflareCacheHeaders(cacheControl) {
 // 60s fresh · 24h SWR (background refresh) · 1y SIE (cluster-down resilience)
 export const PAGE_CACHE_CONTROL = `public, s-maxage=60, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
 
+// /app/notes/stats: observability rollup snapshot, refreshed once a minute.
+// Mirrors _STATS_CACHE_CONTROL in home/observability/router.py, keep in sync.
+export const STATS_CACHE_CONTROL = `public, s-maxage=60, stale-while-revalidate=${ONE_DAY}, stale-if-error=${ONE_YEAR}`;
+
 // /health probe: deliberately the inverse of the data caches above. A 60s edge
 // cache caps origin load at ~1 req/min, but health MUST surface a real outage,
 // so there is NO stale-if-error (it would serve a stale 200 while the origin is
