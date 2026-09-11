@@ -67,18 +67,28 @@ optional fields; every other field is required.
 
 The derived allowance is `max_attempts` summed over the live nodes that have
 not succeeded, plus the work turns already spent, plus what the engine may still
-insert on its own: a review round is a correction and a re-review, a fan-out wave
-needs one fan-in node, and each is reserved at `max_attempts` exactly as the
-inserted node will carry, so the insertion is turn-neutral. Review rounds are
-reserved only when the plan holds a review node. Its dollar figure is the same
+insert on its own. Review rounds are reserved lazily, one round at a time: the
+next round only, at the two turns it really costs, because the engine inserts
+its correction and its re-review at one attempt each. A correction that fails is
+a deviation the planner answers, not a turn to spend again. Reserving every
+remaining round up front instead priced a loop the task would probably never
+open, and it left a nine-turn envelope unable to hold a three-node plan at all.
+Each round the engine inserts is then counted like any other live node while the
+round behind it is reserved, so the allowance grows by one round at a time and
+every insertion is checked against the envelope as it happens. A fan-out wave
+still reserves its one fan-in node at `max_attempts`, exactly as the inserted
+node will carry, so a fan-in is turn-neutral. Review rounds are reserved only
+when the plan holds a review node. Its dollar figure is the same
 sum over node `max_cost_usd` ceilings plus charged history. It is stored on the receipt as
 `allowance_json` with the graph revision it came from, re-derived and audited
 whenever an accepted edit changes the graph, and it is the bound work starts
-meet. A plan whose derived allowance would exceed the envelope is refused whole
+meet. An edit whose derived allowance would exceed the envelope is refused whole
 with `envelope_exceeded` and a detail naming needed against allowed for both
-turns and dollars, which the planner reads in `decision_feedback` and answers by
-splitting the work or pausing. Discarding a node drops its unspent slots and
-never refunds a consumed turn.
+turns and dollars, beside `spare_turns`, what the envelope would still fund at
+the graph as it stands. The planner reads that in `decision_feedback` and
+answers by shrinking the edit to fit, splitting the work, or pausing; it must
+not re-propose a refused edit unchanged. Discarding a node drops its unspent
+slots and never refunds a consumed turn.
 
 The example is documentation, not live authorization. Use the selected issue,
 current capacity and an explicitly accepted policy for an operating trial.

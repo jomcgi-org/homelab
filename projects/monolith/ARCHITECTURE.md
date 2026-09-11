@@ -252,19 +252,24 @@ the engine could not open, or a settled graph with no verified delivery.
 
 The accepted plan sizes the task. Its allowance is the sum over live
 unsucceeded nodes of `max_attempts`, plus the work turns history already spent,
-plus what the engine may still insert on its own: a review round is a
-correction and a re-review, a fan-out wave needs one fan-in node, and each is
-reserved at the policy's `max_attempts` exactly as the inserted node will carry,
-so the insertion itself is turn-neutral. Money is the same sum over node cost
+plus what the engine may still insert on its own. Review rounds are reserved one
+at a time: the next round only, at the two turns it costs, because the engine
+inserts its correction and its re-review at one attempt each. Each inserted
+round is then counted like any other live node while the round behind it is
+reserved, so the allowance grows by one round at a time and every insertion is
+checked against the envelope as it happens. A fan-out wave reserves its one
+fan-in node at the policy's `max_attempts`, exactly as the inserted node will
+carry, so that insertion is turn-neutral. Money is the same sum over node cost
 ceilings plus charged history. Review rounds are reserved only when the plan
 holds a review node. That allowance is
 persisted on the receipt with the graph revision it came from, re-derived and
 audited on every accepted plan, add, discard and engine round, and it is the
 bound `authorize_start` and the board actually read. Policy keeps only an
-envelope, `max_task_turns_hard` beside `task_budget_usd` and the deadline. A
-plan whose derived allowance would exceed either is refused whole with
-`envelope_exceeded` and the excess named as needed against allowed, which
-reaches the planner as decision feedback so it can split the work or pause.
+envelope, `max_task_turns_hard` beside `task_budget_usd` and the deadline. An
+edit whose derived allowance would exceed either is refused whole with
+`envelope_exceeded` and the excess named as needed against allowed, beside the
+spare turns the graph still leaves, which reaches the planner as decision
+feedback so it can shrink the edit, split the work, or pause.
 
 Nodes that can start together fan out, up to `max_parallel_nodes`. A wave is
 read from the live graph rather than from the plan as a whole: source-writing
@@ -395,7 +400,16 @@ fit inside. Refusing an over-envelope plan whole, with the excess named, is
 what makes the bound actionable: the planner can split the work into a
 follow-up task or pause for orchestration review instead of discovering the
 wall one turn at a time. `max_turns_per_task` is still accepted and read as the
-envelope, so a live policy needs no re-post (#5419).
+envelope, so a live policy needs no re-post. Reserving every remaining review
+round up front then reintroduced the same failure from the other side: at two
+nodes of `max_attempts` per round, two rounds cost eight turns of allowance on
+top of the plan, so a nine-turn envelope could not hold a three-node plan and a
+task with any history could not add a review node at all (t-5e48b6e1, #5981).
+The reserve is lazy instead, the next round only and at the two turns the engine
+really inserts, and the envelope is checked again at each insertion, which is
+the check that was doing the work all along. Naming the spare turns in the
+refusal is the other half: a planner that only hears no re-proposes the same
+edit until `max_planner_turns` pauses the task (#5419).
 
 **Why.** Nodes were serial because every node pushed to the one branch
 `factory/<task-id>` and the reconciler dispatched one active run per task, not
