@@ -144,6 +144,15 @@ else
 	fail "header_docs" "missing usage/docs markers"
 fi
 
+ratchet_ln=$(grep -n 'central_build_ratchet.py "$base_ref" HEAD' "$BUILD_BUDDY" | head -1 | cut -d: -f1)
+affected_ln=$(grep -n 'affected-targets.sh "$base_ref" HEAD' "$BUILD_BUDDY" | head -1 | cut -d: -f1)
+if [[ -n "$ratchet_ln" && -n "$affected_ln" && "$ratchet_ln" -lt "$affected_ln" ]] &&
+	grep -q 'git fetch origin "${GIT_REPO_DEFAULT_BRANCH:-main}"' "$BUILD_BUDDY"; then
+	pass "central_build_ratchet_in_pr_checks"
+else
+	fail "central_build_ratchet_in_pr_checks" "ratchet must fetch the base and run before affected tests"
+fi
+
 if grep -q 'deleted_packages=bazel/tools/python' "$LOCAL_AFFECTED_TEST" &&
 	grep -q 'test_tag_filters=-external,-future' "$LOCAL_AFFECTED_TEST" &&
 	grep -q -- '--script=' "$CI"; then
