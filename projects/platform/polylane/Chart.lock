@@ -1,0 +1,6 @@
+dependencies:
+- name: polylane-k8s
+  repository: oci://ghcr.io/coreplanelabs/charts
+  version: 0.2.3
+digest: sha256:2eee2a5b90d056929ffaa82b5c97acf9ae36ca7026c2ffefd6777890399a1f22
+generated: "2026-09-10T18:21:26.534408-07:00"
