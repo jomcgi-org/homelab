@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   activityRow,
+  activitySummary,
   attemptMark,
   attemptWord,
   briefRuns,
@@ -18,6 +19,7 @@ import {
   outcome,
   planLayout,
   plural,
+  prettyCommand,
   relative,
   reviewRounds,
   sessionHref,
@@ -652,6 +654,106 @@ describe("activityRow", () => {
     expect(
       activityRow({ type: "edit", file_path: "elsewhere.py" }, DIFF).hunk,
     ).toBeNull();
+  });
+});
+
+describe("prettyCommand", () => {
+  it("unwraps the shell wrapper and rejoins a quoted argv", () => {
+    expect(prettyCommand(`/bin/sh -lc '"git" "remote" "-v"'`)).toBe(
+      "git remote -v",
+    );
+  });
+
+  it("unescapes the argv quotes a double-quoted wrapper carries", () => {
+    expect(prettyCommand('/bin/sh -lc "\\"rg\\" \\"-n\\" \\"pattern\\""')).toBe(
+      "rg -n pattern",
+    );
+  });
+
+  it("leaves a command that was never wrapped alone", () => {
+    expect(prettyCommand("ci")).toBe("ci");
+    expect(prettyCommand("git status --short")).toBe("git status --short");
+  });
+
+  it("keeps a heredoc intact, dropping only the wrapper", () => {
+    const inner = "cat <<'EOF' > a.txt\nline one\nline two\nEOF";
+    expect(prettyCommand(`/bin/bash -lc '${inner}'`)).toBe(inner);
+  });
+
+  it("leaves a shell line with its own quoting as it found it", () => {
+    const inner = `pwd && rg --files -g 'AGENTS.md' | sort`;
+    expect(prettyCommand(`/bin/sh -lc "${inner}"`)).toBe(inner);
+  });
+
+  it("never throws on odd input", () => {
+    expect(prettyCommand(null)).toBe("");
+    expect(prettyCommand(undefined)).toBe("");
+    expect(prettyCommand(42)).toBe("42");
+    expect(prettyCommand(`/bin/sh -lc '"git" "unbalanced`)).toBe(
+      `/bin/sh -lc '"git" "unbalanced`,
+    );
+  });
+});
+
+describe("activitySummary", () => {
+  const ACTIVITIES = [
+    { type: "edit", file_path: "projects/monolith/factory/engine.py" },
+    { type: "write", file_path: "a/b/new.py" },
+    { type: "bash", command: `/bin/sh -lc '"git" "remote" "-v"'` },
+    { type: "tool_use", name: "Read", file_path: "docs/one.md" },
+    { type: "bash", command: "ci" },
+    { type: "tool_use", name: "search_knowledge" },
+  ];
+
+  it("counts the kinds in the vocabulary the rows use, in reading order", () => {
+    expect(activitySummary(ACTIVITIES).counts).toEqual([
+      { kind: "edit", count: 1 },
+      { kind: "write", count: 1 },
+      { kind: "command", count: 2 },
+      { kind: "read", count: 1 },
+      { kind: "tool call", count: 1 },
+    ]);
+  });
+
+  it("shows the first few rows short and says how many are left", () => {
+    const digest = activitySummary(ACTIVITIES);
+    expect(digest.shown).toEqual([
+      {
+        type: "edit",
+        text: "engine.py",
+        title: "projects/monolith/factory/engine.py",
+      },
+      { type: "write", text: "new.py", title: "a/b/new.py" },
+      { type: "bash", text: "git remote -v", title: "git remote -v" },
+      { type: "tool", text: "one.md", title: "Read docs/one.md" },
+    ]);
+    expect(digest.hidden).toBe(2);
+  });
+
+  it("hides nothing when the turn is shorter than the limit", () => {
+    const digest = activitySummary(ACTIVITIES.slice(0, 2));
+    expect(digest.shown).toHaveLength(2);
+    expect(digest.hidden).toBe(0);
+  });
+
+  it("takes an explicit limit", () => {
+    expect(activitySummary(ACTIVITIES, 1).hidden).toBe(5);
+  });
+
+  it("flattens a multi-line command to one clipped line", () => {
+    const command = `/bin/sh -lc 'pwd\n${"rg --files ".repeat(20)}'`;
+    const [row] = activitySummary([{ type: "bash", command }]).shown;
+    expect(row.text).toHaveLength(80);
+    expect(row.text.endsWith("…")).toBe(true);
+    expect(row.text).not.toContain("\n");
+  });
+
+  it("is empty for a turn that recorded nothing", () => {
+    expect(activitySummary(null)).toEqual({
+      counts: [],
+      shown: [],
+      hidden: 0,
+    });
   });
 });
 

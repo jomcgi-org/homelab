@@ -818,6 +818,51 @@
   color: var(--ink-3);
 }
 
+/* The turn digest on the task page is a summary, not the list. A Codex-runtime
+   turn records over a hundred commands, and every one of them inline made the
+   dotted line a wall: the counts read first, then the first few rows, then the
+   way to the rest. */
+.factory-page.activity-page .turn .digest {
+  display: grid;
+  gap: 0.25em;
+  min-width: 0;
+}
+
+.factory-page.activity-page .turn .did-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ink-2);
+  font-family: var(--font-code);
+  font-size: 0.72rem;
+}
+
+/* The same two columns as the session record's rows, so a reader who opens the
+   full session finds the label where they left it. */
+.factory-page.activity-page .turn .did-rows li {
+  display: grid;
+  grid-template-columns: 3.2em minmax(0, 1fr);
+  gap: 0.6rem;
+  align-items: baseline;
+  padding: 0.08em 0;
+}
+
+.factory-page.activity-page .turn .did-rows .ty {
+  color: var(--ink-3);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.factory-page.activity-page .turn .did-rows .what {
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.factory-page.activity-page .turn .digest .more {
+  margin: 0.1em 0 0;
+}
+
 .factory-page.activity-page .turn .meta {
   color: var(--ink-3);
   font-family: var(--font-code);
@@ -967,6 +1012,13 @@
 .factory-page.activity-page .acts .a.x:hover .tog,
 .factory-page.activity-page .acts li.open .tog {
   color: var(--accent-ink);
+}
+
+/* The toggle that opens the tail of a long activity list. It lines up with the
+   value column, the way an opened hunk does, rather than with the type label. */
+.factory-page.activity-page .acts-tog {
+  justify-self: start;
+  margin: 0 0 0 calc(3.2em + 0.6rem);
 }
 
 /* Diffs render as one row per line rather than one pre block: the classifier
