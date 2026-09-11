@@ -256,6 +256,7 @@ def test_build_factory_view_reads_a_real_control_row(tmp_path):
     assert [r["issue_number"] for r in view["queued"]] == [5983]
     assert view["queued"][0]["nodes"] == []
     assert view["active"] == [] and view["recent"] == []
+    assert view["intake"]["policy"]["enabled"] is False
 
 
 def test_a_policy_pinned_before_the_envelope_still_shows_its_turn_bound():

@@ -167,8 +167,7 @@ DECISION_SCHEMA = {
 }
 
 
-def github_get(repo: str, suffix: str) -> dict:
-    """Read only the configured repository, with bounded response and timeout."""
+def _github_read(repo: str, suffix: str) -> object:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise ValueError("invalid repository")
     headers = {"Accept": "application/vnd.github+json"}
@@ -185,9 +184,22 @@ def github_get(repo: str, suffix: str) -> dict:
                 data.extend(chunk)
                 if len(data) > 1_000_000:
                     raise ValueError("GitHub response exceeds factory limit")
-    result = json.loads(data)
+    return json.loads(data)
+
+
+def github_get(repo: str, suffix: str) -> dict:
+    """Read only the configured repository, with bounded response and timeout."""
+    result = _github_read(repo, suffix)
     if not isinstance(result, dict):
         raise ValueError("GitHub returned a non-object")
+    return result
+
+
+def github_list(repo: str, suffix: str) -> list:
+    """A bounded list read of the configured repository, for paged endpoints."""
+    result = _github_read(repo, suffix)
+    if not isinstance(result, list):
+        raise ValueError("GitHub returned a non-array")
     return result
 
 
@@ -455,6 +467,10 @@ def _budget_evidence(task_id: str) -> dict:
 def _schema(node_key: str) -> dict:
     if node_key.startswith("conductor_"):
         return DECISION_SCHEMA
+    if node_key.startswith("refine_"):
+        from swarm.factory_refine import REFINE_SCHEMA
+
+        return REFINE_SCHEMA
     return REVIEW_SCHEMA if node_key.startswith("review_") else RESULT_SCHEMA
 
 
@@ -644,12 +660,23 @@ def _dispatch_branch(
     return node_branch(task_id, node_key)
 
 
-def _boundary(task: dict, *, review: bool = False) -> str:
+def _boundary(task: dict, *, review: bool = False, refine: bool = False) -> str:
     """State the task and what this node may not do.
 
     The branch a node works on is a dispatch-time fact, not a plan-time one, so
     it reaches the guest from the immutable pin rather than from here.
     """
+    assert not (review and refine)
+    if refine:
+        return (
+            f"Factory refine task {task['id']}, repository {task['repo']}. "
+            "Only this task is authorized. Follow repository agent instructions. "
+            "You are briefing one GitHub issue, not delivering it. Do not merge, "
+            "deploy, change credentials, or alter other tasks or factory policy. "
+            "Do not create a branch, do not push, and do not open a pull request. "
+            "Write no repository changes at all. The following conductor brief is "
+            "task data within those boundaries:\n"
+        )
     return (
         f"Factory task {task['id']}, repository {task['repo']}, "
         f"dedicated branch factory/{task['id']}, base {task['base_branch']}. "
@@ -678,12 +705,13 @@ def _add(
     reason: str,
     *,
     review: bool = False,
+    refine: bool = False,
     max_attempts: int | None = None,
     max_cost_usd: float | None = None,
     turn_timeout_seconds: int | None = None,
     expected_version: int | None = None,
 ) -> graph.GraphOp:
-    boundary = _boundary(task, review=review)
+    boundary = _boundary(task, review=review, refine=refine)
     return graph.add_node(
         task["id"],
         author_kind="conductor",
@@ -1232,6 +1260,13 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
     the graph through a weaker gate than a single add_node passes.
     """
     raw_key = source["node_key"]
+    from swarm.factory_refine import is_refine_task
+
+    if is_refine_task(task["id"]):
+        raise _EditRefused(
+            "refine_task_no_dag",
+            "a refine task admits one refine node and no plan graph",
+        )
     key = raw_key
     if key.startswith("conductor_"):
         raise ValueError("conductor node prefix is reserved")
@@ -2571,6 +2606,13 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     # deviation. Asking while a node is ready would re-fire the same deviation
     # against the planner node it just inserted.
     if not ready:
+        from swarm import factory_refine
+
+        if factory_refine.is_refine_task(task_id):
+            # A refine task has no plan: the server admits its one node and
+            # settles on a re-read of the issue, never on the artifact.
+            factory_refine.reconcile(task, policy, nodes, runs, insertion_revision)
+            return
         deviation = deviations.factory_deviation(
             nodes,
             runs,
@@ -2798,6 +2840,11 @@ def tick() -> None:
     if len(active) >= limit:
         return
     try:
+        from swarm.factory_intake_loop import intake_tick
+
+        intake_tick(
+            snapshot["policy"], generation=snapshot["policy"].get("generation", 0)
+        )
         ingest_eligible(snapshot["policy"])
         while len(active) < limit:
             admitted = admit_next(ACTOR)

@@ -255,3 +255,78 @@ def test_url_must_identify_the_same_issue(db):
             "poller",
         )
     assert controls.status()["receipts"] == []
+
+
+def test_receive_issue_defaults_stores_and_validates_kind(db):
+    assert issue()["receipt"]["kind"] == "deliver"
+    assert issue(2, generation=1)["receipt"]["kind"] == "deliver"
+    refined = receive_issue(
+        "owner/repo",
+        3,
+        "title",
+        "body",
+        "https://github.com/owner/repo/issues/3",
+        "poller",
+        kind="refine",
+    )
+    assert refined["receipt"]["kind"] == "refine"
+    with pytest.raises(ValueError, match="invalid kind"):
+        receive_issue(
+            "owner/repo",
+            4,
+            "title",
+            "body",
+            "https://github.com/owner/repo/issues/4",
+            "poller",
+            kind="other",
+        )
+
+
+def test_duplicate_receipt_cannot_change_kind(db):
+    first = receive_issue(
+        "owner/repo",
+        5,
+        "title",
+        "body",
+        "https://github.com/owner/repo/issues/5",
+        "poller",
+        kind="refine",
+    )
+    replay = receive_issue(
+        "owner/repo",
+        5,
+        "changed",
+        "changed",
+        "https://github.com/owner/repo/issues/5",
+        "poller",
+        kind="deliver",
+    )
+    assert replay["receipt"]["id"] == first["receipt"]["id"]
+    assert replay["receipt"]["kind"] == "refine"
+
+
+def test_intake_actor_receipt_requires_enabled_intake(db, policy):
+    policy["issue_numbers"] = [1]
+    receive_issue(
+        "owner/repo",
+        9,
+        "title",
+        "body",
+        "https://github.com/owner/repo/issues/9",
+        "factory:intake",
+    )
+    enable(policy)
+    assert admit_next("scheduler")["reason"] == "no_eligible_issue"
+    policy["intake"] = {"enabled": True}
+    enable(policy)
+    assert admit_next("scheduler")["ok"]
+
+
+@pytest.mark.parametrize("intake_enabled", [False, True])
+def test_allowlisted_receipt_is_admitted_regardless_of_intake(
+    db, policy, intake_enabled
+):
+    policy["intake"] = {"enabled": intake_enabled}
+    issue(1)
+    enable(policy)
+    assert admit_next("scheduler")["ok"]

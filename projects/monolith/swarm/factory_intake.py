@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from sqlalchemy import or_
 from sqlmodel import Session, select
 
 from swarm.factory_controls import (
@@ -14,11 +15,16 @@ from swarm.factory_controls import (
     _now,
     _snapshot,
     _text,
+    DELIVER,
+    REFINE,
+    intake_policy,
     normalize_repo,
     validate_policy,
 )
 from swarm.factory_models import FactoryReceipt
 from swarm.models import SwarmTask, mint_task_id
+
+INTAKE_ACTOR = "factory:intake"
 
 
 def receive_issue(
@@ -30,6 +36,7 @@ def receive_issue(
     actor: str,
     *,
     generation: int = 0,
+    kind: str = DELIVER,
     session: Session | None = None,
 ) -> dict:
     """Store one bounded issue snapshot. A duplicate can never replace its text.
@@ -41,6 +48,8 @@ def receive_issue(
     issue_number = _integer(issue_number, "issue_number", 1, 2**31 - 1)
     generation = _integer(generation, "generation", 0, 2**31 - 1)
     actor = _text(actor, "actor")
+    if kind not in (DELIVER, REFINE):
+        raise ValueError("invalid kind")
     title = _text(title, "title", 512)
     if not isinstance(body, str) or len(body) > 65536:
         raise ValueError("invalid body")
@@ -67,6 +76,7 @@ def receive_issue(
             body=body,
             url=url,
             actor=actor,
+            kind=kind,
         )
         db.add(row)
         db.flush()
@@ -78,6 +88,7 @@ def receive_issue(
             repo=repo,
             issue_number=issue_number,
             generation=generation,
+            kind=kind,
         )
         return {"ok": True, "created": True, "receipt": _snapshot(db, row)}
 
@@ -118,12 +129,18 @@ def admit_next(actor: str, *, session: Session | None = None) -> dict:
                 "active": len(active),
                 "limit": limit,
             }
+        eligible = FactoryReceipt.issue_number.in_(policy["issue_numbers"])
+        if intake_policy(policy)["enabled"]:
+            # Intake receipts are not in the operator allowlist by construction.
+            # They are admissible only while intake is on, so turning intake off
+            # leaves the allowlist exactly as it was.
+            eligible = or_(eligible, FactoryReceipt.actor == INTAKE_ACTOR)
         row = db.exec(
             select(FactoryReceipt)
             .where(
                 FactoryReceipt.state == "queued",
                 FactoryReceipt.repo == policy["repo"],
-                FactoryReceipt.issue_number.in_(policy["issue_numbers"]),
+                eligible,
                 FactoryReceipt.generation == policy["generation"],
             )
             .order_by(FactoryReceipt.created_at, FactoryReceipt.id)

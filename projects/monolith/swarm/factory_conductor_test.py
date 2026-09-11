@@ -57,6 +57,33 @@ def test_missing_delivery_branch_hydrates_base_without_hiding_outages(monkeypatc
         conductor.hydration_branch(task)
 
 
+def test_github_object_and_list_readers_enforce_response_shapes(monkeypatch):
+    monkeypatch.setattr(conductor, "_github_read", lambda *_args: [1, 2])
+    assert conductor.github_list("owner/repo", "issues") == [1, 2]
+    with pytest.raises(ValueError, match="non-object"):
+        conductor.github_get("owner/repo", "issues")
+    monkeypatch.setattr(conductor, "_github_read", lambda *_args: {"id": 1})
+    assert conductor.github_get("owner/repo", "issues") == {"id": 1}
+    with pytest.raises(ValueError, match="non-array"):
+        conductor.github_list("owner/repo", "issues")
+
+
+def test_refine_schema_and_boundary_are_separate_from_delivery():
+    from swarm.factory_refine import REFINE_SCHEMA
+
+    task = {"id": "t-1", "repo": "owner/repo", "base_branch": "main"}
+    assert conductor._schema("refine_1") is REFINE_SCHEMA
+    boundary = conductor._boundary(task, refine=True)
+    assert "Factory refine task t-1" in boundary
+    assert "Do not create a branch" in boundary
+    assert "do not open a pull request" in boundary
+    delivery = conductor._boundary(task)
+    assert "dedicated branch factory/t-1" in delivery
+    assert "Factory refine task" not in delivery
+    with pytest.raises(AssertionError):
+        conductor._boundary(task, review=True, refine=True)
+
+
 def delivery(monkeypatch, *, review_head=None, draft=False, check_state="success"):
     monkeypatch.setattr(conductor, "_budget_evidence", lambda _task: {})
     head = "a" * 40
@@ -4662,6 +4689,24 @@ def plan_edit(node_key, role, deps=(), **overrides):
     }
     edit.update(overrides)
     return edit
+
+
+@pytest.mark.parametrize("role", ["investigate", "implement", "review"])
+def test_refine_task_refuses_planner_dag_edits(feedback_db, role):
+    from sqlmodel import Session, select
+    from swarm.factory_models import FactoryReceipt
+
+    task, policy = feedback_task()
+    with Session(feedback_db) as db:
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        receipt.kind = "refine"
+        db.add(receipt)
+        db.commit()
+    with pytest.raises(conductor._EditRefused) as exc:
+        conductor._prepare_add(task, policy, plan_edit("work", role))
+    assert exc.value.code == "refine_task_no_dag"
 
 
 def planned_task(feedback_task_result, edits, **decision):
