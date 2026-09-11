@@ -14,8 +14,14 @@ for candidate in \
 		break
 	fi
 done
-[[ -n "$SCRIPT" ]] || { echo "ERROR: cannot locate $SCRIPT_REL" >&2; exit 1; }
-[[ -x "$SCRIPT" ]] || { echo "ERROR: $SCRIPT_REL is not executable" >&2; exit 1; }
+[[ -n "$SCRIPT" ]] || {
+	echo "ERROR: cannot locate $SCRIPT_REL" >&2
+	exit 1
+}
+[[ -x "$SCRIPT" ]] || {
+	echo "ERROR: $SCRIPT_REL is not executable" >&2
+	exit 1
+}
 
 TMP="${TEST_TMPDIR:-$(mktemp -d)}"
 FAKE_RUNFILES="$TMP/runfiles"
@@ -92,18 +98,18 @@ run_case() {
 	(
 		cd "$UNRELATED"
 		RUNFILES_DIR="$FAKE_RUNFILES" \
-		TEST_TMPDIR="$case_tmp" \
-		CALLS="$CALLS" \
-		HELM_RC="$helm_rc" \
-		ARGOCD_RC="$argocd_rc" \
-		HELM="../multitool/tools/helm" \
-		ARGOCD="../multitool/tools/argocd" \
-		OP="../multitool/tools/op" \
-		ARGOCD_APP_NAME="demo app" \
-		CHART_FILE="projects/demo/chart/Chart.yaml" \
-		RELEASE_NAME="demo release" \
-		NAMESPACE="demo namespace" \
-		VALUES_FILES=$'projects/demo/chart/values.yaml\nprojects/demo/deploy/values with space.yaml' \
+			TEST_TMPDIR="$case_tmp" \
+			CALLS="$CALLS" \
+			HELM_RC="$helm_rc" \
+			ARGOCD_RC="$argocd_rc" \
+			HELM="../multitool/tools/helm" \
+			ARGOCD="../multitool/tools/argocd" \
+			OP="../multitool/tools/op" \
+			ARGOCD_APP_NAME="demo app" \
+			CHART_FILE="projects/demo/chart/Chart.yaml" \
+			RELEASE_NAME="demo release" \
+			NAMESPACE="demo namespace" \
+			VALUES_FILES=$'projects/demo/chart/values.yaml\nprojects/demo/deploy/values with space.yaml' \
 			"$SCRIPT"
 	) >"$TMP/$name.out" 2>&1
 	case_rc=$?
