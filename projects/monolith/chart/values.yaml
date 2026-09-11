@@ -1345,10 +1345,11 @@ agentSessions:
   # clamps the two inner numbers, so they can never exceed it by a typo.
   #
   # These numbers must stay at or below what EmberVM will actually create:
-  # claudeRuntimeWorkload cap and session.maxSessions, and piRuntimeWorkload
-  # likewise, in projects/embervm/chart/values.yaml. Above those a permit is
-  # granted and the guest create takes a session_cap 429, which fails the turn
-  # instead of making it wait.
+  # claudeRuntimeWorkload concurrency cap and session.maxSessions in
+  # projects/embervm/deploy/values.yaml, raised to 12 and 24 alongside this.
+  # Above those a permit is granted and the guest create takes a session_cap
+  # 429, which fails the turn instead of making it wait, so the guest cap has
+  # to sit above the permit cap rather than below it.
   admission:
     total: 16
     background: 12

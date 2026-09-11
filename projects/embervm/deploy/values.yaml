@@ -836,6 +836,29 @@ claudeRuntimeWorkload:
   # another 4 GiB per brick until the GC is fixed, so watch headroom under
   # /var/lib/embervm/scratch on node-1/2/3 rather than on node-4.
   persistenceEnabled: true
+  # Raised from the chart's 4 and 8 for the factory's two lanes. The monolith
+  # grants 16 shared execution permits with 12 for the background tiers
+  # (agentSessions.admission), and a permit the guest cap then refuses is
+  # worse than one that waits: the create takes a session_cap 429, which fails
+  # the turn instead of queueing it. So the guest cap has to sit ABOVE the
+  # permit cap, not below it.
+  #
+  # cap bounds NEW session VMs at create time. Twelve of them is 48 GiB from
+  # creates at memMib 4096, spread over three spot brick nodes at
+  # noded.maxLiveVMs 16 each, so no single node is asked for more than the
+  # placement gate would give it anyway. Rejoin still admits a parked session
+  # on placement memory headroom rather than on cap, which is why this is a
+  # bound on bursts of creates and not a worst-case live RAM figure.
+  #
+  # maxSessions counts live plus banked and is what actually bounds the
+  # snapshot dir: 24 x ~4 GiB is 96 GiB worst case, held down in practice by
+  # the one-hour banked TTL that reaps abandoned and parked sessions alike.
+  # Keep it at twice cap so a full set of creates can still bank without
+  # locking the workload out, which is the failure that cap 1 / maxSessions 2
+  # produced during the original validation.
+  cap: 12
+  session:
+    maxSessions: 24
 
 # The pi-runtime workload: the small session lane (256 MiB), carrying only the
 # pi CLI. Sizing and the "why 256 holds" arithmetic are in chart/values.yaml.

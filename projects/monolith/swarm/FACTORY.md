@@ -204,10 +204,11 @@ non-interactive tiers under it, and `kg` under that. The code defaults are
 numbers.
 
 These must stay at or below what EmberVM will actually create for the session
-workloads, `claudeRuntimeWorkload` and `piRuntimeWorkload` `cap` and
-`session.maxSessions` in `projects/embervm/chart/values.yaml`. Above those, a
-granted permit meets a `session_cap` 429 at guest create, which fails the turn
-rather than making it wait.
+workload: `claudeRuntimeWorkload` concurrency `cap` and `session.maxSessions`
+in `projects/embervm/deploy/values.yaml`, 12 and 24. Above those, a granted
+permit meets a `session_cap` 429 at guest create, which fails the turn rather
+than making it wait, so the guest cap sits above the permit cap rather than
+below it.
 
 ### Autonomous intake and refine
 
