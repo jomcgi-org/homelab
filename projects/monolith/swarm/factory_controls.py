@@ -19,6 +19,7 @@ from sqlmodel import Session, select
 
 from core.db import get_engine
 from swarm.factory_models import (
+    DEFAULT_TASK_CLASS,
     FactoryAudit,
     FactoryControl,
     FactoryReceipt,
@@ -78,7 +79,8 @@ DEFAULT_INTAKE = {
 }
 # ADR agents/038 decision 5. A class carries a verification mode and a floor on
 # the implementer tier, and judgment work never routes to the cheap lane.
-DEFAULT_TASK_CLASS = "bug-fix"
+# DEFAULT_TASK_CLASS is re-exported from factory_models, which owns it because
+# the column default is written there.
 # Machine-verified: an objective done condition a machine checks.
 MACHINE_VERIFIED_CLASSES = ("bug-fix", "mechanical-refactor", "docs")
 # Advisory: the output is a comment or a digest. No PR, no review gate.
@@ -244,7 +246,11 @@ def _validate_intake(value: object) -> dict:
         1,
         168,
     )
-    if set(result["labels"]) & set(result["exclude_labels"]):
+    # Selection lowercases both sides, so an overlap that only differs in
+    # case is the same contradiction and must be refused here too.
+    if {label.lower() for label in result["labels"]} & {
+        label.lower() for label in result["exclude_labels"]
+    }:
         raise ValueError("intake labels overlap exclude_labels")
     return result
 

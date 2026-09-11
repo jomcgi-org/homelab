@@ -43,6 +43,10 @@
   const queued = $derived(board?.queued ?? []);
   const recent = $derived(board?.recent ?? []);
   const policy = $derived(board?.policy ?? null);
+  const intake = $derived(board?.intake ?? null);
+  const intakeSeen = $derived(
+    intake?.last_admitted?.created_at ?? intake?.last_idle?.created_at ?? null,
+  );
   const stateWord = $derived(
     board?.state ?? (unavailable ? "unavailable" : "loading"),
   );
@@ -155,6 +159,14 @@
         <span class="k">reviews</span>
         <span class="v">{policy?.reviewer_model ?? "–"}</span>
       </div>
+      <div>
+        <span class="k">intake</span>
+        <span class="v"
+          >{intake?.policy?.enabled
+            ? `${intake.admitted_today}/${intake.max_per_day} today`
+            : "off"}</span
+        >
+      </div>
     </section>
 
     <p class="policy-line">
@@ -164,6 +176,15 @@
             policy.task_budget_usd,
           )} and up to {policy.max_task_turns_hard} starts per task · {policy.max_parallel_nodes ??
             1} in parallel · policy v{board.version}</span
+        >
+      {/if}
+      {#if intake?.policy?.enabled && intakeSeen}
+        <span
+          >last intake {intake.last_admitted
+            ? `admitted #${intake.last_admitted.detail?.issue_number ?? "?"}`
+            : "found nothing"} at {new Date(
+            intakeSeen,
+          ).toLocaleTimeString()}</span
         >
       {/if}
       {#if board && board.ok === false}

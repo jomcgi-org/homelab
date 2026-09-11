@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 import logging
 import os
+from urllib.parse import quote
 
 from sqlmodel import select
 
@@ -22,6 +24,7 @@ from swarm.factory_controls import (
 from swarm.factory_models import FactoryAudit, FactoryReceipt
 from swarm.factory_conductor import (
     _artifact,
+    _audit_once,
     _bounded_planner_text,
     github_get,
     github_list,
@@ -33,6 +36,11 @@ logger = logging.getLogger(__name__)
 ACTOR = "factory:refine"
 NODE_KEY = "refine_1"
 MAX_ATTEMPTS = 2
+# Comment pages read per settlement. The read is already narrowed by a
+# since= filter, so this only bounds a thread that is busy after the brief
+# was posted rather than the whole history before it.
+COMMENT_PAGE_SIZE = 100
+MAX_COMMENT_PAGES = 5
 TASK_CLASS = "refine"
 BRIEF_HEADING = "## Agent brief"
 READY_LABEL = "agent-ready"
@@ -85,24 +93,77 @@ def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
-def _mismatch(task_id: str, number: int, reason: str, label_present: bool) -> None:
-    bounded = f"issue {number}: {reason}; label_present={label_present}"[:500]
-    with _locked_session() as (db, _control):
-        _audit(
-            db,
-            ACTOR,
-            "refine_mismatch",
-            task_id=task_id,
-            issue_number=number,
-            reason=bounded,
-            label_present=label_present,
-        )
-    finish_task(
+def _recorded_mismatch(task_id: str) -> str | None:
+    """The stored verdict when this task has already failed verification.
+
+    Settlement can be refused while a start is unresolved, so the reconciler
+    reaches this branch again on the next tick. The verdict is a fact about
+    GitHub that was established once, so a later tick retries the settlement
+    and never re-reads the issue to re-derive an answer it already has.
+    """
+    with _read_session() as db:
+        row = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == "refine_mismatch",
+            )
+            .order_by(FactoryAudit.id.desc())
+        ).first()
+        return None if row is None else json.loads(row.detail_json).get("reason")
+
+
+def _finish_unverified(task_id: str, reason: str) -> None:
+    result = finish_task(
         task_id,
         "failed",
         ACTOR,
-        evidence={"state": "refine_unverified", "reason": bounded},
+        evidence={"state": "refine_unverified", "reason": reason},
     )
+    if not result["ok"]:
+        # An unresolved start blocks settlement until the reconciler charges
+        # it. The verdict is already on record, so the next tick retries this
+        # without another GitHub read.
+        logger.info(
+            "factory refine settlement deferred for %s: %s",
+            task_id,
+            result["reason"],
+        )
+
+
+def _mismatch(task_id: str, number: int, reason: str, label_present: bool) -> None:
+    bounded = f"issue {number}: {reason}; label_present={label_present}"[:500]
+    _audit_once(
+        task_id,
+        f"factory-refine:{task_id}",
+        "refine_mismatch",
+        {"issue_number": number, "reason": bounded, "label_present": label_present},
+    )
+    _finish_unverified(task_id, bounded)
+
+
+def _comments_since(repo: str, number: int, admitted: datetime) -> list:
+    """Issue comments posted at or after admission, paged.
+
+    Reading only the first page would miss the brief entirely on a busy issue,
+    and the settlement would then fail a task whose node did exactly what it
+    was asked. The since filter is what keeps that bounded: the only comments
+    that can carry this task's brief are the ones written after it started.
+    """
+    stamp = quote(
+        admitted.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), safe=""
+    )
+    collected: list = []
+    for page in range(1, MAX_COMMENT_PAGES + 1):
+        rows = github_list(
+            repo,
+            f"issues/{number}/comments?per_page={COMMENT_PAGE_SIZE}"
+            f"&since={stamp}&page={page}",
+        )
+        collected.extend(rows)
+        if len(rows) < COMMENT_PAGE_SIZE:
+            break
+    return collected
 
 
 def _notify_once(task_id: str, repo: str, number: int, question: str) -> None:
@@ -144,6 +205,12 @@ def _notify_once(task_id: str, repo: str, number: int, question: str) -> None:
 
 
 def _settle(task: dict, run: dict) -> None:
+    recorded = _recorded_mismatch(task["id"])
+    if recorded is not None:
+        # The verdict is already established. Retry only the settlement, so a
+        # task waiting on an unresolved start costs no GitHub reads per tick.
+        _finish_unverified(task["id"], recorded)
+        return
     receipt = task_snapshot(task["id"])
     number = receipt["issue_number"]
     repo = task["repo"]
@@ -168,10 +235,10 @@ def _settle(task: dict, run: dict) -> None:
     if not label_present:
         _mismatch(task["id"], number, "claimed outcome label is absent", False)
         return
-    comments = github_list(repo, f"issues/{number}/comments?per_page=100")
     admitted = datetime.fromisoformat(receipt["admitted_at"].replace("Z", "+00:00"))
     if admitted.tzinfo is None:
         admitted = admitted.replace(tzinfo=timezone.utc)
+    comments = _comments_since(repo, number, admitted)
     executor = os.environ.get("FACTORY_EXECUTOR_LOGIN", "").strip().lower()
     matching = []
     for comment in comments:
@@ -204,9 +271,9 @@ def _settle(task: dict, run: dict) -> None:
     )
     if match is None:
         reason = (
-            "comment page is full and has no matching brief"
-            if len(comments) >= 100 and not matching
-            else "no matching verified brief comment"
+            f"no matching verified brief in {len(comments)} comments since admission"
+            if not matching
+            else "no brief comment matches the claimed comment url"
         )
         _mismatch(task["id"], number, reason, label_present)
         return
@@ -218,12 +285,19 @@ def _settle(task: dict, run: dict) -> None:
     # A needs-human outcome succeeds because the refine task produced a verified
     # brief and escalated the one decision that remains.
     state = "refine_agent_ready" if outcome == READY_LABEL else "refine_needs_human"
-    finish_task(
+    settled = finish_task(
         task["id"],
         "succeeded",
         ACTOR,
         evidence={"state": state, "reason": match["html_url"]},
     )
+    if not settled["ok"]:
+        logger.info(
+            "factory refine settlement deferred for %s: %s",
+            task["id"],
+            settled["reason"],
+        )
+        return
     with _locked_session() as (db, _control):
         _audit(
             db,

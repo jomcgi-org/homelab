@@ -243,7 +243,10 @@ def branch_hydration(task: dict, branch: str, task_hydration: str) -> str:
 
 
 def ingest_eligible(policy: dict) -> None:
+    # Imported here rather than at module scope: the intake loop reaches back
+    # into this module for its bounded GitHub reads.
     from swarm.factory_intake import receive_issue
+    from swarm.factory_intake_loop import _label_names, derive_task_class
 
     # An allowlist is operator policy. Labels and issue text cannot expand it.
     for number in policy["issue_numbers"]:
@@ -252,6 +255,11 @@ def ingest_eligible(policy: dict) -> None:
             continue
         if issue.get("assignees"):
             continue
+        # An operator naming an issue says which work to do, not how hard it
+        # is. The class comes off the same labels either path reads, so a
+        # security-finding or needs-thought issue keeps its Opus floor whether
+        # the lane discovered it or an operator asked for it.
+        task_class, _reason = derive_task_class(_label_names(issue), refine=False)
         receive_issue(
             policy["repo"],
             number,
@@ -260,6 +268,7 @@ def ingest_eligible(policy: dict) -> None:
             issue["html_url"],
             ACTOR,
             generation=policy.get("generation", 0),
+            task_class=task_class,
         )
 
 
@@ -676,7 +685,8 @@ def _boundary(task: dict, *, review: bool = False, refine: bool = False) -> str:
     The branch a node works on is a dispatch-time fact, not a plan-time one, so
     it reaches the guest from the immutable pin rather than from here.
     """
-    assert not (review and refine)
+    if review and refine:
+        raise ValueError("a node is either a review or a refine, never both")
     if refine:
         return (
             f"Factory refine task {task['id']}, repository {task['repo']}. "
@@ -1743,7 +1753,11 @@ def _pending_correction(nodes: list[dict], runs: list[dict]) -> dict | None:
 
 
 def _correction_model(
-    nodes: list[dict], runs: list[dict], review_run: dict, policy: dict
+    nodes: list[dict],
+    runs: list[dict],
+    review_run: dict,
+    policy: dict,
+    task_class: str = DEFAULT_TASK_CLASS,
 ) -> tuple[str | None, str]:
     """The model that produced the head this review examined."""
     by_key = {node["node_key"]: node for node in nodes}
@@ -1768,6 +1782,12 @@ def _correction_model(
     for model, provenance in candidates:
         if model and model in policy["allowed_models"]:
             return model, provenance
+    # The fallback is the one place this can pick a model the graph did not
+    # already hold, so it honours the judgment floor. A correction round on
+    # judgment work is judgment work.
+    if task_class in JUDGMENT_CLASSES:
+        choice = judgment_floor(policy)
+        return choice["model"], ", with a floor-selected judgment model"
     choice = select_model("worker", policy)
     return choice["model"], ", with a pool-selected worker model"
 
@@ -1810,7 +1830,11 @@ def _insert_review_round(
         REVIEW_FINDINGS_CHARS,
         " [text omitted]",
     )
-    model, provenance = _correction_model(nodes, runs, review_run, policy)
+    from swarm.factory_refine import task_class_for
+
+    model, provenance = _correction_model(
+        nodes, runs, review_run, policy, task_class_for(task["id"])
+    )
     if model is None or model not in policy["allowed_models"]:
         return False, "correction_model_not_allowed"
     reviewer = policy.get("reviewer_model", policy["conductor_model"])
@@ -2883,10 +2907,14 @@ def tick() -> None:
     try:
         from swarm.factory_intake_loop import intake_tick
 
+        # The operator's allowlist is read first on purpose. Both paths write
+        # queued receipts and admit_next takes the oldest, so discovering an
+        # issue before ingesting the named ones would hand the free slot to
+        # the discovery and leave an explicitly requested issue waiting.
+        ingest_eligible(snapshot["policy"])
         intake_tick(
             snapshot["policy"], generation=snapshot["policy"].get("generation", 0)
         )
-        ingest_eligible(snapshot["policy"])
         while len(active) < limit:
             admitted = admit_next(ACTOR)
             if not admitted["ok"]:

@@ -80,7 +80,9 @@ def test_refine_schema_and_boundary_are_separate_from_delivery():
     delivery = conductor._boundary(task)
     assert "dedicated branch factory/t-1" in delivery
     assert "Factory refine task" not in delivery
-    with pytest.raises(AssertionError):
+    # An explicit raise, not an assert: a python -O run strips asserts and
+    # would hand a reviewer node the refine boundary instead of refusing.
+    with pytest.raises(ValueError, match="never both"):
         conductor._boundary(task, review=True, refine=True)
 
 
@@ -6402,3 +6404,76 @@ def test_a_stale_allowance_is_re_derived_before_a_top_up_dispatch(
     # allowance must never be what the second admission is measured against.
     conductor.reconcile_task(task["id"], policy, object())
     assert controls.task_snapshot(task["id"])["allowance"] == derived
+
+
+def test_ingest_eligible_classifies_the_operators_named_issues(monkeypatch):
+    """The floor must not depend on which path found the work."""
+    import swarm.factory_intake as intake
+
+    received = []
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda _repo, _suffix: {
+            "state": "open",
+            "assignees": [],
+            "title": "Judgment",
+            "body": "body",
+            "html_url": "https://github.com/owner/repo/issues/4",
+            "labels": [{"name": "needs-thought"}],
+        },
+    )
+    monkeypatch.setattr(
+        intake,
+        "receive_issue",
+        lambda *_args, **kwargs: received.append(kwargs.get("task_class")),
+    )
+    conductor.ingest_eligible(
+        {"repo": "owner/repo", "issue_numbers": [4], "generation": 0}
+    )
+    assert received == ["judgment-analysis"]
+
+
+def test_a_correction_on_judgment_work_stays_at_the_floor():
+    policy = {
+        "conductor_model": "opus",
+        "worker_model": "luna",
+        "reviewer_model": "opus",
+        "allowed_models": ["opus", "luna"],
+        "model_pools": {"worker": ["luna"], "conductor": ["opus"]},
+    }
+    review_run = {"node_key": "review_1", "id": 2}
+    model, provenance = conductor._correction_model(
+        [], [], review_run, policy, "judgment-analysis"
+    )
+    assert model == "opus" and "judgment" in provenance
+    model, _ = conductor._correction_model([], [], review_run, policy, "bug-fix")
+    assert model == "luna"
+
+
+def test_tick_ingests_the_operators_issues_before_it_discovers_one(monkeypatch):
+    """Both paths write queued receipts and the oldest is admitted first."""
+    import swarm.factory_controls as controls
+    import swarm.factory_intake as intake
+    import swarm.factory_intake_loop as intake_loop
+
+    policy = {"max_tasks": 1, "generation": 0}
+    monkeypatch.delenv("FACTORY_MAX_CONCURRENT_TASKS", raising=False)
+    monkeypatch.setattr(
+        controls,
+        "status",
+        lambda: {"state": "enabled", "policy": policy, "active_tasks": []},
+    )
+    monkeypatch.setattr(conductor.runtime, "is_launched", lambda: True)
+    monkeypatch.setattr(conductor.runtime, "init_dbos", lambda: object())
+    order = []
+    monkeypatch.setattr(conductor, "ingest_eligible", lambda _p: order.append("ingest"))
+    monkeypatch.setattr(
+        intake_loop,
+        "intake_tick",
+        lambda _p, **_kwargs: order.append("intake"),
+    )
+    monkeypatch.setattr(intake, "admit_next", lambda _actor: {"ok": False})
+    monkeypatch.setattr(conductor, "reconcile_task", lambda *_args: None)
+    conductor.tick()
+    assert order == ["ingest", "intake"]

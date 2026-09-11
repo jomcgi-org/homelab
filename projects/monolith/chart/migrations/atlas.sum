@@ -1,4 +1,4 @@
-h1:wqWDsezd4eGN1byE4fZuBelq1wRV+4PzJkPP0ubx7VQ=
+h1:0vsGBhgULgbibqwM0pLKuLxo0mtGuBjUmx8OIWU3pQI=
 20260330000000_initial_schema.sql h1:J2futpSW0nJAIRR7nR7ssT7LwXIYrvRI+PkHb5Y4tLI=
 20260403000000_chat_schema.sql h1:pERUFC0vzM95etRuzp43XzkCV7lBCzrrtY5Mk7aF3CA=
 20260404000000_chat_attachments.sql h1:tv+Fdbr1rQC5nzUxfaBC0O6fu2OMGgLWf+YNg1WQXi4=
@@ -201,4 +201,4 @@ h1:wqWDsezd4eGN1byE4fZuBelq1wRV+4PzJkPP0ubx7VQ=
 20260908160000_drop_public_api_session_cost.sql h1:VKZD/0J9Ab7DcCfvIKm4k1wYVntq1k+RqXuR7FilLgY=
 20260909035300_guest_cleanup_ownership.sql h1:MIBnHTJMMDDfxvmgVADI3kLZK6kqyHhi3TErdWiOfOA=
 20260910130000_factory_task_allowance.sql h1:s/utDghCRq7ex2CR3wRJe43yanNEcDcdY4RbKDA5RpY=
-20260910180000_factory_receipt_task_class.sql h1:++sHCQfdrJij0BSxM2saa17YXOzhVH5N5oJaR/qUuBU=
+20260910180000_factory_receipt_task_class.sql h1:Sj73nCEU1bRDjdQLQwyZHP030QkKneNG9oOwcaWJC7c=

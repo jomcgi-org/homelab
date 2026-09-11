@@ -11,21 +11,28 @@ from sqlmodel import select
 from swarm.factory_controls import (
     DEFAULT_TASK_CLASS,
     _audit,
+    receipt_task_class,
     _locked_session,
     _now,
     _read_session,
     intake_policy,
     intake_state,
 )
-from swarm.factory_intake import receive_issue
+from swarm.factory_intake import INTAKE_ACTOR, receive_issue
 from swarm.factory_models import FactoryAudit, FactoryReceipt
 
 logger = logging.getLogger(__name__)
 
-ACTOR = "factory:intake"
+# One name for the identity admission also keys on, so the receipts this
+# module writes and the receipts admit_next will accept can never diverge.
+ACTOR = INTAKE_ACTOR
 PAGE_SIZE = 100
 MAX_PAGES = 5
 CANDIDATE_EVIDENCE_LIMIT = 20
+# Both the idle audit and the listing that precedes it run on this clock. A
+# quiet lane ticks every 15 seconds and the repository does not change that
+# fast, so listing every tick would spend roughly 2400 of the shared 5000
+# requests an hour to learn nothing.
 IDLE_AUDIT_SECONDS = 3600
 RANK_LABELS = ("critical", "bug")
 # ADR agents/038 decision 5, read off the issue's own labels. A refine
@@ -40,6 +47,7 @@ CLASS_LABELS = (
     ("todo", "mechanical-refactor"),
 )
 _EXCLUSION_REASONS = (
+    "malformed",
     "pull_request",
     "not_open",
     "assigned",
@@ -67,16 +75,28 @@ def github_list(repo: str, suffix: str) -> list:
     return read(repo, suffix)
 
 
-def _pages(repo: str, endpoint: str) -> list:
+def _pages(repo: str, endpoint: str) -> tuple[list, bool]:
+    """Open rows oldest first, and whether the read hit the page cap.
+
+    GitHub defaults to newest first, so a repository with more open rows than
+    MAX_PAGES * PAGE_SIZE would truncate exactly the oldest ones, which is the
+    half ranking prefers. Asking for ascending order makes the truncation fall
+    on the newest instead, and the flag says it happened so an operator reads
+    a partial sweep as partial.
+    """
     result = []
+    truncated = False
     for page in range(1, MAX_PAGES + 1):
         rows = github_list(
-            repo, f"{endpoint}?state=open&per_page={PAGE_SIZE}&page={page}"
+            repo,
+            f"{endpoint}?state=open&sort=created&direction=asc"
+            f"&per_page={PAGE_SIZE}&page={page}",
         )
         result.extend(rows)
         if len(rows) < PAGE_SIZE:
             break
-    return result
+        truncated = page == MAX_PAGES
+    return result, truncated
 
 
 def _label_names(issue: dict) -> set[str]:
@@ -108,20 +128,69 @@ def _created_rank(issue: dict) -> float:
             return parsed.timestamp()
         except ValueError:
             pass
-    return float(issue["number"])
+    # Unknown age sorts last. Falling back to the issue number would read a
+    # low number as an old date and hand the top rank to the one candidate
+    # whose age could not be established.
+    return float("inf")
+
+
+def _latest(db, action: str) -> FactoryAudit | None:
+    return db.exec(
+        select(FactoryAudit)
+        .where(FactoryAudit.action == action)
+        .order_by(FactoryAudit.id.desc())
+    ).first()
+
+
+def _throttled(action: str, detail: dict) -> None:
+    """Write one audit of this action per hour, and drop the rest.
+
+    A quiet lane reaches the same conclusion every fifteen seconds. Recording
+    each one would bury the audit trail under rows that all say what the first
+    already said.
+    """
+    cutoff = _now() - timedelta(seconds=IDLE_AUDIT_SECONDS)
+    with _locked_session() as (db, _control):
+        last = _latest(db, action)
+        if last is not None and _aware(last.created_at) >= cutoff:
+            return
+        _audit(db, ACTOR, action, **detail)
 
 
 def _idle(detail: dict) -> None:
-    cutoff = _now() - timedelta(seconds=IDLE_AUDIT_SECONDS)
-    with _locked_session() as (db, _control):
-        last = db.exec(
-            select(FactoryAudit)
-            .where(FactoryAudit.action == "intake_idle")
-            .order_by(FactoryAudit.id.desc())
+    _throttled("intake_idle", detail)
+
+
+def _listing_due(now: datetime) -> bool:
+    """Whether this tick may spend GitHub reads on a fresh sweep.
+
+    The sweep runs at most once an hour while the lane finds nothing, because
+    a repository does not gain eligible work faster than that and the request
+    budget is shared with everything else that reads GitHub. A settlement is
+    the exception: once a receipt reaches a terminal state the picture has
+    genuinely changed, so the next tick sweeps immediately rather than waiting
+    out the rest of the hour.
+
+    The clock is its own audit rather than the idle one. A refusal that never
+    reached GitHub, the daily cap above, also writes an idle row, and reading
+    that as a sweep would leave the lane blind for an hour after the cap
+    cleared. A settlement recorded in the same second as the sweep re-opens
+    it: one extra sweep costs two requests, a missed one costs an hour.
+    """
+    with _read_session() as db:
+        last = _latest(db, "intake_swept")
+        if last is None:
+            return True
+        marked = _aware(last.created_at)
+        if marked < now - timedelta(seconds=IDLE_AUDIT_SECONDS):
+            return True
+        settled = db.exec(
+            select(FactoryReceipt.id).where(
+                FactoryReceipt.state.in_(("succeeded", "failed", "cancelled")),
+                FactoryReceipt.updated_at >= marked,
+            )
         ).first()
-        if last is not None and _aware(last.created_at) >= cutoff:
-            return
-        _audit(db, ACTOR, "intake_idle", **detail)
+        return settled is not None
 
 
 def intake_tick(policy: dict, *, generation: int) -> dict | None:
@@ -159,9 +228,37 @@ def intake_tick(policy: dict, *, generation: int) -> dict | None:
             )
             return None
 
+        if not _listing_due(now):
+            return None
+
         repo = policy["repo"]
-        issues = _pages(repo, "issues")
-        pulls = _pages(repo, "pulls")
+        # The clock records the ATTEMPT, not the result. A sweep that fails is
+        # the case most worth rate limiting: a 403 usually means the shared
+        # budget is already spent, and retrying every fifteen seconds is how
+        # it stays spent.
+        with _locked_session() as (db, _control):
+            _audit(db, ACTOR, "intake_swept")
+        try:
+            issues, issues_cut = _pages(repo, "issues")
+            pulls, pulls_cut = _pages(repo, "pulls")
+        except Exception as exc:  # noqa: BLE001 - recorded, never swallowed
+            # A 403 from the shared rate limit, or any other read failure,
+            # would otherwise leave intake silently dead: the blanket handler
+            # below logs where nobody looks. Record the shape of the failure
+            # without its response body, URL or credential-bearing text.
+            _throttled(
+                "intake_error",
+                {
+                    "stage": "listing",
+                    "error": type(exc).__name__,
+                    "status": getattr(
+                        getattr(exc, "response", None), "status_code", None
+                    ),
+                },
+            )
+            logger.warning("factory intake listing failed", exc_info=True)
+            return None
+        truncated = issues_cut or pulls_cut
         linked: set[int] = set()
         for pull in pulls:
             if not isinstance(pull, dict):
@@ -185,7 +282,7 @@ def intake_tick(policy: dict, *, generation: int) -> dict | None:
         survivors = []
         for item in issues:
             if not isinstance(item, dict):
-                exclude("not_open")
+                exclude("malformed")
                 continue
             labels = _label_names(item)
             if "pull_request" in item:
@@ -234,18 +331,25 @@ def intake_tick(policy: dict, *, generation: int) -> dict | None:
             ):
                 exclude("cooldown")
                 continue
-            if any(row.generation == generation for row in rows):
+            delivery = bool(labels & include_labels)
+            refine = not delivery
+            task_class, class_reason = derive_task_class(labels, refine=refine)
+            # Scoped to the class, not just the generation. A refine pass that
+            # moved an issue to agent-ready has changed what the lane can do
+            # with it, and waiting for an operator to bump the generation
+            # would strand the readiness the lane just produced.
+            if any(
+                row.generation == generation and receipt_task_class(row) == task_class
+                for row in rows
+            ):
                 exclude("already_received")
                 continue
-            delivery = bool(labels & include_labels)
             if not delivery and not intake["refine_enabled"]:
                 exclude("refine_disabled")
                 continue
             if type(number) is not int or not 1 <= number <= 2**31 - 1:
-                exclude("not_open")
+                exclude("malformed")
                 continue
-            refine = not delivery
-            task_class, class_reason = derive_task_class(labels, refine=refine)
             label_rank = next(
                 (index for index, label in enumerate(RANK_LABELS) if label in labels),
                 len(RANK_LABELS),
@@ -271,7 +375,13 @@ def intake_tick(policy: dict, *, generation: int) -> dict | None:
         candidates.sort(key=lambda candidate: candidate["sort"])
         excluded = {reason: count for reason, count in excluded.items() if count}
         if not candidates:
-            _idle({"excluded": excluded, "listed": len(issues)})
+            _idle(
+                {
+                    "excluded": excluded,
+                    "listed": len(issues),
+                    **({"truncated": True} if truncated else {}),
+                }
+            )
             return None
 
         chosen = candidates[0]
@@ -306,6 +416,7 @@ def intake_tick(policy: dict, *, generation: int) -> dict | None:
                 ],
                 excluded=excluded,
                 admitted_today=admitted_today + 1,
+                **({"truncated": True} if truncated else {}),
             )
         return received
     except Exception:  # noqa: BLE001 - intake is optional and never stops the lane
