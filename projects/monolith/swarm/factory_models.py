@@ -136,6 +136,9 @@ class FactoryAudit(SQLModel, table=True):
     __tablename__ = "factory_audit"
     __table_args__ = (
         Index("factory_audit_created_at_idx", "created_at"),
+        # Landing reads this trail by task and action on every tick, for the
+        # per-task landing state and for the once-only fences.
+        Index("factory_audit_task_action_idx", "task_id", "action"),
         {"schema": "swarm", "extend_existing": True},
     )
 
