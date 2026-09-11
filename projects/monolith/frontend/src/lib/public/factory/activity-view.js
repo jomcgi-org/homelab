@@ -15,6 +15,8 @@ const SECONDS_PER_HOUR = 3600;
 const SECONDS_PER_MINUTE = 60;
 const MS_PER_DAY = 86_400_000;
 const RECENT_WINDOW_DAYS = 7;
+// A prompt or a reply past this many characters is collapsed by default.
+const TEXT_CLIP = 600;
 
 // One square, one meaning. A task state and a node state are different
 // vocabularies over the same six marks, so each gets its own map rather than a
@@ -38,10 +40,15 @@ const NODE_WORD = {
   retired: "retired",
 };
 
-// Plan figure geometry, in the SVG's own user units. The viewBox scales it, so
-// these are ratios rather than pixels: a box wide enough for a node key at
-// 11px mono, a column gap wide enough for an elbow and its arrowhead.
-const NODE_WIDTH = 150;
+// Plan figure geometry, in the SVG's own user units. The figure is drawn at one
+// unit per pixel, so a box is as wide as the longest node key needs at 11px
+// mono, and a column gap is wide enough for an elbow and its arrowhead.
+const NODE_MIN_WIDTH = 150;
+const NODE_MAX_WIDTH = 300;
+// 11px mono advances about 6.6 units per character, and the label sits in a
+// 10-unit gutter on each side of the box.
+const CHAR_WIDTH = 6.6;
+const NODE_PAD = 20;
 const NODE_HEIGHT = 44;
 const COLUMN_GAP = 44;
 const ROW_GAP = 16;
@@ -367,6 +374,75 @@ export function sessionSpec(session) {
 }
 
 /**
+ * Long text, cut for a first read. A conductor prompt runs to thousands of
+ * characters and buries the reply under it, so the view shows a head and offers
+ * the rest. The cut lands on the last whitespace before the limit so it ends on
+ * a word, and `head + rest` is always the original text.
+ */
+export function clip(text, limit = TEXT_CLIP) {
+  const full = text ?? "";
+  if (full.length <= limit) return { head: full, rest: "", clipped: false };
+  const window = full.slice(0, limit);
+  // The last run of whitespace in the window, or none at all in one long token.
+  const at = window.search(/\s+(?=\S*$)/);
+  const cut = at > 0 ? at : limit;
+  return { head: full.slice(0, cut), rest: full.slice(cut), clipped: true };
+}
+
+// The brief is a GitHub issue body, so it arrives as markdown. Exactly three
+// things earn a run and nothing else is interpreted: the rest of the markdown
+// is rarer here than the damage a half-built renderer would do.
+const HEADING = /^#{1,6}\s+(.+)$/;
+const INLINE = /`([^`]+)`|\*\*([^*]+)\*\*/g;
+
+/**
+ * One paragraph of the brief as runs the view paints: plain text, an inline
+ * code span, bold, or the whole paragraph as a heading. Runs, never HTML: the
+ * issue body is other people's text and must not reach the page as markup.
+ */
+export function briefRuns(paragraph) {
+  const text = (paragraph ?? "").trim();
+  if (!text) return [];
+  const heading = HEADING.exec(text);
+  if (heading) return [{ text: heading[1].trim(), heading: true }];
+  const runs = [];
+  let at = 0;
+  for (const match of text.matchAll(INLINE)) {
+    if (match.index > at) runs.push({ text: text.slice(at, match.index) });
+    if (match[1] != null) runs.push({ text: match[1], code: true });
+    else runs.push({ text: match[2], strong: true });
+    at = match.index + match[0].length;
+  }
+  if (at < text.length) runs.push({ text: text.slice(at) });
+  return runs;
+}
+
+/**
+ * One width for every box in the figure, wide enough for the longest node key
+ * it has to hold. Every box gets it, not just the long one: ragged columns
+ * would read as a hierarchy the plan does not have.
+ */
+function boxWidthFor(nodes) {
+  const longest = Math.max(
+    0,
+    ...nodes.map((node) => (node.node_key ?? "").length),
+  );
+  const wanted = Math.ceil(NODE_PAD + longest * CHAR_WIDTH);
+  return Math.min(NODE_MAX_WIDTH, Math.max(NODE_MIN_WIDTH, wanted));
+}
+
+/**
+ * The label a box of this width can hold. A key longer than the widest box is
+ * cut to one ellipsis; the full key stays on the box for the view to title.
+ */
+function fitLabel(key, boxWidth) {
+  const text = key ?? "";
+  const budget = Math.floor((boxWidth - NODE_PAD) / CHAR_WIDTH);
+  if (text.length <= budget) return text;
+  return `${text.slice(0, Math.max(0, budget - 1))}…`;
+}
+
+/**
  * Rank each node one past its deepest dependency, then lay the ranks out as
  * columns left to right. Returns absolute geometry so the figure is a `each`
  * over boxes and paths rather than a script inside the template.
@@ -403,8 +479,8 @@ export function planLayout(nodes = [], steps = []) {
   }
   const stages = columns.size;
   const tallest = Math.max(...[...columns.values()].map((c) => c.length));
-  const width =
-    FIGURE_PAD * 2 + stages * NODE_WIDTH + (stages - 1) * COLUMN_GAP;
+  const nodeWidth = boxWidthFor(nodes);
+  const width = FIGURE_PAD * 2 + stages * nodeWidth + (stages - 1) * COLUMN_GAP;
   const height =
     FIGURE_PAD * 2 + tallest * NODE_HEIGHT + (tallest - 1) * ROW_GAP;
 
@@ -416,9 +492,10 @@ export function planLayout(nodes = [], steps = []) {
       node,
       index,
       number: index + 1,
-      x: FIGURE_PAD + rank * (NODE_WIDTH + COLUMN_GAP),
+      label: fitLabel(node.node_key, nodeWidth),
+      x: FIGURE_PAD + rank * (nodeWidth + COLUMN_GAP),
       y: FIGURE_PAD + row * (NODE_HEIGHT + ROW_GAP),
-      width: NODE_WIDTH,
+      width: nodeWidth,
       height: NODE_HEIGHT,
       step: steps.findIndex((step) => step.node === node),
     };
@@ -430,7 +507,7 @@ export function planLayout(nodes = [], steps = []) {
   for (const box of laid) {
     for (const parent of parentsOf(box.node)) {
       const from = placed.get(parent);
-      const x1 = from.x + NODE_WIDTH;
+      const x1 = from.x + nodeWidth;
       const y1 = from.y + NODE_HEIGHT / 2;
       const x2 = box.x;
       const y2 = box.y + NODE_HEIGHT / 2;
