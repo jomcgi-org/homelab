@@ -283,9 +283,7 @@ def held_qwen(engine):
             "generation": 3,
             "observed_at": now.isoformat(),
             "updated_at": int((now - timedelta(seconds=10)).timestamp() * 1000),
-            "last_invoke_at": int(
-                (now - timedelta(seconds=20)).timestamp() * 1000
-            ),
+            "last_invoke_at": int((now - timedelta(seconds=20)).timestamp() * 1000),
             "evidence_sha256": "b" * 64,
         },
         "disposition": "rearm",
@@ -355,9 +353,7 @@ def test_qwen_docfix_refuses_incomplete_or_mismatched_evidence(database, invalid
         reconciliation.reconcile_held_job(**request)
 
     with Session(database) as db:
-        row = db.execute(
-            text("SELECT last_status,next_run_at FROM routine_jobs")
-        ).one()
+        row = db.execute(text("SELECT last_status,next_run_at FROM routine_jobs")).one()
         assert row.last_status == UNKNOWN_INVOCATION
         assert row.next_run_at is None
         permit = db.get(AgentCapacityReservation, before["reservation_id"])
