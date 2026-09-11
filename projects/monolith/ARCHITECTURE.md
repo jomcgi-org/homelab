@@ -296,6 +296,15 @@ run serially on the task branch and it merges nothing.
 (see: /projects/monolith/swarm/deviations.py)
 (see: /projects/monolith/swarm/FACTORY.md)
 
+**Why.** Autonomous intake lets the bounded lane discover delivery-ready work
+without making the operator continually copy issue numbers into policy, while
+keeping that authority inert by default and capped by labels, cooldown, and a
+daily limit. Issues that are not ready can take a separate refine-or-escalate
+path: one bounded node writes a structured brief, and the server trusts only
+the label and comment it re-reads from GitHub. This makes readiness evidence an
+observable issue state and keeps an unresolved human decision from entering the
+delivery DAG (#6002).
+
 **Why.** The bootstrap asked the planner for one graph edit at a time, so a
 single task (#5981) spent nine starts on five pieces of work: five were planner
 turns that added one node each, and a review that requested changes went back
@@ -869,6 +878,7 @@ this table when the work ships or the issue closes without it.
 | One factory conversation spans web, Discord, and voice for the same conductor | The factory conductor | #5788 | not started |
 | Conductor mutations are server-gated by tier, ledgered, and stoppable, with health gates before autonomous action | The factory conductor | #5789 | not started |
 | Shared admission and reservations schedule product-goal work across lanes with downstream backpressure | The factory conductor | #5804 | not started |
+| Autonomous intake selects bounded issue work and refines or escalates issues that are not delivery-ready | section 4 | #6002 | in progress: policy, intake selection, and the refine path are implemented behind disabled defaults |
 | Per-caller result scoping restricts what each MCP caller's tool calls can return | section 7 | #4569 | not started |
 | Discord chat automation gets persisted scheduled tasks, configurable message triggers, and per-channel memory notes | Decision history (services/002) | #3901 | not started |
 | Grimoire post-extraction quality passes (evidence-grounded stat verification, review-approved alias merges) ship | Decision history (services/014) | #3912 | not started |
