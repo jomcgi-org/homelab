@@ -76,6 +76,11 @@ DEFAULT_INTAKE = {
     "max_per_day": 5,
     "cooldown_hours": 24,
     "refine_enabled": False,
+    # Closing an issue is the one refine outcome that destroys something an
+    # operator would have to undo by hand, so it is a flag of its own and the
+    # rest of the refine path works without it.
+    "close_enabled": False,
+    "max_closes_per_day": 3,
 }
 # ADR agents/038 decision 5. A class carries a verification mode and a floor on
 # the implementer tier, and judgment work never routes to the cheap lane.
@@ -224,7 +229,7 @@ def _validate_intake(value: object) -> dict:
     if not isinstance(value, dict) or not set(value) <= set(DEFAULT_INTAKE):
         raise ValueError("invalid intake")
     result = {}
-    for key in ("enabled", "refine_enabled"):
+    for key in ("enabled", "refine_enabled", "close_enabled"):
         setting = value.get(key, DEFAULT_INTAKE[key])
         if type(setting) is not bool:
             raise ValueError(f"invalid {key}")
@@ -245,6 +250,12 @@ def _validate_intake(value: object) -> dict:
         "cooldown_hours",
         1,
         168,
+    )
+    result["max_closes_per_day"] = _integer(
+        value.get("max_closes_per_day", DEFAULT_INTAKE["max_closes_per_day"]),
+        "max_closes_per_day",
+        1,
+        50,
     )
     # Selection lowercases both sides, so an overlap that only differs in
     # case is the same contradiction and must be refused here too.

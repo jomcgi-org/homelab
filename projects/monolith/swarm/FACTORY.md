@@ -86,7 +86,10 @@ labels and may be empty, in which case no issue is a delivery candidate.
 `exclude_labels` rejects an issue before selection. `max_per_day` is between 1
 and 50, and `cooldown_hours` is between 1 and 168. `refine_enabled` allows an
 otherwise eligible issue with none of the delivery labels to enter the refine
-path. Both feature flags default off.
+path. `close_enabled` allows a refine verdict to close an issue and
+`max_closes_per_day` bounds how many it may close in a rolling 24 hours,
+default 3. All three feature flags default off or, for the cap, bound a
+capability that is itself off.
 
 Intake sweeps GitHub at most once an hour while it is finding nothing, and
 again immediately after any receipt settles. A tick that cannot read GitHub
@@ -145,13 +148,40 @@ built in these phases (#3843).
 
 A refine task runs one planner-class node with at most two attempts and has no
 DAG. The node posts exactly one `## Agent brief` comment with `### Outcome`,
-`### Acceptance`, `### Files`, `### Evidence`, and `### Risks` in that order.
-It applies `agent-ready` when no human decision remains. Otherwise it applies
-`needs-human`, adds a final `### Question` section, and sends exactly one warn
-notification. The server settles from a re-read of the issue label and comment,
-never from the node artifact alone. A verified `needs-human` result succeeds
-because the briefing and escalation completed. Two failed attempts settle the
-task failed and apply nothing.
+`### Acceptance`, `### Files`, `### Evidence`, and `### Risks` in that order,
+then reaches exactly one of four verdicts and acts on it:
+
+| Verdict | What the node does | What settlement demands back from GitHub |
+|---|---|---|
+| `agent-ready` | applies `agent-ready` | the label, the brief, and the issue still open |
+| `needs-human` | applies `needs-human`, ends the brief with `### Decision needed` carrying `recommend: deliver \| close \| split \| defer` and the one question a person must answer | the label, the brief, the issue still open, and one warn notification naming the issue, the recommendation and the question |
+| `reject` | adds `### Why not` citing a file, pull request or recorded decision, applies `wontfix`, closes with reason `not_planned` | the label, the brief, and the issue closed |
+| `stale` | adds `### Why stale`, applies `stale`, creating the label if the repository has none, closes with reason `not_planned` | the label, the brief, and the issue closed |
+
+`reject` and `stale` are for a premise a reader can check: a decision recorded
+in an ARCHITECTURE.md **Why.** paragraph, work already merged, a file or flag
+that is gone. The prompt says that doubt resolves to `needs-human` with a
+recommendation rather than to a close, because a wrong escalation costs a
+minute and a wrong close costs the issue.
+
+Closing is gated twice. It needs `close_enabled`, and it needs room under
+`max_closes_per_day`, counted from the `intake_closed` audits of the last 24
+hours. Both are read before the node runs, so the prompt offers three verdicts
+rather than four when closing is unavailable, and again at settlement, so a cap
+spent while the node was running still holds. A close verdict the lane may not
+act on is downgraded to `needs-human`: the server then demands the
+`needs-human` label and an open issue, exactly as it would for an escalation,
+and records `refine_close_downgraded`. An issue carrying `critical` or
+`security-finding`, or assigned to any milestone, is never closed and takes the
+same downgrade. Every close that settles audits `intake_closed` with the
+evidence cited.
+
+The server settles from a re-read of the issue, never from the node artifact
+alone. A verified `needs-human` result succeeds because the briefing and the
+escalation both completed, and a verified close succeeds because the issue is
+demonstrably closed with its reason on record. A mismatch fails the task and
+the issue takes the cooldown. Two failed attempts settle the task failed and
+apply nothing.
 
 Before enabling `refine_enabled`, confirm the guest GitHub token has
 `issues: write` on a fine-grained token, or `repo` on a classic one. Opening a
