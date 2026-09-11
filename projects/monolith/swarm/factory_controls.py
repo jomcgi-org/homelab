@@ -53,6 +53,7 @@ _POLICY_KEYS = {
     "max_review_rounds",
     "intake",
     "quota_guard",
+    "auto_merge",
 }
 _OPTIONAL_POLICY_KEYS = {
     "reviewer_model",
@@ -64,6 +65,7 @@ _OPTIONAL_POLICY_KEYS = {
     "max_parallel_nodes",
     "intake",
     "quota_guard",
+    "auto_merge",
 }
 # Bounded review, correct and re-review rounds the engine runs on its own before
 # it asks the planner. Absent from a live policy means this default, so the
@@ -85,6 +87,10 @@ DEFAULT_INTAKE = {
     "close_enabled": False,
     "max_closes_per_day": 3,
 }
+# Landing is off until an operator turns it on. Arming a merge is the first
+# thing the reconciler does that changes the repository rather than reading
+# it, so the capability arrives inert and an operator opts in.
+DEFAULT_AUTO_MERGE = False
 # The shared Claude 7-day window, as a percentage used. Review is what spends
 # it: every delivery task ends in an independent Opus review. Above the pause
 # percent review routes to the next reviewer with quota, and below the resume
@@ -282,6 +288,13 @@ def validate_policy(policy: dict) -> dict:
         result["model_pools"] = _validate_model_pools(policy["model_pools"], result)
     result["intake"] = _validate_intake(policy.get("intake", {}))
     result["quota_guard"] = _validate_quota_guard(policy.get("quota_guard", {}))
+    # Landing is the one factory step that writes to the repository rather
+    # than reading it, so it is a flag of its own and defaults off. A policy
+    # written before landing existed reads as false and lands nothing.
+    auto_merge = policy.get("auto_merge", DEFAULT_AUTO_MERGE)
+    if type(auto_merge) is not bool:
+        raise ValueError("invalid auto_merge")
+    result["auto_merge"] = auto_merge
     if result["turn_timeout_seconds"] > result["task_timeout_seconds"]:
         raise ValueError("turn timeout exceeds task timeout")
     result["base_branch"] = _text(policy["base_branch"], "base_branch", 256)
@@ -351,6 +364,16 @@ def quota_guard_policy(policy: dict) -> dict:
 def intake_policy(policy: dict) -> dict:
     """The intake block, defaulted, so a policy stored before it reads as off."""
     return _validate_intake(policy.get("intake") or {})
+
+
+def auto_merge_enabled(policy: dict) -> bool:
+    """Whether this policy lets the lane arm a merge.
+
+    A stored policy written before landing existed has no key at all, and a
+    malformed one is not a licence: anything that is not exactly True reads as
+    off, because the failure that matters here writes to the repository.
+    """
+    return policy.get("auto_merge", DEFAULT_AUTO_MERGE) is True
 
 
 def validate_task_class(value: object) -> str:

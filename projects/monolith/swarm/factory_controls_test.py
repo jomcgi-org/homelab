@@ -339,10 +339,10 @@ def test_invalid_start_budget_cannot_reserve(db, policy, value):
 
 
 def test_unlisted_model_and_untrusted_policy_field_are_refused(db, policy):
-    policy["auto_merge"] = True
+    policy["deploy_on_merge"] = True
     with pytest.raises(ValueError):
         controls.set_control("configure", "operator", policy=policy)
-    del policy["auto_merge"]
+    del policy["deploy_on_merge"]
     task = admitted(policy)
     assert grant(task, model="issue-selected-model")["reason"] == "model_not_allowed"
 
@@ -1304,3 +1304,22 @@ def test_lane_usage_ignores_other_generations(monkeypatch):
         "delivery": {"limit": 2, "active": 1, "queued": 0},
         "advisory": {"limit": 2, "active": 0, "queued": 1},
     }
+
+
+def test_auto_merge_defaults_off_and_only_true_enables_landing(policy):
+    """Landing writes to the repository, so nothing but True opts in."""
+    assert controls.validate_policy(policy)["auto_merge"] is False
+    assert controls.auto_merge_enabled(controls.validate_policy(policy)) is False
+    armed = controls.validate_policy({**policy, "auto_merge": True})
+    assert armed["auto_merge"] is True
+    assert controls.auto_merge_enabled(armed) is True
+    # A policy stored before the flag existed carries no key at all, and a
+    # truthy non-boolean is not an opt-in.
+    assert controls.auto_merge_enabled({}) is False
+    assert controls.auto_merge_enabled({"auto_merge": "true"}) is False
+
+
+@pytest.mark.parametrize("value", ["true", 1, None, {}])
+def test_auto_merge_refuses_a_non_boolean(policy, value):
+    with pytest.raises(ValueError, match="auto_merge"):
+        controls.validate_policy({**policy, "auto_merge": value})
