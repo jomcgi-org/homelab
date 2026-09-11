@@ -385,6 +385,81 @@ demonstrably closed with its reason on record. A mismatch fails the task and
 the issue takes the cooldown. Two failed attempts settle the task failed and
 apply nothing.
 
+### Escalation decisions
+
+A `needs-human` verdict is a decision waiting on a person, so it arrives as
+options rather than as a question. The artifact carries two to four, ordered
+with the recommendation first, and the server refuses the settlement when they
+do not hold up:
+
+```json
+{
+  "key": "split",
+  "label": "Split the operator console out of the API",
+  "effect": "split",
+  "detail": {"children": [{"title": "...", "body": "..."}]}
+}
+```
+
+`effect` is one of five. `agent-ready` applies the delivery label and takes
+`needs-human` off, with an optional scope note posted as a comment. `close`
+comments the reason and closes with `not_planned` or `completed`. `split`
+opens one to five child issues, then closes the parent against them. `defer`
+applies `needs-thought`, takes `needs-human` off, and comments the condition
+that would make the work worth doing. `hold` writes nothing and records that
+someone looked and chose to leave it.
+
+The first option is the recommendation, and its effect has to be the one the
+`recommend:` line names: deliver is `agent-ready`, close is `close`, split is
+`split`, defer is `defer`. The prompt asks for labels that name the concrete
+act ("Close as superseded by #5656") rather than the verb the effect already
+carries, because the label is the whole of what a person reads before
+deciding. The same options are the numbered list in the brief's
+`### Decision needed` section, so a reader on GitHub and an operator on the
+console are choosing from one list.
+
+A close verdict the server downgrades never wrote options: the node reached a
+verdict it was allowed to act on and the server is what turned it into an
+escalation. Settlement synthesises two for it, the close the node wanted and
+`hold`, so every escalation is decidable rather than leaving the downgraded
+ones as a question with no buttons under it.
+
+The escalation is stored on the receipt as `escalation_json`, which is also
+where the resolution lands, and the options are repeated on the
+`refine_settled` audit as what was offered at the time.
+
+**Deciding.** `POST /api/swarm/factory/decisions/{receipt_id}` behind the same
+operator gate as `/control`, with `{"option_key": "...", "note": "..."}` or
+`{"action": "chat", "note": "..."}`. The private agents page at
+`/agents/escalations` reaches the same code through
+`POST /api/agents/factory/decisions/{receipt_id}`, which the browser can use
+because it is gated on the address Cloudflare Access verified at the edge
+matched against `FACTORY_OPERATOR_EMAILS`. That list is empty in the chart, so
+the page 403s until an operator puts themselves on it.
+
+Every write is idempotent on the pair of receipt and option. A comment carries
+a hidden marker naming that pair and is skipped when the marker is already on
+the issue, a label add is idempotent already, and each child a split opens is
+fenced by its own `decision_child_created` audit row, so a retry after a
+network failure finishes the decision rather than doubling it. A decision is
+claimed before it is applied, which is what refuses a second, different option
+against one escalation; repeating the same option returns the first result.
+Applying audits `decision_applied` with the actor, the option and what it did.
+
+**Chat.** `action: chat` posts the note on the issue prefixed
+`Operator asks:`, records it on the escalation, audits
+`decision_chat_requested`, and returns the refine receipt to `queued` so the
+lane briefs the issue again in the same generation with the note in its
+prompt. The receipt rather than a new one, because admission selects on the
+policy's generation and a receipt at any other generation would never be
+admitted at all. The issue text is never rewritten. This is the one path that
+returns a settled receipt to the queue, so total spend per generation is
+bounded by the receipts a generation can hold plus the re-briefs an operator
+asks for by hand.
+
+The `needs-human` warning on Discord carries the escalations link, so the
+notification is the way in rather than a thing to read and then go looking.
+
 Before enabling `refine_enabled`, confirm the guest GitHub token has
 `issues: write` on a fine-grained token, or `repo` on a classic one. Opening a
 pull request needs `pull_requests: write` or `repo`. A fine-grained token
