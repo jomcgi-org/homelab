@@ -14,7 +14,7 @@ async function getJson(fetch, path) {
 
 export async function load({ fetch, setHeaders }) {
   const sections = await Promise.allSettled([
-    getJson(fetch, "/slop/factory/activity"),
+    getJson(fetch, "/slop/factory/data/activity"),
     getJson(fetch, "/slop/factory/merges"),
     getJson(fetch, "/slop/factory/facts"),
   ]);

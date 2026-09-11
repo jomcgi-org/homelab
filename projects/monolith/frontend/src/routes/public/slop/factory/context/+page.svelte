@@ -260,6 +260,7 @@
       <div class="mast-actions">
         <nav class="view-tabs" aria-label="Factory views">
           <a href="/slop/factory">overview</a>
+          <a href="/slop/factory/activity">activity</a>
           <a class="here" href="/slop/factory/context" aria-current="page"
             >context</a
           >

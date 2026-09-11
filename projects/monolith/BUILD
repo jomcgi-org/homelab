@@ -5104,6 +5104,19 @@ py_test(
     ],
 )
 
+# Pure shaping for the public factory snapshot: every helper takes plain dicts,
+# so this links no database and no swarm package.
+py_test(
+    name = "agent_sessions_factory_public_test",
+    srcs = ["agent_sessions/factory_public_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
 py_test(
     name = "agent_sessions_admission_test",
     srcs = ["agent_sessions/admission_test.py"],
@@ -7700,6 +7713,16 @@ bdd_test(
     deps = ["@pip//typer"],
 )
 
+# Real-Postgres test: the public factory snapshot WRITER. Covers the empty
+# board (both prune keep-lists empty, which is the untyped-bindparam case),
+# the seeded board's task and session rows, identity never reaching a payload,
+# and a task falling off the window taking its sessions with it. The shaping
+# half is agent_sessions_factory_public_test, which needs no database.
+bdd_test(
+    name = "factory_public_writer_test",
+    srcs = ["agent_sessions/factory_public_writer_test.py"],
+)
+
 # Real-Postgres test: the public_writer role can DML only the chat_public schema,
 # is denied other schemas, and public_reader can never write chat_public
 # (ADR 005). Uses the bdd_test harness for the pg fixture + applied migrations.
@@ -8354,6 +8377,22 @@ py_test(
 py_test(
     name = "agent_sessions_public_agent_activity_router_test",
     srcs = ["agent_sessions/public_agent_activity_router_test.py"],
+    imports = ["."],
+    deps = [
+        ":monolith_public_backend",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+    ],
+)
+
+# Hand-registered (agent_sessions is gazelle-excluded): the public factory
+# routes read only the public_api snapshot tables, with cache headers,
+# conditional ETags, 404s before the first snapshot, and colon-bearing keys.
+py_test(
+    name = "agent_sessions_public_factory_router_test",
+    srcs = ["agent_sessions/public_factory_router_test.py"],
     imports = ["."],
     deps = [
         ":monolith_public_backend",

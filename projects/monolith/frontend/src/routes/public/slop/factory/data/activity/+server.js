@@ -3,7 +3,7 @@ import {
   AGENT_ACTIVITY_CACHE_CONTROL,
   cloudflareCacheHeaders,
   versionedEtag,
-} from "../../../../../lib/cache-headers.js";
+} from "../../../../../../lib/cache-headers.js";
 
 // nosemgrep: sveltekit-server-hardcoded-api-base-fallback
 const API_BASE = process.env.API_BASE || "http://localhost:8000";

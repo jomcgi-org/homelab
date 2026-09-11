@@ -567,6 +567,33 @@ def home_cluster_snapshot_refresh() -> None:
     logger.info("home-cluster-snapshot-refresh: done")
 
 
+@app.command("factory-public-snapshot")
+def factory_public_snapshot() -> None:
+    """Snapshot the factory board to public_api for the jomcgi.dev pages.
+
+    The public tier has no grant on the swarm or agent_sessions schemas and no
+    factory code in its image, so it cannot build a board. This job does it on
+    the private side and upserts the three payload kinds (the board, one task's
+    walkthrough, one session's full record) into public_api tables the public
+    router reads with plain SQL. Needs only DATABASE_URL. The writer commits its
+    own transaction."""
+    from sqlmodel import Session
+
+    from agent_sessions.factory_public import write_public_snapshot
+    from core.db import get_engine
+
+    configure_logging()
+    logger.info("factory-public-snapshot: starting")
+    with Session(get_engine()) as session:
+        report = write_public_snapshot(session)
+    logger.info(
+        "factory-public-snapshot: wrote %d task(s), %d session(s) at %s",
+        report["tasks"],
+        report["sessions"],
+        report["snapshotted_at"],
+    )
+
+
 @app.command("snapshot-merged-prs")
 def snapshot_merged_prs() -> None:
     """Snapshot the last 90 days of merged GitHub pull requests."""

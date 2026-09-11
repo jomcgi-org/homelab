@@ -556,6 +556,29 @@ jobs:
           memory: 512Mi
         limits:
           memory: 512Mi
+    # Snapshot the factory board into public_api for the jomcgi.dev factory
+    # pages (#6014). The public tier has no grant on swarm or agent_sessions
+    # and no factory code in its image, so this is the only thing that puts a
+    # board where the public router can read it. Postgres only: no cluster
+    # reads, so it stays on the default executor SA and needs nothing beyond
+    # the DATABASE_URL every job pod gets.
+    #
+    # 2-min cadence matches how fast the board actually moves: a turn lands
+    # every few minutes at most, and the public route caches for 60s on top.
+    # Forbid, because a slow run overlapping the next one would have two
+    # writers pruning the same rolling window against each other.
+    - name: factory-public-snapshot
+      args: ["factory-public-snapshot"]
+      schedule: "*/2 * * * *"
+      concurrencyPolicy: Forbid
+      activeDeadlineSeconds: 240
+      suspend: false
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          memory: 512Mi
     # chat.summary_generation: per-user + per-channel LLM summaries. LLM-only
     # (configured provider via LLAMA_CPP_URL), no Discord bot needed.
     # Daily (was 86400s); generous deadline since it loops users/channels with
