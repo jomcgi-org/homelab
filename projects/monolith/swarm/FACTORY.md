@@ -200,11 +200,13 @@ The derived allowance is `max_attempts` summed over the live nodes that have
 not succeeded, plus the work turns already spent, plus what the engine may still
 insert on its own. Review rounds are reserved lazily, one round at a time: the
 next round only, at the two turns it really costs, because the engine inserts
-its correction and its re-review at one attempt each. A correction that fails is
-a deviation the planner answers, not a turn to spend again. One attempt is a
-deliberate trade: a correction or re-review that fails or stalls costs the
-round and returns to the planner, which can re-add the work under the same
-envelope, rather than retrying silently inside a round nobody sized for it.
+its correction and its re-review at one attempt each. A correction that fails
+costs the round rather than the turn: the engine opens the next round against
+the same reviewed head and the same findings, and the failed round still counts
+against `max_review_rounds`. One attempt is a deliberate trade: a correction or
+re-review that fails or stalls spends a round rather than retrying silently
+inside a round nobody sized for it, and the planner is asked once the rounds
+are spent.
 Reserving every remaining round up front instead priced a loop the task would
 probably never open, and it left a nine-turn envelope unable to hold a
 three-node plan at all.
@@ -278,9 +280,17 @@ the stalled run.
 
 Settling either one as uncertain does not start stop supervision on its own.
 Supervision runs only once the attempt's stop is due: an operator stop, a
-cancellation request, or the turn timeout elapsed measured from dispatch. So a
-strand or a stall caught early holds its reservation until that timeout passes
-and self-heals there, rather than at the moment it is observed.
+cancellation request, the turn timeout elapsed measured from dispatch, or two
+minutes after the session's own turn was recorded as failed. That last term is
+what makes the deadline track the guest instead of the policy. A turn timeout
+bounds how long a turn may run, so it is the right deadline only while the turn
+could still be running; once the turn is terminal there is nothing left to wait
+out, and the two-minute grace is there so the conductor's own native completion
+check settles the attempt first where it can. Every term is a minimum, so the
+grace only ever brings a stop forward, and an attempt whose turn is still open
+carries no failure stamp and keeps the turn-timeout deadline alone. A strand or
+a stall caught early still holds its reservation until one of those deadlines
+passes rather than self-healing at the moment it is observed.
 
 An attempt whose workflow died mid-way has no session recorded on its run,
 because `record_dispatch` binds one only at completion. The reconciler resolves
@@ -304,7 +314,30 @@ planner's: when a review returns `changes_requested` the reconciler appends
 `correct_<n>` on the model that produced the reviewed head and `review_<n>` on
 the configured independent reviewer, up to `max_review_rounds`. Those keys are
 refused to a planner, and the rounds are counted from the version ledger, so
-discarding or renaming a correction node cannot buy another one. The planner is
+discarding or renaming a correction node cannot buy another one. A round that
+fails is reopened by the engine for the same reason it was opened by it: the
+planner is refused those keys and `swarm/graph.py` refuses discarding a node
+that has run, so a failed `correct_<n>` would otherwise leave the task with no
+task-local recovery path at all. The replacement round carries the same reviewed
+head and findings, and the failed round still counts, so a round that keeps
+failing spends the bound instead of looping inside it. A node that escalated is
+deliberately not reopened, because escalation asked for the planner.
+
+Each round inherits its timeouts from the nodes it repeats: the correction takes
+the reviewed implementation node's `turn_timeout_seconds` and the re-review
+takes the original review's, each clamped to the policy ceiling. The planner is
+asked to size every node it adds to the work that node really does, roughly 900
+to 1800 seconds for investigation, 3600 to 7200 for implementation and 3600 for
+review, rather than leaving the policy maximum in place.
+
+The correction brief states its completion contract: commit on the task branch,
+push, confirm the pull request head moved, and write the declared JSON artifact.
+A guest with no local test tooling records that in the artifact and pushes
+anyway, because the required Linux CI that gates the work runs on the pull
+request and not in the guest. A turn that ends with neither a push nor an
+artifact fails the round.
+
+The planner is
 called back only for a named deviation: no plan applied yet, a node that failed
 or escalated with no runnable retry, exhausted review rounds, or a settled
 graph with no verified delivery.
