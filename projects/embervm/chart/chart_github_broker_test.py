@@ -151,6 +151,10 @@ def test_canary_has_own_identity_and_no_key_or_kubernetes_token(tmp_path):
     assert result.returncode == 0, result.stderr
     docs = [doc for doc in yaml.safe_load_all(result.stdout) if doc]
     job = next(d for d in docs if d["kind"] == "Job")
+    assert job["metadata"]["annotations"] == {
+        "argocd.argoproj.io/hook": "PostSync",
+        "argocd.argoproj.io/hook-delete-policy": "BeforeHookCreation",
+    }
     pod = job["spec"]["template"]["spec"]
     assert pod["serviceAccountName"] == "bosun-embervm-github-canary"
     assert pod["automountServiceAccountToken"] is False

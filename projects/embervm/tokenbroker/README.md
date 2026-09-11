@@ -237,11 +237,15 @@ canary:
   repositoryID: 847803371
 ```
 
-The Job has a 90-second deadline and does not retry. It retains completion status
-for inspection rather than deleting itself and being recreated repeatedly by
-GitOps. To rerun, remove the completed Job and let GitOps recreate it, or toggle
-its flag off and back on in deployment changes. On Cilium clusters it has scoped
-broker/DNS/GitHub egress and broker ingress; GKE relies on SPIFFE authorization.
+The Job has a 90-second deadline and does not retry. It is an Argo CD PostSync
+hook, so it starts after the broker and other synced resources are healthy.
+`BeforeHookCreation` replaces the previous Job on the next full sync, allowing
+image and configuration updates despite Kubernetes Job template immutability.
+The completed or failed Job remains available for inspection until that sync.
+To rerun while enabled, request a full Argo CD sync; selective syncs do not run
+hooks. Outside Argo CD, delete the old Job before applying a changed template.
+On Cilium clusters it has scoped broker/DNS/GitHub egress and broker ingress;
+GKE relies on SPIFFE authorization.
 
 Do not enable the production broker listener just to run this test: doing so
 also disables legacy plaintext token retrieval. First perform the client

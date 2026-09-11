@@ -38,6 +38,9 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: {{ $name }}
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
   labels:
     app.kubernetes.io/instance: {{ .Release.Name }}
     app.kubernetes.io/component: github-canary
