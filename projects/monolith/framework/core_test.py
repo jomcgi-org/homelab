@@ -613,12 +613,16 @@ async def test_mcp_tool_sees_per_message_principal(monkeypatch):
     import auth.api as auth_api
     from auth.api import Authority, Principal, PrincipalKind
 
+    # Carries operators because the shared instance gates tool calls on it
+    # (core/mcp_policy.py) and a real caller arrives with it. That makes this
+    # the one end-to-end proof that the gate admits an operator across the
+    # actual transport, rather than only across a stubbed middleware chain.
     principals = {
         subject: Principal(
             subject=subject,
             actor=(),
             scope=(),
-            groups=(),
+            groups=("operators",),
             email=f"{subject}@example.com",
             kind=PrincipalKind.HUMAN,
             authority=Authority.STANDING,
