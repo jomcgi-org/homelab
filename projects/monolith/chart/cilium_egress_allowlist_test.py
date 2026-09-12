@@ -338,9 +338,10 @@ def test_dev_overlay_retargets_only_its_embervm_dependencies():
     assert _endpoint_rules(policy) == _expected_endpoints(
         "monolith-dev", "monolith-dev", "embervm-dev"
     )
-    assert policy["spec"]["endpointSelector"]["matchLabels"][
-        "app.kubernetes.io/instance"
-    ] == "monolith-dev"
+    assert (
+        policy["spec"]["endpointSelector"]["matchLabels"]["app.kubernetes.io/instance"]
+        == "monolith-dev"
+    )
 
 
 def test_external_egress_is_exact_fqdn_on_https_only():
@@ -348,9 +349,7 @@ def test_external_egress_is_exact_fqdn_on_https_only():
     values = yaml.safe_load((_chart_dir() / "values.yaml").read_text())
     expected_names = set(values["ciliumPolicy"]["egress"]["externalFqdns"])
     assert expected_names == EXPECTED_EXTERNAL_FQDNS
-    assert _fqdn_rules(policy) == {
-        (name, (("443", "TCP"),)) for name in expected_names
-    }
+    assert _fqdn_rules(policy) == {(name, (("443", "TCP"),)) for name in expected_names}
     assert all("*" not in name for name in expected_names)
 
 
