@@ -322,6 +322,8 @@ def build_system_prompt(channel: str = "discord") -> str:
         "- Search the web and fact-check claims.\n"
         "- Recall and search this channel's past discussions, and remember "
         "what's known about the people here.\n"
+        "- Read this channel's durable notes. The configured owner can also "
+        "update its notes and rolling-summary prompts.\n"
         "- Adjust how you behave for the whole channel or just for one person "
         "when asked.\n"
         "- Catch someone up on this channel, or pull out the decisions and "
@@ -805,6 +807,49 @@ def create_agent(
             f"(updated {summary.updated_at.strftime('%Y-%m-%d')}):\n"
             f"{summary.summary}"
         )
+
+    @agent.tool
+    @signposted(
+        "When someone asks what this channel has deliberately remembered, or "
+        "the configured owner asks to update its durable notes or summary settings."
+    )
+    async def channel_notes(
+        ctx: RunContext[ChatDeps],
+        action: str = "read",
+        field: str = "notes",
+        value: str = "",
+    ) -> str:
+        """Read or update this channel's durable memory.
+
+        action is "read" or "update". Updates are owner-only. field is notes,
+        summary_style, summary_prompt_user, or summary_prompt_channel. Prompt
+        templates use simple placeholders documented in validation errors.
+        Passing an empty value clears a field back to its default.
+        """
+        from chat import acl, channel_notes as channel_memory
+
+        if action == "read":
+            return channel_memory.format_memory(
+                channel_memory.get_memory(ctx.deps.store.session, ctx.deps.channel_id)
+            )
+        if action != "update":
+            return 'action must be "read" or "update".'
+        if not acl.is_owner(ctx.deps.author_id):
+            return "Only the configured owner can update channel memory."
+        try:
+            memory = channel_memory.update_memory(
+                ctx.deps.store.session,
+                ctx.deps.channel_id,
+                field,
+                value,
+                ctx.deps.author_id,
+            )
+        except (RuntimeError, ValueError) as exc:
+            return f"Channel memory was not updated: {exc}"
+        saved = getattr(memory, field)
+        if saved:
+            return f"Updated {field} for this channel."
+        return f"Cleared {field}; this channel now uses the default."
 
     @agent.tool
     @signposted(

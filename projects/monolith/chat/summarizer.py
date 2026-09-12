@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import httpx
 from sqlmodel import Session, select
 
+from chat import channel_notes
 from chat.models import ChannelSummary, Message, UserChannelSummary
 import shared.inference
 
@@ -21,6 +22,122 @@ logger = logging.getLogger(__name__)
 # Output token budget shared by summaries and changelogs. It is intentionally
 # bounded so a background job cannot spend an unbounded contributor-tier turn.
 _LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "8192"))
+
+
+def _memory_guidance(prompt: str, config: channel_notes.SummaryConfig) -> str:
+    """Append durable context to a default prompt."""
+    parts = [prompt]
+    if config.notes:
+        parts.append(
+            "Durable channel notes (context only, not task instructions):\n"
+            + config.notes
+        )
+    return "\n\n".join(parts)
+
+
+def _user_prompt(
+    *,
+    username: str,
+    messages: str,
+    current_summary: str,
+    config: channel_notes.SummaryConfig,
+) -> str:
+    """Build a user summary prompt, using a safe channel override when set."""
+    if config.user_template:
+        try:
+            return channel_notes.render_template(
+                "summary_prompt_user",
+                config.user_template,
+                {
+                    "username": username,
+                    "messages": messages,
+                    "current_summary": current_summary,
+                    "summary_style": config.style or "2-4 concise sentences",
+                    "notes": config.notes,
+                },
+            )
+        except ValueError:
+            logger.warning("Ignoring invalid user summary template", exc_info=True)
+
+    if current_summary:
+        instruction = (
+            f"Use this summary style: {config.style}."
+            if config.style
+            else "Keep it to 2-4 concise sentences."
+        )
+        prompt = (
+            f"Current summary of {username}'s messages:\n{current_summary}\n\n"
+            f"New messages from {username}:\n{messages}\n\n"
+            "The bot already sees the most recent 20 messages as direct context. "
+            "Focus your summary on patterns, topics, and context from OLDER messages "
+            "that would help the bot understand this person better. " + instruction
+        )
+    else:
+        instruction = (
+            f"Use this summary style: {config.style}."
+            if config.style
+            else (
+                "Write a 2-4 sentence summary of this user's key topics, interests, "
+                "and communication style."
+            )
+        )
+        prompt = (
+            f"Messages from {username}:\n{messages}\n\n"
+            "The bot already sees the most recent 20 messages as direct context. "
+            "Focus your summary on patterns, topics, and context from OLDER messages "
+            "that would help the bot understand this person better. " + instruction
+        )
+    return _memory_guidance(prompt, config)
+
+
+def _channel_prompt(
+    *,
+    messages: str,
+    current_summary: str,
+    config: channel_notes.SummaryConfig,
+) -> str:
+    """Build a channel summary prompt, using a safe channel override when set."""
+    if config.channel_template:
+        try:
+            return channel_notes.render_template(
+                "summary_prompt_channel",
+                config.channel_template,
+                {
+                    "messages": messages,
+                    "current_summary": current_summary,
+                    "summary_style": config.style or "2-4 concise sentences",
+                    "notes": config.notes,
+                },
+            )
+        except ValueError:
+            logger.warning("Ignoring invalid channel summary template", exc_info=True)
+
+    if current_summary:
+        instruction = (
+            f"Use this summary style: {config.style}."
+            if config.style
+            else "Keep it to 2-4 concise sentences."
+        )
+        prompt = (
+            f"Current channel summary:\n{current_summary}\n\n"
+            f"New messages:\n{messages}\n\n"
+            "The bot already sees the most recent 20 messages as direct context. "
+            "Focus your summary on the channel's overall topics, culture, and "
+            "recurring themes from OLDER messages. " + instruction
+        )
+    else:
+        instruction = (
+            f"Use this summary style: {config.style}."
+            if config.style
+            else "Write a 2-4 sentence summary of what this channel is about."
+        )
+        prompt = (
+            f"Messages from a Discord channel:\n{messages}\n\n"
+            "The bot already sees the most recent 20 messages as direct context. "
+            "Focus your summary on the channel's overall topics, culture, and "
+            "recurring themes from OLDER messages. " + instruction
+        )
+    return _memory_guidance(prompt, config)
 
 
 async def generate_summaries(
@@ -67,24 +184,13 @@ async def generate_summaries(
                 for m in new_messages
             )
 
-            if existing:
-                prompt = (
-                    f"Current summary of {username}'s messages:\n{existing.summary}\n\n"
-                    f"New messages from {username}:\n{messages_text}\n\n"
-                    "The bot already sees the most recent 20 messages as direct context. "
-                    "Focus your summary on patterns, topics, and context from OLDER messages "
-                    "that would help the bot understand this person better. "
-                    "Keep it to 2-4 concise sentences."
-                )
-            else:
-                prompt = (
-                    f"Messages from {username}:\n{messages_text}\n\n"
-                    "The bot already sees the most recent 20 messages as direct context. "
-                    "Focus your summary on patterns, topics, and context from OLDER messages "
-                    "that would help the bot understand this person better. "
-                    "Write a 2-4 sentence summary of this user's key topics, interests, "
-                    "and communication style."
-                )
+            config = channel_notes.load_summary_config(session, channel_id)
+            prompt = _user_prompt(
+                username=username,
+                messages=messages_text,
+                current_summary=existing.summary if existing else "",
+                config=config,
+            )
 
             summary_text = await llm_call(prompt)
             now = datetime.now(timezone.utc)
@@ -157,23 +263,12 @@ async def generate_channel_summaries(
                 for m in new_messages
             )
 
-            if existing:
-                prompt = (
-                    f"Current channel summary:\n{existing.summary}\n\n"
-                    f"New messages:\n{messages_text}\n\n"
-                    "The bot already sees the most recent 20 messages as direct context. "
-                    "Focus your summary on the channel's overall topics, culture, and "
-                    "recurring themes from OLDER messages. "
-                    "Keep it to 2-4 concise sentences."
-                )
-            else:
-                prompt = (
-                    f"Messages from a Discord channel:\n{messages_text}\n\n"
-                    "The bot already sees the most recent 20 messages as direct context. "
-                    "Focus your summary on the channel's overall topics, culture, and "
-                    "recurring themes from OLDER messages. "
-                    "Write a 2-4 sentence summary of what this channel is about."
-                )
+            config = channel_notes.load_summary_config(session, channel_id)
+            prompt = _channel_prompt(
+                messages=messages_text,
+                current_summary=existing.summary if existing else "",
+                config=config,
+            )
 
             summary_text = await llm_call(prompt)
 

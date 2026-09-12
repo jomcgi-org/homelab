@@ -97,6 +97,21 @@ class ChannelSummary(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class ChannelMemory(SQLModel, table=True):
+    """Durable summary configuration and notes scoped to one chat channel."""
+
+    __tablename__ = "channel_memory"
+    __table_args__ = {"schema": "chat", "extend_existing": True}
+
+    channel_id: str = Field(primary_key=True, max_length=64)
+    summary_prompt_user: str | None = Field(default=None, max_length=8000)
+    summary_prompt_channel: str | None = Field(default=None, max_length=8000)
+    summary_style: str | None = Field(default=None, max_length=500)
+    notes: str | None = Field(default=None, max_length=12000)
+    updated_by_user_id: str = Field(default="", max_length=64)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 # nosemgrep: sqlmodel-datetime-without-factory (posted_at is intentionally NULL until the drain posts the row)
 class DiscordOutbox(SQLModel, table=True):
     """Pending Discord posts. Producers on any replica (or an Argo job) insert a

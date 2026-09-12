@@ -3576,6 +3576,20 @@ py_test(
 )
 
 py_test(
+    name = "chat_channel_memory_test",
+    srcs = ["chat/channel_memory_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_cyclegroup",
+        "@pip//pgvector",
+        "@pip//pydantic_ai_slim",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "main_extra_test",
     srcs = ["app/main_extra_test.py"],
     imports = ["."],
