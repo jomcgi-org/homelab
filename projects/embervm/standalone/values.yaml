@@ -1,0 +1,166 @@
+# Single-host k3s profile for the published EmberVM chart.
+# Image repositories and digests come from the packaged chart. This file only
+# narrows the deployment to the runtime-python lane used by the quickstart.
+
+rbac:
+  scope: cluster
+
+imagePullSecret:
+  enabled: false
+  create: false
+
+scratchSizeGi: 12
+
+scratchPrep:
+  enabled: true
+
+opLog:
+  postgres:
+    enabled: false
+  persistentVolume: true
+  storageClass: local-path
+  size: 1Gi
+
+auth:
+  allowedServiceAccounts:
+    - system:serviceaccount:embervm:embervm-embervm
+
+tokenBroker:
+  enabled: false
+
+conformance:
+  enabled: false
+
+xds:
+  enabled: false
+
+servingEnvoy:
+  enabled: false
+
+sampleWorkload:
+  enabled: false
+
+sandboxWorkloads:
+  sandboxPython:
+    enabled: false
+  sandboxGo:
+    enabled: false
+  sandboxRust:
+    enabled: false
+  sandboxElixir:
+    enabled: false
+  sandboxOcaml:
+    enabled: false
+  sandboxJavascript:
+    enabled: false
+
+semgrepWorkload:
+  enabled: false
+
+bazelQueryWorkload:
+  enabled: false
+
+shotterWorkload:
+  enabled: false
+
+pingWorkload:
+  enabled: false
+  guestImage:
+    repository: ""
+
+claudeRuntimeWorkload:
+  enabled: false
+
+piRuntimeWorkload:
+  enabled: false
+
+demoPostgres:
+  enabled: false
+
+bricks:
+  enabled: false
+
+egress:
+  enabled: false
+
+rootfsBuilder:
+  rootfsSize: 2G
+
+# Helm merges maps recursively. Blank every unused guest repository so the
+# default workloads map cannot render extra rootfs builders.
+sandboxPython:
+  guestImage:
+    repository: ""
+sandboxGo:
+  guestImage:
+    repository: ""
+sandboxRust:
+  guestImage:
+    repository: ""
+sandboxElixir:
+  guestImage:
+    repository: ""
+sandboxOcaml:
+  guestImage:
+    repository: ""
+sandboxJavascript:
+  guestImage:
+    repository: ""
+semgrep:
+  guestImage:
+    repository: ""
+runtimeClaude:
+  guestImage:
+    repository: ""
+runtimePi:
+  guestImage:
+    repository: ""
+scratchPostgres:
+  enabled: false
+  guestImage:
+    repository: ""
+bazelQuery:
+  guestImage:
+    repository: ""
+shotter:
+  guestImage:
+    repository: ""
+
+noded:
+  enabled: true
+  nodeSelector:
+    homelab.io/firecracker: "true"
+  tolerations: []
+  priorityClassName: embervm-standalone
+  maxLiveVMs: 2
+  admissionModel: reserved
+  vmOverheadMib: 64
+  networkPolicy:
+    enabled: false
+  bearerTokenSecret:
+    enabled: true
+    name: embervm-noded-token
+    key: token
+    onepassword:
+      itemPath: ""
+  firecracker:
+    nvmeRoot: /var/lib/embervm/scratch
+    nvmeRootHostPathType: Directory
+  store:
+    endpoint: http://embervm-minio:9000
+    bucket: embervm
+    compress: true
+    encrypt: false
+    credentials:
+      enabled: true
+      secretName: embervm-store
+      accessKeyIdKey: access_key_id
+      secretAccessKeyKey: secret_access_key
+      onepassword:
+        itemPath: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 4Gi

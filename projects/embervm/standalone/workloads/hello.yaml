@@ -1,0 +1,23 @@
+apiVersion: embervm.dev/v1alpha1
+kind: Workload
+metadata:
+  name: hello
+spec:
+  class: task
+  source:
+    zip:
+      runtime: python312
+      codeUri: http://embervm-minio:9000/embervm-functions/hello/53ff98ccb09d4d12a629322caac8ee0aee9f77ca69fd08fbc1eee83b7a60230b.zip
+      sha256: 53ff98ccb09d4d12a629322caac8ee0aee9f77ca69fd08fbc1eee83b7a60230b
+      handler: app.handle
+      readyPath: /shim/ready
+      invokePath: /invoke
+  resources:
+    vcpus: 1
+    memMib: 512
+  concurrency:
+    floor: 0
+    cap: 1
+  invocation:
+    timeoutSeconds: 30
+    resultTtlSeconds: 3600
