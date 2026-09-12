@@ -73,12 +73,14 @@ def test_cell_override_routes_bricks_to_its_configured_control_plane() -> None:
         "cell.brickDialHomeAddress=http://cell-west-control.embervm.svc:8080",
     )
     workloads = [
-        doc
-        for doc in documents
-        if doc.get("kind") in {"DaemonSet", "Deployment"}
+        doc for doc in documents if doc.get("kind") in {"DaemonSet", "Deployment"}
     ]
-    control = next(doc for doc in workloads if doc["metadata"]["name"] == "cell-test-embervm")
-    noded = next(doc for doc in workloads if doc["metadata"]["name"] == "cell-test-embervm-noded")
+    control = next(
+        doc for doc in workloads if doc["metadata"]["name"] == "cell-test-embervm"
+    )
+    noded = next(
+        doc for doc in workloads if doc["metadata"]["name"] == "cell-test-embervm-noded"
+    )
 
     control_env = _env(control["spec"]["template"]["spec"]["containers"][0])
     assert control_env["EMBERVM_CELL_ID"] == "cell-west"
@@ -98,7 +100,9 @@ def test_cell_override_routes_bricks_to_its_configured_control_plane() -> None:
 
 
 def test_workload_crd_defaults_and_fences_cell_assignment() -> None:
-    crd = next(doc for doc in _render() if doc.get("kind") == "CustomResourceDefinition")
+    crd = next(
+        doc for doc in _render() if doc.get("kind") == "CustomResourceDefinition"
+    )
     version = crd["spec"]["versions"][0]
     spec_schema = version["schema"]["openAPIV3Schema"]["properties"]["spec"]
     cell = spec_schema["properties"]["cellId"]
