@@ -905,3 +905,176 @@ def test_real_writer_rejects_tampered_receipt_turn_and_rolls_back_fence(
             await asyncio.wait_for(drain_observers(), 3)
 
     asyncio.run(asyncio.wait_for(run(), 10))
+
+
+def fake_http_allowing_cleanup(monkeypatch, handler):
+    """The same hermetic transport, with the guest lifecycle calls recorded.
+
+    ``fake_http`` fails the test on DELETE because the paths it covers must
+    keep their resident guest. These tests are about the paths that must not.
+    """
+    requests = []
+    cleanup = {"destroyed": [], "read": []}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def post(self, url, **kwargs):
+            request = httpx.Request("POST", url, **kwargs)
+            requests.append(request)
+            assert request.url.path.endswith("/invoke"), "unexpected new guest"
+            return await handler(request)
+
+        async def delete(self, url, **kwargs):
+            guest = str(url).rsplit("/", 1)[-1]
+            cleanup["destroyed"].append(guest)
+            return httpx.Response(
+                200,
+                json={"session_id": guest, "state": "destroyed"},
+                request=httpx.Request("DELETE", url),
+            )
+
+        async def get(self, url, **kwargs):
+            guest = str(url).rsplit("/", 1)[-1]
+            cleanup["read"].append(guest)
+            return httpx.Response(
+                200,
+                json={"session_id": guest, "state": "destroyed"},
+                request=httpx.Request("GET", url),
+            )
+
+    monkeypatch.setattr(transport.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(transport, "EMBERVM_URL", "https://ember.test")
+    monkeypatch.setattr(mcp, "_transport", transport.EmberVmShimTransport())
+    monkeypatch.setattr(execution_api, "_transport", mcp._transport)
+    return requests, cleanup
+
+
+@pytest.mark.parametrize("response", ["disconnect", "still_in_flight"])
+def test_receipt_won_probe_releases_its_fence_and_destroys_its_guest(
+    database, monkeypatch, response
+):
+    sid = queue(database, "probe-receipt", tier="probe")
+    record = native_record()
+    captured = {}
+    release_response = asyncio.Event()
+
+    async def handler(request):
+        assert not captured, "a captured native result must suppress retry"
+        receipt, _body = await publish(request, record)
+        captured.update(receipt)
+        if response == "disconnect":
+            raise httpx.ReadError("original response lost", request=request)
+        await release_response.wait()
+        return httpx.Response(200, json=record, request=request)
+
+    requests, cleanup = fake_http_allowing_cleanup(monkeypatch, handler)
+
+    async def run():
+        try:
+            await asyncio.wait_for(mcp._execute_pending_message(sid), 5)
+            state = snapshot(database, sid)
+            assert state["pending"] == []
+            assert len(state["turns"]) == 1
+            assert state["turns"][0]["result_text"] == record["result"]
+            # The completed probe keeps no guest, and the fence its own POST
+            # would never have cleared is gone with it.
+            assert state["session"]["result_receipt_fence_id"] is None
+            assert state["session"]["ember_session_id"] is None
+            assert cleanup["destroyed"] == [f"guest-{sid}"]
+            assert cleanup["read"] == []
+            release_response.set()
+            await asyncio.wait_for(drain_observers(), 3)
+            after = snapshot(database, sid)
+            assert after == state
+            # One destroy, whichever way the original POST ended.
+            assert cleanup["destroyed"] == [f"guest-{sid}"]
+            with Session(database) as db:
+                observed = db.get(AgentResultReceipt, captured["id"])
+                assert (observed.response_observed_at is None) == (
+                    response == "disconnect"
+                )
+            assert len(requests) == 1
+        finally:
+            release_response.set()
+            await asyncio.wait_for(drain_observers(), 3)
+
+    asyncio.run(asyncio.wait_for(run(), 12))
+
+
+def test_reaper_frees_a_receipt_won_guest_instead_of_holding_it_pending(
+    database, monkeypatch
+):
+    sid = queue(database, "reaped-receipt")
+    record = native_record()
+    captured = {}
+
+    async def handler(request):
+        assert not captured, "a lost response must not replay the model POST"
+        receipt, _body = await publish(request, record)
+        captured.update(receipt)
+        raise httpx.ReadError("original response lost", request=request)
+
+    requests, cleanup = fake_http_allowing_cleanup(monkeypatch, handler)
+
+    async def run():
+        await asyncio.wait_for(mcp._execute_pending_message(sid), 5)
+        await asyncio.wait_for(drain_observers(), 3)
+        with Session(database) as db, db.begin():
+            row = store._lock_session(db, sid)
+            row.workflow_id = "finished-node"
+            db.add(row)
+        held = snapshot(database, sid)
+        assert held["session"]["result_receipt_fence_id"] == captured["id"]
+        assert held["session"]["ember_session_id"] == f"guest-{sid}"
+        assert cleanup["destroyed"] == []
+        assert await execution_api.reap_sessions_for_workflow("finished-node") == {
+            "reaped": [sid],
+            "failed": [],
+            "skipped": [],
+            "pending": [],
+        }
+        after = snapshot(database, sid)
+        assert after["session"]["result_receipt_fence_id"] is None
+        assert after["session"]["ember_session_id"] is None
+        assert after["turns"] == held["turns"]
+        assert after["permits"] == held["permits"]
+        assert cleanup["destroyed"] == [f"guest-{sid}"]
+        assert len(requests) == 1
+
+    asyncio.run(asyncio.wait_for(run(), 10))
+
+
+def test_reaper_holds_a_guest_whose_receipt_has_not_arrived(database, monkeypatch):
+    sid = queue(database, "unreceived-receipt")
+    guest_id = f"guest-{sid}"
+    assert store.claim_pending_message_for_session_sync(sid, "in-flight-owner") == 1
+    assert admission.recheck(sid, 1, "in-flight-owner")
+    receipt = result_receipts.prepare_receipt(
+        sid, "in-flight-owner", 1, guest_id, b'{"message":"in flight"}'
+    )
+    with Session(database) as db, db.begin():
+        row = store._lock_session(db, sid)
+        row.workflow_id = "live-node"
+        row.result_receipt_fence_id = receipt["id"]
+        db.add(row)
+    _requests, cleanup = fake_http_allowing_cleanup(
+        monkeypatch, lambda _request: pytest.fail("no dispatch in this test")
+    )
+    before = snapshot(database, sid)
+    assert asyncio.run(execution_api.reap_sessions_for_workflow("live-node")) == {
+        "reaped": [],
+        "failed": [],
+        "skipped": [],
+        "pending": [sid],
+    }
+    # The POST may still be the only path to this turn, so the guest lives.
+    assert snapshot(database, sid) == before
+    assert cleanup["destroyed"] == []

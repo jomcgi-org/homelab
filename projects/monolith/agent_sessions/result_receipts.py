@@ -544,6 +544,105 @@ def mark_response_observed(
         return True
 
 
+def release_unobserved_fence(
+    receipt_id: str,
+    session_id: int,
+    claim_owner: str,
+    dispatch_count: int,
+    guest_id: str,
+) -> bool:
+    """Clear the fence of a receipt whose original POST observed nothing.
+
+    The mirror of ``mark_response_observed`` for every terminal path that is
+    not a validated native response: the invoke coroutine ended in an error, a
+    timeout or a cancellation, so nothing is coming that could clear the fence
+    and no other owner is watching. Identity is checked exactly as the observed
+    path checks it, so a stale coroutine can neither release a newer fence nor
+    authorize destroying a newer guest.
+
+    A receipt with no committed body is refused. While the result may still
+    arrive the guest is the only path to the turn, so the fence stays and the
+    guest lives. ``response_observed_at`` is deliberately left alone: nothing
+    here observed a response, and the reconciliation and lease owners read that
+    stamp as evidence about the response, not about this release.
+    """
+    from agent_sessions import store
+
+    with Session(get_engine()) as db, db.begin():
+        _bound_observer_transaction(db)
+        agent = store._lock_session(db, session_id)
+        db.execute(
+            update(AgentResultReceipt)
+            .where(AgentResultReceipt.id == receipt_id)
+            .values(created_at=AgentResultReceipt.created_at)
+        )
+        receipt = _receipt_metadata(db, receipt_id)
+        if receipt is None:
+            return False
+        _check_identity(receipt, session_id, claim_owner, dispatch_count, guest_id)
+        if (
+            receipt["received_at"] is None
+            or receipt["response_observed_at"] is not None
+            or receipt["superseded_at"] is not None
+            or agent is None
+            or agent.local_session_id != receipt["local_session_id"]
+            or agent.ember_session_id != receipt["guest_id"]
+            or agent.result_receipt_fence_id != receipt_id
+            or _newer_work_exists(db, receipt)
+        ):
+            return False
+        agent.result_receipt_fence_id = None
+        db.add(agent)
+        return True
+
+
+def release_abandoned_fence(session_id: int, receipt_id: str) -> bool:
+    """Release a fence the workflow reaper can prove nobody is still waiting on.
+
+    The reaper owns sessions whose workflow is over, so no follow-up dispatch
+    will ever reuse the guest and the only thing a fence can still be holding
+    it for is a synchronous response nobody is left to read. Three shapes are
+    releasable: a fence naming a receipt retention has already deleted, a
+    receipt whose body has arrived (the turn completed through it), and a
+    receipt past its acceptance window, which can never be captured again.
+
+    A receipt still inside its acceptance window with no committed body is NOT
+    releasable: its guest remains the only path to the turn. Identity is bound
+    to the session's current binding, so a fence whose receipt names another
+    guest or another local session is left exactly where it is.
+    """
+    from agent_sessions import store
+
+    with Session(get_engine()) as db, db.begin():
+        agent = store._lock_session(db, session_id)
+        if (
+            agent is None
+            or not isinstance(receipt_id, str)
+            or not receipt_id
+            or agent.result_receipt_fence_id != receipt_id
+        ):
+            return False
+        db.execute(
+            update(AgentResultReceipt)
+            .where(AgentResultReceipt.id == receipt_id)
+            .values(created_at=AgentResultReceipt.created_at)
+        )
+        receipt = _receipt_metadata(db, receipt_id)
+        if receipt is not None and (
+            receipt["session_id"] != session_id
+            or agent.local_session_id != receipt["local_session_id"]
+            or agent.ember_session_id != receipt["guest_id"]
+            or (
+                receipt["received_at"] is None
+                and _now() < _aware(receipt["accept_until"])
+            )
+        ):
+            return False
+        agent.result_receipt_fence_id = None
+        db.add(agent)
+        return True
+
+
 def _check_credential_format(receipt_id: str, token: str) -> None:
     if (
         not isinstance(receipt_id, str)

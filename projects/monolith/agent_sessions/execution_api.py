@@ -29,6 +29,7 @@ from agent_sessions.mcp import (
     _persist_turn_from_pending_sync,
     _refresh_claim_sync,
     _release_pending_message_claim_sync,
+    _release_receipt_fence_sync,
     _schedule_next_message,
     _set_session_status,
     _transport,
@@ -332,10 +333,18 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
             and ember is not None
             and not outcome_unknown
             and not claim_stolen
-            # A receipt winner preserves the resident guest until the original
-            # POST resolves. Normal lifecycle cleanup can observe it later.
-            and turn.native_receipt is None
         ):
+            # A receipt winner used to preserve the resident guest until the
+            # original POST resolved, and nothing destroyed it when that POST
+            # instead errored, timed out or was cancelled: no owner, no
+            # deadline, one leaked guest per receipt-won turn (#6050). The
+            # receipt is already received here, so the guest is not the only
+            # path to the result. Release this exact receipt's fence, then run
+            # the ordinary completion cleanup.
+            if turn.native_receipt is not None:
+                await asyncio.to_thread(
+                    _release_receipt_fence_sync, turn.native_receipt
+                )
             try:
                 await _transport.destroy_session(ember.session_id)
             except EmberSessionGone:
@@ -434,6 +443,12 @@ def _begin_guest_cleanup(session_id: int, guest_id: str, workflow_id: str) -> di
         return store.begin_guest_cleanup(db_session, session_id, guest_id, workflow_id)
 
 
+def _release_abandoned_fence(session_id: int, receipt_id: str) -> bool:
+    from agent_sessions import result_receipts
+
+    return result_receipts.release_abandoned_fence(session_id, receipt_id)
+
+
 def _finish_guest_cleanup(
     session_id: int, guest_id: str, workflow_id: str, claim_id: str
 ) -> bool:
@@ -501,6 +516,17 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
     receipt minting and guest rebinding until terminal confirmation. Interrupted
     or failed requests retain their exact claim for a later workflow reap.
 
+    A receipt fence used to send its row straight to pending, forever: the
+    fence is cleared only by the original POST's own validated response, and a
+    POST that errors, times out or is cancelled never produces one, so the
+    guest survived to idle_ttl and the workload cap filled (#6050). The
+    workflow is over by the time the reaper runs, so nothing will dispatch into
+    that guest again and the fence is releasable once it can no longer be
+    waited on: its receipt is gone, its body has arrived, or its acceptance
+    window has closed. A fence whose receipt is still unreceived inside that
+    window keeps today's behaviour and goes to pending, because its guest is
+    the only remaining path to the turn.
+
     This observes control-plane lifecycle state; it does not settle capacity
     or establish exact-attempt cessation for factory restart. That remains
     the factory reconciliation owner's responsibility.
@@ -517,10 +543,13 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
         if ember_session_id is None:
             summary["skipped"].append(row.id)
             continue
-        if getattr(row, "result_receipt_fence_id", None) is not None:
-            summary["pending"].append(row.id)
-            continue
         try:
+            fence_id = getattr(row, "result_receipt_fence_id", None)
+            if fence_id is not None and not await asyncio.to_thread(
+                _release_abandoned_fence, row.id, fence_id
+            ):
+                summary["pending"].append(row.id)
+                continue
             claim = await asyncio.to_thread(
                 _begin_guest_cleanup, row.id, ember_session_id, workflow_id
             )
