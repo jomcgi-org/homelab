@@ -247,6 +247,7 @@ async def test_on_message_wires_humans_but_not_bots_to_triggers(
     ):
         await ChatBot.on_message(bot, message)
 
+    await asyncio.sleep(0)
     assert bot.evaluate_triggers.await_count == expected_calls
     bot._process_message.assert_awaited_once_with(message)
 
