@@ -289,6 +289,39 @@ def test_all_exclusion_reasons_are_first_match_counts(db, monkeypatch):
     }
 
 
+def test_an_escalated_receipt_keeps_the_lane_off_its_issue(db, monkeypatch):
+    """A question in front of a person is not work the lane may start again.
+
+    The issue carries needs-human, which the default exclusion list already
+    drops, so this covers the operator who takes that label off while the
+    decision is still open.
+    """
+    fake_pages(monkeypatch, [issue(6, ["agent-ready"])])
+    with Session(db) as session:
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=6,
+                generation=0,
+                title="waiting on a decision",
+                body="",
+                url="https://github.com/owner/repo/issues/6",
+                actor="test",
+                state="escalated",
+                updated_at=NOW - timedelta(hours=48),
+            )
+        )
+        session.commit()
+    assert intake_loop.intake_tick(policy(refine_enabled=False), generation=1) == []
+    with Session(db) as session:
+        idle = session.exec(
+            select(FactoryAudit)
+            .where(FactoryAudit.action == "intake_idle")
+            .order_by(FactoryAudit.id.desc())
+        ).first()
+    assert json.loads(idle.detail_json)["excluded"] == {"escalated": 1}
+
+
 def test_expired_cooldown_is_admissible(db, monkeypatch):
     fake_pages(monkeypatch, [issue(6, ["agent-ready"])])
     with Session(db) as session:

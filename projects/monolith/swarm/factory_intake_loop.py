@@ -63,6 +63,7 @@ _EXCLUSION_REASONS = (
     "excluded_label",
     "linked_pr",
     "delivered",
+    "escalated",
     "cooldown",
     "already_received",
     "refine_disabled",
@@ -212,7 +213,9 @@ def _listing_due(now: datetime) -> bool:
             return True
         settled = db.exec(
             select(FactoryReceipt.id).where(
-                FactoryReceipt.state.in_(("succeeded", "failed", "cancelled")),
+                FactoryReceipt.state.in_(
+                    ("succeeded", "failed", "cancelled", "escalated")
+                ),
                 FactoryReceipt.updated_at >= marked,
             )
         ).first()
@@ -376,6 +379,14 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 for row in rows
             ):
                 exclude("delivered")
+                continue
+            # An escalated receipt is a question in front of a person. The
+            # issue carries needs-human, which the default exclusion list
+            # already drops, but an operator who takes that label out must not
+            # have the lane start a second attempt on the same work while the
+            # first one's decision is still open.
+            if any(row.state == "escalated" for row in rows):
+                exclude("escalated")
                 continue
             if (
                 latest is not None
