@@ -59,7 +59,7 @@ esac
 postgres_bin="$pg_root/usr/lib/postgresql/16/bin/postgres"
 pg_isready_bin="$pg_root/usr/lib/postgresql/16/bin/pg_isready"
 initdb_bin="${postgres_bin%/postgres}/initdb"
-pg_share="$pg_root/usr/share/postgresql/16"
+pg_share_src="$pg_root/usr/share/postgresql/16"
 pg_lib="$pg_root/usr/lib"
 pg_arch_lib="$pg_lib/x86_64-linux-gnu"
 pg_internal_lib="$pg_lib/postgresql/16/lib"
@@ -67,6 +67,7 @@ dynamic_library_path="$pg_arch_lib:$pg_internal_lib:$pg_lib"
 
 work="$(mktemp -d)"
 pg_data="$work/data"
+pg_share="$work/share"
 pg_log="$work/postgres.log"
 port=$((20000 + $$ % 20000))
 pg_pid=""
@@ -80,7 +81,37 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$pg_data"
+mkdir -p "$pg_data" "$pg_share"
+cp -RL "$pg_share_src"/. "$pg_share/"
+
+if [ ! -f "$pg_share/postgresql.conf.sample" ]; then
+	printf '%s\n' \
+		"listen_addresses = '127.0.0.1'" \
+		"max_connections = 100" \
+		"shared_buffers = 128MB" \
+		"dynamic_shared_memory_type = posix" \
+		"log_timezone = 'UTC'" \
+		"datestyle = 'iso, mdy'" \
+		"timezone = 'UTC'" \
+		"lc_messages = 'C'" \
+		"lc_monetary = 'C'" \
+		"lc_numeric = 'C'" \
+		"lc_time = 'C'" \
+		"default_text_search_config = 'pg_catalog.english'" \
+		>"$pg_share/postgresql.conf.sample"
+fi
+
+if [ ! -f "$pg_share/pg_hba.conf.sample" ]; then
+	printf '%s\n' \
+		"local all all trust" \
+		"host all all 127.0.0.1/32 trust" \
+		"host all all ::1/128 trust" \
+		>"$pg_share/pg_hba.conf.sample"
+fi
+
+if [ ! -f "$pg_share/pg_ident.conf.sample" ]; then
+	printf '%s\n' "# MAPNAME SYSTEM-USERNAME PG-USERNAME" >"$pg_share/pg_ident.conf.sample"
+fi
 
 run_as_postgres_user() {
 	if [ "$(id -u)" -eq 0 ]; then
