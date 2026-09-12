@@ -4645,6 +4645,19 @@ py_test(
 )
 
 py_test(
+    name = "swarm_mcp_test",
+    srcs = ["swarm/mcp_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_swarm",
+        "@pip//fastmcp",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "swarm_factory_intake_test",
     srcs = ["swarm/factory_intake_test.py"],
     imports = ["."],
