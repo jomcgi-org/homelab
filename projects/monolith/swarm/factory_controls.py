@@ -1035,6 +1035,34 @@ def delivery_admissions(db, since: datetime) -> int:
     )
 
 
+# The escape hatch every unresolved escalation carries. These three are
+# appended by the view rather than written by a brief, so an operator who
+# agrees with none of the offered options can still leave the card without a
+# chat round trip and a wait. Their keys are namespaced with a colon, which
+# the option key pattern in factory_refine forbids, so a brief can never
+# author a key that collides with one of these.
+ESCAPE_OPTIONS = (
+    {
+        "key": "escape:close",
+        "label": "Close the issue",
+        "effect": "escape-close",
+        "detail": {"reason": "not_planned"},
+    },
+    {
+        "key": "escape:defer",
+        "label": "Defer it",
+        "effect": "escape-defer",
+        "detail": {},
+    },
+    {
+        "key": "escape:dismiss",
+        "label": "Dismiss the escalation",
+        "effect": "escape-dismiss",
+        "detail": {},
+    },
+)
+
+
 def escalation_view(receipt: dict) -> dict | None:
     """One escalation as the operator page renders it, from a board snapshot.
 
@@ -1083,6 +1111,21 @@ def escalation_view(receipt: dict) -> dict | None:
             }
             for entry in escalation.get("chat") or []
         ],
+        # The fixed way out, offered only while there is something to escape
+        # from. Kept in its own list so the brief's options keep the numbered
+        # keys 1 to 4 however many escapes there are.
+        "escape": (
+            [
+                {
+                    "key": option["key"],
+                    "label": option["label"],
+                    "effect": option["effect"],
+                }
+                for option in ESCAPE_OPTIONS
+            ]
+            if resolved is None
+            else []
+        ),
         "resolved": resolved,
         "open": resolved is None,
         # A brief running on this issue is a decision the server will refuse,

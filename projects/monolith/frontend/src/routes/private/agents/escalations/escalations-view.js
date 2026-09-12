@@ -8,10 +8,27 @@ export const EFFECT_WORD = {
   split: "split",
   defer: "defer",
   hold: "hold",
+  "escape-close": "close",
+  "escape-defer": "defer",
+  "escape-dismiss": "dismiss",
 };
 
 /** The numbered hotkeys, in the order the buttons render. */
 export const HOTKEYS = ["1", "2", "3", "4"];
+
+/**
+ * The key each escape action answers to. Letters and Escape rather than more
+ * numbers, so the brief's own options keep 1 to 4 whatever the server appends
+ * beneath them.
+ */
+export const ESCAPE_HOTKEYS = {
+  "escape:close": "x",
+  "escape:defer": "d",
+  "escape:dismiss": "Escape",
+};
+
+/** How a key name reads on a button, where the event name is not the label. */
+export const ESCAPE_KEY_LABEL = { Escape: "Esc" };
 
 export function open(escalations) {
   return (escalations ?? []).filter((item) => item.open);
@@ -48,8 +65,44 @@ export function effectLine(option) {
       close: "closes the issue with a reason",
       defer: "moves it to needs-thought with a wait condition",
       hold: "leaves the issue exactly as it is",
+      "escape-close": "closes it as not planned and drops needs-human",
+      "escape-defer": "swaps needs-human for needs-thought",
+      "escape-dismiss": "clears the card, the issue keeps needs-human",
     }[option.effect] ?? option.effect
   );
+}
+
+/** The escape options a card offers. Empty once the escalation is resolved. */
+export function escapesFor(item) {
+  return item?.escape ?? [];
+}
+
+/** The escape option a key fires on this card, or null when none does. */
+export function escapeForKey(item, key) {
+  return (
+    escapesFor(item).find((option) => ESCAPE_HOTKEYS[option.key] === key) ??
+    null
+  );
+}
+
+/** What the hotkey reads as on an escape button. */
+export function escapeHotkey(option) {
+  const key = ESCAPE_HOTKEYS[option?.key];
+  if (!key) return "";
+  return ESCAPE_KEY_LABEL[key] ?? key;
+}
+
+/**
+ * Whether an escape is asked about before it is sent. Only the close is: it
+ * is the one action on the card that another button cannot undo.
+ */
+export function needsConfirm(option) {
+  return option?.key === "escape:close";
+}
+
+/** The one line a close confirmation puts in front of the operator. */
+export function confirmLine(item) {
+  return `Close #${item?.issue_number} as not planned and drop needs-human? Press x again, or Esc to cancel.`;
 }
 
 /** Clamp an index into a list, returning -1 for an empty one. */

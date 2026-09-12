@@ -6,9 +6,13 @@
     EFFECT_WORD,
     HOTKEYS,
     chatBody,
+    confirmLine,
     decisionBody,
     effectLine,
+    escapeForKey,
+    escapeHotkey,
     moveCursor,
+    needsConfirm,
     open as openOnes,
     optionForKey,
     resolutionLine,
@@ -39,6 +43,9 @@
   let notice = $state(null);
   let now = $state(Date.now());
   let noteBox = $state(null);
+  // The receipt whose close is armed, or null. Closing is the one escape
+  // another button cannot undo, so it is asked about once before it is sent.
+  let confirming = $state(null);
 
   const pending = $derived(openOnes(escalations));
   const settled = $derived(resolvedOnes(escalations));
@@ -111,7 +118,32 @@
       failure = "a brief is running on this issue; decide when it settles";
       return;
     }
+    confirming = null;
     return send(item, decisionBody(option.key, noteFor(item)), option.key);
+  }
+
+  /**
+   * The fixed way out, on every card whatever the brief offered. The close
+   * arms on the first press and sends on the second; the other two send at
+   * once, because a defer is reversible and a dismiss writes nothing.
+   */
+  function escapeWith(item, option) {
+    if (item.briefing) {
+      failure = "a brief is running on this issue; decide when it settles";
+      return;
+    }
+    if (needsConfirm(option) && confirming !== item.receipt_id) {
+      confirming = item.receipt_id;
+      failure = null;
+      notice = null;
+      return;
+    }
+    confirming = null;
+    return send(item, decisionBody(option.key, noteFor(item)), option.key);
+  }
+
+  function armed(item, option) {
+    return needsConfirm(option) && confirming === item.receipt_id;
   }
 
   function chat(item) {
@@ -134,11 +166,26 @@
     if (event.metaKey || event.ctrlKey || event.altKey || typing(event)) return;
     if (event.key === "j" || event.key === "k") {
       cursor = moveCursor(cursor, event.key === "j" ? 1 : -1, pending.length);
+      confirming = null;
       event.preventDefault();
       return;
     }
     if (event.key === "c") {
       noteBox?.focus();
+      event.preventDefault();
+      return;
+    }
+    // Escape cancels an armed close before it dismisses anything, so the key
+    // that gets you out of the confirmation is the one already under your
+    // finger rather than a second one to learn.
+    if (event.key === "Escape" && confirming !== null) {
+      confirming = null;
+      event.preventDefault();
+      return;
+    }
+    const way = escapeForKey(current, event.key);
+    if (way) {
+      escapeWith(current, way);
       event.preventDefault();
       return;
     }
@@ -198,7 +245,7 @@
       </div>
       <div>
         <span class="k">keys</span>
-        <span class="v keys">j k 1-4 c</span>
+        <span class="v keys">j k 1-4 c x d esc</span>
       </div>
     </section>
 
@@ -267,6 +314,29 @@
                 </button>
               {/each}
             </div>
+
+            {#if item.escape?.length}
+              <div class="escapes">
+                <span class="escapes-label code">escape</span>
+                {#each item.escape as way (way.key)}
+                  <button
+                    class="escape-btn"
+                    class:armed={armed(item, way)}
+                    disabled={busy !== null || item.briefing}
+                    onclick={() => escapeWith(item, way)}
+                  >
+                    <span class="hotkey code">{escapeHotkey(way)}</span>
+                    <span class="label"
+                      >{armed(item, way) ? "Confirm close" : way.label}</span
+                    >
+                    <span class="effect code">{effectLine(way)}</span>
+                  </button>
+                {/each}
+              </div>
+              {#if confirming === item.receipt_id}
+                <p class="confirm code" role="status">{confirmLine(item)}</p>
+              {/if}
+            {/if}
 
             {#if index === cursor}
               <div class="chat">
@@ -600,6 +670,72 @@
   .option .effect {
     color: var(--ink-2);
     font-size: 0.7rem;
+  }
+
+  /* The escape row. Always the same three, always quieter than the brief's
+     own options, so they read as a way out rather than as a fifth answer:
+     hairline border, --ink-2 label, no primary outline. */
+  .escapes {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.5rem;
+    margin-top: 0.7rem;
+    padding-top: 0.7rem;
+    border-top: 1px solid var(--line);
+  }
+  .escapes-label {
+    color: var(--ink-2);
+    font-size: 0.66rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .escape-btn {
+    display: inline-grid;
+    grid-template-columns: 1.4rem minmax(0, 1fr);
+    gap: 0.1rem 0.5rem;
+    align-items: center;
+    min-height: 2.75rem;
+    padding: 0.35rem 0.6rem;
+    border: 1px solid var(--line);
+    background: var(--sheet);
+    color: var(--ink-2);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .escape-btn:hover:not(:disabled) {
+    border-color: var(--stroke);
+    background: var(--band);
+    color: var(--ink);
+  }
+  .escape-btn:disabled {
+    cursor: default;
+    opacity: 0.55;
+  }
+  .escape-btn.armed {
+    border-color: var(--warn);
+    color: var(--warn);
+  }
+  .escape-btn .hotkey {
+    grid-row: 1 / span 2;
+    align-self: center;
+    font-size: 0.78rem;
+    text-align: center;
+  }
+  .escape-btn .label {
+    color: inherit;
+    font-size: 0.84rem;
+    font-weight: 600;
+  }
+  .escape-btn .effect {
+    color: var(--ink-2);
+    font-size: 0.66rem;
+  }
+  .confirm {
+    margin: 0.6rem 0 0;
+    color: var(--warn);
+    font-size: 0.72rem;
   }
 
   .chat {

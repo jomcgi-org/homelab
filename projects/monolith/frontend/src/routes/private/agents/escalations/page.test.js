@@ -27,12 +27,29 @@ function escalation(overrides = {}) {
       },
       { key: "hold", label: "Leave it open", effect: "hold", children: 0 },
     ],
+    escape: [
+      { key: "escape:close", label: "Close the issue", effect: "escape-close" },
+      { key: "escape:defer", label: "Defer it", effect: "escape-defer" },
+      {
+        key: "escape:dismiss",
+        label: "Dismiss the escalation",
+        effect: "escape-dismiss",
+      },
+    ],
     chat: [],
     resolved: null,
     open: true,
     briefing: false,
     ...overrides,
   };
+}
+
+/** A fetch that accepts the decision, then returns an empty list. */
+function acceptingFetch() {
+  return vi
+    .fn()
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+    .mockResolvedValue({ ok: true, json: async () => ({ escalations: [] }) });
 }
 
 /**
@@ -234,6 +251,112 @@ describe("escalations page", () => {
     );
     await settle();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("every card carries the escape row below the brief's own options", () => {
+    const target = renderPage({ escalations: [escalation()], error: false });
+    const ways = [...target.querySelectorAll(".escape-btn")];
+    expect(
+      ways.map((button) => button.querySelector(".hotkey").textContent.trim()),
+    ).toEqual(["x", "d", "Esc"]);
+    expect(ways[0].textContent).toContain("Close the issue");
+    expect(ways[2].textContent).toContain("keeps needs-human");
+    // The brief's options are untouched, so 1 to 4 still mean what it said.
+    expect(target.querySelectorAll(".option:not(.chat-button)")).toHaveLength(
+      2,
+    );
+  });
+
+  test("the close arms once and sends on the second press", async () => {
+    const fetchMock = acceptingFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    const target = renderPage({ escalations: [escalation()], error: false });
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "x" }));
+    await tick();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(target.querySelector(".confirm").textContent).toContain(
+      "Close #6002 as not planned",
+    );
+    expect(target.querySelector(".escape-btn").textContent).toContain(
+      "Confirm close",
+    );
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "x" }));
+    await settle();
+    expect(fetchMock.mock.calls[0][0]).toBe("/agents/escalations/decisions/3");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      option_key: "escape:close",
+    });
+  });
+
+  test("Escape cancels an armed close before it dismisses anything", async () => {
+    const fetchMock = acceptingFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    const target = renderPage({ escalations: [escalation()], error: false });
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "x" }));
+    await tick();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await tick();
+    expect(target.querySelector(".confirm")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await settle();
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      option_key: "escape:dismiss",
+    });
+  });
+
+  test("defer sends at once and carries the card's own note", async () => {
+    const fetchMock = acceptingFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    const target = renderPage({ escalations: [escalation()], error: false });
+
+    const box = target.querySelector("textarea");
+    box.value = "after the hub migration";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "d" }));
+    await settle();
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      option_key: "escape:defer",
+      note: "after the hub migration",
+    });
+  });
+
+  test("a briefing card offers the escapes disabled rather than clickable", () => {
+    const target = renderPage({
+      escalations: [escalation({ briefing: true })],
+      error: false,
+    });
+    const ways = [...target.querySelectorAll(".escape-btn")];
+    expect(ways).toHaveLength(3);
+    expect(ways.every((button) => button.disabled)).toBe(true);
+  });
+
+  test("a decided card offers no way out, because there is nothing to leave", () => {
+    const target = renderPage({
+      escalations: [
+        escalation({
+          open: false,
+          escape: [],
+          resolved: {
+            option_key: "escape:dismiss",
+            label: "Dismiss the escalation",
+            actor: "joe@example.test",
+            decided_at: new Date().toISOString(),
+          },
+        }),
+      ],
+      error: false,
+    });
+    expect(target.querySelector(".escape-btn")).toBeNull();
+    expect(target.querySelector(".ledger").textContent).toContain(
+      "Dismiss the escalation by joe@example.test",
+    );
   });
 
   test("an unavailable board says so rather than rendering an empty list", () => {
