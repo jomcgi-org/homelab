@@ -275,16 +275,8 @@ py_library(
 
 py_venv_binary(
     name = "stars_grid_job",
-    srcs = ["stars/grid_gen/job.py"],
-    imports = ["."],
     main = "stars/grid_gen/job.py",
     visibility = ["//:__subpackages__"],
-    deps = [
-        ":pkg_stars",
-        ":stars_grid_generator",
-        "@pip//boto3",
-        "@pip//botocore",
-    ],
 )
 
 # Progress-ingest entrypoint (ADR agents/051): same source closure as :main,
@@ -9178,4 +9170,19 @@ py_test(
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
+)
+
+semgrep_target_test(
+    name = "stars_grid_job_semgrep_test",
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    lockfiles = ["//bazel/requirements:all.txt"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    sca_rules = ["//bazel/semgrep/rules:sca_python_rules"],
+    target = ":stars_grid_job",
 )
