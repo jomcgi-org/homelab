@@ -1,6 +1,7 @@
 # gazelle:resolve py cloudflare_cache //projects/platform/cloudflare-cache:cloudflare_cache_lib
 
 load("@aspect_rules_py//py:defs.bzl", "py_library")
+load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
 load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
@@ -9,6 +10,13 @@ py_library(
     srcs = ["cloudflare_cache.py"],
     data = ["policy.json"],
     imports = ["."],
+)
+
+py_venv_binary(
+    name = "cloudflare_cache",
+    srcs = ["cloudflare_cache.py"],
+    data = ["policy.json"],
+    main = "cloudflare_cache.py",
 )
 
 py_test(
