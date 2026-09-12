@@ -1,4 +1,5 @@
 # gazelle:ignore
+# gazelle:exclude functions
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 py_test(
