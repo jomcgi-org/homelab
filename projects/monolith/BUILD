@@ -6506,13 +6506,13 @@ py_test(
     name = "isolation_config_test",
     srcs = ["isolation_config_test.py"],
     data = [
-        "//projects/monolith/chart:docfix_review_test_data",
-        "//projects/monolith/deploy:deploy_values",
-        "//projects/monolith/deploy:gke_values",
         "//projects/monolith-public/chart:chart_render_inputs",
         "//projects/monolith-public/chart:chart_values",
         "//projects/monolith-public/deploy:deploy_values",
         "//projects/monolith-public/deploy:gke_values",
+        "//projects/monolith/chart:docfix_review_test_data",
+        "//projects/monolith/deploy:deploy_values",
+        "//projects/monolith/deploy:gke_values",
         "@multitool//tools/helm",
     ],
     env = {
@@ -8613,19 +8613,6 @@ semgrep_target_test(
 semgrep_test(
     name = "public_cilium_scoped_egress_guard_test_semgrep_test",
     srcs = ["public_cilium_scoped_egress_guard_test.py"],
-    exclude_rules = [
-        "avoid-sqlalchemy-text",
-        "sqlmodel-datetime-without-factory",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-pillow-fastapi",
-        "tainted-path-traversal-stdlib-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-)
-
-semgrep_test(
-    name = "isolation_config_test_semgrep_test",
-    srcs = ["isolation_config_test.py"],
     exclude_rules = [
         "avoid-sqlalchemy-text",
         "sqlmodel-datetime-without-factory",
