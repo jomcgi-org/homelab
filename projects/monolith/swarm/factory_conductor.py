@@ -3059,7 +3059,22 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                         "reason": "not_invoked: exact session-owner failure before model POST",
                         "previous_outcome": _outcome(current) or result,
                         "not_invoked": proof,
+                        # A refused slot is the control plane's state, not this
+                        # attempt's, so the marker rides on the outcome and the
+                        # attempt count reads it back off the ledger.
+                        "capacity_denied": bool(proof.get("capacity_denied")),
                     }
+                    if result["capacity_denied"]:
+                        _controls_audit(
+                            db,
+                            ACTOR,
+                            "capacity_denied",
+                            task_id=task["id"],
+                            workflow_id=key,
+                            node_key=run["node_key"],
+                            attempt=run["attempt"],
+                            session_id=proof["session_id"],
+                        )
                 elif lost_before_guest_settlement_enabled():
                     # The next window along. The not-invoked proof needs a turn
                     # that never reached its model POST; this one covers a turn
@@ -3535,7 +3550,7 @@ def _ready_nodes(nodes: list[dict], runs: list[dict]) -> list[dict]:
         if n["node_key"] not in succeeded
         and n["node_key"] not in escalated
         and all(dep in succeeded for dep in n["deps"])
-        and sum(r["node_key"] == n["node_key"] for r in runs) < n["max_attempts"]
+        and graph.attempts_spent(runs, n["node_key"]) < n["max_attempts"]
         and sum(r["accounted_cost_usd"] for r in runs if r["node_key"] == n["node_key"])
         < n["max_cost_usd"]
     ]

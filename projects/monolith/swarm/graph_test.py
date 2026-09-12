@@ -918,6 +918,37 @@ def test_typed_not_invoked_proof_releases_reservation(db):
     assert admit_dispatch(task_id, "one").ok
 
 
+def _capacity_denied_attempt(task_id, node_key):
+    admitted = admit_dispatch(task_id, node_key)
+    assert admitted.ok
+    outcome = json.dumps(
+        {
+            "invocation_phase": "not_invoked",
+            "capacity_denied": True,
+        }
+    )
+    assert record_outcome(
+        task_id, node_key, admitted.attempt, "failed", None, None, outcome
+    ).ok
+
+
+def test_capacity_denied_attempts_are_excluded_up_to_their_bound(db):
+    """A refused slot is the control plane's state, not the node's attempt."""
+    task_id = make_task(db, budget=100.0)
+    assert add_work(task_id, "one", 0, max_cost_usd=50.0, max_attempts=2).ok
+    for denials in range(4):
+        assert graph.attempts_spent(node_runs(task_id), "one") == max(0, denials - 3)
+        _capacity_denied_attempt(task_id, "one")
+    # Four denials, three of them excused: the fourth is the node's first spent
+    # attempt, so one ordinary failure now exhausts it.
+    assert graph.attempts_spent(node_runs(task_id), "one") == 1
+    admitted = admit_dispatch(task_id, "one")
+    assert admitted.ok and admitted.attempt == 5
+    assert record_outcome(task_id, "one", 5, "failed", 0.1, None, "{}").ok
+    assert graph.attempts_spent(node_runs(task_id), "one") == 2
+    assert admit_dispatch(task_id, "one").refusal_code == "attempts_exhausted"
+
+
 def test_legacy_no_post_attempt_does_not_pin_an_old_node_ceiling(db):
     task_id = make_task(db, budget=2.0)
     assert add_work(task_id, "old", 0).ok

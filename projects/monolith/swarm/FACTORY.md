@@ -383,7 +383,11 @@ alone. A verified `needs-human` result succeeds because the briefing and the
 escalation both completed, and a verified close succeeds because the issue is
 demonstrably closed with its reason on record. A mismatch fails the task and
 the issue takes the cooldown. Two failed attempts settle the task failed and
-apply nothing.
+apply nothing. So does any other limit that leaves the node unable to run:
+advisory work has one node and no planner to fall back on, so a tick that finds
+no attempt in flight, no success, and the node absent from the conductor's
+ready set settles `refine_failed` there and then, naming the limit it hit.
+Idling instead held the advisory slot and its reservation for ever (#6045).
 
 ### Escalation decisions
 
@@ -611,7 +615,13 @@ its actual dispatcher and guest route are verified on the deployed stack.
 Each graph admission and factory turn reservation commit atomically. The
 node's deterministic session identity is reused after an interrupted submit.
 A workflow replay cannot read a different graph or silently replenish its
-attempt, task-turn, deadline or budget bounds. Confirmed failed artifacts feed
+attempt, task-turn, deadline or budget bounds. One failure does not count
+against `max_attempts`: a session create the control plane refused with a 429
+capacity denial never reached a model, so the run records `capacity_denied`,
+audits it against the task, and is excluded from the attempt count by both
+`graph.admit_dispatch` and the conductor's readiness. At most three such
+denials per node are excluded, after which they count like any other failure,
+so a saturated control plane still retires the node. Confirmed failed artifacts feed
 bounded retry context back to the next attempt. Unknown execution retains its
 reservation and requires reconciliation before another attempt starts.
 
@@ -714,7 +724,14 @@ it terminal.
 
 Missing provider usage consumes the entire reserved ceiling. This is
 conservative admission accounting, not an interruptible dollar cap on a running
-provider turn. Observed overruns prevent further admission.
+provider turn. Observed overruns prevent further admission. The exception is an
+attempt whose own evidence proves it never reached a model POST, an
+`invocation_phase` of `never_dispatched`, `not_invoked` or `lost_before_guest`
+recorded on the outcome or on the typed proof attached under that phase: it
+books at nothing on the `no_model_post` basis, because charging it the ceiling
+retired its node on the first failure (#6045). An attempt that may have reached
+the model with an unknown cost, `guest_cessation_confirmed` after dispatch
+among them, stays conservative and keeps its reservation.
 
 A planner decision is one graph edit or one `plan` whose edits apply together
 under a single expected revision, so a rejected edit rejects the whole plan and

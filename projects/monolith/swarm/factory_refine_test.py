@@ -408,6 +408,27 @@ def test_null_cost_not_invoked_attempt_stays_ready_for_retry(db):
     assert controls.task_snapshot(task["id"])["state"] == "admitted"
 
 
+def test_a_capacity_denied_attempt_does_not_spend_the_lane_a_retry(db):
+    """EmberVM having no slot must not read as the refine node failing twice."""
+    task, policy = make_task()
+    node = add_refine_node(task, policy)
+    denial = {
+        "not_invoked": {"invocation_phase": "not_invoked", "session_id": 101},
+        "capacity_denied": True,
+    }
+    runs = [
+        settle_attempt(task, "failed", cost_usd=None, outcome_evidence=denial),
+        settle_attempt(task, "failed", cost_usd=None, outcome_evidence=denial),
+    ]
+    assert len(runs) >= node["max_attempts"]
+    assert graph.attempts_spent(runs, refine.NODE_KEY) == 0
+    assert conductor._ready_nodes([node], runs) == [node]
+
+    refine.reconcile(task, policy, [node], runs, graph.current_version(task["id"]))
+    assert controls.task_snapshot(task["id"])["state"] == "admitted"
+    assert "refine_failed" not in audit_actions(db)
+
+
 def test_uncertain_refine_attempt_is_not_finished(db):
     task, policy = make_task()
     node = add_refine_node(task, policy)
