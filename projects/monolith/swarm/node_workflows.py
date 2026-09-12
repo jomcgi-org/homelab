@@ -26,13 +26,18 @@ from agent_sessions.constants import (
     INTERRUPTED_TERMINAL_REASONS,
     UNKNOWN_INVOCATION,
 )
+from swarm.factory_models import MAX_CAPACITY_DENIED_ATTEMPTS
+from swarm.graph import MAX_ATTEMPTS
 from swarm.steps import observe_clock, poll_turn, read_branch_head
 from swarm.turn_artifact import evaluate, evaluate_content
 from swarm.unified_diff import parse_unified_diff
 
 logger = logging.getLogger(__name__)
 
-MAX_PIN_ATTEMPTS = 10
+# A node's own attempt ceiling plus the capacity denials the graph excuses
+# from it: an excused denial still takes an attempt NUMBER, so the bound a pin
+# carries is the ceiling plus however many were excused (#6045).
+MAX_PIN_ATTEMPTS = MAX_ATTEMPTS + MAX_CAPACITY_DENIED_ATTEMPTS
 MAX_PIN_TIMEOUT_SECONDS = 43200
 MAX_RETRY_CONTEXT_CHARS = 16000
 # Guest apko and shim contract: EMBER_CLAUDE_WORKSPACE=/workspace.

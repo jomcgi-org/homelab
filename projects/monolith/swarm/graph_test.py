@@ -932,6 +932,24 @@ def _capacity_denied_attempt(task_id, node_key):
     ).ok
 
 
+def _validated(pin):
+    """The pin as the node workflow validates it before doing anything."""
+    from swarm.node_workflows import _validate_pin
+
+    return _validate_pin(
+        {
+            "repo": "org/repo",
+            "branch": "factory/work",
+            "hydration_branch": "main",
+            "retry_context": "[]",
+            "artifact_path": "result.json",
+            "artifact_schema": {"type": "object"},
+            "workflow_id": "factory-node:task-1:one:1",
+            **pin,
+        }
+    )
+
+
 def test_capacity_denied_attempts_are_excluded_up_to_their_bound(db):
     """A refused slot is the control plane's state, not the node's attempt."""
     task_id = make_task(db, budget=100.0)
@@ -944,9 +962,23 @@ def test_capacity_denied_attempts_are_excluded_up_to_their_bound(db):
     assert graph.attempts_spent(node_runs(task_id), "one") == 1
     admitted = admit_dispatch(task_id, "one")
     assert admitted.ok and admitted.attempt == 5
+    # The workflow validates its pin before it does anything, so a bound that
+    # did not carry the excused denials would kill this attempt on arrival.
+    assert _validated(admitted.pin)["attempt"] == 5
+    assert admitted.pin["max_attempts"] == 5
     assert record_outcome(task_id, "one", 5, "failed", 0.1, None, "{}").ok
     assert graph.attempts_spent(node_runs(task_id), "one") == 2
     assert admit_dispatch(task_id, "one").refusal_code == "attempts_exhausted"
+
+
+def test_one_excused_denial_re_admits_a_single_attempt_node_with_a_valid_pin(db):
+    """A review round node has one attempt, so its pin is the tightest case."""
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0, max_attempts=1).ok
+    _capacity_denied_attempt(task_id, "one")
+    admitted = admit_dispatch(task_id, "one")
+    assert admitted.ok and admitted.attempt == 2
+    assert _validated(admitted.pin)["max_attempts"] == 2
 
 
 def test_legacy_no_post_attempt_does_not_pin_an_old_node_ceiling(db):

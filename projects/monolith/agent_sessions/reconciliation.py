@@ -150,11 +150,15 @@ def _factory_owner(db: Session, pin: dict, session_id: int | None):
 
 
 # EmberVM refuses a create it cannot place with 429 and a machine readable
-# reason (transport._CAPACITY_DENIAL_REASONS). That body does not survive into
-# the turn: what is persisted is the status line httpx raised once the
-# transport's capacity ladder ran out, so the refusal is read back off that
-# line. The endpoint is matched as well as the status because a refusal to
-# place a session is the only 429 that means no work was possible at all.
+# reason in the body: see create_denial/3 in the control plane router, whose
+# 429 set is exactly these four. The body survives into the turn, because
+# transport._status_error_detail appends it to the status line and the
+# not-invoked path persists that whole string, so the reason is what is matched
+# here rather than the bare status. The endpoint is matched too: a create the
+# control plane would not place is the refusal that did no work at all.
+_CAPACITY_DENIAL_REASON = re.compile(
+    r'"reason"\s*:\s*"(?:session_cap|workload_cap|quota|no_capacity)"'
+)
 _CAPACITY_DENIAL_STATUS = "429 Too Many Requests"
 _CAPACITY_DENIAL_ENDPOINT = "/sessions"
 
@@ -165,9 +169,15 @@ def _capacity_denied_turn(turn) -> bool:
     Read together with the not-invoked evidence, never alone: the phase proves
     the attempt never reached its model, and this says the reason was that
     EmberVM had no slot for it rather than anything about the attempt itself.
+    A turn whose error text lost the body, to truncation or to a partial
+    result, reads as an ordinary failure and spends its attempt.
     """
     text = f"{turn.voice_summary or ''}\n{turn.result_text or ''}"
-    return _CAPACITY_DENIAL_STATUS in text and _CAPACITY_DENIAL_ENDPOINT in text
+    return (
+        _CAPACITY_DENIAL_STATUS in text
+        and _CAPACITY_DENIAL_ENDPOINT in text
+        and _CAPACITY_DENIAL_REASON.search(text) is not None
+    )
 
 
 def read_not_invoked_factory_attempt(

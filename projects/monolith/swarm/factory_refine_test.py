@@ -136,6 +136,11 @@ def settle_attempt(task, status, value=None, *, cost_usd=0.1, outcome_evidence=N
         status,
         "worker",
         cost_usd=cost_usd,
+        # Derived from the outcome exactly as the conductor derives it, so the
+        # start ledger in these tests books what the real one books.
+        accounting_basis=graph.settled_zero_basis(outcome)
+        if status in graph.TERMINAL_RUN_STATUSES
+        else None,
         session_id=100 + attempt,
     )["ok"]
     return graph.node_runs(task["id"], refine.NODE_KEY)[-1]
@@ -427,6 +432,69 @@ def test_a_capacity_denied_attempt_does_not_spend_the_lane_a_retry(db):
     refine.reconcile(task, policy, [node], runs, graph.current_version(task["id"]))
     assert controls.task_snapshot(task["id"])["state"] == "admitted"
     assert "refine_failed" not in audit_actions(db)
+
+
+CAPACITY_DENIAL = {
+    "not_invoked": {"invocation_phase": "not_invoked", "session_id": 101},
+    "capacity_denied": True,
+}
+
+
+def test_two_capacity_denials_still_leave_the_lane_a_start(db):
+    """The turn ledger has to excuse what the attempt ledger excuses."""
+    task, policy = make_task()
+    node = add_refine_node(task, policy)
+    for _ in range(node["max_attempts"]):
+        settle_attempt(task, "failed", cost_usd=None, outcome_evidence=CAPACITY_DENIAL)
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["turns_used"] == 0
+    assert snapshot["committed_cost_usd"] == 0
+    assert [start["accounting_basis"] for start in snapshot["starts"]] == [
+        "capacity_denied",
+        "capacity_denied",
+    ]
+
+    third = controls.authorize_start(
+        task["id"],
+        f"factory-node:{task['id']}:{refine.NODE_KEY}:3",
+        "worker",
+        model=policy["worker_model"],
+        max_cost_usd=node["max_cost_usd"],
+    )
+    assert third["ok"] and not third["replayed"]
+
+
+def test_a_start_that_never_reached_a_model_commits_no_budget(db):
+    """The graph books the attempt at zero; the start ledger has to agree."""
+    task, policy = make_task()
+    node = add_refine_node(task, policy)
+    run = settle_attempt(
+        task,
+        "failed",
+        cost_usd=None,
+        outcome_evidence={"not_invoked": {"invocation_phase": "not_invoked"}},
+    )
+    snapshot = controls.task_snapshot(task["id"])
+    assert run["accounted_cost_usd"] == 0.0
+    assert snapshot["committed_cost_usd"] == 0
+    assert snapshot["starts"][0]["accounting_basis"] == "no_model_post"
+    # It reached no model, but it is still an attempt the node made, so it
+    # spends a turn where a refused slot does not.
+    assert snapshot["turns_used"] == 1
+
+    retry = controls.authorize_start(
+        task["id"],
+        f"factory-node:{task['id']}:{refine.NODE_KEY}:2",
+        "worker",
+        model=policy["worker_model"],
+        max_cost_usd=node["max_cost_usd"],
+    )
+    assert retry["ok"]
+    # Nothing of the task budget was spent on an attempt that never ran, so
+    # the retry's own ceiling is all that is committed against it.
+    assert (
+        controls.task_snapshot(task["id"])["committed_cost_usd"] == node["max_cost_usd"]
+    )
 
 
 def test_uncertain_refine_attempt_is_not_finished(db):

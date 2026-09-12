@@ -3250,6 +3250,7 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 status,
                 ACTOR,
                 cost_usd=result.get("cost_usd"),
+                accounting_basis=graph.settled_zero_basis(result),
                 session_id=result.get("session_id"),
                 reconciled=True,
                 session=db,
@@ -3329,6 +3330,7 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
                 run["status"],
                 ACTOR,
                 cost_usd=result.get("cost_usd"),
+                accounting_basis=graph.settled_zero_basis(result),
                 session_id=result.get("session_id"),
                 reconciled=True,
             )
