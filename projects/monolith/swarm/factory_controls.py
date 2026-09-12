@@ -638,7 +638,9 @@ def lane_usage(policy: dict, receipts: list[dict]) -> dict:
     for receipt in receipts:
         if receipt.get("generation") != generation:
             continue
-        lane = lane_for(receipt.get("task_class") or DEFAULT_TASK_CLASS)
+        lane = receipt.get("routing_tier") or lane_for(
+            receipt.get("task_class") or DEFAULT_TASK_CLASS
+        )
         if receipt.get("state") in _ACTIVE:
             usage[lane]["active"] += 1
         elif receipt.get("state") == "queued":
@@ -1092,6 +1094,10 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
         )
     }
     result["task_class"] = receipt_task_class(row)
+    # Keep the original class for verdict windows while exposing the route
+    # this admitted task actually runs. A receipt predating feedback routing
+    # has no pin and follows its established class lane.
+    result["routing_tier"] = row.routing_tier or lane_for(result["task_class"])
     # The escalation document, when this receipt raised one. It is read by the
     # board, by the decision endpoint, and by the next refine prompt when the
     # operator asked for more, so it belongs on the one snapshot they share.

@@ -664,6 +664,9 @@ def _requeue(row: FactoryReceipt) -> None:
     row.task_id = None
     row.policy_json = None
     row.allowance_json = None
+    # A re-admission is a new task and must see the then-current class window,
+    # not the route pinned for the attempt that asked the operator a question.
+    row.routing_tier = None
     row.task_paused = False
     row.cancellation_requested = False
 

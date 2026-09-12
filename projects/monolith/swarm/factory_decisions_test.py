@@ -17,8 +17,10 @@ from swarm import factory_refine as refine
 from swarm.factory_intake import receive_issue
 from swarm.factory_models import (
     FactoryAudit,
+    FactoryClassTier,
     FactoryControl,
     FactoryReceipt,
+    FactoryReviewVerdict,
     FactoryStart,
 )
 from swarm.models import (
@@ -51,8 +53,10 @@ def db(tmp_path, monkeypatch):
         SwarmPlanNode,
         SwarmNodeRun,
         SwarmConductorCall,
+        FactoryClassTier,
         FactoryControl,
         FactoryReceipt,
+        FactoryReviewVerdict,
         FactoryStart,
         FactoryAudit,
     )
