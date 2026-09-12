@@ -88,7 +88,12 @@ if [ "$(id -u)" -eq 0 ]; then
 	chmod -R a+rX "$pg_root"
 fi
 
-run_as_postgres_user "$initdb_bin" -D "$pg_data" --no-locale -U test -L "$pg_share" >"$work/initdb.log" 2>&1
+if ! run_as_postgres_user "$initdb_bin" -D "$pg_data" --no-locale -U test -L "$pg_share" \
+	>"$work/initdb.log" 2>&1; then
+	echo "PostgreSQL initdb failed" >&2
+	cat "$work/initdb.log" >&2
+	exit 1
+fi
 
 run_as_postgres_user "$postgres_bin" \
 	-D "$pg_data" \
