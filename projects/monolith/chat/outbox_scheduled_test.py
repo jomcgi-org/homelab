@@ -57,11 +57,22 @@ async def test_success_crosses_sending_boundary_then_marks_posted(engine):
         assert row.posted_at is not None
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionError("connection reset"),
+        discord.DiscordServerError(
+            MagicMock(status=503), "service unavailable after create"
+        ),
+    ],
+)
 @pytest.mark.asyncio
-async def test_failed_scheduled_send_becomes_uncertain_and_is_not_retried(engine):
+async def test_ambiguous_scheduled_send_becomes_uncertain_and_is_not_retried(
+    engine, error
+):
     _enqueue(engine)
     channel = MagicMock()
-    channel.send = AsyncMock(side_effect=ConnectionError("connection reset"))
+    channel.send = AsyncMock(side_effect=error)
     bot = MagicMock()
     bot.get_channel.return_value = channel
 
