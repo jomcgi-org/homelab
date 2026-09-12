@@ -53,7 +53,10 @@ defmodule Embervm.CellTest do
           send(parent, {:base_reconcile, cell_id, descriptor.name})
           :ok
         end,
-        base_forget_fun: fn _name -> :ok end,
+        base_forget_fun: fn name ->
+          send(parent, {:base_forget, cell_id, name})
+          :ok
+        end,
         watch_startup: false
       )
 
@@ -99,6 +102,7 @@ defmodule Embervm.CellTest do
     assert WorkloadCatalog.fetch(catalog, "routed-workload") == :error
     assert Cell.owner("routed-workload", assignments) == {:ok, "cell-a"}
 
+    assert_receive {:base_forget, "cell-b", "routed-workload"}
     assert_receive {:status, "cell-b", %{"conditions" => [condition]}}
     assert condition["reason"] == "CellAssignmentImmutable"
   end
@@ -112,6 +116,7 @@ defmodule Embervm.CellTest do
     assert Cell.route("routed-workload", assignments, "cell-a") == :owned
 
     assert_receive {:base_reconcile, "cell-a", "routed-workload"}
+    refute_receive {:base_forget, "cell-a", "routed-workload"}
     assert_receive {:status, "cell-a", %{"conditions" => [condition]}}
     assert condition["reason"] == "CellAssignmentImmutable"
   end
@@ -147,6 +152,27 @@ defmodule Embervm.CellTest do
 
     assert log =~ "skipping durable assignment for an unknown cell"
     assert log =~ "cell-c"
+  end
+
+  test "rebuild still rejects malformed durable assignments" do
+    opts = [
+      name: nil,
+      table: unique_table("cell_catalog"),
+      assignment_table: unique_table("cell_assignments"),
+      cell_id: "cell-a",
+      known_cell_ids: ["cell-a", "cell-b"],
+      load_assignments_fun: fn ->
+        {:ok, [%{workload: "broken", cell_id: "not a DNS label"}]}
+      end,
+      lister: fn -> {:ok, []} end,
+      watch_startup: false
+    ]
+
+    assert {:error, {%RuntimeError{message: message}, _stacktrace}} =
+             GenServer.start(WorkloadWatcher, opts)
+
+    assert message =~ "durable workload cell registry contains invalid assignments"
+    assert message =~ "not a DNS label"
   end
 
   test "SQLite persists immutable assignment and stamps replay records with its cell" do
