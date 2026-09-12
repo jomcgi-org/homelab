@@ -97,8 +97,10 @@ secret:
 # sso_providers.team_mapping) declared here instead of in a hand-run script.
 teamMapping:
   enabled: false
-  # Every 15 minutes: a new group in values is not urgent, and this never
-  # touches the tool catalogue so it cannot preempt CF's own refresh loop.
+  # Every 15 minutes: a new group in values is not urgent, and neither is a
+  # newly deployed tool. publishTools reads the catalogue and writes visibility
+  # and server associations, but never asks for a refresh, so this still cannot
+  # preempt CF's own AUTO_REFRESH_SERVERS loop.
   schedule: "*/15 * * * *"
   # Cap each run so a hung pod cannot linger.
   activeDeadlineSeconds: 120
@@ -112,6 +114,17 @@ teamMapping:
   #  - authentikGroup: homelab-admin
   #    team: homelab-admin
   #    description: Full monolith catalogue.
+  # A catalogue refresh puts rows in `tools` and stops: a new tool stays at
+  # `team` visibility with no server association, invisible to every caller
+  # until someone edits CF's Postgres by hand. This makes each tick do those
+  # two writes instead. Additive only, and it refuses to write when the
+  # gateway reports an empty catalogue. See files/reconcile_tools.py.
+  publishTools:
+    enabled: false
+    # The registered upstream whose tools are published, matched by name.
+    gatewayName: monolith
+    # The virtual server the admin route serves, matched by name.
+    serverName: homelab-admin
   resources:
     requests:
       cpu: 10m

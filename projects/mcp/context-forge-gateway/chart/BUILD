@@ -7,6 +7,7 @@ load("//bazel/tools/pytest:defs.bzl", "py_test")
 # it as data without Gazelle creating a nested files/ package and a generated
 # py_venv_binary that has no mandatory main attribute.
 # gazelle:exclude files/reconcile_team_mapping.py
+# gazelle:exclude files/reconcile_tools.py
 
 helm_chart(
     name = "chart",
@@ -37,5 +38,21 @@ py_test(
 semgrep_test(
     name = "reconcile_team_mapping_test_semgrep_test",
     srcs = ["reconcile_team_mapping_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+py_test(
+    name = "reconcile_tools_test",
+    srcs = ["reconcile_tools_test.py"],
+    data = ["files/reconcile_tools.py"],
+    env = {
+        "RECONCILE_TOOLS_SCRIPT": "$(rootpath files/reconcile_tools.py)",
+    },
+    deps = ["@pip//pytest"],
+)
+
+semgrep_test(
+    name = "reconcile_tools_test_semgrep_test",
+    srcs = ["reconcile_tools_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )

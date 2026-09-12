@@ -13,12 +13,19 @@
 # client id and stays on the script; the job fails loudly when the row is
 # missing rather than inventing one.
 #
+# With teamMapping.publishTools.enabled it also publishes the upstream's tools:
+# a catalogue refresh writes rows into `tools` and stops there, leaving each new
+# tool at `team` visibility with no server_tool_association, so it is invisible
+# to every caller until someone edits CF's Postgres by hand. See
+# files/reconcile_tools.py for why that half is additive by construction.
+#
 # Cadence: every 15 minutes. There is nothing to hurry (entitlement for a new
-# group is a values change that lands on the next tick) and this job never
-# touches the tool catalogue, so unlike the retired tool-refresh CronJob it
-# cannot preempt CF's own AUTO_REFRESH_SERVERS loop whatever cadence it runs
-# at. 15 is still chosen to sit off the 10-minute refresh interval so the two
-# do not routinely land on the same second in the gateway log.
+# group is a values change that lands on the next tick, and so is a newly
+# deployed tool). The tool half reads the catalogue and writes visibility and
+# associations but never requests a refresh, so unlike the retired tool-refresh
+# CronJob this still cannot preempt CF's own AUTO_REFRESH_SERVERS loop whatever
+# cadence it runs at. 15 is still chosen to sit off the 10-minute refresh
+# interval so the two do not routinely land on the same second in the log.
 #
 # Mints a short-lived admin JWT from JWT_SECRET_KEY + PLATFORM_ADMIN_EMAIL (the
 # same context-forge secret the gateway reads, synced from 1Password) and
@@ -32,6 +39,10 @@ metadata:
 data:
   reconcile_team_mapping.py: |
 {{ .Files.Get "files/reconcile_team_mapping.py" | indent 4 }}
+{{- if .Values.teamMapping.publishTools.enabled }}
+  reconcile_tools.py: |
+{{ .Files.Get "files/reconcile_tools.py" | indent 4 }}
+{{- end }}
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -85,6 +96,12 @@ spec:
                   value: {{ .Values.teamMapping.providerId | quote }}
                 - name: TEAM_MAPPING_JSON
                   value: {{ toJson .Values.teamMapping.teams | quote }}
+{{- if .Values.teamMapping.publishTools.enabled }}
+                - name: CF_GATEWAY_NAME
+                  value: {{ .Values.teamMapping.publishTools.gatewayName | quote }}
+                - name: CF_SERVER_NAME
+                  value: {{ .Values.teamMapping.publishTools.serverName | quote }}
+{{- end }}
                 - name: HOME
                   value: /tmp
                 - name: TMPDIR
@@ -96,7 +113,17 @@ spec:
                   set -eu
                   CF_ADMIN_TOKEN=$(python3 -m mcpgateway.utils.create_jwt_token -u "$PLATFORM_ADMIN_EMAIL" --admin -e 600 | tail -1)
                   export CF_ADMIN_TOKEN
+{{- if .Values.teamMapping.publishTools.enabled }}
+                  # Both run every tick. They reconcile unrelated state, so a
+                  # failure in one must not hide the other's result, and the
+                  # job still fails if either did.
+                  rc=0
+                  python3 /scripts/reconcile_team_mapping.py || rc=$?
+                  python3 /scripts/reconcile_tools.py || rc=$?
+                  exit $rc
+{{- else }}
                   exec python3 /scripts/reconcile_team_mapping.py
+{{- end }}
               resources:
                 {{- toYaml .Values.teamMapping.resources | nindent 16 }}
               volumeMounts:
