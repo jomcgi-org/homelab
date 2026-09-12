@@ -171,3 +171,5 @@ ciliumPolicy:
     enabled: false
   ingress:
     enabled: false
+  egress:
+    enabled: false

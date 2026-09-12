@@ -1,0 +1,131 @@
+{{- /*
+Destination-scoped egress for the private monolith app pod (issues #3897 and
+#5277).
+
+This policy selects the same app endpoint as cilium-ingress-policy.yaml. One
+pod carries the backend, progress-ingest, and frontend containers, so an
+egress rule on this endpoint applies to all three containers. Traffic not
+listed in `egress` is denied when mode is `enforce`.
+
+Rollout modes:
+
+  audit    Render the complete allowlist with enableDefaultDeny.egress=false.
+           Existing connectivity is unchanged, but Hubble can show flows that
+           do not correlate with this policy. Keep this mode for a long enough
+           window to include periodic callers before enforcing.
+  enforce  The same allowlist carries default-deny. A missed dependency then
+           fails as a silent dial timeout, not a readable policy error.
+
+The outer enabled gate is default-false. Production must first opt into audit,
+verify the allowlist against live egress, and only then move to enforce. GKE
+overlays explicitly force the gate off because Dataplane V2 does not install
+the CiliumNetworkPolicy CRD. This template therefore documents, but does not
+enforce, the hub boundary.
+
+Why the special rules matter:
+
+  - toFQDNs only learns destination IPs when DNS passes through Cilium's L7 DNS
+    proxy. The CoreDNS allow therefore includes rules.dns, not just port 53.
+  - Cilium evaluates service traffic after DNAT. Authentik is reached through
+    Service port 80 but listens on pod port 9000, so 9000 is allowlisted.
+  - The monolith uses the Kubernetes API for cluster views, scheduler actions,
+    and EmberVM resources. On k3s the ClusterIP on 443 translates to a control
+    plane endpoint on 6443. Both ports and the identities observed in the
+    repository's token-broker datapath investigation are retained here.
+  - There is no `cluster`, `world`, `all`, or catch-all CIDR grant. Internal
+    dependencies are selected by pod identity and port. External destinations
+    are exact FQDNs on 443.
+
+The narrow token-replay egressDeny remains a separate policy in
+cilium-policy.yaml. Cilium deny rules take precedence over allows, and this
+allowlist does not name the Context Forge gateway in any case.
+*/}}
+{{- $mode := .Values.ciliumPolicy.egress.mode | default "audit" }}
+{{- if not (has $mode (list "audit" "enforce")) }}
+{{- fail (printf "ciliumPolicy.egress.mode must be audit or enforce; got %q" $mode) }}
+{{- end }}
+{{- if .Values.ciliumPolicy.egress.enabled }}
+{{- $targets := .Values.ciliumPolicy.egress.targets }}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-app-egress
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+spec:
+  description: >-
+    Destination-scoped egress for the private monolith app pod. Audit mode is
+    additive; enforce mode denies every destination and port not listed here.
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: monolith
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: app
+  {{- if eq $mode "audit" }}
+  enableDefaultDeny:
+    egress: false
+  {{- end }}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $targets.dns.namespace }}
+            {{- toYaml $targets.dns.matchLabels | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace }}
+            cnpg.io/cluster: {{ .Release.Name }}-pg
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    {{- range $target := list $targets.inference $targets.embeddings $targets.authentik $targets.otelCollector $targets.embervm $targets.tokenBroker $targets.embervmServing $targets.dcgmExporter $targets.inferenceBridge }}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ $target.namespace }}
+            {{- toYaml $target.matchLabels | nindent 12 }}
+      toPorts:
+        - ports:
+            - port: {{ $target.port | quote }}
+              protocol: TCP
+    {{- end }}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace }}
+            app.kubernetes.io/name: monolith
+            app.kubernetes.io/instance: {{ .Release.Name }}
+            app.kubernetes.io/component: searxng
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # The service address is 443, while the k3s control-plane endpoint is 6443
+    # after DNAT. host and remote-node cover the identities a control-plane node
+    # may present instead of kube-apiserver, on these two ports only.
+    - toEntities:
+        - kube-apiserver
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "6443"
+              protocol: TCP
+    {{- range .Values.ciliumPolicy.egress.externalFqdns }}
+    - toFQDNs:
+        - matchName: {{ . | quote }}
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    {{- end }}
+{{- end }}

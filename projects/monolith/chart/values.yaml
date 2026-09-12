@@ -1843,7 +1843,8 @@ cfIngress:
         itemPath: ""
 
 # Cilium policies for the k3s cluster only. GKE has no Cilium CRDs. See
-# templates/cilium-policy.yaml and templates/cilium-ingress-policy.yaml.
+# templates/cilium-policy.yaml, templates/cilium-ingress-policy.yaml, and
+# templates/cilium-egress-policy.yaml.
 ciliumPolicy:
   # Deny monolith -> Context Forge egress, so a forwarded multi-audience
   # identity token cannot be replayed back at the gateway. Uses egressDeny, so
@@ -1875,3 +1876,114 @@ ciliumPolicy:
     # tokenReplayDeny.gatewayPodLabel names the SAME pod; the chart test fails
     # if the two copies of that fact drift apart.
     mcpGatewayPodLabel: context-forge-gateway-mcp-stack-mcpgateway
+  # Destination-scoped default-deny egress for the private app pod (#3897,
+  # #5277). This policy has two independent rollout controls:
+  #
+  #   enabled=false  renders nothing (the default and every GKE overlay)
+  #   mode=audit     renders additive allows for Hubble correlation
+  #   mode=enforce   makes every unlisted destination and port default-deny
+  #
+  # Do not enable audit for only a short sample: leader jobs and interactive
+  # routes are periodic. Do not move to enforce until unmatched live flows are
+  # empty across a representative window. See templates/cilium-egress-policy.yaml.
+  egress:
+    enabled: false
+    mode: audit
+    targets:
+      dns:
+        namespace: kube-system
+        matchLabels:
+          k8s:k8s-app: kube-dns
+      inference:
+        namespace: inference
+        matchLabels:
+          app.kubernetes.io/name: inference
+          app.kubernetes.io/component: inference
+        port: 8080
+      embeddings:
+        namespace: inference
+        matchLabels:
+          app.kubernetes.io/name: inference
+          app.kubernetes.io/component: embeddings
+        port: 8080
+      # authentik-server Service port 80 targets pod port 9000. Cilium applies
+      # the port rule after DNAT, so 80 here would silently deny JWKS refresh.
+      authentik:
+        namespace: authentik
+        matchLabels:
+          app.kubernetes.io/name: authentik
+          app.kubernetes.io/instance: authentik
+          app.kubernetes.io/component: server
+        port: 9000
+      otelCollector:
+        namespace: otel-collector
+        matchLabels:
+          app.kubernetes.io/name: otel-collector
+          app.kubernetes.io/instance: otel-collector
+        port: 4318
+      embervm:
+        namespace: embervm
+        matchLabels:
+          app.kubernetes.io/name: embervm
+          app.kubernetes.io/instance: embervm
+        port: 8080
+      tokenBroker:
+        namespace: embervm
+        matchLabels:
+          app.kubernetes.io/name: embervm-tokenbroker
+          app.kubernetes.io/instance: embervm
+          app.kubernetes.io/component: tokenbroker
+        port: 8080
+      embervmServing:
+        namespace: embervm
+        matchLabels:
+          app.kubernetes.io/name: embervm-serving-envoy
+          app.kubernetes.io/instance: embervm
+          app.kubernetes.io/component: serving-envoy
+        port: 5401
+      # The NVIDIA GPU operator owns this pod label. Confirm it again during
+      # the audit window whenever the operator chart changes.
+      dcgmExporter:
+        namespace: gpu-operator
+        matchLabels:
+          app: nvidia-dcgm-exporter
+        port: 9400
+      # Tailscale operator proxy for frontend.qwenFlashApiBase. These ownership
+      # labels identify one egress Service proxy rather than the whole namespace.
+      inferenceBridge:
+        namespace: tailscale
+        matchLabels:
+          tailscale.com/managed: "true"
+          tailscale.com/parent-resource-type: svc
+          tailscale.com/parent-resource: inference-bridge-freetoken
+          tailscale.com/parent-resource-ns: tailscale
+        port: 8090
+    # Exact DNS names only, all on 443. No suffix wildcard is accepted by the
+    # regression test. The list covers the private request paths and enabled
+    # leader integrations visible in current code and deploy values. The R2
+    # hostname is deliberately exact rather than a Cloudflare-wide CIDR grant.
+    # ICAL_FEED_URL is secret-backed and cannot be proven from Git; its hostname
+    # is an explicit pre-enforcement live-audit acceptance gap.
+    externalFqdns:
+      - 7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
+      - api.github.com
+      - github.com
+      - openrouter.ai
+      - integrate.api.nvidia.com
+      - api.meta.ai
+      - semgrep.dev
+      - stream.aisstream.io
+      - discord.com
+      - gateway.discord.gg
+      - cdn.discordapp.com
+      - media.discordapp.net
+      - oauth2.googleapis.com
+      - www.googleapis.com
+      - challenges.cloudflare.com
+      - jomcgi.dev
+      - private.jomcgi.dev
+      - api.met.no
+      - api.open-meteo.com
+      - geocoding-api.open-meteo.com
+      - camping.bcparks.ca
+      - www.walkhighlands.co.uk
