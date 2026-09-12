@@ -149,6 +149,198 @@ def _factory_owner(db: Session, pin: dict, session_id: int | None):
     return owner
 
 
+_NEVER_DISPATCHED_WORKFLOW_STATUSES = frozenset({"CANCELLED", "ERROR"})
+
+
+def read_never_dispatched_factory_attempt(
+    db: Session,
+    pin: dict,
+    session_id: int | None,
+    workflow_status: str | None,
+) -> dict | None:
+    """Prove an exact factory attempt was stranded before its first dispatch.
+
+    The terminal workflow is external evidence that no executor can still own
+    this queued message. The factory caller holds its control lock and keeps
+    this transaction open through session, graph and start settlement. The
+    pool/session/message locks serialize this read against a first claim.
+
+    A missing guest is only one required observation. Any turn, claim,
+    dispatch, receipt, binding history, or non-reserved permit contradicts the
+    proof. This shape is deliberately separate from
+    read_not_invoked_factory_attempt, whose first dispatch was claimed and
+    whose dispatch_count is exactly one.
+    """
+    from datetime import timezone
+    from sqlalchemy import or_
+
+    from agent_sessions import normalize_model
+    from agent_sessions.models import AgentResultReceipt, AgentTurn, PendingMessage
+
+    if workflow_status not in _NEVER_DISPATCHED_WORKFLOW_STATUSES:
+        return None
+    if session_id is not None and (type(session_id) is not int or session_id < 1):
+        raise ValueError("invalid factory session identity")
+    admission.lock_pool(db)
+    agent = _factory_owner(db, pin, session_id)
+    if agent is None:
+        return None
+    agent = _locked_session(db, agent.id)
+    if _factory_owner(db, pin, agent.id) is None:
+        return None
+    if (
+        agent.status != "running"
+        or agent.result_receipt_fence_id is not None
+        or admission.cleanup_pending(db, agent)
+        or agent.recovery_completed_at is not None
+    ):
+        return None
+    if any(
+        getattr(agent, field) is not None
+        for field in (
+            "ember_session_id",
+            "ember_session_token",
+            "ember_session_expires_at",
+            "ember_lineage_id",
+            "prior_ember_lineage_id",
+            "cli_session_id",
+            "prior_cli_session_id",
+            "guest_cleanup_id",
+            "guest_cleanup_guest_id",
+            "guest_cleanup_workflow_id",
+            "guest_cleanup_dispatch_json",
+            "guest_cleanup_started_at",
+            "recovery_workspace_loss",
+        )
+    ):
+        return None
+    if (
+        db.exec(
+            select(AgentTurn.id)
+            .where(AgentTurn.session_id == agent.id)
+            .with_for_update()
+        ).first()
+        is not None
+    ):
+        return None
+    pending = db.exec(
+        select(PendingMessage)
+        .where(PendingMessage.session_id == agent.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+        .limit(2)
+    ).all()
+    if len(pending) != 1:
+        return None
+    message = pending[0]
+    if (
+        message.seq != 1
+        or message.model != normalize_model(pin["model"])
+        or type(message.dispatch_count) is not int
+        or message.dispatch_count != 0
+        or message.claimed_by_replica is not None
+        or message.claimed_at is not None
+        or message.last_dispatch_at is not None
+        or message.partial_text is not None
+        or message.partial_activities is not None
+    ):
+        return None
+
+    def aware(value):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+    if aware(agent.last_turn_at) > aware(message.created_at):
+        return None
+    permits = db.exec(
+        select(AgentCapacityReservation)
+        .where(
+            or_(
+                AgentCapacityReservation.local_session_id == agent.local_session_id,
+                AgentCapacityReservation.session_id == agent.id,
+            )
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+        .limit(2)
+    ).all()
+    if len(permits) > 1 or any(
+        permit.local_session_id != agent.local_session_id
+        or permit.session_id not in (None, agent.id)
+        or permit.pending_seq != 1
+        or permit.tier != "project"
+        or permit.model != normalize_model(pin["model"])
+        or permit.daily_key is not None
+        or permit.routine_job_name is not None
+        or permit.state != "reserved"
+        or permit.owner is not None
+        or permit.workload is not None
+        or permit.outcome is not None
+        or permit.settled_at is not None
+        for permit in permits
+    ):
+        return None
+    if (
+        db.exec(
+            select(AgentResultReceipt.id)
+            .where(
+                or_(
+                    AgentResultReceipt.session_id == agent.id,
+                    AgentResultReceipt.local_session_id == agent.local_session_id,
+                )
+            )
+            .with_for_update()
+        ).first()
+        is not None
+    ):
+        return None
+    permit = permits[0] if permits else None
+    return {
+        "session_id": agent.id,
+        "local_session_id": agent.local_session_id,
+        "workflow_id": agent.workflow_id,
+        "workflow_status": workflow_status,
+        "message_id": message.id,
+        "seq": message.seq,
+        "dispatch_count": 0,
+        "permit_id": None if permit is None else permit.id,
+        "invocation_phase": "never_dispatched",
+        "cost_usd": 0.0,
+    }
+
+
+def settle_never_dispatched_factory_attempt(
+    db: Session, pin: dict, proof: dict
+) -> None:
+    """Fail and consume a factory message proven never to have dispatched."""
+    from agent_sessions.models import PendingMessage
+
+    current = read_never_dispatched_factory_attempt(
+        db,
+        pin,
+        proof["session_id"],
+        proof["workflow_status"],
+    )
+    if current != proof:
+        raise ValueError("factory_attempt_changed")
+    agent = _locked_session(db, proof["session_id"])
+    message = db.exec(
+        select(PendingMessage)
+        .where(PendingMessage.id == proof["message_id"])
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    if not admission.cancel_unattempted(db, agent, message):
+        raise ValueError("factory_attempt_changed")
+    permit = admission.reservation(db, agent.local_session_id, message.seq)
+    if permit is not None:
+        permit.outcome = "never_dispatched"
+        db.add(permit)
+    agent.status = "failed"
+    db.add(agent)
+    db.delete(message)
+    db.flush()
+
+
 def read_not_invoked_factory_attempt(
     db: Session, pin: dict, session_id: int | None
 ) -> dict | None:

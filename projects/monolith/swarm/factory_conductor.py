@@ -2965,11 +2965,11 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
         # happened yet and the next tick retries the whole branch.
         if _audit_once(task["id"], key, audit_action, detail) and notify is not None:
             notify()
-        # The workflow is terminal now, so supervision may observe the real
-        # session outcome exactly as it does for any other non-success status,
-        # and a node that then fails with no retry left reaches the planner
-        # through the ordinary deviation path.
-        workflow_status = "CANCELLED"
+        # Re-read rather than inferring a terminal state from the cancellation
+        # request. The never-dispatched proof below requires the owning workflow
+        # itself to report CANCELLED or ERROR.
+        cancelled = dbos.get_workflow_status(key)
+        workflow_status = None if cancelled is None else cancelled.status
         result = {
             "status": "uncertain",
             "reason": reason,
@@ -3023,12 +3023,59 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                 and result.get("cost_usd") is None
                 and run.get("cost_usd") is None
             ):
-                from agent_sessions.api import read_not_invoked_factory_attempt
-
-                proof = read_not_invoked_factory_attempt(
-                    db, pin, result.get("session_id") or run.get("session_id")
+                from agent_sessions.api import (
+                    read_never_dispatched_factory_attempt,
+                    read_not_invoked_factory_attempt,
+                    settle_never_dispatched_factory_attempt,
                 )
-                if proof is not None:
+
+                never_dispatched = read_never_dispatched_factory_attempt(
+                    db,
+                    pin,
+                    result.get("session_id") or run.get("session_id"),
+                    workflow_status,
+                )
+                if never_dispatched is not None:
+                    current = next(
+                        (
+                            value
+                            for value in graph.node_runs(
+                                task["id"], run["node_key"], session=db
+                            )
+                            if value["attempt"] == run["attempt"]
+                        ),
+                        None,
+                    )
+                    if (
+                        current is None
+                        or current["pin"] != pin
+                        or current["dispatch_key"] != key
+                        or current["session_id"]
+                        not in (None, never_dispatched["session_id"])
+                        or current["status"]
+                        not in ("admitted", "dispatched", "uncertain")
+                        or current["cost_usd"] is not None
+                    ):
+                        raise ValueError("never-dispatched factory attempt changed")
+                    settle_never_dispatched_factory_attempt(db, pin, never_dispatched)
+                    result = {
+                        **result,
+                        "status": "failed",
+                        "session_id": never_dispatched["session_id"],
+                        "cost_usd": 0.0,
+                        "cost_basis": "unknown",
+                        "head_sha": current.get("head_sha") or result.get("head_sha"),
+                        "reason": "never_dispatched",
+                        "previous_outcome": _outcome(current) or result,
+                        "never_dispatched": never_dispatched,
+                    }
+                else:
+                    proof = read_not_invoked_factory_attempt(
+                        db,
+                        pin,
+                        result.get("session_id") or run.get("session_id"),
+                    )
+                if never_dispatched is None and proof is not None:
                     current = next(
                         (
                             value
@@ -3060,7 +3107,9 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                         "previous_outcome": _outcome(current) or result,
                         "not_invoked": proof,
                     }
-                elif lost_before_guest_settlement_enabled():
+                elif (
+                    never_dispatched is None and lost_before_guest_settlement_enabled()
+                ):
                     # The next window along. The not-invoked proof needs a turn
                     # that never reached its model POST; this one covers a turn
                     # that was invoked and lost its executor before a guest was
@@ -3325,30 +3374,43 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
         for run in active:
             _submit_or_reconcile(task, run, dbos)
         # A submit can settle its own run, so the free slots are read after the
-        # whole in-flight set has had its tick. A tick that reconciled in-flight
-        # work never also plans: it either fills a free parallel slot beside
-        # work still running, or leaves a settled graph to the next tick.
+        # whole in-flight set has had its tick. Ordinarily a tick that reconciles
+        # in-flight work either fills a free parallel slot beside work still
+        # running or leaves a settled graph to the next tick. A positively
+        # never-dispatched attempt is the narrow exception: it may admit its
+        # retry immediately because this tick proved both zero spend and no
+        # external invocation.
         runs = graph.node_runs(task_id)
         running = [
             r for r in runs if r["status"] in ("admitted", "dispatched", "uncertain")
         ]
-        if not running or len(running) >= parallel:
+        if not running:
+            active_keys = {(run["node_key"], run["attempt"]) for run in active}
+            settled_never_dispatched = any(
+                (run["node_key"], run["attempt"]) in active_keys
+                and run["status"] == "failed"
+                and (_outcome(run) or {}).get("reason") == "never_dispatched"
+                for run in runs
+            )
+            if not settled_never_dispatched:
+                return
+        else:
+            if len(running) >= parallel or not can_start(task_id)["ok"]:
+                return
+            # Nothing may be admitted against an allowance the graph has
+            # outgrown, so the top-up path resyncs exactly as the settled path
+            # does.
+            _resync_allowance(task_id, policy, graph.current_version(task_id))
+            _dispatch_ready(
+                task,
+                graph.load_graph(task_id),
+                runs,
+                parallel - len(running),
+                fan_out=True,
+                parallel=parallel,
+                policy=policy,
+            )
             return
-        if not can_start(task_id)["ok"]:
-            return
-        # Nothing may be admitted against an allowance the graph has outgrown,
-        # so the top-up path resyncs exactly as the settled path does.
-        _resync_allowance(task_id, policy, graph.current_version(task_id))
-        _dispatch_ready(
-            task,
-            graph.load_graph(task_id),
-            runs,
-            parallel - len(running),
-            fan_out=True,
-            parallel=parallel,
-            policy=policy,
-        )
-        return
     permission = can_start(task_id)
     if not permission["ok"]:
         if permission["reason"] == "task_deadline":
