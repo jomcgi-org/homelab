@@ -163,6 +163,33 @@ semgrep:
 tokenBroker:
   url: "http://embervm-dev-embervm-tokenbroker.embervm-dev.svc.cluster.local:8080"
 
+# Keep destination identities aligned with the dev EmberVM overlay. The egress
+# gate remains inherited false; these selectors matter only during an explicit
+# audit or enforce render for dev.
+ciliumPolicy:
+  egress:
+    targets:
+      embervm:
+        namespace: embervm-dev
+        matchLabels:
+          app.kubernetes.io/name: embervm
+          app.kubernetes.io/instance: embervm-dev
+        port: 8080
+      tokenBroker:
+        namespace: embervm-dev
+        matchLabels:
+          app.kubernetes.io/name: embervm-tokenbroker
+          app.kubernetes.io/instance: embervm-dev
+          app.kubernetes.io/component: tokenbroker
+        port: 8080
+      embervmServing:
+        namespace: embervm-dev
+        matchLabels:
+          app.kubernetes.io/name: embervm-serving-envoy
+          app.kubernetes.io/instance: embervm-dev
+          app.kubernetes.io/component: serving-envoy
+        port: 5401
+
 # NO Argo CronWorkflows in dev, and this is the third identity collision this
 # overlay has had to close.
 #

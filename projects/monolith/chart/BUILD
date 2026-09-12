@@ -264,6 +264,40 @@ py_test(
     ],
 )
 
+# Rendered guard for the private app's default-deny egress policy (#3897):
+# Cilium audit stays additive, both enforcing arms pin required destinations,
+# and GKE emits native NetworkPolicy without an unsupported Cilium CR.
+py_test(
+    name = "cilium_egress_allowlist_test",
+    srcs = ["cilium_egress_allowlist_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/monolith:scheduler_registration_sources",
+        "//projects/monolith/deploy:deploy_values",
+        "//projects/monolith/deploy:gke_values",
+        "//projects/monolith/dev/deploy:deploy_values",
+        "//projects/monolith/dev/deploy:recovery_gke_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "migrations/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
+        "GKE_VALUES": "$(rootpath //projects/monolith/deploy:gke_values)",
+        "DEV_VALUES": "$(rootpath //projects/monolith/dev/deploy:deploy_values)",
+        "RECOVERY_GKE_VALUES": "$(rootpath //projects/monolith/dev/deploy:recovery_gke_values)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
 semgrep_test(
     name = "chart_env_vars_test_semgrep_test",
     srcs = ["chart_env_vars_test.py"],
@@ -293,6 +327,19 @@ semgrep_test(
 semgrep_test(
     name = "cilium_ingress_allowlist_test_semgrep_test",
     srcs = ["cilium_ingress_allowlist_test.py"],
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "cilium_egress_allowlist_test_semgrep_test",
+    srcs = ["cilium_egress_allowlist_test.py"],
     exclude_rules = [
         "avoid-sqlalchemy-text",
         "sqlmodel-datetime-without-factory",

@@ -73,13 +73,35 @@ Where the Cilium CRDs exist, the application pod is default-deny for ingress. A
 gateway on 3000 and 8000, Context Forge on 8000, the workflows namespace on
 8000, and EmberVM on 8091 and 3000. A caller that is not listed fails as a
 silent dial timeout rather than a readable deny, so a new in-cluster consumer
-needs an entry in the same change. The public tier carries the equivalent
-ingress policy plus off-cluster default-deny egress with a single Turnstile
-allow. None of these policies render on the GKE hub, which ships Cilium without
-its CRDs, so every tier there runs with no network policy until a native
-replacement lands (#5656 for the agents tier; the private tier's default-deny
-egress was already open as #5143).
+needs an entry in the same change. The app endpoint also has an exact-FQDN
+egress arm there. Its required CoreDNS `matchPattern: "*"` lets Cilium learn
+addresses for `toFQDNs`, but accepts DNS-channel exfiltration as a residual.
+
+The GKE hub has no Cilium policy CRDs, so the chart carries a native Kubernetes
+`NetworkPolicy` for the same app endpoint. Its overlay leaves that template
+disabled because Kubernetes NetworkPolicy has no additive audit mode. The API
+and resolver address lists also stay empty until GKE network-policy logs cover
+a representative live window, including periodic leader jobs and the
+secret-backed ICAL feed. An enabling change must validate both addresses from
+the live hub. Until then, the hub has no private-monolith egress enforcement.
+
+When enabled, exact pod selectors and ports admit internal dependencies. The
+resolver pod selector is paired with its validated service address so policy
+does not depend on the dataplane's service-translation order. A public TCP 443
+rule excludes cluster-addressable, loopback, link-local, shared-address, and
+multicast ranges. Native policy cannot select FQDNs, so arbitrary public HTTPS
+remains an accepted residual.
+
+Both egress arms intentionally select only the private app endpoint, not every
+pod rendered into the namespace. Searxng, WhatsApp, CNPG, Atlas migration jobs,
+and batch pods in `monolith-workflows` keep their existing egress behavior.
+They have distinct service accounts, credentials, and execution roles, and
+folding them into one policy would replace destination-specific review with a
+namespace-wide union of every workload's privileges. Add a separate policy
+when one of those boundaries needs default-deny.
 (see: /projects/monolith/chart/templates/cilium-ingress-policy.yaml)
+(see: /projects/monolith/chart/templates/cilium-egress-policy.yaml)
+(see: /projects/monolith/chart/templates/networkpolicy-egress.yaml)
 (see: /projects/monolith-public/chart/templates/cilium-policy.yaml)
 (see: /projects/monolith/deploy/values-gke.yaml)
 

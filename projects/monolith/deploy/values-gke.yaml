@@ -88,12 +88,25 @@ chat:
   movingChatInferenceUrl: "https://api.meta.ai"
   embeddingUrl: "http://inference-embeddings.inference.svc.cluster.local:8080"
 
-# Cilium CRDs are not installed on GKE. Native policy replacements can be
-# introduced separately when the dormant application is activated.
+# Kubernetes NetworkPolicy has no additive audit mode. Keep the native app
+# egress policy off until GKE network-policy logs cover a representative live
+# window, including periodic leader jobs and the secret-backed ICAL feed.
+# Populate the API and DNS addresses from the live hub in the enabling change;
+# the addresses in the inactive recovery profile are revalidation hints only.
+networkPolicy:
+  egress:
+    enabled: false
+    apiServerCidrs: []
+    dnsServiceCidrs: []
+
+# Cilium CRDs are not installed on GKE. Keep those resources disabled; the
+# native NetworkPolicy arm above is staged but does not enforce on the hub.
 ciliumPolicy:
   tokenReplayDeny:
     enabled: false
   ingress:
+    enabled: false
+  egress:
     enabled: false
 
 whatsapp:

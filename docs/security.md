@@ -188,24 +188,44 @@ admins listed in `projects/platform-gke/tailscale/values.yaml`, exposes the
 monolith API as a tailnet host, and runs three egress bridges to the home
 inference host.
 
-**GKE Dataplane V2 is the CNI, and there is no network policy on the hub.**
+**GKE Dataplane V2 is the CNI, and there is no enforced private-monolith
+egress policy on the hub.**
 The managed dataplane exposes no `CiliumNetworkPolicy` or
 `CiliumClusterwideNetworkPolicy` CRD (`kubectl api-resources | grep cilium`)
 and reports `Encryption: Disabled`, so nothing on the wire is encrypted by
 the cluster and only Kubernetes `NetworkPolicy` can be expressed. Every
 Cilium policy template in this repo is gated off in the hub overlays:
 `ciliumPolicy.ingress` and `ciliumPolicy.egress` in
-`projects/monolith-public/deploy/values-gke.yaml`, `ciliumPolicy.ingress`
-and `tokenReplayDeny` in `projects/monolith/deploy/values-gke.yaml`,
+`projects/monolith-public/deploy/values-gke.yaml`, `ciliumPolicy.ingress`,
+`ciliumPolicy.egress`, and `tokenReplayDeny` in
+`projects/monolith/deploy/values-gke.yaml`,
 `noded.networkPolicy` and `tokenBroker.networkPolicy` in
 `projects/embervm/deploy/values-gke.yaml`, `ciliumPolicy` in
-`projects/monolith-agents/deploy/values-gke.yaml`. The one live
-`NetworkPolicy` is the Context Forge redis rule from the upstream subchart
-(`kubectl get networkpolicies -A`). Every other pod is unrestricted in both
-directions: the public tier can dial any pod (#5276 and #5142 were closed on
-the chart, not the hub), and the private monolith has no egress policy
-(#5277, #3897). A chart that carries a `CiliumNetworkPolicy` is documenting
-an intent the hub does not enforce.
+`projects/monolith-agents/deploy/values-gke.yaml`.
+
+The chart carries a native Kubernetes `NetworkPolicy` egress arm for the
+private app endpoint, but the GKE overlay leaves it disabled. Kubernetes
+NetworkPolicy has no additive audit mode, so the policy remains staged until
+GKE network-policy logs cover a representative window, including periodic
+leader jobs and the secret-backed ICAL feed. Its API and DNS address lists are
+also empty until an enabling change validates them against the live hub.
+
+When enabled, required internal flows use namespace plus pod selectors, exact
+ports, and a paired resolver address. Standard NetworkPolicy cannot match
+FQDNs, so its public TCP 443 grant excludes private, loopback, link-local,
+shared-address, and multicast ranges but cannot deny an arbitrary public HTTPS
+host. That is an accepted GKE residual, not an exact replacement for Cilium's
+FQDN rules. Metadata-server access would remain denied.
+
+The Cilium arm stays available, default-off, for clusters that expose its CRD.
+Its enforce mode uses exact external FQDNs. Its CoreDNS rule necessarily allows
+`matchPattern: "*"` so Cilium can learn addresses for those FQDNs, leaving a DNS
+channel as an accepted residual. Both arms intentionally scope default-deny to
+the private app endpoint. Searxng, WhatsApp, CNPG, Atlas migration jobs, and
+the separate `monolith-workflows` batch namespace retain their existing egress
+behavior because they are distinct workload and credential boundaries. They
+need their own destination-specific policies instead of inheriting a union of
+the app's privileges.
 
 **Guest egress is brokered.** Task and session guests have no NIC. The only
 way out is the vsock egress port, which noded forwards unparsed to the
@@ -541,7 +561,7 @@ document carries what shipped.
 | security/001 Hermetic Semgrep via Bazel | vendor `semgrep-core` as an OCI artifact and run rules as cached Bazel tests | Accepted; every target passes without scanning (#4777, #3893) | deleted |
 | security/002 Semgrep rule generation via RL | RL-finetuned model generates rules from CVEs | Deprecated; nothing live | deleted |
 | security/003 gVisor RuntimeClass | `runsc` for agent sandbox pods | Accepted, never built (#3894); the sandboxes it targeted became Firecracker guests | deleted |
-| security/004 Public read-only service isolation | separate public composition, `public_reader` on a replica, default-deny egress | Accepted; composition, role, replica and imports test shipped; egress policy inert on the hub (#3897, #5277); read-only rootfs open (#3898); tracking #3895 | deleted |
+| security/004 Public read-only service isolation | separate public composition, `public_reader` on a replica, default-deny egress | Accepted; composition, role, replica and imports test shipped; private egress policy is gated pending live audit and inert on the hub (#3897, #5277); read-only rootfs open (#3898); tracking #3895 | deleted |
 | security/005 Public chat adversarial hardening | Turnstile sessions, reserved headroom, server-side limits, DB-confined retrieval | Implemented except the purge (#3899); inference moved off-cluster | deleted |
 | security/006 Friends authorization lane | `/moving` on `friends.jomcgi.dev` behind an authentik `family` group | Accepted, shipped (#4968) | deleted |
 | security/007 Aggregate threat model index | one ranked index over labelled issues, re-ranked by hand | Accepted; decisions 1, 2 and 4 live, decision 3 superseded by STPA lenses (#5294) | deleted |
