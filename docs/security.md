@@ -195,16 +195,19 @@ and reports `Encryption: Disabled`, so nothing on the wire is encrypted by
 the cluster and only Kubernetes `NetworkPolicy` can be expressed. Every
 Cilium policy template in this repo is gated off in the hub overlays:
 `ciliumPolicy.ingress` and `ciliumPolicy.egress` in
-`projects/monolith-public/deploy/values-gke.yaml`, `ciliumPolicy.ingress`
-and `tokenReplayDeny` in `projects/monolith/deploy/values-gke.yaml`,
+`projects/monolith-public/deploy/values-gke.yaml`, `ciliumPolicy.ingress`,
+`ciliumPolicy.egress`, and `tokenReplayDeny` in
+`projects/monolith/deploy/values-gke.yaml`,
 `noded.networkPolicy` and `tokenBroker.networkPolicy` in
 `projects/embervm/deploy/values-gke.yaml`, `ciliumPolicy` in
 `projects/monolith-agents/deploy/values-gke.yaml`. The one live
 `NetworkPolicy` is the Context Forge redis rule from the upstream subchart
 (`kubectl get networkpolicies -A`). Every other pod is unrestricted in both
 directions: the public tier can dial any pod (#5276 and #5142 were closed on
-the chart, not the hub), and the private monolith has no egress policy
-(#5277, #3897). A chart that carries a `CiliumNetworkPolicy` is documenting
+the chart, not the hub). The private monolith chart now carries a
+destination-scoped egress policy with additive audit and default-deny enforce
+modes, but its gate is off pending a representative Hubble audit and is forced
+off on GKE (#5277). A chart that carries a `CiliumNetworkPolicy` is documenting
 an intent the hub does not enforce.
 
 **Guest egress is brokered.** Task and session guests have no NIC. The only
@@ -541,7 +544,7 @@ document carries what shipped.
 | security/001 Hermetic Semgrep via Bazel | vendor `semgrep-core` as an OCI artifact and run rules as cached Bazel tests | Accepted; every target passes without scanning (#4777, #3893) | deleted |
 | security/002 Semgrep rule generation via RL | RL-finetuned model generates rules from CVEs | Deprecated; nothing live | deleted |
 | security/003 gVisor RuntimeClass | `runsc` for agent sandbox pods | Accepted, never built (#3894); the sandboxes it targeted became Firecracker guests | deleted |
-| security/004 Public read-only service isolation | separate public composition, `public_reader` on a replica, default-deny egress | Accepted; composition, role, replica and imports test shipped; egress policy inert on the hub (#3897, #5277); read-only rootfs open (#3898); tracking #3895 | deleted |
+| security/004 Public read-only service isolation | separate public composition, `public_reader` on a replica, default-deny egress | Accepted; composition, role, replica and imports test shipped; private egress policy is gated pending live audit and inert on the hub (#5277); read-only rootfs open (#3898); tracking #3895 | deleted |
 | security/005 Public chat adversarial hardening | Turnstile sessions, reserved headroom, server-side limits, DB-confined retrieval | Implemented except the purge (#3899); inference moved off-cluster | deleted |
 | security/006 Friends authorization lane | `/moving` on `friends.jomcgi.dev` behind an authentik `family` group | Accepted, shipped (#4968) | deleted |
 | security/007 Aggregate threat model index | one ranked index over labelled issues, re-ranked by hand | Accepted; decisions 1, 2 and 4 live, decision 3 superseded by STPA lenses (#5294) | deleted |
