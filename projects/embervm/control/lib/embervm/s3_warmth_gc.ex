@@ -742,7 +742,7 @@ defmodule Embervm.S3WarmthGc do
     workload = Map.get(snapshot.group_workloads, cand.group_instance_id)
 
     cond do
-      is_nil(workload) or not owns_workload?(state, workload) ->
+      not owns_workload?(state, workload) ->
         {:held, "foreign_or_unknown_cell_owner"}
 
       created_at == :error -> {:held, "meta_unreadable"}
