@@ -1,9 +1,20 @@
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
+load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 exports_files([
     "semgrep-test.sh",
     "semgrep-manifest-test.sh",
 ])
+
+py_test(
+    name = "semgrep_wrapper_test",
+    srcs = ["semgrep_wrapper_test.py"],
+    data = [
+        "semgrep-manifest-test.sh",
+        "semgrep-test.sh",
+    ],
+    deps = ["@pip//pytest"],
+)
 
 # keep: Gazelle's bzl extension mis-resolves @rules_shell//shell:sh_test.bzl
 bzl_library(

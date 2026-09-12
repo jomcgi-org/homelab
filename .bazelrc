@@ -134,6 +134,7 @@ common:ci --noreuse_sandbox_directories
 
 # Pass Semgrep App token to test actions for Pro interfile analysis
 test:ci --test_env=SEMGREP_APP_TOKEN
+test:ci --test_env=SEMGREP_REPO=jomcgi-org/homelab
 
 # Semgrep tests are deterministic — never retry on failure
 test:ci --flaky_test_attempts=.*semgrep.*@1

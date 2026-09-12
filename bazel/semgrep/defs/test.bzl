@@ -21,7 +21,7 @@ def semgrep_test(
     The semgrep-core binary is discovered at runtime via find(1) in the
     runfiles tree, rather than passed as an argument, because Bazel's
     $(rootpath) can't resolve platform-specific select() targets in sh_test
-    args. GHCR_TOKEN is required for fetching the engine.
+    args. GHCR_TOKEN and SEMGREP_APP_TOKEN are required.
 
     Args:
         name: Name of the test target
@@ -41,10 +41,12 @@ def semgrep_test(
     env = kwargs.pop("env", {})
     if exclude_rules:
         env["SEMGREP_EXCLUDE_RULES"] = ",".join(exclude_rules)
+    env["UPLOAD_SCRIPT"] = "$(rootpath //bazel/tools/semgrep:upload)"
     tags = kwargs.pop("tags", [])
 
     data = [
         "//bazel/semgrep/third_party/semgrep:engine",
+        "//bazel/tools/semgrep:upload",
     ] + rules + sca_rules + srcs + lockfiles
 
     if pro_engine:
@@ -96,10 +98,12 @@ def semgrep_manifest_test(
     env = kwargs.pop("env", {})
     if exclude_rules:
         env["SEMGREP_EXCLUDE_RULES"] = ",".join(exclude_rules)
+    env["UPLOAD_SCRIPT"] = "$(rootpath //bazel/tools/semgrep:upload)"
     tags = kwargs.pop("tags", [])
 
     data = [
         "//bazel/semgrep/third_party/semgrep:engine",
+        "//bazel/tools/semgrep:upload",
         "@multitool//tools/helm",
         chart_files,
     ] + rules + values_files
