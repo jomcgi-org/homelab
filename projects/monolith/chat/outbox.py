@@ -203,9 +203,9 @@ def _mark_failed(engine, row_id: int, error: str) -> None:
         if row is not None:
             row.attempts += 1
             row.last_error = error[:500]
-            # A Discord HTTP response proves the scheduled message was not
-            # delivered. Move it back across the sending boundary so the
-            # existing bounded retry budget can safely attempt it again.
+            # A definitive Discord client error proves the scheduled message
+            # was not delivered. Move it back across the sending boundary so
+            # the existing bounded retry budget can safely attempt it again.
             if row.delivery_state == "sending":
                 row.delivery_state = "pending"
                 row.send_started_at = None
@@ -250,9 +250,19 @@ _LEVEL_PREFIX = {"info": "", "warn": "⚠️ ", "error": "\U0001f534 "}
 
 
 def _discord_response_status(exc: Exception) -> int | None:
-    """Return a concrete Discord HTTP status, if the request got a response."""
+    """Return a definitive Discord client-error status, if present.
+
+    Server errors remain transport-ambiguous because Discord may have accepted
+    the message before its edge returned a 5xx response.
+    """
     status = getattr(exc, "status", None)
-    return status if isinstance(status, int) and not isinstance(status, bool) else None
+    if (
+        isinstance(status, int)
+        and not isinstance(status, bool)
+        and 400 <= status < 500
+    ):
+        return status
+    return None
 
 
 async def _resolve_channel(bot, row: dict):

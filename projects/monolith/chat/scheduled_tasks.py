@@ -29,6 +29,7 @@ logger = logging.getLogger("monolith.chat.scheduled_tasks")
 
 MAX_PENDING_PER_USER = 10
 MAX_HORIZON_DAYS = 366
+MIN_CRON_INTERVAL_MINUTES = 15
 CLAIM_LEASE_SECONDS = 300
 CLAIM_BATCH = 20
 POLL_INTERVAL_SECONDS = 15.0
@@ -220,8 +221,16 @@ def create_task(
         normalized_cron = " ".join(cron_expression.strip().split())
         try:
             next_run_at = next_cron_at(normalized_cron, now)
+            following_run_at = next_cron_at(normalized_cron, next_run_at)
         except ValueError as exc:
             return str(exc)
+        if following_run_at - next_run_at < timedelta(
+            minutes=MIN_CRON_INTERVAL_MINUTES
+        ):
+            return (
+                "cron_expression must schedule runs at least "
+                f"{MIN_CRON_INTERVAL_MINUTES} minutes apart"
+            )
         payload = {"mode": digest_mode}
     else:
         return "only one-shot reminders and recurring cron digests are supported"

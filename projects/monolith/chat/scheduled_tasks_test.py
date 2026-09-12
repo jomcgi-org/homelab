@@ -63,7 +63,7 @@ def _insert_due(engine, *, kind="reminder", cron=None) -> tuple[int, datetime]:
                 author_id="456",
                 task_kind="digest",
                 schedule_kind="cron",
-                cron_expression=cron or "*/5 * * * *",
+                cron_expression=cron or "*/15 * * * *",
                 digest_mode="summary",
                 now=now,
             )
@@ -95,7 +95,7 @@ def test_one_shot_completion_is_atomic_with_occurrence_and_outbox(engine):
 
 def test_recurring_digest_advances_past_drain_time(engine):
     task_id, scheduled_for = _insert_due(engine, kind="digest")
-    now = datetime(2026, 9, 12, 12, 6, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 12, 12, 16, tzinfo=timezone.utc)
     with Session(engine) as session:
         claim = claim_due(session, now, "worker-a")[0]
         session.commit()
@@ -107,7 +107,7 @@ def test_recurring_digest_advances_past_drain_time(engine):
         task = session.get(ScheduledTask, task_id)
         assert task.status == "pending"
         assert task.next_run_at.replace(tzinfo=timezone.utc) == datetime(
-            2026, 9, 12, 12, 10, tzinfo=timezone.utc
+            2026, 9, 12, 12, 30, tzinfo=timezone.utc
         )
         assert session.query(ScheduledTaskOccurrence).count() == 1
 
@@ -242,7 +242,7 @@ async def test_recurring_digest_builder_is_wired_to_outbox(engine):
 
     delivered = await drain_once(
         engine,
-        now=datetime(2026, 9, 12, 12, 6, tzinfo=timezone.utc),
+        now=datetime(2026, 9, 12, 12, 16, tzinfo=timezone.utc),
         claimant="leader-a",
         digest_builder=build,
     )
@@ -263,7 +263,7 @@ async def test_long_digest_is_clipped_before_enqueue(engine):
     assert (
         await drain_once(
             engine,
-            now=datetime(2026, 9, 12, 12, 6, tzinfo=timezone.utc),
+            now=datetime(2026, 9, 12, 12, 16, tzinfo=timezone.utc),
             claimant="leader-a",
             digest_builder=build,
         )
@@ -278,7 +278,7 @@ async def test_long_digest_is_clipped_before_enqueue(engine):
 @pytest.mark.asyncio
 async def test_repeated_digest_failure_advances_after_retry_budget(engine):
     task_id, scheduled_for = _insert_due(engine, kind="digest")
-    now = datetime(2026, 9, 12, 12, 6, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 12, 12, 16, tzinfo=timezone.utc)
     calls = 0
 
     async def fail(_engine, _claim):
@@ -306,7 +306,7 @@ async def test_repeated_digest_failure_advances_after_retry_budget(engine):
         assert task.status == "pending"
         assert task.failure_count == 0
         assert task.next_run_at.replace(tzinfo=timezone.utc) == datetime(
-            2026, 9, 12, 12, 10, tzinfo=timezone.utc
+            2026, 9, 12, 12, 30, tzinfo=timezone.utc
         )
 
 
@@ -330,6 +330,15 @@ def test_validation_and_owner_scoping(engine):
             task_kind="digest",
             schedule_kind="cron",
             cron_expression="bad cron",
+            now=now,
+        )
+        assert "at least 15 minutes" in create_task(
+            session,
+            channel_id="123",
+            author_id="456",
+            task_kind="digest",
+            schedule_kind="cron",
+            cron_expression="* * * * *",
             now=now,
         )
         task = create_task(
