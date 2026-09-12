@@ -203,6 +203,14 @@ def _mark_failed(engine, row_id: int, error: str) -> None:
         if row is not None:
             row.attempts += 1
             row.last_error = error[:500]
+            # A Discord HTTP response proves the scheduled message was not
+            # delivered. Move it back across the sending boundary so the
+            # existing bounded retry budget can safely attempt it again.
+            if row.delivery_state == "sending":
+                row.delivery_state = "pending"
+                row.send_started_at = None
+            if row.attempts >= _MAX_ATTEMPTS:
+                _record_scheduled_outcome(session, row, "failed", row.last_error)
             session.add(row)
             session.commit()
 
@@ -239,6 +247,12 @@ def _mark_uncertain(engine, row_id: int, error: str) -> None:
 
 
 _LEVEL_PREFIX = {"info": "", "warn": "⚠️ ", "error": "\U0001f534 "}
+
+
+def _discord_response_status(exc: Exception) -> int | None:
+    """Return a concrete Discord HTTP status, if the request got a response."""
+    status = getattr(exc, "status", None)
+    return status if isinstance(status, int) and not isinstance(status, bool) else None
 
 
 async def _resolve_channel(bot, row: dict):
@@ -393,7 +407,7 @@ async def drain_once(bot, engine) -> int:
             posted_message = await _post_row(bot, row, channel=channel)
         except Exception as exc:  # noqa: BLE001 - a bad row must not stall the rest
             logger.warning("outbox: failed to post row %s: %s", row["id"], exc)
-            if scheduled:
+            if scheduled and _discord_response_status(exc) is None:
                 await asyncio.to_thread(_mark_uncertain, engine, row["id"], str(exc))
             else:
                 await asyncio.to_thread(_mark_failed, engine, row["id"], str(exc))
