@@ -1740,7 +1740,6 @@ apko_image(
     config = "stars/grid_gen/apko.yaml",
     contents = "@stars_grid_apko_lock//:contents",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/stars-grid-base",
-    visibility = ["//visibility:private"],
 )
 
 py3_image(
