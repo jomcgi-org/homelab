@@ -77,9 +77,15 @@ defmodule Embervm.NodeCapacity do
 
   @doc "Removes an instance's capacity facts (it is no longer dispatchable)."
   @spec drop(atom(), {String.t(), String.t()} | {String.t(), String.t(), String.t()}) :: true
-  def drop(table \\ @table, instance_key) do
+  def drop(table \\ @table, instance_key)
+
+  def drop(table, {node_id, pod_uid} = instance_key) do
     :ets.delete(table, instance_key)
+    :ets.delete(table, {Embervm.Cell.current(), node_id, pod_uid})
   end
+
+  def drop(table, {_cell_id, _node_id, _pod_uid} = instance_key),
+    do: :ets.delete(table, instance_key)
 
   @doc """
   All dispatchable nodes' capacity facts, in no particular order. Empty when no
@@ -114,7 +120,13 @@ defmodule Embervm.NodeCapacity do
           {:ok, map()} | :error
   def fetch(table \\ @table, key)
 
-  def fetch(table, {_node, _pod_uid} = instance_key), do: fetch_instance(table, instance_key)
+  def fetch(table, {node_id, pod_uid} = instance_key) do
+    case fetch_instance(table, instance_key) do
+      :error -> fetch_instance(table, {Embervm.Cell.current(), node_id, pod_uid})
+      result -> result
+    end
+  end
+
   def fetch(table, {_cell, _node, _pod_uid} = instance_key), do: fetch_instance(table, instance_key)
 
   def fetch(table, node_id) when is_binary(node_id) do

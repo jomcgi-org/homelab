@@ -125,6 +125,8 @@ defmodule Embervm.CellTest do
 
     GenServer.stop(op_log)
 
+    Process.flag(:trap_exit, true)
+
     assert {:error, {:open_failed, {:wrong_cell, "cell-a"}}} =
              SQLite.start_link(path: path, name: nil, cell_id: "cell-b")
 

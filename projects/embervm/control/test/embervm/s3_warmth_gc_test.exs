@@ -134,6 +134,11 @@ defmodule Embervm.S3WarmthGcTest do
   end
 
   defp start_gc(s3_funs, opts) do
+    # Most fixtures exercise the legacy single-cell path, where no assignment
+    # cache exists yet. Use an absent table name so the supervised application's
+    # global cache cannot make these async tests depend on unrelated workloads.
+    assignment_table = :"s3gc_cells_absent_#{System.unique_integer([:positive])}"
+
     {:ok, pid} =
       S3WarmthGc.start_link(
         Keyword.merge(
@@ -152,6 +157,7 @@ defmodule Embervm.S3WarmthGcTest do
             end,
             session_store: start_store([]),
             serving_store: start_store([]),
+            assignment_table: assignment_table,
             clock: fn -> @mono end,
             wall_clock: fn -> @wall end
           ],
