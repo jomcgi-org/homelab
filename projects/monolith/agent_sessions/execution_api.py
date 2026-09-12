@@ -29,7 +29,7 @@ from agent_sessions.mcp import (
     _persist_turn_from_pending_sync,
     _refresh_claim_sync,
     _release_pending_message_claim_sync,
-    _release_receipt_fence_sync,
+    _release_receipt_fence,
     _schedule_next_message,
     _set_session_status,
     _transport,
@@ -342,9 +342,7 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
             # path to the result. Release this exact receipt's fence, then run
             # the ordinary completion cleanup.
             if turn.native_receipt is not None:
-                await asyncio.to_thread(
-                    _release_receipt_fence_sync, turn.native_receipt
-                )
+                await _release_receipt_fence(turn.native_receipt)
             try:
                 await _transport.destroy_session(ember.session_id)
             except EmberSessionGone:
@@ -449,6 +447,12 @@ def _release_abandoned_fence(session_id: int, receipt_id: str) -> bool:
     return result_receipts.release_abandoned_fence(session_id, receipt_id)
 
 
+def _restore_abandoned_fence(session_id: int, receipt_id: str, guest_id: str) -> bool:
+    from agent_sessions import result_receipts
+
+    return result_receipts.restore_abandoned_fence(session_id, receipt_id, guest_id)
+
+
 def _finish_guest_cleanup(
     session_id: int, guest_id: str, workflow_id: str, claim_id: str
 ) -> bool:
@@ -543,13 +547,16 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
         if ember_session_id is None:
             summary["skipped"].append(row.id)
             continue
+        released_fence = None
         try:
             fence_id = getattr(row, "result_receipt_fence_id", None)
-            if fence_id is not None and not await asyncio.to_thread(
-                _release_abandoned_fence, row.id, fence_id
-            ):
-                summary["pending"].append(row.id)
-                continue
+            if fence_id is not None:
+                if not await asyncio.to_thread(
+                    _release_abandoned_fence, row.id, fence_id
+                ):
+                    summary["pending"].append(row.id)
+                    continue
+                released_fence = fence_id
             claim = await asyncio.to_thread(
                 _begin_guest_cleanup, row.id, ember_session_id, workflow_id
             )
@@ -557,6 +564,13 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
             if hold is not None:
                 summary["skipped" if hold == "unknown" else "pending"].append(row.id)
                 continue
+            # The claim is committed and now blocks dispatch, receipt minting
+            # and rebinding on its own, so it has taken over from the fence and
+            # a failure below can leave the fence released. Before it, nothing
+            # had: a row that goes to pending with its fence gone and no claim
+            # would let claim_pending_message_for_session_sync put a queued
+            # follow-up on a guest whose original POST may still be streaming.
+            released_fence = None
             try:
                 confirmed = await destroy_and_confirm(ember_session_id)
             except EmberSessionGone:
@@ -591,6 +605,23 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
                 exc,
             )
             summary["failed"].append({"session_id": row.id, "error": str(exc)})
+        finally:
+            if released_fence is not None:
+                try:
+                    await asyncio.to_thread(
+                        _restore_abandoned_fence,
+                        row.id,
+                        released_fence,
+                        ember_session_id,
+                    )
+                except Exception:  # noqa: BLE001 - one bad row cannot stop the rest
+                    logger.exception(
+                        "swarm reap could not restore the receipt fence for "
+                        "session %s (ember %s) of workflow %s",
+                        row.id,
+                        ember_session_id,
+                        workflow_id,
+                    )
     return summary
 
 

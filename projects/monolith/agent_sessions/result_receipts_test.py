@@ -1305,3 +1305,21 @@ def test_reaper_release_ignores_a_fence_it_was_not_asked_for(database):
     assert receipts.release_abandoned_fence(1, "f" * 32) is False
     assert receipts.release_abandoned_fence(2, receipt["id"]) is False
     assert execution_state(database) == before
+
+
+def test_restore_puts_a_released_fence_back_for_the_same_guest(database):
+    receipt = prepare()
+    capture(receipt)
+    with Session(database) as db, db.begin():
+        validate_active(db, receipt)
+    fenced = execution_state(database)
+    assert receipts.release_abandoned_fence(1, receipt["id"])
+    assert receipts.restore_abandoned_fence(1, receipt["id"], "guest-one")
+    assert execution_state(database) == fenced
+    # A fence that is still held, one another owner has taken, and a binding
+    # that has moved on are all left exactly as they are.
+    assert receipts.restore_abandoned_fence(1, receipt["id"], "guest-one") is False
+    assert receipts.release_abandoned_fence(1, receipt["id"])
+    assert receipts.restore_abandoned_fence(1, receipt["id"], "newer-guest") is False
+    with Session(database) as db:
+        assert db.get(AgentSession, 1).result_receipt_fence_id is None

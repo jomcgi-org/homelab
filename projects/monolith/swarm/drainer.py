@@ -602,7 +602,7 @@ def _report_drainer_failure(settings: dict, name: str, error: str) -> None:
 
 @DBOS.step()
 def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bool:
-    from agent_sessions import admission, store
+    from agent_sessions import admission, result_receipts, store
     from agent_sessions.execution_api import destroy_and_confirm
     from agent_sessions.mcp import _load_session_row
     from agent_sessions.models import PendingMessage
@@ -662,6 +662,19 @@ def destroy_drainer_session(session_id: int | None, local_session_id: str) -> bo
                         # cannot safely claim this guest.
                         span.set_attribute("drain.destroyed", False)
                         return False
+                    # A turn that completed through a result receipt leaves a
+                    # fence only the original POST's own validated response
+                    # clears, and begin_guest_cleanup refuses while any bound
+                    # row carries one, so a lost response used to strand this
+                    # cleanup on observer_pending for every later cycle and the
+                    # guest ran on to idle_ttl (#6050). Release it here, inside
+                    # this transaction: a refused or failed cleanup rolls the
+                    # release back with everything else this block was going to
+                    # write, and a committed claim blocks dispatch in its place.
+                    if current.result_receipt_fence_id is not None:
+                        result_receipts.release_abandoned_fence_locked(
+                            session, current, current.result_receipt_fence_id
+                        )
                     claim = store.begin_guest_cleanup(
                         session,
                         resolved_session_id,

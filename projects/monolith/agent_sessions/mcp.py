@@ -84,6 +84,10 @@ GUEST_STATE_TIMEOUT_SECONDS = 3.0
 SHUTDOWN_HOLD_LOCK_SECONDS = 2.0
 # How long the lifespan waits for in-flight executors to record their outcomes.
 INFLIGHT_DRAIN_SECONDS = 5.0
+# Releasing a receipt fence is optional work on a completion path, bounded the
+# same way the response observer bounds its own write: three tries, two gaps.
+RECEIPT_FENCE_RELEASE_ATTEMPTS = 3
+RECEIPT_FENCE_RELEASE_GAP_SECONDS = 1.0
 
 
 def response_lost_recovery_enabled() -> bool:
@@ -314,6 +318,34 @@ def _release_receipt_fence_sync(native_receipt: dict) -> bool:
         )
     except result_receipts.ReceiptRejected:
         return False
+
+
+async def _release_receipt_fence(native_receipt: dict) -> bool:
+    """Release the fence without ever standing between the turn and its cleanup.
+
+    The release takes the global pool lock under a one second ``lock_timeout``,
+    so a contended pool answers ``lock_not_available`` rather than waiting. It
+    runs from a ``finally`` on the way out of a completed turn, where an
+    exception would both replace whatever that turn was already raising and
+    skip the destroy and unbind that follow, leaving the very guest this exists
+    to free still running. Retry a bounded number of times the way the response
+    observer does, then log and let the caller carry on: the cleanup owners
+    (the workflow reaper, the drainer) release an abandoned fence themselves.
+    """
+    for attempt in range(RECEIPT_FENCE_RELEASE_ATTEMPTS):
+        try:
+            return await asyncio.to_thread(_release_receipt_fence_sync, native_receipt)
+        except Exception as exc:  # noqa: BLE001 - cleanup must not inherit this
+            # Database exception strings can contain bound native result bodies.
+            if attempt == RECEIPT_FENCE_RELEASE_ATTEMPTS - 1:
+                logger.warning(
+                    "Could not release the result receipt fence for session %s: %s",
+                    native_receipt.get("session_id"),
+                    type(exc).__name__,
+                )
+            else:
+                await asyncio.sleep(RECEIPT_FENCE_RELEASE_GAP_SECONDS)
+    return False
 
 
 def _persist_pending_message(
@@ -1161,9 +1193,7 @@ async def _execute_pending_message(session_id: int) -> None:
             and not claim_released
         ):
             if probe_turn.native_receipt is not None:
-                await asyncio.to_thread(
-                    _release_receipt_fence_sync, probe_turn.native_receipt
-                )
+                await _release_receipt_fence(probe_turn.native_receipt)
             try:
                 await _transport.destroy_session(probe_ember.session_id)
             except EmberSessionGone:

@@ -614,31 +614,77 @@ def release_abandoned_fence(session_id: int, receipt_id: str) -> bool:
     from agent_sessions import store
 
     with Session(get_engine()) as db, db.begin():
+        _bound_observer_transaction(db)
+        agent = store._lock_session(db, session_id)
+        return release_abandoned_fence_locked(db, agent, receipt_id)
+
+
+def release_abandoned_fence_locked(db: Session, agent, receipt_id: str) -> bool:
+    """Release an abandoned fence inside a cleanup owner's own transaction.
+
+    The drainer decides whether its cleanup goes ahead while holding the pool
+    and session locks, and ``begin_guest_cleanup`` refuses while any row bound
+    to the guest still carries a fence. Releasing here rather than in a
+    transaction of its own means a refused cleanup rolls the release back with
+    everything else it was going to write, and a cleanup that does commit
+    commits the release alongside the claim that replaces it as the thing
+    keeping dispatch off the guest.
+    """
+    if (
+        agent is None
+        or not isinstance(receipt_id, str)
+        or not receipt_id
+        or agent.result_receipt_fence_id != receipt_id
+    ):
+        return False
+    db.execute(
+        update(AgentResultReceipt)
+        .where(AgentResultReceipt.id == receipt_id)
+        .values(created_at=AgentResultReceipt.created_at)
+    )
+    receipt = _receipt_metadata(db, receipt_id)
+    if receipt is not None and (
+        receipt["session_id"] != agent.id
+        or agent.local_session_id != receipt["local_session_id"]
+        or agent.ember_session_id != receipt["guest_id"]
+        or (receipt["received_at"] is None and _now() < _aware(receipt["accept_until"]))
+    ):
+        return False
+    agent.result_receipt_fence_id = None
+    db.add(agent)
+    # The caller reads the row back through its own locked query, so the
+    # cleared fence has to be in the database before that read, not only in
+    # this identity map.
+    db.flush()
+    return True
+
+
+def restore_abandoned_fence(session_id: int, receipt_id: str, guest_id: str) -> bool:
+    """Put a released fence back when the cleanup it was released for did not start.
+
+    The reaper has to release before ``begin_guest_cleanup``, which refuses
+    while any row bound to the guest carries a fence, so between those two
+    calls the fence is gone and no cleanup claim has replaced it. If the claim
+    does not follow, the released fence is the only thing that was keeping a
+    queued follow-up off a guest whose original POST may still be streaming,
+    so it goes back exactly as it was. A fence some other owner has taken in
+    the meantime, or a binding that has since moved, is left alone.
+    """
+    from agent_sessions import store
+
+    with Session(get_engine()) as db, db.begin():
+        _bound_observer_transaction(db)
         agent = store._lock_session(db, session_id)
         if (
             agent is None
             or not isinstance(receipt_id, str)
             or not receipt_id
-            or agent.result_receipt_fence_id != receipt_id
+            or agent.result_receipt_fence_id is not None
+            or not guest_id
+            or agent.ember_session_id != guest_id
         ):
             return False
-        db.execute(
-            update(AgentResultReceipt)
-            .where(AgentResultReceipt.id == receipt_id)
-            .values(created_at=AgentResultReceipt.created_at)
-        )
-        receipt = _receipt_metadata(db, receipt_id)
-        if receipt is not None and (
-            receipt["session_id"] != session_id
-            or agent.local_session_id != receipt["local_session_id"]
-            or agent.ember_session_id != receipt["guest_id"]
-            or (
-                receipt["received_at"] is None
-                and _now() < _aware(receipt["accept_until"])
-            )
-        ):
-            return False
-        agent.result_receipt_fence_id = None
+        agent.result_receipt_fence_id = receipt_id
         db.add(agent)
         return True
 
