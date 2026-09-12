@@ -33,6 +33,17 @@ defmodule Embervm.Application do
   def start(_type, _args) do
     port = http_port()
 
+    # Cell identity is process-wide configuration. Validate it before any
+    # durable backend, informer, registry, or router starts so a misspelled or
+    # incomplete registry cannot degrade into cross-cell routing.
+    {cell_id, known_cell_ids} = Embervm.Cell.configuration!()
+    Application.put_env(:embervm, :cell_id, cell_id)
+    Application.put_env(:embervm, :known_cell_ids, known_cell_ids)
+
+    if length(known_cell_ids) > 1 and op_log_mod() == Embervm.OpLog.SQLite do
+      raise "multiple cells require the shared Postgres op-log backend"
+    end
+
     # Quota + usage-admin config into app-env BEFORE the supervisor starts, so the
     # Dispatcher (reads the quota budgets at init) and the Router (reads them and
     # the usage-admin list per request) see them. Empty budgets = quota off.
@@ -171,7 +182,11 @@ defmodule Embervm.Application do
       # not depend on the watcher being up (WorkloadCatalog.retry_config/1
       # tolerates the catalog table not existing yet), so their relative order
       # here is not load-bearing.
-      Embervm.WorkloadWatcher,
+      {Embervm.WorkloadWatcher,
+       op_log_mod: op_log_mod(),
+       op_log: op_log_mod(),
+       cell_id: cell_id,
+       known_cell_ids: known_cell_ids},
       # The node registry (Task 9): one supervised gRPC stream per configured node
       # daemon, consuming WatchNode into the Embervm.NodeCapacity ETS table the
       # dispatcher (Task 11) reads, and reassigning a downed node's in-flight tasks
@@ -589,10 +604,14 @@ defmodule Embervm.Application do
   defp op_log_child_spec do
     case op_log_mod() do
       Embervm.OpLog.SQLite ->
-        {Embervm.OpLog.SQLite, path: oplog_path(), journal_horizon_ms: journal_horizon_ms()}
+        {Embervm.OpLog.SQLite,
+         path: oplog_path(), journal_horizon_ms: journal_horizon_ms(), cell_id: Embervm.Cell.current()}
 
       Embervm.OpLog.Postgres ->
-        {Embervm.OpLog.Postgres, dsn: trimmed_env("EMBERVM_OPLOG_DSN"), journal_horizon_ms: journal_horizon_ms()}
+        {Embervm.OpLog.Postgres,
+         dsn: trimmed_env("EMBERVM_OPLOG_DSN"),
+         journal_horizon_ms: journal_horizon_ms(),
+         cell_id: Embervm.Cell.current()}
     end
   end
 
@@ -1189,6 +1208,7 @@ defmodule Embervm.Application do
   defp node_registry_opts do
     [
       nodes: configured_nodes(),
+      cell_id: Embervm.Cell.current(),
       control_plane_activator_ip: stateful_activator_ip()
     ]
   end

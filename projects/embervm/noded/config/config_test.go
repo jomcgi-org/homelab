@@ -88,6 +88,39 @@ func TestLoadCpuVendorEnvOverride(t *testing.T) {
 	}
 }
 
+func TestLoadCellID(t *testing.T) {
+	t.Run("single-cell default", func(t *testing.T) {
+		if err := os.Unsetenv("EMBERVM_CELL_ID"); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.CellID != "cell-0" {
+			t.Fatalf("CellID = %q, want cell-0", cfg.CellID)
+		}
+	})
+
+	t.Run("configured cell", func(t *testing.T) {
+		t.Setenv("EMBERVM_CELL_ID", "cell-west")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.CellID != "cell-west" {
+			t.Fatalf("CellID = %q, want cell-west", cfg.CellID)
+		}
+	})
+
+	t.Run("invalid cell fails closed", func(t *testing.T) {
+		t.Setenv("EMBERVM_CELL_ID", "Cell West")
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "EMBERVM_CELL_ID") {
+			t.Fatalf("Load error = %v, want invalid cell error", err)
+		}
+	})
+}
+
 func TestLoadSilenceTimeoutSeconds(t *testing.T) {
 	const key = "EMBERVM_NODED_SILENCE_TIMEOUT_SECONDS"
 	for _, tc := range []struct {

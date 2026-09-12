@@ -32,12 +32,27 @@ of the reference deployment in this monorepo.
   for secrets, Cloudflare Tunnel for the zero-trust edge, SigNoz for
   observability.
 
+## Cell ownership
+
+The reference release is explicitly `cell-0`. `cell.id` selects the control
+plane and brick ownership domain, `cell.knownIds` is the complete registry, and
+`cell.brickDialHomeAddress` optionally supplies that cell's stable registration
+target. An empty address preserves the release-local Service URL.
+
+Workloads default to `spec.cellId: cell-0`. The assignment becomes immutable in
+both the CRD and the durable `workload_cells` registry. Multi-cell deployments
+must enable the shared Postgres op-log so every cell observes the same first
+claim while all lifecycle records, recovery reads, replay, reconciliation, and
+compaction remain row-fenced to the configured cell. SQLite remains a
+single-cell backend and refuses to open a file owned by another cell. There is
+no automatic cross-cell migration.
+
 ## Node enrollment
 
 noded runs on every brick; bricks schedule onto Kubernetes nodes carrying
 the enrollment label. Each daemon dials home: on start and on a jittered
 interval it POSTs its identity to `/v1/nodes/register`, and the control
-plane adopts it keyed by `(node, pod_uid)`. A node label is node-lifecycle
+plane adopts it keyed by `(cell_id, node, pod_uid)`. A node label is node-lifecycle
 configuration, the same class as joining the node, so growing the fleet is
 a label, not a values edit:
 

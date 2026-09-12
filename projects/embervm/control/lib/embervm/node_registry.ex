@@ -57,9 +57,11 @@ defmodule Embervm.NodeRegistry do
 
   The control plane no longer DISCOVERS daemons (the retired EndpointSlice poll):
   each noded instance DIALS HOME, POSTing
-  `{node, pod_uid, address, boot_id, scratch_generation}` to
+  `{cell_id, node, pod_uid, address, boot_id, scratch_generation}` to
   the control plane's `/v1/nodes/register` route, which forwards it here as
-  `register/2`. Registration upserts an instance keyed by `{node, pod_uid}`
+  `register/2`. The receiving control plane rejects every foreign cell before
+  opening a stream. Registration upserts an instance keyed by
+  `{cell_id, node, pod_uid}` in the shared capacity registry
   (a new instance opens a streamer and joins the NodeChannel/BaseBuilder fleet; a
   changed address re-points; an unchanged one just refreshes the registration
   timestamp). This inverts the ownership: the CP never lists-and-watches daemon
@@ -270,16 +272,17 @@ defmodule Embervm.NodeRegistry do
   @doc """
   Applies one dial-home registration from a noded instance. The map carries
   `node` (K8s node name), `pod_uid` (the pod UID, the instance identity),
-  `address` (`"pod_ip:grpc_port"`), `scratch_generation`, and optionally
-  `boot_id`. Upserts the
-  instance keyed by `{node, pod_uid}`: a new instance seeds runtime + opens a
+  `address` (`"pod_ip:grpc_port"`), `cell_id`, `scratch_generation`, and
+  optionally `boot_id`. Upserts the instance keyed by
+  `{cell_id, node, pod_uid}`: a new instance seeds runtime + opens a
   streamer + joins the NodeChannel/BaseBuilder fleet; a changed address re-points;
   an unchanged one just refreshes the registration timestamp. Called by the
   router's `/v1/nodes/register` handler; returns `:ok` (registration is
   advertisement, so even a malformed body is a benign no-op the caller reports as
   accepted). An empty `node` is rejected as `{:error, :invalid}`.
   """
-  @spec register(GenServer.server(), map()) :: :ok | {:error, :invalid}
+  @spec register(GenServer.server(), map()) ::
+          :ok | {:error, :invalid | {:wrong_cell, String.t()}}
   def register(server \\ __MODULE__, %{} = reg) do
     GenServer.call(server, {:register, reg})
   end
@@ -302,6 +305,11 @@ defmodule Embervm.NodeRegistry do
   def init(opts) do
     table = Keyword.get(opts, :table, NodeCapacity.table())
     nodes = Keyword.get(opts, :nodes, [])
+    cell_id = Keyword.get(opts, :cell_id, Embervm.Cell.current())
+
+    unless Embervm.Cell.valid_id?(cell_id) do
+      raise ArgumentError, "invalid cell_id #{inspect(cell_id)}"
+    end
     # Injected seams (defaults are the real gRPC + wall clock + task store):
     connect_fun = Keyword.get(opts, :connect_fun, &default_connect/1)
     watch_fun = Keyword.get(opts, :watch_fun, &default_watch/3)
@@ -387,12 +395,13 @@ defmodule Embervm.NodeRegistry do
 
     node_runtime =
       for spec <- nodes, into: %{} do
-        instance = seed_runtime(spec, base_backoff, now)
+        instance = seed_runtime(spec, base_backoff, now, cell_id)
         {instance.instance_id, instance}
       end
 
     state = %{
       table: table,
+      cell_id: cell_id,
       clock: clock,
       connect_fun: connect_fun,
       watch_fun: watch_fun,
@@ -690,8 +699,9 @@ defmodule Embervm.NodeRegistry do
   end
 
   def handle_call({:register, reg}, _from, state) do
-    case normalize_registration(reg) do
+    case normalize_registration(reg, state.cell_id) do
       {:ok, norm} -> {:reply, :ok, apply_registration(state, norm)}
+      {:error, {:wrong_cell, assigned}} -> {:reply, {:error, {:wrong_cell, assigned}}, state}
       :error -> {:reply, {:error, :invalid}, state}
     end
   end
@@ -846,10 +856,10 @@ defmodule Embervm.NodeRegistry do
     state
   end
 
-  # The ETS/capacity key for an instance: the {node_name, pod_uid} tuple. A
-  # statically-seeded instance carries pod_uid "" and keys as {node, ""}
-  # (node-scoped, matching the pre-dial-home behaviour).
-  defp instance_key(rt), do: {rt.configured_id, rt.pod_uid}
+  # The ETS/capacity key for an instance: the {cell_id, node_name, pod_uid}
+  # tuple. A statically-seeded instance carries pod_uid "". Including cell_id
+  # prevents two independently rebuilding registries from aliasing capacity.
+  defp instance_key(rt), do: {rt.cell_id, rt.configured_id, rt.pod_uid}
 
   defp facts_from_status(%NodeStatus{} = s, rt, now) do
     configured_id = rt.configured_id
@@ -882,6 +892,7 @@ defmodule Embervm.NodeRegistry do
 
     %{
       node_id: s.node_id,
+      cell_id: rt.cell_id,
       configured_id: configured_id,
       # Instance identity (R0 PR-2): pod_uid is the daemon-reported pod UID
       # (falling back to the runtime's registered pod_uid when a daemon predates
@@ -1609,25 +1620,33 @@ defmodule Embervm.NodeRegistry do
   # string keys; a test may pass atoms). A blank node OR address is rejected; a
   # blank pod_uid collapses to a node-scoped instance (instance_id == node name),
   # so a pre-Downward-API daemon still registers under a stable key.
-  defp normalize_registration(reg) do
+  defp normalize_registration(reg, expected_cell) do
     node = reg_field(reg, "node") |> to_trimmed()
     pod_uid = reg_field(reg, "pod_uid") |> to_trimmed()
     address = reg_field(reg, "address") |> to_trimmed()
     boot_id = reg_field(reg, "boot_id") |> to_trimmed()
     scratch_generation = reg_field(reg, "scratch_generation") |> to_trimmed()
+    claimed_cell = reg_field(reg, "cell_id") |> to_trimmed()
+    cell_id = if claimed_cell == "" and expected_cell == Embervm.Cell.default_id(), do: expected_cell, else: claimed_cell
 
-    if node == "" or address == "" do
-      :error
-    else
-      {:ok,
-       %{
-         node: node,
-         pod_uid: pod_uid,
-         address: address,
-         boot_id: boot_id,
-         scratch_generation: scratch_generation,
-         instance_id: instance_id_of(node, pod_uid)
-       }}
+    cond do
+      node == "" or address == "" or not Embervm.Cell.valid_id?(cell_id) ->
+        :error
+
+      cell_id != expected_cell ->
+        {:error, {:wrong_cell, cell_id}}
+
+      true ->
+        {:ok,
+         %{
+           cell_id: cell_id,
+           node: node,
+           pod_uid: pod_uid,
+           address: address,
+           boot_id: boot_id,
+           scratch_generation: scratch_generation,
+           instance_id: instance_id_of(node, pod_uid)
+         }}
     end
   end
 
@@ -1731,7 +1750,8 @@ defmodule Embervm.NodeRegistry do
       seed_runtime(
         %{id: norm.node, address: norm.address, pod_uid: norm.pod_uid, boot_id: norm.boot_id},
         state.base_backoff_ms,
-        now
+        now,
+        state.cell_id
       )
 
     rt = %{
@@ -1780,12 +1800,13 @@ defmodule Embervm.NodeRegistry do
   # Seed one instance runtime entry from a node spec (%{id, address} plus optional
   # pod_uid). The runtime map is keyed by instance_id ("node/pod_uid"); an absent
   # pod_uid collapses to "" (a node-scoped instance, the pre-dial-home shape).
-  defp seed_runtime(spec, base_backoff, now) do
+  defp seed_runtime(spec, base_backoff, now, cell_id) do
     node = spec.id
     pod_uid = Map.get(spec, :pod_uid, "") |> to_trimmed()
 
     %{
       configured_id: node,
+      cell_id: cell_id,
       pod_uid: pod_uid,
       instance_id: instance_id_of(node, pod_uid),
       boot_id: Map.get(spec, :boot_id, ""),

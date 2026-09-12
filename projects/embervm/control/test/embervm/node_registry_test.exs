@@ -12,7 +12,7 @@ defmodule Embervm.NodeRegistryTest do
   # test), proving connect -> emit -> ETS publish -> reconnect-on-drop.
   use ExUnit.Case, async: true
 
-  alias Embervm.{NodeRegistry, ServingStore, StatefulStore, WorkloadCatalog}
+  alias Embervm.{NodeCapacity, NodeRegistry, ServingStore, StatefulStore, WorkloadCatalog}
   alias Embervm.OpLog.SQLite
   alias Embervm.Node.V1.{GroupMemberVm, NodeStatus, ServingVm, StatefulVm, WorkloadCapacity}
 
@@ -749,7 +749,7 @@ defmodule Embervm.NodeRegistryTest do
     eventually(fn -> match?(%{health: :healthy}, NodeRegistry.status(reg)[instance_id]) end, 200)
   end
 
-  test "register/2 upserts an instance keyed by (node, pod_uid) and dials it" do
+  test "register/2 upserts an instance keyed by (cell_id, node, pod_uid) and dials it" do
     {reg, table} = start_registry(register_seams([]))
 
     :ok =
@@ -769,9 +769,58 @@ defmodule Embervm.NodeRegistryTest do
     eventually(fn -> NodeRegistry.capacity(table) != [] end, 200)
     [facts] = NodeRegistry.capacity(table)
     assert facts.node_id == "node-4"
+    assert facts.cell_id == "cell-0"
     assert facts.pod_uid == "uid-1"
     assert facts.instance_id == "node-4/uid-1"
     assert facts.boot_id == "boot-1"
+  end
+
+  test "registries reject foreign bricks and rebuild cell capacity independently" do
+    table_a = unique_table()
+    table_b = unique_table()
+
+    {reg_a, ^table_a} =
+      start_registry(register_seams(table: table_a, cell_id: "cell-a"))
+
+    {reg_b, ^table_b} =
+      start_registry(register_seams(table: table_b, cell_id: "cell-b"))
+
+    assert {:error, {:wrong_cell, "cell-b"}} =
+             NodeRegistry.register(reg_a, %{
+               "cell_id" => "cell-b",
+               "node" => "node-4",
+               "pod_uid" => "uid-bad",
+               "address" => "10.0.0.9:9090"
+             })
+
+    assert :ok =
+             NodeRegistry.register(reg_a, %{
+               "cell_id" => "cell-a",
+               "node" => "node-4",
+               "pod_uid" => "uid-a",
+               "address" => "10.0.0.1:9090"
+             })
+
+    assert :ok =
+             NodeRegistry.register(reg_b, %{
+               "cell_id" => "cell-b",
+               "node" => "node-4",
+               "pod_uid" => "uid-b",
+               "address" => "10.0.0.2:9090"
+             })
+
+    await_initial_status(reg_a, "node-4/uid-a")
+    await_initial_status(reg_b, "node-4/uid-b")
+
+    assert {:ok, %{cell_id: "cell-a"}} =
+             NodeCapacity.fetch(table_a, {"cell-a", "node-4", "uid-a"})
+
+    assert NodeCapacity.fetch(table_a, {"cell-b", "node-4", "uid-b"}) == :error
+
+    GenServer.stop(reg_a)
+
+    assert {:ok, %{cell_id: "cell-b"}} =
+             NodeCapacity.fetch(table_b, {"cell-b", "node-4", "uid-b"})
   end
 
   test "a daemon boot change retracts old stream facts before publishing the new identity" do

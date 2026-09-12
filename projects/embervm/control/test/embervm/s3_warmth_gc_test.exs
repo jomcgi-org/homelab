@@ -1,7 +1,7 @@
 defmodule Embervm.S3WarmthGcTest do
   use ExUnit.Case, async: true
 
-  alias Embervm.{NodeCapacity, NodeRegistry, S3Client, S3WarmthGc}
+  alias Embervm.{Cell, NodeCapacity, NodeRegistry, S3Client, S3WarmthGc}
   alias Embervm.Node.V1.NodeStatus
 
   # Fixed clocks: the monotonic clock (uptime + NodeCapacity freshness) and the
@@ -134,6 +134,11 @@ defmodule Embervm.S3WarmthGcTest do
   end
 
   defp start_gc(s3_funs, opts) do
+    # Most fixtures exercise the legacy single-cell path, where no assignment
+    # cache exists yet. Use an absent table name so the supervised application's
+    # global cache cannot make these async tests depend on unrelated workloads.
+    assignment_table = :"s3gc_cells_absent_#{System.unique_integer([:positive])}"
+
     {:ok, pid} =
       S3WarmthGc.start_link(
         Keyword.merge(
@@ -152,6 +157,7 @@ defmodule Embervm.S3WarmthGcTest do
             end,
             session_store: start_store([]),
             serving_store: start_store([]),
+            assignment_table: assignment_table,
             clock: fn -> @mono end,
             wall_clock: fn -> @wall end
           ],
@@ -438,6 +444,24 @@ defmodule Embervm.S3WarmthGcTest do
       gc = start_gc(s3, opts ++ [enabled: true])
       assert {:ok, %{deleted: [], plan: [], held: held}} = S3WarmthGc.sweep_now(gc)
       assert [%{prefix: ^prefix, reason: "desired_ref"}] = held
+      assert deleted(agent) == []
+    end
+
+    test "a foreign cell workload is held even when otherwise eligible" do
+      %{prefix: prefix, agent: agent, s3: s3, base_opts: base_opts} = orphan_fixture()
+      assignments = :"s3gc_cells_#{System.unique_integer([:positive])}"
+      Cell.create(assignments)
+      Cell.put(assignments, "dead-wl", "cell-b", false)
+
+      gc =
+        start_gc(
+          s3,
+          base_opts ++
+            [enabled: true, cell_id: "cell-0", assignment_table: assignments]
+        )
+
+      assert {:ok, %{deleted: [], plan: [], held: held}} = S3WarmthGc.sweep_now(gc)
+      assert [%{prefix: ^prefix, reason: "foreign_or_unknown_cell_owner"}] = held
       assert deleted(agent) == []
     end
 

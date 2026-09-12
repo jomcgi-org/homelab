@@ -14,6 +14,18 @@ rbac:
   # Empty means no Secret rule, not unrestricted access. Tokenbroker is separate.
   secretNames: []
 
+# One immutable ownership domain per control-plane release (ADR embervm/007).
+# Existing installations are cell-0. Multi-cell installations use the shared
+# Postgres op-log and deploy one release per cell with the same knownIds list.
+cell:
+  id: cell-0
+  knownIds:
+    - cell-0
+  # Per-cell noded and brick dial-home target. Empty preserves the existing
+  # release-local Service URL. Set it when a cell's bricks use a distinct stable
+  # address or a separately named control-plane Service.
+  brickDialHomeAddress: ""
+
 image:
   # Pinned at build time by helm_chart(images={"image": ".../image:image.info"}).
   repository: ghcr.io/jomcgi/homelab/projects/embervm/image

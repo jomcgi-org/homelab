@@ -70,16 +70,25 @@ defmodule Embervm.NodeCapacity do
   called by the registry for an instance it has already decided is dispatchable,
   so a row's mere presence is the dispatchable signal.
   """
-  @spec put(atom(), {String.t(), String.t()}, map()) :: true
+  @spec put(atom(), {String.t(), String.t()} | {String.t(), String.t(), String.t()}, map()) :: true
   def put(table \\ @table, instance_key, facts) do
     :ets.insert(table, {instance_key, facts})
   end
 
   @doc "Removes an instance's capacity facts (it is no longer dispatchable)."
-  @spec drop(atom(), {String.t(), String.t()}) :: true
-  def drop(table \\ @table, instance_key) do
+  @spec drop(atom(), String.t() | {String.t(), String.t()} | {String.t(), String.t(), String.t()}) ::
+          true
+  def drop(table \\ @table, instance_key)
+
+  def drop(table, {node_id, pod_uid} = instance_key) do
     :ets.delete(table, instance_key)
+    :ets.delete(table, {Embervm.Cell.current(), node_id, pod_uid})
   end
+
+  def drop(table, {_cell_id, _node_id, _pod_uid} = instance_key),
+    do: :ets.delete(table, instance_key)
+
+  def drop(table, instance_key), do: :ets.delete(table, instance_key)
 
   @doc """
   All dispatchable nodes' capacity facts, in no particular order. Empty when no
@@ -98,10 +107,11 @@ defmodule Embervm.NodeCapacity do
   end
 
   @doc """
-  Capacity facts for a key that is EITHER an instance tuple `{node_id, pod_uid}`
-  (exact instance lookup) OR a bare `node_id` string (NODE-scoped lookup, returns
-  an instance ON that node, preferring the most recently updated). `:error` when
-  nothing dispatchable matches (or the table does not exist yet).
+  Capacity facts for a key that is either a legacy instance tuple
+  `{node_id, pod_uid}`, a cell-scoped tuple `{cell_id, node_id, pod_uid}`
+  (exact instance lookup), or a bare `node_id` string (node-scoped lookup,
+  returns an instance on that node, preferring the most recently updated).
+  Returns `:error` when nothing dispatchable matches or the table does not exist.
 
   The bare-string form is what the node-scoped consumers (session/serving/stateful/
   group placement + adoption) call: snapshots and volumes are NODE resources, not
@@ -109,19 +119,18 @@ defmodule Embervm.NodeCapacity do
   node dispatchable" regardless of which instance currently owns it. The tuple form
   is the dispatcher/registry's exact per-instance read.
   """
-  @spec fetch(atom(), {String.t(), String.t()} | String.t()) :: {:ok, map()} | :error
+  @spec fetch(atom(), {String.t(), String.t()} | {String.t(), String.t(), String.t()} | String.t()) ::
+          {:ok, map()} | :error
   def fetch(table \\ @table, key)
 
-  def fetch(table, {_node, _pod_uid} = instance_key) do
-    if :ets.whereis(table) == :undefined do
-      :error
-    else
-      case :ets.lookup(table, instance_key) do
-        [{^instance_key, facts}] -> {:ok, facts}
-        [] -> :error
-      end
+  def fetch(table, {node_id, pod_uid} = instance_key) do
+    case fetch_instance(table, instance_key) do
+      :error -> fetch_instance(table, {Embervm.Cell.current(), node_id, pod_uid})
+      result -> result
     end
   end
+
+  def fetch(table, {_cell, _node, _pod_uid} = instance_key), do: fetch_instance(table, instance_key)
 
   def fetch(table, node_id) when is_binary(node_id) do
     if :ets.whereis(table) == :undefined do
@@ -137,6 +146,17 @@ defmodule Embervm.NodeCapacity do
     end
   end
 
+  defp fetch_instance(table, instance_key) do
+    if :ets.whereis(table) == :undefined do
+      :error
+    else
+      case :ets.lookup(table, instance_key) do
+        [{^instance_key, facts}] -> {:ok, facts}
+        [] -> :error
+      end
+    end
+  end
+
   @doc """
   The CPUID vendor ("amd"/"intel") the anchor `key` currently reports, for stamping
   `RestoreArtifactRequest.artifact.vendor` on a restore-on-miss (R7, ADR
@@ -147,7 +167,8 @@ defmodule Embervm.NodeCapacity do
   maps an empty vendor to the node-4 legacy alias, so an empty vendor still restores
   the legacy un-vendored prefix rather than failing closed. Never raises.
   """
-  @spec vendor_for(atom(), {String.t(), String.t()} | String.t()) :: String.t()
+  @spec vendor_for(atom(), {String.t(), String.t()} | {String.t(), String.t(), String.t()} | String.t()) ::
+          String.t()
   def vendor_for(table \\ @table, key) do
     case fetch(table, key) do
       {:ok, facts} -> Map.get(facts, :cpu_vendor, "") || ""

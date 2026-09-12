@@ -19,6 +19,7 @@ defmodule Embervm.LogFormatter do
   @meta_keys [
     :task_id,
     :workload,
+    :cell_id,
     :principal,
     :ref,
     :node_id,

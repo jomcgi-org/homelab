@@ -1,14 +1,12 @@
 defmodule Embervm.OpLog.PostgresTest do
   @moduledoc """
   Compile-time + no-connection coverage for `Embervm.OpLog.Postgres` (PR-4,
-  #18/#27). CI has no Postgres service for the control plane today (see the
-  fleet-finish plan's PR-4 section), so this deliberately does NOT stand one
-  up: a full round-trip conformance suite (re-running the SQLite test suite's
-  scenarios against a real Postgres) is that plan's acceptance bar for the
-  future DSN-cutover PR, not this one. What IS verifiable without a live
-  database: the module satisfies `@behaviour Embervm.OpLog` (a compile-time,
-  CI-visible check via `mix compile --warnings-as-errors` catching a missing
-  callback), and `db_size/1` is a plain function that never dials out.
+  #18/#27). The separate `Embervm.OpLog.PostgresLiveTest` module runs against
+  an ephemeral Postgres service in its Linux CI lane. These tests remain the
+  fast no-connection checks: the module satisfies `@behaviour Embervm.OpLog`
+  (a compile-time, CI-visible check via `mix compile --warnings-as-errors`
+  catching a missing callback), and `db_size/1` is a plain function that never
+  dials out.
   """
   use ExUnit.Case, async: true
 
@@ -28,6 +26,8 @@ defmodule Embervm.OpLog.PostgresTest do
       {:append, 2},
       {:read_from, 2},
       {:load_tasks, 1},
+      {:claim_workload, 3},
+      {:load_workload_cells, 1},
       {:load_sessions, 1},
       {:load_serving_instances, 1},
       {:load_stateful_instances, 1},
@@ -51,6 +51,23 @@ defmodule Embervm.OpLog.PostgresTest do
     for {name, arity} <- expected do
       assert {name, arity} in exported, "missing callback #{name}/#{arity}"
     end
+  end
+
+  test "DDL fences every mutable recovery table and leaves ownership fleet-visible" do
+    ddl = Postgres.ddl()
+
+    for table <- Postgres.cell_scoped_tables() do
+      assert Enum.any?(ddl, &String.contains?(&1, "ALTER TABLE #{table} ADD COLUMN IF NOT EXISTS cell_id"))
+      assert "ALTER TABLE #{table} FORCE ROW LEVEL SECURITY" in ddl
+
+      assert Enum.any?(ddl, fn statement ->
+               String.contains?(statement, "CREATE POLICY embervm_cell_isolation ON #{table}") and
+                 String.contains?(statement, "WITH CHECK")
+             end)
+    end
+
+    refute "workload_cells" in Postgres.cell_scoped_tables()
+    assert Enum.any?(ddl, &String.contains?(&1, "CREATE TABLE IF NOT EXISTS workload_cells"))
   end
 
   test "db_size/1 is not supported for the Postgres backend (no single PVC file to stat)" do
