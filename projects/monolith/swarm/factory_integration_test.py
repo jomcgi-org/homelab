@@ -375,6 +375,45 @@ def delivery_api(monkeypatch, task_id, *, branches=None):
     monkeypatch.setattr(conductor, "github_get", get)
 
 
+def escalation_api(monkeypatch):
+    """The reads and writes an escalating pause makes, and the warn it sends.
+
+    Returns the written payloads so a test can assert the label went on and
+    the decision card was posted exactly once.
+    """
+    from agent import notify as notify_module
+    from swarm import factory_landing
+
+    written = []
+    comments = []
+    notices = []
+
+    def listed(_repo, suffix):
+        assert suffix.startswith("issues/7/comments")
+        return comments if suffix.endswith("page=1") else []
+
+    def write(repo, suffix, payload, *, method="POST"):
+        assert repo == "owner/repo"
+        written.append((suffix, payload, method))
+        if suffix.endswith("/comments"):
+            comments.append(
+                {
+                    "body": payload["body"],
+                    "html_url": "https://github.com/owner/repo/issues/7#c1",
+                }
+            )
+            return comments[-1]
+        return {}
+
+    async def notify(text, *, level):
+        notices.append((text, level))
+
+    monkeypatch.setattr(conductor, "github_list", listed)
+    monkeypatch.setattr(factory_landing, "github_write", write)
+    monkeypatch.setattr(notify_module, "notify", notify)
+    return written, notices
+
+
 def reconcile_until(task_id, policy, dbos, condition, *, max_ticks=40):
     for _ in range(max_ticks):
         if condition():
@@ -723,7 +762,28 @@ def test_exhausted_review_rounds_return_the_task_to_the_planner(
                     "cost_usd": 0.25,
                     "head_sha": HEAD,
                     "artifact": {"status": "ok", "value": {}, "errors": []},
-                    "value": {"action": "pause", "reason": "review is unresolved"},
+                    "value": {
+                        "action": "pause",
+                        "reason": "review is unresolved",
+                        "question": "Should the review finding block delivery?",
+                        "options": [
+                            {
+                                "key": "continue-without-it",
+                                "label": "Deliver without the contested rename",
+                                "effect": "agent-ready",
+                                "detail": {"scope": "Leave the rename out"},
+                            },
+                            {
+                                "key": "close-as-stale",
+                                "label": "Close it: the rename landed elsewhere",
+                                "effect": "close",
+                                "detail": {
+                                    "reason": "not_planned",
+                                    "comment": "Superseded",
+                                },
+                            },
+                        ],
+                    },
                     "reason": None,
                     "cleanup": {"status": "completed"},
                 }
@@ -732,11 +792,12 @@ def test_exhausted_review_rounds_return_the_task_to_the_planner(
 
     dbos = NeverSatisfied()
     delivery_api(monkeypatch, task_id)
+    written, notices = escalation_api(monkeypatch)
     reconcile_until(
         task_id,
         policy,
         dbos,
-        lambda: controls.task_snapshot(task_id)["task_paused"],
+        lambda: controls.task_snapshot(task_id)["state"] == "escalated",
     )
     assert [p["node_key"] for p in dbos.started_pins] == [
         "conductor_1",
@@ -744,6 +805,25 @@ def test_exhausted_review_rounds_return_the_task_to_the_planner(
         "review_check",
         "conductor_2",
     ]
+    # The pause left the lane rather than holding its slot behind a flag.
+    receipt = controls.task_snapshot(task_id)
+    assert receipt["task_paused"] is False
+    assert receipt["escalation"]["question"].startswith("Should the review")
+    assert [option["key"] for option in receipt["escalation"]["options"]] == [
+        "continue-without-it",
+        "close-as-stale",
+    ]
+    assert receipt["escalation"]["branch"] == f"factory/{task_id}"
+    assert [suffix for suffix, _payload, _method in written] == [
+        "issues/7/labels",
+        "issues/7/comments",
+    ]
+    assert written[0][1] == {"labels": ["needs-human"]}
+    assert "## Decision needed" in written[1][1]["body"]
+    assert len(notices) == 1 and notices[0][1] == "warn"
+    # The graph survives the settlement: the evidence a decision re-admits
+    # against is exactly what the escalated attempt left behind.
+    assert graph.load_graph(task_id)
     assert not any(
         node["node_key"].startswith("correct_") for node in graph.load_graph(task_id)
     )
