@@ -10,6 +10,7 @@ import zlib
 
 import httpx
 import pytest
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from agent_sessions import (
@@ -643,7 +644,7 @@ def test_receipt_completes_once_and_fences_only_its_guest_until_response(
 
 
 @pytest.mark.parametrize("response", ["disconnect", "cancelled_observer"])
-def test_kg_cleanup_preserves_fence_after_lost_original_response(
+def test_kg_cleanup_frees_a_receipt_won_guest_after_a_lost_response(
     database, monkeypatch, response
 ):
     from swarm import drainer
@@ -663,7 +664,7 @@ def test_kg_cleanup_preserves_fence_after_lost_original_response(
         await release_response.wait()
         return httpx.Response(200, json=record, request=request)
 
-    requests = fake_http(monkeypatch, handler)
+    requests, cleanup = fake_http_allowing_cleanup(monkeypatch, handler)
 
     async def run():
         try:
@@ -673,16 +674,26 @@ def test_kg_cleanup_preserves_fence_after_lost_original_response(
                 for observer in list(transport._receipt_observers):
                     observer.cancel()
             await asyncio.wait_for(drain_observers(), 3)
-            assert execution_api.send_to_swarm_session(sid, "KG correction") == 2
+            with Session(database) as db, db.begin():
+                # The drainer needs authoritative workflow identity before it
+                # will claim a guest at all; without one it refuses early and
+                # the fence is never what this exercises.
+                row = store._lock_session(db, sid)
+                row.workflow_id = "kg-drain-cycle"
+                db.add(row)
             before = snapshot(database, sid)
             assert before["session"]["result_receipt_fence_id"] == captured["id"]
-            assert not await asyncio.to_thread(
+            # The fence used to send this cleanup back with observer_pending on
+            # every cycle, so the guest ran on to idle_ttl with no owner able
+            # to stop it. A received receipt is now releasable.
+            assert await asyncio.to_thread(
                 drainer.destroy_drainer_session.__wrapped__, sid, "kg-lost-response"
             )
-            assert snapshot(database, sid) == before
-            assert (
-                store.claim_pending_message_for_session_sync(sid, "correction") is None
-            )
+            after = snapshot(database, sid)
+            assert after["session"]["result_receipt_fence_id"] is None
+            assert after["session"]["ember_session_id"] is None
+            assert after["turns"] == before["turns"]
+            assert cleanup["destroyed"] == [f"guest-{sid}"]
             with Session(database) as db:
                 receipt = db.get(AgentResultReceipt, captured["id"])
                 assert receipt.response_observed_at is None
@@ -1078,3 +1089,126 @@ def test_reaper_holds_a_guest_whose_receipt_has_not_arrived(database, monkeypatc
     # The POST may still be the only path to this turn, so the guest lives.
     assert snapshot(database, sid) == before
     assert cleanup["destroyed"] == []
+
+
+def test_kg_cleanup_preserves_a_fence_whose_receipt_has_not_arrived(
+    database, monkeypatch
+):
+    from swarm import drainer
+
+    sid = queue(database, "kg-unreceived", tier="kg")
+    guest_id = f"guest-{sid}"
+    assert store.claim_pending_message_for_session_sync(sid, "kg-owner") == 1
+    assert admission.recheck(sid, 1, "kg-owner")
+    receipt = result_receipts.prepare_receipt(
+        sid, "kg-owner", 1, guest_id, b'{"message":"still in flight"}'
+    )
+    with Session(database) as db, db.begin():
+        row = store._lock_session(db, sid)
+        row.workflow_id = "kg-drain-cycle"
+        row.result_receipt_fence_id = receipt["id"]
+        db.add(row)
+    _requests, cleanup = fake_http_allowing_cleanup(
+        monkeypatch, lambda _request: pytest.fail("no dispatch in this test")
+    )
+    before = snapshot(database, sid)
+    # Inside its acceptance window with no body committed, the guest is still
+    # the only path to the turn, so the drainer waits exactly as it did.
+    assert not drainer.destroy_drainer_session.__wrapped__(sid, "kg-unreceived")
+    assert snapshot(database, sid) == before
+    assert cleanup["destroyed"] == []
+
+
+def test_a_wedged_fence_release_never_skips_the_guest_destroy(database, monkeypatch):
+    sid = queue(database, "probe-release-wedged", tier="probe")
+    record = native_record()
+    captured = {}
+    attempts = []
+
+    async def handler(request):
+        receipt, _body = await publish(request, record)
+        captured.update(receipt)
+        raise httpx.ReadError("original response lost", request=request)
+
+    requests, cleanup = fake_http_allowing_cleanup(monkeypatch, handler)
+    monkeypatch.setattr(mcp, "RECEIPT_FENCE_RELEASE_GAP_SECONDS", 0)
+
+    def wedged(*_args, **_kwargs):
+        # What a contended pool answers under the release's one second
+        # lock_timeout, which used to propagate out of the completion finally.
+        attempts.append(1)
+        raise OperationalError("SELECT 1", {}, Exception("lock_not_available"))
+
+    monkeypatch.setattr(result_receipts, "release_unobserved_fence", wedged)
+
+    async def run():
+        try:
+            await asyncio.wait_for(mcp._execute_pending_message(sid), 5)
+            await asyncio.wait_for(drain_observers(), 3)
+            assert len(attempts) == mcp.RECEIPT_FENCE_RELEASE_ATTEMPTS
+            state = snapshot(database, sid)
+            assert len(state["turns"]) == 1
+            assert state["turns"][0]["result_text"] == record["result"]
+            # Both cleanup steps still run.
+            assert cleanup["destroyed"] == [f"guest-{sid}"]
+            # The unbind is a deliberate no-op while a fence stands, so the
+            # binding waits for a cleanup owner that can release it first.
+            assert state["session"]["result_receipt_fence_id"] == captured["id"]
+            assert state["session"]["ember_session_id"] == f"guest-{sid}"
+            assert len(requests) == 1
+        finally:
+            await asyncio.wait_for(drain_observers(), 3)
+
+    asyncio.run(asyncio.wait_for(run(), 10))
+
+
+def test_reaper_puts_the_fence_back_when_no_cleanup_claim_follows(
+    database, monkeypatch
+):
+    sid = queue(database, "held-reap")
+    record = native_record()
+    captured = {}
+
+    async def handler(request):
+        receipt, _body = await publish(request, record)
+        captured.update(receipt)
+        raise httpx.ReadError("original response lost", request=request)
+
+    requests, cleanup = fake_http_allowing_cleanup(monkeypatch, handler)
+
+    async def run():
+        await asyncio.wait_for(mcp._execute_pending_message(sid), 5)
+        await asyncio.wait_for(drain_observers(), 3)
+        with Session(database) as db, db.begin():
+            row = store._lock_session(db, sid)
+            row.workflow_id = "held-node"
+            db.add(row)
+            # A second row bound to the same guest, carrying its own fence.
+            # begin_guest_cleanup refuses on any alias fence, so the reaper
+            # releases this row's fence and then gets no claim at all.
+            db.add(
+                AgentSession(
+                    local_session_id="held-alias",
+                    workspace="<guest>",
+                    branch="main",
+                    model="luna",
+                    ember_session_id=f"guest-{sid}",
+                    result_receipt_fence_id="b" * 32,
+                )
+            )
+        before = snapshot(database, sid)
+        assert before["session"]["result_receipt_fence_id"] == captured["id"]
+        assert await execution_api.reap_sessions_for_workflow("held-node") == {
+            "reaped": [],
+            "failed": [],
+            "skipped": [],
+            "pending": [sid],
+        }
+        # Nothing took over from the fence, so the fence goes back: without it
+        # a queued follow-up could claim a guest whose POST may still stream.
+        assert snapshot(database, sid) == before
+        assert cleanup["destroyed"] == []
+        assert store.claim_pending_message_for_session_sync(sid, "follow-up") is None
+        assert len(requests) == 1
+
+    asyncio.run(asyncio.wait_for(run(), 10))
