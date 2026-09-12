@@ -7628,6 +7628,26 @@ def test_dispatch_refusal_audits_numbers_and_offers_three_exits(monkeypatch):
     assert "used 7.02, requested 15.02, allowed 12.0" in decision["question"]
 
 
+def test_a_non_envelope_dispatch_race_keeps_the_existing_pause_path(monkeypatch):
+    import swarm.factory_controls as controls_module
+
+    paused = []
+    monkeypatch.setattr(
+        controls_module,
+        "set_control",
+        lambda action, _actor, *, task_id: paused.append((action, task_id)),
+    )
+    result = routed_dispatch(
+        monkeypatch,
+        ["implement_fix"],
+        reviewer="opus",
+        refusal=conductor.ReservationResult(False, refusal_code="start_pending"),
+        fan_out=False,
+    )
+    assert result.escalated == []
+    assert paused == [("pause_task", "t-1")]
+
+
 def test_the_window_is_observed_before_any_task_reconciles(monkeypatch):
     """A factory at its limit never admits, so admission cannot be the gate."""
     import swarm.factory_controls as controls_module

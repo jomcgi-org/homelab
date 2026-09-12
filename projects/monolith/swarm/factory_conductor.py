@@ -3941,7 +3941,11 @@ def _dispatch_ready(
             dispatched += 1
             continue
         if dispatched == 0 and not fan_out:
-            if isinstance(reservation, ReservationResult):
+            if isinstance(reservation, ReservationResult) and reservation.limit in {
+                "task_budget",
+                "max_task_turns_hard",
+                "max_planner_turns",
+            }:
                 _escalate_dispatch_refusal(task, node_key, key, reservation, runs)
             else:
                 set_control("pause_task", ACTOR, task_id=task_id)
