@@ -153,10 +153,7 @@ py_test(
         "DEV_VALUES": "$(rootpath //projects/monolith/dev/deploy:deploy_values)",
         "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
-    deps = [
-        "@pip//pytest",
-        "@pip//pyyaml",
-    ],
+    deps = ["@pip//pyyaml"],
 )
 
 py_test(
@@ -346,6 +343,19 @@ semgrep_test(
 semgrep_test(
     name = "scheduler_run_now_test_semgrep_test",
     srcs = ["scheduler_run_now_test.py"],
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "stars_grid_job_test_semgrep_test",
+    srcs = ["stars_grid_job_test.py"],
     exclude_rules = [
         "avoid-sqlalchemy-text",
         "sqlmodel-datetime-without-factory",
