@@ -5631,7 +5631,7 @@ def test_a_failed_merge_conflict_round_reuses_the_bound_then_exhausts(
     conductor.reconcile_task(task["id"], policy, object())
     fail_round_node(task, "correct_1")
     monkeypatch.setattr(
-        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_ONE}}
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_TWO}}
     )
 
     conductor.reconcile_task(task["id"], policy, object())
@@ -5640,6 +5640,7 @@ def test_a_failed_merge_conflict_round_reuses_the_bound_then_exhausts(
     assert nodes["correct_2"]["deps"] == ["review_fix"]
     assert nodes["correct_2"]["model"] == "luna"
     assert "force-with-lease" in nodes["correct_2"]["prompt"]
+    assert f"has since moved to {HEAD_TWO}" in nodes["correct_2"]["prompt"]
     assert nodes["review_2"]["deps"] == ["correct_2"]
     assert conductor._review_rounds_used(task["id"]) == 2
     with Session(feedback_db) as db:

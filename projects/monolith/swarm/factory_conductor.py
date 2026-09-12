@@ -2691,7 +2691,9 @@ def _insert_review_round(
     correction = (
         (
             f"Pull request {number} at reviewed head {reviewed_head} has a merge "
-            "conflict. Rebase the task branch onto origin/main, preserve the "
+            "conflict."
+            + moved
+            + " Rebase the task branch onto origin/main, preserve the "
             "reviewed changes, resolve all conflicts, push the rewritten branch "
             "with force-with-lease, and report the new pull request head. Update "
             "the same pull request. "

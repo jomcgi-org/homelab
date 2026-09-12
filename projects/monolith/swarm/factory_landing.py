@@ -358,9 +358,9 @@ def _deliveries(policy: dict) -> list[dict]:
                 "task_id": row.task_id,
                 "issue_number": row.issue_number,
                 "pr_number": number,
-                # The head the newest arming was measured against, so a branch
-                # that moves under an armed pull request can be caught.
-                "head_sha": armed[-1].get("head_sha") if armed else head,
+                # The newest settlement carries the latest exact-head review.
+                # It supersedes any earlier arming after a conflict correction.
+                "head_sha": head,
                 "armed": len(armed),
                 "ejected": len(ejected),
                 "merged": bool(audits["merged"]),
@@ -572,6 +572,13 @@ def _observe(repo: str, item: dict) -> None:
                 attempt=item["armed"],
             )
             item["ejected"] += 1
+            if item["ejected"] >= MAX_EJECTIONS:
+                _refuse(
+                    item,
+                    "ejected_from_merge_queue",
+                    ejections=item["ejected"],
+                )
+                _notify_stuck(item["task_id"], number)
         return
     # Open, still unmerged, and GitHub has turned auto-merge off: the merge
     # queue ejected it. Without this the holder wedged forever, because the

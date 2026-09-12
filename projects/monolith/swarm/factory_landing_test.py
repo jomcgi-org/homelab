@@ -506,6 +506,112 @@ def test_a_merge_conflict_ejection_reopens_for_correction_instead_of_rearming(
     assert audits(db, "merge_arm_refused", "t-1") == []
 
 
+def test_a_corrected_merge_conflict_rearms_at_the_newly_approved_head(
+    db, monkeypatch
+):
+    delivered(db, "t-1", 11, 3)
+    pulls = {3: pull(3)}
+    calls = github(monkeypatch, pulls=pulls)
+    landing.landing_tick(POLICY)
+    pulls[3] = {
+        **pulls[3],
+        "auto_merge": None,
+        "mergeable": False,
+        "mergeable_state": "dirty",
+    }
+    landing.landing_tick(POLICY)
+
+    corrected_head = "c" * 40
+    assert controls.finish_task(
+        "t-1",
+        "succeeded",
+        "test",
+        evidence={
+            "pr_url": "https://github.com/owner/repo/pull/3",
+            "head_sha": corrected_head,
+            "review_session_id": 12,
+            "reviewer_model": "opus",
+            "state": "ready_for_review",
+        },
+    )["ok"]
+    pulls[3] = pull(3, head=corrected_head)
+
+    landing.landing_tick(POLICY)
+
+    assert calls["graphql"] == [
+        {"pullRequestId": "PR_3"},
+        {"pullRequestId": "PR_3"},
+    ]
+    assert audits(db, "merge_armed", "t-1") == [
+        {
+            "pr_number": 3,
+            "head_sha": HEAD,
+            "attempt": 1,
+            "merge_method": "rebase",
+        },
+        {
+            "pr_number": 3,
+            "head_sha": corrected_head,
+            "attempt": 2,
+            "merge_method": "rebase",
+        },
+    ]
+    assert audits(db, "merge_arm_refused", "t-1") == []
+
+
+def test_a_second_merge_conflict_ejection_hands_the_pull_request_to_a_human(
+    db, monkeypatch
+):
+    delivered(db, "t-1", 11, 3)
+    pulls = {3: pull(3)}
+    warned = []
+    monkeypatch.setattr(
+        landing,
+        "_notify_stuck",
+        lambda task_id, number: warned.append((task_id, number)),
+    )
+    github(monkeypatch, pulls=pulls)
+    landing.landing_tick(POLICY)
+
+    pulls[3] = {
+        **pulls[3],
+        "auto_merge": None,
+        "mergeable": False,
+        "mergeable_state": "dirty",
+    }
+    landing.landing_tick(POLICY)
+
+    corrected_head = "c" * 40
+    assert controls.finish_task(
+        "t-1",
+        "succeeded",
+        "test",
+        evidence={
+            "pr_url": "https://github.com/owner/repo/pull/3",
+            "head_sha": corrected_head,
+            "review_session_id": 12,
+            "reviewer_model": "opus",
+            "state": "ready_for_review",
+        },
+    )["ok"]
+    pulls[3] = pull(3, head=corrected_head)
+    landing.landing_tick(POLICY)
+
+    pulls[3] = {
+        **pulls[3],
+        "auto_merge": None,
+        "mergeable": False,
+        "mergeable_state": "dirty",
+    }
+    landing.landing_tick(POLICY)
+
+    assert len(audits(db, "merge_ejected", "t-1")) == 2
+    assert audits(db, "merge_arm_refused", "t-1") == [
+        {"pr_number": 3, "reason": "ejected_from_merge_queue", "ejections": 2}
+    ]
+    assert warned == [("t-1", 3)]
+
+
 def test_a_head_that_moves_under_an_armed_pull_request_is_disarmed(db, monkeypatch):
     """What the review approved is not what would merge, so it goes to a human."""
     delivered(db, "t-1", 11, 3)
