@@ -46,6 +46,7 @@ helm_chart(
         "frontend.image": "//projects/monolith/frontend:image.info",
         "jobs.image": "//projects/monolith:jobs_image.info",
         "progress.image": "//projects/monolith:progress_image.info",
+        "stars.gridGenerator.image": "//projects/monolith:stars_grid_image.info",
         "whatsapp.image": "//projects/monolith/whatsapp:image.info",
     },
     lint = False,
@@ -130,6 +131,29 @@ py_test(
         "@pip//pytest",
         "@pip//pyyaml",
     ],
+)
+
+py_test(
+    name = "stars_grid_job_test",
+    srcs = ["stars_grid_job_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/monolith/deploy:deploy_values",
+        "//projects/monolith/dev/deploy:deploy_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "migrations/**/*",
+    ]),
+    env = {
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
+        "DEV_VALUES": "$(rootpath //projects/monolith/dev/deploy:deploy_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = ["@pip//pyyaml"],
 )
 
 py_test(
@@ -319,6 +343,19 @@ semgrep_test(
 semgrep_test(
     name = "scheduler_run_now_test_semgrep_test",
     srcs = ["scheduler_run_now_test.py"],
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "stars_grid_job_test_semgrep_test",
+    srcs = ["stars_grid_job_test.py"],
     exclude_rules = [
         "avoid-sqlalchemy-text",
         "sqlmodel-datetime-without-factory",

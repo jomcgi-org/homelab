@@ -1,0 +1,107 @@
+{{- /*
+The stars grid is near-static and expensive to compute, so it has a dedicated
+image and suspended CronWorkflow instead of sharing the API or routine jobs
+image. The operator configures source objects, submits a one-off run, verifies
+the resulting Workflow, and leaves the schedule suspended between refreshes.
+*/ -}}
+{{- $job := .Values.stars.gridGenerator -}}
+{{- if and $job.enabled $job.image }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: stars-grid-compute
+  namespace: {{ .Values.jobs.workflowNamespace }}
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+    app.kubernetes.io/component: stars-grid-compute
+spec:
+  schedules:
+    - {{ $job.schedule | quote }}
+  concurrencyPolicy: {{ $job.concurrencyPolicy }}
+  suspend: {{ $job.suspend }}
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 5
+  workflowSpec:
+    entrypoint: compute-and-ingest
+    serviceAccountName: argo-workflow
+    podPriorityClassName: homelab-disposable
+    activeDeadlineSeconds: {{ $job.activeDeadlineSeconds }}
+    podMetadata:
+      labels:
+        app.kubernetes.io/part-of: {{ .Release.Name }}-jobs
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 65532
+      runAsGroup: 65532
+      fsGroup: 65532
+      seccompProfile:
+        type: RuntimeDefault
+    ttlStrategy:
+      secondsAfterCompletion: 3600
+      secondsAfterSuccess: 3600
+      secondsAfterFailure: 86400
+    podGC:
+      strategy: OnWorkflowSuccess
+    tolerations:
+      - key: embervm.jomcgi.dev/node
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
+    volumes:
+      - name: work
+        emptyDir:
+          sizeLimit: {{ $job.temporaryStorage.sizeLimit }}
+    templates:
+      - name: compute-and-ingest
+        container:
+          image: "{{ $job.image.repository }}@{{ $job.image.digest }}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.jobs.dbSecretName }}
+                  key: {{ .Values.jobs.dbSecretKey }}
+            - name: STARS_GRID_SOURCE_S3_ENDPOINT
+              value: {{ $job.source.endpoint | quote }}
+            - name: STARS_GRID_SOURCE_S3_REGION
+              value: {{ $job.source.region | quote }}
+            - name: STARS_GRID_SOURCE_S3_BUCKET
+              value: {{ $job.source.bucket | quote }}
+            - name: STARS_GRID_ADMIN1_KEY
+              value: {{ $job.source.admin1Key | quote }}
+            - name: STARS_GRID_ROADS_KEY
+              value: {{ $job.source.roadsKey | quote }}
+            - name: STARS_GRID_LIGHT_POLLUTION_KEY
+              value: {{ $job.source.lightPollutionKey | quote }}
+            - name: STARS_GRID_DEM_KEY
+              value: {{ $job.source.demKey | quote }}
+            - name: STARS_GRID_SPACING_KM
+              value: {{ $job.spacingKm | quote }}
+            - name: STARS_GRID_MAX_ROAD_DISTANCE_M
+              value: {{ $job.maxRoadDistanceM | quote }}
+            - name: STARS_GRID_WORK_DIR
+              value: {{ $job.workDir | quote }}
+            {{- if $job.source.credentialsSecretName }}
+            - name: STARS_GRID_SOURCE_S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $job.source.credentialsSecretName }}
+                  key: {{ $job.source.accessKeyKey }}
+            - name: STARS_GRID_SOURCE_S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $job.source.credentialsSecretName }}
+                  key: {{ $job.source.secretAccessKeyKey }}
+            {{- end }}
+          volumeMounts:
+            - name: work
+              mountPath: {{ $job.workDir }}
+          resources:
+            {{- toYaml $job.resources | nindent 12 }}
+{{- end }}
