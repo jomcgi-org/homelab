@@ -1,0 +1,72 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: embervm-fixture-upload
+spec:
+  backoffLimit: 4
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: embervm-fixture-upload
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: upload
+          image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              until mc alias set local http://embervm-minio:9000 "$MINIO_USER" "$MINIO_PASSWORD"; do
+                sleep 2
+              done
+              mc mb --ignore-existing local/embervm
+              mc mb --ignore-existing local/embervm-functions
+              mc cp /fixtures/hello.zip "local/embervm-functions/hello/$HELLO_SHA.zip"
+              mc cp /fixtures/continuity.zip "local/embervm-functions/continuity/$CONTINUITY_SHA.zip"
+          env:
+            - name: MC_CONFIG_DIR
+              value: /tmp/.mc
+            - name: MINIO_USER
+              valueFrom:
+                secretKeyRef:
+                  name: embervm-store
+                  key: access_key_id
+            - name: MINIO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: embervm-store
+                  key: secret_access_key
+            - name: HELLO_SHA
+              value: 53ff98ccb09d4d12a629322caac8ee0aee9f77ca69fd08fbc1eee83b7a60230b
+            - name: CONTINUITY_SHA
+              value: bd12054be9fc385984157d27bba1847ab2ceb4a8167db26b3d0c0b99784f31d9
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: fixtures
+              mountPath: /fixtures
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: fixtures
+          configMap:
+            name: embervm-quickstart-functions
+        - name: tmp
+          emptyDir: {}
