@@ -124,6 +124,10 @@ class DiscordOutbox(SQLModel, table=True):
             "content IS NOT NULL OR embed_json IS NOT NULL OR reaction IS NOT NULL",
             name="discord_outbox_content_or_embed",
         ),
+        CheckConstraint(
+            "delivery_state IN ('pending', 'sending', 'posted', 'uncertain')",
+            name="discord_outbox_delivery_state_valid",
+        ),
         {"schema": "chat", "extend_existing": True},
     )
 
@@ -147,6 +151,14 @@ class DiscordOutbox(SQLModel, table=True):
     # row the leader drain follows up on (payload_json below carries the args).
     kind: str = Field(default="")
     payload_json: str | None = Field(default=None)
+    # Scheduled occurrences use a durable dedupe key and an explicit send
+    # state.  A row left in ``sending`` across a leader restart is quarantined
+    # as ``uncertain`` instead of retried: Discord may have accepted the send
+    # before the process died, so retrying would risk a duplicate.
+    dedupe_key: str | None = Field(default=None, unique=True)
+    delivery_state: str = Field(default="pending")
+    send_started_at: datetime | None = Field(default=None)
+    uncertain_at: datetime | None = Field(default=None)
 
 
 # nosemgrep: sqlmodel-datetime-without-factory (posted_at/sent_message_id are intentionally NULL until the gateway sends the row)
@@ -536,6 +548,87 @@ class Reminder(SQLModel, table=True):
     status: str = Field(default="pending")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     delivered_at: datetime | None = Field(default=None)
+
+
+# nosemgrep: sqlmodel-datetime-without-factory (claim/completion timestamps are lifecycle markers)
+class ScheduledTask(SQLModel, table=True):
+    """Durable one-shot reminders and recurring Discord digests.
+
+    ``next_run_at`` is the identity-bearing scheduled instant for the next
+    occurrence.  Claiming copies it into a deterministic occurrence id before
+    any async work begins.  The task row is then either completed (one-shot) or
+    advanced to the first cron instant after the drain time (recurring).
+    """
+
+    __tablename__ = "scheduled_tasks"
+    __table_args__ = (
+        CheckConstraint(
+            "task_kind IN ('reminder', 'digest')",
+            name="scheduled_task_kind_valid",
+        ),
+        CheckConstraint(
+            "schedule_kind IN ('one_shot', 'cron')",
+            name="scheduled_task_schedule_kind_valid",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'claimed', 'completed', 'failed', 'cancelled')",
+            name="scheduled_task_status_valid",
+        ),
+        CheckConstraint(
+            "(schedule_kind = 'one_shot' AND task_kind = 'reminder' "
+            "AND due_at IS NOT NULL AND cron_expression IS NULL) OR "
+            "(schedule_kind = 'cron' AND task_kind = 'digest' "
+            "AND due_at IS NULL AND cron_expression IS NOT NULL)",
+            name="scheduled_task_shape_valid",
+        ),
+        {"schema": "chat", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    channel_id: str = Field(index=True)
+    author_id: str = Field(index=True)
+    task_kind: str
+    schedule_kind: str
+    payload_json: str
+    due_at: datetime | None = Field(default=None)
+    cron_expression: str | None = Field(default=None)
+    next_run_at: datetime = Field(index=True)
+    status: str = Field(default="pending")
+    claim_token: str | None = Field(default=None)
+    claimed_at: datetime | None = Field(default=None)
+    current_occurrence_id: str | None = Field(default=None, max_length=64)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    completed_at: datetime | None = Field(default=None)
+
+
+# nosemgrep: sqlmodel-datetime-without-factory (enqueued_at is NULL until finalized)
+class ScheduledTaskOccurrence(SQLModel, table=True):
+    """Audit and deduplication record for one scheduled firing."""
+
+    __tablename__ = "scheduled_task_occurrences"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('claimed', 'enqueued', 'delivered', 'uncertain', 'failed')",
+            name="scheduled_task_occurrence_status_valid",
+        ),
+        UniqueConstraint(
+            "scheduled_task_id",
+            "scheduled_for",
+            name="scheduled_task_occurrence_task_time_unique",
+        ),
+        {"schema": "chat", "extend_existing": True},
+    )
+
+    occurrence_id: str = Field(primary_key=True, max_length=64)
+    scheduled_task_id: int = Field(index=True)
+    scheduled_for: datetime
+    status: str = Field(default="claimed")
+    claim_token: str
+    claimed_at: datetime
+    outbox_id: int | None = Field(default=None)
+    last_error: str | None = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    enqueued_at: datetime | None = Field(default=None)
 
 
 class UserStylePref(SQLModel, table=True):

@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import json
 import logging
 import os
 from dataclasses import dataclass, field, replace
@@ -9,13 +10,13 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
+import shared.inference
 from pydantic_ai import Agent, ModelSettings, RunContext, ToolDefinition
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
-
-import shared.inference
 from sandbox.client import run_code_in_sandbox
 from shared.embedding import EmbeddingClient
+
 from chat.models import Attachment, Blob, Message
 from chat.store import MessageStore
 from chat.web_search import search_web
@@ -144,39 +145,127 @@ def _create_reminder_sync(
     caller needs before the session closes and the ORM instance expires. Runs
     off the event loop via asyncio.to_thread."""
     from core.db import get_engine
-    from chat import reminders
     from sqlmodel import Session
 
+    from chat import scheduled_tasks
+
     with Session(get_engine()) as session:
-        result = reminders.create_reminder(
-            session, channel_id, author_id, content, due_at
+        result = scheduled_tasks.create_task(
+            session,
+            channel_id=channel_id,
+            author_id=author_id,
+            task_kind="reminder",
+            schedule_kind="one_shot",
+            content=content,
+            due_at=due_at,
         )
         if isinstance(result, str):
             return result
         session.commit()
-        return (result.id, result.due_at)
+        return (result.id, result.next_run_at)
 
 
-def _list_pending_sync(author_id: str) -> list[tuple[int, datetime, str]]:
+def _list_pending_sync(
+    author_id: str, channel_id: str
+) -> list[tuple[int, datetime, str]]:
     """Open a session, list the author's pending reminders, and extract the
     fields the caller needs before the session closes."""
     from core.db import get_engine
-    from chat import reminders
     from sqlmodel import Session
 
+    from chat import scheduled_tasks
+
     with Session(get_engine()) as session:
-        rows = reminders.list_pending(session, author_id)
-        return [(row.id, row.due_at, row.content) for row in rows]
+        rows = [
+            row
+            for row in scheduled_tasks.list_tasks(session, author_id, channel_id)
+            if row.task_kind == "reminder"
+        ]
+        return [
+            (row.id, row.next_run_at, json.loads(row.payload_json)["content"])
+            for row in rows
+        ]
 
 
-def _cancel_reminder_sync(author_id: str, reminder_id: int) -> bool:
+def _cancel_reminder_sync(
+    author_id: str, channel_id: str, reminder_id: int
+) -> bool:
     """Open a session and cancel the reminder, committing only on success."""
     from core.db import get_engine
-    from chat import reminders
     from sqlmodel import Session
 
+    from chat import scheduled_tasks
+
     with Session(get_engine()) as session:
-        ok = reminders.cancel_reminder(session, author_id, reminder_id)
+        ok = scheduled_tasks.cancel_task(
+            session,
+            author_id,
+            reminder_id,
+            channel_id=channel_id,
+            task_kind="reminder",
+        )
+        if ok:
+            session.commit()
+        return ok
+
+
+def _create_cron_digest_sync(
+    channel_id: str, author_id: str, cron_expression: str, digest_mode: str
+) -> tuple[int, datetime] | str:
+    from core.db import get_engine
+    from sqlmodel import Session
+
+    from chat import scheduled_tasks
+
+    with Session(get_engine()) as session:
+        result = scheduled_tasks.create_task(
+            session,
+            channel_id=channel_id,
+            author_id=author_id,
+            task_kind="digest",
+            schedule_kind="cron",
+            cron_expression=cron_expression,
+            digest_mode=digest_mode,
+        )
+        if isinstance(result, str):
+            return result
+        session.commit()
+        return (result.id, result.next_run_at)
+
+
+def _list_scheduled_sync(
+    author_id: str, channel_id: str
+) -> list[tuple[int, str, str, datetime, str | None]]:
+    from core.db import get_engine
+    from sqlmodel import Session
+
+    from chat import scheduled_tasks
+
+    with Session(get_engine()) as session:
+        return [
+            (
+                row.id,
+                row.task_kind,
+                row.schedule_kind,
+                row.next_run_at,
+                row.cron_expression,
+            )
+            for row in scheduled_tasks.list_tasks(session, author_id, channel_id)
+        ]
+
+
+def _cancel_scheduled_sync(
+    author_id: str, channel_id: str, task_id: int
+) -> bool:
+    from core.db import get_engine
+    from sqlmodel import Session
+
+    from chat import scheduled_tasks
+
+    with Session(get_engine()) as session:
+        ok = scheduled_tasks.cancel_task(
+            session, author_id, task_id, channel_id=channel_id
+        )
         if ok:
             session.commit()
         return ok
@@ -949,7 +1038,9 @@ def create_agent(
         if not ctx.deps.author_id:
             return "I can't manage reminders here."
         try:
-            rows = await asyncio.to_thread(_list_pending_sync, ctx.deps.author_id)
+            rows = await asyncio.to_thread(
+                _list_pending_sync, ctx.deps.author_id, ctx.deps.channel_id
+            )
         except Exception:
             logger.exception("list_my_reminders: list_pending failed")
             return "I couldn't check your reminders right now, try again in a bit."
@@ -975,13 +1066,129 @@ def create_agent(
         except (TypeError, ValueError):
             return "That doesn't look like a valid reminder id."
         try:
-            ok = await asyncio.to_thread(_cancel_reminder_sync, ctx.deps.author_id, rid)
+            ok = await asyncio.to_thread(
+                _cancel_reminder_sync,
+                ctx.deps.author_id,
+                ctx.deps.channel_id,
+                rid,
+            )
         except Exception:
             logger.exception("cancel_reminder: cancel_reminder failed")
             return "I couldn't cancel that reminder right now, try again in a bit."
         if not ok:
             return f"No pending reminder #{rid} found for you."
         return f"Reminder #{rid} cancelled."
+
+    @agent.tool
+    @signposted(
+        "When someone wants either a one-time reminder or an ongoing channel "
+        "digest on a UTC cron schedule. The destination is always the current "
+        "authorized channel; never accept or invent another channel id."
+    )
+    async def schedule_task(
+        ctx: RunContext[ChatDeps],
+        task_kind: str,
+        schedule_kind: str,
+        due_at_iso: str = "",
+        cron_expression: str = "",
+        text: str = "",
+        digest_mode: str = "summary",
+    ) -> str:
+        """Persist a scheduled task in this channel. Supported shapes are task_kind='reminder' with schedule_kind='one_shot' and an absolute UTC due_at_iso, or task_kind='digest' with schedule_kind='cron' and a five-field UTC cron_expression. digest_mode is 'summary' or 'decisions'."""
+        if not ctx.deps.author_id or not ctx.deps.channel_id:
+            return "I can't manage scheduled tasks here."
+        try:
+            if task_kind == "reminder" and schedule_kind == "one_shot":
+                due_at = _parse_due_at(due_at_iso)
+                if due_at is None:
+                    return (
+                        "I couldn't understand that time -- give me an absolute "
+                        "date and time, like '2026-07-05T09:00:00Z'."
+                    )
+                result = await asyncio.to_thread(
+                    _create_reminder_sync,
+                    ctx.deps.channel_id,
+                    ctx.deps.author_id,
+                    text,
+                    due_at,
+                )
+            elif task_kind == "digest" and schedule_kind == "cron":
+                result = await asyncio.to_thread(
+                    _create_cron_digest_sync,
+                    ctx.deps.channel_id,
+                    ctx.deps.author_id,
+                    cron_expression,
+                    digest_mode,
+                )
+            else:
+                return (
+                    "only one-shot reminders and recurring cron digests are supported"
+                )
+        except Exception:
+            logger.exception("schedule_task: create failed")
+            return "I couldn't schedule that task right now, try again in a bit."
+        if isinstance(result, str):
+            return result
+        task_id, next_run = result
+        return (
+            f"Scheduled task #{task_id}; next run "
+            f"{next_run.strftime('%Y-%m-%d %H:%M')} UTC."
+        )
+
+    @agent.tool
+    @signposted(
+        "When someone asks to list or check their one-shot reminders and "
+        "recurring digest schedules."
+    )
+    async def list_my_scheduled_tasks(ctx: RunContext[ChatDeps]) -> str:
+        """List the requesting user's active scheduled tasks."""
+        if not ctx.deps.author_id:
+            return "I can't manage scheduled tasks here."
+        try:
+            rows = await asyncio.to_thread(
+                _list_scheduled_sync, ctx.deps.author_id, ctx.deps.channel_id
+            )
+        except Exception:
+            logger.exception("list_my_scheduled_tasks: list failed")
+            return "I couldn't check your scheduled tasks right now."
+        if not rows:
+            return "You have no pending scheduled tasks."
+        lines = ["Your scheduled tasks:"]
+        for task_id, task_kind, schedule_kind, next_run, cron in rows:
+            detail = f"cron {cron}" if cron else schedule_kind
+            lines.append(
+                f"- #{task_id} {task_kind} ({detail}), next "
+                f"{next_run.strftime('%Y-%m-%d %H:%M')} UTC"
+            )
+        return "\n".join(lines)
+
+    @agent.tool
+    @signposted(
+        "When someone wants to cancel one of their scheduled reminders or digests."
+    )
+    async def cancel_scheduled_task(
+        ctx: RunContext[ChatDeps], task_id: int
+    ) -> str:
+        """Cancel one of the requesting user's pending scheduled tasks by id."""
+        if not ctx.deps.author_id:
+            return "I can't manage scheduled tasks here."
+        try:
+            resolved_id = int(task_id)
+        except (TypeError, ValueError):
+            return "That doesn't look like a valid scheduled task id."
+        try:
+            ok = await asyncio.to_thread(
+                _cancel_scheduled_sync,
+                ctx.deps.author_id,
+                ctx.deps.channel_id,
+                resolved_id,
+            )
+        except Exception:
+            logger.exception("cancel_scheduled_task: cancel failed")
+            return "I couldn't cancel that scheduled task right now."
+        if not ok:
+            return f"No pending scheduled task #{resolved_id} found for you."
+        return f"Scheduled task #{resolved_id} cancelled."
 
     @agent.tool
     @signposted(
@@ -1111,7 +1318,7 @@ def create_fact_check_agent(base_url: str | None = None) -> "Agent[None]":
         ),
     )
 
-    fact_agent: "Agent[None]" = Agent(
+    fact_agent: Agent[None] = Agent(
         model,
         system_prompt=(
             "You're Bosun, and someone just hit the fact-check button on your last response. "
