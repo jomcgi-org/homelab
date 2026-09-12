@@ -1,0 +1,69 @@
+# Both environments run the exact OCI chart selected by Kargo. Upstream's
+# release build pins all four service images; do not override them here.
+fullnameOverride: loom
+migrations:
+  mode: onBoot
+postgres:
+  enabled: false
+  # Ingest, query-api and two engines each own a pool: at most 20 per environment.
+  maxConnections: 5
+  external:
+    existingSecret: loom-db
+imagePullSecrets:
+  - name: ghcr-imagepull-secret
+objectStore:
+  storageClassName: standard-rwo
+  accessModes: [ReadWriteOnce]
+  retain: true
+  s3:
+    enabled: false
+# Keep ingest running: upstream requires query and worker pods to share its
+# node so they can mount the warehouse. Add queue scaling in a later change.
+ingest:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+queryApi:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+engine:
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      memory: 2Gi
+worker:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+# Internal-only bootstrap. Agent identity and public UI ingress are separate
+# integration work; no unauthenticated internet-facing ingest is introduced.
+gateway:
+  enabled: false
+networkPolicy:
+  enabled: true
+  extraEgress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monolith
+          podSelector:
+            matchLabels:
+              cnpg.io/cluster: monolith-pg
+      ports:
+        - protocol: TCP
+          port: 5432
