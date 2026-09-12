@@ -1390,6 +1390,52 @@ def test_discord_session_claims_followup_after_receipt_accept_window(
         assert agent.ember_session_id == "guest-one"
 
 
+@pytest.mark.parametrize("release_path", ["followup", "destroy"])
+def test_ownerless_session_releases_fence_after_receipt_is_pruned(
+    database, release_path
+):
+    make_ownerless_discord_session(database)
+    receipt = prepare()
+    capture(receipt)
+    with Session(database) as db, db.begin():
+        validate_active(db, receipt)
+        pending = db.exec(select(PendingMessage)).one()
+        db.delete(pending)
+        db.add(
+            AgentTurn(
+                session_id=1,
+                seq=1,
+                prompt="first Discord message",
+                result_text="done",
+                terminal_reason="completed",
+                stop_reason="end_turn",
+            )
+        )
+        permit = db.exec(select(AgentCapacityReservation)).one()
+        permit.state = "settled"
+        db.add(permit)
+        receipt_row = db.get(AgentResultReceipt, receipt["id"])
+        assert receipt_row is not None
+        db.delete(receipt_row)
+    with Session(database) as db:
+        assert db.get(AgentResultReceipt, receipt["id"]) is None
+        followup = store.create_pending_message(db, 1, "next Discord message")
+        assert followup.seq == 2
+
+    if release_path == "followup":
+        assert store.claim_pending_message_for_session_sync(1, "discord-followup") == 2
+    else:
+        with Session(database) as db:
+            assert store.clear_ember_bindings_by_ember_id(db, "guest-one") == [1]
+
+    with Session(database) as db:
+        agent = db.get(AgentSession, 1)
+        assert agent.result_receipt_fence_id is None
+        assert agent.ember_session_id == (
+            "guest-one" if release_path == "followup" else None
+        )
+
+
 @pytest.mark.parametrize(
     "changes",
     [

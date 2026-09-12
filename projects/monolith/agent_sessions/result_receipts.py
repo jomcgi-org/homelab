@@ -693,7 +693,9 @@ def release_ownerless_fence_locked(db: Session, agent, receipt_id: str) -> bool:
     an interactive follow-up cannot declare every received receipt abandoned:
     its original POST may still be returning the validated response. The
     durable observer-release stamp, or the receipt acceptance deadline, is the
-    proof that the old observer no longer owns dispatch exclusion.
+    proof that the old observer no longer owns dispatch exclusion. Receipt
+    retention may already have removed that metadata, in which case no receipt
+    remains to validate against the matching ownerless fence.
     """
     if (
         not _ownerless_interactive_session(agent)
@@ -708,9 +710,8 @@ def release_ownerless_fence_locked(db: Session, agent, receipt_id: str) -> bool:
         .values(created_at=AgentResultReceipt.created_at)
     )
     receipt = _receipt_metadata(db, receipt_id)
-    if (
-        receipt is None
-        or receipt["session_id"] != agent.id
+    if receipt is not None and (
+        receipt["session_id"] != agent.id
         or agent.local_session_id != receipt["local_session_id"]
         or agent.ember_session_id != receipt["guest_id"]
         or receipt["received_at"] is None
