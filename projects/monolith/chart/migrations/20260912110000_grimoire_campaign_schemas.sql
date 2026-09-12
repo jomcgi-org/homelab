@@ -155,6 +155,14 @@ BEGIN
                 (LIKE grimoire.entity INCLUDING DEFAULTS INCLUDING GENERATED
                  INCLUDING CONSTRAINTS INCLUDING STORAGE)', target_schema
         );
+        -- New campaigns are provisioned after the shared-corpus-only check is
+        -- installed below. LIKE copies CHECK constraints, so remove that one
+        -- before adding the inverse homebrew-only invariant.
+        EXECUTE format(
+            'ALTER TABLE %I.homebrew_entity
+                DROP CONSTRAINT IF EXISTS entity_shared_corpus_only_chk',
+            target_schema
+        );
         EXECUTE format(
             'ALTER TABLE %I.homebrew_entity
                 ADD PRIMARY KEY (id),
