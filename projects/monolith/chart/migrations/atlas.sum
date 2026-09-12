@@ -1,4 +1,4 @@
-h1:tumgXqj37FKZ6CxYyENuD7CAXCrafm1pWxsje28ufR0=
+h1:oNWH4P45DXBBh/ELBKh3W4MedNkR9sMJAiz1n1GXcBs=
 20260330000000_initial_schema.sql h1:J2futpSW0nJAIRR7nR7ssT7LwXIYrvRI+PkHb5Y4tLI=
 20260403000000_chat_schema.sql h1:pERUFC0vzM95etRuzp43XzkCV7lBCzrrtY5Mk7aF3CA=
 20260404000000_chat_attachments.sql h1:tv+Fdbr1rQC5nzUxfaBC0O6fu2OMGgLWf+YNg1WQXi4=
@@ -207,3 +207,4 @@ h1:tumgXqj37FKZ6CxYyENuD7CAXCrafm1pWxsje28ufR0=
 20260911214500_factory_receipt_escalation.sql h1:CRByj0b/giOIaQUnYNX2e8hPw+9D8nd9wZPU4LI/Mns=
 20260912090000_factory_receipt_escalated.sql h1:VJN+izZrvddeZ8DndCFXvL1CUA9T67XEP4/j6+7lBTQ=
 20260912100000_factory_start_accounting_basis.sql h1:elEugm5e1kfW1KTPXkXGpZNAOwCFjWdVqechAP5r8QA=
+20260912110000_grimoire_campaign_schemas.sql h1:YPfTX1GepPvMwRBKeepIH0sOt+wvTAsYdaLkJ/4DQyA=
