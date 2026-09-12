@@ -28,6 +28,28 @@ If a package directory is gazelle-excluded, the public binary's BUILD glob may d
 
 Public reads must filter to the public corpus, for example `is_global = true`. A schema-wide grant without row-level filtering does not just fail to serve data correctly, it leaks private rows to the public tier. Granting a table is necessary but not sufficient: the query itself has to filter.
 
+## 5. Explicit shared-cache contract
+
+For every new public data route, follow the
+[public response cache contract](../reference/services.md#public-response-cache-contract).
+Confirm that the response is anonymous and cookie-free, contains no
+caller-specific data, and does not depend on authentication, personalization,
+or session state. Authenticated or personalized responses must not use the
+shared-cache contract.
+
+Set explicit `Cache-Control` and `Cloudflare-CDN-Cache-Control` response headers
+at the same-origin SvelteKit proxy with `cloudflareCacheHeaders()` and a
+route-specific constant from `projects/monolith/frontend/src/lib/cache-headers.js`.
+Keep a backend mirror synchronized when one exists. If the browser polls the
+route, start with the documented five-minute cadence and justify route-specific
+exceptions against the data refresh rate and edge lifetime. Check both browser
+and edge directives rather than treating them as one TTL.
+
+Header tests prove only the landed code contract. Keep live cache acceptance
+unverified until a post-deploy repeated request under the
+`jomcgi.dev` apex hostname rule shows an appropriate `cf-cache-status` and
+`age` response. Do not claim an edge hit from CI or from header presence alone.
+
 ## Rollout: the public origin is `monolith-public`
 
 `jomcgi.dev` is served by the `monolith-public` chart, so a change that only moves the `monolith` chart does not move the public origin. Chart versions are written back on `main` after merge (ADR platform/009): a PR never touches `Chart.yaml` `version:` or `targetRevision:`. On the hub Kargo promotes `monolith-public` from that published version, so the git pin under `projects/gke-apps/monolith-public/` is a floor, not the deployed version. Confirm the `chart-version-bot` write-back landed, then read the live value before curling the route:
