@@ -269,6 +269,36 @@ def test_landing_never_arms_a_head_newer_than_delivery_approval(db, monkeypatch)
     ]
 
 
+def test_landing_never_arms_without_an_approved_head(db, monkeypatch):
+    delivered(db, "t-1", 11, 3, head=None)
+    calls = github(monkeypatch, pulls={3: pull(3)})
+
+    landing.landing_tick(POLICY)
+
+    assert calls["graphql"] == []
+    assert audits(db, "merge_arm_refused", "t-1") == [
+        {"pr_number": 3, "reason": "approved_head_missing"}
+    ]
+
+
+def test_landing_never_arms_without_a_current_pull_request_head(db, monkeypatch):
+    delivered(db, "t-1", 11, 3)
+    current = pull(3)
+    current["head"] = {"ref": "factory/t-3"}
+    calls = github(monkeypatch, pulls={3: current})
+
+    landing.landing_tick(POLICY)
+
+    assert calls["graphql"] == []
+    assert audits(db, "merge_arm_refused", "t-1") == [
+        {
+            "pr_number": 3,
+            "reason": "pull_request_head_missing",
+            "approved_head_sha": HEAD,
+        }
+    ]
+
+
 def test_landing_defers_every_waiting_delivery_while_one_is_armed(db, monkeypatch):
     delivered(db, "t-1", 11, 3)
     delivered(db, "t-2", 12, 4)
