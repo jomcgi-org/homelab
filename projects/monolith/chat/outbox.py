@@ -48,7 +48,9 @@ def _record_scheduled_outcome(
     except Exception:
         # Delivery state on the outbox is authoritative. A corrupt legacy
         # payload must not roll back that state transition or cause a resend.
-        logger.exception("outbox: failed to record scheduled outcome for row %s", row.id)
+        logger.exception(
+            "outbox: failed to record scheduled outcome for row %s", row.id
+        )
 
 
 def enqueue_message(
@@ -150,9 +152,7 @@ def _claim_pending(engine) -> list[dict]:
             row.delivery_state = "uncertain"
             row.uncertain_at = datetime.now(timezone.utc)
             row.last_error = "process restarted while Discord send outcome was unknown"
-            _record_scheduled_outcome(
-                session, row, "uncertain", row.last_error
-            )
+            _record_scheduled_outcome(session, row, "uncertain", row.last_error)
             session.add(row)
         if interrupted:
             session.commit()

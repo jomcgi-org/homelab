@@ -187,9 +187,7 @@ def _list_pending_sync(
         ]
 
 
-def _cancel_reminder_sync(
-    author_id: str, channel_id: str, reminder_id: int
-) -> bool:
+def _cancel_reminder_sync(author_id: str, channel_id: str, reminder_id: int) -> bool:
     """Open a session and cancel the reminder, committing only on success."""
     from core.db import get_engine
     from sqlmodel import Session
@@ -254,9 +252,7 @@ def _list_scheduled_sync(
         ]
 
 
-def _cancel_scheduled_sync(
-    author_id: str, channel_id: str, task_id: int
-) -> bool:
+def _cancel_scheduled_sync(author_id: str, channel_id: str, task_id: int) -> bool:
     from core.db import get_engine
     from sqlmodel import Session
 
@@ -1166,9 +1162,7 @@ def create_agent(
     @signposted(
         "When someone wants to cancel one of their scheduled reminders or digests."
     )
-    async def cancel_scheduled_task(
-        ctx: RunContext[ChatDeps], task_id: int
-    ) -> str:
+    async def cancel_scheduled_task(ctx: RunContext[ChatDeps], task_id: int) -> str:
         """Cancel one of the requesting user's pending scheduled tasks by id."""
         if not ctx.deps.author_id:
             return "I can't manage scheduled tasks here."
