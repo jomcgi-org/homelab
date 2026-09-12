@@ -84,7 +84,7 @@ defmodule Embervm.WorkloadWatcher do
   use GenServer
   require Logger
 
-  alias Embervm.WorkloadCatalog
+  alias Embervm.{Cell, WorkloadCatalog}
 
   @default_table :embervm_workloads
   @base_backoff_ms 1_000
@@ -187,6 +187,35 @@ defmodule Embervm.WorkloadWatcher do
   @impl true
   def init(opts) do
     table = Keyword.get(opts, :table, @default_table)
+    assignment_table =
+      Keyword.get_lazy(opts, :assignment_table, fn ->
+        if table == @default_table,
+          do: Cell.assignment_table(),
+          else: String.to_atom("#{table}_cell_assignments")
+      end)
+
+    cell_id = Keyword.get(opts, :cell_id, Cell.current())
+    known_cell_ids = Keyword.get(opts, :known_cell_ids, Cell.known_ids())
+
+    unless Cell.valid_id?(cell_id) and cell_id in known_cell_ids and
+             Enum.all?(known_cell_ids, &Cell.valid_id?/1) do
+      raise ArgumentError, "invalid cell registry configuration"
+    end
+
+    op_log_mod = Keyword.get(opts, :op_log_mod, Embervm.Application.op_log_mod())
+    op_log = Keyword.get(opts, :op_log, op_log_mod)
+
+    load_assignments_fun =
+      Keyword.get_lazy(opts, :load_assignments_fun, fn ->
+        fn -> safe_load_assignments(op_log_mod, op_log, cell_id) end
+      end)
+
+    claim_assignment_fun =
+      Keyword.get_lazy(opts, :claim_assignment_fun, fn ->
+        fn workload, assigned_cell ->
+          safe_claim_assignment(op_log_mod, op_log, workload, assigned_cell, cell_id)
+        end
+      end)
     lister = Keyword.get(opts, :lister, &Embervm.K8s.list_workloads/0)
     watcher_fun = Keyword.get(opts, :watcher_fun, &Embervm.K8s.watch_workloads/2)
     status_writer = Keyword.get(opts, :status_writer, &Embervm.K8s.patch_workload_status/3)
@@ -246,9 +275,22 @@ defmodule Embervm.WorkloadWatcher do
         Application.get_env(:embervm, :workload_resync_interval_ms, @default_resync_interval_ms)
 
     WorkloadCatalog.create(table)
+    Cell.create(assignment_table)
+
+    case load_assignments_fun.() do
+      {:ok, assignments} ->
+        validate_loaded_assignments!(assignments, known_cell_ids)
+        Cell.seed(assignment_table, assignments)
+
+      {:error, reason} -> raise "could not rebuild workload cell assignments: #{inspect(reason)}"
+    end
 
     state = %{
       table: table,
+      assignment_table: assignment_table,
+      cell_id: cell_id,
+      known_cell_ids: known_cell_ids,
+      claim_assignment_fun: claim_assignment_fun,
       stateful_listen_range: stateful_listen_range,
       composite_listen_range: composite_listen_range,
       max_group_size: max_group_size,
@@ -507,6 +549,7 @@ defmodule Embervm.WorkloadWatcher do
 
     if name do
       WorkloadCatalog.drop(state.table, name)
+      Cell.deactivate(state.assignment_table, name)
       state.base_forget_fun.(name)
     end
 
@@ -624,6 +667,9 @@ defmodule Embervm.WorkloadWatcher do
       state.base_forget_fun.(name)
     end)
 
+    (Cell.active_names(state.assignment_table) -- seen)
+    |> Enum.each(&Cell.deactivate(state.assignment_table, &1))
+
     if rv, do: %{state | resource_version: rv}, else: state
   end
 
@@ -641,7 +687,39 @@ defmodule Embervm.WorkloadWatcher do
       generation = get_in(cr, ["metadata", "generation"])
       spec = Map.get(cr, "spec") || %{}
 
-      case validate(state, name, spec) do
+      case reconcile_assignment(state, name, spec) do
+        :owned ->
+          catalog_owned_cr(state, name, namespace, generation, spec)
+
+        {:foreign, assigned_cell} ->
+          WorkloadCatalog.drop(state.table, name)
+          state.base_forget_fun.(name)
+
+          Logger.debug("embervm workload watcher: workload belongs to another cell",
+            workload: name,
+            cell_id: assigned_cell
+          )
+
+        {:error, reason_code, message} ->
+          WorkloadCatalog.drop(state.table, name)
+          state.base_forget_fun.(name)
+          write_status(state, namespace, name, generation, ready_condition(state, "False", reason_code, message))
+      end
+
+      name
+    catch
+      kind, reason ->
+        Logger.warning(
+          "embervm workload watcher: catalog_cr crashed on a malformed CR, skipping: " <>
+            inspect({kind, reason})
+        )
+
+        get_in(cr, ["metadata", "name"])
+    end
+  end
+
+  defp catalog_owned_cr(state, name, namespace, generation, spec) do
+    case validate(state, name, spec) do
         {:ok, class, floor, cap, session_cfg, serving_cfg, stateful_cfg, group_cfg} ->
           entry =
             catalog_entry(
@@ -657,6 +735,7 @@ defmodule Embervm.WorkloadWatcher do
               stateful_cfg,
               group_cfg
             )
+            |> Map.put(:cell_id, state.cell_id)
 
           WorkloadCatalog.upsert(state.table, name, entry)
 
@@ -678,17 +757,45 @@ defmodule Embervm.WorkloadWatcher do
           WorkloadCatalog.drop(state.table, name)
           state.base_forget_fun.(name)
           write_status(state, namespace, name, generation, ready_condition(state, "False", reason_code, message))
-      end
+    end
+  end
 
-      name
-    catch
-      kind, reason ->
-        Logger.warning(
-          "embervm workload watcher: catalog_cr crashed on a malformed CR, skipping: " <>
-            inspect({kind, reason})
-        )
+  defp reconcile_assignment(state, name, spec) do
+    requested = Map.get(spec, "cellId", Cell.default_id())
 
-        get_in(cr, ["metadata", "name"])
+    cond do
+      not Cell.valid_id?(requested) ->
+        {:error, "InvalidCellAssignment", "spec.cellId must be a DNS label"}
+
+      requested not in state.known_cell_ids ->
+        Cell.deactivate(state.assignment_table, name)
+
+        {:error, "UnknownCellAssignment",
+         "spec.cellId #{inspect(requested)} is not present in the configured cell registry"}
+
+      true ->
+        case state.claim_assignment_fun.(name, requested) do
+          {:ok, ^requested} ->
+            Cell.put(state.assignment_table, name, requested, true)
+            if requested == state.cell_id, do: :owned, else: {:foreign, requested}
+
+          {:ok, durable_owner} ->
+            if Cell.valid_id?(durable_owner) and durable_owner in state.known_cell_ids do
+              Cell.put(state.assignment_table, name, durable_owner, true)
+
+              {:error, "CellAssignmentImmutable",
+               "workload is durably owned by #{inspect(durable_owner)} and cannot be reassigned to #{inspect(requested)}"}
+            else
+              Cell.deactivate(state.assignment_table, name)
+
+              {:error, "UnknownDurableCellAssignment",
+               "durable workload owner #{inspect(durable_owner)} is not present in the configured cell registry"}
+            end
+
+          {:error, reason} ->
+            {:error, "CellAssignmentUnavailable",
+             "durable workload cell assignment could not be verified: #{inspect(reason)}"}
+        end
     end
   end
 
@@ -1688,4 +1795,46 @@ defmodule Embervm.WorkloadWatcher do
   end
 
   defp parse_retry_on(_), do: [:transport, :timeout, :guest5xx]
+
+  defp safe_load_assignments(op_log_mod, op_log, local_cell) do
+    if server_available?(op_log) do
+      op_log_mod.load_workload_cells(op_log)
+    else
+      # Unit tests historically start the watcher without the application
+      # supervision tree. The default cell keeps that local compatibility; a
+      # non-default cell is never allowed to boot without durable ownership.
+      if local_cell == Cell.default_id(), do: {:ok, []}, else: {:error, :op_log_unavailable}
+    end
+  end
+
+  defp validate_loaded_assignments!(assignments, known_cell_ids) when is_list(assignments) do
+    invalid =
+      Enum.reject(assignments, fn row ->
+        workload = Map.get(row, :workload) || Map.get(row, "workload")
+        cell_id = Map.get(row, :cell_id) || Map.get(row, "cell_id")
+        is_binary(workload) and workload != "" and Cell.valid_id?(cell_id) and cell_id in known_cell_ids
+      end)
+
+    if invalid != [] do
+      raise "durable workload cell registry contains unknown or invalid assignments: #{inspect(invalid)}"
+    end
+  end
+
+  defp validate_loaded_assignments!(other, _known_cell_ids) do
+    raise "durable workload cell registry returned invalid data: #{inspect(other)}"
+  end
+
+  defp safe_claim_assignment(op_log_mod, op_log, workload, assigned_cell, local_cell) do
+    if server_available?(op_log) do
+      op_log_mod.claim_workload(op_log, workload, assigned_cell)
+    else
+      if local_cell == Cell.default_id() and assigned_cell == Cell.default_id(),
+        do: {:ok, Cell.default_id()},
+        else: {:error, :op_log_unavailable}
+    end
+  end
+
+  defp server_available?(pid) when is_pid(pid), do: Process.alive?(pid)
+  defp server_available?(name) when is_atom(name), do: not is_nil(Process.whereis(name))
+  defp server_available?(_), do: false
 end

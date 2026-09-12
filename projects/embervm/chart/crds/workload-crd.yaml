@@ -78,7 +78,18 @@ spec:
                 - class
                 - source
                 - resources
+              x-kubernetes-validations:
+                - rule: "!has(oldSelf.cellId) ? self.cellId == 'cell-0' : self.cellId == oldSelf.cellId"
+                  message: spec.cellId is immutable; legacy workloads may only backfill cell-0
               properties:
+                cellId:
+                  type: string
+                  default: cell-0
+                  pattern: '^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$'
+                  description: >-
+                    Immutable cell ownership assignment. Existing workloads and
+                    omitted values belong to cell-0. Cross-cell migration is not
+                    automatic and requires a future explicit migration workflow.
                 class:
                   type: string
                   description: >-

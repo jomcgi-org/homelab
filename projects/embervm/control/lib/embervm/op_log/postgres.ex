@@ -115,6 +115,56 @@ defmodule Embervm.OpLog.Postgres do
   # the append budget below is defined RELATIVE to it.
   @query_timeout_ms 15_000
 
+  # Every mutable op-log record belongs to one cell. workload_cells is omitted:
+  # it is the fleet-visible ownership index used to reject a second claimant.
+  @cell_scoped_tables [
+    "ops",
+    "tasks",
+    "results",
+    "usage",
+    "sessions",
+    "serving_instances",
+    "stateful_instances",
+    "volumes",
+    "volume_blessing",
+    "key_epochs",
+    "blessing_lease",
+    "checkpoint_dispatch",
+    "group_instances",
+    "group_members",
+    "meta"
+  ]
+
+  @cell_setting "COALESCE(NULLIF(current_setting('embervm.cell_id', true), ''), 'cell-0')"
+
+  @cell_column_ddl Enum.flat_map(@cell_scoped_tables, fn table ->
+                     [
+                       "ALTER TABLE #{table} ADD COLUMN IF NOT EXISTS cell_id TEXT NOT NULL DEFAULT 'cell-0'",
+                       "ALTER TABLE #{table} ALTER COLUMN cell_id SET DEFAULT (#{@cell_setting})"
+                     ]
+                   end)
+
+  @cell_key_ddl [
+    "DROP INDEX IF EXISTS tasks_idem_idx",
+    "CREATE UNIQUE INDEX IF NOT EXISTS tasks_cell_idem_idx ON tasks(cell_id, workload, idempotency_key) WHERE idempotency_key IS NOT NULL",
+    "DROP INDEX IF EXISTS sessions_idem_idx",
+    "CREATE UNIQUE INDEX IF NOT EXISTS sessions_cell_idem_idx ON sessions(cell_id, principal, idempotency_key) WHERE idempotency_key IS NOT NULL",
+    "ALTER TABLE usage DROP CONSTRAINT IF EXISTS usage_pkey",
+    "CREATE UNIQUE INDEX IF NOT EXISTS usage_cell_key ON usage(cell_id, principal, day)",
+    "ALTER TABLE key_epochs DROP CONSTRAINT IF EXISTS key_epochs_pkey",
+    "CREATE UNIQUE INDEX IF NOT EXISTS key_epochs_cell_key ON key_epochs(cell_id, principal)",
+    "ALTER TABLE meta DROP CONSTRAINT IF EXISTS meta_pkey",
+    "CREATE UNIQUE INDEX IF NOT EXISTS meta_cell_key ON meta(cell_id, key)"
+  ]
+
+  @cell_policy_ddl Enum.flat_map(@cell_scoped_tables, fn table ->
+                     [
+                       "ALTER TABLE #{table} ENABLE ROW LEVEL SECURITY",
+                       "ALTER TABLE #{table} FORCE ROW LEVEL SECURITY",
+                       "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = current_schema() AND tablename = '#{table}' AND policyname = 'embervm_cell_isolation') THEN CREATE POLICY embervm_cell_isolation ON #{table} USING (cell_id = #{@cell_setting}) WITH CHECK (cell_id = #{@cell_setting}); END IF; END $$"
+                     ]
+                   end)
+
   @connection_loss_codes [
     :connection_exception,
     :connection_does_not_exist,
@@ -392,8 +442,19 @@ defmodule Embervm.OpLog.Postgres do
       key TEXT PRIMARY KEY,
       value BIGINT
     )
+    """,
+    # Fleet-visible, insert-only workload ownership. This table deliberately is
+    # not protected by the per-cell row policy below: every cell must see the
+    # first owner in order to reject an attempted reassignment.
     """
-  ]
+    CREATE TABLE IF NOT EXISTS workload_cells (
+      workload TEXT PRIMARY KEY,
+      cell_id TEXT NOT NULL,
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL
+    )
+    """
+  ] ++ @cell_column_ddl ++ @cell_key_ddl ++ @cell_policy_ddl
 
   @day_ms 86_400_000
 
@@ -425,6 +486,16 @@ defmodule Embervm.OpLog.Postgres do
   @impl Embervm.OpLog
   def load_tasks(server \\ __MODULE__) do
     Embervm.OpLog.safe_server_call(server, :load_tasks)
+  end
+
+  @impl Embervm.OpLog
+  def claim_workload(server \\ __MODULE__, workload, cell_id) do
+    Embervm.OpLog.safe_server_call(server, {:claim_workload, workload, cell_id})
+  end
+
+  @impl Embervm.OpLog
+  def load_workload_cells(server \\ __MODULE__) do
+    Embervm.OpLog.safe_server_call(server, :load_workload_cells)
   end
 
   @impl Embervm.OpLog
@@ -518,6 +589,12 @@ defmodule Embervm.OpLog.Postgres do
 
   @impl true
   def init(opts) do
+    cell_id = Keyword.get(opts, :cell_id, Embervm.Cell.current())
+
+    unless Embervm.Cell.valid_id?(cell_id) do
+      raise ArgumentError, "invalid cell_id #{inspect(cell_id)}"
+    end
+
     retention_ms = Keyword.get(opts, :retention_ms, @default_retention_ms)
     journal_horizon_ms = Keyword.get(opts, :journal_horizon_ms, @default_journal_horizon_ms)
     compact_batch_size = Keyword.get(opts, :compact_batch_size, @default_compact_batch_size)
@@ -525,13 +602,14 @@ defmodule Embervm.OpLog.Postgres do
     transaction_fun = Keyword.get(opts, :transaction_fun, &Postgrex.transaction/2)
     query_fun = Keyword.get(opts, :query_fun, &Postgrex.query/3)
 
-    with {:ok, conn, owns_conn} <- open_connection(opts) do
-      Logger.info("embervm op-log opened against Postgres")
+    with {:ok, conn, owns_conn} <- open_connection(opts, cell_id) do
+      Logger.info("embervm op-log opened against Postgres", cell_id: cell_id)
 
       {:ok,
        %{
          conn: conn,
          owns_conn: owns_conn,
+         cell_id: cell_id,
          transaction_fun: transaction_fun,
          query_fun: query_fun,
          retention_ms: retention_ms,
@@ -543,16 +621,24 @@ defmodule Embervm.OpLog.Postgres do
     end
   end
 
-  defp open_connection(opts) do
+  defp open_connection(opts, cell_id) do
     case Keyword.fetch(opts, :connection) do
       {:ok, conn} ->
         {:ok, conn, false}
 
       :error ->
-        with {:ok, conn} <- opts |> Keyword.fetch!(:dsn) |> connect(),
+        with {:ok, conn} <- opts |> Keyword.fetch!(:dsn) |> connect(cell_id),
+             :ok <- configure_cell(conn, cell_id),
              :ok <- apply_ddl(conn) do
           {:ok, conn, true}
         end
+    end
+  end
+
+  defp configure_cell(conn, cell_id) do
+    case Postgrex.query(conn, "SELECT set_config('embervm.cell_id', $1, false)", [cell_id]) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -560,14 +646,18 @@ defmodule Embervm.OpLog.Postgres do
   # Postgrex.Utils.default_opts/1 has no public DSN parser, so we accept
   # either a full "postgres://user:pass@host:port/db" DSN (parsed here) or,
   # for tests, opts already in Postgrex's own keyword shape.
-  defp connect(dsn) when is_binary(dsn), do: dsn |> connect_opts() |> Postgrex.start_link()
+  defp connect(dsn, cell_id) when is_binary(dsn),
+    do: dsn |> connect_opts() |> connect(cell_id)
 
   # Opts already in Postgrex's own keyword shape (tests). Keepalive is put_new,
   # so a test that pins its own socket_options still wins.
-  defp connect(opts) when is_list(opts) do
+  defp connect(opts, cell_id) when is_list(opts) do
     opts
     |> Keyword.put(:name, nil)
     |> Keyword.put_new(:socket_options, keepalive_socket_options())
+    |> Keyword.update(:parameters, [{:"embervm.cell_id", cell_id}], fn parameters ->
+      Keyword.put(parameters, :"embervm.cell_id", cell_id)
+    end)
     |> Postgrex.start_link()
   end
 
@@ -616,7 +706,7 @@ defmodule Embervm.OpLog.Postgres do
   @impl true
   def handle_call({:append, %Op{} = op}, _from, state) do
     reply_connection_call(state, :append, fn ->
-      do_append(state.conn, op, state.transaction_fun)
+      do_append(state.conn, %{op | cell_id: state.cell_id}, state.transaction_fun)
     end)
   end
 
@@ -629,6 +719,18 @@ defmodule Embervm.OpLog.Postgres do
   def handle_call(:load_tasks, _from, state) do
     reply_connection_call(state, :load_tasks, fn ->
       do_load_tasks(state.conn, state.query_fun)
+    end)
+  end
+
+  def handle_call({:claim_workload, workload, cell_id}, _from, state) do
+    reply_connection_call(state, :claim_workload, fn ->
+      do_claim_workload(state.conn, workload, cell_id, state.transaction_fun)
+    end)
+  end
+
+  def handle_call(:load_workload_cells, _from, state) do
+    reply_connection_call(state, :load_workload_cells, fn ->
+      do_load_workload_cells(state.conn, state.query_fun)
     end)
   end
 
@@ -794,12 +896,13 @@ defmodule Embervm.OpLog.Postgres do
 
   defp insert_op(conn, %Op{} = op) do
     sql = """
-    INSERT INTO ops (ts, tenant, principal, workload, task_id, session_id, serving_instance_id, stateful_instance_id, group_instance_id, kind, payload_blob)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    INSERT INTO ops (cell_id, ts, tenant, principal, workload, task_id, session_id, serving_instance_id, stateful_instance_id, group_instance_id, kind, payload_blob)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
     RETURNING seq
     """
 
     params = [
+      op.cell_id,
       op.ts,
       op.tenant,
       op.principal,
@@ -905,6 +1008,12 @@ defmodule Embervm.OpLog.Postgres do
 
   @doc false
   def projected_kinds, do: @projected_kinds
+
+  @doc false
+  def cell_scoped_tables, do: @cell_scoped_tables
+
+  @doc false
+  def ddl, do: @ddl
 
   # Write-through projection: applies the effect of one op onto the mutable
   # tasks/results tables, mirroring Embervm.OpLog.SQLite.project/3 exactly
@@ -1377,7 +1486,7 @@ defmodule Embervm.OpLog.Postgres do
     sql = """
     INSERT INTO key_epochs (principal, current_epoch, min_epoch, updated_at)
     VALUES ($1, $2, 0, $3)
-    ON CONFLICT(principal) DO UPDATE SET
+    ON CONFLICT(cell_id, principal) DO UPDATE SET
       current_epoch = excluded.current_epoch,
       updated_at = excluded.updated_at
     """
@@ -1920,7 +2029,7 @@ defmodule Embervm.OpLog.Postgres do
         sql = """
         INSERT INTO usage (principal, day, tenant, vcpu_seconds, gb_seconds, task_count, updated_at)
         VALUES ($1, $2, $3, $4, $5, 1, $6)
-        ON CONFLICT(principal, day) DO UPDATE SET
+        ON CONFLICT(cell_id, principal, day) DO UPDATE SET
           vcpu_seconds = usage.vcpu_seconds + excluded.vcpu_seconds,
           gb_seconds = usage.gb_seconds + excluded.gb_seconds,
           task_count = usage.task_count + 1,
@@ -1949,7 +2058,7 @@ defmodule Embervm.OpLog.Postgres do
     sql = """
     INSERT INTO usage (principal, day, tenant, vcpu_seconds, gb_seconds, task_count, request_count, updated_at)
     VALUES ($1, $2, $3, 0, 0, 0, $4, $5)
-    ON CONFLICT(principal, day) DO UPDATE SET
+    ON CONFLICT(cell_id, principal, day) DO UPDATE SET
       request_count = usage.request_count + excluded.request_count,
       updated_at = excluded.updated_at
     """
@@ -1965,7 +2074,7 @@ defmodule Embervm.OpLog.Postgres do
     sql = """
     INSERT INTO usage (principal, day, tenant, vcpu_seconds, gb_seconds, task_count, request_count, updated_at)
     VALUES ($1, $2, $3, 0, 0, 0, $4, $5)
-    ON CONFLICT(principal, day) DO UPDATE SET
+    ON CONFLICT(cell_id, principal, day) DO UPDATE SET
       request_count = usage.request_count + excluded.request_count,
       updated_at = excluded.updated_at
     """
@@ -1985,7 +2094,7 @@ defmodule Embervm.OpLog.Postgres do
         sql = """
         INSERT INTO usage (principal, day, tenant, vcpu_seconds, gb_seconds, task_count, request_count, updated_at)
         VALUES ($1, $2, $3, $4, $5, 0, 0, $6)
-        ON CONFLICT(principal, day) DO UPDATE SET
+        ON CONFLICT(cell_id, principal, day) DO UPDATE SET
           vcpu_seconds = usage.vcpu_seconds + excluded.vcpu_seconds,
           gb_seconds = usage.gb_seconds + excluded.gb_seconds,
           updated_at = excluded.updated_at
@@ -2023,6 +2132,56 @@ defmodule Embervm.OpLog.Postgres do
     end
   end
 
+  defp do_claim_workload(conn, workload, cell_id, transaction_fun)
+       when is_binary(workload) and workload != "" and is_binary(cell_id) and cell_id != "" do
+    if Embervm.Cell.valid_id?(cell_id) do
+      do_claim_valid_workload(conn, workload, cell_id, transaction_fun)
+    else
+      {:error, :invalid_assignment}
+    end
+  end
+
+  defp do_claim_valid_workload(conn, workload, cell_id, transaction_fun) do
+    now = System.system_time(:millisecond)
+
+    case transaction_fun.(conn, fn tx ->
+           with {:ok, _} <-
+                  Postgrex.query(
+                    tx,
+                    "INSERT INTO workload_cells (workload, cell_id, created_at, updated_at) VALUES ($1, $2, $3, $3) ON CONFLICT(workload) DO NOTHING",
+                    [workload, cell_id, now]
+                  ),
+                {:ok, %Postgrex.Result{rows: [[owner]]}} <-
+                  Postgrex.query(tx, "SELECT cell_id FROM workload_cells WHERE workload=$1", [workload]) do
+             owner
+           else
+             {:error, reason} -> Postgrex.rollback(tx, reason)
+             other -> Postgrex.rollback(tx, {:assignment_read_failed, other})
+           end
+         end) do
+      {:ok, owner} -> {:ok, owner}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp do_claim_workload(_conn, _workload, _cell_id, _transaction_fun),
+    do: {:error, :invalid_assignment}
+
+  defp do_load_workload_cells(conn, query_fun) do
+    sql = "SELECT workload, cell_id, created_at, updated_at FROM workload_cells ORDER BY workload"
+
+    case query_fun.(conn, sql, []) do
+      {:ok, %Postgrex.Result{rows: rows}} ->
+        {:ok,
+         Enum.map(rows, fn [workload, cell_id, created_at, updated_at] ->
+           %{workload: workload, cell_id: cell_id, created_at: created_at, updated_at: updated_at}
+         end)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   # -- reads -----------------------------------------------------------------
 
   defp do_read_from(conn, seq, query_fun) do
@@ -2031,7 +2190,7 @@ defmodule Embervm.OpLog.Postgres do
         {:error, {:compacted, marker}}
       else
         sql = """
-        SELECT seq, ts, tenant, principal, workload, task_id, session_id, serving_instance_id, stateful_instance_id, group_instance_id, kind, payload_blob
+        SELECT seq, cell_id, ts, tenant, principal, workload, task_id, session_id, serving_instance_id, stateful_instance_id, group_instance_id, kind, payload_blob
         FROM ops WHERE seq > $1 ORDER BY seq ASC
         """
 
@@ -2045,6 +2204,7 @@ defmodule Embervm.OpLog.Postgres do
 
   defp row_to_op([
          seq,
+         cell_id,
          ts,
          tenant,
          principal,
@@ -2059,6 +2219,7 @@ defmodule Embervm.OpLog.Postgres do
        ]) do
     %Op{
       seq: seq,
+      cell_id: cell_id,
       ts: ts,
       tenant: tenant,
       principal: principal,
@@ -2779,7 +2940,7 @@ defmodule Embervm.OpLog.Postgres do
   defp write_marker(conn, value) do
     sql = """
     INSERT INTO meta (key, value) VALUES ($1, $2)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    ON CONFLICT(cell_id, key) DO UPDATE SET value = excluded.value
     """
 
     exec(conn, sql, [@marker_key, value])

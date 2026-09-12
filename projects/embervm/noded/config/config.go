@@ -333,6 +333,10 @@ type Config struct {
 	// plane adopts it without ever listing pods. Empty disables dial-home (tests,
 	// out-of-cluster); the daemon logs a startup notice and never registers.
 	ControlPlaneURL string
+	// CellID is the immutable control-plane ownership domain this brick belongs
+	// to. It is sent on every dial-home registration and defaults to cell-0 for
+	// existing single-cell deployments. Env EMBERVM_CELL_ID.
+	CellID string
 	// ControlPlaneTokenPath is the file the daemon reads its bearer token from for
 	// the dial-home POST (EMBERVM_NODED_CONTROL_PLANE_TOKEN_PATH). Default the
 	// projected ServiceAccount token at
@@ -508,6 +512,7 @@ func Load() (Config, error) {
 		DiffBanking:           boolDefault("EMBERVM_NODED_DIFF_BANKING", false),
 		DiffBankingWorkloads:  csvDefault("EMBERVM_NODED_DIFF_BANKING_WORKLOADS"),
 		ControlPlaneURL:       os.Getenv("EMBERVM_NODED_CONTROL_PLANE_URL"),
+		CellID:                getenvDefault("EMBERVM_CELL_ID", "cell-0"),
 		ControlPlaneTokenPath: getenvDefault("EMBERVM_NODED_CONTROL_PLANE_TOKEN_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
 		RegisterInterval:      30 * time.Second,
 
@@ -538,6 +543,9 @@ func Load() (Config, error) {
 	}
 	if c.AdmissionModel != "observed" && c.AdmissionModel != "reserved" {
 		return Config{}, fmt.Errorf("EMBERVM_NODED_ADMISSION_MODEL must be observed or reserved, got %q", c.AdmissionModel)
+	}
+	if !regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`).MatchString(c.CellID) {
+		return Config{}, fmt.Errorf("EMBERVM_CELL_ID must be a DNS label, got %q", c.CellID)
 	}
 	if c.StoreAccessKeyID == "" && c.StoreSecretAccessKey != "" {
 		return Config{}, fmt.Errorf("EMBERVM_NODED_STORE_ACCESS_KEY_ID is required when EMBERVM_NODED_STORE_SECRET_ACCESS_KEY is set")

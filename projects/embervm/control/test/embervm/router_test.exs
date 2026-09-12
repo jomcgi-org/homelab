@@ -59,6 +59,14 @@ defmodule Embervm.RouterTest do
     def submit(_server, _attrs), do: {:error, :unavailable}
   end
 
+  defmodule CellFenceBomb do
+    def create(_server, _workload, _principal, _restore_lineage, _opts),
+      do: raise("foreign create handler was called")
+
+    def destroy_instance(_server, _workload),
+      do: raise("foreign destroy handler was called")
+  end
+
   # Fakes for the R2 session routes: the router resolves the session manager/store
   # from app-env (the :session_manager / :session_store_mod keys), so a request test
   # can drive the HTTP surface, and especially the SESSION-TOKEN auth boundary,
@@ -468,6 +476,7 @@ defmodule Embervm.RouterTest do
 
   setup do
     Application.put_env(:embervm, :authenticator, FakeAuth)
+    Application.put_env(:embervm, :cell_route_fun, fn _workload -> :owned end)
 
     on_exit(fn ->
       # Only the two registers that return 200 actually create an instance; the
@@ -500,6 +509,7 @@ defmodule Embervm.RouterTest do
       Application.delete_env(:embervm, :artifact_key_service)
       Application.delete_env(:embervm, :artifact_principal)
       Application.delete_env(:embervm, :task_store_mod)
+      Application.delete_env(:embervm, :cell_route_fun)
     end)
 
     :ok
@@ -531,6 +541,23 @@ defmodule Embervm.RouterTest do
   defp with_session_fakes do
     Application.put_env(:embervm, :session_manager, FakeSessionManager)
     Application.put_env(:embervm, :session_store_mod, FakeSessionStore)
+  end
+
+  test "foreign workload create and destroy routes halt before their handlers" do
+    Application.put_env(:embervm, :cell_route_fun, fn _workload ->
+      {:error, {:wrong_cell, "cell-b"}}
+    end)
+
+    Application.put_env(:embervm, :session_manager, CellFenceBomb)
+    Application.put_env(:embervm, :serving_manager_mod, CellFenceBomb)
+
+    create = req(:post, "/v1/workloads/foreign/sessions", auth("good"), "{}")
+    destroy = req(:delete, "/v1/serving/foreign/instances", auth("good"))
+
+    assert create.status == 409
+    assert destroy.status == 409
+    assert json(create.body)["assigned_cell"] == "cell-b"
+    assert json(destroy.body)["assigned_cell"] == "cell-b"
   end
 
   defp unique(prefix), do: "#{prefix}-#{System.unique_integer([:positive, :monotonic])}"

@@ -63,7 +63,7 @@ signals, and admission control are the product surface instead).
 | Transport auth CP-to-noded | **Built** (bearer + ingress policy) | SPIFFE mTLS is **Planned**: SPIRE is live with no EmberVM consumer yet, phase 2 of #5706 in flight |
 | Guest identity (JWT-SVID) | **Decided direction** | Per-principal SVID delivered over vsock, phase 3 of #5706 |
 | Encryption at rest | **Built** | Per-principal mutable artifacts (#4691), enabled per environment by values; Account-scoped immutable rootfs chunks remain planned (ADR 028, #4182) |
-| Cells / multi-cell | **Planned** | No cell seams exist in code yet (#4753); one control plane today |
+| Cells / multi-cell | **Built** (ownership and routing seam) | Explicit assignment and per-cell recovery are built; no stateless fleet layer or automatic migration (#4753) |
 | Standalone packaging | **Decided direction** | Open-sourceable artifact |
 | Website snapshotter (task guest) | **Built** | Headless Chromium screenshot over MCP (ADR embervm/035), #4994 |
 
@@ -615,12 +615,13 @@ never stores or witnesses anything that scales with the fleet.
   (ADR embervm/034), tracked in #4761 and #4763.
 - **Cells**: the unit of horizontal scale is a cell, a complete
   single-writer control plane owning a bounded set of bricks and workloads,
-  with one op-log appender (ordering is within-cell only). **Planned**
-  (#4753): no `cell_id`, workload-to-cell assignment, or per-cell
-  dial-home address exists in code yet; there is exactly one control
-  plane today. A
-  thin stateless fleet layer (route + capacity roll-up) arrives only with a
-  second cell.
+  with one op-log appender (ordering is within-cell only). **Built**: every
+  workload has an immutable durable cell assignment, op-log recovery and brick
+  registration are cell-fenced, and each release renders a per-cell dial-home
+  address. Existing installations default and backfill to `cell-0`. Unknown or
+  inconsistent assignments fail closed. There is no automatic cross-cell
+  migration. A thin stateless fleet layer (route + capacity roll-up) remains
+  planned (#4753) and arrives only with a second cell.
 - **Registry survives restarts**: noded persists its last-synced registry to
   NVMe marked stale; a restarting noded with an absent CP serves warm
   workloads from cache. No dependency's brief absence may turn a warm node
@@ -1269,7 +1270,7 @@ has the full text.
 | embervm/004 | Back kubernetes-sigs/agent-sandbox through a deferred edge adapter, no native session API | Accepted; adapter not built, gated on upstream traction | deleted |
 | embervm/005 | EKS scale-out: metal pool, multi-daemon bricks, EmberPool CRD, dial-home | Accepted; EmberPool never built, brick counts are a values knob behind `BrickController`; decision 3 superseded by 028 (#3849, #3851) | deleted |
 | embervm/006 | TLA+ pilot with three conformance layers | Accepted; six specs run under TLC in the build, trace validation deferred to 034 | deleted |
-| embervm/007 | Batched Postgres op-log tier, cells, hot-loop corrections | Accepted; Postgres Built, no cell seams exist (#4753, #3853, #3855) | deleted |
+| embervm/007 | Batched Postgres op-log tier, cells, hot-loop corrections | Accepted; Postgres and cell ownership/routing seams Built, fleet layer remains (#4753, #3853, #3855) | deleted |
 | embervm/008 | Opt-in two-phase interruptible bank | Accepted, Built | deleted |
 | embervm/009 | Continuity before tenancy: R6 to R9, spot availability contract, S3 seam | Accepted; quickstart open (#3856, #3858) | deleted |
 | embervm/010 | Bazel warm-Skyframe public demo as a stateless query consumer | Accepted, Built | deleted |

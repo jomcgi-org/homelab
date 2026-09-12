@@ -209,7 +209,7 @@ containers:
       # The pod's own UID (Downward API metadata.uid), the daemon's INSTANCE
       # identity. Reported as NodeStatus.pod_uid and advertised in the
       # dial-home registration, so the control plane keys its registry and
-      # capacity ledger by (node, pod_uid): two noded instances on one node
+      # capacity ledger by (cell_id, node, pod_uid): two noded instances on one node
       # during a surge roll never alias (R0 PR-2, ADR embervm/005).
       - name: EMBERVM_POD_UID
         valueFrom:
@@ -237,8 +237,10 @@ containers:
       # jittered interval. Rendered from the control-plane Service name +
       # http port so it survives a rename. The daemon presents its projected
       # ServiceAccount token (auto-mounted at the default path) as the bearer.
+      - name: EMBERVM_CELL_ID
+        value: {{ required "cell.id is required" $ctx.Values.cell.id | quote }}
       - name: EMBERVM_NODED_CONTROL_PLANE_URL
-        value: {{ printf "http://%s.%s.svc:%v" (include "embervm.fullname" $ctx) $ctx.Release.Namespace $ctx.Values.service.port | quote }}
+        value: {{ $ctx.Values.cell.brickDialHomeAddress | default (printf "http://%s.%s.svc:%v" (include "embervm.fullname" $ctx) $ctx.Release.Namespace $ctx.Values.service.port) | quote }}
       - name: EMBERVM_NODED_MAX_LIVE_VMS
         value: {{ ternary .maxLiveVMs $ctx.Values.noded.maxLiveVMs (not (kindIs "invalid" .maxLiveVMs)) | quote }}
       - name: EMBERVM_NODED_ADMISSION_MODEL

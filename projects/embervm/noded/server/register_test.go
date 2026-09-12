@@ -73,13 +73,14 @@ func registerTestServer(cfg config.Config) *Server {
 	return &Server{cfg: cfg, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 }
 
-// register-posts-identity: one register/3 call POSTs {node, pod_uid, address,
-// boot_id} to <url>/v1/nodes/register with the bearer header derived from the
+// register-posts-identity: one register/3 call POSTs {cell_id, node, pod_uid,
+// address, boot_id} to <url>/v1/nodes/register with the bearer header derived from the
 // token path, and treats a 2xx as success.
 func TestRegisterPostsIdentity(t *testing.T) {
 	tokenFile := writeTempFile(t, "sa-token\n")
 	generationFile := writeTempFile(t, "scratch-gen-7\n")
 	s := registerTestServer(config.Config{
+		CellID:                "cell-west",
 		Node:                  "node-4",
 		PodUID:                "uid-abc",
 		PodIP:                 "10.1.2.3",
@@ -106,6 +107,9 @@ func TestRegisterPostsIdentity(t *testing.T) {
 	}
 	if req.body.Node != "node-4" || req.body.PodUID != "uid-abc" {
 		t.Fatalf("unexpected identity %+v", req.body)
+	}
+	if req.body.CellID != "cell-west" {
+		t.Fatalf("unexpected cell id %q", req.body.CellID)
 	}
 	if req.body.Address != "10.1.2.3:9090" {
 		t.Fatalf("unexpected address %q", req.body.Address)

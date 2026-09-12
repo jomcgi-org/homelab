@@ -76,6 +76,12 @@ spec:
               value: "embervm@$(EMBERVM_RELEASE_POD_IP)"
             - name: EMBERVM_HTTP_PORT
               value: {{ .Values.service.port | quote }}
+            # Cell identity and the complete registry are validated before any
+            # durable backend, informer, or HTTP listener starts.
+            - name: EMBERVM_CELL_ID
+              value: {{ required "cell.id is required" .Values.cell.id | quote }}
+            - name: EMBERVM_KNOWN_CELL_IDS
+              value: {{ join "," .Values.cell.knownIds | quote }}
             {{- if .Values.opLog.postgres.enabled }}
             # Postgres op-log (ADR embervm/007). A set, non-empty
             # EMBERVM_OPLOG_DSN is what makes op_log_mod/0 select

@@ -206,6 +206,8 @@ defmodule Embervm.S3WarmthGc do
       # Read the expected fleet and its expiry tombstones on every sweep. A
       # static boot option goes stale as bricks register, expire, and are replaced.
       node_registry_fun: Keyword.get(opts, :node_registry_fun, fn -> NodeRegistry.expected_instances() end),
+      cell_id: Keyword.get(opts, :cell_id, Embervm.Cell.current()),
+      assignment_table: Keyword.get(opts, :assignment_table, Embervm.Cell.assignment_table()),
       freshness_window_ms: Keyword.get(opts, :freshness_window_ms, @freshness_window_ms),
       min_uptime_ms: Keyword.get(opts, :min_uptime_ms, @min_uptime_ms),
       ttls: Map.merge(@default_ttls, Keyword.get(opts, :ttls, %{})),
@@ -316,7 +318,7 @@ defmodule Embervm.S3WarmthGc do
     else
       stale =
         Enum.filter(expected_instances, fn instance ->
-          case NodeCapacity.fetch(state.capacity_table, {instance.node_id, instance.pod_uid}) do
+          case fetch_instance_capacity(state, instance) do
             {:ok, facts} ->
               now - Map.get(facts, :updated_at, now - state.freshness_window_ms - 1) >
                 state.freshness_window_ms
@@ -334,6 +336,18 @@ defmodule Embervm.S3WarmthGc do
           "instances missing or stale in NodeCapacity: #{inspect(Enum.map(stale, & &1.instance_id))}"
         )
       end
+    end
+  end
+
+  defp fetch_instance_capacity(state, instance) do
+    key = {state.cell_id, instance.node_id, instance.pod_uid}
+
+    case NodeCapacity.fetch(state.capacity_table, key) do
+      :error when state.cell_id == Embervm.Cell.default_id() ->
+        NodeCapacity.fetch(state.capacity_table, {instance.node_id, instance.pod_uid})
+
+      result ->
+        result
     end
   end
 
@@ -451,6 +465,7 @@ defmodule Embervm.S3WarmthGc do
         ),
       live_group_ids:
         for(row <- group_rows, not GroupState.terminal?(row.state), into: MapSet.new(), do: row.instance_id),
+      group_workloads: Map.new(group_rows, &{&1.instance_id, &1.workload}),
       reported_refs: reported_refs,
       reported_set_ids: reported_set_ids,
       reported_session_refs: reported_session_refs,
@@ -655,6 +670,9 @@ defmodule Embervm.S3WarmthGc do
     created_at = Map.get(created, cand.prefix)
 
     cond do
+      not owns_workload?(state, cand.workload) ->
+        {:held, "foreign_or_unknown_cell_owner"}
+
       # meta.json unreadable for a non-404 reason: age/tier facts are unknown.
       created_at == :error ->
         {:held, "meta_unreadable"}
@@ -691,6 +709,7 @@ defmodule Embervm.S3WarmthGc do
     reported = if kind == :session, do: snapshot.reported_session_refs, else: snapshot.reported_serving_refs
 
     cond do
+      not owns_workload?(state, cand.workload) -> {:held, "foreign_or_unknown_cell_owner"}
       created_at == :error -> {:held, "meta_unreadable"}
       MapSet.member?(refs, cand.ref) -> {:held, "referenced_ref"}
       MapSet.member?(reported, cand.ref) -> {:held, "node_reported"}
@@ -704,6 +723,7 @@ defmodule Embervm.S3WarmthGc do
     created_at = Map.get(created, cand.prefix)
 
     cond do
+      not owns_workload?(state, cand.workload) -> {:held, "foreign_or_unknown_cell_owner"}
       created_at == :error -> {:held, "meta_unreadable"}
       MapSet.member?(snapshot.referenced_lineages, cand.lineage) -> {:held, "lineage_referenced"}
       MapSet.member?(snapshot.reported_lineages, cand.lineage) -> {:held, "node_reported"}
@@ -715,8 +735,12 @@ defmodule Embervm.S3WarmthGc do
 
   defp classify(state, snapshot, %{kind: :group} = cand, created, _protected, now) do
     created_at = Map.get(created, cand.prefix)
+    workload = Map.get(snapshot.group_workloads, cand.group_instance_id)
 
     cond do
+      is_nil(workload) or not owns_workload?(state, workload) ->
+        {:held, "foreign_or_unknown_cell_owner"}
+
       created_at == :error -> {:held, "meta_unreadable"}
       MapSet.member?(snapshot.desired_set_ids, cand.set_id) -> {:held, "desired_set"}
       MapSet.member?(snapshot.reported_set_ids, cand.set_id) -> {:held, "node_reported"}
@@ -728,6 +752,16 @@ defmodule Embervm.S3WarmthGc do
   end
 
   defp ttl(state, kind), do: Map.fetch!(state.ttls, kind)
+
+  defp owns_workload?(state, workload) do
+    if :ets.whereis(state.assignment_table) == :undefined do
+      # Existing one-cell installations and isolated GC tests have no assignment
+      # cache. Only the compatibility cell may use that legacy posture.
+      state.cell_id == Embervm.Cell.default_id()
+    else
+      Embervm.Cell.owner(workload, state.assignment_table) == {:ok, state.cell_id}
+    end
+  end
 
   # A workload is LIVE when the CP tracks a non-terminal instance for it OR the
   # volume ledger holds a row (a cold-but-real workload whose data volume

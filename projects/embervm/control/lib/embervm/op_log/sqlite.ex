@@ -119,6 +119,7 @@ defmodule Embervm.OpLog.SQLite do
     """
     CREATE TABLE IF NOT EXISTS ops (
       seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      cell_id TEXT NOT NULL DEFAULT 'cell-0',
       ts INTEGER NOT NULL,
       tenant TEXT NOT NULL,
       principal TEXT,
@@ -438,6 +439,26 @@ defmodule Embervm.OpLog.SQLite do
       key TEXT PRIMARY KEY,
       value INTEGER
     )
+    """,
+    # Fleet routing ownership. This table is intentionally never compacted and
+    # has no reassignment verb: changing cells is an explicit future migration,
+    # not an informer side effect.
+    """
+    CREATE TABLE IF NOT EXISTS workload_cells (
+      workload TEXT PRIMARY KEY,
+      cell_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+    """,
+    # A SQLite file is a single-cell durable store. Existing files backfill to
+    # cell-0, and opening one under another cell is rejected instead of exposing
+    # or rewriting the first cell's recovery state.
+    """
+    CREATE TABLE IF NOT EXISTS oplog_cell (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      cell_id TEXT NOT NULL
+    )
     """
   ]
 
@@ -456,6 +477,7 @@ defmodule Embervm.OpLog.SQLite do
     opts = Keyword.put(opts, :path, Keyword.get(opts, :path) || default_path())
 
     case start_gen_server(opts) do
+      {:error, {:open_failed, {:wrong_cell, _owner}}} = error -> error
       {:error, {:open_failed, reason}} -> recover_open_failure(opts, reason)
       result -> result
     end
@@ -618,6 +640,16 @@ defmodule Embervm.OpLog.SQLite do
   end
 
   @impl Embervm.OpLog
+  def claim_workload(server \\ __MODULE__, workload, cell_id) do
+    GenServer.call(server, {:claim_workload, workload, cell_id})
+  end
+
+  @impl Embervm.OpLog
+  def load_workload_cells(server \\ __MODULE__) do
+    GenServer.call(server, :load_workload_cells)
+  end
+
+  @impl Embervm.OpLog
   def load_sessions(server \\ __MODULE__) do
     GenServer.call(server, :load_sessions)
   end
@@ -711,17 +743,24 @@ defmodule Embervm.OpLog.SQLite do
   @impl true
   def init(opts) do
     path = Keyword.get(opts, :path) || default_path()
+    cell_id = Keyword.get(opts, :cell_id, Embervm.Cell.current())
+
+    unless Embervm.Cell.valid_id?(cell_id) do
+      raise ArgumentError, "invalid cell_id #{inspect(cell_id)}"
+    end
+
     retention_ms = Keyword.get(opts, :retention_ms, @default_retention_ms)
     journal_horizon_ms = Keyword.get(opts, :journal_horizon_ms, @default_journal_horizon_ms)
     compact_batch_size = Keyword.get(opts, :compact_batch_size, @default_compact_batch_size)
 
-    with {:ok, conn} <- open_database(path) do
-      Logger.info("embervm op-log opened at #{path}")
+    with {:ok, conn} <- open_database(path, cell_id) do
+      Logger.info("embervm op-log opened at #{path}", cell_id: cell_id)
 
       {:ok,
        %{
          conn: conn,
          path: path,
+         cell_id: cell_id,
          retention_ms: retention_ms,
          journal_horizon_ms: journal_horizon_ms,
          compact_batch_size: compact_batch_size
@@ -731,10 +770,10 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
-  defp open_database(path) do
+  defp open_database(path, cell_id) do
     with :ok <- validate_existing_database_header(path),
          {:ok, conn} <- Sqlite3.open(path) do
-      case initialize_database(conn) do
+      case initialize_database(conn, cell_id) do
         :ok ->
           {:ok, conn}
 
@@ -759,10 +798,11 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
-  defp initialize_database(conn) do
+  defp initialize_database(conn, cell_id) do
     with :ok <- apply_pragmas(conn),
          :ok <- apply_ddl(conn),
-         :ok <- apply_migrations(conn) do
+         :ok <- apply_migrations(conn),
+         :ok <- ensure_database_cell(conn, cell_id) do
       :ok
     end
   end
@@ -775,7 +815,7 @@ defmodule Embervm.OpLog.SQLite do
 
   @impl true
   def handle_call({:append, %Op{} = op}, _from, state) do
-    case do_append(state.conn, op) do
+    case do_append(state.conn, %{op | cell_id: state.cell_id}) do
       {:ok, seq} -> {:reply, {:ok, seq}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
@@ -787,6 +827,14 @@ defmodule Embervm.OpLog.SQLite do
 
   def handle_call(:load_tasks, _from, state) do
     {:reply, do_load_tasks(state.conn), state}
+  end
+
+  def handle_call({:claim_workload, workload, cell_id}, _from, state) do
+    {:reply, do_claim_workload(state.conn, workload, cell_id), state}
+  end
+
+  def handle_call(:load_workload_cells, _from, state) do
+    {:reply, do_load_workload_cells(state.conn), state}
   end
 
   def handle_call(:load_sessions, _from, state) do
@@ -884,13 +932,14 @@ defmodule Embervm.OpLog.SQLite do
 
   defp insert_op(conn, %Op{} = op) do
     sql = """
-    INSERT INTO ops (ts, tenant, principal, workload, task_id, session_id, serving_instance_id, stateful_instance_id, group_instance_id, kind, payload_json)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO ops (cell_id, ts, tenant, principal, workload, task_id, session_id, serving_instance_id, stateful_instance_id, group_instance_id, kind, payload_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
     with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
          :ok <-
            Sqlite3.bind(stmt, [
+             op.cell_id,
              op.ts,
              op.tenant,
              op.principal,
@@ -2676,6 +2725,72 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
+  # Workload ownership is insert-only. A second cell observing the same CR gets
+  # the first durable owner back and rejects the inconsistent assignment.
+  defp do_claim_workload(conn, workload, cell_id)
+       when is_binary(workload) and workload != "" and is_binary(cell_id) and cell_id != "" do
+    if Embervm.Cell.valid_id?(cell_id) do
+      do_claim_valid_workload(conn, workload, cell_id)
+    else
+      {:error, :invalid_assignment}
+    end
+  end
+
+  defp do_claim_valid_workload(conn, workload, cell_id) do
+    now = System.system_time(:millisecond)
+    sql = "INSERT OR IGNORE INTO workload_cells (workload, cell_id, created_at, updated_at) VALUES (?, ?, ?, ?)"
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql),
+         :ok <- Sqlite3.bind(stmt, [workload, cell_id, now, now]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      select_workload_cell(conn, workload)
+    end
+  end
+
+  defp do_claim_workload(_conn, _workload, _cell_id), do: {:error, :invalid_assignment}
+
+  defp select_workload_cell(conn, workload) do
+    with {:ok, stmt} <- Sqlite3.prepare(conn, "SELECT cell_id FROM workload_cells WHERE workload=?"),
+         :ok <- Sqlite3.bind(stmt, [workload]) do
+      result =
+        case Sqlite3.step(conn, stmt) do
+          {:row, [cell_id]} -> {:ok, cell_id}
+          :done -> {:error, :assignment_missing}
+          {:error, reason} -> {:error, reason}
+        end
+
+      :ok = Sqlite3.release(conn, stmt)
+      result
+    end
+  end
+
+  defp do_load_workload_cells(conn) do
+    with {:ok, stmt} <-
+           Sqlite3.prepare(
+             conn,
+             "SELECT workload, cell_id, created_at, updated_at FROM workload_cells ORDER BY workload"
+           ) do
+      result = collect_workload_cells(conn, stmt, [])
+      :ok = Sqlite3.release(conn, stmt)
+      result
+    end
+  end
+
+  defp collect_workload_cells(conn, stmt, acc) do
+    case Sqlite3.step(conn, stmt) do
+      {:row, [workload, cell_id, created_at, updated_at]} ->
+        row = %{workload: workload, cell_id: cell_id, created_at: created_at, updated_at: updated_at}
+        collect_workload_cells(conn, stmt, [row | acc])
+
+      :done ->
+        {:ok, Enum.reverse(acc)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   # -- reads ---------------------------------------------------------------
 
   # A caller asking for a `seq` below the durable prefix marker is asking for
@@ -2691,7 +2806,7 @@ defmodule Embervm.OpLog.SQLite do
       {:error, {:compacted, marker}}
     else
       sql = """
-      SELECT seq, ts, tenant, principal, workload, task_id, session_id, serving_instance_id, stateful_instance_id, group_instance_id, kind, payload_json
+      SELECT seq, cell_id, ts, tenant, principal, workload, task_id, session_id, serving_instance_id, stateful_instance_id, group_instance_id, kind, payload_json
       FROM ops WHERE seq > ? ORDER BY seq ASC
       """
 
@@ -2709,6 +2824,7 @@ defmodule Embervm.OpLog.SQLite do
       {:row,
        [
          seq,
+         cell_id,
          ts,
          tenant,
          principal,
@@ -2723,6 +2839,7 @@ defmodule Embervm.OpLog.SQLite do
        ]} ->
         op = %Op{
           seq: seq,
+          cell_id: cell_id,
           ts: ts,
           tenant: tenant,
           principal: principal,
@@ -3746,8 +3863,20 @@ defmodule Embervm.OpLog.SQLite do
          :ok <- migrate_usage_request_count(conn),
          :ok <- migrate_ops_stateful_instance_id(conn),
          :ok <- migrate_volumes_exported_generation(conn),
-         :ok <- migrate_ops_group_instance_id(conn) do
+         :ok <- migrate_ops_group_instance_id(conn),
+         :ok <- migrate_ops_cell_id(conn) do
       :ok
+    end
+  end
+
+  defp migrate_ops_cell_id(conn) do
+    with {:ok, cols} <- table_columns(conn, "ops") do
+      add_column_if_missing(
+        conn,
+        cols,
+        "cell_id",
+        "ALTER TABLE ops ADD COLUMN cell_id TEXT NOT NULL DEFAULT 'cell-0'"
+      )
     end
   end
 
@@ -3946,6 +4075,68 @@ defmodule Embervm.OpLog.SQLite do
         conn,
         "CREATE INDEX IF NOT EXISTS ops_group_instance_id_idx ON ops(group_instance_id)"
       )
+    end
+  end
+
+  defp ensure_database_cell(conn, requested_cell) do
+    with {:ok, existing} <- read_database_cell(conn),
+         :ok <- maybe_claim_database_cell(conn, existing, requested_cell),
+         {:ok, owner} <- read_database_cell(conn) do
+      if owner == requested_cell, do: :ok, else: {:error, {:wrong_cell, owner}}
+    end
+  end
+
+  defp read_database_cell(conn) do
+    with {:ok, stmt} <- Sqlite3.prepare(conn, "SELECT cell_id FROM oplog_cell WHERE singleton=1") do
+      result =
+        case Sqlite3.step(conn, stmt) do
+          {:row, [cell_id]} -> {:ok, cell_id}
+          :done -> {:ok, nil}
+          {:error, reason} -> {:error, reason}
+        end
+
+      :ok = Sqlite3.release(conn, stmt)
+      result
+    end
+  end
+
+  defp maybe_claim_database_cell(_conn, owner, _requested_cell) when is_binary(owner), do: :ok
+
+  defp maybe_claim_database_cell(conn, nil, requested_cell) do
+    owner = if legacy_database_has_rows?(conn), do: Embervm.Cell.default_id(), else: requested_cell
+
+    with {:ok, stmt} <-
+           Sqlite3.prepare(
+             conn,
+             "INSERT OR IGNORE INTO oplog_cell (singleton, cell_id) VALUES (1, ?)"
+           ),
+         :ok <- Sqlite3.bind(stmt, [owner]),
+         :done <- Sqlite3.step(conn, stmt),
+         :ok <- Sqlite3.release(conn, stmt) do
+      :ok
+    end
+  end
+
+  defp legacy_database_has_rows?(conn) do
+    sql = """
+    SELECT 1 FROM (
+      SELECT 1 FROM ops
+      UNION ALL SELECT 1 FROM tasks
+      UNION ALL SELECT 1 FROM sessions
+      UNION ALL SELECT 1 FROM serving_instances
+      UNION ALL SELECT 1 FROM stateful_instances
+      UNION ALL SELECT 1 FROM group_instances
+      UNION ALL SELECT 1 FROM volumes
+      UNION ALL SELECT 1 FROM meta
+    ) durable LIMIT 1
+    """
+
+    with {:ok, stmt} <- Sqlite3.prepare(conn, sql) do
+      has_rows = match?({:row, [1]}, Sqlite3.step(conn, stmt))
+      :ok = Sqlite3.release(conn, stmt)
+      has_rows
+    else
+      _ -> true
     end
   end
 

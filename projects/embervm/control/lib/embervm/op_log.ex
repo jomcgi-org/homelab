@@ -27,6 +27,7 @@ defmodule Embervm.OpLog do
     """
     @enforce_keys [:kind, :tenant, :ts]
     defstruct seq: nil,
+              cell_id: nil,
               kind: nil,
               tenant: nil,
               principal: nil,
@@ -41,6 +42,7 @@ defmodule Embervm.OpLog do
 
     @type t :: %__MODULE__{
             seq: pos_integer() | nil,
+            cell_id: String.t() | nil,
             kind: atom(),
             tenant: String.t(),
             principal: String.t() | nil,
@@ -303,6 +305,13 @@ defmodule Embervm.OpLog do
   @callback read_from(server(), seq :: non_neg_integer()) ::
               {:ok, [Op.t()]} | {:error, {:compacted, non_neg_integer()}} | {:error, term()}
   @callback load_tasks(server()) :: {:ok, [map()]} | {:error, term()}
+  # Persisted workload ownership is fleet-visible rather than row-policy scoped:
+  # every cell must reject a CR that attempts to move a workload already owned by
+  # another cell. `claim_workload/3` is insert-if-absent and returns the durable
+  # owner either way. There is deliberately no automatic reassignment callback.
+  @callback claim_workload(server(), workload :: String.t(), cell_id :: String.t()) ::
+              {:ok, String.t()} | {:error, term()}
+  @callback load_workload_cells(server()) :: {:ok, [map()]} | {:error, term()}
   # Loads every session row from the durable `sessions` projection (R2), for the
   # SessionStore's boot/adoption rebuild (Task 5/8): the ETS hot set of sessions
   # is reconstructed from this exactly as the task index is from load_tasks/1. A

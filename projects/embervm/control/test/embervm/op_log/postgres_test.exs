@@ -28,6 +28,8 @@ defmodule Embervm.OpLog.PostgresTest do
       {:append, 2},
       {:read_from, 2},
       {:load_tasks, 1},
+      {:claim_workload, 3},
+      {:load_workload_cells, 1},
       {:load_sessions, 1},
       {:load_serving_instances, 1},
       {:load_stateful_instances, 1},
@@ -51,6 +53,23 @@ defmodule Embervm.OpLog.PostgresTest do
     for {name, arity} <- expected do
       assert {name, arity} in exported, "missing callback #{name}/#{arity}"
     end
+  end
+
+  test "DDL fences every mutable recovery table and leaves ownership fleet-visible" do
+    ddl = Postgres.ddl()
+
+    for table <- Postgres.cell_scoped_tables() do
+      assert Enum.any?(ddl, &String.contains?(&1, "ALTER TABLE #{table} ADD COLUMN IF NOT EXISTS cell_id"))
+      assert "ALTER TABLE #{table} FORCE ROW LEVEL SECURITY" in ddl
+
+      assert Enum.any?(ddl, fn statement ->
+               String.contains?(statement, "CREATE POLICY embervm_cell_isolation ON #{table}") and
+                 String.contains?(statement, "WITH CHECK")
+             end)
+    end
+
+    refute "workload_cells" in Postgres.cell_scoped_tables()
+    assert Enum.any?(ddl, &String.contains?(&1, "CREATE TABLE IF NOT EXISTS workload_cells"))
   end
 
   test "db_size/1 is not supported for the Postgres backend (no single PVC file to stat)" do

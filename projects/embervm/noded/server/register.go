@@ -35,6 +35,9 @@ const registerPath = "/v1/nodes/register"
 // registration is the JSON body the daemon POSTs to the control plane. Field
 // names are snake_case to match the control plane's decoder.
 type registration struct {
+	// CellID is the configured ownership domain. The receiving control plane
+	// rejects any value other than its own before opening a stream.
+	CellID string `json:"cell_id"`
 	// Node is the Kubernetes node name this daemon is pinned to.
 	Node string `json:"node"`
 	// PodUID is this pod's Kubernetes UID (Downward API metadata.uid): the
@@ -180,6 +183,7 @@ func (s *Server) register(ctx context.Context, doer httpDoer, bootID string) err
 		return fmt.Errorf("read scratch generation: %w", err)
 	}
 	body, err := json.Marshal(registration{
+		CellID:            s.cfg.CellID,
 		Node:              s.cfg.Node,
 		PodUID:            s.cfg.PodUID,
 		Address:           s.advertisedAddress(),

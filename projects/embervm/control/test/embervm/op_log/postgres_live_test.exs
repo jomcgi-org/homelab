@@ -48,7 +48,46 @@ defmodule Embervm.OpLog.PostgresLiveTest do
       Embervm.TestProcess.stop_safely(cleanup_conn)
     end)
 
-    %{server: server}
+    %{server: server, adapter_opts: adapter_opts}
+  end
+
+  test "two cells share ownership but isolate replay and projections", %{
+    server: cell_0,
+    adapter_opts: adapter_opts
+  } do
+    {:ok, cell_b} =
+      Postgres.start_link(
+        dsn: adapter_opts,
+        name: nil,
+        cell_id: "cell-b",
+        journal_horizon_ms: 0
+      )
+
+    on_exit(fn -> Embervm.TestProcess.stop_safely(cell_b) end)
+
+    assert Postgres.claim_workload(cell_0, "owned", "cell-0") == {:ok, "cell-0"}
+    assert Postgres.claim_workload(cell_b, "owned", "cell-b") == {:ok, "cell-0"}
+
+    assert {:ok, _} =
+             append(cell_0, :submitted, 100,
+               tenant: "t",
+               principal: "p",
+               workload: "owned",
+               task_id: "task-cell-0"
+             )
+
+    assert {:ok, _} =
+             append(cell_b, :submitted, 101,
+               tenant: "t",
+               principal: "p",
+               workload: "cell-b-workload",
+               task_id: "task-cell-b"
+             )
+
+    assert {:ok, [%{task_id: "task-cell-0"}]} = Postgres.load_tasks(cell_0)
+    assert {:ok, [%{task_id: "task-cell-b"}]} = Postgres.load_tasks(cell_b)
+    assert {:ok, [%Op{cell_id: "cell-0", task_id: "task-cell-0"}]} = Postgres.read_from(cell_0, 0)
+    assert {:ok, [%Op{cell_id: "cell-b", task_id: "task-cell-b"}]} = Postgres.read_from(cell_b, 0)
   end
 
   test "strict session stop intent and completion project with nullable invocation identity", %{server: server} do

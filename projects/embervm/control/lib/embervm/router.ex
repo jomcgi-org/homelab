@@ -67,6 +67,7 @@ defmodule Embervm.Router do
   plug(:match)
   plug(:fetch_query)
   plug(:authenticate)
+  plug(:enforce_cell_route)
   plug(:dispatch)
 
   # Readiness reflects process presence, so a busy manager is never dropped from
@@ -257,6 +258,46 @@ defmodule Embervm.Router do
   # -- plugs -----------------------------------------------------------------
 
   defp fetch_query(conn, _opts), do: fetch_query_params(conn)
+
+  # Every route whose resource key is a Workload name is fenced before its
+  # handler can create, replay, destroy, or reconcile anything. Task/session id
+  # routes are fenced by the cell-scoped durable rebuild that populated their
+  # local stores. The assignment table is built before Bandit starts.
+  defp enforce_cell_route(%Plug.Conn{halted: true} = conn, _opts), do: conn
+
+  defp enforce_cell_route(conn, _opts) do
+    case Map.get(conn.path_params, "name") do
+      workload when is_binary(workload) and workload != "" -> route_workload(conn, workload)
+      _ -> conn
+    end
+  end
+
+  defp route_workload(conn, workload) do
+    case cell_route(workload) do
+      :owned ->
+        conn
+
+      {:error, {:wrong_cell, assigned_cell}} ->
+        halt_json(conn, 409, %{
+          error: "workload belongs to another cell",
+          workload: workload,
+          assigned_cell: assigned_cell,
+          current_cell: Embervm.Cell.current(),
+          retryable: false
+        })
+
+      {:error, :unknown_workload} ->
+        halt_json(conn, 404, %{error: "unknown workload", workload: workload, retryable: false})
+
+      {:error, reason} ->
+        halt_json(conn, 422, %{
+          error: "workload cell assignment is unavailable or unknown",
+          reason: to_string(reason),
+          workload: workload,
+          retryable: false
+        })
+    end
+  end
 
   # Auth is scoped to /v1: /healthz and /livez stay open for kubelet probes. The
   # session routes that take a SESSION token (invoke, and the session-token-or-management
@@ -874,8 +915,21 @@ defmodule Embervm.Router do
             case decode_registration(body) do
               {:ok, reg} ->
                 if registration_bound_to?(reg, identity) do
-                  _ = Embervm.NodeRegistry.register(reg)
-                  send_json(conn, 200, %{registered: true})
+                  case Embervm.NodeRegistry.register(reg) do
+                    :ok ->
+                      send_json(conn, 200, %{registered: true, cell_id: Embervm.Cell.current()})
+
+                    {:error, {:wrong_cell, assigned_cell}} ->
+                      send_json(conn, 409, %{
+                        error: "registration belongs to another cell",
+                        assigned_cell: assigned_cell,
+                        current_cell: Embervm.Cell.current(),
+                        retryable: false
+                      })
+
+                    {:error, :invalid} ->
+                      send_json(conn, 400, %{error: "invalid registration", retryable: false})
+                  end
                 else
                   reject_registration_identity(conn, reg, identity)
                 end
@@ -2168,6 +2222,13 @@ defmodule Embervm.Router do
   # anonymous end-user traffic with no bearer principal), passed as the manager's
   # principal so the audit ops attribute to the workload.
   defp handle_activator_miss(conn, workload) do
+    case cell_route(workload) do
+      :owned -> do_handle_activator_miss(conn, workload)
+      {:error, _reason} -> send_json(conn, 503, %{error: "workload unavailable", retryable: false})
+    end
+  end
+
+  defp do_handle_activator_miss(conn, workload) do
     # Restore any caller trace (an unfurler/browser rarely carries one, but a
     # traced synthetic probe does), then open the activator ROOT span so the
     # manager's `park`/`placement`/`wake`/`publish` and this `proxy` all nest
@@ -2181,6 +2242,11 @@ defmodule Embervm.Router do
                      %{attributes: %{"ember.workload" => workload, "ember.principal" => activator_principal(workload)}} do
       do_activator_miss(conn, workload)
     end
+  end
+
+  defp cell_route(workload) do
+    route_fun = Application.get_env(:embervm, :cell_route_fun, &Embervm.Cell.route/1)
+    route_fun.(workload)
   end
 
   defp do_activator_miss(conn, workload) do
