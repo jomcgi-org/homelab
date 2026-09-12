@@ -292,6 +292,12 @@ excluded labels, issues linked from an open pull request, issues already
 delivered, and issues already received in the current generation under the same
 task class are not candidates.
 
+A refine candidate carrying `needs-thought` is excluded as `deferred`, so an
+autonomous `defer` verdict does not brief the same issue again after its
+cooldown. A delivery candidate is still admitted when it also carries
+`needs-thought`: an include label such as `agent-ready` determines that path
+before the deferred exclusion is applied.
+
 An issue with a `succeeded` receipt in any generation and any class is excluded
 as `delivered` and is never admitted again. The lane's own labels are not
 evidence that work is outstanding: #3877 shipped as PR #6007, the pull request
@@ -349,27 +355,36 @@ Reviewer-driven class escalation and the verdict ledger are deliberately not
 built in these phases (#3843).
 
 A refine task runs one planner-class node with at most two attempts and has no
-DAG. The node posts exactly one `## Agent brief` comment with `### Outcome`,
+DAG. It researches before briefing: the knowledge graph first, then the
+checkout's ARCHITECTURE.md `**Why.**` paragraphs, file history and referenced
+pull requests, then the web only for a named external product, version or CVE.
+The brief cites those sources under `### Evidence`, and after the verdict the
+node reports its issue number, verdict and one-sentence reason back to the
+knowledge graph on a best-effort basis. The node then posts exactly one
+`## Agent brief` comment with `### Outcome`,
 `### Acceptance`, `### Files`, `### Evidence`, and `### Risks` in that order,
-then reaches exactly one of four verdicts and acts on it:
+then reaches exactly one of five verdicts and acts on it:
 
 | Verdict | What the node does | What settlement demands back from GitHub |
 |---|---|---|
 | `agent-ready` | applies `agent-ready` | the label, the brief, and the issue still open |
-| `needs-human` | applies `needs-human`, ends the brief with `### Decision needed` carrying `recommend: deliver \| close \| split \| defer` and the one question a person must answer | the label, the brief, the issue still open, and one warn notification naming the issue, the recommendation and the question |
+| `defer` | adds `### Why defer` naming the concrete condition that would make the issue actionable, applies `needs-thought`, and leaves the issue open | the label, the brief, the issue still open, and the condition in the artifact evidence |
+| `needs-human` | applies `needs-human`, ends the brief with `### Decision needed` carrying `recommend: deliver \| close \| split` and the one quick-unblock question a person must answer | the label, the brief, the issue still open, and one warn notification naming the issue, the recommendation and the question |
 | `reject` | adds `### Why not` citing a file, pull request or recorded decision, applies `wontfix`, closes with reason `not_planned` | the label, the brief, and the issue closed |
 | `stale` | adds `### Why stale`, applies `stale`, creating the label if the repository has none, closes with reason `not_planned` | the label, the brief, and the issue closed |
 
 `reject` and `stale` are for a premise a reader can check: a decision recorded
 in an ARCHITECTURE.md **Why.** paragraph, work already merged, a file or flag
-that is gone. The prompt says that doubt resolves to `needs-human` with a
-recommendation rather than to a close, because a wrong escalation costs a
-minute and a wrong close costs the issue.
+that is gone. `needs-human` is for a decision a person can make in about a
+minute and that unblocks the work, such as which of two scopes, whether the
+work is still wanted, or confirming that #z supersedes this. A question that
+needs real thought, a design, or a window only the author can declare is the
+`defer` verdict, taken by the node itself.
 
 Closing is gated twice. It needs `close_enabled`, and it needs room under
 `max_closes_per_day`, counted from the `intake_closed` audits of the last 24
 hours. Both are read before the node runs, so the prompt offers three verdicts
-rather than four when closing is unavailable, and again at settlement, so a cap
+rather than five when closing is unavailable, and again at settlement, so a cap
 spent while the node was running still holds. A close verdict the lane may not
 act on is downgraded to `needs-human`: the server then demands the
 `needs-human` label and an open issue, exactly as it would for an escalation,
@@ -377,6 +392,24 @@ and records `refine_close_downgraded`. An issue carrying `critical` or
 `security-finding`, or assigned to any milestone, is never closed and takes the
 same downgrade. Every close that settles audits `intake_closed` with the
 evidence cited.
+
+A `reject` that finds the work belongs in another issue can list up to ten
+other open issues in `supersedes`, but doing so also requires the surviving
+issue in `in_favour_of`. The server refuses the relationship unless that
+favoured issue is open, is not a pull request, and is neither in `supersedes`
+nor the issue the node briefed. The node closes only the issue it briefed.
+After verifying that primary close, the server re-reads each sibling, comments
+with an idempotency marker, applies `wontfix`, closes it as `not_planned`, and
+writes its own `intake_closed` audit. It skips and audits a sibling that is a
+pull request, already closed, protected by a label or milestone, assigned,
+represented by an active or escalated receipt, or beyond the daily close cap.
+The marker proves only that the comment landed. On a retry the server re-reads
+the sibling: if it is closed, it fences in the missing audit; if it is still
+open, it repeats every other guard, then retries the label and close without a
+second comment. One sibling failure is also audited and does not fail
+settlement of the verified brief. If an operator later chooses `supersede` and
+the receipt's own issue is the survivor, the server re-queues that receipt for
+a fresh brief that includes the folded-in scope.
 
 The server settles from a re-read of the issue, never from the node artifact
 alone. A verified `needs-human` result succeeds because the briefing and the
@@ -405,17 +438,21 @@ do not hold up:
 }
 ```
 
-`effect` is one of five. `agent-ready` applies the delivery label and takes
+`effect` is one of six. `agent-ready` applies the delivery label and takes
 `needs-human` off, with an optional scope note posted as a comment. `close`
 comments the reason and closes with `not_planned` or `completed`. `split`
 opens one to five child issues, then closes the parent against them. `defer`
 applies `needs-thought`, takes `needs-human` off, and comments the condition
 that would make the work worth doing. `hold` writes nothing and records that
-someone looked and chose to leave it.
+someone looked and chose to leave it. `supersede` closes one to ten named
+issues as `wontfix` in favour of one surviving issue. The receipt's own issue
+must be among the closes or be the survivor.
 
 The first option is the recommendation, and its effect has to be the one the
-`recommend:` line names: deliver is `agent-ready`, close is `close`, split is
-`split`, defer is `defer`. The prompt asks for labels that name the concrete
+`recommend:` line names: deliver is `agent-ready`, close is `close` or
+`supersede`, and split is `split`. `defer` remains available as an alternative
+but cannot be recommended, because a node that reaches that conclusion takes
+the autonomous verdict. The prompt asks for labels that name the concrete
 act ("Close as superseded by #5656") rather than the verb the effect already
 carries, because the label is the whole of what a person reads before
 deciding. The same options are the numbered list in the brief's

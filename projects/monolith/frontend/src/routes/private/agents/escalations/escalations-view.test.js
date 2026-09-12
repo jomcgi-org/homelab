@@ -75,6 +75,13 @@ describe("escalations view helpers", () => {
     );
     expect(effectLine({ effect: "hold" })).toContain("exactly as it is");
     expect(effectLine(null)).toBe("");
+    expect(
+      effectLine({
+        effect: "supersede",
+        closes: [7, 8],
+        in_favour_of: 10,
+      }),
+    ).toBe("Closes #7, #8 as superseded by #10");
     // A delivery card's buttons end a task and abandon its branch, which the
     // identical button on a refine card does not.
     expect(effectLine({ effect: "agent-ready" }, "delivery")).toContain(

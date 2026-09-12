@@ -9,10 +9,13 @@ import logging
 import os
 from urllib.parse import quote
 
+import httpx
+from sqlalchemy import or_
 from sqlmodel import select
 
 from swarm.factory_controls import (
     DEFAULT_TASK_CLASS,
+    ESCALATED,
     MAX_OPTIONS,
     MIN_OPTIONS,
     OPTION_SCHEMA,
@@ -26,6 +29,7 @@ from swarm.factory_controls import (
     set_control,
     task_snapshot,
     verify_option_list,
+    _ACTIVE,
 )
 from swarm.factory_models import FactoryAudit, FactoryReceipt
 from swarm.factory_conductor import (
@@ -51,31 +55,32 @@ TASK_CLASS = "refine"
 BRIEF_HEADING = "## Agent brief"
 READY_LABEL = "agent-ready"
 HUMAN_LABEL = "needs-human"
+DEFER_OUTCOME = "defer"
+DEFER_LABEL = "needs-thought"
 REJECT_OUTCOME = "reject"
 STALE_OUTCOME = "stale"
 # The two verdicts that close an issue. They are the only refine outcomes that
 # remove something a person would have to restore by hand, which is why they
 # sit behind their own flag and their own daily cap.
 CLOSING_OUTCOMES = (REJECT_OUTCOME, STALE_OUTCOME)
-OUTCOMES = (READY_LABEL, HUMAN_LABEL, *CLOSING_OUTCOMES)
+OUTCOMES = (READY_LABEL, HUMAN_LABEL, DEFER_OUTCOME, *CLOSING_OUTCOMES)
 # The label each verdict leaves on the issue, and so the label settlement
 # demands back from GitHub before it believes the verdict.
 OUTCOME_LABEL = {
     READY_LABEL: "agent-ready",
     HUMAN_LABEL: "needs-human",
+    DEFER_OUTCOME: DEFER_LABEL,
     REJECT_OUTCOME: "wontfix",
     STALE_OUTCOME: "stale",
 }
-RECOMMENDATIONS = ("deliver", "close", "split", "defer")
+RECOMMENDATIONS = ("deliver", "close", "split")
 # The recommendation line and the first option say the same thing in two
 # places, so settlement checks they agree rather than trusting either alone.
 RECOMMENDED_EFFECT = {
     "deliver": "agent-ready",
     "close": "close",
     "split": "split",
-    "defer": "defer",
 }
-DEFER_LABEL = "needs-thought"
 # An issue carrying one of these, or any milestone, is never closed by the
 # lane. Triage on work someone has already prioritised or flagged as a
 # security finding is a judgment call that belongs to a person.
@@ -98,16 +103,23 @@ REFINE_SCHEMA = {
             "items": OPTION_SCHEMA,
         },
         "evidence": {"type": "string", "maxLength": 2000},
+        "supersedes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10,
+            "items": {"type": "integer", "minimum": 1},
+        },
+        "in_favour_of": {"type": "integer", "minimum": 1},
     },
 }
 
 
 def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
-    """The brief the guest writes, and the four verdicts it may reach.
+    """The brief the guest writes, and the verdicts it may reach.
 
     ``closing`` says whether the lane may close an issue at all right now. It
     is false whenever the policy flag is off or the daily close cap is spent,
-    and the prompt then offers three outcomes rather than four, so the guest
+    and the prompt then offers three outcomes rather than five, so the guest
     is never asked to take an action the server would refuse.
     """
     body = _bounded_planner_text(receipt.get("body") or "", 12000)
@@ -128,11 +140,44 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
         "are not available. An issue you would have closed is `needs-human` "
         "with `recommend: close` and the reason you would have cited.\n"
     )
+    supersedes = (
+        "`supersedes` and `in_favour_of` are only used with `reject`. When a "
+        "reject finds that work lives in another issue, set `in_favour_of` "
+        "to that issue and list the other open issues retired by the same "
+        "finding in `supersedes`. Add `### Supersedes` to the brief with one "
+        "line per number. Close only the issue you are briefing; the server "
+        "checks and closes eligible siblings.\n\n"
+        if closing
+        else ""
+    )
+    human_examples = (
+        ", whether the work is still wanted, or confirming that #z supersedes this"
+        if closing
+        else ", or whether the work is still wanted"
+    )
     return (
         f"Brief repository {task['repo']} issue #{receipt['issue_number']} at "
         f"{receipt['url']}.\n\n"
         f"Title: {receipt['title']}\n\nIssue body:\n{body}\n\n"
         + _chat_prompt(receipt)
+        + "Research before reading toward a verdict, and cite what you find "
+        "under `### Evidence`, in this order. First, call `search_knowledge` "
+        "on the `agents` MCP server with the issue title, then once for every "
+        "issue, ADR, or pull request number the body references. Claude CLIs "
+        "see it as `mcp__agents__search_knowledge`; Codex sees the `agents` "
+        "server's `search_knowledge`. Each fact carries a "
+        "`verification_state`; cite it as `KG: <fact title> (<state>)`. A "
+        "`verified` fact saying the work merged, the file is gone, or a Why "
+        "paragraph decided against it is closing evidence. Second, inspect "
+        "the checkout: read the domain's ARCHITECTURE.md `**Why.**` paragraph, "
+        "run `git log` for files the issue names, and check whether referenced "
+        "pull requests merged. Cite this as `git: <sha or path>`. Third, only "
+        "when the issue names an external product, version, or CVE, use the "
+        "web search tool if this CLI has one and cite `web: <url>`. After the "
+        "verdict, call `report_knowledge` on the same server with one fact: "
+        "the issue number, verdict, and one-sentence reason, so a sibling's "
+        "next brief recalls it. This is best effort; settlement does not "
+        "verify the report.\n\n"
         + "Read the issue and the repository, then post EXACTLY ONE issue comment "
         f"whose first line is `{BRIEF_HEADING}`. Include `### Outcome`, "
         "`### Acceptance`, `### Files`, `### Evidence`, and `### Risks` in that "
@@ -140,10 +185,17 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
         "Reach exactly one of these verdicts and act on it.\n"
         "`agent-ready` when the brief is actionable with no human decision "
         "left. Apply the `agent-ready` label.\n"
-        "`needs-human` when value, scope, or staleness is unclear. Apply the "
+        "`defer` when the issue is worth doing but needs a decision, design, "
+        "or event nobody can supply now. Add a `### Why defer` section naming "
+        "the concrete condition that would make it actionable, apply the "
+        "`needs-thought` label, and leave the issue open.\n"
+        "`needs-human` is for a decision a person can make in about a minute "
+        "and that unblocks the work, such as which of two scopes"
+        + human_examples
+        + ". Apply the "
         "`needs-human` label and make the LAST section `### Decision needed`, "
         "holding one line of the form `recommend: deliver` (or `close`, "
-        "`split`, `defer`), then the single specific question a person must "
+        "`split`), then the single specific question a person must "
         "answer, then the same options you return in the artifact as a "
         "numbered list, the recommended one first, each line reading "
         "`1. <label>`. A reader on GitHub decides from that list, and an "
@@ -151,12 +203,12 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
         "say the same thing.\n"
         + triage
         + "\nThe bar for closing is evidence a reader can check, not a "
-        "judgement you formed. If you are in any doubt, choose `needs-human` "
-        "with a recommendation instead of closing: a wrong escalation costs "
-        "someone a minute, and a wrong close costs them the issue. Never "
+        "judgement you formed. A question that needs real thought, a design, "
+        "or a window only the author can declare is the `defer` verdict, taken "
+        "by the node itself. Never "
         "close an issue carrying `critical` or `security-finding`, or one "
-        "assigned to a milestone; those can only be `agent-ready` or "
-        "`needs-human`.\n\n"
+        "assigned to a milestone; those can only be `agent-ready`, `defer`, "
+        "or `needs-human`.\n\n"
         "Do not edit the issue title or body. Do not create or push a branch "
         "or open a pull request. Apply no label other than the one your "
         "verdict names. Use `gh issue comment`, `gh issue edit --add-label`, "
@@ -166,8 +218,11 @@ def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
         "Return the typed artifact. `question`, `recommendation`, `summary` "
         "and `options` are required for `needs-human` and omitted otherwise. "
         "`summary` is the `### Outcome` paragraph verbatim. `evidence` is "
-        "required for `reject` and `stale`, and is the same citation your "
-        "brief section gives.\n\n" + _options_prompt()
+        "required for `reject`, `stale`, and `defer`. For a close it is the "
+        "same citation your brief section gives; for `defer` it is the "
+        "concrete condition that would make the issue actionable. "
+        + supersedes
+        + _options_prompt(closing=closing)
     )
 
 
@@ -194,7 +249,7 @@ def _chat_prompt(receipt: dict) -> str:
     )
 
 
-def _options_prompt() -> str:
+def _options_prompt(*, closing: bool) -> str:
     """How to write the options, which is the half that decides whether a
     person can act on the escalation in one click.
 
@@ -203,26 +258,48 @@ def _options_prompt() -> str:
     verb the effect already names. A screen of buttons reading close, defer,
     hold tells a reader nothing the effect field did not.
     """
+    supersede = (
+        "A close recommendation may use `supersede` when one decision retires "
+        "several issues. "
+        if closing
+        else ""
+    )
+    effect = ", `supersede`" if closing else ""
+    detail = (
+        "`supersede` takes `closes`, one to ten issue numbers, and "
+        "`in_favour_of`, the surviving issue number; "
+        if closing
+        else ""
+    )
+    label_examples = (
+        '"Deliver the /invoke path first", "Close as superseded by #5656", '
+        '"Split the operator UI out of the API"'
+        if closing
+        else '"Deliver the /invoke path first", "Split the operator UI out of the API"'
+    )
     return (
         "`options` is two to four things a person could decide, ordered with "
         "the recommendation FIRST. Its effect must match your `recommend:` "
         "line: deliver means `agent-ready`, close means `close`, split means "
-        "`split`, defer means `defer`.\n"
+        "`split`. " + supersede + "You may offer `defer` as an alternative, but "
+        "never recommend it: if deferring is right, take the `defer` verdict "
+        "yourself.\n"
         "Each option is `{key, label, effect, detail}`.\n"
         "`key` is a short slug, lowercase letters, digits and hyphens.\n"
         "`label` is what the button says, and it must name the concrete act "
-        'with the specifics in it: "Deliver the /invoke path first", "Close '
-        'as superseded by #5656", "Split the operator UI out of the API". '
+        "with the specifics in it: " + label_examples + ". "
         'Never a bare verb such as "close" or "defer": the effect field '
         "already says that, and a label that only repeats it gives the person "
         "deciding nothing to decide on.\n"
-        "`effect` is one of `agent-ready`, `close`, `split`, `defer`, "
-        "`hold`.\n"
+        "`effect` is one of `agent-ready`, `close`"
+        + effect
+        + ", `split`, `defer`, `hold`.\n"
         "`detail` carries what that effect needs: `agent-ready` takes an "
         "optional `scope` note posted as a comment; `close` takes `reason` "
         "(`not_planned` or `completed`) and a `comment` saying why; `split` "
         "takes `children`, one to five `{title, body}` issues to open before "
-        "the parent closes; `defer` takes a `comment` naming the condition "
+        "the parent closes; " + detail + "`defer` "
+        "takes a `comment` naming the condition "
         "that would make this worth doing; `hold` takes nothing and leaves "
         "the issue exactly as it is.\n"
         "Always include one option that is not the recommendation, so the "
@@ -230,25 +307,31 @@ def _options_prompt() -> str:
     )
 
 
-def closes_today() -> int:
+def closes_today(*, exclude_task_id: str | None = None) -> int:
     """Issues this lane has closed in the last 24 hours, from the audit trail."""
     from datetime import timedelta
 
     from swarm.factory_controls import _now
 
     cutoff = _now() - timedelta(hours=24)
-    with _read_session() as db:
-        return len(
-            db.exec(
-                select(FactoryAudit.id).where(
-                    FactoryAudit.action == "intake_closed",
-                    FactoryAudit.created_at >= cutoff,
-                )
-            ).all()
+    conditions = [
+        FactoryAudit.action == "intake_closed",
+        FactoryAudit.created_at >= cutoff,
+    ]
+    if exclude_task_id is not None:
+        conditions.append(
+            or_(
+                FactoryAudit.task_id.is_(None),
+                FactoryAudit.task_id != exclude_task_id,
+            )
         )
+    with _read_session() as db:
+        return len(db.exec(select(FactoryAudit.id).where(*conditions)).all())
 
 
-def closing_allowed(policy: dict) -> tuple[bool, str]:
+def closing_allowed(
+    policy: dict, *, exclude_task_id: str | None = None
+) -> tuple[bool, str]:
     """Whether a close verdict may be acted on, and why not when it may not.
 
     Read twice: once to shape the prompt, so the guest is never offered an
@@ -258,7 +341,7 @@ def closing_allowed(policy: dict) -> tuple[bool, str]:
     intake = intake_policy(policy)
     if not intake["close_enabled"]:
         return False, "close_disabled"
-    if closes_today() >= intake["max_closes_per_day"]:
+    if closes_today(exclude_task_id=exclude_task_id) >= intake["max_closes_per_day"]:
         return False, "close_cap"
     return True, "allowed"
 
@@ -499,10 +582,14 @@ def _verify_options(artifact: dict, recommendation: str) -> str | None:
     invalid = verify_option_list(options, subject="needs-human")
     if invalid is not None:
         return invalid
-    if options[0]["effect"] != RECOMMENDED_EFFECT[recommendation]:
+    effect = options[0]["effect"]
+    expected = RECOMMENDED_EFFECT[recommendation]
+    allowed = ("close", "supersede") if recommendation == "close" else (expected,)
+    if effect not in allowed:
+        expected_text = "close or supersede" if recommendation == "close" else expected
         return (
-            f"the first option is {options[0]['effect']}, which is not what "
-            f"recommend: {recommendation} asks for"
+            f"the first option is {effect}, which is not what recommend: "
+            f"{recommendation} asks for (expected {expected_text})"
         )
     return None
 
@@ -518,12 +605,56 @@ def _verify_artifact(artifact: dict, outcome: str) -> str | None:
         if recommendation not in RECOMMENDATIONS:
             return "needs-human carries no recommendation"
         return _verify_options(artifact, recommendation)
-    if outcome in CLOSING_OUTCOMES:
+    if outcome in (*CLOSING_OUTCOMES, DEFER_OUTCOME):
         if not isinstance(evidence, str) or not evidence.strip():
             return f"{outcome} cites no evidence"
+        if outcome == REJECT_OUTCOME:
+            siblings = artifact.get("supersedes")
+            if siblings is not None and (
+                not isinstance(siblings, list)
+                or not 1 <= len(siblings) <= 10
+                or any(type(number) is not int or number < 1 for number in siblings)
+            ):
+                return "reject carries invalid superseded issue numbers"
+            favoured = artifact.get("in_favour_of")
+            if favoured is not None and (type(favoured) is not int or favoured < 1):
+                return "reject carries an invalid issue in favour"
         return None
     if question is not None or recommendation is not None:
         return "agent-ready carries a question or recommendation"
+    return None
+
+
+def _verify_supersedes(
+    repo: str, number: int, artifact: dict, outcome: str
+) -> str | None:
+    """Validate reject relationships before inspecting the primary issue."""
+    if outcome != REJECT_OUTCOME:
+        return None
+    siblings = artifact.get("supersedes")
+    favoured = artifact.get("in_favour_of")
+    if siblings is not None and favoured is None:
+        return "supersedes names no issue in favour"
+    if favoured is None:
+        return None
+    if favoured == number:
+        return "issue in favour is the briefed issue"
+    if siblings is not None and favoured in siblings:
+        return "supersedes includes the issue in favour"
+    if siblings is not None and number in siblings:
+        return "supersedes includes the briefed issue"
+    try:
+        issue = github_get(repo, f"issues/{favoured}")
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return "issue in favour is not an open issue"
+        raise
+    if (
+        not isinstance(issue, dict)
+        or issue.get("state") != "open"
+        or "pull_request" in issue
+    ):
+        return "issue in favour is not an open issue"
     return None
 
 
@@ -562,6 +693,144 @@ def _brief_comment(repo: str, number: int, admitted: datetime, claimed) -> tuple
     return match, len(comments), bool(matching)
 
 
+def _github_write(repo: str, suffix: str, payload: dict, *, method: str = "POST"):
+    """The bounded GitHub writer, imported lazily to keep board reads light."""
+    from swarm.factory_landing import github_write
+
+    return github_write(repo, suffix, payload, method=method)
+
+
+def _supersede_marker(task_id: str, sibling: int) -> str:
+    return f"<!-- factory-supersede:{task_id}:{sibling} -->"
+
+
+def _has_supersede_marker(repo: str, sibling: int, marker: str) -> bool:
+    for page in range(1, MAX_COMMENT_PAGES + 1):
+        comments = github_list(
+            repo,
+            f"issues/{sibling}/comments?per_page={COMMENT_PAGE_SIZE}&page={page}",
+        )
+        if any(
+            isinstance(comment, dict) and marker in str(comment.get("body") or "")
+            for comment in comments
+        ):
+            return True
+        if len(comments) < COMMENT_PAGE_SIZE:
+            break
+    return False
+
+
+def _active_receipt(repo: str, sibling: int) -> bool:
+    with _read_session() as db:
+        return (
+            db.exec(
+                select(FactoryReceipt.id).where(
+                    FactoryReceipt.repo == repo,
+                    FactoryReceipt.issue_number == sibling,
+                    FactoryReceipt.state.in_((*_ACTIVE, "queued", ESCALATED)),
+                )
+            ).first()
+            is not None
+        )
+
+
+def _supersede_skip(task_id: str, number: int, sibling: int, reason: str) -> None:
+    _audit_once(
+        task_id,
+        f"factory-refine-supersede-skip:{task_id}:{sibling}",
+        "refine_supersede_skipped",
+        {"issue_number": number, "sibling": sibling, "reason": reason},
+    )
+
+
+def _settle_superseded(
+    task: dict, policy: dict, artifact: dict, comment_url: str
+) -> None:
+    """Close eligible siblings named by a verified primary reject."""
+    number = task_snapshot(task["id"])["issue_number"]
+    repo = task["repo"]
+    favoured = artifact.get("in_favour_of") or number
+    cap = intake_policy(policy)["max_closes_per_day"]
+    for sibling in dict.fromkeys(artifact.get("supersedes") or []):
+        try:
+            issue = github_get(repo, f"issues/{sibling}")
+            marker = _supersede_marker(task["id"], sibling)
+            marked = _has_supersede_marker(repo, sibling, marker)
+            if marked:
+                issue = github_get(repo, f"issues/{sibling}")
+            if marked and issue.get("state") == "closed":
+                _audit_once(
+                    task["id"],
+                    f"factory-refine-supersede-close:{task['id']}:{sibling}",
+                    "intake_closed",
+                    {
+                        "issue_number": sibling,
+                        "outcome": REJECT_OUTCOME,
+                        "superseded_by": favoured,
+                        "comment_url": comment_url,
+                    },
+                )
+                continue
+            if "pull_request" in issue:
+                _supersede_skip(task["id"], number, sibling, "pull_request")
+                continue
+            labels = {
+                str(label.get("name") or "").lower()
+                for label in issue.get("labels") or []
+                if isinstance(label, dict)
+            }
+            if not marked and issue.get("state") != "open":
+                _supersede_skip(task["id"], number, sibling, "not_open")
+                continue
+            if labels & set(PROTECTED_LABELS):
+                _supersede_skip(task["id"], number, sibling, "protected_label")
+                continue
+            if issue.get("milestone"):
+                _supersede_skip(task["id"], number, sibling, "milestone")
+                continue
+            if issue.get("assignees"):
+                _supersede_skip(task["id"], number, sibling, "assigned")
+                continue
+            if _active_receipt(repo, sibling):
+                _supersede_skip(task["id"], number, sibling, "active_receipt")
+                continue
+            if closes_today() >= cap:
+                _supersede_skip(task["id"], number, sibling, "close_cap")
+                continue
+
+            if not marked:
+                _github_write(
+                    repo,
+                    f"issues/{sibling}/comments",
+                    {
+                        "body": (
+                            f"{marker}\nSuperseded by #{favoured}. See the brief "
+                            f"on #{number}: {comment_url}"
+                        )
+                    },
+                )
+            _github_write(repo, f"issues/{sibling}/labels", {"labels": ["wontfix"]})
+            _github_write(
+                repo,
+                f"issues/{sibling}",
+                {"state": "closed", "state_reason": "not_planned"},
+                method="PATCH",
+            )
+            _audit_once(
+                task["id"],
+                f"factory-refine-supersede-close:{task['id']}:{sibling}",
+                "intake_closed",
+                {
+                    "issue_number": sibling,
+                    "outcome": REJECT_OUTCOME,
+                    "superseded_by": favoured,
+                    "comment_url": comment_url,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - one sibling cannot fail the task
+            _supersede_skip(task["id"], number, sibling, type(exc).__name__)
+
+
 def _settle(task: dict, run: dict, policy: dict) -> None:
     recorded = _recorded_mismatch(task["id"])
     if recorded is not None:
@@ -580,6 +849,8 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
         _mismatch(task["id"], number, "artifact outcome is invalid", False)
         return
     invalid = _verify_artifact(artifact, outcome)
+    if invalid is None:
+        invalid = _verify_supersedes(repo, number, artifact, outcome)
     if invalid is not None:
         _mismatch(task["id"], number, invalid, False)
         return
@@ -599,7 +870,7 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
     # server refusing to be talked into the close by the artifact alone.
     effective, downgrade = outcome, None
     if outcome in CLOSING_OUTCOMES:
-        allowed, why = closing_allowed(policy)
+        allowed, why = closing_allowed(policy, exclude_task_id=task["id"])
         if protected:
             effective, downgrade = HUMAN_LABEL, "protected_issue"
         elif not allowed:
@@ -672,6 +943,8 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
                 "comment_url": match["html_url"],
             },
         )
+        if effective == REJECT_OUTCOME:
+            _settle_superseded(task, policy, artifact, match["html_url"])
     # A needs-human outcome succeeds because the refine task produced a
     # verified brief and escalated the one decision that remains. A close
     # succeeds because the issue is verifiably closed with its reason on
@@ -679,6 +952,7 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
     state = {
         READY_LABEL: "refine_agent_ready",
         HUMAN_LABEL: "refine_needs_human",
+        DEFER_OUTCOME: "refine_deferred",
         REJECT_OUTCOME: "refine_rejected",
         STALE_OUTCOME: "refine_stale",
     }[effective]
@@ -753,7 +1027,11 @@ def reconcile(
             task,
             policy,
             NODE_KEY,
-            refine_prompt(task, receipt, closing=closing_allowed(policy)[0]),
+            refine_prompt(
+                task,
+                receipt,
+                closing=closing_allowed(policy, exclude_task_id=task["id"])[0],
+            ),
             [],
             choice["model"],
             cause,

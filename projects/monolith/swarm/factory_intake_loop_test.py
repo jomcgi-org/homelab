@@ -430,6 +430,20 @@ def test_refine_enabled_sets_class_while_labelled_stays_delivery(db, monkeypatch
     assert delivered[0]["receipt"]["task_class"] == "bug-fix"
 
 
+def test_needs_thought_excludes_only_a_refine_candidate(db, monkeypatch):
+    fake_pages(monkeypatch, [issue(1, ["needs-thought"])])
+    assert intake_loop.intake_tick(policy(refine_enabled=True), generation=0) == []
+    detail = json.loads(audits(db, "intake_idle")[-1].detail_json)
+    assert detail["excluded"] == {"deferred": 1}
+
+    release_sweep(db)
+    fake_pages(monkeypatch, [issue(2, ["agent-ready", "needs-thought"])])
+    admitted = intake_loop.intake_tick(
+        policy(labels=["agent-ready"], refine_enabled=True), generation=0
+    )
+    assert admitted[0]["receipt"]["task_class"] == "judgment-analysis"
+
+
 def test_intake_state_reports_policy_usage_and_latest_audits(db):
     with Session(db) as session:
         # The board shows usage against the cap, so it counts what the cap

@@ -184,7 +184,14 @@ _CLASS_POOL_ROLES = ("implement", "refine", "reviewer")
 # What an option does when an operator picks it. Every effect except `hold`
 # writes to GitHub, and `hold` exists so "leave it exactly as it is" is a
 # choice a person can record rather than a tab they close.
-OPTION_EFFECTS = ("agent-ready", "close", "split", "defer", "hold")
+OPTION_EFFECTS = (
+    "agent-ready",
+    "close",
+    "supersede",
+    "split",
+    "defer",
+    "hold",
+)
 # The one effect that puts the work back in front of the lane rather than
 # ending it. A delivery escalation answered with it is re-admitted carrying
 # the operator's answer as direction, and it is what `resume_task` applies,
@@ -195,6 +202,7 @@ CONTINUE_EFFECT = "agent-ready"
 EFFECT_WORD = {
     "agent-ready": "deliver",
     "close": "close",
+    "supersede": "supersede",
     "split": "split",
     "defer": "defer",
     "hold": "hold",
@@ -220,6 +228,13 @@ OPTION_SCHEMA = {
                 "scope": {"type": "string", "maxLength": 2000},
                 "reason": {"enum": list(CLOSE_REASONS)},
                 "comment": {"type": "string", "maxLength": 2000},
+                "closes": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 10,
+                    "items": {"type": "integer", "minimum": 1},
+                },
+                "in_favour_of": {"type": "integer", "minimum": 1},
                 "children": {
                     "type": "array",
                     "minItems": 1,
@@ -276,6 +291,16 @@ def verify_option(option: object, index: int) -> str | None:
         return f"{where} closes with no reason"
     if effect == "defer" and not str(detail.get("comment") or "").strip():
         return f"{where} defers with no wait condition"
+    if effect == "supersede":
+        closes = detail.get("closes")
+        if not isinstance(closes, list) or not 1 <= len(closes) <= 10:
+            return f"{where} supersedes with no issues to close"
+        if any(type(number) is not int or number < 1 for number in closes):
+            return f"{where} supersedes with an invalid issue number"
+        if type(detail.get("in_favour_of")) is not int or (detail["in_favour_of"] < 1):
+            return f"{where} supersedes with no issue in favour"
+        if detail["in_favour_of"] in closes:
+            return f"{where} supersedes the issue it favours"
     if effect == "split":
         children = detail.get("children")
         if not isinstance(children, list) or not 1 <= len(children) <= (
@@ -1337,6 +1362,8 @@ def escalation_view(receipt: dict) -> dict | None:
                 # shape of a split without carrying every child body to the
                 # browser.
                 "children": len((option.get("detail") or {}).get("children") or []),
+                "closes": list((option.get("detail") or {}).get("closes") or []),
+                "in_favour_of": (option.get("detail") or {}).get("in_favour_of"),
             }
             for option in escalation.get("options") or []
         ],

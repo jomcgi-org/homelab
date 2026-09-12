@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import httpx
 import pytest
@@ -71,41 +72,76 @@ class Github:
 
     def __init__(self):
         self.comments: list[dict] = []
+        self.comments_by_issue: dict[int, list[dict]] = {}
         self.writes: list[tuple[str, str, dict]] = []
+        self.reads: list[int] = []
         self.next_issue = 100
         # The issue as GitHub holds it, so a test can assert on the state a
         # decision left behind rather than only on the calls it made.
         self.labels: set[str] = {"needs-human"}
         self.state = "open"
+        self.issue_labels: dict[int, set[str]] = {}
+        self.issue_states: dict[int, str] = {}
+        self.pull_requests: set[int] = set()
 
-    def get(self, _repo, _suffix):
-        return {
-            "number": ISSUE,
-            "state": self.state,
-            "labels": [{"name": name} for name in sorted(self.labels)],
+    def get(self, _repo, suffix):
+        number = int(suffix.rsplit("/", 1)[1])
+        self.reads.append(number)
+        labels = (
+            self.labels if number == ISSUE else self.issue_labels.get(number, set())
+        )
+        state = self.state if number == ISSUE else self.issue_states.get(number, "open")
+        issue = {
+            "number": number,
+            "state": state,
+            "labels": [{"name": name} for name in sorted(labels)],
         }
+        if number in self.pull_requests:
+            issue["pull_request"] = {"url": f"https://api.github.test/pulls/{number}"}
+        return issue
 
     def list(self, _repo, suffix):
         if "comments" in suffix and "page=1" in suffix:
-            return list(self.comments)
+            match = re.match(r"issues/(\d+)/comments", suffix)
+            if match:
+                return list(self.comments_by_issue.get(int(match.group(1)), []))
         return []
 
     def write(self, repo, suffix, payload, *, method="POST"):
         self.writes.append((method, suffix, payload))
         if suffix.endswith("/comments"):
-            self.comments.append({"body": payload["body"]})
+            comment = {"body": payload["body"]}
+            self.comments.append(comment)
+            number = int(suffix.split("/")[1])
+            self.comments_by_issue.setdefault(number, []).append(comment)
             return {"id": len(self.comments)}
         if suffix == "issues":
             self.next_issue += 1
             return {"number": self.next_issue}
         if method == "POST" and suffix.endswith("/labels"):
-            self.labels.update(payload.get("labels") or [])
+            number = int(suffix.split("/")[1])
+            if number == ISSUE:
+                self.labels.update(payload.get("labels") or [])
+            else:
+                self.issue_labels.setdefault(number, set()).update(
+                    payload.get("labels") or []
+                )
             return {}
         if method == "DELETE" and "/labels/" in suffix:
-            self.labels.discard(suffix.rsplit("/", 1)[1])
+            number = int(suffix.split("/")[1])
+            labels = (
+                self.labels
+                if number == ISSUE
+                else self.issue_labels.setdefault(number, set())
+            )
+            labels.discard(suffix.rsplit("/", 1)[1])
             return {}
         if method == "PATCH" and payload.get("state") == "closed":
-            self.state = "closed"
+            number = int(suffix.split("/")[1])
+            if number == ISSUE:
+                self.state = "closed"
+            else:
+                self.issue_states[number] = "closed"
             return {}
         return {}
 
@@ -135,6 +171,16 @@ def options(first="split"):
             "label": "Close as superseded by #5656",
             "effect": "close",
             "detail": {"reason": "not_planned", "comment": "Superseded by #5656."},
+        },
+        "supersede": {
+            "key": "supersede",
+            "label": "Fold duplicates into #10",
+            "effect": "supersede",
+            "detail": {
+                "closes": [7, 8, 9],
+                "in_favour_of": 10,
+                "comment": "One issue carries the implementation.",
+            },
         },
         "split": {
             "key": "split",
@@ -250,6 +296,178 @@ def test_close_comments_then_closes_with_the_stated_reason(db, github):
     # must find the reason already on it.
     assert github.writes[0][1].endswith("/comments")
     assert "Superseded by #5656." in github.bodies()
+
+
+def test_supersede_closes_three_issues_and_clears_the_receipt_label(db, github):
+    receipt_id = escalate(db, "supersede")
+    result = decisions.apply_decision(
+        receipt_id, "supersede", "joe@example.test", "Keep the context together"
+    )
+    effects = result["resolution"]["effects"]
+    assert effects == {
+        "closed": [7, 8, 9],
+        "skipped": [],
+        "in_favour_of": 10,
+        "labels_removed": ["needs-human"],
+    }
+    for number in (7, 8, 9):
+        assert ("POST", f"issues/{number}/labels", {"labels": ["wontfix"]}) in (
+            github.writes
+        )
+        assert (
+            "PATCH",
+            f"issues/{number}",
+            {"state": "closed", "state_reason": "not_planned"},
+        ) in github.writes
+        assert len(github.comments_by_issue[number]) == 1
+        body = github.comments_by_issue[number][0]["body"]
+        first_line = body.splitlines()[0]
+        assert first_line.startswith("<!-- factory-decision:")
+        assert first_line.endswith(f":{number} -->")
+        assert not any(line.startswith(":") for line in body.splitlines())
+        assert f"-->:{number}" not in body
+    own_close = github.writes.index(
+        (
+            "PATCH",
+            "issues/7",
+            {"state": "closed", "state_reason": "not_planned"},
+        )
+    )
+    own_unlabel = github.writes.index(("DELETE", "issues/7/labels/needs-human", {}))
+    assert own_close < own_unlabel
+    assert "Operator note: Keep the context together" in github.bodies()
+
+
+def test_supersede_retry_resumes_without_duplicate_comments(db, github):
+    receipt_id = escalate(db, "supersede")
+    request = httpx.Request("PATCH", "https://api.github.com")
+    response = httpx.Response(502, request=request)
+    failed = False
+
+    def flaky(repo, suffix, payload, *, method="POST"):
+        nonlocal failed
+        if suffix == "issues/9" and method == "PATCH" and not failed:
+            failed = True
+            raise httpx.HTTPStatusError("boom", request=request, response=response)
+        return github.write(repo, suffix, payload, method=method)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(landing, "github_write", flaky)
+        with pytest.raises(decisions.DecisionError):
+            decisions.apply_decision(receipt_id, "supersede", "joe@example.test")
+
+    result = decisions.apply_decision(receipt_id, "supersede", "joe@example.test")
+    assert result["resolution"]["effects"]["closed"] == [7, 9]
+    assert result["resolution"]["effects"]["skipped"] == [
+        {"number": 8, "reason": "not_open"}
+    ]
+    assert [len(github.comments_by_issue[number]) for number in (7, 8, 9)] == [
+        1,
+        1,
+        1,
+    ]
+
+
+def test_supersede_requires_the_receipt_issue_to_close_or_survive(db, github):
+    receipt_id = escalate(db, "supersede")
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, receipt_id)
+        escalation_doc = json.loads(row.escalation_json)
+        escalation_doc["options"][0]["detail"] = {
+            "closes": [8, 9],
+            "in_favour_of": 10,
+        }
+        row.escalation_json = json.dumps(escalation_doc)
+        session.add(row)
+        session.commit()
+    with pytest.raises(decisions.DecisionError) as raised:
+        decisions.apply_decision(receipt_id, "supersede", "joe@example.test")
+    assert raised.value.status == 422
+    assert raised.value.reason == (
+        "the receipt's issue must be closed or be the one favoured"
+    )
+    assert github.writes == []
+
+
+def test_supersede_skips_pull_requests_and_closed_issues(db, github):
+    receipt_id = escalate(db, "supersede")
+    github.pull_requests.add(8)
+    github.issue_states[9] = "closed"
+
+    result = decisions.apply_decision(receipt_id, "supersede", "joe@example.test")
+
+    effects = result["resolution"]["effects"]
+    assert effects["closed"] == [7]
+    assert effects["skipped"] == [
+        {"number": 8, "reason": "pull_request"},
+        {"number": 9, "reason": "not_open"},
+    ]
+    assert github.reads[:3] == [7, 8, 9]
+    assert not any(
+        write[1].startswith(("issues/8/", "issues/9/")) for write in github.writes
+    )
+
+
+def test_supersede_requeues_the_favoured_survivor_for_a_fresh_brief(db, github):
+    configure()
+    receipt_id = escalate(db, "supersede")
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, receipt_id)
+        document = json.loads(row.escalation_json)
+        document["options"][0]["detail"]["closes"] = [8, 9]
+        document["options"][0]["detail"]["in_favour_of"] = ISSUE
+        row.escalation_json = json.dumps(document)
+        session.add(row)
+        session.commit()
+
+    result = decisions.apply_decision(receipt_id, "supersede", "joe@example.test")
+
+    effects = result["resolution"]["effects"]
+    assert effects["requeued"] is True
+    assert effects["blocked_by"] is None
+    with Session(db) as session:
+        row = session.get(FactoryReceipt, receipt_id)
+        assert row.state == "queued"
+        assert row.task_id is None
+        document = json.loads(row.escalation_json)
+    assert document["chat"][-1]["note"] == (
+        "Operator folded in #8, #9: brief again with their scope included"
+    )
+    assert "Folded in by an operator decision: #8, #9." in github.bodies()
+    assert ("DELETE", "issues/7/labels/needs-human", {}) in github.writes
+
+
+@pytest.mark.parametrize(
+    ("detail", "reason"),
+    [
+        ({"in_favour_of": 10}, "no issues to close"),
+        ({"closes": [7]}, "no issue in favour"),
+    ],
+)
+def test_verify_option_requires_both_supersede_fields(detail, reason):
+    invalid = controls.verify_option(
+        {
+            "key": "supersede",
+            "label": "Fold duplicates into one issue",
+            "effect": "supersede",
+            "detail": detail,
+        },
+        0,
+    )
+    assert reason in invalid
+
+
+def test_verify_option_refuses_to_close_the_favoured_issue():
+    invalid = controls.verify_option(
+        {
+            "key": "supersede",
+            "label": "Fold duplicates into one issue",
+            "effect": "supersede",
+            "detail": {"closes": [7, 10], "in_favour_of": 10},
+        },
+        0,
+    )
+    assert invalid == "option 1 supersedes the issue it favours"
 
 
 def test_split_opens_the_children_then_closes_the_parent(db, github):
