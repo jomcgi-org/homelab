@@ -38,7 +38,10 @@ genrule(
     # This is an executor-capability check, not a build output. A cache hit
     # proves nothing about the executor serving this invocation, and a local
     # fallback would prove only the workflow runner's architecture.
-    tags = ["no-cache", "no-local"],
+    tags = [
+        "no-cache",
+        "no-local",
+    ],
 )
 
 build_test(
