@@ -17,6 +17,9 @@ export const RECEIPT_STATE_WORD = {
   queued: "queued",
   admitted: "in flight",
   uncertain: "uncertain",
+  // A pause is a decision request, so the task leaves the lane and waits
+  // outside it. The card says so rather than reading as in flight.
+  escalated: "escalated",
   succeeded: "landed",
   failed: "failed",
   cancelled: "cancelled",
@@ -86,7 +89,9 @@ export function focusNode(nodes) {
 export function phaseLabel(receipt) {
   if (!receipt) return "";
   if (receipt.state === "queued") return "waiting for a slot";
-  if (["succeeded", "failed", "cancelled"].includes(receipt.state)) {
+  if (
+    ["succeeded", "failed", "cancelled", "escalated"].includes(receipt.state)
+  ) {
     return RECEIPT_STATE_WORD[receipt.state];
   }
   const node = focusNode(receipt.nodes);

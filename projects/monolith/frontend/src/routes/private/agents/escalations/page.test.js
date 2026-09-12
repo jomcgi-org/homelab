@@ -82,6 +82,58 @@ afterEach(() => {
 });
 
 describe("escalations page", () => {
+  test("renders a delivery escalation beside a refine one", () => {
+    // A paused delivery planner leaves the lane as a card on this page. It
+    // carries a branch and usually a pull request, which a refine escalation
+    // never has, and the page has to say which kind it is looking at.
+    const delivery = escalation({
+      receipt_id: 9,
+      issue_number: 3824,
+      title: "the scope covers two surfaces",
+      task_class: "bug-fix",
+      kind: "delivery",
+      state: "escalated",
+      recommendation: "deliver",
+      branch: "factory/t-d49f3323",
+      pr_url: "https://github.com/jomcgi-org/homelab/pull/6012",
+      options: [
+        {
+          key: "continue-narrowed",
+          label: "Deliver only the /invoke path",
+          effect: "agent-ready",
+          children: 0,
+        },
+        { key: "hold", label: "Leave it open", effect: "hold", children: 0 },
+      ],
+    });
+    const target = renderPage({
+      escalations: [delivery, escalation({ kind: "advisory" })],
+      error: false,
+    });
+
+    const panels = [...target.querySelectorAll(".panel")];
+    expect(panels).toHaveLength(2);
+    expect(panels[0].querySelector(".panel-head").textContent).toContain(
+      "left the lane",
+    );
+    expect(panels[1].querySelector(".panel-head").textContent).not.toContain(
+      "left the lane",
+    );
+    const links = panels[0].querySelector(".links");
+    expect(links.textContent).toContain("the decision card");
+    expect(links.textContent).toContain("factory/t-d49f3323");
+    expect(
+      [...links.querySelectorAll("a")].map((a) => a.getAttribute("href")),
+    ).toContain("https://github.com/jomcgi-org/homelab/pull/6012");
+    expect(panels[1].querySelector(".links").textContent).toContain(
+      "the brief",
+    );
+    // The buttons are live: an escalated receipt runs nothing.
+    expect(panels[0].querySelector(".option:not(.chat-button)").disabled).toBe(
+      false,
+    );
+  });
+
   test("renders the question, the outcome, and the options in order", () => {
     const target = renderPage({ escalations: [escalation()], error: false });
 

@@ -94,6 +94,10 @@ describe("factory board helpers", () => {
     expect(phaseLabel({ state: "queued" })).toBe("waiting for a slot");
     expect(phaseLabel({ state: "succeeded" })).toBe("landed");
     expect(phaseLabel({ state: "admitted", nodes: [] })).toBe("planning");
+    // An escalated task left the lane to wait on a person. It is not in
+    // flight and it is not paused, so the card says escalated whatever its
+    // last node was doing when the planner asked.
+    expect(phaseLabel({ ...receipt, state: "escalated" })).toBe("escalated");
   });
 
   it("summarises the lane for the launcher strip", () => {
