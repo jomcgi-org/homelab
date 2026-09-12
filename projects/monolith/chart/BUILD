@@ -46,6 +46,7 @@ helm_chart(
         "frontend.image": "//projects/monolith/frontend:image.info",
         "jobs.image": "//projects/monolith:jobs_image.info",
         "progress.image": "//projects/monolith:progress_image.info",
+        "stars.gridGenerator.image": "//projects/monolith:stars_grid_image.info",
         "whatsapp.image": "//projects/monolith/whatsapp:image.info",
     },
     lint = False,
@@ -125,6 +126,32 @@ py_test(
         # The Applications, so releaseName is read from where it is DECLARED.
         "PROD_APPLICATION": "$(rootpath //projects/monolith/deploy:application)",
         "DEV_APPLICATION": "$(rootpath //projects/monolith/dev/deploy:application)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
+    name = "stars_grid_job_test",
+    srcs = ["stars_grid_job_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/monolith/deploy:deploy_values",
+        "//projects/monolith/dev/deploy:deploy_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "migrations/**/*",
+    ]),
+    env = {
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
+        "DEV_VALUES": "$(rootpath //projects/monolith/dev/deploy:deploy_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
     },
     deps = [
         "@pip//pytest",

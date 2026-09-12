@@ -1717,6 +1717,44 @@ stars:
   historyMapKey: "history-map.json"
   onepassword:
     itemPath: "vaults/k8s-homelab/items/r2-s3-credentials"
+  # Dedicated near-static geospatial computation. The production overlay
+  # enables the CronWorkflow but keeps it suspended until all four source
+  # object keys are configured and an operator intentionally submits a run.
+  # Empty keys are deliberate: the repository has no authoritative DEM object
+  # location, so the chart must not guess one.
+  gridGenerator:
+    enabled: false
+    suspend: true
+    schedule: "0 3 1 */3 *" # quarterly guardrail; normal use is an explicit run
+    concurrencyPolicy: Forbid
+    activeDeadlineSeconds: 7200
+    image: ""
+    source:
+      endpoint: ""
+      region: ""
+      bucket: ""
+      admin1Key: ""
+      roadsKey: ""
+      lightPollutionKey: ""
+      demKey: ""
+      # Existing 1Password-backed R2 Secret, cloned into monolith-workflows.
+      # Override only to another already-managed Secret for a different store.
+      credentialsSecretName: monolith-r2-s3
+      accessKeyKey: access-key-id
+      secretAccessKeyKey: secret-access-key
+    spacingKm: 2
+    maxRoadDistanceM: 2000
+    workDir: /work
+    temporaryStorage:
+      sizeLimit: 5Gi
+    resources:
+      requests:
+        cpu: "1"
+        memory: 3Gi
+        ephemeral-storage: 3Gi
+      limits:
+        memory: 3Gi
+        ephemeral-storage: 5Gi
 
 # goosecracker artifact store (ADR 024). The full monolith writes agent-built
 # HTML to s3://<bucket>/<id>/index.html (reusing the shared SeaweedFS S3

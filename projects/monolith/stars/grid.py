@@ -86,19 +86,15 @@ def _fetch_grid() -> list[dict] | None:
     return data
 
 
-def _load_grid_sync() -> int:
-    """Wholesale-replace stars.sites from the grid. Returns rows written.
+def replace_grid(grid: list[dict], *, engine=None) -> int:
+    """Wholesale-replace ``stars.sites`` from an already-computed grid.
 
     Malformed points (missing id/lat/lon) are skipped with a logged count. The
     delete + add_all run in one transaction so a failure leaves the prior table
-    intact rather than truncating it.
+    intact rather than truncating it. Reusing this transaction boundary lets the
+    dedicated geospatial image ingest its computed rows directly while the
+    existing S3 loader keeps its fetch and skip-on-error behavior unchanged.
     """
-    from core.db import get_engine
-
-    grid = _fetch_grid()
-    if not grid:
-        return 0
-
     now = datetime.now(timezone.utc)
     rows: list[Site] = []
     skipped = 0
@@ -130,7 +126,12 @@ def _load_grid_sync() -> int:
         logger.warning("stars.load_grid: no valid grid points, leaving table intact")
         return 0
 
-    with Session(get_engine()) as session:
+    if engine is None:
+        from core.db import get_engine
+
+        engine = get_engine()
+
+    with Session(engine) as session:
         session.execute(delete(Site))
         session.add_all(rows)
         # Clean orphaned forecast hours for sites no longer in the grid: the
@@ -147,6 +148,14 @@ def _load_grid_sync() -> int:
         )
         session.commit()
     return len(rows)
+
+
+def _load_grid_sync() -> int:
+    """Fetch the configured S3 grid and replace ``stars.sites`` with it."""
+    grid = _fetch_grid()
+    if not grid:
+        return 0
+    return replace_grid(grid)
 
 
 async def load_grid_handler(session: Session) -> datetime | None:

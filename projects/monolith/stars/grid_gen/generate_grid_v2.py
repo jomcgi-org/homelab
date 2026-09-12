@@ -1,8 +1,8 @@
-"""Offline grid-v2 generator: Scotland land mesh -> road-accessible -> dark.
+"""Stars grid engine: Scotland land mesh -> road-accessible -> dark -> elevated.
 
-This is NOT runtime code (grid_gen is excluded from the monolith image in BUILD).
-It is run by hand on the workstation, where heavy geospatial deps (rasterio/GDAL,
-geopandas, shapely 2) are available. Pipeline:
+This module is excluded from the API and general-purpose jobs images. The
+dedicated ``stars_grid_job`` binary packages its heavy geospatial dependencies
+and invokes this engine against operator-configured inputs. Pipeline:
 
   1. Mesh Scotland land at 2 km spacing. The Natural Earth admin-1 council-area
      polygons ARE land boundaries, so a point-in-Scotland test already excludes
@@ -19,25 +19,17 @@ geopandas, shapely 2) are available. Pipeline:
      black/gray/blue, every city reads orange/pink/white. The color_palette.json
      on the PVC is a MISMATCHED legend, ignore it; the swatches below are
      authoritative.
+  4. DEM enrichment: transform each retained WGS84 point into the DEM CRS,
+     sample band 1, and fail the run if any retained point lacks valid elevation.
 
 Output: grid.json, an array of
-  {id: "scotland-NNNN", name: null, lat, lon, altitude_m: 0, lp_zone}
+  {id: "scotland-NNNN", name: null, lat, lon, altitude_m, lp_zone}
 where lp_zone is the classified zone name (pristine/excellent/rural). ids are
 assigned after a stable sort by (lat, lon).
 
-Inputs (the stargazer service was decommissioned 2026-06; its processed data was
-archived to SeaweedFS at s3://stargazer-archive/processed/ before removal):
-
-    # Roads (~193 MB) and the LP raster. Pull from the SeaweedFS archive. Set $EP
-    # to the in-cluster SeaweedFS S3 endpoint (the seaweedfsS3Endpoint value in the
-    # monolith chart; creds default to duckdb/duckdb, see chat/store.py).
-    aws --endpoint-url "$EP" s3 cp s3://stargazer-archive/processed/scotland-roads.geojson /tmp/scotland-roads.geojson
-    aws --endpoint-url "$EP" s3 cp s3://stargazer-archive/processed/scotland_lp_2024.tif /tmp/scotland_lp_2024.tif
-
-    # Natural Earth 10m admin-1 (for the Scotland boundary); features with
-    # properties.geonunit == "Scotland" are the Scottish council areas.
-    curl -o /tmp/admin1.geojson https://raw.githubusercontent.com/nvkelso/\
-natural-earth-vector/master/geojson/ne_10m_admin_1_states_provinces.geojson
+The one-shot job downloads the admin-1 boundary, roads, light-pollution raster,
+and DEM from the configured S3-compatible source. See this directory's README
+for the environment-to-chart mapping and execution procedure.
 
 Run:
 
@@ -45,15 +37,14 @@ Run:
         --admin1 /tmp/admin1.geojson \
         --roads /tmp/scotland-roads.geojson \
         --raster /tmp/scotland_lp_2024.tif \
+        --dem /tmp/scotland-dem.tif \
         --spacing-km 2 --output grid.json
 
 Expected output: a grid.json of road-accessible dark sites (order ~150-400
 genuinely-dark accessible points over the Highlands; cities are absent because
-their pixels classify as orange/pink/white). Upload it the same way as v1:
-
-    kubectl port-forward -n seaweedfs svc/seaweedfs-s3 8333:8333 &
-    curl -X PUT -T grid.json http://localhost:8333/stars/grid.json
-    # stars.load_grid ingests it into stars.sites on its next run (or trigger it).
+their pixels classify as orange/pink/white). The dedicated job passes these rows
+directly to the transactional ``stars.sites`` replacement; the CLI output stays
+available for offline inspection.
 """
 
 from __future__ import annotations
@@ -228,17 +219,57 @@ def classify_points(
 ) -> list[tuple[tuple[float, float], str]]:
     """Sample the 3-band RGB LP raster at each (lon, lat) point and classify it.
 
-    Returns (point, zone_name) for every point. The raster is EPSG:4326, so the
-    (lon, lat) points sample directly.
+    Returns (point, zone_name) for every point. Points are transformed from
+    WGS84 into the raster CRS before sampling.
     """
     import rasterio
+    from rasterio.warp import transform
 
     results: list[tuple[tuple[float, float], str]] = []
     with rasterio.open(raster_path) as src:
-        coords = [(lon, lat) for lon, lat in points]
-        for point, vals in zip(points, src.sample(coords)):
+        if src.crs is None:
+            raise ValueError("light-pollution raster has no CRS")
+        xs, ys = transform(
+            "EPSG:4326",
+            src.crs,
+            [point[0] for point in points],
+            [point[1] for point in points],
+        )
+        coords = list(zip(xs, ys))
+        for point, vals in zip(points, src.sample(coords, masked=True)):
+            if any(bool(getattr(value, "mask", False)) for value in vals[:3]):
+                raise ValueError(f"light-pollution raster has no data at {point}")
             rgb = (int(vals[0]), int(vals[1]), int(vals[2]))
             results.append((point, classify_zone(rgb)))
+    return results
+
+
+def sample_elevations(
+    points: list[tuple[float, float]], dem_path: str
+) -> list[tuple[tuple[float, float], int]]:
+    """Sample DEM elevations for WGS84 points and return rounded metres."""
+    import rasterio
+    from rasterio.warp import transform
+
+    results: list[tuple[tuple[float, float], int]] = []
+    with rasterio.open(dem_path) as src:
+        if src.crs is None:
+            raise ValueError("DEM raster has no CRS")
+        xs, ys = transform(
+            "EPSG:4326",
+            src.crs,
+            [point[0] for point in points],
+            [point[1] for point in points],
+        )
+        coords = list(zip(xs, ys))
+        for point, vals in zip(points, src.sample(coords, indexes=1, masked=True)):
+            value = vals[0]
+            if bool(getattr(value, "mask", False)):
+                raise ValueError(f"DEM raster has no data at {point}")
+            elevation = float(value)
+            if not math.isfinite(elevation):
+                raise ValueError(f"DEM raster has invalid elevation at {point}")
+            results.append((point, int(round(elevation))))
     return results
 
 
@@ -246,14 +277,22 @@ def build(
     scotland: list,
     roads_path: str,
     raster_path: str,
+    dem_path: str,
     spacing_km: float = 2.0,
+    max_road_distance_m: float = 2000.0,
     drop_non_drivable: bool = True,
 ) -> list[dict]:
     """Run the full pipeline and return the grid.json site list."""
     mesh = generate_mesh(scotland, spacing_km)
-    on_road = filter_by_road(mesh, roads_path, drop_non_drivable=drop_non_drivable)
+    on_road = filter_by_road(
+        mesh,
+        roads_path,
+        max_dist_m=max_road_distance_m,
+        drop_non_drivable=drop_non_drivable,
+    )
     classified = classify_points(on_road, raster_path)
     kept = [(pt, zone) for pt, zone in classified if is_dark_zone(zone)]
+    elevations = dict(sample_elevations([point for point, _ in kept], dem_path))
     # Stable-sort by (lat, lon); ids are assigned after sorting so they follow it.
     kept.sort(key=lambda pz: (pz[0][1], pz[0][0]))
 
@@ -265,7 +304,7 @@ def build(
                 "name": None,
                 "lat": round(lat, 4),
                 "lon": round(lon, 4),
-                "altitude_m": 0,
+                "altitude_m": elevations[(lon, lat)],
                 "lp_zone": zone,
             }
         )
@@ -277,7 +316,9 @@ def main() -> None:
     ap.add_argument("--admin1", default="admin1.geojson")
     ap.add_argument("--roads", default="scotland-roads.geojson")
     ap.add_argument("--raster", default="scotland_lp_2024.tif")
+    ap.add_argument("--dem", default="scotland-dem.tif")
     ap.add_argument("--spacing-km", type=float, default=2.0)
+    ap.add_argument("--max-road-distance-m", type=float, default=2000.0)
     ap.add_argument("--output", default="grid.json")
     ap.add_argument(
         "--keep-non-drivable",
@@ -295,7 +336,9 @@ def main() -> None:
         scotland,
         args.roads,
         args.raster,
+        args.dem,
         spacing_km=args.spacing_km,
+        max_road_distance_m=args.max_road_distance_m,
         drop_non_drivable=not args.keep_non_drivable,
     )
     with open(args.output, "w") as fh:

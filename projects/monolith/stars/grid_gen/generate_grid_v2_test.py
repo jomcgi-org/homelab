@@ -8,6 +8,7 @@ classify_zone (nearest swatch), is_dark_zone (keep set), and generate_mesh
 
 import pytest
 
+import generate_grid_v2
 from generate_grid_v2 import (
     DARK_ZONES,
     SWATCHES,
@@ -144,3 +145,55 @@ class TestGenerateMesh:
         for lon, lat in points:
             assert 0.0 <= lon <= 0.01
             assert 56.0 <= lat <= 56.01
+
+
+def test_build_combines_road_light_pollution_and_dem(monkeypatch):
+    points = [(-4.2, 56.1), (-4.1, 56.2), (-4.0, 56.3)]
+    observed = {}
+
+    monkeypatch.setattr(
+        generate_grid_v2, "generate_mesh", lambda scotland, spacing: points
+    )
+
+    def filter_by_road(mesh, roads_path, **kwargs):
+        observed["roads"] = (mesh, roads_path, kwargs)
+        return points[1:]
+
+    def classify_points(on_road, raster_path):
+        observed["light_pollution"] = (on_road, raster_path)
+        return [(points[1], "excellent"), (points[2], "green")]
+
+    def sample_elevations(dark_points, dem_path):
+        observed["dem"] = (dark_points, dem_path)
+        return [(points[1], 417)]
+
+    monkeypatch.setattr(generate_grid_v2, "filter_by_road", filter_by_road)
+    monkeypatch.setattr(generate_grid_v2, "classify_points", classify_points)
+    monkeypatch.setattr(generate_grid_v2, "sample_elevations", sample_elevations)
+
+    sites = generate_grid_v2.build(
+        ["scotland"],
+        "roads.geojson",
+        "light.tif",
+        "dem.tif",
+        spacing_km=4.0,
+        max_road_distance_m=1200.0,
+    )
+
+    assert sites == [
+        {
+            "id": "scotland-0000",
+            "name": None,
+            "lat": 56.2,
+            "lon": -4.1,
+            "altitude_m": 417,
+            "lp_zone": "excellent",
+        }
+    ]
+    assert observed["roads"] == (
+        points,
+        "roads.geojson",
+        {"max_dist_m": 1200.0, "drop_non_drivable": True},
+    )
+    assert observed["light_pollution"] == (points[1:], "light.tif")
+    assert observed["dem"] == ([points[1]], "dem.tif")

@@ -62,6 +62,7 @@ load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test", "semgrep_test")
 load("//bazel/tools/js:exec_filegroup.bzl", "exec_filegroup")
+load("//bazel/tools/oci:apko_image.bzl", apko_base_image = "apko_image")
 load("//bazel/tools/oci:py3_image.bzl", "py3_image")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 load("//projects/monolith:bdd_test.bzl", "bdd_test")
@@ -229,6 +230,37 @@ py_venv_binary(
         ":monolith_backend",
         "@pip//typer",
     ],  # keep
+)
+
+# Dedicated heavy geospatial computation. None of these sources or dependencies
+# enter :monolith_backend, :main, or :jobs: grid_gen is excluded from their
+# source globs above, and only this binary depends on the GIS wheels.
+py_library(
+    name = "stars_grid_generator",
+    srcs = [
+        "stars/grid_gen/__init__.py",
+        "stars/grid_gen/generate_grid_v2.py",
+    ],
+    imports = ["."],
+    deps = [
+        "@pip//geopandas",
+        "@pip//rasterio",
+        "@pip//shapely",
+    ],
+)
+
+py_venv_binary(
+    name = "stars_grid_job",
+    srcs = ["stars/grid_gen/job.py"],
+    imports = ["."],
+    main = "stars/grid_gen/job.py",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        ":pkg_stars",
+        ":stars_grid_generator",
+        "@pip//boto3",
+        "@pip//botocore",
+    ],
 )
 
 # Progress-ingest entrypoint (ADR agents/051): same source closure as :main,
@@ -1697,6 +1729,35 @@ py3_image(
     main = "app/jobs_main.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/jobs",
     tars = [":repo_docs_manifest_layer"],
+)
+
+# The job's root filesystem is apko-built and package-locked. The application
+# layer is a separate, minimal py_venv_binary closure so GIS wheels never enter
+# the API or general-purpose jobs images. The apko base call is aliased so the
+# generated push-all list does not publish the implementation-only base image.
+apko_base_image(
+    name = "stars_grid_apko_base",
+    arm64 = True,
+    config = "stars/grid_gen/apko.yaml",
+    contents = "@stars_grid_apko_lock//:contents",
+    repository = "ghcr.io/jomcgi/homelab/projects/monolith/stars-grid-base",
+    visibility = ["//visibility:private"],
+)
+
+py3_image(
+    name = "stars_grid_image",
+    base = select({
+        "@platforms//cpu:arm64": ":stars_grid_apko_base_arm64",
+        "@platforms//cpu:x86_64": ":stars_grid_apko_base_amd64",
+    }),
+    bash_symlink = False,
+    binary = ":stars_grid_job",
+    env = {
+        "PYTHONPATH": "/projects/monolith/stars_grid_job.runfiles/_main:/projects/monolith/stars_grid_job.runfiles/_main/projects/monolith",
+    },
+    main = "stars/grid_gen/job.py",
+    multi_platform = True,
+    repository = "ghcr.io/jomcgi/homelab/projects/monolith/stars-grid",
 )
 
 # Progress-ingest image (ADR agents/051): identical base/deps to :image,
@@ -6210,6 +6271,7 @@ py_test(
         ":pkg_core",
         ":pkg_stars",
         "@pip//pytest",
+        "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
 )
@@ -6758,6 +6820,29 @@ py_test(
     srcs = [
         "stars/grid_gen/generate_grid_v2.py",
         "stars/grid_gen/generate_grid_v2_test.py",
+    ],
+    imports = ["stars/grid_gen"],
+    deps = ["@pip//pytest"],
+)
+
+py_test(
+    name = "stars_grid_job_test",
+    srcs = [
+        "stars/grid_gen/generate_grid_v2.py",
+        "stars/grid_gen/job.py",
+        "stars/grid_gen/job_test.py",
+    ],
+    imports = ["stars/grid_gen"],
+    deps = ["@pip//pytest"],
+)
+
+py_test(
+    name = "stars_grid_build_config_test",
+    srcs = ["stars/grid_gen/build_config_test.py"],
+    data = [
+        "BUILD",
+        "stars/grid_gen/apko.lock.json",
+        "stars/grid_gen/apko.yaml",
     ],
     imports = ["stars/grid_gen"],
     deps = ["@pip//pytest"],
