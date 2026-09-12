@@ -228,6 +228,7 @@ actions:
           # author to move new package ownership into a package-local BUILD.
           base_ref="origin/${GIT_REPO_DEFAULT_BRANCH:-main}"
           git fetch origin "${GIT_REPO_DEFAULT_BRANCH:-main}" --quiet
+          base_ref="$(git merge-base "$base_ref" HEAD)"
           python3 ./bazel/tools/ci/central_build_ratchet.py "$base_ref" HEAD
 
           # ORDER IS LOAD-BEARING: everything that analyses //... runs BEFORE the

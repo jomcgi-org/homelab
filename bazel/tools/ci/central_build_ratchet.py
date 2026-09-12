@@ -27,7 +27,9 @@ import sys
 from typing import Sequence
 
 CENTRAL_BUILD = "projects/monolith/BUILD"
-_GAZELLE_EXCLUDE = re.compile(r"^\s*#\s*gazelle:exclude(?:\s+(?P<pattern>\S+))?\s*$")
+_GAZELLE_EXCLUDE = re.compile(
+    r"^\s*#\s*gazelle:exclude(?:\s+(?P<pattern>.*?))?\s*$"
+)
 
 
 class RatchetError(RuntimeError):
@@ -90,8 +92,16 @@ def _string_values(
             value for item in node.elts for value in _string_values(item, variables)
         )
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        return _string_values(node.left, variables) + _string_values(
-            node.right, variables
+        left = _string_values(node.left, variables)
+        right = _string_values(node.right, variables)
+        if isinstance(node.left, (ast.List, ast.Tuple, ast.Set)) or isinstance(
+            node.right, (ast.List, ast.Tuple, ast.Set)
+        ):
+            return left + right
+        return tuple(
+            _StringValue(left_value.value + right_value.value, node.lineno)
+            for left_value in left
+            for right_value in right
         )
     if isinstance(node, ast.Name):
         return variables.get(node.id, ())
