@@ -305,6 +305,9 @@
             <span class="title">{item.title}</span>
             <span class="badge">{item.task_class}</span>
             <span class="badge">recommend {item.recommendation}</span>
+            {#if item.kind === "delivery"}
+              <span class="badge">left the lane</span>
+            {/if}
             {#if item.briefing}
               <span class="badge briefing">briefing</span>
             {/if}
@@ -398,7 +401,17 @@
             <p class="links code">
               <a href={item.url}>issue on GitHub</a>
               {#if item.comment_url}
-                <a href={item.comment_url}>the brief</a>
+                <a href={item.comment_url}
+                  >{item.kind === "delivery"
+                    ? "the decision card"
+                    : "the brief"}</a
+                >
+              {/if}
+              {#if item.pr_url}
+                <a href={item.pr_url}>the pull request</a>
+              {/if}
+              {#if item.branch}
+                <span>branch {item.branch}</span>
               {/if}
               {#if item.downgraded}
                 <span class="badge">close refused, escalated</span>

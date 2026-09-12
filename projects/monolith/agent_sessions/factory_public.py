@@ -79,11 +79,12 @@ RECEIPT_STATE_WORD = {
     "queued": "queued",
     "admitted": "in flight",
     "uncertain": "uncertain",
+    "escalated": "escalated",
     "succeeded": "landed",
     "failed": "failed",
     "cancelled": "cancelled",
 }
-TERMINAL_STATES = ("succeeded", "failed", "cancelled")
+TERMINAL_STATES = ("succeeded", "failed", "cancelled", "escalated")
 
 # The phase word for a task that never got a node far enough to name one. A
 # failed task with no node that ran was escalated out rather than finished, so
@@ -93,6 +94,7 @@ _PHASE_FALLBACK = {
     "admitted": "queued",
     "succeeded": "done",
     "uncertain": "escalated",
+    "escalated": "escalated",
     "failed": "escalated",
     "cancelled": "cancelled",
 }
