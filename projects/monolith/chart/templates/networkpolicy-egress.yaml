@@ -5,25 +5,36 @@ Dataplane V2 (issue #3897).
 The GKE hub does not expose CiliumNetworkPolicy CRDs, so the Cilium policy in
 cilium-egress-policy.yaml cannot enforce there. This policy selects the same
 app endpoint and reuses the same exact pod selectors and ports for internal
-dependencies. The GKE overlay enables it and supplies the verified private API
-endpoint.
+dependencies. The GKE overlay leaves it disabled and its live API and resolver
+addresses empty until network-policy logs cover a representative audit window.
+The enabling change must validate those addresses against the hub.
 
 Kubernetes NetworkPolicy has no FQDN destination selector. Required external
 calls therefore use public TCP 443 while excluding cluster-addressable,
 loopback, link-local, shared-address, and multicast ranges. This is broader
 than the Cilium exact-FQDN arm, but it still default-denies arbitrary cluster
-egress and every non-HTTPS public flow. Metadata-server access remains denied.
+egress and every non-HTTPS public flow. Metadata-server access remains denied
+when the policy is enabled.
 
 Like the Cilium arm, this intentionally selects only the app endpoint. Searxng,
 WhatsApp, CNPG, Atlas jobs, and monolith-workflows pods have separate trust and
 execution boundaries and are not made namespace-wide default-deny by this
 change.
 */}}
+{{- $targets := .Values.ciliumPolicy.egress.targets }}
 {{- if and .Values.networkPolicy.egress.enabled (empty .Values.networkPolicy.egress.apiServerCidrs) }}
-{{- fail "networkPolicy.egress.apiServerCidrs must contain the verified control-plane endpoint when enabled" }}
+{{- fail "networkPolicy.egress.apiServerCidrs must contain a live-validated control-plane endpoint when enabled" }}
+{{- end }}
+{{- if and .Values.networkPolicy.egress.enabled (empty .Values.networkPolicy.egress.dnsServiceCidrs) }}
+{{- fail "networkPolicy.egress.dnsServiceCidrs must contain a live-validated resolver address when enabled" }}
+{{- end }}
+{{- if and .Values.networkPolicy.egress.enabled (not (hasKey $targets.dns.matchLabels "k8s:k8s-app")) }}
+{{- fail "ciliumPolicy.egress.targets.dns.matchLabels must contain k8s:k8s-app when native egress is enabled" }}
+{{- end }}
+{{- if and .Values.networkPolicy.egress.enabled (hasKey $targets.dns.matchLabels "k8s:k8s-app") (empty (index $targets.dns.matchLabels "k8s:k8s-app")) }}
+{{- fail "ciliumPolicy.egress.targets.dns.matchLabels k8s:k8s-app must not be empty when native egress is enabled" }}
 {{- end }}
 {{- if .Values.networkPolicy.egress.enabled }}
-{{- $targets := .Values.ciliumPolicy.egress.targets }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -46,6 +57,10 @@ spec:
           podSelector:
             matchLabels:
               k8s-app: {{ index $targets.dns.matchLabels "k8s:k8s-app" }}
+        {{- range .Values.networkPolicy.egress.dnsServiceCidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
       ports:
         - protocol: UDP
           port: 53
