@@ -9,6 +9,7 @@ are the recovery state, so losing this process cannot lose a task or its pin.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import json
 import logging
 import math
@@ -535,6 +536,7 @@ def _budget_evidence(task_id: str) -> dict:
         planner_turn_cap,
         task_snapshot,
         task_turn_ceiling,
+        turn_reservation_usd,
     )
 
     with Session(get_engine()) as db:
@@ -555,7 +557,9 @@ def _budget_evidence(task_id: str) -> dict:
             "deadline_at": receipt["deadline_at"],
             "new_node_max_cost_usd": policy["turn_budget_usd"],
             "max_attempts": policy["max_attempts"],
-            "pending_planner_max_cost_usd": policy["turn_budget_usd"],
+            "pending_planner_max_cost_usd": turn_reservation_usd(
+                policy["conductor_model"], "planner", policy["turn_budget_usd"]
+            ),
             "snapshot_phase": "before_this_planner_node_is_added_or_admitted",
         }
 
@@ -820,6 +824,21 @@ def _add(
     expected_version: int | None = None,
 ) -> graph.GraphOp:
     boundary = _boundary(task, review=review, refine=refine)
+    if max_cost_usd is None:
+        from swarm.factory_controls import turn_reservation_usd
+
+        turn_class = (
+            "refine"
+            if refine
+            else "planner"
+            if key.startswith("conductor_")
+            else "work"
+        )
+        max_cost_usd = (
+            _review_reservation_usd(task, policy, model)
+            if review
+            else turn_reservation_usd(model, turn_class, policy["turn_budget_usd"])
+        )
     return graph.add_node(
         task["id"],
         author_kind="conductor",
@@ -837,9 +856,7 @@ def _add(
         prompt=boundary + prompt,
         model=model,
         deps=deps,
-        max_cost_usd=policy["turn_budget_usd"]
-        if max_cost_usd is None
-        else max_cost_usd,
+        max_cost_usd=max_cost_usd,
         side_effects=not review,
         max_attempts=policy["max_attempts"] if max_attempts is None else max_attempts,
         turn_timeout_seconds=(
@@ -847,6 +864,54 @@ def _add(
             if turn_timeout_seconds is None
             else turn_timeout_seconds
         ),
+    )
+
+
+def _review_changed_lines(
+    task: dict, runs: list[dict] | None = None, pr_number: int | None = None
+) -> int:
+    """Return bounded GitHub diff lines available when a review is inserted."""
+    from swarm.factory_controls import MAX_REVIEW_CHANGED_LINES
+
+    number = pr_number if isinstance(pr_number, int) else _latest_pr(runs or [])
+    if number is None:
+        return 0
+    try:
+        pull = github_get(task["repo"], f"pulls/{number}")
+    except (httpx.HTTPError, ValueError):
+        logger.info(
+            "Factory review sizing could not read pull request %s for task %s",
+            number,
+            task["id"],
+            exc_info=True,
+        )
+        return 0
+    additions, deletions = pull.get("additions"), pull.get("deletions")
+    if (
+        type(additions) is not int
+        or additions < 0
+        or type(deletions) is not int
+        or deletions < 0
+    ):
+        return 0
+    return min(MAX_REVIEW_CHANGED_LINES, additions + deletions)
+
+
+def _review_reservation_usd(
+    task: dict,
+    policy: dict,
+    model: str,
+    *,
+    runs: list[dict] | None = None,
+    pr_number: int | None = None,
+) -> float:
+    """The model-priced reservation for the diff this review can inspect."""
+    from swarm.factory_controls import review_reservation_usd
+
+    return review_reservation_usd(
+        model,
+        _review_changed_lines(task, runs, pr_number),
+        policy["turn_budget_usd"],
     )
 
 
@@ -1777,14 +1842,28 @@ class _EditRefused(ValueError):
         self.reason = reason
 
 
-def _policy_bounds(policy: dict, source: dict) -> dict:
+def _policy_bounds(
+    policy: dict,
+    source: dict,
+    *,
+    max_cost_default: float | None = None,
+    max_cost_limit: float | None = None,
+) -> dict:
     """Per-node bounds, refusing anything a decision cannot widen."""
     limits = {
         "max_attempts": policy["max_attempts"],
-        "max_cost_usd": policy["turn_budget_usd"],
+        "max_cost_usd": (
+            policy["turn_budget_usd"] if max_cost_limit is None else max_cost_limit
+        ),
         "turn_timeout_seconds": policy["turn_timeout_seconds"],
     }
-    bounds = {name: source.get(name, limit) for name, limit in limits.items()}
+    defaults = {
+        **limits,
+        "max_cost_usd": (
+            limits["max_cost_usd"] if max_cost_default is None else max_cost_default
+        ),
+    }
+    bounds = {name: source.get(name, defaults[name]) for name in limits}
     for name, value in bounds.items():
         valid = (
             type(value) is int and value > 0
@@ -1801,7 +1880,9 @@ def _policy_bounds(policy: dict, source: dict) -> dict:
     return bounds
 
 
-def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
+def _prepare_add(
+    task: dict, policy: dict, source: dict, runs: list[dict] | None = None
+) -> dict:
     """Resolve one add against policy, or refuse it with a stated code.
 
     Single decisions and batched plan edits share this so a plan cannot reach
@@ -1869,8 +1950,20 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
         )
     if model not in policy["allowed_models"]:
         raise _EditRefused("model_not_allowed", "model is not allowed")
-    bounds = _policy_bounds(policy, source)
     review = role == "review"
+    review_ceiling = (
+        _review_reservation_usd(task, policy, model, runs=runs) if review else None
+    )
+    bounds = _policy_bounds(
+        policy,
+        source,
+        max_cost_default=review_ceiling,
+        max_cost_limit=review_ceiling,
+    )
+    # Review spend is a server-derived bound. A planner may ask to spend less,
+    # but it cannot undercut the capability floor or the diff-priced estimate.
+    if review:
+        bounds["max_cost_usd"] = review_ceiling
     return {
         "op": "add_node",
         "role": role,
@@ -2088,7 +2181,7 @@ def _apply_decision(
                 raise ValueError(f"plan edit {index} is not a graph operation")
             try:
                 if item["action"] == "add_node":
-                    prepared.append(_prepare_add(task, policy, item))
+                    prepared.append(_prepare_add(task, policy, item, runs))
                 else:
                     if not head_read:
                         observed_head, head_read = _observed_branch_head(task), True
@@ -2153,7 +2246,7 @@ def _apply_decision(
             )
     elif action == "add_node":
         try:
-            edit = _prepare_add(task, policy, decision)
+            edit = _prepare_add(task, policy, decision, runs)
         except _EditRefused as exc:
             _reject_decision(task["id"], cause, action, exc.code, exc.reason)
             return
@@ -2475,8 +2568,14 @@ def _insert_review_round(
     # One attempt each. A correction that fails costs the round rather than the
     # turn again on the same brief, and a round that costs exactly two turns is
     # a round the allowance can reserve honestly.
-    bounds = {
+    work_bounds = {
         "max_cost_usd": policy["turn_budget_usd"],
+        "max_attempts": REVIEW_ROUND_ATTEMPTS,
+    }
+    review_bounds = {
+        "max_cost_usd": _review_reservation_usd(
+            task, policy, reviewer, runs=runs, pr_number=number
+        ),
         "max_attempts": REVIEW_ROUND_ATTEMPTS,
     }
     moved = (
@@ -2552,7 +2651,7 @@ def _insert_review_round(
                 f"Engine-owned correction round {ordinal} of {max_rounds}{provenance}"
             ),
             "turn_timeout_seconds": _sized(reviewed),
-            **bounds,
+            **work_bounds,
         },
         {
             "op": "add_node",
@@ -2564,7 +2663,7 @@ def _insert_review_round(
             "side_effects": False,
             "stated_reason": f"Engine-owned re-review for round {ordinal}",
             "turn_timeout_seconds": _sized(review_node),
-            **bounds,
+            **review_bounds,
         },
     ]
     # An engine insertion is checked on the nodes it really adds and on nothing
@@ -2624,7 +2723,12 @@ def _integration_group(
 
 
 def _integration_edits(
-    task: dict, policy: dict, nodes: list[dict], group: list[str], key: str
+    task: dict,
+    policy: dict,
+    nodes: list[dict],
+    runs: list[dict],
+    group: list[str],
+    key: str,
 ) -> list[dict] | None:
     """Add the fan-in node and repoint everything that depended on the branches.
 
@@ -2695,7 +2799,16 @@ def _integration_edits(
                 "deps": deps,
                 "side_effects": by_key[node["node_key"]]["side_effects"],
                 "stated_reason": f"Repointed {node['node_key']} at {key}",
-                "max_cost_usd": by_key[node["node_key"]]["max_cost_usd"],
+                "max_cost_usd": (
+                    _review_reservation_usd(
+                        task,
+                        policy,
+                        by_key[node["node_key"]]["model"],
+                        runs=runs,
+                    )
+                    if node["node_key"].startswith("review_")
+                    else by_key[node["node_key"]]["max_cost_usd"]
+                ),
                 "max_attempts": by_key[node["node_key"]]["max_attempts"],
                 "turn_timeout_seconds": by_key[node["node_key"]][
                     "turn_timeout_seconds"
@@ -2737,7 +2850,7 @@ def _insert_integration(
         node["armed_at"] is not None for node in nodes if node["node_key"] in at_risk
     ):
         return False, "integration_after_dispatch"
-    edits = _integration_edits(task, policy, nodes, group, key)
+    edits = _integration_edits(task, policy, nodes, runs, group, key)
     if edits is None:
         return False, "integration_batch_too_large"
     cause = f"{FANIN_CAUSE}:{key}"
@@ -3169,6 +3282,31 @@ def _submit_or_reconcile(task: dict, run: dict, dbos) -> None:
                         "reason": "cancelled_before_dispatch: factory timeout reconciliation",
                     }
             status = result["status"]
+            actual_cost = result.get("cost_usd")
+            reserved_cost = run.get("reserved_cost_usd")
+            if (
+                status == "succeeded"
+                and isinstance(actual_cost, (int, float))
+                and not isinstance(actual_cost, bool)
+                and math.isfinite(actual_cost)
+                and isinstance(reserved_cost, (int, float))
+                and not isinstance(reserved_cost, bool)
+                and actual_cost > reserved_cost
+            ):
+                _controls_audit(
+                    db,
+                    ACTOR,
+                    "cost_over_reservation",
+                    task_id=task["id"],
+                    workflow_id=key,
+                    node_key=run["node_key"],
+                    attempt=run["attempt"],
+                    model=pin["model"],
+                    reserved_cost_usd=reserved_cost,
+                    actual_cost_usd=actual_cost,
+                    overage_usd=round(actual_cost - reserved_cost, 6),
+                    cost_basis=result.get("cost_basis"),
+                )
             if result.get("session_id") and not run.get("session_id"):
                 binding = graph.record_dispatch(
                     task["id"],
@@ -3629,6 +3767,90 @@ def _reviewer_override(
     return True, None if model == node.get("model") else model
 
 
+@dataclass(frozen=True)
+class ReservationResult:
+    ok: bool
+    limit: str | None = None
+    used: float | int | None = None
+    requested: float | int | None = None
+    allowed: float | int | None = None
+    refusal_code: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
+def _dispatch_refusal_options(refusal: ReservationResult) -> list[dict]:
+    target = refusal.requested if refusal.requested is not None else refusal.allowed
+    limit = refusal.limit or refusal.refusal_code or "dispatch limit"
+    return [
+        {
+            "key": "raise_envelope",
+            "label": f"Raise {limit} to at least {target}",
+            "effect": CONTINUE_EFFECT,
+            "detail": {
+                "scope": (
+                    f"Raise {limit} to at least {target} before re-admitting "
+                    "this delivery, then continue on its existing branch and pull request."
+                )
+            },
+        },
+        {
+            "key": "cancel",
+            "label": "Cancel this delivery as not planned",
+            "effect": "close",
+            "detail": {
+                "reason": "not_planned",
+                "comment": f"Factory dispatch was refused by {limit}.",
+            },
+        },
+        {
+            "key": "wait",
+            "label": f"Wait for {limit} to change",
+            "effect": "defer",
+            "detail": {"comment": f"Waiting for an operator to change {limit}."},
+        },
+    ]
+
+
+def _escalate_dispatch_refusal(
+    task: dict,
+    node_key: str,
+    workflow_id: str,
+    refusal: ReservationResult,
+    runs: list[dict],
+) -> None:
+    """Audit and surface a candidate admission refusal as one decision card."""
+    limit = refusal.limit or refusal.refusal_code or "dispatch_limit"
+    detail = {
+        "node_key": node_key,
+        "attempt": sum(run["node_key"] == node_key for run in runs) + 1,
+        "limit": limit,
+        "used": refusal.used,
+        "requested": refusal.requested,
+        "allowed": refusal.allowed,
+        "refusal_code": refusal.refusal_code,
+    }
+    _audit_once(task["id"], workflow_id, "dispatch_refused", detail)
+    numbers = (
+        f"used {refusal.used}, requested {refusal.requested}, allowed {refusal.allowed}"
+    )
+    _escalate_task(
+        task,
+        {
+            "action": "pause",
+            "reason": f"Candidate dispatch was refused by {limit}: {numbers}.",
+            "question": (
+                f"Dispatch of {node_key} was refused by {limit} ({numbers}). "
+                "Should the envelope be raised, the delivery cancelled, or the task wait?"
+            ),
+            "options": _dispatch_refusal_options(refusal),
+        },
+        f"dispatch-refused:{workflow_id}:{limit}",
+        runs,
+    )
+
+
 def _dispatch_ready(
     task: dict,
     nodes: list[dict],
@@ -3700,18 +3922,42 @@ def _dispatch_ready(
             )[-16000:],
         }
 
-        if reserve_node(task_id, node_key, key, context, model=reviewer):
+        candidate_cost = (
+            _review_reservation_usd(
+                task, policy, reviewer or node.get("model"), runs=runs
+            )
+            if node_key.startswith("review_") and policy is not None
+            else None
+        )
+        reservation = reserve_node(
+            task_id,
+            node_key,
+            key,
+            context,
+            model=reviewer,
+            max_cost_usd=candidate_cost,
+        )
+        if reservation:
             dispatched += 1
             continue
         if dispatched == 0 and not fan_out:
-            set_control("pause_task", ACTOR, task_id=task_id)
+            if isinstance(reservation, ReservationResult):
+                _escalate_dispatch_refusal(task, node_key, key, reservation, runs)
+            else:
+                set_control("pause_task", ACTOR, task_id=task_id)
         break
     return dispatched > 0
 
 
 def reserve_node(
-    task_id: str, node_key: str, key: str, context: dict, *, model: str | None = None
-) -> bool:
+    task_id: str,
+    node_key: str,
+    key: str,
+    context: dict,
+    *,
+    model: str | None = None,
+    max_cost_usd: float | None = None,
+) -> ReservationResult:
     """Atomically reserve graph attempt and factory turn under the control lock.
 
     ``model`` substitutes the model for this attempt, which is how a review
@@ -3723,7 +3969,11 @@ def reserve_node(
 
     with Session(get_engine()) as db:
         with _locked_session(db):
-            from swarm.factory_controls import task_snapshot
+            from swarm.factory_controls import (
+                planner_turn_cap,
+                task_snapshot,
+                task_turn_ceiling,
+            )
 
             # This immutable context is derived from the receipt under its lock.
             existing = next(
@@ -3734,12 +3984,12 @@ def reserve_node(
                 ),
                 None,
             )
+            receipt = task_snapshot(task_id, session=db)
+            policy = receipt["policy"]
             if existing is None or "task_deadline_at" in existing["pin"]:
                 context = {
                     **context,
-                    "task_deadline_at": task_snapshot(task_id, session=db)[
-                        "deadline_at"
-                    ],
+                    "task_deadline_at": receipt["deadline_at"],
                 }
             admitted = graph.admit_dispatch(
                 task_id,
@@ -3747,11 +3997,29 @@ def reserve_node(
                 dispatch_key=key,
                 execution_context=context,
                 model=model,
+                max_cost_usd=max_cost_usd,
                 session=db,
             )
             if not admitted.ok:
+                refusal = ReservationResult(False, refusal_code=admitted.refusal_code)
+                if admitted.refusal_code == "task_budget_exhausted":
+                    try:
+                        numbers = json.loads(admitted.detail or "{}")
+                    except (TypeError, ValueError):
+                        numbers = {}
+                    refusal = ReservationResult(
+                        False,
+                        limit="task_budget",
+                        used=numbers.get("accounted_cost_usd"),
+                        requested=(
+                            numbers.get("accounted_cost_usd", 0)
+                            + numbers.get("candidate_reservation_usd", 0)
+                        ),
+                        allowed=numbers.get("task_budget_usd"),
+                        refusal_code=admitted.refusal_code,
+                    )
                 db.rollback()
-                return False
+                return refusal
             pin = admitted.pin
             grant = authorize_start(
                 task_id,
@@ -3762,10 +4030,44 @@ def reserve_node(
                 session=db,
             )
             if not grant["ok"]:
+                snapshot = receipt
+                reason = grant["reason"]
+                if reason == "budget_limit":
+                    used = snapshot["committed_cost_usd"]
+                    refusal = ReservationResult(
+                        False,
+                        limit="task_budget",
+                        used=used,
+                        requested=used + pin["max_cost_usd"],
+                        allowed=policy["task_budget_usd"],
+                        refusal_code=reason,
+                    )
+                elif reason == "planner_turn_limit":
+                    used = snapshot["planner_turns_used"]
+                    refusal = ReservationResult(
+                        False,
+                        limit="max_planner_turns",
+                        used=used,
+                        requested=used + 1,
+                        allowed=planner_turn_cap(policy),
+                        refusal_code=reason,
+                    )
+                elif reason == "turn_limit":
+                    used = snapshot["turns_used"]
+                    refusal = ReservationResult(
+                        False,
+                        limit="max_task_turns_hard",
+                        used=used,
+                        requested=used + 1,
+                        allowed=task_turn_ceiling(policy),
+                        refusal_code=reason,
+                    )
+                else:
+                    refusal = ReservationResult(False, refusal_code=reason)
                 db.rollback()
-                return False
+                return refusal
         db.commit()
-    return True
+    return ReservationResult(True)
 
 
 def observe_reviewer_routing(policy: dict) -> None:

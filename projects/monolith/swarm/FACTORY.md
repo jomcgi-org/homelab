@@ -154,7 +154,11 @@ cannot be authority on its own identity.
 The model is chosen when the review is dispatched, not when it was planned. A
 plan written while the window was quiet can reach its review hours later, so
 the node keeps the model the planner asked for and the pin records what really
-ran. A retry after the window moved is a new attempt and takes a new pin.
+ran. A retry after the window moved is a new attempt and takes a new pin. Its
+reservation is recalculated for that pinned reviewer from the pull request's
+bounded additions plus deletions and the shared list-price table. Opus always
+reserves at least 8 USD, including planner-created reviews, engine re-reviews,
+and reviews reinserted behind a fan-in.
 
 Two things never fall back:
 
@@ -620,11 +624,13 @@ Each round the engine inserts is then counted like any other live node while the
 round behind it is reserved, so the allowance grows by one round at a time. A
 fan-out wave still reserves its one fan-in node at `max_attempts`, exactly as
 the inserted node will carry, so a fan-in is turn-neutral. Review rounds are
-reserved only when the plan holds a review node. Its dollar figure is the same
-sum over node `max_cost_usd` ceilings plus charged history. It is stored on the receipt as
-`allowance_json` with the graph revision it came from, re-derived and audited
-whenever an accepted edit changes the graph, and it is the bound work starts
-meet.
+reserved only when the plan holds a review node. Their dollar figure is one
+worker correction ceiling plus the model-priced review reservation. Planner
+and refine nodes on Astra or Spark reserve 0.50 USD rather than a worker
+ceiling. The allowance otherwise sums live node `max_cost_usd` ceilings plus
+charged history. It is stored on the receipt as `allowance_json` with the graph
+revision it came from, re-derived and audited whenever an accepted edit changes
+the graph, and it is the bound work starts meet.
 
 The reserve is headroom for sizing the planner's next edit, not a charge against
 the engine's own. Every insertion is checked against the envelope as it happens,
@@ -665,6 +671,16 @@ agree: a node the graph keeps ready whose every start the turn gate refuses
 pauses the task instead of retrying it. Confirmed failed artifacts feed
 bounded retry context back to the next attempt. Unknown execution retains its
 reservation and requires reconciliation before another attempt starts.
+
+Budget admission charges settled attempts at their actual cost and retains
+active or unknown-cost reservations. It then checks only the reservation of the
+candidate about to run, including its remaining aggregate retry ceiling, so an
+old completed node's historical ceiling cannot block later work. Equality at
+the task boundary is admitted. A refusal audits `dispatch_refused` with the
+binding `task_budget`, `max_task_turns_hard`, or `max_planner_turns` limit and
+its used, requested, and allowed values. A serial refusal leaves the lane as a
+decision card offering `raise_envelope`, `cancel`, and `wait` rather than a
+reasonless task pause.
 
 The DBOS application version is pinned to the node workflow's own source:
 `execute_node`, the helpers that decide which steps run, and every step they
@@ -765,8 +781,12 @@ it terminal.
 
 Missing provider usage consumes the entire reserved ceiling. This is
 conservative admission accounting, not an interruptible dollar cap on a running
-provider turn. Observed overruns prevent further admission. The exception is an
-attempt whose own evidence proves it never reached a model POST, an
+provider turn. A successfully completed turn with a valid artifact or review
+verdict remains succeeded when measured or list-priced spend exceeds the
+reservation. Both ledgers charge its actual cost, the conductor audits
+`cost_over_reservation`, and that overrun constrains later admission. The
+exception to retaining an unknown reservation is an attempt whose own evidence
+proves it never reached a model POST, an
 `invocation_phase` of `never_dispatched`, `not_invoked` or `lost_before_guest`
 recorded on the outcome or on the typed proof attached under that phase: it
 books at nothing on the `no_model_post` basis, in the graph and on the start

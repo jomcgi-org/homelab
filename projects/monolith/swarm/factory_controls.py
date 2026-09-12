@@ -161,6 +161,64 @@ DEFAULT_MAX_PARALLEL_NODES = 1
 # that fails is a deviation the planner must answer, not a turn to spend again,
 # so a round costs exactly two turns and the reserve can say so honestly.
 REVIEW_ROUND_ATTEMPTS = 1
+
+# Planner and refine turns are short, bounded decisions rather than delivery
+# work. Astra and the Muse-backed Spark aliases have repository list pricing,
+# and production evidence puts their rounds in cents, so half a dollar is a
+# deliberately conservative reservation without booking a full worker turn.
+CHEAP_TURN_RESERVATION_USD = 0.5
+CHEAP_TURN_MODELS = frozenset(("astra", "spark", "pi-spark", "qwen"))
+CHEAP_TURN_CLASSES = frozenset(("planner", "refine"))
+
+# Review sizing estimates the context a reviewer reads, then prices those
+# tokens through the same list-price owner used to settle turns. The multiplier
+# covers reasoning and retries inside one guest turn. GitHub's changed-line
+# count is bounded before multiplication so malformed remote data cannot mint
+# an unbounded reservation. Opus retains the observed factory-diff floor from
+# #6052 whatever the estimate says.
+OPUS_REVIEW_FLOOR_USD = 8.0
+REVIEW_BASE_INPUT_TOKENS = 50_000
+REVIEW_BASE_OUTPUT_TOKENS = 10_000
+REVIEW_INPUT_TOKENS_PER_LINE = 20
+REVIEW_OUTPUT_TOKENS_PER_LINE = 2
+REVIEW_PRICE_MULTIPLIER = 4
+MAX_REVIEW_CHANGED_LINES = 1_000_000
+
+
+def turn_reservation_usd(model: str, turn_class: str, fallback: float) -> float:
+    """The reservation for a model and turn class, with a policy fallback."""
+    if turn_class in CHEAP_TURN_CLASSES and model in CHEAP_TURN_MODELS:
+        return CHEAP_TURN_RESERVATION_USD
+    return float(fallback)
+
+
+def review_reservation_usd(model: str, changed_lines: int, fallback: float) -> float:
+    """Price one review from its selected model and bounded diff size."""
+    lines = (
+        changed_lines
+        if type(changed_lines) is int and 0 <= changed_lines <= MAX_REVIEW_CHANGED_LINES
+        else 0
+    )
+    from shared.pricing import price_usage
+
+    priced = price_usage(
+        model,
+        {
+            "input_tokens": REVIEW_BASE_INPUT_TOKENS
+            + lines * REVIEW_INPUT_TOKENS_PER_LINE,
+            "output_tokens": REVIEW_BASE_OUTPUT_TOKENS
+            + lines * REVIEW_OUTPUT_TOKENS_PER_LINE,
+        },
+    )
+    estimated = (
+        float(fallback)
+        if priced is None
+        else math.ceil(priced.cost_usd * REVIEW_PRICE_MULTIPLIER * 100) / 100
+    )
+    floor = OPUS_REVIEW_FLOOR_USD if model == "opus" else 0.0
+    return max(floor, estimated)
+
+
 # Pools whose head must be the role's own configured model, so the policy's
 # stated preference is always what a pool is ranked from.
 _POOL_ROLES = {"conductor": "conductor_model", "worker": "worker_model"}
@@ -211,7 +269,7 @@ MIN_OPTIONS = 2
 MAX_OPTIONS = 4
 MAX_SPLIT_CHILDREN = 5
 CLOSE_REASONS = ("not_planned", "completed")
-OPTION_KEY = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+OPTION_KEY = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 OPTION_SCHEMA = {
     "type": "object",
@@ -886,14 +944,20 @@ def allowance_from_graph(
         reviewable = any(node["node_key"].startswith("review_") for node in nodes)
     rounds = min(1, max(0, review_rounds_remaining)) if reviewable else 0
     fan_ins = max(0, fan_ins_remaining)
-    reserved_nodes = 2 * rounds + fan_ins
     reserved_turns = (
         2 * rounds * REVIEW_ROUND_ATTEMPTS + fan_ins * policy["max_attempts"]
+    )
+    prospective_review = review_reservation_usd(
+        policy.get("reviewer_model", "opus"), 0, policy["turn_budget_usd"]
+    )
+    reserved_usd = (
+        rounds * (policy["turn_budget_usd"] + prospective_review)
+        + fan_ins * policy["turn_budget_usd"]
     )
     return {
         "turns": work_turns_used + remaining_turns + reserved_turns,
         "usd": round(
-            charged_total + remaining_usd + reserved_nodes * policy["turn_budget_usd"],
+            charged_total + remaining_usd + reserved_usd,
             6,
         ),
         "graph_revision": graph_revision,
@@ -1772,6 +1836,8 @@ def authorize_start(
             return {"ok": True, "replayed": True, "start": _start_dict(existing)}
         budget = _accounting(starts)
         planner = _planner_key(start_key)
+        parsed_key = _START_KEY.match(start_key)
+        review = bool(parsed_key) and parsed_key.group("node_key").startswith("review_")
         reason = None
         # One reserved start per parallel slot. At the default limit of one
         # this is the original single-flight fence, unchanged.
@@ -1792,10 +1858,9 @@ def authorize_start(
         ):
             reason = "turn_limit"
         # Both kinds of start still answer to the one task budget.
-        elif (
-            cost > policy["turn_budget_usd"]
-            or budget["committed_cost_usd"] + cost > policy["task_budget_usd"]
-        ):
+        elif (not review and cost > policy["turn_budget_usd"]) or budget[
+            "committed_cost_usd"
+        ] + cost > policy["task_budget_usd"]:
             reason = "budget_limit"
         if reason:
             _audit(

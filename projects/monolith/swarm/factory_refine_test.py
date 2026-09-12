@@ -67,7 +67,7 @@ def db(tmp_path, monkeypatch):
     engine.dispose()
 
 
-def make_task(task_class="refine"):
+def make_task(task_class="refine", **overrides):
     policy = {
         "repo": "owner/repo",
         "issue_numbers": [7],
@@ -84,6 +84,7 @@ def make_task(task_class="refine"):
         "task_timeout_seconds": 3600,
         "max_attempts": 4,
     }
+    policy.update(overrides)
     assert controls.set_control("configure", "operator", policy=policy)["ok"]
     assert controls.set_control("enable", "operator")["ok"]
     receive_issue(
@@ -229,6 +230,16 @@ def test_empty_refine_graph_adds_one_conductor_pool_node(db):
     assert "Factory refine task" in node["prompt"]
     refine.reconcile(task, policy, [node], [], graph.current_version(task["id"]))
     assert len(graph.load_graph(task["id"])) == 1
+
+
+def test_spark_refine_reserves_the_turn_class_price(db):
+    task, policy = make_task(
+        allowed_models=["spark", "opus", "luna"],
+        model_pools={"refine": ["spark"]},
+    )
+    node = add_refine_node(task, policy)
+    assert node["model"] == "spark"
+    assert node["max_cost_usd"] == 0.5
 
 
 def test_advisory_diagnosis_pauses_and_audits_without_a_node(db):

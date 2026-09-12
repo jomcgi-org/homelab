@@ -768,6 +768,36 @@ def test_task_budget_accounts_observed_overrun_and_other_reservations(db):
     assert node_runs(task_id)[0]["accounted_cost_usd"] == 1.25
 
 
+def test_candidate_reservation_admits_at_exact_remaining_task_boundary(db):
+    task_id = make_task(db, budget=3.0)
+    assert add_work(task_id, "done", 0, max_cost_usd=1.0).ok
+    assert add_work(task_id, "candidate", 1, max_cost_usd=2.0).ok
+    assert admit_dispatch(task_id, "done").ok
+    assert record_outcome(task_id, "done", 1, "succeeded", 1.5, None, "{}").ok
+
+    refused = admit_dispatch(task_id, "candidate")
+    assert refused.refusal_code == "task_budget_exhausted"
+    assert json.loads(refused.detail) == {
+        "accounted_cost_usd": 1.5,
+        "candidate_reservation_usd": 2.0,
+        "task_budget_usd": 3.0,
+    }
+    admitted = admit_dispatch(task_id, "candidate", max_cost_usd=1.5)
+    assert admitted.ok
+    assert admitted.pin["max_cost_usd"] == 1.5
+    assert node_runs(task_id, "candidate")[0]["reserved_cost_usd"] == 1.5
+
+
+def test_server_candidate_can_raise_a_future_review_without_refunding_retries(db):
+    task_id = make_task(db, budget=20.0)
+    assert add_work(task_id, "review_delivery", 0, max_cost_usd=8.0, max_attempts=2).ok
+    first = admit_dispatch(task_id, "review_delivery", max_cost_usd=10.0)
+    assert first.ok and first.pin["max_cost_usd"] == 10.0
+    assert record_outcome(task_id, "review_delivery", 1, "failed", 3.0, None, "{}").ok
+    second = admit_dispatch(task_id, "review_delivery", max_cost_usd=10.0)
+    assert second.ok and second.pin["max_cost_usd"] == 7.0
+
+
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -1, 0, True, 10**1000])
 def test_invalid_node_cost_is_refused_and_audited(db, value):
     task_id = make_task(db)

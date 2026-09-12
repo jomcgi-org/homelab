@@ -1208,6 +1208,7 @@ def admit_dispatch(
     dispatch_key: str | None = None,
     execution_context: dict | None = None,
     model: str | None = None,
+    max_cost_usd: float | None = None,
     session: Session | None = None,
 ) -> GraphOp:
     """Atomically reserve one bounded attempt, or replay its immutable pin.
@@ -1230,6 +1231,7 @@ def admit_dispatch(
         "dispatch_key": dispatch_key,
         "execution_context": context,
         "model": model,
+        "max_cost_usd": max_cost_usd,
     }
     with _session(session) as db:
         task = _lock_task(db, task_id)
@@ -1305,13 +1307,37 @@ def admit_dispatch(
             ):
                 return refuse("dependency_not_succeeded", dependency)
         budgets = _node_budgets(db, task_id)
+        if max_cost_usd is not None and not _valid_cost(max_cost_usd):
+            return refuse("invalid_candidate_budget")
+        # A review may be planned before its pull request exists. The trusted
+        # dispatcher prices the real diff when it becomes runnable and passes
+        # that server-derived ceiling here. A higher candidate therefore grows
+        # this attempt's effective aggregate ceiling, while prior attempt spend
+        # is still subtracted. A cheaper routed model caps only this attempt.
+        effective_max = max(
+            node.max_cost_usd,
+            node.max_cost_usd if max_cost_usd is None else float(max_cost_usd),
+        )
         spent = sum(_accounted_cost(run, budgets) for run in runs)
-        remaining = node.max_cost_usd - spent
+        remaining = effective_max - spent
         if remaining <= 0:
             return refuse("node_budget_exhausted")
+        reservation = min(
+            remaining,
+            remaining if max_cost_usd is None else float(max_cost_usd),
+        )
         task_spent = sum(_accounted_cost(run, budgets) for run in all_runs)
-        if task_spent + remaining > task.budget_usd:
-            return refuse("task_budget_exhausted")
+        if task_spent + reservation > task.budget_usd:
+            return refuse(
+                "task_budget_exhausted",
+                _json(
+                    {
+                        "accounted_cost_usd": task_spent,
+                        "candidate_reservation_usd": reservation,
+                        "task_budget_usd": task.budget_usd,
+                    }
+                ),
+            )
         attempt = max((run.attempt for run in runs), default=0) + 1
         # Attempt numbers count every row, excused denials included, so the
         # bound the pin carries has to as well. node_workflows._validate_pin
@@ -1326,7 +1352,7 @@ def admit_dispatch(
             "attempt": attempt,
             "prompt": node.prompt,
             "model": model or node.model,
-            "max_cost_usd": remaining,
+            "max_cost_usd": reservation,
             "max_attempts": node.max_attempts + excused,
             "turn_timeout_seconds": node.turn_timeout_seconds,
         }
@@ -1337,7 +1363,7 @@ def admit_dispatch(
                 attempt=attempt,
                 dispatch_key=dispatch_key,
                 pin_json=_json(pin),
-                reserved_cost_usd=remaining,
+                reserved_cost_usd=reservation,
                 status="admitted",
             )
         )
