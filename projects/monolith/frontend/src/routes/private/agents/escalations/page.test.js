@@ -34,6 +34,18 @@ function escalation(overrides = {}) {
   };
 }
 
+/**
+ * Let the decision round trip finish. It awaits two fetches and their json
+ * bodies before the list re-renders, so a microtask tick alone lands mid
+ * flight and reads the DOM from before the update.
+ */
+async function settle() {
+  for (let i = 0; i < 4; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
+  }
+}
+
 function renderPage(data) {
   const target = document.createElement("div");
   document.body.append(target);
@@ -106,9 +118,7 @@ describe("escalations page", () => {
     const target = renderPage({ escalations: [escalation()], error: false });
 
     target.querySelector(".option").click();
-    await tick();
-    await tick();
-    await tick();
+    await settle();
 
     expect(fetchMock.mock.calls[0][0]).toBe("/agents/escalations/decisions/3");
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
@@ -131,8 +141,7 @@ describe("escalations page", () => {
     const target = renderPage({ escalations: [escalation()], error: false });
 
     target.querySelector(".option").click();
-    await tick();
-    await tick();
+    await settle();
 
     expect(target.querySelector("[role=alert]").textContent).toContain(
       "already decided as close",
@@ -149,7 +158,7 @@ describe("escalations page", () => {
     renderPage({ escalations: [escalation()], error: false });
 
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "2" }));
-    await tick();
+    await settle();
 
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
       option_key: "hold",
@@ -194,7 +203,7 @@ describe("escalations page", () => {
     const target = renderPage({ escalations: [escalation()], error: false });
 
     target.querySelector(".chat-button").click();
-    await tick();
+    await settle();
     expect(target.querySelector("[role=alert]").textContent).toContain(
       "needs a note",
     );
@@ -205,8 +214,7 @@ describe("escalations page", () => {
     box.dispatchEvent(new Event("input"));
     await tick();
     target.querySelector(".chat-button").click();
-    await tick();
-    await tick();
+    await settle();
 
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
       action: "chat",
@@ -223,7 +231,7 @@ describe("escalations page", () => {
     box.dispatchEvent(
       new KeyboardEvent("keydown", { key: "1", bubbles: true }),
     );
-    await tick();
+    await settle();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
