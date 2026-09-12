@@ -86,6 +86,35 @@ actions:
           - "main"
     steps:
       - run: |
+          set -eu
+
+          # Native ARM64 OCaml coverage. The probe action is no-cache and
+          # no-local, so this invocation must execute `uname -m` on the remote
+          # executor selected by Arch: arm64. Listing the genrule itself makes
+          # its output a top-level artifact that can be printed as CI evidence;
+          # the build_test keeps the probe in the ordinary test result set.
+          bazel test \
+            //bazel/ocaml/platforms:executor_arch_probe_arm64 \
+            //bazel/ocaml/platforms:executor_arch_probe_arm64_test \
+            --config=ci \
+            --nocache_test_results \
+            --remote_download_outputs=all
+          probe_arch=$(tr -d '[:space:]' < bazel-bin/bazel/ocaml/platforms/executor_arch_arm64.txt)
+          if [ "$probe_arch" != "aarch64" ]; then
+            echo "Expected remote ARM64 executor, got: $probe_arch" >&2
+            exit 1
+          fi
+          echo "Verified remote OCaml executor architecture: $probe_arch"
+
+          # Exercise the bounded example ladder on the existing native ARM64
+          # platform and toolchain. C-stub targets remain excluded until #3923
+          # supplies an aarch64 C/C++ toolchain.
+          bazel test //bazel/ocaml/examples/... --config=ci \
+            --platforms=//bazel/ocaml/platforms:linux_aarch64 \
+            --build_tests_only \
+            --test_tag_filters=-external,-no-arm64
+
+      - run: |
           # errexit is LOAD-BEARING. A BuildBuddy step is one shell script and
           # the action's status is the LAST command's, so without -e a failing
           # `bazel test` followed by a passing image build reports GREEN. That
