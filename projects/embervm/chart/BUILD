@@ -85,6 +85,20 @@ helm_chart(
     visibility = ["//overlays:__subpackages__"],
 )
 
+# Source-only chart boundary for the hermetic standalone packaging check. The
+# deployable chart target above stays restricted to overlays.
+filegroup(
+    name = "standalone_chart_sources",
+    srcs = [
+        "Chart.yaml",
+        "values.yaml",
+    ] + glob([
+        "crds/**/*",
+        "templates/**/*",
+    ]),
+    visibility = ["//projects/embervm/standalone:__pkg__"],
+)
+
 # Exposed so the ENOSPC-reclaim guard in the claude runtime package can read the
 # gate default and the builder script text. Mirrors
 # projects/embervm/deploy:deploy_values, which the cleartext-lane guard reads the

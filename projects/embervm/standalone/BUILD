@@ -15,7 +15,7 @@ py_test(
         "values.yaml",
         "workloads/continuity.yaml",
         "workloads/hello.yaml",
-        "//projects/embervm/chart:chart",
+        "//projects/embervm/chart:standalone_chart_sources",
         "@multitool//tools/helm",
     ],
     env = {
