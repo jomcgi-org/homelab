@@ -47,7 +47,7 @@ and edge directives rather than treating them as one TTL.
 
 Header tests prove only the landed code contract. Keep live cache acceptance
 unverified until a post-deploy repeated request under the
-`public.jomcgi.dev` hostname rule shows an appropriate `cf-cache-status` and
+`jomcgi.dev` apex hostname rule shows an appropriate `cf-cache-status` and
 `age` response. Do not claim an edge hit from CI or from header presence alone.
 
 ## Rollout: the public origin is `monolith-public`
