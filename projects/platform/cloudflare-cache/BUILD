@@ -1,3 +1,5 @@
+# gazelle:resolve py cloudflare_cache //projects/platform/cloudflare-cache:cloudflare_cache_lib
+
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("//bazel/semgrep/defs:defs.bzl", "semgrep_test")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
