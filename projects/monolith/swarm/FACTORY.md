@@ -437,14 +437,21 @@ because it is gated on `X-Auth-Email`, the address Envoy projected from the
 verified Access JWT and the gateway strips on ingress so it cannot be
 smuggled. Not `Cf-Access-Authenticated-User-Email`: nothing in the cluster
 validates or strips that one, so a caller reaching the backend can set it to
-any address. The projected address must also be listed in
-`FACTORY_OPERATOR_EMAILS`.
+any address. A request carrying no projected address, two of them, or only the
+Cloudflare header is refused.
 
-That list is a secret, not a values entry. Provision it as a key on the
-`monolith-chat-secrets` 1Password item and wire it with `valueFrom.secretKeyRef`
-the way `GITHUB_API_TOKEN` is wired, rather than naming operator addresses in a
-public `deploy/values.yaml`. Until the key exists the environment variable is
-empty, every decision is 403, and the page's buttons do nothing.
+Cloudflare Access is the gate. `private.jomcgi.dev` is zero trust locked to one
+identity, so an address arriving on the projected header was already authorised
+to be there and a second list would only restate that.
+`FACTORY_OPERATOR_EMAILS` is empty by default and any single verified identity
+decides. Set it only to narrow that: non-empty it is an allowlist, so someone
+Access admits who is not on it reads the board and the escalations and gets a
+403 on the click.
+
+That list, once it is set, is a secret and not a values entry. Provision it as a
+key on the `monolith-chat-secrets` 1Password item and wire it with
+`valueFrom.secretKeyRef` the way `GITHUB_API_TOKEN` is wired, rather than naming
+operator addresses in a public `deploy/values.yaml`.
 
 A decision is refused while the receipt is `admitted` or `uncertain`, because a
 brief running on the issue would keep writing to something the decision has

@@ -331,9 +331,13 @@ def factory_decider(request: Request) -> str:
     (the class of gap #4628 was). It is read here only for attribution when
     the verified header agrees with it, never for the authorization decision.
 
-    The address must also be listed in FACTORY_OPERATOR_EMAILS, which is
-    empty by default, so the route is inert until an operator is provisioned:
-    the capability arrives switched off, the same way landing and closing did.
+    Access is the gate, so the verified address is enough on its own.
+    private.jomcgi.dev is zero trust locked to one identity, and a second list
+    behind that would only restate what Access already decided, so
+    FACTORY_OPERATOR_EMAILS is empty by default and any single verified
+    identity decides. Set it to narrow that, granting someone the page without
+    the buttons: non-empty it is an allowlist, and an address missing from it
+    gets a 403 on the click.
     Agents holding a real bearer use POST /api/swarm/factory/decisions/{id}
     and never reach here.
     """
@@ -342,11 +346,6 @@ def factory_decider(request: Request) -> str:
         for entry in os.environ.get("FACTORY_OPERATOR_EMAILS", "").split(",")
         if entry.strip()
     }
-    if not allowed:
-        raise HTTPException(
-            status_code=403,
-            detail="no factory operator emails are configured",
-        )
     # Defence in depth behind the listener strip, the same check the moving
     # planner's viewer makes: Envoy APPENDS its projected claim, so more than
     # one value means a forged one arrived first and ordinary header reads
@@ -358,7 +357,10 @@ def factory_decider(request: Request) -> str:
             detail="missing or ambiguous X-Auth-Email header",
         )
     email = projected[0].strip()
-    if not email or email.lower() not in allowed:
+    # An empty allowlist is not "refuse everyone": Access has already decided
+    # who reaches this backend, so any verified identity decides. A non-empty
+    # one narrows that further.
+    if not email or (allowed and email.lower() not in allowed):
         raise HTTPException(status_code=403, detail="not a factory operator")
     return email
 

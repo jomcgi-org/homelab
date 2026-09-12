@@ -388,9 +388,11 @@ bearer at all. That identity is `X-Auth-Email`, the claim Envoy projects from
 a signature it verified and the gateway strips on ingress so it cannot be
 smuggled past the auth filter, never `Cf-Access-Authenticated-User-Email`,
 which nothing in the cluster validates or strips and which any caller reaching
-the backend could therefore write. The address must also be on an allowlist
-delivered as a secret, empty until one is provisioned, so the capability
-arrives switched off (#6002).
+the backend could therefore write. Access itself is the gate, since
+`private.jomcgi.dev` is zero trust locked to one identity, so a verified
+address decides on its own and the `FACTORY_OPERATOR_EMAILS` secret is empty by
+default. Setting it narrows the click to a named list while leaving the page
+readable to everyone Access admits (#6002).
 
 (see: /projects/monolith/swarm/factory_decisions.py)
 (see: /projects/monolith/frontend/src/routes/private/agents/escalations/+page.svelte)

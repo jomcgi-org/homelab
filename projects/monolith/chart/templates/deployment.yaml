@@ -240,10 +240,11 @@ spec:
             # verified Access token. A list of real people's addresses, so it
             # comes from 1Password like every other secret rather than from a
             # values file this repository publishes. optional: true means a
-            # cluster whose item has no such key gets an empty allowlist and
-            # the route 403s for everybody, which is the inert state this
-            # capability is meant to arrive in. Agents holding a standing
-            # bearer use /api/swarm/factory/decisions and never read this.
+            # cluster whose item has no such key gets an empty allowlist, and
+            # empty means any single verified identity decides: Access already
+            # locks the hostname to one person, so the list is only for
+            # narrowing that. Agents holding a standing bearer use
+            # /api/swarm/factory/decisions and never read this.
             - name: FACTORY_OPERATOR_EMAILS
               valueFrom:
                 secretKeyRef:
