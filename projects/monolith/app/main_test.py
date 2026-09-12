@@ -202,8 +202,9 @@ async def test_lifespan_creates_background_tasks_on_startup():
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             await _start_singletons(app)
 
-    # Ships, pending-message sweep, titles, KG feed, receipt retention, cd probe.
-    assert len(created_tasks) == 6
+    # Ships, pending-message sweep, titles, KG feed, receipt retention, receipt
+    # cleanup, and cd probe.
+    assert len(created_tasks) == 7
 
 
 @pytest.mark.asyncio
@@ -225,8 +226,9 @@ async def test_lifespan_cancels_all_tasks_on_shutdown():
             await _start_singletons(app)
             await _stop_singletons(app)
 
-    # Ships, pending-message sweep, titles, KG feed, receipt retention, cd probe.
-    assert len(mock_tasks) == 6
+    # Ships, pending-message sweep, titles, KG feed, receipt retention, receipt
+    # cleanup, and cd probe.
+    assert len(mock_tasks) == 7
     for task in mock_tasks:
         task.cancel.assert_called_once()
 
@@ -248,8 +250,9 @@ async def test_lifespan_no_tasks_cancelled_before_shutdown():
     with patch("asyncio.create_task", side_effect=capture_create_task):
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             await _start_singletons(app)
-            # Ships, pending-message sweep, titles, KG feed, retention, cd probe.
-            assert len(mock_tasks) == 6
+            # Ships, pending-message sweep, titles, KG feed, receipt retention,
+            # receipt cleanup, and cd probe.
+            assert len(mock_tasks) == 7
             for task in mock_tasks:
                 task.cancel.assert_not_called()
             await _stop_singletons(app)
@@ -504,8 +507,9 @@ async def test_lifespan_creates_discord_and_service_tasks_when_token_set():
             ):
                 await _start_singletons(app)
 
-    # Bot, outbox, lock sweep, and six service loops including receipt retention.
-    assert len(created_tasks) == 9
+    # Bot, outbox, lock sweep, and seven service loops including receipt
+    # retention and cleanup.
+    assert len(created_tasks) == 10
 
 
 @pytest.mark.asyncio

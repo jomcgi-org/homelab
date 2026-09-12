@@ -140,10 +140,10 @@ class TestChatStartupHook:
 
         # Tasks: bot, outbox drain, ships ingest, message lock sweep, the
         # agent_sessions pending-message sweep, titles, KG feed, receipt retention,
-        # and the cd-probe that writes the platform_probe latch.
+        # receipt cleanup, and the cd-probe that writes the platform_probe latch.
         # The scheduler dispatch loop was removed (batch jobs run as Argo
         # CronWorkflows).
-        assert len(task_mocks) == 9
+        assert len(task_mocks) == 10
         # Assert the invariant rather than indexing a hand-numbered list: what
         # matters is that EVERY singleton gets the done callback, so a task that
         # crashes is logged. Indexing meant this broke whenever a singleton was
