@@ -112,6 +112,7 @@ actions:
           bazel test //bazel/ocaml/examples/... --config=ci \
             --platforms=//bazel/ocaml/platforms:linux_aarch64 \
             --build_tests_only \
+            --nocache_test_results \
             --test_tag_filters=-external,-no-arm64
 
       - run: |
