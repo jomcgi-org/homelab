@@ -2664,6 +2664,19 @@ py_test(
 )
 
 py_test(
+    name = "semgrep_client_test",
+    srcs = ["semgrep_scan/client_test.py"],
+    imports = ["."],
+    # gazelle:exclude semgrep_scan means this py_test is hand-added, not generated.
+    deps = [
+        ":pkg_semgrep_scan",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "semgrep_report_test",
     srcs = ["semgrep_scan/report_test.py"],
     data = [

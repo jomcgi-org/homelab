@@ -492,7 +492,7 @@ async def _scan_and_report(payload: dict[str, Any], received: float) -> None:
         # measured on its own so it is both the App total_time and a clean
         # "how fast is our scanner" signal, independent of gather/report/status.
         t_scan = time.monotonic()
-        scan = await scan_files(files)
+        scan = await scan_files(files, correlation_id=head_sha)
         scan_execution_duration = time.monotonic() - t_scan
         if not isinstance(scan, dict) or scan.get("error"):
             logger.error(

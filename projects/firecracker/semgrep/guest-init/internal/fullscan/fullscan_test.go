@@ -11,7 +11,7 @@ import (
 )
 
 func TestMaterializeAndScan(t *testing.T) {
-	req := vsockproto.ScanRequest{Files: []vsockproto.ScanFile{
+	req := vsockproto.ScanRequest{CorrelationID: "full-scan-123", Files: []vsockproto.ScanFile{
 		{Path: "pkg/a.py", Content: "a = 1\n"},
 		{Path: "pkg/b.py", Content: "b = 2\n"},
 	}}
@@ -37,6 +37,9 @@ func TestMaterializeAndScan(t *testing.T) {
 	}
 	if got, want := res.Findings[0].Path, "pkg/b.py"; got != want {
 		t.Fatalf("Path = %q, want %q", got, want)
+	}
+	if res.CorrelationID != req.CorrelationID {
+		t.Fatalf("CorrelationID = %q, want %q", res.CorrelationID, req.CorrelationID)
 	}
 
 	if recordedDir == "" {
@@ -79,7 +82,7 @@ func TestPathTraversalIsContainedNotEscaping(t *testing.T) {
 }
 
 func TestRunnerErrorWithOutputStillParses(t *testing.T) {
-	req := vsockproto.ScanRequest{Files: []vsockproto.ScanFile{
+	req := vsockproto.ScanRequest{CorrelationID: "partial-id", Files: []vsockproto.ScanFile{
 		{Path: "pkg/a.py", Content: "a = 1\n"},
 	}}
 
@@ -107,10 +110,13 @@ func TestRunnerErrorWithOutputStillParses(t *testing.T) {
 	if !found {
 		t.Fatalf("want runner error %q appended to Errors, got %v", runErr.Error(), res.Errors)
 	}
+	if res.CorrelationID != req.CorrelationID {
+		t.Fatalf("CorrelationID = %q, want %q", res.CorrelationID, req.CorrelationID)
+	}
 }
 
 func TestRunnerErrorNoOutputFails(t *testing.T) {
-	req := vsockproto.ScanRequest{Files: []vsockproto.ScanFile{
+	req := vsockproto.ScanRequest{CorrelationID: "failed-full-scan", Files: []vsockproto.ScanFile{
 		{Path: "pkg/a.py", Content: "a = 1\n"},
 	}}
 
@@ -118,8 +124,33 @@ func TestRunnerErrorNoOutputFails(t *testing.T) {
 		return nil, errors.New("semgrep: command not found")
 	}
 
-	_, err := Scan(context.Background(), req, runner)
+	res, err := Scan(context.Background(), req, runner)
 	if err == nil {
 		t.Fatal("want error when runner fails with no output, got nil")
+	}
+	if res.CorrelationID != req.CorrelationID {
+		t.Fatalf("CorrelationID = %q, want %q on error", res.CorrelationID, req.CorrelationID)
+	}
+}
+
+func TestSuccessiveScanOmittingMetadataDoesNotLeak(t *testing.T) {
+	runner := func(ctx context.Context, treeDir string) ([]byte, error) {
+		return []byte(`{"results":[],"errors":[]}` + "\n"), nil
+	}
+
+	tagged, err := Scan(context.Background(), vsockproto.ScanRequest{CorrelationID: "tagged"}, runner)
+	if err != nil {
+		t.Fatalf("tagged Scan: %v", err)
+	}
+	if tagged.CorrelationID != "tagged" {
+		t.Fatalf("tagged CorrelationID = %q", tagged.CorrelationID)
+	}
+
+	untagged, err := Scan(context.Background(), vsockproto.ScanRequest{}, runner)
+	if err != nil {
+		t.Fatalf("untagged Scan: %v", err)
+	}
+	if untagged.CorrelationID != "" {
+		t.Fatalf("untagged CorrelationID leaked as %q", untagged.CorrelationID)
 	}
 }
