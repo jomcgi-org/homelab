@@ -42,8 +42,10 @@ from swarm import graph
 from swarm.factory_intake import admit_next, receive_issue
 from swarm.factory_models import (
     FactoryAudit,
+    FactoryClassTier,
     FactoryControl,
     FactoryReceipt,
+    FactoryReviewVerdict,
     FactoryStart,
 )
 from swarm.factory_router import router
@@ -102,8 +104,10 @@ def database(tmp_path, monkeypatch):
         SwarmPlanNode,
         SwarmNodeRun,
         SwarmConductorCall,
+        FactoryClassTier,
         FactoryControl,
         FactoryReceipt,
+        FactoryReviewVerdict,
         FactoryStart,
         FactoryAudit,
         AgentSession,

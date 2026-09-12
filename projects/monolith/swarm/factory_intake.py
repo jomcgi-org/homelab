@@ -25,7 +25,6 @@ from swarm.factory_controls import (
     lane_max_tasks,
     normalize_repo,
     receipt_task_class,
-    TASK_CLASSES,
     validate_task_class,
     validate_policy,
 )
@@ -110,8 +109,8 @@ def concurrency_limit(policy: dict) -> int:
 
 
 def lane_of(row) -> str:
-    """The lane a receipt belongs to, reading a pre-class receipt as delivery."""
-    return lane_for(receipt_task_class(row))
+    """The pinned lane, or the class lane for a receipt admitted before pins."""
+    return getattr(row, "routing_tier", None) or lane_for(receipt_task_class(row))
 
 
 def ceiling_below_lanes(policy: dict) -> dict | None:
@@ -244,30 +243,39 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
                     for lane in LANES
                 },
             }
-        # A receipt written before classes existed has a NULL column and reads
-        # as the default class, which is delivery. Matching it by class alone
-        # would leave those receipts unadmittable.
-        classes = [name for name in TASK_CLASSES if lane_for(name) in available]
-        in_lane = FactoryReceipt.task_class.in_(classes)
-        if "delivery" in available:
-            in_lane = or_(in_lane, FactoryReceipt.task_class.is_(None))
         eligible = FactoryReceipt.issue_number.in_(policy["issue_numbers"])
         if intake_policy(policy)["enabled"]:
             # Intake receipts are not in the operator allowlist by construction.
             # They are admissible only while intake is on, so turning intake off
             # leaves the allowlist exactly as it was.
             eligible = or_(eligible, FactoryReceipt.actor == INTAKE_ACTOR)
-        row = db.exec(
+        candidates = db.exec(
             select(FactoryReceipt)
             .where(
                 FactoryReceipt.state == "queued",
                 FactoryReceipt.repo == policy["repo"],
                 eligible,
-                in_lane,
                 FactoryReceipt.generation == policy["generation"],
             )
             .order_by(FactoryReceipt.created_at, FactoryReceipt.id)
-        ).first()
+        ).all()
+        # Feedback routing is evaluated at admission, not receipt creation, so
+        # a queued issue sees the latest complete class window. Cache by class
+        # because every candidate in one class gets the same decision.
+        from swarm.factory_feedback import route_for_class, store_class_tier
+
+        routes = {}
+        row = None
+        route = None
+        for candidate in candidates:
+            task_class = receipt_task_class(candidate)
+            feedback = routes.get(task_class)
+            if feedback is None:
+                feedback = route_for_class(task_class, session=db)
+                routes[task_class] = feedback
+            if feedback["tier"] in available:
+                row, route = candidate, feedback
+                break
         if row is None:
             return {"ok": False, "reason": "no_eligible_issue"}
         task_id = mint_task_id()
@@ -285,6 +293,8 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         db.add(task)
         db.flush()
         row.task_id, row.state, row.policy_json = task_id, "admitted", _json(policy)
+        row.routing_tier = route["tier"]
+        store_class_tier(receipt_task_class(row), row.routing_tier, session=db)
         row.updated_at = _now()
         control.admitted_count += 1
         control.updated_at = _now()
@@ -297,8 +307,29 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             task_id=task_id,
             receipt_id=row.id,
             lane=lane_of(row),
+            task_class=receipt_task_class(row),
+            feedback_decision=route["decision"],
+            feedback_samples=route["sample_count"],
+            first_pass_approval_rate=route["approval_rate"],
             policy_version=control.version,
         )
+        if route["tier"] != route["previous_tier"]:
+            _audit(
+                db,
+                "factory:feedback",
+                (
+                    "class_tier_demoted"
+                    if route["tier"] == "advisory"
+                    else "class_tier_restored"
+                ),
+                task_id=task_id,
+                task_class=receipt_task_class(row),
+                previous_tier=route["previous_tier"],
+                routing_tier=route["tier"],
+                sample_count=route["sample_count"],
+                approval_rate=route["approval_rate"],
+                approval_floor=route["approval_floor"],
+            )
         return {
             "ok": True,
             "task_id": task_id,

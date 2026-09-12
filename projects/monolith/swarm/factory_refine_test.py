@@ -16,8 +16,10 @@ from swarm import graph
 from swarm.factory_intake import admit_next, receive_issue
 from swarm.factory_models import (
     FactoryAudit,
+    FactoryClassTier,
     FactoryControl,
     FactoryReceipt,
+    FactoryReviewVerdict,
     FactoryStart,
 )
 from swarm.models import (
@@ -47,8 +49,10 @@ def db(tmp_path, monkeypatch):
         SwarmPlanNode,
         SwarmNodeRun,
         SwarmConductorCall,
+        FactoryClassTier,
         FactoryControl,
         FactoryReceipt,
+        FactoryReviewVerdict,
         FactoryStart,
         FactoryAudit,
     )

@@ -345,8 +345,29 @@ judgment work to its strongest configured model and says so in the node's
 stated reason. Configure an Opus-class worker pool member before enabling
 intake on a repository whose issues carry `needs-thought`. Advisory classes other than `refine` have
 no producer yet and park the task paused; phase 3 fills that hook.
-Reviewer-driven class escalation and the verdict ledger are deliberately not
-built in these phases (#3843).
+The first valid review on each delivery task is recorded once against that
+original class. Failed review attempts, duplicate reconciliation and later
+correction reviews do not replace it. Admission reads the latest 20 such tasks
+for that class only. Fewer than 20 samples preserve the ordinary delivery
+route. At 20, an approval rate below 60 percent pins new receipts to the
+advisory tier; above 60 percent restores delivery; exactly 60 percent keeps the
+previous tier so the boundary does not flap. The route is pinned per admitted
+task and never changes work already in flight. Existing receipts with no pin
+retain their class route.
+
+A feedback-demoted delivery still keeps its original class, but it occupies the
+advisory lane and writes no repository changes or pull request. Its one bounded
+node posts a server-verified `## Factory advisory` issue comment with a proposed
+investigation, implementation, test and review recipe. The planner for normal
+delivery receives the same bounded rates and up to five recent first-pass
+rejection summaries as `class_feedback`, so recorded verdicts improve the real
+graph recipe rather than an unused report. If the advisory lane is configured
+with zero capacity, demoted work waits queued. Verdicts from delivery work
+already pinned before the transition can still move the rolling window; once
+the latest window rises above the floor, admission automatically restores the
+class. Judgment work never crosses its Opus-class capability floor: when
+demoted it becomes comment-only, and when restored its existing implementer
+and reviewer floors apply unchanged.
 
 A refine task runs one planner-class node with at most two attempts and has no
 DAG. The node posts exactly one `## Agent brief` comment with `### Outcome`,

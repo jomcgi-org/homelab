@@ -4645,6 +4645,18 @@ py_test(
 )
 
 py_test(
+    name = "swarm_factory_feedback_test",
+    srcs = ["swarm/factory_feedback_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_swarm",
+        "@pip//pytest",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "swarm_factory_intake_test",
     srcs = ["swarm/factory_intake_test.py"],
     imports = ["."],

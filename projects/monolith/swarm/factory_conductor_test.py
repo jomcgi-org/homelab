@@ -82,6 +82,7 @@ def test_github_object_and_list_readers_enforce_response_shapes(monkeypatch):
 
 
 def test_refine_schema_and_boundary_are_separate_from_delivery():
+    from swarm.factory_feedback import ADVISORY_SCHEMA
     from swarm.factory_refine import REFINE_SCHEMA
 
     task = {"id": "t-1", "repo": "owner/repo", "base_branch": "main"}
@@ -97,6 +98,12 @@ def test_refine_schema_and_boundary_are_separate_from_delivery():
     # would hand a reviewer node the refine boundary instead of refusing.
     with pytest.raises(ValueError, match="never both"):
         conductor._boundary(task, review=True, refine=True)
+    assert conductor._schema("feedback_1") is ADVISORY_SCHEMA
+    advisory = conductor._boundary(task, advisory=True)
+    assert "Factory advisory task t-1" in advisory
+    assert "open a pull request" in advisory
+    with pytest.raises(ValueError, match="never both"):
+        conductor._boundary(task, review=True, advisory=True)
 
 
 def delivery(
@@ -451,8 +458,10 @@ def feedback_db(tmp_path, monkeypatch):
     from swarm import factory_controls as controls
     from swarm.factory_models import (
         FactoryAudit,
+        FactoryClassTier,
         FactoryControl,
         FactoryReceipt,
+        FactoryReviewVerdict,
         FactoryStart,
     )
     from swarm.models import (
@@ -478,8 +487,10 @@ def feedback_db(tmp_path, monkeypatch):
         SwarmPlanNode,
         SwarmNodeRun,
         SwarmConductorCall,
+        FactoryClassTier,
         FactoryControl,
         FactoryReceipt,
+        FactoryReviewVerdict,
         FactoryStart,
         FactoryAudit,
     )
@@ -545,6 +556,111 @@ def feedback_task(
     admitted = admit_next("scheduler")
     assert admitted["ok"]
     return conductor._task(admitted["task_id"]), policy
+
+
+def test_pinned_feedback_tier_routes_reconciliation_to_comment_node(
+    feedback_db,
+):
+    from sqlmodel import Session, select
+
+    from swarm.factory_models import FactoryReceipt
+
+    task, policy = feedback_task()
+    with Session(feedback_db) as db:
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        receipt.routing_tier = "advisory"
+        db.add(receipt)
+        db.commit()
+
+    conductor.reconcile_task(task["id"], policy, object())
+    nodes = conductor.graph.load_graph(task["id"])
+    assert [node["node_key"] for node in nodes] == ["feedback_1"]
+    assert "## Factory advisory" in nodes[0]["prompt"]
+    assert "Do not create a branch" in nodes[0]["prompt"]
+
+
+def test_feedback_advisory_keeps_the_judgment_model_floor(feedback_db):
+    from sqlmodel import Session, select
+
+    from swarm.factory_models import FactoryReceipt
+
+    task, policy = feedback_task(
+        task_class="judgment-analysis",
+        model_pools={"worker": ["luna", "opus"]},
+    )
+    with Session(feedback_db) as db:
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        receipt.routing_tier = "advisory"
+        db.add(receipt)
+        db.commit()
+
+    conductor.reconcile_task(task["id"], policy, object())
+    node = conductor.graph.load_graph(task["id"])[0]
+    assert node["node_key"] == "feedback_1"
+    assert node["model"] == "opus"
+
+
+def test_feedback_advisory_settles_only_after_comment_is_verified(
+    feedback_db, monkeypatch
+):
+    from sqlmodel import Session, select
+
+    from swarm import factory_controls as controls
+    from swarm.factory_models import FactoryReceipt
+
+    task, policy = feedback_task()
+    with Session(feedback_db) as db:
+        receipt = db.exec(
+            select(FactoryReceipt).where(FactoryReceipt.task_id == task["id"])
+        ).one()
+        receipt.routing_tier = "advisory"
+        db.add(receipt)
+        db.commit()
+    conductor.reconcile_task(task["id"], policy, object())
+    url = "https://github.com/owner/repo/issues/7#issuecomment-1"
+    run_feedback_node(
+        task,
+        "feedback_1",
+        {"status": "complete", "summary": "Safer recipe posted.", "comment_url": url},
+    )
+    monkeypatch.setattr(
+        conductor,
+        "github_list",
+        lambda *_args: [
+            {
+                "html_url": url,
+                "body": (
+                    "## Factory advisory\n\n### Why delivery is paused\n\n"
+                    "Below the floor.\n\n### Suggested recipe\n\n"
+                    "Investigate, implement, test, review.\n\n### Evidence\n\n"
+                    "Recorded verdicts.\n\n"
+                    f"<!-- factory-feedback-advisory:{task['id']} -->"
+                ),
+            }
+        ],
+    )
+
+    conductor.reconcile_task(task["id"], policy, object())
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["state"] == "succeeded"
+    assert snapshot["evidence"]["state"] == "feedback_advisory"
+    assert snapshot["evidence"]["reason"] == url
+
+
+def test_planner_receives_class_feedback_as_recipe_input(feedback_db):
+    import json
+
+    task, _policy = feedback_task()
+    prompt = conductor.planner_prompt(task, [], [], task_class="bug-fix")
+    context = json.loads(prompt.rsplit("\n", 1)[1])
+    assert context["class_feedback"]["task_class"] == "bug-fix"
+    assert context["class_feedback"]["sample_count"] == 0
+    assert context["class_feedback"]["tier"] == "delivery"
+    assert "Use class_feedback" in prompt
 
 
 def complete_feedback_node(
