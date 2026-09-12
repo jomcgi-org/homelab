@@ -343,8 +343,12 @@ defmodule Embervm.S3WarmthGc do
     key = {state.cell_id, instance.node_id, instance.pod_uid}
 
     case NodeCapacity.fetch(state.capacity_table, key) do
-      :error when state.cell_id == Embervm.Cell.default_id() ->
-        NodeCapacity.fetch(state.capacity_table, {instance.node_id, instance.pod_uid})
+      :error ->
+        if state.cell_id == Embervm.Cell.default_id() do
+          NodeCapacity.fetch(state.capacity_table, {instance.node_id, instance.pod_uid})
+        else
+          :error
+        end
 
       result ->
         result

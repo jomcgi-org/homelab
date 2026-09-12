@@ -2141,6 +2141,9 @@ defmodule Embervm.OpLog.Postgres do
     end
   end
 
+  defp do_claim_workload(_conn, _workload, _cell_id, _transaction_fun),
+    do: {:error, :invalid_assignment}
+
   defp do_claim_valid_workload(conn, workload, cell_id, transaction_fun) do
     now = System.system_time(:millisecond)
 
@@ -2163,9 +2166,6 @@ defmodule Embervm.OpLog.Postgres do
       {:error, reason} -> {:error, reason}
     end
   end
-
-  defp do_claim_workload(_conn, _workload, _cell_id, _transaction_fun),
-    do: {:error, :invalid_assignment}
 
   defp do_load_workload_cells(conn, query_fun) do
     sql = "SELECT workload, cell_id, created_at, updated_at FROM workload_cells ORDER BY workload"

@@ -2736,6 +2736,8 @@ defmodule Embervm.OpLog.SQLite do
     end
   end
 
+  defp do_claim_workload(_conn, _workload, _cell_id), do: {:error, :invalid_assignment}
+
   defp do_claim_valid_workload(conn, workload, cell_id) do
     now = System.system_time(:millisecond)
     sql = "INSERT OR IGNORE INTO workload_cells (workload, cell_id, created_at, updated_at) VALUES (?, ?, ?, ?)"
@@ -2747,8 +2749,6 @@ defmodule Embervm.OpLog.SQLite do
       select_workload_cell(conn, workload)
     end
   end
-
-  defp do_claim_workload(_conn, _workload, _cell_id), do: {:error, :invalid_assignment}
 
   defp select_workload_cell(conn, workload) do
     with {:ok, stmt} <- Sqlite3.prepare(conn, "SELECT cell_id FROM workload_cells WHERE workload=?"),

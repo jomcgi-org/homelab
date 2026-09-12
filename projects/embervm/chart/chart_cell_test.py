@@ -18,7 +18,13 @@ def _chart_dir() -> Path:
 
 def _render(*sets: str) -> list[dict]:
     helm_bin = os.environ.get("HELM_BIN", "helm")
-    command = [helm_bin, "template", "cell-test", str(_chart_dir())]
+    command = [
+        helm_bin,
+        "template",
+        "cell-test",
+        str(_chart_dir()),
+        "--include-crds",
+    ]
     for value in sets:
         command.extend(("--set", value))
 
@@ -34,18 +40,18 @@ def _env(container: dict) -> dict[str, str]:
 
 def test_default_cell_preserves_single_cell_addresses() -> None:
     documents = _render("noded.enabled=true")
-    deployments = {
+    workloads = {
         doc["metadata"]["name"]: doc
         for doc in documents
-        if doc.get("kind") == "Deployment"
+        if doc.get("kind") in {"DaemonSet", "Deployment"}
     }
 
-    control = deployments["cell-test-embervm"]
+    control = workloads["cell-test-embervm"]
     control_env = _env(control["spec"]["template"]["spec"]["containers"][0])
     assert control_env["EMBERVM_CELL_ID"] == "cell-0"
     assert control_env["EMBERVM_KNOWN_CELL_IDS"] == "cell-0"
 
-    noded = deployments["cell-test-embervm-noded"]
+    noded = workloads["cell-test-embervm-noded"]
     noded_container = next(
         container
         for container in noded["spec"]["template"]["spec"]["containers"]
@@ -66,9 +72,13 @@ def test_cell_override_routes_bricks_to_its_configured_control_plane() -> None:
         "cell.knownIds={cell-east,cell-west}",
         "cell.brickDialHomeAddress=http://cell-west-control.embervm.svc:8080",
     )
-    deployments = [doc for doc in documents if doc.get("kind") == "Deployment"]
-    control = next(doc for doc in deployments if doc["metadata"]["name"] == "cell-test-embervm")
-    noded = next(doc for doc in deployments if doc["metadata"]["name"] == "cell-test-embervm-noded")
+    workloads = [
+        doc
+        for doc in documents
+        if doc.get("kind") in {"DaemonSet", "Deployment"}
+    ]
+    control = next(doc for doc in workloads if doc["metadata"]["name"] == "cell-test-embervm")
+    noded = next(doc for doc in workloads if doc["metadata"]["name"] == "cell-test-embervm-noded")
 
     control_env = _env(control["spec"]["template"]["spec"]["containers"][0])
     assert control_env["EMBERVM_CELL_ID"] == "cell-west"
