@@ -76,6 +76,18 @@ def test_duplicate_central_gazelle_exclude_is_rejected():
     )
 
 
+@pytest.mark.parametrize(
+    ("suffix", "value"),
+    [("  # legacy", "chat  # legacy"), (" notes", "chat notes")],
+)
+def test_malformed_central_gazelle_exclude_is_rejected(suffix, value):
+    _assert_rejected(
+        LEGACY + f"# gazelle:exclude chat{suffix}\n",
+        "gazelle:exclude",
+        value,
+    )
+
+
 def test_new_central_package_glob_is_rejected():
     _assert_rejected(
         LEGACY.replace(
@@ -97,14 +109,31 @@ def test_same_count_package_glob_replacement_is_rejected():
 
 def test_moving_a_grandfathered_glob_to_another_target_is_rejected():
     candidate = LEGACY.replace('        "auth/**/*.py",\n', "").replace(
-        '    srcs = glob(["auth/**/*.py"]),',
-        '    srcs = glob(["auth/**/*.py", "auth/**/*.py"]),',
+        "\npy_library(",
+        '\nfilegroup(name = "moved_auth", '
+        'srcs = glob(["auth/**/*.py"]))\n\npy_library(',
     )
     _assert_rejected(candidate, "package glob", "auth/**/*.py")
 
 
+def test_concatenated_package_glob_is_rejected():
+    _assert_rejected(
+        LEGACY + 'PACKAGE = "chat"\nfilegroup(srcs = glob([PACKAGE + "/**/*.py"]))\n',
+        "package glob",
+        "chat/**/*.py",
+    )
+
+
 def test_broad_globs_are_not_per_package_enumeration():
     _assert_allowed(LEGACY.replace('"**/*_test.py",', '"**/*.py",'))
+
+
+def test_explicit_source_paths_are_outside_ratchet_scope():
+    _assert_allowed(
+        LEGACY
+        + 'py_library(name = "pkg_chat", srcs = ["chat/main.py"])\n'
+        + 'filegroup(name = "chat_files", srcs = ["chat/data.json"])\n'
+    )
 
 
 def test_legitimate_package_local_build_content_is_allowed():
@@ -112,13 +141,8 @@ def test_legitimate_package_local_build_content_is_allowed():
         "# gazelle:exclude generated.py\n"
         'py_library(name = "chat", srcs = glob(["*.py"]))\n'
     )
-    candidate_files = {
-        ratchet.CENTRAL_BUILD: LEGACY,
-        "projects/monolith/chat/BUILD": local_content,
-    }
-
     assert ratchet.scan_central_build(local_content)
-    assert ratchet.new_findings(LEGACY, candidate_files[ratchet.CENTRAL_BUILD]) == []
+    assert ratchet.new_findings(LEGACY, LEGACY) == []
 
 
 def test_missing_base_reference_fails_with_actionable_diagnostic(tmp_path, monkeypatch):
