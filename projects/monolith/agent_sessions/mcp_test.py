@@ -2485,3 +2485,30 @@ def test_probe_worker_path_retains_guest_on_unknown_outcome(monkeypatch, session
     session.expire_all()
     reloaded = store.get_session(session, row.id)
     assert reloaded.ember_session_id == "ember-1"
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "monolith_voice_ui_attach",
+        "monolith_voice_ui_show",
+        "monolith_voice_ui_ask",
+        "monolith_voice_ui_dismiss",
+    ],
+)
+def test_voice_ui_tools_stay_callable_without_an_identified_caller(tool_name):
+    """ADR 058 keeps the voice companion working on an anonymous principal.
+
+    The MCP group gate denies by default, so these four only keep working
+    because they carry the public tag. Losing the tag would fail closed and the
+    voice path would go quiet rather than error visibly, which is why this is
+    asserted rather than left to the reviewer to notice.
+    """
+    from core.mcp_app import mcp as shared
+    from core.mcp_policy import PUBLIC_TAG
+
+    tool = asyncio.run(shared.get_tool(tool_name))
+    assert tool is not None, f"{tool_name} is not registered"
+    assert PUBLIC_TAG in tool.tags, (
+        f"{tool_name} lost {PUBLIC_TAG}; the voice path would fail closed"
+    )

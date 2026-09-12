@@ -2485,6 +2485,18 @@ py_test(
 )
 
 py_test(
+    name = "mcp_policy_test",
+    srcs = ["core/mcp_policy_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_core",
+        "@pip//fastmcp",
+        "@pip//pytest",
+    ],
+)
+
+py_test(
     name = "observability_merged_prs_test",
     srcs = ["observability/merged_prs_test.py"],
     imports = ["."],
