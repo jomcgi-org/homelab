@@ -24,6 +24,7 @@ from core.db import get_engine
 from core.github import GITHUB_API
 from swarm import deviations, graph, runtime
 from swarm.factory_controls import (
+    CONTINUE_EFFECT,
     DEFAULT_TASK_CLASS,
     EFFECT_WORD,
     JUDGMENT_CLASSES,
@@ -1162,6 +1163,34 @@ def _planner_context(
             context["omitted"]["task_characters"] += removed
 
 
+def _pause_options_prompt() -> str:
+    """How to write a pause's options, which is what makes it decidable.
+
+    Every planner round pays for this text whether or not it pauses, so it
+    says only what a pause is refused for and what the operator reads. The
+    labels matter most: they are what someone picks from under time pressure,
+    so it asks for the concrete act rather than the verb the effect names.
+    """
+    return (
+        "Order them with your recommendation FIRST, and the first option must "
+        f"have effect `{CONTINUE_EFFECT}`: resuming the task applies it, so it "
+        "has to carry this work on, written as a rescope to a named surface, a "
+        "split of what you would then do, or a stated assumption. Any other "
+        "first effect is refused. Include one real alternative, such as closing "
+        "as stale. Each option is `{key, label, effect, detail}`: `key` a short "
+        "lowercase slug; `label` the concrete act with its specifics, never a "
+        'bare verb, as in "Deliver only the /invoke path, leave the console"; '
+        f"`effect` one of `{CONTINUE_EFFECT}`, `close`, `split`, `defer`, "
+        f"`hold`; `detail` what that effect needs, `scope` for "
+        f"`{CONTINUE_EFFECT}` which comes back to you as direction, `reason` "
+        "and `comment` for `close`, one to five `{title, body}` `children` for "
+        "`split`, a `comment` naming the wait condition for `defer`, nothing "
+        "for `hold`. Carrying on re-admits this issue as a NEW task with an "
+        "empty graph, given your question, the option and the note, so write "
+        "options whose answer is enough to plan from."
+    )
+
+
 def planner_prompt(
     task: dict,
     nodes: list[dict],
@@ -1307,7 +1336,13 @@ def planner_prompt(
         "Omission counts and text markers mean context is incomplete, not that "
         "work is absent or accepted; inspect the task branch or pause if needed. "
         "Explain each edit and delivered-versus-requested "
-        "judgment. Pause if scope, authority or evidence cannot support progress.\n"
+        "judgment. Pause if scope, authority or evidence cannot support "
+        "progress, and pause with a decision rather than a question: a pause "
+        "leaves the lane and waits on a person, so it carries `question`, the "
+        "one thing only they can settle, and `options`, two to four concrete "
+        "things they could decide. "
+        + _pause_options_prompt()
+        + "\n"
         + encoded.decode("utf-8")
     )
 
@@ -1587,6 +1622,10 @@ def _record_escalation(task_id: str, document: dict) -> None:
                     }
                 )
                 document["history"] = history[-8:]
+                # The chat carries forward across a supersede too. It records
+                # what an operator asked rather than any one attempt's answer,
+                # and the page renders it under whichever question is current.
+                document["chat"] = stored.get("chat") or []
         row.escalation_json = json.dumps(document)
         row.updated_at = _now()
         db.add(row)
@@ -1638,6 +1677,24 @@ def _escalate_task(task: dict, decision: dict, cause: str, runs: list[dict]) -> 
     invalid = verify_option_list(options, subject="pause")
     if invalid is not None:
         raise _EditRefused("pause_options_invalid", invalid)
+    # Option one is the recommendation, and on a delivery pause it also has to
+    # be the one that carries the work on. `resume_task` applies it without
+    # showing the operator the card, so an option set recommending a close
+    # would turn pressing resume into closing the issue. The planner may still
+    # offer close, split, defer and hold; it may not recommend them from
+    # inside a task that has a branch and usually a pull request open.
+    if options[0]["effect"] != CONTINUE_EFFECT:
+        raise _EditRefused(
+            "pause_recommendation_not_continue",
+            f"the first option is {options[0]['effect']}, and the first option "
+            f"on a pause must be {CONTINUE_EFFECT}: it is what resuming the "
+            "task applies",
+        )
+    question = decision.get("question")
+    if not isinstance(question, str) or not question.strip():
+        raise _EditRefused(
+            "pause_without_question", "a pause carries the question to be answered"
+        )
     number = task.get("issue_number")
     if not isinstance(number, int):
         raise _EditRefused(
@@ -1648,7 +1705,7 @@ def _escalate_task(task: dict, decision: dict, cause: str, runs: list[dict]) -> 
         "kind": "delivery",
         "task_id": task_id,
         "recommendation": EFFECT_WORD.get(options[0]["effect"], options[0]["effect"]),
-        "question": decision["question"].strip(),
+        "question": question.strip(),
         "reason": decision["reason"].strip()[:4000],
         "summary": _escalation_summary(runs),
         "options": options,
@@ -3395,14 +3452,21 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
         )
         ordinal = sum(n["node_key"].startswith("conductor_") for n in nodes) + 1
         key = f"conductor_{ordinal}"
-        # The operator's answer is carried on the first round only. It is what
-        # this task was re-admitted to act on, so it shapes the plan; every
-        # later round reads that plan and the decision feedback under it, and
-        # repeating the direction there would spend context on something the
-        # graph already records.
+        # The operator's answer is carried until a planner round has actually
+        # read it, which means a SUCCEEDED conductor run. A round that failed
+        # every attempt produced no plan and no decision feedback, so gating on
+        # "a conductor node ran at all" would let conductor_2 plan the task
+        # without ever seeing the direction: exactly the #6041 defect, one
+        # attempt later. Once a round has landed, the plan it shaped and the
+        # feedback under it are the record and repeating the direction would
+        # spend context on something the graph already carries.
         direction = (
             operator_direction(task_id)
-            if not any(run["node_key"].startswith("conductor_") for run in runs)
+            if not any(
+                run["node_key"].startswith("conductor_")
+                and run["status"] == "succeeded"
+                for run in runs
+            )
             else None
         )
         if direction is not None:

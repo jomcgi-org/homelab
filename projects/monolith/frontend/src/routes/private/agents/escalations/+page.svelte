@@ -342,7 +342,7 @@
                   <span class="label">{option.label}</span>
                   <span class="effect code"
                     >{EFFECT_WORD[option.effect] ?? option.effect} ·
-                    {effectLine(option)}</span
+                    {effectLine(option, item.kind)}</span
                   >
                 </button>
               {/each}
@@ -362,7 +362,8 @@
                     <span class="label"
                       >{armed(item, way) ? "Confirm close" : way.label}</span
                     >
-                    <span class="effect code">{effectLine(way)}</span>
+                    <span class="effect code">{effectLine(way, item.kind)}</span
+                    >
                   </button>
                 {/each}
               </div>

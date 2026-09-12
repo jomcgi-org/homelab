@@ -408,9 +408,14 @@ against. The answer comes back the other way rather than on the issue: an
 option that says carry on re-admits the receipt with the choice, its detail and
 the operator's note as direction, and the next task's first planner round reads
 that as a labelled untrusted section naming the previous branch and pull
-request. Every other answer settles the receipt cancelled rather than
-succeeded, because nothing was delivered and a succeeded delivery receipt is in
-the exclusion intake keeps for good (#6041).
+request. That option has to be the one the pause lists first, because
+`resume_task` applies option one without showing anyone the card and a pause
+recommending a close would make resuming the task close the issue. Every other
+answer settles the receipt cancelled rather than succeeded, because nothing was
+delivered and a succeeded delivery receipt is in the exclusion intake keeps for
+good. Re-admission mints a whole new task on a fresh budget, so the receipt
+keeps its previous task ids and the board shows what they spent beside the
+current task rather than inside its limits (#6041).
 
 (see: /projects/monolith/swarm/factory_decisions.py)
 (see: /projects/monolith/frontend/src/routes/private/agents/escalations/+page.svelte)

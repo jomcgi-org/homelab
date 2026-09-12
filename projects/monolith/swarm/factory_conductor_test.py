@@ -1364,7 +1364,14 @@ def test_planner_keeps_completed_review_after_recursive_historical_prompts(monke
     ):
         assert excluded not in prompt
     assert len(prompt.split("\n", 1)[1]) <= conductor.PLANNER_CONTEXT_CHARS
-    assert len(prompt) < 16_000
+    # The shrink loop bounds the JSON context; the instruction preamble rides
+    # on top of it and nothing bounds that, so this is the guard on preamble
+    # growth. The preamble is about 9,300 characters and this case's context
+    # about 6,700. It moved once, from 16,000, when pause gained its option
+    # contract (#6041): roughly 1,000 characters, and cheap against the
+    # planner round a refused pause costs. Move it again only for a rule the
+    # planner cannot follow without being told, and say which rule.
+    assert len(prompt) < 17_000
     assert (task, nodes, runs) == before
 
 

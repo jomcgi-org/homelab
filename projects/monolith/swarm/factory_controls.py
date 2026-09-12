@@ -184,6 +184,11 @@ _CLASS_POOL_ROLES = ("implement", "refine", "reviewer")
 # writes to GitHub, and `hold` exists so "leave it exactly as it is" is a
 # choice a person can record rather than a tab they close.
 OPTION_EFFECTS = ("agent-ready", "close", "split", "defer", "hold")
+# The one effect that puts the work back in front of the lane rather than
+# ending it. A delivery escalation answered with it is re-admitted carrying
+# the operator's answer as direction, and it is what `resume_task` applies,
+# so a delivery pause is required to offer it first.
+CONTINUE_EFFECT = "agent-ready"
 # What each effect reads as in one word, for a prompt and for a comment. The
 # operator page has its own copy of this in escalations-view.js.
 EFFECT_WORD = {
@@ -1058,6 +1063,31 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
     # planner prompt of the task this receipt was re-admitted for reads it on
     # its first round, which is the whole point of recording it.
     result["direction"] = json.loads(row.direction_json) if row.direction_json else None
+    # Every task this receipt has already spent on the same issue. A decision
+    # that re-admits an escalated delivery clears task_id, policy and
+    # allowance so the next admission mints a fresh task, which would
+    # otherwise take the escalated attempt's whole cost off the board.
+    #
+    # Deliberately NOT folded into turns_used or committed_cost_usd. Those are
+    # measured against the current task's own allowance, and adding a previous
+    # attempt's spend to them would read as a task over its budget on its
+    # first turn and trip every limit in `limits` before a node had run.
+    result["previous_task_ids"] = list(
+        (result["direction"] or {}).get("previous_task_ids") or []
+    )
+    result["previous_attempts"] = [
+        {"task_id": previous, **_accounting(_starts(db, previous))}
+        for previous in result["previous_task_ids"]
+    ]
+    result["previous_spend"] = {
+        "turns_used": sum(
+            attempt["turns_used"] for attempt in result["previous_attempts"]
+        ),
+        "committed_cost_usd": sum(
+            attempt["committed_cost_usd"] for attempt in result["previous_attempts"]
+        ),
+        "attempts": len(result["previous_attempts"]),
+    }
     result.update(
         policy=json.loads(row.policy_json) if row.policy_json else None,
         starts=[_start_dict(s) for s in starts],

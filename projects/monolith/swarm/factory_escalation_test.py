@@ -285,6 +285,17 @@ def test_a_pause_without_options_is_refused_and_the_task_stays_in_the_lane(
             ],
             "closes with no reason",
         ),
+        # Option one is what resume applies without showing anyone the card,
+        # so a pause that recommends closing would turn pressing resume into
+        # closing the issue.
+        (list(reversed(pause_options())), "must be agent-ready"),
+        (
+            [
+                {"key": "hold-it", "label": "Leave it", "effect": "hold"},
+                pause_options()[0],
+            ],
+            "must be agent-ready",
+        ),
     ],
 )
 def test_a_pause_whose_options_do_not_hold_up_is_refused(
@@ -296,6 +307,36 @@ def test_a_pause_whose_options_do_not_hold_up_is_refused(
     refusals = audits(db, "conductor_rejected")
     assert refusals and expected in refusals[0]["reason"]
     assert receipt_of(db, task_id).state == "admitted"
+
+
+def test_a_pause_with_no_question_is_refused_rather_than_raising(db, github, notices):
+    """The schema asks for it, and the server never trusts the schema alone."""
+    task_id, policy = admitted(ISSUE)
+    decision = pause(pause_options())
+    del decision["question"]
+    run = planner_run(task_id, decision)
+    conductor.apply_decision(task_of(task_id), policy, run, [run])
+    refusals = audits(db, "conductor_rejected")
+    assert [refusal["refusal_code"] for refusal in refusals] == [
+        "pause_without_question"
+    ]
+    assert receipt_of(db, task_id).state == "admitted"
+
+
+def test_the_planner_prompt_states_the_pause_option_contract(db, github, notices):
+    task_id, policy = admitted(ISSUE)
+    conductor.reconcile_task(task_id, policy, object())
+    node = next(
+        node for node in graph.load_graph(task_id) if node["node_key"] == "conductor_1"
+    )
+    for said in (
+        "the first option must have effect `agent-ready`",
+        "Any other first effect is refused",
+        "rescope to a named surface",
+        "Deliver only the /invoke path, leave the console",
+        "re-admits this issue as a NEW task",
+    ):
+        assert said in node["prompt"], said
 
 
 def test_the_decision_schema_demands_a_question_and_options_from_a_pause():
@@ -500,6 +541,86 @@ def test_the_chat_action_asks_on_the_issue_and_re_admits_with_the_note(
     assert direction["prior_task_id"] == task_id
     second = admit_next("test")["task_id"]
     assert controls.operator_direction(second)["effect"] == "chat"
+
+
+def test_deciding_after_a_chat_keeps_the_delivery_on_its_direction(db, github, notices):
+    """A chat re-queues without resolving, so an option can land on a queued
+    receipt. Reading that as the advisory re-brief case settled it succeeded,
+    which is the state intake reads as delivered for good, and the direction
+    the chat wrote was replaced by nothing.
+    """
+    task_id, _policy = escalate(db, github, notices)
+    receipt_id = receipt_of(db, task_id).id
+    assert decisions.request_chat(receipt_id, "Which client?", "joe@x.test")["requeued"]
+    result = decisions.apply_decision(
+        receipt_id, "continue-narrowed", "joe@example.test", "Use the existing one."
+    )
+    assert result["resolution"]["effects"]["readmitted"] is True
+    row = receipt_of(db, receipt_id=receipt_id)
+    assert row.state == "queued"
+    direction = json.loads(row.direction_json)
+    assert direction["option_key"] == "continue-narrowed"
+    assert direction["note"] == "Use the existing one."
+    # The chat cleared task_id, so the branch and the prior task come from the
+    # direction the chat itself left rather than from a row that no longer
+    # names them.
+    assert direction["prior_task_id"] == task_id
+    assert direction["prior_branch"] == f"factory/{task_id}"
+    assert direction["previous_task_ids"] == [task_id]
+    second = admit_next("test")["task_id"]
+    assert controls.operator_direction(second)["note"] == "Use the existing one."
+    # The audit names the task the decision was made against, not the null a
+    # re-queued receipt carries.
+    assert audits(db, "decision_applied")[-1]["receipt_id"] == receipt_id
+
+
+def test_an_ending_decision_after_a_chat_cancels_rather_than_succeeding(
+    db, github, notices
+):
+    task_id, _policy = escalate(db, github, notices)
+    receipt_id = receipt_of(db, task_id).id
+    assert decisions.request_chat(receipt_id, "Which client?", "joe@x.test")["requeued"]
+    decisions.apply_decision(receipt_id, "close-superseded", "joe@example.test")
+    row = receipt_of(db, receipt_id=receipt_id)
+    assert row.state == "cancelled"
+    # Never succeeded: that is the state intake's delivered rule reads as this
+    # issue being done for good.
+    assert admit_next("test")["ok"] is False
+
+
+def test_the_board_keeps_what_the_escalated_attempt_spent(db, github, notices):
+    """A re-admission mints a new task, so the old one's cost has to be kept.
+
+    Kept beside the current task's accounting rather than added into it: the
+    limits are measured against this task's own allowance, and folding a
+    previous attempt's spend in would trip every one of them before a node ran.
+    """
+    task_id, policy = admitted(ISSUE)
+    # Spend a work turn before the planner asks, so there is something to keep.
+    granted = controls.authorize_start(
+        task_id, "one", "worker", model="luna", max_cost_usd=2.0
+    )
+    assert granted["ok"], granted
+    assert controls.record_start_outcome(
+        task_id, "one", "succeeded", "worker", cost_usd=1.75, session_id=1
+    )["ok"]
+    run = planner_run(task_id, pause(pause_options()))
+    conductor.apply_decision(task_of(task_id), policy, run, [run])
+    receipt_id = receipt_of(db, task_id).id
+    assert receipt_of(db, task_id).state == "escalated"
+    decisions.apply_decision(receipt_id, "continue-narrowed", "joe@example.test")
+    second = admit_next("test")["task_id"]
+    snapshot = controls.task_snapshot(second)
+    assert snapshot["previous_task_ids"] == [task_id]
+    assert snapshot["previous_spend"] == {
+        "turns_used": 1,
+        "committed_cost_usd": 1.75,
+        "attempts": 1,
+    }
+    # The new task starts on its own clean allowance.
+    assert snapshot["turns_used"] == 0
+    assert snapshot["committed_cost_usd"] == 0
+    assert snapshot["limits"]["budget_limit_reached"] is False
 
 
 def test_resume_by_hand_applies_the_recommended_option(db, github, notices):
