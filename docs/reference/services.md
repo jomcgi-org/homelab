@@ -53,7 +53,7 @@ Cloudflare Pages frontends were decommissioned (ADR docs/002).
 ### Public response cache contract
 
 The shared Cloudflare cache contract applies only to public, anonymous,
-cookie-free responses covered by the `public.jomcgi.dev` hostname Cache Rule.
+cookie-free responses covered by the `jomcgi.dev` apex hostname Cache Rule.
 A cacheable response must not depend on `Authorization`, a session, cookies, or
 any other caller-specific state, must not contain personalized data, and must
 not set a cookie. Authenticated or personalized responses are outside this
