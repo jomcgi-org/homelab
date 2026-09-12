@@ -87,6 +87,16 @@ class EmberTurnNotInvoked(EmberVMTransportError):
     """
 
 
+class EmberControlPlaneUnavailable(EmberVMTransportError):
+    """The invoke connection to the EmberVM control plane was lost.
+
+    This is deliberately narrower than ``EmberVMTransportError``. An HTTP
+    response from the control plane, including one reporting a guest failure,
+    is not control-plane unavailability. Timeouts are also excluded because a
+    long-running guest can legitimately reach the invoke deadline.
+    """
+
+
 async def _check_delivery_admission() -> None:
     check = _delivery_admission_check.get()
     if check is not None:
@@ -1381,6 +1391,18 @@ class EmberVmShimTransport:
                     _status_error_detail(exc),
                 )
                 raise
+            except (
+                httpx.ConnectError,
+                httpx.ReadError,
+                httpx.WriteError,
+                httpx.RemoteProtocolError,
+            ) as exc:
+                logger.warning(
+                    "embervm invoke transport error for session %s: %s",
+                    current.session_id,
+                    exc,
+                )
+                raise EmberControlPlaneUnavailable(str(exc)) from exc
             except httpx.TransportError as exc:
                 logger.warning(
                     "embervm invoke transport error for session %s: %s",
