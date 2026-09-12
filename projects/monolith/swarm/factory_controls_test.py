@@ -484,8 +484,15 @@ def test_escalation_requires_exact_uncertain_reconciliation_and_is_not_task_outc
         )["start"]["status"]
         == "failed"
     )
+    # The node-run status settles the START as failed and never the task. The
+    # receipt state of the same name is a different thing entirely, a task
+    # whose planner asked a person for a decision, and it is reached only by
+    # an explicit settlement the reconciler makes.
+    assert controls.task_snapshot(task)["state"] == "admitted"
+    assert controls.finish_task(task, "escalated", "scheduler")["ok"]
+    assert controls.task_snapshot(task)["state"] == "escalated"
     with pytest.raises(ValueError, match="invalid task outcome"):
-        controls.finish_task(task, "escalated", "scheduler")
+        controls.finish_task(task, "reserved", "scheduler")
 
 
 def test_model_pools_are_normalised_and_stored_in_policy(db, policy):
