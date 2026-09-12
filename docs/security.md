@@ -331,7 +331,11 @@ guests; #3894 stays open as its record.
 images build as uid 65532 (`bazel/tools/oci/go_image.bzl`) and most charts
 set the full hardened context (`readOnlyRootFilesystem`, `runAsNonRoot`,
 `allowPrivilegeEscalation: false`, `drop: [ALL]`, `seccompProfile:
-RuntimeDefault`). No admission policy enforces any of it. Kyverno runs two
+RuntimeDefault`). The private monolith applies that context to its backend,
+progress-ingest and frontend containers. Each gets a separate writable
+`/tmp` `emptyDir`, owned through pod `fsGroup: 65532`; the remainder of each
+root filesystem is read-only. No admission policy enforces any of it. Kyverno
+runs two
 `ClusterPolicy` objects, both `Audit` (`kubectl get clusterpolicies`):
 `require-resource-requests`, scoped to the `monolith` and `monolith-public`
 namespaces, and `clone-monolith-workflows-secrets`, which copies Secrets
@@ -525,7 +529,6 @@ this table when the work ships or the issue closes without it.
 | Public-tier egress scopes to its four documented destinations, enforced on the hub | Network | #5276 | not started |
 | Per-workload EmberVM egress allowlists replace the single allowlist shared across every workload | Network | #5320 | not started |
 | The monolith constructs delegated, attenuation-only authority instead of relying only on standing tokens | Identity | #4940, #4943, #4944 | not started |
-| The private monolith container gets a read-only root filesystem, matching every other hardened chart | Decision history (security/004) | #3898 | not started |
 | Semgrep findings reach the hosted App under required credentials, replacing the offline placeholder token | Static checks and review gates | #3893 | not started |
 
 ## Decision history
@@ -541,7 +544,7 @@ document carries what shipped.
 | security/001 Hermetic Semgrep via Bazel | vendor `semgrep-core` as an OCI artifact and run rules as cached Bazel tests | Accepted; every target passes without scanning (#4777, #3893) | deleted |
 | security/002 Semgrep rule generation via RL | RL-finetuned model generates rules from CVEs | Deprecated; nothing live | deleted |
 | security/003 gVisor RuntimeClass | `runsc` for agent sandbox pods | Accepted, never built (#3894); the sandboxes it targeted became Firecracker guests | deleted |
-| security/004 Public read-only service isolation | separate public composition, `public_reader` on a replica, default-deny egress | Accepted; composition, role, replica and imports test shipped; egress policy inert on the hub (#3897, #5277); read-only rootfs open (#3898); tracking #3895 | deleted |
+| security/004 Public read-only service isolation | separate public composition, `public_reader` on a replica, default-deny egress | Accepted; composition, role, replica, imports test and private rootfs hardening shipped; egress policy inert on the hub (#3897, #5277); tracking #3895 | deleted |
 | security/005 Public chat adversarial hardening | Turnstile sessions, reserved headroom, server-side limits, DB-confined retrieval | Implemented except the purge (#3899); inference moved off-cluster | deleted |
 | security/006 Friends authorization lane | `/moving` on `friends.jomcgi.dev` behind an authentik `family` group | Accepted, shipped (#4968) | deleted |
 | security/007 Aggregate threat model index | one ranked index over labelled issues, re-ranked by hand | Accepted; decisions 1, 2 and 4 live, decision 3 superseded by STPA lenses (#5294) | deleted |

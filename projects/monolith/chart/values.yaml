@@ -1217,12 +1217,18 @@ tailnet:
   hostname: monolith
 
 podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  # Give each container's isolated /tmp emptyDir to the non-root process.
+  fsGroup: 65532
   seccompProfile:
     type: RuntimeDefault
 
 securityContext:
   runAsNonRoot: true
   runAsUser: 65532
+  readOnlyRootFilesystem: true
   allowPrivilegeEscalation: false
   capabilities:
     drop:

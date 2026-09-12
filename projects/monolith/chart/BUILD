@@ -97,6 +97,34 @@ py_test(
 )
 
 py_test(
+    name = "root_filesystem_security_test",
+    srcs = ["root_filesystem_security_test.py"],
+    data = [
+        "Chart.lock",
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/monolith/deploy:deploy_values",
+        "//projects/monolith/deploy:gke_values",
+        "//projects/monolith/dev/deploy:deploy_values",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "charts/**/*",
+        "migrations/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
+        "DEV_VALUES": "$(rootpath //projects/monolith/dev/deploy:deploy_values)",
+        "GKE_VALUES": "$(rootpath //projects/monolith/deploy:gke_values)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
     name = "chart_env_identity_test",
     srcs = ["chart_env_identity_test.py"],
     data = [
@@ -306,6 +334,19 @@ semgrep_test(
 semgrep_test(
     name = "tailnet_service_test_semgrep_test",
     srcs = ["tailnet_service_test.py"],
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "root_filesystem_security_test_semgrep_test",
+    srcs = ["root_filesystem_security_test.py"],
     exclude_rules = [
         "avoid-sqlalchemy-text",
         "sqlmodel-datetime-without-factory",
