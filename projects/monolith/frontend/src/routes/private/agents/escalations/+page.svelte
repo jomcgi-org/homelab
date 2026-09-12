@@ -277,7 +277,7 @@
                   id={`note-${item.receipt_id}`}
                   bind:this={noteBox}
                   value={noteFor(item)}
-                  oninput={(event) => setNote(item, event.currentTarget.value)}
+                  oninput={(event) => setNote(item, event.target.value)}
                   rows="2"
                   placeholder="What is missing, or a note to record with the decision"
                 ></textarea>
