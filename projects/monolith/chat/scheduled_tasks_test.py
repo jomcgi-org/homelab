@@ -12,6 +12,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from chat import outbox as discord_outbox
 from chat.models import DiscordOutbox, ScheduledTask, ScheduledTaskOccurrence
 from chat.scheduled_tasks import (
+    MAX_GENERATION_ATTEMPTS,
     cancel_task,
     claim_due,
     create_task,
@@ -181,6 +182,29 @@ def test_generation_failure_releases_for_same_occurrence_retry(engine):
         occurrence = session.get(ScheduledTaskOccurrence, retry.occurrence_id)
         assert occurrence.status == "claimed"
         assert retry.occurrence_id == first.occurrence_id
+        assert session.get(ScheduledTask, retry.task_id).failure_count == 1
+
+
+def test_one_shot_generation_failure_stops_after_retry_budget(engine):
+    task_id, _ = _insert_due(engine)
+    now = datetime(2026, 9, 12, 12, 2, tzinfo=timezone.utc)
+
+    for attempt in range(MAX_GENERATION_ATTEMPTS):
+        with Session(engine) as session:
+            claims = claim_due(
+                session, now + timedelta(seconds=attempt), f"worker-{attempt}"
+            )
+            assert len(claims) == 1
+            assert release_claim(
+                session, claims[0], "deterministic failure", now=now
+            )
+            session.commit()
+
+    with Session(engine) as session:
+        task = session.get(ScheduledTask, task_id)
+        assert task.status == "failed"
+        assert task.failure_count == MAX_GENERATION_ATTEMPTS
+        assert claim_due(session, now + timedelta(minutes=1), "worker-final") == []
 
 
 @pytest.mark.asyncio
@@ -229,6 +253,63 @@ async def test_recurring_digest_builder_is_wired_to_outbox(engine):
     with Session(engine) as session:
         outbox = session.query(DiscordOutbox).one()
         assert outbox.content.startswith("📋 Scheduled summary digest:")
+
+
+@pytest.mark.asyncio
+async def test_long_digest_is_clipped_before_enqueue(engine):
+    _insert_due(engine, kind="digest")
+
+    async def build(_engine, _claim):
+        return "📋 Scheduled summary digest:\n" + "x" * 2_100
+
+    assert (
+        await drain_once(
+            engine,
+            now=datetime(2026, 9, 12, 12, 6, tzinfo=timezone.utc),
+            claimant="leader-a",
+            digest_builder=build,
+        )
+        == 1
+    )
+    with Session(engine) as session:
+        content = session.query(DiscordOutbox).one().content
+        assert len(content) == 2_000
+        assert content.endswith("... (truncated)")
+
+
+@pytest.mark.asyncio
+async def test_repeated_digest_failure_advances_after_retry_budget(engine):
+    task_id, scheduled_for = _insert_due(engine, kind="digest")
+    now = datetime(2026, 9, 12, 12, 6, tzinfo=timezone.utc)
+    calls = 0
+
+    async def fail(_engine, _claim):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("model unavailable")
+
+    for _ in range(MAX_GENERATION_ATTEMPTS + 1):
+        assert (
+            await drain_once(
+                engine,
+                now=now,
+                claimant="leader-a",
+                digest_builder=fail,
+            )
+            == 0
+        )
+
+    assert calls == MAX_GENERATION_ATTEMPTS
+    with Session(engine) as session:
+        task = session.get(ScheduledTask, task_id)
+        occurrence = session.query(ScheduledTaskOccurrence).one()
+        assert occurrence.scheduled_for == scheduled_for
+        assert occurrence.status == "failed"
+        assert task.status == "pending"
+        assert task.failure_count == 0
+        assert task.next_run_at.replace(tzinfo=timezone.utc) == datetime(
+            2026, 9, 12, 12, 10, tzinfo=timezone.utc
+        )
 
 
 def test_validation_and_owner_scoping(engine):

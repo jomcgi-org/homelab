@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
+import discord
 import pytest
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -72,6 +73,35 @@ async def test_failed_scheduled_send_becomes_uncertain_and_is_not_retried(engine
         assert row.delivery_state == "uncertain"
         assert row.uncertain_at is not None
         assert "outcome unknown" in row.last_error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        discord.HTTPException(MagicMock(status=400), "content too long"),
+        discord.Forbidden(MagicMock(status=403), "missing access"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_discord_response_failure_is_definitive_and_retryable(engine, error):
+    _enqueue(engine)
+    channel = MagicMock()
+    channel.send = AsyncMock(side_effect=error)
+    bot = MagicMock()
+    bot.get_channel.return_value = channel
+
+    assert await drain_once(bot, engine) == 0
+    with Session(engine) as session:
+        row = session.query(DiscordOutbox).one()
+        assert row.delivery_state == "pending"
+        assert row.attempts == 1
+        assert row.send_started_at is None
+        assert row.uncertain_at is None
+
+    channel.send.side_effect = None
+    channel.send.return_value = MagicMock()
+    assert await drain_once(bot, engine) == 1
+    assert channel.send.await_count == 2
 
 
 @pytest.mark.asyncio

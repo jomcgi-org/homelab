@@ -32,7 +32,10 @@ MAX_HORIZON_DAYS = 366
 CLAIM_LEASE_SECONDS = 300
 CLAIM_BATCH = 20
 POLL_INTERVAL_SECONDS = 15.0
+MAX_GENERATION_ATTEMPTS = 5
 _MAX_CONTENT_CHARS = 1800
+_DISCORD_MESSAGE_LIMIT = 2000
+_TRUNCATION_SUFFIX = "... (truncated)"
 _CRON_SEARCH_DAYS = 366 * 5
 
 
@@ -58,6 +61,15 @@ def _aware(value: datetime) -> datetime:
 def _occurrence_id(task_id: int, scheduled_for: datetime) -> str:
     identity = f"{task_id}:{_aware(scheduled_for).isoformat()}"
     return hashlib.sha256(identity.encode()).hexdigest()
+
+
+def _clip_scheduled_content(content: str) -> str:
+    """Fit proactive content within Discord's single-message limit."""
+    if len(content) <= _DISCORD_MESSAGE_LIMIT:
+        return content
+    return content[: _DISCORD_MESSAGE_LIMIT - len(_TRUNCATION_SUFFIX)] + (
+        _TRUNCATION_SUFFIX
+    )
 
 
 def _parse_cron_field(field: str, minimum: int, maximum: int) -> set[int]:
@@ -386,7 +398,7 @@ def finalize_claim(
     enqueue_message(
         session,
         claim.channel_id,
-        content=content,
+        content=_clip_scheduled_content(content),
         kind="scheduled_task",
         payload={"occurrence_id": claim.occurrence_id, "task_id": claim.task_id},
         dedupe_key=f"scheduled:{claim.occurrence_id}",
@@ -413,13 +425,19 @@ def finalize_claim(
     task.claim_token = None
     task.claimed_at = None
     task.current_occurrence_id = None
+    task.failure_count = 0
     session.add(task)
     session.add(occurrence)
     return True
 
 
-def release_claim(session: Session, claim: ClaimedOccurrence, error: str) -> bool:
-    """Return a generation failure to pending for lease-safe retry."""
+def release_claim(
+    session: Session,
+    claim: ClaimedOccurrence,
+    error: str,
+    now: datetime | None = None,
+) -> bool:
+    """Release a failed generation without retrying one occurrence forever."""
     task = session.get(ScheduledTask, claim.task_id)
     occurrence = session.get(ScheduledTaskOccurrence, claim.occurrence_id)
     if (
@@ -428,7 +446,20 @@ def release_claim(session: Session, claim: ClaimedOccurrence, error: str) -> boo
         or task.claim_token != claim.claim_token
     ):
         return False
-    task.status = "pending"
+    now = _aware(now or datetime.now(timezone.utc))
+    task.failure_count += 1
+    if task.failure_count < MAX_GENERATION_ATTEMPTS:
+        task.status = "pending"
+    elif task.schedule_kind == "cron":
+        # The retry counter belongs to one scheduled occurrence. Once it is
+        # exhausted, skip that occurrence and let the next cron instant try
+        # with a fresh budget instead of calling the model every poll forever.
+        task.status = "pending"
+        task.next_run_at = next_cron_at(task.cron_expression or "", now)
+        task.failure_count = 0
+    else:
+        task.status = "failed"
+        task.completed_at = now
     task.claim_token = None
     task.claimed_at = None
     task.current_occurrence_id = None
@@ -456,9 +487,11 @@ def _finalize_with_engine(
         return result
 
 
-def _release_with_engine(engine, claim: ClaimedOccurrence, error: str) -> None:
+def _release_with_engine(
+    engine, claim: ClaimedOccurrence, error: str, now: datetime
+) -> None:
     with Session(engine) as session:
-        release_claim(session, claim, error)
+        release_claim(session, claim, error, now)
         session.commit()
 
 
@@ -518,7 +551,9 @@ async def drain_once(
                 finalized += 1
         except Exception as exc:
             logger.exception("scheduled task occurrence %s failed", claim.occurrence_id)
-            await asyncio.to_thread(_release_with_engine, engine, claim, str(exc))
+            await asyncio.to_thread(
+                _release_with_engine, engine, claim, str(exc), now
+            )
     return finalized
 
 

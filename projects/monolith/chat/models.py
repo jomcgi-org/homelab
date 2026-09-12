@@ -597,6 +597,7 @@ class ScheduledTask(SQLModel, table=True):
     claim_token: str | None = Field(default=None)
     claimed_at: datetime | None = Field(default=None)
     current_occurrence_id: str | None = Field(default=None, max_length=64)
+    failure_count: int = Field(default=0)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: datetime | None = Field(default=None)
 
