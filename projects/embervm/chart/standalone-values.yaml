@@ -1,0 +1,175 @@
+# Minimal single-host profile used by ../QUICKSTART.md. This file is an overlay
+# on the published chart, whose generated values carry the immutable image
+# digests. Do not install the source chart directly because its digest fields
+# are build-time placeholders.
+
+rbac:
+  scope: namespace
+
+# Supply this Secret with `kubectl create secret docker-registry`; the standalone
+# profile never creates a OnePasswordItem.
+imagePullSecret:
+  enabled: true
+  create: false
+  name: embervm-quickstart-registry
+
+opLog:
+  postgres:
+    enabled: false
+  persistentVolume: true
+  storageClass: local-path
+  size: 1Gi
+
+auth:
+  allowedServiceAccounts:
+    - system:serviceaccount:embervm:quickstart-client
+
+# The quickstart prepares the host path explicitly. The homelab scratch-prep
+# actuator changes mounts and /etc/fstab and is not appropriate for a generic
+# machine.
+scratchPrep:
+  enabled: false
+
+tokenBroker:
+  enabled: false
+
+xds:
+  enabled: false
+
+servingEnvoy:
+  enabled: false
+
+conformance:
+  enabled: false
+
+bricks:
+  enabled: false
+
+egress:
+  enabled: false
+
+noded:
+  enabled: true
+  nodeSelector:
+    # Remove the chart's reference-deployment selector before adding the
+    # standalone label. Helm treats null as deletion during values coalescing.
+    homelab.io/firecracker: null
+    embervm.jomcgi.dev/node: "true"
+  tolerations: []
+  priorityClassName: embervm-quickstart
+  maxLiveVMs: 4
+  store:
+    # Empty means local-only banked snapshots. QUICKSTART.md explains the
+    # durability boundary and the optional S3-compatible configuration.
+    endpoint: ""
+    bucket: embervm-quickstart
+    credentials:
+      enabled: false
+  firecracker:
+    nvmeRoot: /var/lib/embervm/scratch
+    nvmeRootHostPathType: Directory
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 3Gi
+
+# Keep the ordinary workload surface to one zero-egress Python sandbox. The
+# same pinned guest image is registered as a session later in the walkthrough.
+sampleWorkload:
+  enabled: false
+
+sandboxWorkloads:
+  sandboxPython:
+    enabled: true
+    name: sandbox-python
+    memMib: 512
+    floor: 0
+    cap: 2
+    timeoutSeconds: 30
+  sandboxGo:
+    enabled: false
+  sandboxRust:
+    enabled: false
+  sandboxElixir:
+    enabled: false
+  sandboxOcaml:
+    enabled: false
+  sandboxJavascript:
+    enabled: false
+
+semgrepWorkload:
+  enabled: false
+
+bazelQueryWorkload:
+  enabled: false
+
+shotterWorkload:
+  enabled: false
+
+claudeRuntimeWorkload:
+  enabled: false
+
+piRuntimeWorkload:
+  enabled: false
+
+pingWorkload:
+  enabled: false
+  guestImage:
+    repository: ""
+
+scratchPostgres:
+  enabled: false
+  guestImage:
+    repository: ""
+
+demoPostgres:
+  enabled: false
+
+# The noded rootfs builder ranges over the complete default workloads map, then
+# skips entries whose matching guest-image repository is empty. Blank every
+# unrelated repository so a clean host builds exactly one rootfs.
+sandboxGo:
+  guestImage:
+    repository: ""
+
+sandboxRust:
+  guestImage:
+    repository: ""
+
+sandboxElixir:
+  guestImage:
+    repository: ""
+
+sandboxOcaml:
+  guestImage:
+    repository: ""
+
+sandboxJavascript:
+  guestImage:
+    repository: ""
+
+semgrep:
+  guestImage:
+    repository: ""
+
+runtimePython:
+  guestImage:
+    repository: ""
+
+runtimeClaude:
+  guestImage:
+    repository: ""
+
+runtimePi:
+  guestImage:
+    repository: ""
+
+bazelQuery:
+  guestImage:
+    repository: ""
+
+shotter:
+  guestImage:
+    repository: ""
