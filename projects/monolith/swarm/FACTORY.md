@@ -433,9 +433,23 @@ operator gate as `/control`, with `{"option_key": "...", "note": "..."}` or
 `{"action": "chat", "note": "..."}`. The private agents page at
 `/agents/escalations` reaches the same code through
 `POST /api/agents/factory/decisions/{receipt_id}`, which the browser can use
-because it is gated on the address Cloudflare Access verified at the edge
-matched against `FACTORY_OPERATOR_EMAILS`. That list is empty in the chart, so
-the page 403s until an operator puts themselves on it.
+because it is gated on `X-Auth-Email`, the address Envoy projected from the
+verified Access JWT and the gateway strips on ingress so it cannot be
+smuggled. Not `Cf-Access-Authenticated-User-Email`: nothing in the cluster
+validates or strips that one, so a caller reaching the backend can set it to
+any address. The projected address must also be listed in
+`FACTORY_OPERATOR_EMAILS`.
+
+That list is a secret, not a values entry. Provision it as a key on the
+`monolith-chat-secrets` 1Password item and wire it with `valueFrom.secretKeyRef`
+the way `GITHUB_API_TOKEN` is wired, rather than naming operator addresses in a
+public `deploy/values.yaml`. Until the key exists the environment variable is
+empty, every decision is 403, and the page's buttons do nothing.
+
+A decision is refused while the receipt is `admitted` or `uncertain`, because a
+brief running on the issue would keep writing to something the decision has
+just closed or relabelled. The page shows that card as `briefing` with its
+buttons disabled rather than offering a click the server would refuse.
 
 Every write is idempotent on the pair of receipt and option. A comment carries
 a hidden marker naming that pair and is skipped when the marker is already on
@@ -444,6 +458,12 @@ fenced by its own `decision_child_created` audit row, so a retry after a
 network failure finishes the decision rather than doubling it. A decision is
 claimed before it is applied, which is what refuses a second, different option
 against one escalation; repeating the same option returns the first result.
+A claim is superseded by a later `decision_failed` naming the same option, so
+one failed GitHub call does not lock the escalation to the option that failed.
+Every failure is audited, including the ones an effect raises from inside
+itself. Claims and child records are matched on the receipt id carried in the
+audit detail rather than on `task_id`, which is null for a receipt waiting on
+a re-brief and would otherwise match every other receipt in that state.
 Applying audits `decision_applied` with the actor, the option and what it did.
 
 **Chat.** `action: chat` posts the note on the issue prefixed
@@ -456,6 +476,25 @@ admitted at all. The issue text is never rewritten. This is the one path that
 returns a settled receipt to the queue, so total spend per generation is
 bounded by the receipts a generation can hold plus the re-briefs an operator
 asks for by hand.
+
+The re-brief replaces the escalation document rather than adding to it. The
+second brief settles onto the same receipt, so keeping the first one would
+leave the page showing options written before the question was answered, and
+pressing 1 would apply a stale first option. The chat history carries forward,
+because it records what was asked rather than any one brief's answer.
+
+The question is posted whether or not the lane can take the re-brief, so the
+response says which happened. `requeued: false` carries `blocked_by` naming
+the reason: not a refine receipt, a brief already queued or running, a
+generation the policy has moved past, or an issue that is neither in the
+policy allowlist nor discoverable with intake on. The card renders it, because
+a question on an issue with nothing scheduled to answer it looks exactly like
+one that was taken.
+
+Deciding after asking for chat is allowed and cancels the re-brief: the
+resolution returns a `queued` receipt to `succeeded`, so the lane never spends
+an advisory slot briefing an issue that is already closed, split or labelled
+for delivery.
 
 The `needs-human` warning on Discord carries the escalations link, so the
 notification is the way in rather than a thing to read and then go looking.

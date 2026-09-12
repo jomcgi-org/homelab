@@ -2258,22 +2258,30 @@ def test_factory_decisions_are_inert_without_a_configured_operator(client, monke
     response = client.post(
         "/api/agents/factory/decisions/1",
         json={"option_key": "close"},
-        headers={"Cf-Access-Authenticated-User-Email": "joe@example.test"},
+        headers={"X-Auth-Email": "joe@example.test"},
     )
     assert response.status_code == 403
     assert "no factory operator emails" in response.json()["detail"]
 
 
 @pytest.mark.parametrize(
-    "headers",
+    "headers,detail",
     [
-        {},
-        {"Cf-Access-Authenticated-User-Email": ""},
-        {"Cf-Access-Authenticated-User-Email": "someone@example.test"},
+        ({}, "missing or ambiguous X-Auth-Email header"),
+        ({"X-Auth-Email": ""}, "not a factory operator"),
+        ({"X-Auth-Email": "someone@example.test"}, "not a factory operator"),
+        # The Cloudflare header ALONE is refused. Nothing in the cluster
+        # validates or strips it, so a caller reaching the backend can name
+        # any address; only the claim Envoy projected into X-Auth-Email is
+        # evidence of anything (#4628 was this class).
+        (
+            {"Cf-Access-Authenticated-User-Email": "joe@example.test"},
+            "missing or ambiguous X-Auth-Email header",
+        ),
     ],
 )
 def test_factory_decisions_refuse_anyone_not_on_the_allowlist(
-    client, monkeypatch, headers
+    client, monkeypatch, headers, detail
 ):
     monkeypatch.setenv("FACTORY_OPERATOR_EMAILS", "joe@example.test")
     response = client.post(
@@ -2282,7 +2290,22 @@ def test_factory_decisions_refuse_anyone_not_on_the_allowlist(
         headers=headers,
     )
     assert response.status_code == 403
-    assert response.json()["detail"] == "not a factory operator"
+    assert response.json()["detail"] == detail
+
+
+def test_factory_decisions_refuse_a_second_smuggled_identity(client, monkeypatch):
+    """Envoy appends its claim, so two values mean one of them is forged."""
+    monkeypatch.setenv("FACTORY_OPERATOR_EMAILS", "joe@example.test")
+    response = client.post(
+        "/api/agents/factory/decisions/1",
+        json={"option_key": "close"},
+        headers=[
+            ("X-Auth-Email", "forged@example.test"),
+            ("X-Auth-Email", "joe@example.test"),
+        ],
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "missing or ambiguous X-Auth-Email header"
 
 
 def test_factory_decisions_apply_for_a_listed_operator(client, monkeypatch):
@@ -2301,7 +2324,7 @@ def test_factory_decisions_apply_for_a_listed_operator(client, monkeypatch):
     response = client.post(
         "/api/agents/factory/decisions/9",
         json={"option_key": "close"},
-        headers={"Cf-Access-Authenticated-User-Email": "joe@example.test"},
+        headers={"X-Auth-Email": "joe@example.test"},
     )
     assert response.status_code == 200
     assert seen == {"receipt_id": 9, "option_key": "close", "actor": "joe@example.test"}
@@ -2309,7 +2332,7 @@ def test_factory_decisions_apply_for_a_listed_operator(client, monkeypatch):
 
 def test_factory_decisions_need_exactly_one_of_an_option_or_a_chat(client, monkeypatch):
     monkeypatch.setenv("FACTORY_OPERATOR_EMAILS", "joe@example.test")
-    headers = {"Cf-Access-Authenticated-User-Email": "joe@example.test"}
+    headers = {"X-Auth-Email": "joe@example.test"}
     for body in ({}, {"option_key": "close", "action": "chat", "note": "x"}):
         assert (
             client.post(

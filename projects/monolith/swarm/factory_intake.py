@@ -193,9 +193,16 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
 
     max_tasks bounds tasks in flight, not tasks ever admitted: an autonomous
     intake must keep admitting as tasks settle. Total spend per generation is
-    bounded by the receipts it can hold (one per repo/issue/generation, never
-    returned to queued) times task_budget_usd, not by a counter a human has
-    to re-arm. admitted_count is kept for status only.
+    bounded by the receipts it can hold (one per repo/issue/generation/class)
+    times task_budget_usd, not by a counter a human has to re-arm.
+    admitted_count is kept for status only.
+
+    One path returns a settled receipt to queued, and it is the only one: an
+    operator answering a refine escalation with "needs more chat"
+    (swarm/factory_decisions.py). That re-brief is an explicit human act on
+    one issue at a time, so the bound above becomes those receipts plus the
+    re-briefs somebody asked for by hand, rather than anything the lane can
+    do to itself.
     """
     actor = _text(actor, "actor")
     lanes = tuple(lane for lane in LANES if lane in lanes)

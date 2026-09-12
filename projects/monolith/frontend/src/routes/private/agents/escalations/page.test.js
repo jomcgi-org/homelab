@@ -30,6 +30,7 @@ function escalation(overrides = {}) {
     chat: [],
     resolved: null,
     open: true,
+    briefing: false,
     ...overrides,
   };
 }
@@ -239,6 +240,126 @@ describe("escalations page", () => {
     const target = renderPage({ escalations: [], error: true });
     expect(target.querySelector(".warn-line").textContent).toContain(
       "board is unavailable",
+    );
+  });
+});
+
+describe("escalations page, per card state", () => {
+  test("a note typed on one card never rides along with another's decision", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      .mockResolvedValue({ ok: true, json: async () => ({ escalations: [] }) });
+    vi.stubGlobal("fetch", fetchMock);
+    const target = renderPage({
+      escalations: [
+        escalation(),
+        escalation({ receipt_id: 4, issue_number: 6003 }),
+      ],
+      error: false,
+    });
+
+    // Type on the first card, then move the cursor and decide on the second.
+    const box = target.querySelector("textarea");
+    box.value = "only about 6002";
+    box.dispatchEvent(new Event("input"));
+    await tick();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "j" }));
+    await tick();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "1" }));
+    await settle();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/agents/escalations/decisions/4");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      option_key: "split",
+    });
+  });
+
+  test("the focused card's own note is sent with its decision", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      .mockResolvedValue({ ok: true, json: async () => ({ escalations: [] }) });
+    vi.stubGlobal("fetch", fetchMock);
+    const target = renderPage({ escalations: [escalation()], error: false });
+
+    const box = target.querySelector("textarea");
+    box.value = "ship the console half";
+    box.dispatchEvent(new Event("input"));
+    await tick();
+    target.querySelector(".option").click();
+    await settle();
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      option_key: "split",
+      note: "ship the console half",
+    });
+  });
+
+  test("a chat the lane could not queue says so instead of reading as done", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          requeued: false,
+          blocked_by: "intake is off",
+        }),
+      })
+      .mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          escalations: [
+            escalation({
+              chat: [
+                {
+                  note: "Which tier?",
+                  asked_at: new Date().toISOString(),
+                  requeued: false,
+                  blocked_by: "intake is off",
+                },
+              ],
+            }),
+          ],
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const target = renderPage({ escalations: [escalation()], error: false });
+
+    const box = target.querySelector("textarea");
+    box.value = "Which tier?";
+    box.dispatchEvent(new Event("input"));
+    await tick();
+    target.querySelector(".chat-button").click();
+    await settle();
+
+    expect(target.querySelector("[role=status]").textContent).toContain(
+      "no brief was queued: intake is off",
+    );
+    expect(target.querySelector(".unqueued").textContent).toContain(
+      "intake is off",
+    );
+  });
+
+  test("a card the lane is briefing offers no buttons", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const target = renderPage({
+      escalations: [escalation({ briefing: true })],
+      error: false,
+    });
+
+    expect(target.querySelector(".panel-head").textContent).toContain(
+      "briefing",
+    );
+    const first = target.querySelector(".option");
+    expect(first.disabled).toBe(true);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "1" }));
+    await settle();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(target.querySelector("[role=alert]").textContent).toContain(
+      "decide when it settles",
     );
   });
 });

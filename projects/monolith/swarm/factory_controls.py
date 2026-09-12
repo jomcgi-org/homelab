@@ -1072,11 +1072,22 @@ def escalation_view(receipt: dict) -> dict | None:
             for option in escalation.get("options") or []
         ],
         "chat": [
-            {"note": entry.get("note"), "asked_at": entry.get("asked_at")}
+            {
+                "note": entry.get("note"),
+                "asked_at": entry.get("asked_at"),
+                # Whether the lane actually took the re-brief. A question
+                # posted on the issue with nothing scheduled to answer it
+                # looks identical to one that was, so the card says which.
+                "requeued": entry.get("requeued"),
+                "blocked_by": entry.get("blocked_by"),
+            }
             for entry in escalation.get("chat") or []
         ],
         "resolved": resolved,
         "open": resolved is None,
+        # A brief running on this issue is a decision the server will refuse,
+        # so the page reads this rather than offering buttons that 409.
+        "briefing": receipt.get("state") in _ACTIVE,
     }
 
 

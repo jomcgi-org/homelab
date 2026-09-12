@@ -29,8 +29,15 @@ from datetime import datetime, timezone
 import httpx
 from sqlmodel import select
 
-from swarm.factory_controls import _audit, _locked_session, _now, _read_session
-from swarm.factory_models import FactoryAudit, FactoryReceipt
+from swarm.factory_controls import (
+    _audit,
+    _locked_session,
+    _now,
+    _read_session,
+    intake_policy,
+)
+from swarm.factory_intake import INTAKE_ACTOR
+from swarm.factory_models import FactoryAudit, FactoryControl, FactoryReceipt
 from swarm.factory_refine import (
     CLOSE_REASONS,
     DEFER_LABEL,
@@ -49,6 +56,10 @@ MAX_NOTE = 4000
 COMMENT_PAGE_SIZE = 100
 MAX_COMMENT_PAGES = 3
 CHAT_PREFIX = "Operator asks:"
+# Receipt states that mean a node is live on this issue right now.
+_RUNNING_STATES = ("admitted", "uncertain")
+# Receipt states a settled refine can be decided from.
+_SETTLED_STATES = ("succeeded", "failed")
 
 
 class DecisionError(ValueError):
@@ -120,6 +131,14 @@ def _claim(receipt_id: int, option_key: str, actor: str) -> tuple[dict, dict, di
             raise DecisionError(409, "this receipt raised no escalation")
         option = _option(escalation, option_key)
         resolved = escalation.get("resolved")
+        if resolved is None and row.state in _RUNNING_STATES:
+            # A re-brief the operator asked for is running right now. Applying
+            # an option under it would close or relabel an issue a live node is
+            # still writing to, and the node would then settle against a
+            # verdict nobody asked it for.
+            raise DecisionError(
+                409, "a brief is running on this issue; decide when it settles"
+            )
         if resolved is not None:
             if resolved.get("option_key") == option_key:
                 return _fields(row), escalation, resolved
@@ -127,24 +146,9 @@ def _claim(receipt_id: int, option_key: str, actor: str) -> tuple[dict, dict, di
                 409,
                 f"this escalation was already decided as {resolved.get('option_key')}",
             )
-        claimed = db.exec(
-            select(FactoryAudit.detail_json).where(
-                FactoryAudit.task_id == row.task_id,
-                FactoryAudit.action == "decision_claimed",
-            )
-        ).all()
-        other = next(
-            (
-                json.loads(raw)
-                for raw in claimed
-                if json.loads(raw).get("option_key") != option_key
-            ),
-            None,
-        )
-        if other is not None:
-            raise DecisionError(
-                409, f"a decision for {other.get('option_key')} is already in flight"
-            )
+        holder = _live_claim(db, receipt_id, option_key)
+        if holder is not None:
+            raise DecisionError(409, f"a decision for {holder} is already in flight")
         _audit(
             db,
             actor,
@@ -156,6 +160,47 @@ def _claim(receipt_id: int, option_key: str, actor: str) -> tuple[dict, dict, di
             effect=option.get("effect"),
         )
         return _fields(row), escalation, None
+
+
+def _decision_audits(db, receipt_id: int, action: str) -> list[dict]:
+    """This receipt's rows for one decision action, in order.
+
+    Matched on the receipt id inside the detail rather than on task_id. A
+    receipt the operator sent back for another brief has task_id NULL until
+    the lane admits it again, and `FactoryAudit.task_id == None` renders as
+    `IS NULL`, which matches every other receipt in that state. Reading a
+    claim or a child record for the wrong issue is not a thing to leave to
+    ordering.
+    """
+    rows = db.exec(
+        select(FactoryAudit.detail_json)
+        .where(FactoryAudit.action == action)
+        .order_by(FactoryAudit.id)
+    ).all()
+    details = [json.loads(raw) for raw in rows]
+    return [detail for detail in details if detail.get("receipt_id") == receipt_id]
+
+
+def _live_claim(db, receipt_id: int, option_key: str) -> str | None:
+    """The other option holding this escalation, when one still holds it.
+
+    A claim is superseded by a later `decision_failed` for the same option.
+    Without that, one failed GitHub call would lock the escalation to the
+    option that failed: the operator could neither retry it into a different
+    answer nor pick another, and the only way out would be the database.
+    """
+    failed = [
+        detail.get("option_key")
+        for detail in _decision_audits(db, receipt_id, "decision_failed")
+    ]
+    for detail in _decision_audits(db, receipt_id, "decision_claimed"):
+        held = detail.get("option_key")
+        if held == option_key:
+            continue
+        if held in failed:
+            continue
+        return held
+    return None
 
 
 def _fields(row: FactoryReceipt) -> dict:
@@ -220,7 +265,7 @@ def _close(repo: str, number: int, reason: str) -> None:
     )
 
 
-def _children_done(task_id: str | None) -> dict[int, int]:
+def _children_done(receipt_id: int) -> dict[int, int]:
     """Child issues this split already opened, by index, from the audit trail.
 
     Creating an issue is the one write here with no natural idempotency: there
@@ -228,31 +273,26 @@ def _children_done(task_id: str | None) -> dict[int, int]:
     each one is fenced on its own row, and a retry resumes at the first index
     the trail does not name rather than opening the whole set again.
     """
-    if task_id is None:
-        return {}
     with _read_session() as db:
-        rows = db.exec(
-            select(FactoryAudit.detail_json).where(
-                FactoryAudit.task_id == task_id,
-                FactoryAudit.action == "decision_child_created",
-            )
-        ).all()
+        details = _decision_audits(db, receipt_id, "decision_child_created")
     done: dict[int, int] = {}
-    for raw in rows:
-        detail = json.loads(raw)
+    for detail in details:
         index, number = detail.get("child_index"), detail.get("child_number")
         if isinstance(index, int) and isinstance(number, int):
             done[index] = number
     return done
 
 
-def _record_child(task_id: str | None, index: int, number: int, title: str) -> None:
+def _record_child(
+    receipt_id: int, task_id: str | None, index: int, number: int, title: str
+) -> None:
     with _locked_session() as (db, _control):
         _audit(
             db,
             ACTOR,
             "decision_child_created",
             task_id=task_id,
+            receipt_id=receipt_id,
             child_index=index,
             child_number=number,
             title=title[:256],
@@ -263,7 +303,7 @@ def _apply_split(fields: dict, option: dict, marker: str) -> dict:
     repo, number = fields["repo"], fields["issue_number"]
     _get, _list, github_write = _github()
     children = (option.get("detail") or {}).get("children") or []
-    done = _children_done(fields["task_id"])
+    done = _children_done(fields["id"])
     opened: list[int] = []
     for index, child in enumerate(children):
         if index in done:
@@ -284,7 +324,13 @@ def _apply_split(fields: dict, option: dict, marker: str) -> dict:
         child_number = created.get("number") if isinstance(created, dict) else None
         if not isinstance(child_number, int):
             raise DecisionError(502, "GitHub did not return a child issue number")
-        _record_child(fields["task_id"], index, child_number, str(child.get("title")))
+        _record_child(
+            fields["id"],
+            fields["task_id"],
+            index,
+            child_number,
+            str(child.get("title")),
+        )
         opened.append(child_number)
     listed = "\n".join(f"- #{child}" for child in opened)
     _comment(
@@ -360,6 +406,12 @@ def _resolve(
         if escalation.get("resolved") is None:
             escalation["resolved"] = resolution
             row.escalation_json = json.dumps(escalation)
+            # A decision cancels a re-brief the operator asked for and then
+            # answered without waiting. Leaving the receipt queued would have
+            # the lane spend an advisory slot briefing an issue that is
+            # already closed, split or labelled for delivery.
+            if row.state == "queued":
+                row.state = "succeeded"
             row.updated_at = _now()
             db.add(row)
         else:
@@ -388,50 +440,114 @@ def apply_decision(
     option = _option(escalation, option_key)
     try:
         effects = _apply(fields, option, note)
-    except DecisionError:
-        raise
-    except (httpx.HTTPError, ValueError) as exc:
-        with _locked_session() as (db, _control):
-            _audit(
-                db,
-                actor,
-                "decision_failed",
-                task_id=fields["task_id"],
-                receipt_id=receipt_id,
-                option_key=option_key,
-                error=type(exc).__name__,
-                status=getattr(getattr(exc, "response", None), "status_code", None),
-            )
+    except (DecisionError, httpx.HTTPError, ValueError) as exc:
+        # Every failure is recorded, a DecisionError included. A split whose
+        # child issue came back without a number raises one from inside the
+        # effect, and leaving that unaudited meant the claim it holds could
+        # never be superseded: the escalation would be locked to an option
+        # that had already failed, with nothing on the trail to say so.
+        _record_failure(receipt_id, fields["task_id"], option_key, actor, exc)
         logger.warning(
             "factory decision %s on receipt %s failed",
             option_key,
             receipt_id,
             exc_info=True,
         )
+        if isinstance(exc, DecisionError):
+            raise
         raise DecisionError(502, "the decision could not be applied on GitHub") from exc
     resolution = _resolve(receipt_id, option, actor, note, effects)
     return {"ok": True, "applied": True, "resolution": resolution}
 
 
-def _requeue_refine(db, row: FactoryReceipt, note: str, actor: str) -> bool:
+def _record_failure(
+    receipt_id: int, task_id: str | None, option_key: str, actor: str, exc: Exception
+) -> None:
+    with _locked_session() as (db, _control):
+        _audit(
+            db,
+            actor,
+            "decision_failed",
+            task_id=task_id,
+            receipt_id=receipt_id,
+            option_key=option_key,
+            error=type(exc).__name__,
+            status=getattr(exc, "status", None)
+            or getattr(getattr(exc, "response", None), "status_code", None),
+        )
+
+
+def _requeue_blocker(db, row: FactoryReceipt) -> str | None:
+    """Why this receipt cannot go back to the lane, in words an operator reads.
+
+    Every one of these ends with the question posted on the issue and nothing
+    scheduled to answer it, which is the outcome the page has to say out loud:
+    a comment that reads like a request and a lane that never heard it is
+    worse than a refusal.
+    """
+    if row.task_class != TASK_CLASS:
+        return "this receipt is not a refine, so there is no brief to re-run"
+    if row.state in _RUNNING_STATES:
+        return "a brief is already running on this issue"
+    if row.state == "queued":
+        return "a brief is already queued for this issue"
+    if row.state not in _SETTLED_STATES:
+        return f"the receipt is {row.state}, so the lane will not admit it again"
+    control = db.exec(
+        select(FactoryControl)
+        .where(FactoryControl.id == "factory")
+        .execution_options(populate_existing=True)
+    ).first()
+    policy = json.loads(control.policy_json) if control else {}
+    if row.generation != policy.get("generation"):
+        return (
+            f"the receipt is generation {row.generation} and the policy is on "
+            f"{policy.get('generation')}, so admission will not select it"
+        )
+    # The same two clauses admit_next ORs together. An issue in the operator
+    # allowlist is admissible whatever intake is doing, so reading the intake
+    # flag alone would refuse a re-brief the lane would happily have run.
+    allowlisted = row.issue_number in (policy.get("issue_numbers") or [])
+    discovered = row.actor == INTAKE_ACTOR and intake_policy(policy)["enabled"]
+    if not (allowlisted or discovered):
+        return (
+            "this issue is neither in the policy allowlist nor discoverable "
+            "with intake on, so admission will not select it"
+        )
+    return None
+
+
+def _requeue_refine(db, row: FactoryReceipt, note: str, actor: str) -> str | None:
     """Return this refine receipt to the queue so the lane briefs it again.
 
     The same receipt rather than a new one, because admission selects on the
     policy's generation and a receipt at any other generation would never be
     admitted at all. The issue text is never rewritten: the operator's note
     lives on the escalation document, and the prompt reads it from there.
+
+    Returns the reason it could not be re-queued, or None when it was. The
+    question is recorded and posted either way, so the caller is the one that
+    has to tell the operator which of the two happened.
     """
     escalation = escalation_of(row) or {}
     chat = list(escalation.get("chat") or [])
+    blocker = _requeue_blocker(db, row)
     # The question is recorded whether or not the receipt can be re-queued, so
     # a second question asked while the first re-brief is still queued is not
     # silently dropped. The prompt reads the newest entry.
-    chat.append({"note": note, "actor": actor, "asked_at": _iso(_now())})
+    chat.append(
+        {
+            "note": note,
+            "actor": actor,
+            "asked_at": _iso(_now()),
+            "requeued": blocker is None,
+            "blocked_by": blocker,
+        }
+    )
     escalation["chat"] = chat
     row.escalation_json = json.dumps(escalation)
     row.updated_at = _now()
-    requeued = row.task_class == TASK_CLASS and row.state in ("succeeded", "failed")
-    if requeued:
+    if blocker is None:
         row.state = "queued"
         row.task_id = None
         row.policy_json = None
@@ -439,7 +555,7 @@ def _requeue_refine(db, row: FactoryReceipt, note: str, actor: str) -> bool:
         row.task_paused = False
         row.cancellation_requested = False
     db.add(row)
-    return requeued
+    return blocker
 
 
 def request_chat(receipt_id: int, note: str, actor: str) -> dict:
@@ -473,7 +589,7 @@ def request_chat(receipt_id: int, note: str, actor: str) -> dict:
     with _locked_session() as (db, _control):
         row = _receipt(db, receipt_id)
         task_id = row.task_id
-        requeued = _requeue_refine(db, row, note, actor)
+        blocker = _requeue_refine(db, row, note, actor)
         _audit(
             db,
             actor,
@@ -482,10 +598,16 @@ def request_chat(receipt_id: int, note: str, actor: str) -> dict:
             receipt_id=receipt_id,
             issue_number=fields["issue_number"],
             note=note[:MAX_NOTE],
-            requeued=requeued,
+            requeued=blocker is None,
+            blocked_by=blocker,
             sequence=sequence,
         )
-    return {"ok": True, "requeued": requeued, "sequence": sequence}
+    return {
+        "ok": True,
+        "requeued": blocker is None,
+        "blocked_by": blocker,
+        "sequence": sequence,
+    }
 
 
 __all__ = ["DecisionError", "apply_decision", "request_chat"]

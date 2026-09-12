@@ -136,6 +136,29 @@ def options(first="split"):
     return [head, {"key": "hold", "label": "Leave it open", "effect": "hold"}]
 
 
+def configure(*, generation=0, intake_enabled=True, issues=(ISSUE,)):
+    """An enabled lane whose policy would admit this issue's refine again."""
+    policy = {
+        "repo": REPO,
+        "issue_numbers": list(issues),
+        "generation": generation,
+        "max_tasks": {"delivery": 1, "advisory": 1},
+        "max_turns_per_task": 20,
+        "task_budget_usd": 30.0,
+        "turn_budget_usd": 2.0,
+        "allowed_models": ["opus", "luna"],
+        "conductor_model": "opus",
+        "worker_model": "luna",
+        "base_branch": "main",
+        "turn_timeout_seconds": 60,
+        "task_timeout_seconds": 3600,
+        "max_attempts": 4,
+        "intake": {"enabled": intake_enabled, "refine_enabled": True},
+    }
+    assert controls.set_control("configure", "operator", policy=policy)["ok"]
+    assert controls.set_control("enable", "operator")["ok"]
+
+
 def escalate(db, first="split", *, task_class="refine", state="succeeded"):
     """A settled refine receipt carrying an escalation, without running a node."""
     receive_issue(
@@ -294,6 +317,7 @@ def test_an_unknown_option_or_receipt_is_refused(db, github):
 
 
 def test_chat_posts_the_question_and_requeues_the_refine(db, github):
+    configure()
     receipt_id = escalate(db)
     result = decisions.request_chat(
         receipt_id, "Does this cover the friends tier?", "joe@example.test"
@@ -311,6 +335,7 @@ def test_chat_posts_the_question_and_requeues_the_refine(db, github):
 
 
 def test_chat_twice_asks_twice_and_a_retry_asks_once(db, github):
+    configure()
     receipt_id = escalate(db)
     decisions.request_chat(receipt_id, "First question", "joe@example.test")
     # The receipt is back in the queue, so the second ask is a new question on
@@ -356,3 +381,150 @@ def test_the_board_shape_puts_open_escalations_first(db, github):
     assert view["options"][0]["effect"] == "close"
     # The child bodies never reach the browser; the count is what it renders.
     assert "children" in view["options"][0]
+
+
+def second_receipt(db, first="close"):
+    """A second escalated receipt, so cross-receipt collisions are visible."""
+    other = ISSUE + 1
+    receive_issue(
+        REPO,
+        other,
+        "Another issue",
+        "Untrusted issue body.",
+        f"https://github.com/{REPO}/issues/{other}",
+        "factory:intake",
+        task_class="refine",
+    )
+    with Session(db) as session:
+        row = session.exec(
+            select(FactoryReceipt).where(FactoryReceipt.issue_number == other)
+        ).one()
+        row.state = "succeeded"
+        row.escalation_json = json.dumps(
+            {
+                "recommendation": first,
+                "question": "And this one?",
+                "summary": "A second escalation.",
+                "options": options(first),
+                "comment_url": f"https://github.com/{REPO}/issues/{other}#c1",
+                "downgraded": False,
+                "resolved": None,
+            }
+        )
+        session.add(row)
+        session.commit()
+        return row.id
+
+
+def test_a_claim_on_one_receipt_does_not_block_another(db, github):
+    """Both receipts have task_id NULL, which is what made the audits collide."""
+    first = escalate(db, "close")
+    second = second_receipt(db, "close")
+    decisions.apply_decision(first, "hold", "joe@example.test")
+    # Same option key, different receipt. Matching claims on task_id rendered
+    # IS NULL and read the first receipt's claim as this one's holder.
+    result = decisions.apply_decision(second, "close", "joe@example.test")
+    assert result["applied"] is True
+    assert escalation(db, second)["resolved"]["option_key"] == "close"
+
+
+def test_a_split_on_one_receipt_does_not_reuse_another_s_children(db, github):
+    first = escalate(db, "split")
+    second = second_receipt(db, "split")
+    decisions.apply_decision(first, "split", "joe@example.test")
+    result = decisions.apply_decision(second, "split", "joe@example.test")
+    # Four distinct issues, not the first receipt's two read back by index.
+    assert result["resolution"]["effects"]["children"] == [103, 104]
+    created = [write for write in github.writes if write[1] == "issues"]
+    assert len(created) == 4
+
+
+def test_a_failed_option_does_not_lock_the_escalation(db, github):
+    receipt_id = escalate(db, "close")
+    request = httpx.Request("PATCH", "https://api.github.com")
+    response = httpx.Response(502, request=request)
+
+    def flaky(repo, suffix, payload, *, method="POST"):
+        if method == "PATCH":
+            raise httpx.HTTPStatusError("boom", request=request, response=response)
+        return github.write(repo, suffix, payload, method=method)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(landing, "github_write", flaky)
+        with pytest.raises(decisions.DecisionError):
+            decisions.apply_decision(receipt_id, "close", "joe@example.test")
+    # A different option after the failure, which the claim used to refuse
+    # forever because nothing retracted it.
+    result = decisions.apply_decision(receipt_id, "hold", "joe@example.test")
+    assert result["applied"] is True
+    assert escalation(db, receipt_id)["resolved"]["option_key"] == "hold"
+
+
+def test_a_failed_split_is_audited(db, github):
+    """The DecisionError a split raises from inside the effect is still a failure."""
+    receipt_id = escalate(db, "split")
+
+    def no_number(repo, suffix, payload, *, method="POST"):
+        if suffix == "issues":
+            return {}
+        return github.write(repo, suffix, payload, method=method)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(landing, "github_write", no_number)
+        with pytest.raises(decisions.DecisionError):
+            decisions.apply_decision(receipt_id, "split", "joe@example.test")
+    assert "decision_failed" in audit_actions(db)
+    # And the claim it held is superseded, so another option still works.
+    assert decisions.apply_decision(receipt_id, "hold", "joe@example.test")["applied"]
+
+
+def test_deciding_after_a_chat_cancels_the_re_brief(db, github):
+    configure()
+    receipt_id = escalate(db, "close")
+    assert decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")[
+        "requeued"
+    ]
+    with Session(db) as session:
+        assert session.get(FactoryReceipt, receipt_id).state == "queued"
+    decisions.apply_decision(receipt_id, "close", "joe@example.test")
+    with Session(db) as session:
+        # Left queued, the lane would spend an advisory slot briefing an issue
+        # this decision has already closed.
+        assert session.get(FactoryReceipt, receipt_id).state == "succeeded"
+
+
+def test_a_decision_waits_while_a_brief_is_running(db, github):
+    configure()
+    receipt_id = escalate(db, "close", state="admitted")
+    with pytest.raises(decisions.DecisionError) as raised:
+        decisions.apply_decision(receipt_id, "close", "joe@example.test")
+    assert raised.value.status == 409
+    assert "decide when it settles" in raised.value.reason
+    assert github.writes == []
+    view = controls.escalations(controls.status()["receipts"])[0]
+    assert view["briefing"] is True
+
+
+def test_a_chat_the_lane_cannot_take_says_so(db, github):
+    """The question is still posted, so silence would read as success."""
+    # A policy that allowlists some other issue, so this one is
+    # discoverable-only and intake is what would have found it.
+    configure(intake_enabled=False, issues=(ISSUE + 99,))
+    receipt_id = escalate(db)
+    result = decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")
+    assert result["requeued"] is False
+    assert "neither in the policy allowlist" in result["blocked_by"]
+    assert "Operator asks: Which tier?" in github.bodies()
+    with Session(db) as session:
+        assert session.get(FactoryReceipt, receipt_id).state == "succeeded"
+    view = controls.escalations(controls.status()["receipts"])[0]
+    assert view["chat"][0]["requeued"] is False
+    assert "neither in the policy allowlist" in view["chat"][0]["blocked_by"]
+
+
+def test_a_generation_the_policy_has_moved_past_blocks_the_re_brief(db, github):
+    configure(generation=4)
+    receipt_id = escalate(db)
+    result = decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")
+    assert result["requeued"] is False
+    assert "generation 0 and the policy is on 4" in result["blocked_by"]
