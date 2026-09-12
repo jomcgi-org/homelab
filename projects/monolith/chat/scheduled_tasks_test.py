@@ -195,9 +195,7 @@ def test_one_shot_generation_failure_stops_after_retry_budget(engine):
                 session, now + timedelta(seconds=attempt), f"worker-{attempt}"
             )
             assert len(claims) == 1
-            assert release_claim(
-                session, claims[0], "deterministic failure", now=now
-            )
+            assert release_claim(session, claims[0], "deterministic failure", now=now)
             session.commit()
 
     with Session(engine) as session:
