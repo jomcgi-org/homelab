@@ -150,6 +150,7 @@ LANES = ("delivery", "advisory")
 # the count is read from here, by both the loop and the board. factory_intake
 # re-exports it, so a caller that already knows the name still finds it there.
 INTAKE_ACTOR = "factory:intake"
+FEEDER_ACTOR = "factory:feeders"
 # Absent means one delivery task and no advisory work, which is the shape a
 # policy written before lanes existed asked for. The advisory lane is opt-in:
 # an operator who wants refine running says so.
@@ -548,6 +549,12 @@ def validate_task_class(value: object) -> str:
     if value not in TASK_CLASSES:
         raise ValueError("invalid task_class")
     return value
+
+
+def capability_tier_for(task_class: str) -> str:
+    """The immutable minimum capability persisted with an admitted task."""
+    validate_task_class(task_class)
+    return "opus" if task_class in JUDGMENT_CLASSES else "small"
 
 
 def receipt_task_class(row) -> str:
@@ -1083,6 +1090,8 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
             "repo",
             "issue_number",
             "generation",
+            "source_key",
+            "requires_issue_close",
             "title",
             "url",
             "state",

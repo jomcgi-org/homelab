@@ -4,6 +4,7 @@ import swarm.config as config
 def test_defaults(monkeypatch):
     for name in (
         "SWARM_ENABLED",
+        "SWARM_FEEDERS_ENABLED",
         "SWARM_IMPLEMENTER_MODEL",
         "SWARM_REVIEWER_MODEL",
         "SWARM_MAX_ATTEMPTS",
@@ -14,6 +15,7 @@ def test_defaults(monkeypatch):
     ):
         monkeypatch.delenv(name, raising=False)
     assert config.enabled() is False
+    assert config.feeders_enabled() is False
     assert config.implementer_model() == "luna"
     assert config.reviewer_model() == "opus"
     assert config.max_attempts() == 2
@@ -25,6 +27,7 @@ def test_defaults(monkeypatch):
 
 def test_environment_overrides(monkeypatch):
     monkeypatch.setenv("SWARM_ENABLED", "true")
+    monkeypatch.setenv("SWARM_FEEDERS_ENABLED", "true")
     monkeypatch.setenv("SWARM_IMPLEMENTER_MODEL", "cheap")
     monkeypatch.setenv("SWARM_REVIEWER_MODEL", "careful")
     monkeypatch.setenv("SWARM_MAX_ATTEMPTS", "4")
@@ -33,6 +36,7 @@ def test_environment_overrides(monkeypatch):
     monkeypatch.setenv("SWARM_DECISION_TIMEOUT_SECONDS", "34")
     monkeypatch.setenv("SWARM_CODEX_CONCURRENCY", "7")
     assert config.enabled() is True
+    assert config.feeders_enabled() is True
     assert config.implementer_model() == "cheap"
     assert config.reviewer_model() == "careful"
     assert config.max_attempts() == 4

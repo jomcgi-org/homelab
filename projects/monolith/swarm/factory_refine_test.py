@@ -229,18 +229,15 @@ def test_empty_refine_graph_adds_one_conductor_pool_node(db):
     assert len(graph.load_graph(task["id"])) == 1
 
 
-def test_advisory_diagnosis_pauses_and_audits_without_a_node(db):
+def test_advisory_diagnosis_adds_one_comment_only_node(db):
     task, policy = make_task("advisory-diagnosis")
     conductor.reconcile_task(task["id"], policy, object())
-    assert graph.load_graph(task["id"]) == []
-    assert controls.task_snapshot(task["id"])["task_paused"] is True
-    with Session(db) as session:
-        audit = session.exec(
-            select(FactoryAudit).where(
-                FactoryAudit.action == "advisory_class_unimplemented"
-            )
-        ).one()
-    assert json.loads(audit.detail_json)["task_class"] == "advisory-diagnosis"
+    nodes = graph.load_graph(task["id"])
+    assert len(nodes) == 1
+    assert nodes[0]["node_key"] == refine.ADVISORY_NODE_KEY
+    assert "Do not edit tracked files" in nodes[0]["prompt"]
+    assert "open a pull request" in nodes[0]["prompt"]
+    assert controls.task_snapshot(task["id"])["task_paused"] is False
 
 
 def test_verified_agent_ready_settles_succeeded(db, monkeypatch):

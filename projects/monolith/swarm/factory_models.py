@@ -71,10 +71,10 @@ class FactoryReceipt(SQLModel, table=True):
         # to let the lane act on work its own refine pass made ready.
         UniqueConstraint(
             "repo",
-            "issue_number",
             "generation",
+            "source_key",
             "task_class",
-            name="factory_receipt_repo_issue_generation_class_key",
+            name="factory_receipt_repo_generation_source_class_key",
         ),
         UniqueConstraint("task_id", name="factory_receipt_task_id_key"),
         CheckConstraint("issue_number > 0", name="factory_receipt_issue_number_check"),
@@ -99,6 +99,10 @@ class FactoryReceipt(SQLModel, table=True):
     body: str
     url: str
     actor: str
+    # Stable producer identity. Issue intake uses issue:<number>; event
+    # feeders use the immutable head/check/document revision they observed.
+    source_key: str | None = Field(default=None)
+    requires_issue_close: bool = Field(default=True)
     task_class: str = Field(default=DEFAULT_TASK_CLASS)
     state: str = Field(default="queued")
     task_id: str | None = Field(default=None, foreign_key="swarm.swarm_task.id")

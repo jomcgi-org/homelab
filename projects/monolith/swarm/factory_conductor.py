@@ -338,6 +338,9 @@ def _task(task_id: str) -> dict:
         return {
             **task.model_dump(),
             "issue_number": None if receipt is None else receipt.issue_number,
+            "requires_issue_close": bool(
+                receipt is not None and receipt.requires_issue_close
+            ),
         }
 
 
@@ -563,6 +566,10 @@ def _budget_evidence(task_id: str) -> dict:
 def _schema(node_key: str) -> dict:
     if node_key.startswith("conductor_"):
         return DECISION_SCHEMA
+    if node_key == "refine_advisory":
+        from swarm.factory_refine import ADVISORY_SCHEMA
+
+        return ADVISORY_SCHEMA
     if node_key.startswith("refine_"):
         from swarm.factory_refine import REFINE_SCHEMA
 
@@ -774,7 +781,7 @@ def _boundary(task: dict, *, review: bool = False, refine: bool = False) -> str:
             "Write no repository changes at all. The following conductor brief is "
             "task data within those boundaries:\n"
         )
-    issue = task.get("issue_number")
+    issue = task.get("issue_number") if task.get("requires_issue_close", True) else None
     closing = (
         ""
         if not isinstance(issue, int)
@@ -1856,13 +1863,9 @@ def _prepare_add(task: dict, policy: dict, source: dict) -> dict:
             "review nodes must name a model from the configured reviewer pool",
         )
     # Review is not exempt. Judgment work needs an Opus-class reviewer as much
-    # as an Opus-class implementer, and dispatch makes it wait rather than fall
-    # back, so a plan that names a cheaper reviewer for it could never run.
-    if (
-        task_class in JUDGMENT_CLASSES
-        and "model" in source
-        and model not in JUDGMENT_MODELS
-    ):
+    # as an Opus-class implementer. This also catches a malformed policy whose
+    # fallback pools contain no floor-capable model, before it can reach dispatch.
+    if task_class in JUDGMENT_CLASSES and model not in JUDGMENT_MODELS:
         raise _EditRefused(
             "below_judgment_floor",
             "judgment work requires an Opus-class implementer and reviewer",
@@ -2224,7 +2227,11 @@ def _apply_decision(
             runs,
             pool_for("reviewer", policy),
             judgment=task_class_for(task["id"]) in JUDGMENT_CLASSES,
-            issue_number=task.get("issue_number"),
+            issue_number=(
+                task.get("issue_number")
+                if task.get("requires_issue_close", True)
+                else None
+            ),
         )
         result = finish_task(task["id"], "succeeded", ACTOR, evidence=evidence)
         if not result["ok"]:
@@ -2495,7 +2502,8 @@ def _insert_review_round(
         + (
             f"Leave the Closes #{task['issue_number']} line in the pull request "
             "body exactly as it is. "
-            if isinstance(task.get("issue_number"), int)
+            if task.get("requires_issue_close", True)
+            and isinstance(task.get("issue_number"), int)
             else ""
         )
         + "Do not start work the "
@@ -3822,6 +3830,11 @@ def tick() -> None:
     landing_tick(snapshot["policy"])
     if snapshot["state"] != "enabled":
         return
+    # Producers only write deduplicated receipts. Admission below remains the
+    # queue choke point for lane capacity, budgets and dispatch.
+    from swarm.feeders import feeder_tick
+
+    feeder_tick(snapshot["policy"])
     from swarm.factory_intake import concurrency_limit
 
     limit = concurrency_limit(snapshot["policy"])

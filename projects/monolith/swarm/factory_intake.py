@@ -16,6 +16,8 @@ from swarm.factory_controls import (
     _snapshot,
     _text,
     DEFAULT_TASK_CLASS,
+    FEEDER_ACTOR,
+    capability_tier_for,
     factory_max_concurrent_tasks,
     INTAKE_ACTOR,
     LANES,
@@ -43,6 +45,9 @@ def receive_issue(
     *,
     generation: int = 0,
     task_class: str = DEFAULT_TASK_CLASS,
+    source_key: str | None = None,
+    requires_issue_close: bool = True,
+    require_enabled: bool = False,
     session: Session | None = None,
 ) -> dict:
     """Store one bounded issue snapshot. A duplicate can never replace its text.
@@ -55,6 +60,7 @@ def receive_issue(
     generation = _integer(generation, "generation", 0, 2**31 - 1)
     actor = _text(actor, "actor")
     task_class = validate_task_class(task_class)
+    source_key = _text(source_key or f"issue:{issue_number}", "source_key", 512)
     title = _text(title, "title", 512)
     if not isinstance(body, str) or len(body) > 65536:
         raise ValueError("invalid body")
@@ -63,12 +69,14 @@ def receive_issue(
         or url.lower() != f"https://github.com/{repo}/issues/{issue_number}"
     ):
         raise ValueError("url must identify the received GitHub issue")
-    with _locked_session(session) as (db, _control):
+    with _locked_session(session) as (db, control):
+        if require_enabled and control.state != "enabled":
+            return {"ok": False, "created": False, "reason": control.state}
         existing = db.exec(
             select(FactoryReceipt).where(
                 FactoryReceipt.repo == repo,
-                FactoryReceipt.issue_number == issue_number,
                 FactoryReceipt.generation == generation,
+                FactoryReceipt.source_key == source_key,
                 FactoryReceipt.task_class == task_class,
             )
         ).first()
@@ -82,6 +90,8 @@ def receive_issue(
             body=body,
             url=url,
             actor=actor,
+            source_key=source_key,
+            requires_issue_close=requires_issue_close,
             task_class=task_class,
         )
         db.add(row)
@@ -94,6 +104,7 @@ def receive_issue(
             repo=repo,
             issue_number=issue_number,
             generation=generation,
+            source_key=source_key,
             task_class=task_class,
         )
         return {"ok": True, "created": True, "receipt": _snapshot(db, row)}
@@ -251,7 +262,10 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
         in_lane = FactoryReceipt.task_class.in_(classes)
         if "delivery" in available:
             in_lane = or_(in_lane, FactoryReceipt.task_class.is_(None))
-        eligible = FactoryReceipt.issue_number.in_(policy["issue_numbers"])
+        eligible = or_(
+            FactoryReceipt.issue_number.in_(policy["issue_numbers"]),
+            FactoryReceipt.actor == FEEDER_ACTOR,
+        )
         if intake_policy(policy)["enabled"]:
             # Intake receipts are not in the operator allowlist by construction.
             # They are admissible only while intake is on, so turning intake off
@@ -277,6 +291,8 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
             repo=policy["repo"],
             base_branch=policy["base_branch"],
             conductor_model=policy["conductor_model"],
+            task_class=receipt_task_class(row),
+            capability_tier=capability_tier_for(receipt_task_class(row)),
             budget_usd=policy["task_budget_usd"],
             workflow_id=f"factory:{task_id}",
             start_state="factory",

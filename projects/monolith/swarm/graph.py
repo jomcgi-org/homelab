@@ -1286,6 +1286,15 @@ def admit_dispatch(
         node = live.get(node_key)
         if node is None:
             return refuse("unknown_node")
+        effective_model = model or node.model
+        if task.capability_tier == "opus":
+            from swarm.model_pool import JUDGMENT_MODELS
+
+            if effective_model not in JUDGMENT_MODELS:
+                return refuse(
+                    "below_capability_floor",
+                    "task requires an Opus-class model at dispatch",
+                )
         error = _bounds_error(node)
         if error:
             return refuse(error)
@@ -1325,7 +1334,7 @@ def admit_dispatch(
             "node_key": node_key,
             "attempt": attempt,
             "prompt": node.prompt,
-            "model": model or node.model,
+            "model": effective_model,
             "max_cost_usd": remaining,
             "max_attempts": node.max_attempts + excused,
             "turn_timeout_seconds": node.turn_timeout_seconds,

@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 ACTOR = "factory:refine"
 NODE_KEY = "refine_1"
+ADVISORY_NODE_KEY = "refine_advisory"
 MAX_ATTEMPTS = 2
 # Comment pages read per settlement. The read is already narrowed by a
 # since= filter, so this only bounds a thread that is busy after the brief
@@ -100,6 +101,32 @@ REFINE_SCHEMA = {
         "evidence": {"type": "string", "maxLength": 2000},
     },
 }
+
+ADVISORY_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["status", "summary", "comment_url", "pr_number"],
+    "properties": {
+        "status": {"const": "complete"},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "comment_url": {"type": "string", "minLength": 1, "maxLength": 512},
+        # A typed null makes the no-PR contract observable at result ingest.
+        "pr_number": {"type": "null"},
+    },
+}
+
+
+def advisory_prompt(task: dict, receipt: dict, task_class: str) -> str:
+    """One comment-only task for CI diagnosis or Renovate risk triage."""
+    return (
+        f"Handle {task_class} for repository {task['repo']} pull request or issue "
+        f"#{receipt['issue_number']} at {receipt['url']}.\n\n"
+        f"{_bounded_planner_text(receipt.get('body') or '', 12000)}\n\n"
+        "Post exactly one concise GitHub issue comment with the requested evidence. "
+        "Do not edit tracked files, create or push a branch, or open a pull request. "
+        "Return status complete, a short summary, the exact comment_url, and "
+        "pr_number null in the declared artifact."
+    )
 
 
 def refine_prompt(task: dict, receipt: dict, *, closing: bool) -> str:
@@ -264,8 +291,13 @@ def closing_allowed(policy: dict) -> tuple[bool, str]:
 
 
 def task_class_for(task_id: str) -> str:
-    """The receipt's class, defaulting for a receipt that predates them."""
+    """The task's persisted class, defaulting through its legacy receipt."""
     with _read_session() as db:
+        from swarm.models import SwarmTask
+
+        task = db.get(SwarmTask, task_id)
+        if task is not None and task.task_class:
+            return task.task_class
         row = db.exec(
             select(FactoryReceipt).where(FactoryReceipt.task_id == task_id)
         ).first()
@@ -716,6 +748,65 @@ def _settle(task: dict, run: dict, policy: dict) -> None:
         )
 
 
+def _settle_advisory(task: dict, run: dict, task_class: str) -> None:
+    """Verify the exact comment and absence of a factory PR before settlement."""
+    receipt = task_snapshot(task["id"])
+    number = receipt["issue_number"]
+    artifact = _artifact(run)
+    if not isinstance(artifact, dict) or artifact.get("pr_number") is not None:
+        _finish_unverified(task["id"], "advisory artifact claimed a pull request")
+        return
+    comment_url = artifact.get("comment_url")
+    admitted = datetime.fromisoformat(receipt["admitted_at"].replace("Z", "+00:00"))
+    if admitted.tzinfo is None:
+        admitted = admitted.replace(tzinfo=timezone.utc)
+    comments = _comments_since(task["repo"], number, admitted)
+    executor = os.environ.get("FACTORY_EXECUTOR_LOGIN", "").strip().lower()
+    matched = next(
+        (
+            comment
+            for comment in comments
+            if isinstance(comment, dict)
+            and comment.get("html_url") == comment_url
+            and (
+                not executor
+                or str((comment.get("user") or {}).get("login") or "").lower()
+                == executor
+            )
+        ),
+        None,
+    )
+    owner = task["repo"].split("/", 1)[0]
+    pulls = github_list(
+        task["repo"],
+        f"pulls?state=all&head={quote(owner + ':factory/' + task['id'], safe=':')}&per_page=1",
+    )
+    if matched is None or pulls:
+        reason = (
+            "advisory comment could not be verified"
+            if matched is None
+            else "advisory task opened a pull request"
+        )
+        _finish_unverified(task["id"], reason)
+        return
+    settled = finish_task(
+        task["id"],
+        "succeeded",
+        ACTOR,
+        evidence={"state": "advisory_commented", "reason": comment_url},
+    )
+    if settled["ok"]:
+        with _locked_session() as (db, _control):
+            _audit(
+                db,
+                ACTOR,
+                "advisory_settled",
+                task_id=task["id"],
+                task_class=task_class,
+                comment_url=comment_url,
+            )
+
+
 def reconcile(
     task: dict,
     policy: dict,
@@ -727,19 +818,11 @@ def reconcile(
 ) -> None:
     from swarm import factory_conductor
 
-    if task_class != TASK_CLASS:
-        # Phase 3 fills this hook. Pausing is deliberate so an unreachable
-        # advisory class parks visibly instead of silently planning a DAG.
-        set_control("pause_task", ACTOR, task_id=task["id"])
-        with _locked_session() as (db, _control):
-            _audit(
-                db,
-                ACTOR,
-                "advisory_class_unimplemented",
-                task_id=task["id"],
-                task_class=task_class,
-            )
-        return
+    generic_advisory = task_class in ("advisory-diagnosis", "advisory-triage")
+    if task_class != TASK_CLASS and not generic_advisory:
+        raise ValueError("unsupported advisory task class")
+
+    node_key = ADVISORY_NODE_KEY if generic_advisory else NODE_KEY
 
     if not nodes:
         receipt = task_snapshot(task["id"])
@@ -748,12 +831,16 @@ def reconcile(
         # otherwise, and an unconfigured policy still lands on the conductor
         # pool through the pool default.
         choice = select_model("refine", policy)
-        cause = f"factory-refine:{NODE_KEY}"
+        cause = f"factory-refine:{node_key}"
         result = factory_conductor._add(
             task,
             policy,
-            NODE_KEY,
-            refine_prompt(task, receipt, closing=closing_allowed(policy)[0]),
+            node_key,
+            (
+                advisory_prompt(task, receipt, task_class)
+                if generic_advisory
+                else refine_prompt(task, receipt, closing=closing_allowed(policy)[0])
+            ),
             [],
             choice["model"],
             cause,
@@ -771,15 +858,18 @@ def reconcile(
         (
             run
             for run in runs
-            if run["node_key"] == NODE_KEY and run["status"] == "succeeded"
+            if run["node_key"] == node_key and run["status"] == "succeeded"
         ),
         None,
     )
     if succeeded is not None:
-        _settle(task, succeeded, policy)
+        if generic_advisory:
+            _settle_advisory(task, succeeded, task_class)
+        else:
+            _settle(task, succeeded, policy)
         return
-    node = next((node for node in nodes if node["node_key"] == NODE_KEY), None)
-    attempts = [run for run in runs if run["node_key"] == NODE_KEY]
+    node = next((node for node in nodes if node["node_key"] == node_key), None)
+    attempts = [run for run in runs if run["node_key"] == node_key]
     if node is None or any(
         run["status"] not in factory_conductor.graph.TERMINAL_RUN_STATUSES
         for run in attempts
@@ -789,7 +879,7 @@ def reconcile(
         candidate["node_key"]
         for candidate in factory_conductor._ready_nodes(nodes, runs)
     }
-    if NODE_KEY in ready:
+    if node_key in ready:
         return
     accounted = sum(run["accounted_cost_usd"] for run in attempts)
     # Attempts the node actually spent, which is what readiness above counted:
