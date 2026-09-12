@@ -621,7 +621,11 @@ capacity denial never reached a model, so the run records `capacity_denied`,
 audits it against the task, and is excluded from the attempt count by both
 `graph.admit_dispatch` and the conductor's readiness. At most three such
 denials per node are excluded, after which they count like any other failure,
-so a saturated control plane still retires the node. Confirmed failed artifacts feed
+so a saturated control plane still retires the node. The start ledger records
+the same verdict in `factory_start.accounting_basis` and excuses the turn and
+the budget an excused denial would otherwise spend. The two ledgers have to
+agree: a node the graph keeps ready whose every start the turn gate refuses
+pauses the task instead of retrying it. Confirmed failed artifacts feed
 bounded retry context back to the next attempt. Unknown execution retains its
 reservation and requires reconciliation before another attempt starts.
 
@@ -728,8 +732,9 @@ provider turn. Observed overruns prevent further admission. The exception is an
 attempt whose own evidence proves it never reached a model POST, an
 `invocation_phase` of `never_dispatched`, `not_invoked` or `lost_before_guest`
 recorded on the outcome or on the typed proof attached under that phase: it
-books at nothing on the `no_model_post` basis, because charging it the ceiling
-retired its node on the first failure (#6045). An attempt that may have reached
+books at nothing on the `no_model_post` basis, in the graph and on the start
+row alike, because charging it the ceiling retired its node on the first
+failure (#6045). An attempt that may have reached
 the model with an unknown cost, `guest_cessation_confirmed` after dispatch
 among them, stays conservative and keeps its reservation.
 

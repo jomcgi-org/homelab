@@ -365,7 +365,7 @@ def test_stop_denial_does_not_claim_existing_session_ceased(
         {"task_id": "a" * 129},
         {"attempt": 0},
         {"attempt": 4},
-        {"max_attempts": 11},
+        {"max_attempts": nodes.MAX_PIN_ATTEMPTS + 1},
         {"max_attempts": float("inf")},
         {"turn_timeout_seconds": 0},
         {"turn_timeout_seconds": 43201},

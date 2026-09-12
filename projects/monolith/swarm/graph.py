@@ -25,6 +25,7 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from core.db import get_engine
+from swarm.factory_models import MAX_CAPACITY_DENIED_ATTEMPTS
 from swarm.models import (
     SwarmConductorCall,
     SwarmNodeRun,
@@ -1042,6 +1043,11 @@ def _invocation_phase(run: SwarmNodeRun) -> str | None:
         outcome = json.loads(run.outcome_json)
     except (TypeError, ValueError):
         return None
+    return _outcome_phase(outcome)
+
+
+def _outcome_phase(outcome: object) -> str | None:
+    """The same read, over the outcome body rather than the ledger row."""
     if not isinstance(outcome, dict):
         return None
     phase = outcome.get("invocation_phase")
@@ -1060,14 +1066,20 @@ def _invocation_phase(run: SwarmNodeRun) -> str | None:
     return None
 
 
-# How many capacity denials one node may shrug off. A session create the
-# control plane refused for capacity never reached a model and did none of the
-# attempt's work, so spending an attempt on it retires a node over EmberVM's
-# state rather than its own: four refine attempts died that way inside twenty
-# minutes while the only brick rebuilt after a spot preemption (#6045). The
-# bound is what stops a permanently saturated control plane from retrying for
-# ever. Past it the denials count like any other failure and the node retires.
-MAX_CAPACITY_DENIED_ATTEMPTS = 3
+def settled_zero_basis(outcome: object) -> str | None:
+    """The zero-cost accounting basis this outcome proves, or None.
+
+    The start ledger holds outcomes rather than ledger rows, and it has to book
+    what the graph books: a start still charged its ceiling refuses the retry
+    the graph released, and a start still charged a turn does the same (#6045).
+    ``capacity_denied`` is the narrower verdict. It is a failure before the
+    model POST whose cause was the control plane refusing a slot, so the start
+    ledger excuses its turn as well as its cost.
+    """
+    if _outcome_phase(outcome) not in NO_MODEL_POST_PHASES:
+        return None
+    denied = isinstance(outcome, dict) and bool(outcome.get("capacity_denied"))
+    return "capacity_denied" if denied else "no_model_post"
 
 
 def _capacity_denied(run: SwarmNodeRun) -> bool:
@@ -1301,6 +1313,12 @@ def admit_dispatch(
         if task_spent + remaining > task.budget_usd:
             return refuse("task_budget_exhausted")
         attempt = max((run.attempt for run in runs), default=0) + 1
+        # Attempt numbers count every row, excused denials included, so the
+        # bound the pin carries has to as well. node_workflows._validate_pin
+        # refuses a pin whose attempt exceeds it, and it runs before the
+        # workflow does anything, so a re-admitted attempt would die there
+        # with a misleading error and spend itself doing it (#6045).
+        excused = len(runs) - _spent_attempts(runs)
         pin = {
             **context,
             "task_id": task_id,
@@ -1309,7 +1327,7 @@ def admit_dispatch(
             "prompt": node.prompt,
             "model": model or node.model,
             "max_cost_usd": remaining,
-            "max_attempts": node.max_attempts,
+            "max_attempts": node.max_attempts + excused,
             "turn_timeout_seconds": node.turn_timeout_seconds,
         }
         db.add(

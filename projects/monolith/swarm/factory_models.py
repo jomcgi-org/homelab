@@ -17,6 +17,19 @@ _BIGINT = BigInteger().with_variant(Integer(), "sqlite")
 # rather than in factory_controls because the column default needs it and
 # this module imports nothing from the package above it.
 DEFAULT_TASK_CLASS = "bug-fix"
+# How many capacity denials one node may shrug off. A session create the
+# control plane refused for capacity never reached a model and did none of the
+# attempt's work, so spending an attempt on it retires a node over EmberVM's
+# state rather than its own: four refine attempts died that way inside twenty
+# minutes while the only brick rebuilt after a spot preemption (#6045). The
+# bound is what stops a permanently saturated control plane from retrying for
+# ever. Past it the denials count like any other failure and the node retires.
+#
+# It lives here for the same reason DEFAULT_TASK_CLASS does. The graph bounds
+# attempts with it and the start ledger excuses turns with it, and those two
+# are on opposite sides of the package boundary, so the number they must agree
+# on belongs in the module underneath both.
+MAX_CAPACITY_DENIED_ATTEMPTS = 3
 
 
 class FactoryControl(SQLModel, table=True):
@@ -120,6 +133,11 @@ class FactoryStart(SQLModel, table=True):
             "cost_usd IS NULL OR cost_usd >= 0",
             name="factory_start_cost_check",
         ),
+        CheckConstraint(
+            "accounting_basis IS NULL "
+            "OR accounting_basis IN ('no_model_post', 'capacity_denied')",
+            name="factory_start_accounting_basis_check",
+        ),
         Index("factory_start_task_status_idx", "task_id", "status"),
         {"schema": "swarm", "extend_existing": True},
     )
@@ -134,6 +152,11 @@ class FactoryStart(SQLModel, table=True):
     max_cost_usd: float
     status: str = Field(default="reserved")
     cost_usd: float | None = Field(default=None)
+    # Which zero-cost proof settled this start, when one did. The graph books
+    # the same attempt at zero on the same evidence, and the two ledgers have
+    # to agree or one of them retires a node the other is still holding a
+    # retry for (#6045).
+    accounting_basis: str | None = Field(default=None)
     session_id: int | None = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

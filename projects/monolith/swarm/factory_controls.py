@@ -25,6 +25,7 @@ from swarm.factory_models import (
     FactoryControl,
     FactoryReceipt,
     FactoryStart,
+    MAX_CAPACITY_DENIED_ATTEMPTS,
 )
 from swarm.models import SwarmTask
 
@@ -996,25 +997,62 @@ def record_allowance(
         return {"ok": True, "allowance": allowance}
 
 
+# A start settled on one of these bases commits nothing. Its attempt is proven
+# never to have reached a model, which is the same evidence the graph books at
+# zero, so charging its reserved ceiling here would refuse the retry the graph
+# just released.
+FREE_START_BASES = ("no_model_post", "capacity_denied")
+
+
+def _start_node_key(row: FactoryStart) -> str | None:
+    """The node this start belongs to, or None when the key does not parse."""
+    match = _START_KEY.match(row.start_key or "")
+    return match.group("node_key") if match else None
+
+
+def _committed_cost(row: FactoryStart) -> float:
+    if row.accounting_basis in FREE_START_BASES:
+        return 0.0
+    # Known completion without a provider cost consumes the reserved ceiling.
+    if row.status in ("reserved", "uncertain"):
+        return max(row.max_cost_usd, row.cost_usd or 0)
+    return row.max_cost_usd if row.cost_usd is None else row.cost_usd
+
+
 def _accounting(starts: list[FactoryStart]) -> dict:
     # Planner rounds read evidence and decide; they do not do the task's work.
     # Counting them against max_turns_per_task exhausts a task before it has
     # spent its allowance on delivery. They still consume budget.
-    planner = sum(_planner_start(row) for row in starts)
+    #
+    # A capacity denial spends neither: the control plane refused the slot, so
+    # no turn of either kind happened. Excused up to the same per node bound
+    # graph.attempts_spent applies, so the turn gate and the attempt gate agree
+    # on how many attempts a node has left.
+    planner = 0
+    turns = 0
+    committed = 0.0
+    unresolved = 0
+    denied: dict[str | None, int] = {}
+    # Sorted so the bound excuses the earliest denials whatever order the rows
+    # were read in. An unsaved row sorts last; only settled rows carry a basis.
+    for row in sorted(starts, key=lambda row: (row.id is None, row.id or 0)):
+        committed += _committed_cost(row)
+        unresolved += row.status in ("reserved", "uncertain")
+        if row.accounting_basis == "capacity_denied":
+            node_key = _start_node_key(row)
+            seen = denied.get(node_key, 0)
+            denied[node_key] = seen + 1
+            if seen < MAX_CAPACITY_DENIED_ATTEMPTS:
+                continue
+        if _planner_start(row):
+            planner += 1
+        else:
+            turns += 1
     return {
-        "turns_used": len(starts) - planner,
+        "turns_used": turns,
         "planner_turns_used": planner,
-        "committed_cost_usd": sum(
-            max(row.max_cost_usd, row.cost_usd or 0)
-            if row.status in ("reserved", "uncertain")
-            else row.max_cost_usd
-            if row.cost_usd is None
-            else row.cost_usd
-            for row in starts
-        ),
-        "unresolved_starts": sum(
-            row.status in ("reserved", "uncertain") for row in starts
-        ),
+        "committed_cost_usd": committed,
+        "unresolved_starts": unresolved,
     }
 
 
@@ -1030,6 +1068,7 @@ def _start_dict(row: FactoryStart) -> dict:
             "max_cost_usd",
             "status",
             "cost_usd",
+            "accounting_basis",
             "session_id",
         )
     }
@@ -1764,6 +1803,7 @@ def record_start_outcome(
     actor: str,
     *,
     cost_usd: float | None = None,
+    accounting_basis: str | None = None,
     session_id: int | None = None,
     reconciled: bool = False,
     session: Session | None = None,
@@ -1773,6 +1813,8 @@ def record_start_outcome(
         raise ValueError("invalid reconciled flag")
     if status not in (*_TERMINAL, "uncertain", "escalated"):
         raise ValueError("invalid start outcome")
+    if accounting_basis is not None and accounting_basis not in FREE_START_BASES:
+        raise ValueError("invalid accounting basis")
     cost = None if cost_usd is None else _money(cost_usd, "cost_usd", zero=True)
     if session_id is not None:
         _integer(session_id, "session_id", 1, 2**31 - 1)
@@ -1792,6 +1834,15 @@ def record_start_outcome(
             and start.cost_usd == cost
             and start.session_id == session_id
         ):
+            # A settlement recorded before this evidence existed carries no
+            # basis. Backfill it rather than refusing the replay: it is the
+            # same settlement, and a start left at its ceiling holds the turn
+            # and the budget the graph has already released (#6045). A basis
+            # already on the row is never overwritten.
+            if accounting_basis is not None and start.accounting_basis is None:
+                start.accounting_basis = accounting_basis
+                start.updated_at = _now()
+                db.add(start)
             return {"ok": True, "replayed": True, "start": _start_dict(start)}
         if start.status in _TERMINAL:
             return {"ok": False, "reason": "conflicting_outcome"}
@@ -1800,6 +1851,7 @@ def record_start_outcome(
         if start.session_id is not None and session_id != start.session_id:
             return {"ok": False, "reason": "conflicting_session"}
         start.status, start.cost_usd, start.session_id = effective, cost, session_id
+        start.accounting_basis = accounting_basis
         start.updated_at = _now()
         db.add(start)
         row = _receipt(db, task_id)

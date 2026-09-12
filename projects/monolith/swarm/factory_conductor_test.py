@@ -2249,7 +2249,10 @@ def test_not_invoked_settles_actual_factory_path_at_zero_without_cleanup(
     assert run["cost_usd"] is current["starts"][0]["cost_usd"] is None
     assert run["accounted_cost_usd"] == 0.0
     assert run["accounting_basis"] == "no_model_post"
-    assert current["committed_cost_usd"] == 2
+    # The start ledger books what the graph books. A start still charged its
+    # reserved ceiling would refuse the retry the graph just released (#6045).
+    assert current["committed_cost_usd"] == 0.0
+    assert current["starts"][0]["accounting_basis"] == "no_model_post"
     assert current["state"] == "admitted" and current["unresolved_starts"] == 0
     assert current["turns_used"] == before["turns_used"] == 0
     assert current["planner_turns_used"] == before["planner_turns_used"] == 1
@@ -2267,12 +2270,21 @@ def test_not_invoked_settles_actual_factory_path_at_zero_without_cleanup(
     assert s.native_snapshot() == native
 
 
+# The text the transport actually raises: httpx's status line, then the body
+# _status_error_detail appends, which carries the control plane's reason.
+CAPACITY_DENIAL_ERROR = (
+    "Client error '429 Too Many Requests' for url "
+    "'https://embervm.embervm.svc.cluster.local/v1/workloads/claude/sessions'\n"
+    "For more information check: "
+    "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429\n"
+    'response body: {"error":"session create denied","reason":"no_capacity",'
+    '"workload":"claude","retryable":true}'
+)
+
+
 @pytest.mark.parametrize(
     "not_invoked_factory",
-    [
-        "Client error '429 Too Many Requests' for url "
-        "'https://embervm.default.svc/v1/workloads/claude/sessions'"
-    ],
+    [CAPACITY_DENIAL_ERROR],
     indirect=True,
 )
 def test_capacity_denied_create_is_marked_audited_and_not_charged_an_attempt(
@@ -2301,10 +2313,31 @@ def test_capacity_denied_create_is_marked_audited_and_not_charged_an_attempt(
     assert detail["session_id"] == s.sid
 
 
-def test_generic_not_invoked_failure_is_not_read_as_a_capacity_denial(
+@pytest.mark.parametrize(
+    "not_invoked_factory",
+    [
+        "create failed before invoke",
+        # A 429 on the sessions endpoint whose body says the request was
+        # wrong rather than the workload full. Only the reasons the control
+        # plane emits for a capacity refusal excuse the attempt.
+        "Client error '429 Too Many Requests' for url "
+        "'https://embervm/v1/workloads/claude/sessions'\n"
+        'response body: {"error":"session create denied",'
+        '"reason":"invalid_idempotency_key","retryable":false}',
+        # The reason, but from another endpoint entirely.
+        "Client error '429 Too Many Requests' for url "
+        "'https://embervm/v1/workloads/claude/turns'\n"
+        'response body: {"reason":"no_capacity"}',
+        # The status line alone, with the body lost.
+        "Client error '429 Too Many Requests' for url "
+        "'https://embervm/v1/workloads/claude/sessions'",
+    ],
+    indirect=True,
+)
+def test_a_failure_that_is_not_a_capacity_refusal_spends_its_attempt(
     not_invoked_factory,
 ):
-    """Only the control plane's own refusal excuses the attempt."""
+    """Only the control plane's own refusal to place a session excuses it."""
     import json
 
     s = not_invoked_factory
@@ -2542,8 +2575,10 @@ def test_not_invoked_honors_terminal_workflow_boundary(
         assert current["unresolved_starts"] == 0
         assert conductor.graph.node_runs(s.task["id"])[0]["status"] == "failed"
         assert current["turns_used"] == 0
+        # The planning round is spent: this attempt reached no model, but it
+        # is still an attempt the node made. Only its budget is released.
         assert current["planner_turns_used"] == 1
-        assert current["committed_cost_usd"] == 2
+        assert current["committed_cost_usd"] == 0.0
     assert s.native_snapshot() == native
 
 
@@ -2566,7 +2601,7 @@ def test_not_invoked_reconciliation_does_not_override_operating_controls(
     assert len(conductor.graph.load_graph(s.task["id"])) == 1
     current = controls.task_snapshot(s.task["id"])
     assert current["turns_used"] == 0 and current["planner_turns_used"] == 1
-    assert current["committed_cost_usd"] == 2
+    assert current["committed_cost_usd"] == 0.0
     assert (
         current["task_paused"]
         if action == "pause_task"
