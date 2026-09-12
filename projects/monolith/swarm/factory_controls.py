@@ -30,6 +30,15 @@ from swarm.models import SwarmTask
 
 _ACTIVE = ("admitted", "uncertain")
 _TERMINAL = ("succeeded", "failed", "cancelled")
+# A receipt whose task asked a person for a decision and left the lane to wait
+# for it. It holds no slot, starts nothing and keeps its graph, and it leaves
+# this state only when an operator decides: a re-admission returns it to
+# queued, every other answer settles it cancelled.
+ESCALATED = "escalated"
+# Every state a reconciler treats as finished. An escalated receipt is not
+# terminal, because a decision can still return it to the lane, but nothing
+# the server does on its own will move it either.
+_SETTLED = (*_TERMINAL, ESCALATED)
 _POLICY_KEYS = {
     "repo",
     "issue_numbers",
@@ -163,6 +172,139 @@ _POOL_ROLES = {"conductor": "conductor_model", "worker": "worker_model"}
 # window is nearly spent; it is a class pool rather than a role pool because
 # its default need not start at the policy's own reviewer_model.
 _CLASS_POOL_ROLES = ("implement", "refine", "reviewer")
+
+# The escalation option vocabulary, shared by the two paths that raise one.
+# A refine verdict of needs-human and a delivery planner's pause both hand a
+# person the same kind of thing: two to four concrete acts with the
+# recommendation first. It lives here rather than in factory_refine because
+# factory_refine imports factory_conductor, so the conductor cannot import
+# back the other way to reach it.
+#
+# What an option does when an operator picks it. Every effect except `hold`
+# writes to GitHub, and `hold` exists so "leave it exactly as it is" is a
+# choice a person can record rather than a tab they close.
+OPTION_EFFECTS = ("agent-ready", "close", "split", "defer", "hold")
+# What each effect reads as in one word, for a prompt and for a comment. The
+# operator page has its own copy of this in escalations-view.js.
+EFFECT_WORD = {
+    "agent-ready": "deliver",
+    "close": "close",
+    "split": "split",
+    "defer": "defer",
+    "hold": "hold",
+}
+MIN_OPTIONS = 2
+MAX_OPTIONS = 4
+MAX_SPLIT_CHILDREN = 5
+CLOSE_REASONS = ("not_planned", "completed")
+OPTION_KEY = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+
+OPTION_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["key", "label", "effect"],
+    "properties": {
+        "key": {"type": "string", "pattern": OPTION_KEY.pattern},
+        "label": {"type": "string", "minLength": 1, "maxLength": 120},
+        "effect": {"enum": list(OPTION_EFFECTS)},
+        "detail": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "scope": {"type": "string", "maxLength": 2000},
+                "reason": {"enum": list(CLOSE_REASONS)},
+                "comment": {"type": "string", "maxLength": 2000},
+                "children": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": MAX_SPLIT_CHILDREN,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["title", "body"],
+                        "properties": {
+                            "title": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256,
+                            },
+                            "body": {"type": "string", "maxLength": 8000},
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+def verify_option(option: object, index: int) -> str | None:
+    """One option's shape, checked by the server rather than by the schema.
+
+    The schema goes to the guest so it writes the right thing; this runs on
+    what came back, because the artifact is a claim until the server has
+    checked it. Each effect is checked on the fields it will actually use at
+    apply time, so an operator never clicks a button whose effect has nothing
+    to act with.
+    """
+    where = f"option {index + 1}"
+    if not isinstance(option, dict):
+        return f"{where} is not an object"
+    unknown = set(option) - {"key", "label", "effect", "detail"}
+    if unknown:
+        return f"{where} carries unsupported fields"
+    key, label = option.get("key"), option.get("label")
+    if not isinstance(key, str) or not OPTION_KEY.fullmatch(key):
+        return f"{where} has no usable key"
+    if not isinstance(label, str) or not label.strip() or len(label) > 120:
+        return f"{where} has no usable label"
+    effect = option.get("effect")
+    if effect not in OPTION_EFFECTS:
+        return f"{where} names no known effect"
+    detail = option.get("detail")
+    if detail is None:
+        detail = {}
+    if not isinstance(detail, dict):
+        return f"{where} detail is not an object"
+    if effect == "close" and detail.get("reason") not in CLOSE_REASONS:
+        return f"{where} closes with no reason"
+    if effect == "defer" and not str(detail.get("comment") or "").strip():
+        return f"{where} defers with no wait condition"
+    if effect == "split":
+        children = detail.get("children")
+        if not isinstance(children, list) or not 1 <= len(children) <= (
+            MAX_SPLIT_CHILDREN
+        ):
+            return f"{where} splits into no children"
+        for child in children:
+            if not isinstance(child, dict):
+                return f"{where} has a child that is not an object"
+            title = child.get("title")
+            if not isinstance(title, str) or not title.strip():
+                return f"{where} has a child with no title"
+            if not isinstance(child.get("body", ""), str):
+                return f"{where} has a child with a non-text body"
+    return None
+
+
+def verify_option_list(options: object, *, subject: str) -> str | None:
+    """The bounded, distinct option list an escalation must carry.
+
+    ``subject`` names what raised it, so the refusal an operator or a planner
+    reads says which artifact was wrong rather than only that one was.
+    """
+    if not isinstance(options, list):
+        return f"{subject} carries no options"
+    if not MIN_OPTIONS <= len(options) <= MAX_OPTIONS:
+        return f"{subject} carries {len(options)} options, not two to four"
+    for index, option in enumerate(options):
+        invalid = verify_option(option, index)
+        if invalid is not None:
+            return invalid
+    keys = [option["key"] for option in options]
+    if len(set(keys)) != len(keys):
+        return f"{subject} repeats an option key"
+    return None
 
 
 def factory_max_concurrent_tasks() -> int:
@@ -912,6 +1054,10 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
     result["escalation"] = (
         json.loads(row.escalation_json) if row.escalation_json else None
     )
+    # The answer an operator gave to the previous task's escalation. The
+    # planner prompt of the task this receipt was re-admitted for reads it on
+    # its first round, which is the whole point of recording it.
+    result["direction"] = json.loads(row.direction_json) if row.direction_json else None
     result.update(
         policy=json.loads(row.policy_json) if row.policy_json else None,
         starts=[_start_dict(s) for s in starts],
@@ -1099,10 +1245,18 @@ def escalation_view(receipt: dict) -> dict | None:
         "task_class": receipt.get("task_class"),
         "generation": receipt.get("generation"),
         "state": receipt.get("state"),
+        # Which path raised it. A refine escalation is a briefing asking what
+        # the work should be; a delivery escalation is a planner mid-task
+        # asking a question it cannot answer, and it names a branch and
+        # usually a pull request the next attempt can carry on from.
+        "kind": lane_for(receipt.get("task_class") or DEFAULT_TASK_CLASS),
         "recommendation": escalation.get("recommendation"),
         "question": escalation.get("question"),
         "summary": escalation.get("summary"),
+        "reason": escalation.get("reason"),
         "comment_url": escalation.get("comment_url"),
+        "branch": escalation.get("branch"),
+        "pr_url": escalation.get("pr_url"),
         "downgraded": bool(escalation.get("downgraded")),
         "options": [
             {
@@ -1303,6 +1457,22 @@ def status(*, session: Session | None = None) -> dict:
         }
 
 
+def operator_direction(task_id: str, *, session: Session | None = None) -> dict | None:
+    """The operator's answer that re-admitted this task, or None.
+
+    Read by the planner prompt on the task's first round. It lives on the
+    receipt rather than in the task text because the task text is the issue
+    body captured at admission, and rewriting that would lose the one thing
+    the planner needs to be able to tell apart: what the issue says, and what
+    a person decided about it afterwards.
+    """
+    with _read_session(session) as db:
+        row = _receipt(db, task_id)
+        if row is None or not row.direction_json:
+            return None
+        return json.loads(row.direction_json)
+
+
 def task_snapshot(task_id: str, *, session: Session | None = None) -> dict:
     with _read_session(session) as db:
         row = _receipt(db, task_id)
@@ -1336,6 +1506,20 @@ def set_control(
         raise ValueError("policy requires configure action")
     if (action in ("pause_task", "resume_task")) != (task_id is not None):
         raise ValueError("task_id is required only for task pause/resume")
+    if action == "resume_task" and session is None:
+        # Resuming an escalation is answering it. There is no node to unpause:
+        # the task settled and left the lane, so the only way back in is the
+        # decision path, and the recommendation is what the operator gets for
+        # pressing resume rather than reading the card. Skipped when a caller
+        # supplied a session, because applying an option writes to GitHub and
+        # must never run inside somebody else's open transaction.
+        with _read_session() as db:
+            row = _receipt(db, task_id)
+            escalated = row is not None and row.state == ESCALATED
+        if escalated:
+            from swarm.factory_decisions import resume_escalated
+
+            return resume_escalated(task_id, actor)
     with _locked_session(session) as (db, control):
         reason = None
         if control.state == "stopped" and action != "stop":
@@ -1372,6 +1556,18 @@ def set_control(
                 select(FactoryReceipt).where(FactoryReceipt.state.in_(_ACTIVE))
             ).all():
                 row.cancellation_requested = True
+                row.updated_at = _now()
+                db.add(row)
+            # An escalated receipt runs nothing, so there is no cancellation to
+            # reconcile and cancel_owned never reaches it: the reconciler only
+            # visits active tasks. Settling it here is what stops a stop
+            # leaving a card waiting on a decision for a lane that is shut.
+            # The task keeps escalated as its own outcome, which is what
+            # happened to it; the receipt records what the stop then decided.
+            for row in db.exec(
+                select(FactoryReceipt).where(FactoryReceipt.state == ESCALATED)
+            ).all():
+                row.state, row.cancellation_requested = "cancelled", True
                 row.updated_at = _now()
                 db.add(row)
         if reason is None:
@@ -1606,7 +1802,7 @@ def finish_task(
     session: Session | None = None,
 ) -> dict:
     actor = _text(actor, "actor")
-    if outcome not in (*_TERMINAL, "uncertain"):
+    if outcome not in (*_SETTLED, "uncertain"):
         raise ValueError("invalid task outcome")
     if evidence is not None:
         if not isinstance(evidence, dict) or set(evidence) - {
@@ -1632,7 +1828,7 @@ def finish_task(
         row = _receipt(db, task_id)
         if row is None:
             return {"ok": False, "reason": "unknown_task"}
-        if row.state in _TERMINAL:
+        if row.state in _SETTLED:
             last = db.exec(
                 select(FactoryAudit)
                 .where(
@@ -1655,7 +1851,11 @@ def finish_task(
         row.state = outcome
         row.updated_at = _now()
         db.add(row)
-        if outcome in _TERMINAL:
+        if outcome in _SETTLED:
+            # An escalated task is settled the same way a terminal one is.
+            # Nothing the server does on its own runs another node on it, and
+            # a decision that re-admits the work mints a new task rather than
+            # waking this one.
             task = db.get(SwarmTask, task_id)
             task.settled_at = _now()
             task.start_state = outcome

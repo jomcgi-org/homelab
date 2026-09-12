@@ -68,7 +68,8 @@ class FactoryReceipt(SQLModel, table=True):
         CheckConstraint("generation >= 0", name="factory_receipt_generation_check"),
         CheckConstraint(
             "state IN "
-            "('queued', 'admitted', 'uncertain', 'succeeded', 'failed', 'cancelled')",
+            "('queued', 'admitted', 'uncertain', 'escalated', 'succeeded', "
+            "'failed', 'cancelled')",
             name="factory_receipt_state_check",
         ),
         Index("factory_receipt_state_created_at_idx", "state", "created_at"),
@@ -94,6 +95,10 @@ class FactoryReceipt(SQLModel, table=True):
     # the recommendation, the options a person may pick from, and once someone
     # picks, the resolution. Null on every receipt that never escalated.
     escalation_json: str | None = Field(default=None)
+    # The operator's answer to the escalation the previous task raised, read
+    # by the planner prompt on the first round of the task a decision
+    # re-admits. Null on every receipt no operator has directed.
+    direction_json: str | None = Field(default=None)
     task_paused: bool = Field(default=False)
     cancellation_requested: bool = Field(default=False)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

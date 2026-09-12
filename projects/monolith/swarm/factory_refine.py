@@ -7,13 +7,15 @@ import json
 from datetime import datetime, timezone
 import logging
 import os
-import re
 from urllib.parse import quote
 
 from sqlmodel import select
 
 from swarm.factory_controls import (
     DEFAULT_TASK_CLASS,
+    MAX_OPTIONS,
+    MIN_OPTIONS,
+    OPTION_SCHEMA,
     intake_policy,
     terminal_resolution,
     _audit,
@@ -23,6 +25,7 @@ from swarm.factory_controls import (
     receipt_task_class,
     set_control,
     task_snapshot,
+    verify_option_list,
 )
 from swarm.factory_models import FactoryAudit, FactoryReceipt
 from swarm.factory_conductor import (
@@ -64,10 +67,6 @@ OUTCOME_LABEL = {
     STALE_OUTCOME: "stale",
 }
 RECOMMENDATIONS = ("deliver", "close", "split", "defer")
-# What an option does when an operator picks it. Every effect except `hold`
-# writes to GitHub, and `hold` exists so "leave it exactly as it is" is a
-# choice a person can record rather than a tab they close.
-OPTION_EFFECTS = ("agent-ready", "close", "split", "defer", "hold")
 # The recommendation line and the first option say the same thing in two
 # places, so settlement checks they agree rather than trusting either alone.
 RECOMMENDED_EFFECT = {
@@ -76,53 +75,11 @@ RECOMMENDED_EFFECT = {
     "split": "split",
     "defer": "defer",
 }
-MIN_OPTIONS = 2
-MAX_OPTIONS = 4
-MAX_SPLIT_CHILDREN = 5
-CLOSE_REASONS = ("not_planned", "completed")
 DEFER_LABEL = "needs-thought"
 # An issue carrying one of these, or any milestone, is never closed by the
 # lane. Triage on work someone has already prioritised or flagged as a
 # security finding is a judgment call that belongs to a person.
 PROTECTED_LABELS = ("critical", "security-finding")
-
-OPTION_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["key", "label", "effect"],
-    "properties": {
-        "key": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$"},
-        "label": {"type": "string", "minLength": 1, "maxLength": 120},
-        "effect": {"enum": list(OPTION_EFFECTS)},
-        "detail": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "scope": {"type": "string", "maxLength": 2000},
-                "reason": {"enum": list(CLOSE_REASONS)},
-                "comment": {"type": "string", "maxLength": 2000},
-                "children": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": MAX_SPLIT_CHILDREN,
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["title", "body"],
-                        "properties": {
-                            "title": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": 256,
-                            },
-                            "body": {"type": "string", "maxLength": 8000},
-                        },
-                    },
-                },
-            },
-        },
-    },
-}
 
 REFINE_SCHEMA = {
     "type": "object",
@@ -529,77 +486,19 @@ def _notify_once(
             )
 
 
-_OPTION_KEY = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
-
-
-def _verify_option(option: object, index: int) -> str | None:
-    """One option's shape, checked by the server rather than by the schema.
-
-    The schema goes to the guest so it writes the right thing; this runs on
-    what came back, because the artifact is a claim until the server has
-    checked it. Each effect is checked on the fields it will actually use at
-    apply time, so an operator never clicks a button whose effect has nothing
-    to act with.
-    """
-    where = f"option {index + 1}"
-    if not isinstance(option, dict):
-        return f"{where} is not an object"
-    unknown = set(option) - {"key", "label", "effect", "detail"}
-    if unknown:
-        return f"{where} carries unsupported fields"
-    key, label = option.get("key"), option.get("label")
-    if not isinstance(key, str) or not _OPTION_KEY.fullmatch(key):
-        return f"{where} has no usable key"
-    if not isinstance(label, str) or not label.strip() or len(label) > 120:
-        return f"{where} has no usable label"
-    effect = option.get("effect")
-    if effect not in OPTION_EFFECTS:
-        return f"{where} names no known effect"
-    detail = option.get("detail")
-    if detail is None:
-        detail = {}
-    if not isinstance(detail, dict):
-        return f"{where} detail is not an object"
-    if effect == "close" and detail.get("reason") not in CLOSE_REASONS:
-        return f"{where} closes with no reason"
-    if effect == "defer" and not str(detail.get("comment") or "").strip():
-        return f"{where} defers with no wait condition"
-    if effect == "split":
-        children = detail.get("children")
-        if not isinstance(children, list) or not 1 <= len(children) <= (
-            MAX_SPLIT_CHILDREN
-        ):
-            return f"{where} splits into no children"
-        for child in children:
-            if not isinstance(child, dict):
-                return f"{where} has a child that is not an object"
-            title = child.get("title")
-            if not isinstance(title, str) or not title.strip():
-                return f"{where} has a child with no title"
-            if not isinstance(child.get("body", ""), str):
-                return f"{where} has a child with a non-text body"
-    return None
-
-
 def _verify_options(artifact: dict, recommendation: str) -> str | None:
     """The option list a needs-human escalation must carry, or why it does not.
 
-    The first option is the recommendation. Keeping them in agreement is what
-    lets the operator page render one primary button and the GitHub reader see
-    the same choice as item one, from a single source.
+    The shape is the shared one in factory_controls, which a delivery pause
+    raises too. What is refine's own is the cross-check below: the first
+    option is the recommendation, and keeping the two in agreement is what
+    lets the operator page render one primary button and the GitHub reader
+    see the same choice as item one, from a single source.
     """
     options = artifact.get("options")
-    if not isinstance(options, list):
-        return "needs-human carries no options"
-    if not MIN_OPTIONS <= len(options) <= MAX_OPTIONS:
-        return f"needs-human carries {len(options)} options, not two to four"
-    for index, option in enumerate(options):
-        invalid = _verify_option(option, index)
-        if invalid is not None:
-            return invalid
-    keys = [option["key"] for option in options]
-    if len(set(keys)) != len(keys):
-        return "needs-human repeats an option key"
+    invalid = verify_option_list(options, subject="needs-human")
+    if invalid is not None:
+        return invalid
     if options[0]["effect"] != RECOMMENDED_EFFECT[recommendation]:
         return (
             f"the first option is {options[0]['effect']}, which is not what "
