@@ -17,8 +17,8 @@ have been retired. Their implementation remains available in git history.
 
 ## Data model
 
-The `grimoire` schema uses a typed entity spine rather than the standalone
-prototype's Firestore and polymorphic JSON model:
+The shared `grimoire` schema uses a typed entity spine rather than the
+standalone prototype's Firestore and polymorphic JSON model:
 
 - `entity` stores shared identity, provenance, visibility, and hierarchy.
 - `entity_creature`, `entity_spell`, `entity_location`, and `entity_npc` hold
@@ -26,20 +26,41 @@ prototype's Firestore and polymorphic JSON model:
 - `knowledge_chunk`, `chunk_entity_mention`, `chunk_extraction`, `relationship`,
   and `embedding` provide corpus, graph, extraction, and retrieval state.
 - `book` and `adventure` organize source material.
-- `campaign`, `player_character`, `game_session`, and `knowledge_grant` hold
-  mutable play state and per-player knowledge visibility.
+- `campaign` is the trusted shared registry. Its canonical `schema_name` routes
+  requests to `grimoire_campaign_<campaign UUID without dashes>`.
+
+Each campaign schema owns `player_character`, `game_session`,
+`session_transcript`, and `knowledge_grant`, plus homebrew entity/detail,
+relationship, mention, and embedding backing tables. Campaign read views expose
+the shared corpus together with only that schema's homebrew overlay. Character
+metadata belongs to the campaign working set because it changes during play;
+only registry metadata stays shared.
+
+Routing uses SQLAlchemy's per-session `schema_translate_map`, never a
+connection `search_path`. The schema name comes only from a registry row and is
+checked against the campaign UUID before use. This keeps pooled connection and
+transaction reuse from carrying one campaign's route into another request.
+Campaign schemas are owned by the application role that provisions them;
+`PUBLIC` has neither schema creation nor table privileges.
 
 Queryable values use typed columns. Irregular display-only structures may use
 JSON. Embeddings share one pgvector-backed retrieval surface.
 
 ## Visibility and public access
 
-Private DM routes can read the complete corpus. Player-scoped reads centralize
-the `is_global OR granted-to-player` rule and apply the grant scope when
-projecting details. Public corpus routes are read-only. Full text and page
-images fail closed unless the book is explicitly classified as open-licensed;
-copyrighted books expose only derived entities, graph structure, and bounded
-snippets.
+Private DM routes can read the complete shared corpus and their campaign's
+homebrew. Player-scoped reads join the campaign-local grant table to the shared
+corpus/homebrew read view, centralize the `is_global OR granted-to-player` rule,
+and apply the grant scope when projecting details. The union read views are not
+updatable, so campaign-routed sessions cannot mutate shared corpus rows. Public
+corpus routes are read-only. Full text and page images fail closed unless the
+book is explicitly classified as open-licensed; copyrighted books expose only
+derived entities, graph structure, and bounded snippets.
+
+The separate `grimoire_chat` schema remains anonymous public corpus chat under
+ADR security/005. It has no campaign identity, so its sessions and opt-in shared
+snapshots are not campaign transcripts. Campaign play transcripts live in each
+campaign's `session_transcript` table.
 
 ## Ingestion
 

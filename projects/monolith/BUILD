@@ -55,6 +55,7 @@
 # gazelle:exclude public_turnstile_secret_isolation_test.py
 # gazelle:exclude ember_public_savings_grants_test.py
 # gazelle:exclude ember_synthetic_probe_grants_test.py
+# gazelle:exclude grimoire/campaign_isolation_test.py
 # gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi,tainted-path-traversal-pillow-fastapi
 load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
@@ -7748,6 +7749,14 @@ bdd_test(
 bdd_test(
     name = "public_reader_grants_test",
     srcs = ["public_reader_grants_test.py"],
+)
+
+# Real-Postgres test: campaign-local state and homebrew are physically isolated,
+# routed reads still join grants to the shared corpus, and legacy migration is
+# transactional and data-preserving.
+bdd_test(
+    name = "grimoire_campaign_isolation_test",
+    srcs = ["grimoire/campaign_isolation_test.py"],
 )
 
 # Real-Postgres test: the observability rollup writer upserts a snapshot and

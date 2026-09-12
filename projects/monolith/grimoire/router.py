@@ -15,20 +15,28 @@ already used elsewhere (e.g. knowledge/router.py's `-> dict` handlers).
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from core.db import get_session
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from knowledge.api import get_embedding_client
 from pydantic import BaseModel
+from shared.embedding import EmbeddingClient
 from sqlalchemy import func
 from sqlmodel import Session, or_, select
 
-from core.db import get_session
 from grimoire import library
+from grimoire.campaign_db import (
+    campaign_schema_name,
+    campaign_session,
+    provision_campaign_schema,
+)
 from grimoire.models import (
-    Campaign,
     ENTITY_DETAIL_MODELS,
+    Campaign,
     Entity,
     EntityType,
     GameSession,
@@ -41,8 +49,6 @@ from grimoire.models import (
 )
 from grimoire.search import search_campaign
 from grimoire.visibility import project_entity, visible_entities_query
-from knowledge.api import get_embedding_client
-from shared.embedding import EmbeddingClient
 
 logger = logging.getLogger("monolith.grimoire.router")
 
@@ -71,13 +77,31 @@ def _get_campaign_or_404(session: Session, campaign_id: str) -> Campaign:
     return campaign
 
 
+def get_campaign_session(
+    campaign_id: str,
+    registry_session: Session = Depends(get_session),
+):
+    """Route one request from the shared registry into its campaign schema."""
+    campaign = _get_campaign_or_404(registry_session, campaign_id)
+    with campaign_session(registry_session, campaign) as routed_session:
+        yield routed_session
+
+
 @router.post("/campaigns", response_model=CampaignView)
 def create_campaign(
     body: CampaignCreateRequest,
     session: Session = Depends(get_session),
 ) -> Campaign:
-    campaign = Campaign(name=body.name, dm_name=body.dm_name)
+    campaign_id = str(uuid.uuid4())
+    campaign = Campaign(
+        id=campaign_id,
+        schema_name=campaign_schema_name(campaign_id),
+        name=body.name,
+        dm_name=body.dm_name,
+    )
     session.add(campaign)
+    session.flush()
+    provision_campaign_schema(session, campaign)
     session.commit()
     session.refresh(campaign)
     return campaign
@@ -121,9 +145,8 @@ class CharacterView(BaseModel):
 def create_character(
     campaign_id: str,
     body: CharacterCreateRequest,
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_campaign_session),
 ) -> PlayerCharacter:
-    _get_campaign_or_404(session, campaign_id)
     character = PlayerCharacter(
         campaign_id=campaign_id,
         character_name=body.character_name,
@@ -143,9 +166,8 @@ def create_character(
     response_model=list[CharacterView],
 )
 def list_characters(
-    campaign_id: str, session: Session = Depends(get_session)
+    campaign_id: str, session: Session = Depends(get_campaign_session)
 ) -> list[PlayerCharacter]:
-    _get_campaign_or_404(session, campaign_id)
     return session.exec(
         select(PlayerCharacter)
         .where(PlayerCharacter.campaign_id == campaign_id)
@@ -196,9 +218,8 @@ def _get_character_in_campaign_or_404(
 def create_grant(
     campaign_id: str,
     body: GrantCreateRequest,
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_campaign_session),
 ) -> KnowledgeGrant:
-    _get_campaign_or_404(session, campaign_id)
     _get_character_in_campaign_or_404(session, campaign_id, body.player_character_id)
     # Validate the entity exists before insert: knowledge_grant.entity_id is a
     # FK, so on Postgres a missing entity raises IntegrityError and surfaces as
@@ -235,9 +256,8 @@ def create_grant(
 
 @router.get("/campaigns/{campaign_id}/grants", response_model=list[GrantView])
 def list_grants(
-    campaign_id: str, session: Session = Depends(get_session)
+    campaign_id: str, session: Session = Depends(get_campaign_session)
 ) -> list[KnowledgeGrant]:
-    _get_campaign_or_404(session, campaign_id)
     return session.exec(
         select(KnowledgeGrant)
         .where(KnowledgeGrant.campaign_id == campaign_id)
@@ -253,9 +273,8 @@ def update_grant(
     campaign_id: str,
     grant_id: str,
     body: GrantUpdateRequest,
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_campaign_session),
 ) -> KnowledgeGrant:
-    _get_campaign_or_404(session, campaign_id)
     grant = session.get(KnowledgeGrant, grant_id)
     if grant is None or grant.campaign_id != campaign_id:
         raise HTTPException(status_code=404, detail="grant not found")
@@ -275,13 +294,12 @@ def update_grant(
 def delete_grant(
     campaign_id: str,
     grant_id: str,
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_campaign_session),
 ) -> None:
     """Revoke a grant (the grant editor's "none" scope). Idempotent-ish: a
     missing grant is a 404, matching update_grant's not-found semantics. Removing
     a grant on a non-global entity returns it to invisible for that character;
     on a global entity it drops the character back to the default full view."""
-    _get_campaign_or_404(session, campaign_id)
     grant = session.get(KnowledgeGrant, grant_id)
     if grant is None or grant.campaign_id != campaign_id:
         raise HTTPException(status_code=404, detail="grant not found")
@@ -381,7 +399,7 @@ def list_entities(
     q: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     cursor: str | None = Query(default=None),
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_campaign_session),
 ) -> dict[str, Any]:
     """Grant-filtered, paginated entity list, spine-level only (no typed detail).
 
@@ -398,7 +416,6 @@ def list_entities(
     would have to reconcile the DM view's one-row-per-grant fan-out and is not
     worth it yet.
     """
-    _get_campaign_or_404(session, campaign_id)
     viewer = _resolve_viewer(session, campaign_id, as_)
 
     query = visible_entities_query(campaign_id, viewer).order_by(Entity.name)
@@ -432,7 +449,7 @@ def get_entity(
     campaign_id: str,
     entity_id: str,
     as_: str = Query(alias="as"),
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_campaign_session),
 ) -> dict[str, Any]:
     """Single entity, scope-projected, with typed detail hydrated.
 
@@ -441,7 +458,6 @@ def get_entity(
     returns None for name_only in lookup context, so both cases collapse to
     the same check below).
     """
-    _get_campaign_or_404(session, campaign_id)
     viewer = _resolve_viewer(session, campaign_id, as_)
 
     rows = session.exec(
@@ -470,7 +486,7 @@ def list_entity_relationships(
     campaign_id: str,
     entity_id: str,
     as_: str = Query(alias="as"),
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_campaign_session),
 ) -> list[dict[str, Any]]:
     """1-hop relationship edges from/to entity_id, grant-filtered per neighbor.
 
@@ -480,7 +496,6 @@ def list_entity_relationships(
     name_only neighbor becomes a recognition stub instead of vanishing, while
     a wholly invisible neighbor (ungranted, non-global) drops its edge.
     """
-    _get_campaign_or_404(session, campaign_id)
     viewer = _resolve_viewer(session, campaign_id, as_)
 
     center_rows = session.exec(
@@ -527,7 +542,7 @@ def list_entity_mentions(
     campaign_id: str,
     entity_id: str,
     as_: str = Query(alias="as"),
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_campaign_session),
 ) -> list[dict[str, Any]]:
     """Chunks that mention this entity (the "Sources" list on entity detail).
 
@@ -537,7 +552,6 @@ def list_entity_mentions(
     detail 404). Chunks themselves are corpus-global in v1, so once the gate
     passes every mention is returned.
     """
-    _get_campaign_or_404(session, campaign_id)
     viewer = _resolve_viewer(session, campaign_id, as_)
 
     rows = session.exec(
@@ -638,12 +652,13 @@ def get_chunk(
     """One chunk with full content, image URL, seq neighbours, and on-page
     entity chips projected for the (campaign, viewpoint). The campaign/viewpoint
     only shape the entity chips; the chunk body is corpus-global."""
-    _get_campaign_or_404(session, campaign)
-    viewer = _resolve_viewer(session, campaign, as_)
-    chunk = library.get_chunk(session, campaign, viewer, chunk_id)
-    if chunk is None:
-        raise HTTPException(status_code=404, detail="chunk not found")
-    return chunk
+    campaign_record = _get_campaign_or_404(session, campaign)
+    with campaign_session(session, campaign_record) as routed_session:
+        viewer = _resolve_viewer(routed_session, campaign, as_)
+        chunk = library.get_chunk(routed_session, campaign, viewer, chunk_id)
+        if chunk is None:
+            raise HTTPException(status_code=404, detail="chunk not found")
+        return chunk
 
 
 def _parse_s3_uri(uri: str) -> tuple[str, str] | None:
@@ -729,7 +744,7 @@ async def search_campaign_route(
     as_: str = Query(alias="as"),
     q: str = Query(min_length=1),
     k: int = Query(default=10, ge=1, le=50),
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_campaign_session),
     embed_client: EmbeddingClient = Depends(get_embedding_client),
 ) -> list[dict[str, Any]]:
     """kNN search over embedding, grant-filtered, mixed entity/chunk hits.
@@ -738,7 +753,6 @@ async def search_campaign_route(
     on the same visible_entities_query()/project_entity() helpers as the
     entity read paths above.
     """
-    _get_campaign_or_404(session, campaign_id)
     viewer = _resolve_viewer(session, campaign_id, as_)
     return await search_campaign(session, embed_client, campaign_id, viewer, q, k=k)
 
@@ -764,10 +778,8 @@ class GameSessionView(BaseModel):
 )
 def create_game_session(
     campaign_id: str,
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_campaign_session),
 ) -> GameSession:
-    _get_campaign_or_404(session, campaign_id)
-
     active = session.exec(
         select(GameSession).where(
             GameSession.campaign_id == campaign_id,
@@ -795,9 +807,8 @@ def update_game_session(
     campaign_id: str,
     session_id: str,
     body: GameSessionUpdateRequest,
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_campaign_session),
 ) -> GameSession:
-    _get_campaign_or_404(session, campaign_id)
     game_session = session.get(GameSession, session_id)
     if game_session is None or game_session.campaign_id != campaign_id:
         raise HTTPException(status_code=404, detail="game session not found")
