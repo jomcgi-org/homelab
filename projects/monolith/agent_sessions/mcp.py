@@ -38,6 +38,7 @@ from agent_sessions.transport import (
 from core.db import get_engine
 from core.github import GITHUB_REPO
 from core.mcp_app import mcp
+from core.mcp_policy import PUBLIC_TAG
 from faas.embervm_client import EmberVMTransportError
 from framework import log_task_exception
 from goosecracker.api import REPO_CATALOG
@@ -1512,7 +1513,7 @@ def _voice_ui_principal() -> tuple[str, str]:
     return principal.subject, str(principal.authority)
 
 
-@mcp.tool
+@mcp.tool(tags={PUBLIC_TAG})
 async def monolith_voice_ui_attach(session_id: int | None = None) -> dict:
     """Bind the open voice UI companion to an existing or new agent session."""
     subject, authority = _voice_ui_principal()
@@ -1525,7 +1526,7 @@ async def monolith_voice_ui_attach(session_id: int | None = None) -> dict:
     )
 
 
-@mcp.tool
+@mcp.tool(tags={PUBLIC_TAG})
 async def monolith_voice_ui_show(
     surface: str, ref: str, focus: str | None = None
 ) -> dict:
@@ -1536,7 +1537,7 @@ async def monolith_voice_ui_show(
     )
 
 
-@mcp.tool
+@mcp.tool(tags={PUBLIC_TAG})
 async def monolith_voice_ui_ask(
     question: str,
     options: list[str],
@@ -1554,7 +1555,7 @@ async def monolith_voice_ui_ask(
     )
 
 
-@mcp.tool
+@mcp.tool(tags={PUBLIC_TAG})
 async def monolith_voice_ui_dismiss(surface: str | None = None) -> dict:
     """Dismiss one companion surface, or the current surface when omitted."""
     subject, authority = _voice_ui_principal()
