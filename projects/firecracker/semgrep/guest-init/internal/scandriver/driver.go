@@ -93,6 +93,7 @@ func Start(ctx context.Context, bin, rulesDir, settingsFile string) (*Driver, er
 func (d *Driver) Scan(req vsockproto.ScanRequest) (vsockproto.ScanResult, error) {
 	d.scanMu.Lock()
 	defer d.scanMu.Unlock()
+	result := vsockproto.ScanResult{CorrelationID: req.CorrelationID}
 
 	files := make([]map[string]string, 0, len(req.Files))
 	for _, f := range req.Files {
@@ -104,19 +105,21 @@ func (d *Driver) Scan(req vsockproto.ScanRequest) (vsockproto.ScanResult, error)
 		"git_info": map[string]string{"username": "", "repo": "", "branch": ""},
 	}
 	if err := json.NewEncoder(d.stdin).Encode(wire); err != nil { // Encode appends '\n'
-		return vsockproto.ScanResult{}, err
+		return result, err
 	}
 
 	line, err := d.stdout.ReadBytes('\n')
 	if err != nil {
-		return vsockproto.ScanResult{}, err
+		return result, err
 	}
 
 	// line is a bufio.Reader-owned slice reused by the next ReadBytes call, so
 	// copy it before it outlives this Scan call (cliout.Parse stashes it in
 	// ScanResult.RawCliOutput). No stripPrefix: the scan-server already
 	// returns paths matching the request's file values.
-	return cliout.Parse(append([]byte(nil), line...), "")
+	result, err = cliout.Parse(append([]byte(nil), line...), "")
+	result.CorrelationID = req.CorrelationID
+	return result, err
 }
 
 // Close shuts the child down.

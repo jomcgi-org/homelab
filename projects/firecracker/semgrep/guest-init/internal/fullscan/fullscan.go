@@ -27,9 +27,10 @@ type Runner func(ctx context.Context, treeDir string) ([]byte, error)
 // whose cleaned path would escape the tree (e.g. "../x") is rejected with an
 // error.
 func Scan(ctx context.Context, req vsockproto.ScanRequest, runner Runner) (vsockproto.ScanResult, error) {
+	result := vsockproto.ScanResult{CorrelationID: req.CorrelationID}
 	dir, err := os.MkdirTemp("/tmp", "sgfull-")
 	if err != nil {
-		return vsockproto.ScanResult{}, fmt.Errorf("fullscan: create tree dir: %w", err)
+		return result, fmt.Errorf("fullscan: create tree dir: %w", err)
 	}
 	defer os.RemoveAll(dir)
 
@@ -37,34 +38,35 @@ func Scan(ctx context.Context, req vsockproto.ScanRequest, runner Runner) (vsock
 		clean := filepath.Clean(string(os.PathSeparator) + f.Path)
 		dst := filepath.Join(dir, clean)
 		if !strings.HasPrefix(dst, dir+string(os.PathSeparator)) {
-			return vsockproto.ScanResult{}, fmt.Errorf("fullscan: file path %q escapes tree dir", f.Path)
+			return result, fmt.Errorf("fullscan: file path %q escapes tree dir", f.Path)
 		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return vsockproto.ScanResult{}, fmt.Errorf("fullscan: mkdir for %q: %w", f.Path, err)
+			return result, fmt.Errorf("fullscan: mkdir for %q: %w", f.Path, err)
 		}
 		if err := os.WriteFile(dst, []byte(f.Content), 0o644); err != nil {
-			return vsockproto.ScanResult{}, fmt.Errorf("fullscan: write %q: %w", f.Path, err)
+			return result, fmt.Errorf("fullscan: write %q: %w", f.Path, err)
 		}
 	}
 
 	out, runErr := runner(ctx, dir)
 	if runErr != nil && len(out) == 0 {
-		return vsockproto.ScanResult{}, fmt.Errorf("fullscan: run scan: %w", runErr)
+		return result, fmt.Errorf("fullscan: run scan: %w", runErr)
 	}
 
-	res, err := cliout.Parse(out, dir)
+	result, err = cliout.Parse(out, dir)
+	result.CorrelationID = req.CorrelationID
 	if err != nil {
-		return vsockproto.ScanResult{}, err
+		return result, err
 	}
 
 	// semgrep exits non-zero WITH cli_output when it finds issues (or hits a
 	// partial rule/parse error), so a runErr alongside output is not a hard
 	// failure: surface it alongside the findings we did parse.
 	if runErr != nil {
-		res.Errors = append(res.Errors, runErr.Error())
+		result.Errors = append(result.Errors, runErr.Error())
 	}
 
-	return res, nil
+	return result, nil
 }
 
 // SemgrepRunner runs the python `semgrep scan --pro` CLI (pysemgrep) over treeDir
