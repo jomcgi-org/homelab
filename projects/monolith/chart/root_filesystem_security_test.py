@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-
 _CONTAINER_TMP_VOLUMES = {
     "backend": "backend-tmp",
     "progress-ingest": "progress-ingest-tmp",
@@ -17,7 +16,7 @@ _CONTAINER_TMP_VOLUMES = {
 }
 
 
-def _render(*values_files: Path) -> list[dict]:
+def _render(*values_files: Path, set_values: tuple[str, ...] = ()) -> list[dict]:
     chart_dir = Path(__file__).resolve().parent
     command = [
         os.environ.get("HELM_BIN", "helm"),
@@ -29,6 +28,8 @@ def _render(*values_files: Path) -> list[dict]:
     ]
     for values_file in values_files:
         command.extend(["--values", str(values_file)])
+    for set_value in set_values:
+        command.extend(["--set", set_value])
     result = subprocess.run(
         command,
         capture_output=True,
@@ -45,12 +46,12 @@ def _values_path(env_name: str, fallback: Path) -> Path:
     return Path(os.environ.get(env_name, fallback))
 
 
-def _deployment(documents: list[dict]) -> dict:
+def _deployment(documents: list[dict], name: str = "monolith") -> dict:
     deployments = [
         document
         for document in documents
         if document.get("kind") == "Deployment"
-        and document.get("metadata", {}).get("name") == "monolith"
+        and document.get("metadata", {}).get("name") == name
     ]
     assert len(deployments) == 1
     return deployments[0]
@@ -75,6 +76,15 @@ def app_pod_spec(request: pytest.FixtureRequest) -> dict:
         "development": (deploy_values, dev_values),
     }
     deployment = _deployment(_render(*values_by_environment[request.param]))
+    return deployment["spec"]["template"]["spec"]
+
+
+@pytest.fixture
+def whatsapp_pod_spec() -> dict:
+    deployment = _deployment(
+        _render(set_values=("whatsapp.enabled=true",)),
+        "monolith-whatsapp",
+    )
     return deployment["spec"]["template"]["spec"]
 
 
@@ -110,6 +120,28 @@ def test_each_container_has_only_its_own_writable_tmp(app_pod_spec: dict) -> Non
 
 def test_tmp_volumes_are_writable_by_the_non_root_process(app_pod_spec: dict) -> None:
     assert app_pod_spec["securityContext"] == {
+        "runAsNonRoot": True,
+        "runAsUser": 65532,
+        "runAsGroup": 65532,
+        "fsGroup": 65532,
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
+
+
+def test_whatsapp_gateway_has_only_writable_tmp(whatsapp_pod_spec: dict) -> None:
+    assert len(whatsapp_pod_spec["containers"]) == 1
+    container = whatsapp_pod_spec["containers"][0]
+    assert container["name"] == "whatsapp"
+    assert container["securityContext"] == {
+        "runAsNonRoot": True,
+        "runAsUser": 65532,
+        "readOnlyRootFilesystem": True,
+        "allowPrivilegeEscalation": False,
+        "capabilities": {"drop": ["ALL"]},
+    }
+    assert container["volumeMounts"] == [{"name": "whatsapp-tmp", "mountPath": "/tmp"}]
+    assert whatsapp_pod_spec["volumes"] == [{"name": "whatsapp-tmp", "emptyDir": {}}]
+    assert whatsapp_pod_spec["securityContext"] == {
         "runAsNonRoot": True,
         "runAsUser": 65532,
         "runAsGroup": 65532,
