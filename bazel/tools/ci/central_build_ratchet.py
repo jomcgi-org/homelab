@@ -27,9 +27,7 @@ import sys
 from typing import Sequence
 
 CENTRAL_BUILD = "projects/monolith/BUILD"
-_GAZELLE_EXCLUDE = re.compile(
-    r"^\s*#\s*gazelle:exclude(?:\s+(?P<pattern>.*?))?\s*$"
-)
+_GAZELLE_EXCLUDE = re.compile(r"^\s*#\s*gazelle:exclude(?:\s+(?P<pattern>.*?))?\s*$")
 
 
 class RatchetError(RuntimeError):
