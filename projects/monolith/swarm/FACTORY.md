@@ -735,6 +735,16 @@ head and findings, and the failed round still counts, so a round that keeps
 failing spends the bound instead of looping inside it. A node that escalated is
 deliberately not reopened, because escalation asked for the planner.
 
+The same loop owns merge conflict recovery. An approved pull request that
+GitHub reports as conflicting, including one ejected from the merge queue for a
+conflict after settlement, returns to `admitted` and opens the next bounded
+round. Its correction rebases the task branch onto `origin/main`, preserves the
+reviewed change, resolves the conflicts, pushes with force-with-lease, and
+reports the new head. The independent re-review then examines that exact head.
+The lane audits `merge_conflict_correction` when the pair is inserted, and an
+exhausted round bound returns the conflict to the planner like an unresolved
+`changes_requested` verdict.
+
 Reopening cleans up after the round it replaces. The failed round's re-review
 never ran and never can, so it is discarded in the same atomic edit, which
 returns its attempt and its ceiling to the allowance; its correction stays,
@@ -826,7 +836,9 @@ write access to pull requests and issues before the flag is worth turning on.
 With the flag on, a task that settled `succeeded` with pull request evidence
 has its merge armed through the GitHub auto-merge mutation with the rebase
 method, the equivalent of `gh pr merge --auto --rebase`, and the lane audits
-`merge_armed`. Exactly one factory pull request is armed at a time, because
+`merge_armed`. Landing first checks that the pull request is still at the exact
+approved head and has no computed merge conflict. Exactly one factory pull
+request is armed at a time, because
 this repository merges through the GitHub merge queue and an ejection cascades
 across every candidate behind the one that failed. The holder is read from the
 lane's own audits and from GitHub: before arming anything, one page of open
@@ -854,17 +866,19 @@ Later ticks observe the armed pull request:
 | merged | audits `merged`, then closes the issue |
 | closed, not merged | audits `merge_arm_refused` and stops |
 | open, head moved off the armed SHA | turns auto-merge back off, audits `merge_arm_refused` with `head_moved` |
-| open, auto-merge gone | audits `merge_ejected` and re-arms |
+| open, auto-merge gone with a merge conflict | audits `merge_ejected` and returns the task to correction |
+| open, auto-merge gone for another reason | audits `merge_ejected` and re-arms |
 | open, still armed | waits |
 
 An open pull request whose auto-merge GitHub has turned off was ejected from the
 merge queue. Watching only for a closed pull request wedged the holder forever,
 so the ejection is named and the pull request is armed again: the queue analysis
-failure class is usually transient. After two ejections the lane audits
+failure class is usually transient. A computed merge conflict instead reopens
+the settled task on the same graph and uses its remaining review rounds. After
+two other ejections the lane audits
 `merge_arm_refused`, sends one Discord warning, and leaves the pull request for
-a human, because an invalid merge commit needs a rebase no node here can do. The
-head recheck is what stops a branch that moved under an armed pull request from
-merging something no reviewer approved.
+a human. The head recheck is what stops a branch that moved under an armed pull
+request from merging something no reviewer approved.
 
 A mutation GitHub refuses audits `merge_arm_refused` and is not retried; a
 GitHub read or write that fails audits `landing_error` by exception type and

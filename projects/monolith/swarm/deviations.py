@@ -169,6 +169,7 @@ def factory_deviation(
     review_rounds_used: int,
     max_review_rounds: int,
     pending_review: str | None = None,
+    pending_reason: str = "changes_requested",
     loop_refusal: str | None = None,
     integration_refusal: str | None = None,
 ) -> dict:
@@ -207,8 +208,13 @@ def factory_deviation(
     if pending_review is not None and review_rounds_used >= max_review_rounds:
         failed = _failed_correction(work, runs)
         text = (
-            f"{pending_review} requested changes after "
+            f"{pending_review} approved a head that now has a merge conflict after "
             f"{review_rounds_used} engine-owned correction rounds."
+            if pending_reason == "merge_conflict"
+            else (
+                f"{pending_review} requested changes after "
+                f"{review_rounds_used} engine-owned correction rounds."
+            )
         )
         if failed is not None:
             # Without this the planner reads an exhausted loop as "the reviewer
