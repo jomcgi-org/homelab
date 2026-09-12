@@ -250,6 +250,12 @@ class AgentResultReceipt(SQLModel, table=True):
     response_observed_at: datetime | None = Field(
         default=None, sa_type=DateTime(timezone=True)
     )
+    # The original synchronous POST ended without producing a validated
+    # response. This is distinct from response_observed_at: it proves that the
+    # observer no longer needs the session fence, not that it saw a response.
+    response_observer_released_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
     result_sha256: str | None = None
     result_body: bytes | None = Field(default=None, sa_type=LargeBinary)
 
