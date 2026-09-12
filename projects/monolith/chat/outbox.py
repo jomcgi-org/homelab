@@ -256,11 +256,7 @@ def _discord_response_status(exc: Exception) -> int | None:
     the message before its edge returned a 5xx response.
     """
     status = getattr(exc, "status", None)
-    if (
-        isinstance(status, int)
-        and not isinstance(status, bool)
-        and 400 <= status < 500
-    ):
+    if isinstance(status, int) and not isinstance(status, bool) and 400 <= status < 500:
         return status
     return None
 
