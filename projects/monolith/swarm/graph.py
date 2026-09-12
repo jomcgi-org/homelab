@@ -1060,6 +1060,44 @@ def _invocation_phase(run: SwarmNodeRun) -> str | None:
     return None
 
 
+# How many capacity denials one node may shrug off. A session create the
+# control plane refused for capacity never reached a model and did none of the
+# attempt's work, so spending an attempt on it retires a node over EmberVM's
+# state rather than its own: four refine attempts died that way inside twenty
+# minutes while the only brick rebuilt after a spot preemption (#6045). The
+# bound is what stops a permanently saturated control plane from retrying for
+# ever. Past it the denials count like any other failure and the node retires.
+MAX_CAPACITY_DENIED_ATTEMPTS = 3
+
+
+def _capacity_denied(run: SwarmNodeRun) -> bool:
+    """True when the control plane refused this attempt a slot before it ran."""
+    if not run.outcome_json:
+        return False
+    try:
+        outcome = json.loads(run.outcome_json)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(outcome, dict) and bool(outcome.get("capacity_denied"))
+
+
+def _spent_attempts(runs: list[SwarmNodeRun]) -> int:
+    denied = sum(_capacity_denied(run) for run in runs)
+    return len(runs) - min(denied, MAX_CAPACITY_DENIED_ATTEMPTS)
+
+
+def attempts_spent(runs: list[dict], node_key: str) -> int:
+    """Attempts a node has spent, counted over node_runs rows.
+
+    The same count admit_dispatch enforces, for callers that read readiness off
+    the projection rather than the ledger. Both must agree: a node the reader
+    calls ready and the ledger calls exhausted is a dispatch refused every tick.
+    """
+    attempts = [run for run in runs if run["node_key"] == node_key]
+    denied = sum(bool(run.get("capacity_denied")) for run in attempts)
+    return len(attempts) - min(denied, MAX_CAPACITY_DENIED_ATTEMPTS)
+
+
 def _accounted_cost(run: SwarmNodeRun, budgets: dict[str, float]) -> float:
     measured = run.cost_usd if _valid_cost(run.cost_usd, zero=True) else None
     if run.status in TERMINAL_RUN_STATUSES and measured is not None:
@@ -1246,7 +1284,7 @@ def admit_dispatch(
             return refuse("node_succeeded")
         if any(run.status not in TERMINAL_RUN_STATUSES for run in runs):
             return refuse("active_attempt")
-        if len(runs) >= node.max_attempts:
+        if _spent_attempts(runs) >= node.max_attempts:
             return refuse("attempts_exhausted")
         for dependency in _node_deps(node):
             if dependency not in live or not any(
@@ -1462,6 +1500,7 @@ def node_runs(
                 "reserved_cost_usd": row.reserved_cost_usd,
                 "accounted_cost_usd": _accounted_cost(row, budgets),
                 "accounting_basis": _accounting_basis(row),
+                "capacity_denied": _capacity_denied(row),
                 "session_id": row.session_id,
                 "status": row.status,
                 "cost_usd": row.cost_usd,

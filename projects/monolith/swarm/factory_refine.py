@@ -792,16 +792,20 @@ def reconcile(
     if NODE_KEY in ready:
         return
     accounted = sum(run["accounted_cost_usd"] for run in attempts)
-    if len(attempts) >= node["max_attempts"]:
+    # Attempts the node actually spent, which is what readiness above counted:
+    # a create the control plane refused for capacity is excluded up to its
+    # bound, so a saturated EmberVM does not read as a node out of attempts.
+    spent = factory_conductor.graph.attempts_spent(attempts, NODE_KEY)
+    if spent >= node["max_attempts"]:
         reason = (
             "Refine attempt limit exhausted after "
-            f"{len(attempts)} of {node['max_attempts']} attempts without a "
+            f"{spent} of {node['max_attempts']} attempts without a "
             "verified brief."
         )
     elif accounted >= node["max_cost_usd"]:
         reason = (
             "Refine cost limit exhausted after "
-            f"{len(attempts)} of {node['max_attempts']} attempts: "
+            f"{spent} of {node['max_attempts']} attempts: "
             f"{accounted:.2f} USD accounted against the "
             f"{node['max_cost_usd']:.2f} USD node allowance without a verified brief."
         )

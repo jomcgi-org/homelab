@@ -2083,7 +2083,7 @@ def queued_factory(feedback_db, monkeypatch):
 
 
 @pytest.fixture
-def not_invoked_factory(queued_factory, monkeypatch):
+def not_invoked_factory(queued_factory, monkeypatch, request):
     import json
     from sqlmodel import Session, SQLModel, select
     from agent_sessions import admission, store
@@ -2112,10 +2112,13 @@ def not_invoked_factory(queued_factory, monkeypatch):
     owner = "original-executor"
     assert store.claim_pending_message_for_session_sync(s.sid, owner) == 1
     assert admission.recheck(s.sid, 1, owner, "claude-runtime")
+    # The text the session owner recorded for the failure. The default is a
+    # generic one; a test that needs the control plane's own refusal passes the
+    # status line the transport raises, which is how a denial is recognised.
     store.mark_turn_error_sync(
         s.sid,
         1,
-        "create capacity denied",
+        getattr(request, "param", "create failed before invoke"),
         owner,
         invocation_not_attempted=True,
         dispatch_count=1,
@@ -2262,6 +2265,81 @@ def test_not_invoked_settles_actual_factory_path_at_zero_without_cleanup(
     # remains ready for the retry promised by its attempt bound.
     assert conductor._ready_nodes(conductor.graph.load_graph(s.task["id"]), [run])
     assert s.native_snapshot() == native
+
+
+@pytest.mark.parametrize(
+    "not_invoked_factory",
+    [
+        "Client error '429 Too Many Requests' for url "
+        "'https://embervm.default.svc/v1/workloads/claude/sessions'"
+    ],
+    indirect=True,
+)
+def test_capacity_denied_create_is_marked_audited_and_not_charged_an_attempt(
+    not_invoked_factory,
+):
+    """EmberVM having no slot is not the node failing, so it keeps its attempt."""
+    import json
+    from sqlmodel import Session, select
+    from swarm.factory_models import FactoryAudit
+
+    s = not_invoked_factory
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    assert run["status"] == "failed" and run["capacity_denied"] is True
+    result = json.loads(run["outcome_json"])
+    assert result["capacity_denied"] is True
+    assert result["not_invoked"]["capacity_denied"] is True
+    assert conductor.graph.attempts_spent([run], run["node_key"]) == 0
+    with Session(s.engine) as db:
+        denials = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "capacity_denied")
+        ).all()
+    assert len(denials) == 1
+    detail = json.loads(denials[0].detail_json)
+    assert detail["node_key"] == run["node_key"] and detail["attempt"] == 1
+    assert detail["session_id"] == s.sid
+
+
+def test_generic_not_invoked_failure_is_not_read_as_a_capacity_denial(
+    not_invoked_factory,
+):
+    """Only the control plane's own refusal excuses the attempt."""
+    import json
+
+    s = not_invoked_factory
+    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
+    run = conductor.graph.node_runs(s.task["id"])[0]
+    assert run["capacity_denied"] is False
+    assert json.loads(run["outcome_json"])["capacity_denied"] is False
+    assert conductor.graph.attempts_spent([run], run["node_key"]) == 1
+
+
+def _ready_node(key, **overrides):
+    node = {"node_key": key, "deps": [], "max_attempts": 2, "max_cost_usd": 4.0}
+    node.update(overrides)
+    return node
+
+
+def _ready_run(key, **overrides):
+    run = {
+        "node_key": key,
+        "status": "failed",
+        "accounted_cost_usd": 0.0,
+        "capacity_denied": False,
+    }
+    run.update(overrides)
+    return run
+
+
+def test_ready_nodes_excuse_capacity_denials_up_to_their_bound():
+    """A node with one attempt left survives three refused slots, not four."""
+    node = _ready_node("implement_fix", max_attempts=1)
+    denied = _ready_run("implement_fix", capacity_denied=True)
+    for count in range(1, 4):
+        assert conductor._ready_nodes([node], [denied] * count) == [node]
+    assert conductor._ready_nodes([node], [denied] * 4) == []
+    assert conductor._ready_nodes([node], [_ready_run("implement_fix")]) == []
 
 
 @pytest.mark.parametrize(

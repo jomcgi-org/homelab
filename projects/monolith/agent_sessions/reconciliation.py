@@ -149,6 +149,27 @@ def _factory_owner(db: Session, pin: dict, session_id: int | None):
     return owner
 
 
+# EmberVM refuses a create it cannot place with 429 and a machine readable
+# reason (transport._CAPACITY_DENIAL_REASONS). That body does not survive into
+# the turn: what is persisted is the status line httpx raised once the
+# transport's capacity ladder ran out, so the refusal is read back off that
+# line. The endpoint is matched as well as the status because a refusal to
+# place a session is the only 429 that means no work was possible at all.
+_CAPACITY_DENIAL_STATUS = "429 Too Many Requests"
+_CAPACITY_DENIAL_ENDPOINT = "/sessions"
+
+
+def _capacity_denied_turn(turn) -> bool:
+    """True when this failed turn's error is the control plane refusing a slot.
+
+    Read together with the not-invoked evidence, never alone: the phase proves
+    the attempt never reached its model, and this says the reason was that
+    EmberVM had no slot for it rather than anything about the attempt itself.
+    """
+    text = f"{turn.voice_summary or ''}\n{turn.result_text or ''}"
+    return _CAPACITY_DENIAL_STATUS in text and _CAPACITY_DENIAL_ENDPOINT in text
+
+
 def read_not_invoked_factory_attempt(
     db: Session, pin: dict, session_id: int | None
 ) -> dict | None:
@@ -300,6 +321,9 @@ def read_not_invoked_factory_attempt(
         "permit_id": permit.id,
         "permit_outcome": permit.outcome,
         "invocation_phase": "not_invoked",
+        # Whether the control plane refused the slot, which the factory reads
+        # to decide if this failure spends one of the node's attempts (#6045).
+        "capacity_denied": _capacity_denied_turn(turn),
         "cost_usd": None,
     }
 
