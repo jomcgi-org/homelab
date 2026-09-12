@@ -2316,7 +2316,7 @@ def _merge_conflict_requests(task_id: str) -> list[dict]:
 def _record_merge_conflict_correction(
     task_id: str, conflict: dict, ordinal: int
 ) -> None:
-    """Audit one exact-head conflict correction, idempotently."""
+    """Audit one exact-head conflict correction round, idempotently."""
     from swarm.factory_controls import _audit, _locked_session
     from swarm.factory_models import FactoryAudit
 
@@ -2331,6 +2331,7 @@ def _record_merge_conflict_correction(
         if any(
             (detail := json.loads(raw)).get("pr_number") == identity[0]
             and detail.get("head_sha") == identity[1]
+            and detail.get("round") == ordinal
             for raw in rows
         ):
             return
@@ -2347,9 +2348,18 @@ def _record_merge_conflict_correction(
 
 
 def _pending_merge_conflict(
-    task: dict, nodes: list[dict], runs: list[dict]
+    task: dict,
+    nodes: list[dict],
+    runs: list[dict],
+    *,
+    detect_live: bool = True,
 ) -> tuple[dict, dict] | None:
-    """Newest exact-head approval whose delivery is known to conflict."""
+    """Newest exact-head approval whose delivery is known to conflict.
+
+    Durable landing observations are always scanned so a graph edit that won
+    just before its audit can be backfilled even while its correction is
+    runnable. A new round is only returned when ``detect_live`` permits it.
+    """
 
     requests = _merge_conflict_requests(task["id"])
     reviews = sorted(
@@ -2391,12 +2401,13 @@ def _pending_merge_conflict(
                 ordinal = int(correction["node_key"].removeprefix("correct_"))
                 _record_merge_conflict_correction(task["id"], conflict, ordinal)
             continue
-        return review, conflict
+        if detect_live:
+            return review, conflict
 
     # An active delivery has not passed through landing yet. Read its latest
     # approval once the graph is otherwise exhausted, and only accept a
     # conflict on the exact reviewed task-branch head.
-    if not reviews:
+    if not detect_live or not reviews:
         return None
     review = reviews[0]
     if any(review["node_key"] in node["deps"] for node in nodes):
@@ -2420,11 +2431,40 @@ def _pending_merge_conflict(
         "head_sha": head,
         "source": "delivered_pr",
     }
+    from swarm.factory_controls import request_merge_conflict_correction
+
+    recorded = request_merge_conflict_correction(
+        task["id"], number, head, "delivered_pr", ACTOR
+    )
+    if not recorded["ok"]:
+        return None
     return review, conflict
 
 
-def _failed_round(nodes: list[dict], runs: list[dict]) -> dict | None:
-    """The review behind the newest engine round, when that round cannot finish.
+def _merge_conflict_for_round(task_id: str, ordinal: int) -> dict | None:
+    """The conflict that opened an engine round, when this was that kind of loop."""
+    from swarm.factory_models import FactoryAudit
+
+    with Session(get_engine()) as db:
+        rows = db.exec(
+            select(FactoryAudit.detail_json)
+            .where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == "merge_conflict_correction",
+            )
+            .order_by(FactoryAudit.id.desc())
+        ).all()
+    for raw in rows:
+        detail = json.loads(raw)
+        if detail.get("round") == ordinal:
+            return detail
+    return None
+
+
+def _failed_round(
+    task_id: str, nodes: list[dict], runs: list[dict]
+) -> tuple[dict, dict | None] | None:
+    """The review and cause behind the newest round when it cannot finish.
 
     A correction that settles without delivering, or a re-review that settles
     without a verdict, leaves the task with nothing runnable and nothing that
@@ -2438,9 +2478,12 @@ def _failed_round(nodes: list[dict], runs: list[dict]) -> dict | None:
     Escalation is deliberately not a failure here. A node that escalated asked
     for the planner, and answering it with another round would talk over it.
 
-    Only the newest round is considered, which is what makes this idempotent:
-    once round n+1 exists it is the newest, it has no settled run yet, and this
-    returns None until it too fails.
+    A merge-conflict round depends on an approving review rather than one that
+    requested changes. Its dedicated audit supplies that cause so a failed
+    correction or re-review spends the round and reopens the same conflict in
+    the next round. Only the newest round is considered, which is what makes
+    this idempotent: once round n+1 exists it is the newest, it has no settled
+    run yet, and this returns None until it too fails.
     """
     ordinals = [
         int(match.group(1))
@@ -2479,8 +2522,13 @@ def _failed_round(nodes: list[dict], runs: list[dict]) -> dict | None:
         if not settled:
             continue
         latest = max(settled, key=lambda run: run["id"])
-        if _artifact(latest).get("verdict") == "changes_requested":
-            return latest
+        verdict = _artifact(latest).get("verdict")
+        if verdict == "changes_requested":
+            return latest, None
+        if verdict == "approve":
+            conflict = _merge_conflict_for_round(task_id, newest)
+            if conflict is not None:
+                return latest, conflict
     return None
 
 
@@ -3577,17 +3625,24 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     rounds_used = _review_rounds_used(task_id)
     pending = _pending_correction(nodes, runs)
     reopened = False
+    conflict = None
+    if pending is None:
+        # Conflict detection runs before failed-round recovery so a graph edit
+        # that won just before its audit can backfill the durable round marker.
+        # The failed-round scan below can then reopen that round in this tick.
+        conflict_pending = _pending_merge_conflict(
+            task, nodes, runs, detect_live=not ready
+        )
+        if conflict_pending is not None:
+            pending, conflict = conflict_pending
     if pending is None:
         # A round the engine opened and that then failed is the engine's to
         # reopen. The planner cannot: it is refused the round keys and cannot
         # discard a node that has run, so the task would only pause.
-        pending = _failed_round(nodes, runs)
-        reopened = pending is not None
-    conflict = None
-    if pending is None and not ready:
-        conflict_pending = _pending_merge_conflict(task, nodes, runs)
-        if conflict_pending is not None:
-            pending, conflict = conflict_pending
+        failed = _failed_round(task_id, nodes, runs)
+        if failed is not None:
+            pending, conflict = failed
+            reopened = True
     loop_refusal = None
     if pending is not None and rounds_used < max_rounds:
         inserted, loop_refusal = _insert_review_round(

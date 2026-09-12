@@ -5515,6 +5515,86 @@ def fail_round_node(task, node_key):
     )
 
 
+def test_a_failed_merge_conflict_round_reuses_the_bound_then_exhausts(
+    feedback_db, monkeypatch
+):
+    from sqlmodel import Session, select
+    from swarm.factory_models import FactoryAudit
+
+    task, policy = reviewed_task(verdict="approve", rounds=2)
+    monkeypatch.setattr(conductor, "github_get", lambda *_args: conflicting_pull(task))
+    conductor.reconcile_task(task["id"], policy, object())
+    fail_round_node(task, "correct_1")
+    monkeypatch.setattr(
+        conductor, "github_get", lambda *_args: {"object": {"sha": HEAD_ONE}}
+    )
+
+    conductor.reconcile_task(task["id"], policy, object())
+
+    nodes = {node["node_key"]: node for node in conductor.graph.load_graph(task["id"])}
+    assert nodes["correct_2"]["deps"] == ["review_fix"]
+    assert nodes["correct_2"]["model"] == "luna"
+    assert "force-with-lease" in nodes["correct_2"]["prompt"]
+    assert nodes["review_2"]["deps"] == ["correct_2"]
+    assert conductor._review_rounds_used(task["id"]) == 2
+    with Session(feedback_db) as db:
+        events = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "merge_conflict_correction",
+            )
+        ).all()
+        assert [
+            __import__("json").loads(event.detail_json)["round"] for event in events
+        ] == [1, 2]
+
+    fail_round_node(task, "correct_2")
+    conductor.reconcile_task(task["id"], policy, object())
+
+    nodes = {node["node_key"]: node for node in conductor.graph.load_graph(task["id"])}
+    assert "correct_3" not in nodes and "review_3" not in nodes
+    deviation = node_planner_context(nodes["conductor_1"])["deviation"]
+    assert deviation["code"] == "review_rounds_exhausted"
+    assert "approved a head that now has a merge conflict" in deviation["text"]
+    assert "correct_2 delivered nothing" in deviation["text"]
+
+
+def test_a_direct_conflict_backfills_a_lost_correction_audit(feedback_db, monkeypatch):
+    from sqlmodel import Session, select
+    from swarm.factory_models import FactoryAudit
+
+    task, policy = reviewed_task(verdict="approve")
+    monkeypatch.setattr(conductor, "github_get", lambda *_args: conflicting_pull(task))
+    record = conductor._record_merge_conflict_correction
+    calls = []
+
+    def lose_first_audit(task_id, conflict, ordinal):
+        calls.append(ordinal)
+        if len(calls) > 1:
+            record(task_id, conflict, ordinal)
+
+    monkeypatch.setattr(
+        conductor, "_record_merge_conflict_correction", lose_first_audit
+    )
+    conductor.reconcile_task(task["id"], policy, object())
+    version = conductor.graph.current_version(task["id"])
+
+    # correct_1 is runnable, but the durable detection marker is still scanned
+    # to repair the missing audit without inserting another pair.
+    conductor.reconcile_task(task["id"], policy, object())
+
+    assert conductor.graph.current_version(task["id"]) == version
+    assert calls == [1, 1]
+    with Session(feedback_db) as db:
+        events = db.exec(
+            select(FactoryAudit).where(
+                FactoryAudit.task_id == task["id"],
+                FactoryAudit.action == "merge_conflict_correction",
+            )
+        ).all()
+        assert len(events) == 1
+
+
 def test_a_failed_correction_opens_the_next_round_against_the_same_review(
     feedback_db, monkeypatch
 ):
@@ -5821,7 +5901,7 @@ def test_a_discarded_round_is_not_a_failed_round(feedback_db):
         ).ok
     nodes = conductor.graph.load_graph(task["id"])
     runs = conductor.graph.node_runs(task["id"])
-    assert conductor._failed_round(nodes, runs) is None
+    assert conductor._failed_round(task["id"], nodes, runs) is None
     assert conductor._pending_correction(nodes, runs)["node_key"] == "review_fix"
 
     conductor.reconcile_task(task["id"], policy, object())

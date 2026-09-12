@@ -447,11 +447,18 @@ def _arm(repo: str, item: dict) -> None:
             _refuse(item, "pull request is not open and ready")
             return
         head = (pr.get("head") or {}).get("sha")
-        if isinstance(head, str) and item["head_sha"] and head != item["head_sha"]:
+        approved = item["head_sha"]
+        if not isinstance(approved, str) or not re.fullmatch(r"[0-9a-f]{40}", approved):
+            _refuse(item, "approved_head_missing")
+            return
+        if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+            _refuse(item, "pull_request_head_missing", approved_head_sha=approved)
+            return
+        if head != approved:
             _refuse(
                 item,
                 "head_moved",
-                approved_head_sha=item["head_sha"],
+                approved_head_sha=approved,
                 head_sha=head,
             )
             return
