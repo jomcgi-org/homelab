@@ -12,6 +12,10 @@ web:
       secretKeyRef:
         key: uri
         name: monolith-public-db
+  - name: PUBLIC_READER_DATABASE_SERVICE
+    value: monolith-pg-ro
+  - name: PUBLIC_READER_DATABASE_USER
+    value: public_reader
   - name: PUBLIC_WRITER_DATABASE_URL
     valueFrom:
       secretKeyRef:

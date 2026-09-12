@@ -1,0 +1,193 @@
+{{- /*
+Destination-scoped egress for the private monolith app pod (ADR security/004).
+
+One pod contains backend, progress-ingest and frontend, so Cilium enforces one
+combined endpoint policy for all three containers. Loopback traffic between
+them never crosses the endpoint. Every network dependency below is proven by a
+rendered environment variable, an in-process client, or Kubernetes client use.
+
+Rollout has two gates:
+  enabled=true, enforce=false renders additive rules with default deny disabled.
+  enabled=true, enforce=true makes every unlisted destination a silent timeout.
+
+Use the additive shape for a representative Hubble window before enforcing.
+Short windows miss scheduled GitHub, weather, calendar and other periodic
+calls. The GKE overlay keeps this off because Dataplane V2 exposes no Cilium
+policy CRDs. The policy is enforceable only on a Cilium cluster.
+*/ -}}
+{{- if not (kindIs "bool" .Values.ciliumPolicy.egress.enabled) }}
+{{- fail "ciliumPolicy.egress.enabled must be a boolean" }}
+{{- end }}
+{{- if not (kindIs "bool" .Values.ciliumPolicy.egress.enforce) }}
+{{- fail "ciliumPolicy.egress.enforce must be a boolean" }}
+{{- end }}
+{{- if and .Values.ciliumPolicy.egress.enforce (not .Values.ciliumPolicy.egress.enabled) }}
+{{- fail "ciliumPolicy.egress.enforce requires ciliumPolicy.egress.enabled" }}
+{{- end }}
+{{- if .Values.ciliumPolicy.egress.enabled }}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-app-egress
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+spec:
+  description: >-
+    Destination-scoped egress for the private monolith app pod. Unlisted
+    destinations are denied only when ciliumPolicy.egress.enforce is true.
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: monolith
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: app
+  enableDefaultDeny:
+    egress: {{ .Values.ciliumPolicy.egress.enforce }}
+  egress:
+    # DNS is explicit because toFQDNs depends on Cilium observing answers.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+    # DATABASE_URL reaches the CNPG primary. The same selector covers every
+    # instance behind the release-aware -rw Service.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace }}
+            cnpg.io/cluster: {{ include "monolith.fullname" . }}-pg
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    # Authentik JWKS validation.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: authentik
+            app.kubernetes.io/name: authentik
+            app.kubernetes.io/instance: authentik
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+    # OTLP/HTTP trace export.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: otel-collector
+            app.kubernetes.io/name: otel-collector
+            app.kubernetes.io/instance: otel-collector
+      toPorts:
+        - ports:
+            - port: "4318"
+              protocol: TCP
+    # Chat generation and embeddings.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: inference
+            app.kubernetes.io/name: inference
+            app.kubernetes.io/component: inference
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: inference
+            app.kubernetes.io/name: inference
+            app.kubernetes.io/component: embeddings
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Search sidecar Deployment in this release.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ .Release.Namespace }}
+            app.kubernetes.io/name: monolith
+            app.kubernetes.io/instance: {{ .Release.Name }}
+            app.kubernetes.io/component: searxng
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # EmberVM control plane and OAuth token broker.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: embervm
+            app.kubernetes.io/name: embervm
+            app.kubernetes.io/instance: embervm
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: embervm
+            app.kubernetes.io/name: embervm-tokenbroker
+            app.kubernetes.io/instance: embervm
+            app.kubernetes.io/component: tokenbroker
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Demo Postgres connects through the EmberVM serving Envoy.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: embervm
+            app.kubernetes.io/name: embervm-serving-envoy
+            app.kubernetes.io/instance: embervm
+      toPorts:
+        - ports:
+            - port: "5401"
+              protocol: TCP
+    # GPU health snapshot collection.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: gpu-operator
+            k8s:app: nvidia-dcgm-exporter
+      toPorts:
+        - ports:
+            - port: "9400"
+              protocol: TCP
+    # Private frontend Qwen Flash calls use the operator-managed tailnet proxy.
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: tailscale
+            tailscale.com/managed: "true"
+            tailscale.com/parent-resource-type: svc
+            tailscale.com/parent-resource: inference-bridge-freetoken
+            tailscale.com/parent-resource-ns: tailscale
+      toPorts:
+        - ports:
+            - port: "8090"
+              protocol: TCP
+    # Kubernetes clients create and inspect Argo Workflows. Cilium evaluates
+    # the post-DNAT apiserver port on k3s, so 6443 is required alongside 443.
+    - toEntities:
+        - kube-apiserver
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "6443"
+              protocol: TCP
+    # Exact sanctioned external dependencies, TLS only. WSS is HTTPS upgraded
+    # on the same port. No world, CIDR-wide or wildcard-domain grant exists.
+    - toFQDNs:
+        {{- range .Values.ciliumPolicy.egress.externalFqdns }}
+        - matchName: {{ . | quote }}
+        {{- end }}
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+{{- end }}
