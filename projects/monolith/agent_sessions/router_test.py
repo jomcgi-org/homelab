@@ -2252,16 +2252,61 @@ def test_unknown_outcome_detail_retains_evidence_and_rejects_all_send_boundaries
     assert session.get(AgentSession, session_id).status == "failed"
 
 
-def test_factory_decisions_are_inert_without_a_configured_operator(client, monkeypatch):
-    """The capability arrives switched off: an empty allowlist refuses everyone."""
+def test_factory_decisions_accept_a_verified_identity_without_an_allowlist(
+    client, monkeypatch
+):
+    """Access is the gate: with no allowlist one verified identity decides."""
+    from swarm import factory_decisions
+
+    monkeypatch.delenv("FACTORY_OPERATOR_EMAILS", raising=False)
+    seen = {}
+
+    def apply_decision(receipt_id, option_key, actor, note=None):
+        seen.update(receipt_id=receipt_id, option_key=option_key, actor=actor)
+        return {"ok": True, "applied": True, "resolution": {}}
+
+    monkeypatch.setattr(factory_decisions, "apply_decision", apply_decision)
+    response = client.post(
+        "/api/agents/factory/decisions/4",
+        json={"option_key": "close"},
+        headers={"X-Auth-Email": "joe@example.test"},
+    )
+    assert response.status_code == 200
+    assert seen == {"receipt_id": 4, "option_key": "close", "actor": "joe@example.test"}
+
+
+@pytest.mark.parametrize(
+    "headers,detail",
+    [
+        ({}, "missing or ambiguous X-Auth-Email header"),
+        ({"X-Auth-Email": ""}, "not a factory operator"),
+        # Refused with no allowlist too. Access authorises the caller and this
+        # header is not evidence that it did: nothing in the cluster validates
+        # or strips it (#4628 was this class).
+        (
+            {"Cf-Access-Authenticated-User-Email": "joe@example.test"},
+            "missing or ambiguous X-Auth-Email header",
+        ),
+        (
+            [
+                ("X-Auth-Email", "forged@example.test"),
+                ("X-Auth-Email", "joe@example.test"),
+            ],
+            "missing or ambiguous X-Auth-Email header",
+        ),
+    ],
+)
+def test_factory_decisions_need_a_verified_identity_without_an_allowlist(
+    client, monkeypatch, headers, detail
+):
     monkeypatch.delenv("FACTORY_OPERATOR_EMAILS", raising=False)
     response = client.post(
         "/api/agents/factory/decisions/1",
         json={"option_key": "close"},
-        headers={"X-Auth-Email": "joe@example.test"},
+        headers=headers,
     )
     assert response.status_code == 403
-    assert "no factory operator emails" in response.json()["detail"]
+    assert response.json()["detail"] == detail
 
 
 @pytest.mark.parametrize(

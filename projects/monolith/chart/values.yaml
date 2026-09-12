@@ -1507,9 +1507,11 @@ swarm:
   # The 1Password key on the monolith-chat-secrets item holding the comma
   # separated emails allowed to answer a factory escalation from the private
   # agents page. The addresses themselves are never named here: this is a
-  # public repository and that list is real people. Until the key exists the
-  # environment variable is empty and every decision is 403, which is the
-  # state this capability ships in.
+  # public repository and that list is real people. Cloudflare Access is the
+  # gate, and private.jomcgi.dev is locked to one identity, so with no such
+  # key the environment variable is empty and any single verified X-Auth-Email
+  # decides. Provision the key only to narrow that, giving someone the page
+  # without the buttons.
   factoryOperatorEmailsSecretKey: FACTORY_OPERATOR_EMAILS
   enabled: false
   # The cheap implementer lane and the reviewer that gates it. The reviewer is
