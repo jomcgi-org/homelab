@@ -103,7 +103,7 @@ def add_refine_node(task, policy):
     return graph.load_graph(task["id"])[0]
 
 
-def settle_attempt(task, status, value=None):
+def settle_attempt(task, status, value=None, *, cost_usd=0.1, outcome_evidence=None):
     runs = graph.node_runs(task["id"], refine.NODE_KEY)
     attempt = len(runs) + 1
     key = f"factory-node:{task['id']}:{refine.NODE_KEY}:{attempt}"
@@ -120,13 +120,13 @@ def settle_attempt(task, status, value=None):
     assert graph.record_dispatch(
         task["id"], refine.NODE_KEY, attempt, 100 + attempt, None
     ).ok
-    outcome = {"value": value or {}}
+    outcome = {"value": value or {}, **(outcome_evidence or {})}
     assert graph.record_outcome(
         task["id"],
         refine.NODE_KEY,
         attempt,
         status,
-        0.1,
+        cost_usd,
         None,
         json.dumps(outcome),
     ).ok
@@ -135,7 +135,7 @@ def settle_attempt(task, status, value=None):
         key,
         status,
         "worker",
-        cost_usd=0.1,
+        cost_usd=cost_usd,
         session_id=100 + attempt,
     )["ok"]
     return graph.node_runs(task["id"], refine.NODE_KEY)[-1]
@@ -358,7 +358,70 @@ def test_two_failed_attempts_fail_without_touching_github(db, monkeypatch):
     snapshot = controls.task_snapshot(task["id"])
     assert snapshot["state"] == "failed"
     assert snapshot["evidence"]["state"] == "refine_failed"
+    assert "attempt limit" in snapshot["evidence"]["reason"]
     assert "refine_failed" in audit_actions(db)
+
+
+def test_unpriced_failed_attempt_that_exhausts_cost_finishes_on_next_reconcile(db):
+    task, policy = make_task()
+    node = add_refine_node(task, policy)
+    run = settle_attempt(task, "failed", cost_usd=None)
+    assert run["accounted_cost_usd"] == node["max_cost_usd"]
+    assert len(graph.node_runs(task["id"])) < node["max_attempts"]
+
+    refine.reconcile(
+        task,
+        policy,
+        [node],
+        [run],
+        graph.current_version(task["id"]),
+    )
+
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["state"] == "failed"
+    assert snapshot["evidence"]["state"] == "refine_failed"
+    assert "cost limit" in snapshot["evidence"]["reason"]
+    assert "1 of 2 attempts" in snapshot["evidence"]["reason"]
+
+
+def test_null_cost_not_invoked_attempt_stays_ready_for_retry(db):
+    task, policy = make_task()
+    node = add_refine_node(task, policy)
+    run = settle_attempt(
+        task,
+        "failed",
+        cost_usd=None,
+        outcome_evidence={
+            "not_invoked": {"invocation_phase": "not_invoked", "session_id": 101}
+        },
+    )
+    assert run["accounted_cost_usd"] == 0.0
+    assert conductor._ready_nodes([node], [run]) == [node]
+
+    refine.reconcile(
+        task,
+        policy,
+        [node],
+        [run],
+        graph.current_version(task["id"]),
+    )
+    assert controls.task_snapshot(task["id"])["state"] == "admitted"
+
+
+def test_uncertain_refine_attempt_is_not_finished(db):
+    task, policy = make_task()
+    node = add_refine_node(task, policy)
+    run = settle_attempt(task, "uncertain", cost_usd=None)
+    refine.reconcile(
+        task,
+        policy,
+        [node],
+        [run],
+        graph.current_version(task["id"]),
+    )
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["state"] == "uncertain"
+    assert snapshot["evidence"] is None
 
 
 def test_the_brief_is_read_from_the_comments_written_since_admission(db, monkeypatch):

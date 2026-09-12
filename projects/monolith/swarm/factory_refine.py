@@ -780,22 +780,48 @@ def reconcile(
         return
     node = next((node for node in nodes if node["node_key"] == NODE_KEY), None)
     attempts = [run for run in runs if run["node_key"] == NODE_KEY]
-    if (
-        node is not None
-        and len(attempts) >= node["max_attempts"]
-        and all(
-            run["status"] in factory_conductor.graph.TERMINAL_RUN_STATUSES
-            for run in attempts
-        )
+    if node is None or any(
+        run["status"] not in factory_conductor.graph.TERMINAL_RUN_STATUSES
+        for run in attempts
     ):
-        finish_task(
-            task["id"],
-            "failed",
-            ACTOR,
-            evidence={
-                "state": "refine_failed",
-                "reason": "Two refine attempts did not produce a verified brief.",
-            },
+        return
+    ready = {
+        candidate["node_key"]
+        for candidate in factory_conductor._ready_nodes(nodes, runs)
+    }
+    if NODE_KEY in ready:
+        return
+    accounted = sum(run["accounted_cost_usd"] for run in attempts)
+    if len(attempts) >= node["max_attempts"]:
+        reason = (
+            "Refine attempt limit exhausted after "
+            f"{len(attempts)} of {node['max_attempts']} attempts without a "
+            "verified brief."
         )
+    elif accounted >= node["max_cost_usd"]:
+        reason = (
+            "Refine cost limit exhausted after "
+            f"{len(attempts)} of {node['max_attempts']} attempts: "
+            f"{accounted:.2f} USD accounted against the "
+            f"{node['max_cost_usd']:.2f} USD node allowance without a verified brief."
+        )
+    else:
+        # Refine has no dependencies, but keep this conservative if its graph
+        # shape ever changes. Only the same attempt or cost bounds used by the
+        # scheduler authorize terminal settlement here.
+        return
+    settled = finish_task(
+        task["id"],
+        "failed",
+        ACTOR,
+        evidence={"state": "refine_failed", "reason": reason},
+    )
+    if settled["ok"]:
         with _locked_session() as (db, _control):
-            _audit(db, ACTOR, "refine_failed", task_id=task["id"])
+            _audit(
+                db,
+                ACTOR,
+                "refine_failed",
+                task_id=task["id"],
+                reason=reason,
+            )

@@ -2195,7 +2195,7 @@ def _persist_uncertain_not_invoked(s):
 @pytest.mark.parametrize("historical", [False, True])
 @pytest.mark.parametrize("bound_guest", [False, True, "prepared_receipt"])
 @pytest.mark.parametrize("supervision", [False, True])
-def test_not_invoked_settles_actual_factory_path_without_refunding_or_cleanup(
+def test_not_invoked_settles_actual_factory_path_at_zero_without_cleanup(
     not_invoked_factory, monkeypatch, historical, bound_guest, supervision
 ):
     import json
@@ -2244,8 +2244,9 @@ def test_not_invoked_settles_actual_factory_path_without_refunding_or_cleanup(
     assert run["status"] == current["starts"][0]["status"] == "failed"
     assert run["finished_at"] is not None and run["pin"] == s.run["pin"]
     assert run["cost_usd"] is current["starts"][0]["cost_usd"] is None
-    assert run["accounted_cost_usd"] == current["committed_cost_usd"] == 2
-    assert run["accounting_basis"] == "reserved_unknown_cost"
+    assert run["accounted_cost_usd"] == 0.0
+    assert run["accounting_basis"] == "no_model_post"
+    assert current["committed_cost_usd"] == 2
     assert current["state"] == "admitted" and current["unresolved_starts"] == 0
     assert current["turns_used"] == before["turns_used"] == 0
     assert current["planner_turns_used"] == before["planner_turns_used"] == 1
@@ -2257,18 +2258,9 @@ def test_not_invoked_settles_actual_factory_path_without_refunding_or_cleanup(
     assert result["not_invoked"]["claim_owner"] == "original-executor"
     assert result["not_invoked"]["dispatch_count"] == 1
     assert s.native_snapshot() == native
-    # The next ordinary tick can plan within the original task, without replay
-    # or a hidden refund. This tick inserts a planner; it starts no workflow.
-    monkeypatch.setattr(
-        conductor, "github_get", lambda *_: {"object": {"sha": "a" * 40}}
-    )
-    conductor.reconcile_task(s.task["id"], s.policy, s.dbos)
-    assert conductor.graph.node_runs(s.task["id"]) == [run]
-    assert controls.task_snapshot(s.task["id"])["starts"] == current["starts"]
-    assert any(
-        node["node_key"] == "conductor_2"
-        for node in conductor.graph.load_graph(s.task["id"])
-    )
+    # The failed pre-model attempt spent no graph allowance, so the same node
+    # remains ready for the retry promised by its attempt bound.
+    assert conductor._ready_nodes(conductor.graph.load_graph(s.task["id"]), [run])
     assert s.native_snapshot() == native
 
 

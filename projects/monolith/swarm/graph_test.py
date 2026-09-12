@@ -889,6 +889,100 @@ def test_completed_unknown_cost_consumes_node_budget(db):
 
 
 @pytest.mark.parametrize(
+    "phase",
+    ["never_dispatched", "not_invoked", "lost_before_guest"],
+)
+def test_terminal_null_cost_before_model_post_releases_reservation(db, phase):
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0).ok
+    assert admit_dispatch(task_id, "one").ok
+    outcome = json.dumps({"invocation_phase": phase})
+    assert record_outcome(task_id, "one", 1, "failed", None, None, outcome).ok
+    row = node_runs(task_id, "one")[0]
+    assert row["accounted_cost_usd"] == 0.0
+    assert row["accounting_basis"] == "no_model_post"
+    retry = admit_dispatch(task_id, "one")
+    assert retry.ok and retry.attempt == 2
+    assert retry.pin["max_cost_usd"] == 1.0
+
+
+def test_typed_not_invoked_proof_releases_reservation(db):
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0).ok
+    assert admit_dispatch(task_id, "one").ok
+    outcome = json.dumps(
+        {"not_invoked": {"invocation_phase": "not_invoked", "session_id": 7}}
+    )
+    assert record_outcome(task_id, "one", 1, "failed", None, None, outcome).ok
+    assert node_runs(task_id, "one")[0]["accounted_cost_usd"] == 0.0
+    assert admit_dispatch(task_id, "one").ok
+
+
+def test_legacy_no_post_attempt_does_not_pin_an_old_node_ceiling(db):
+    task_id = make_task(db, budget=2.0)
+    assert add_work(task_id, "old", 0).ok
+    assert admit_dispatch(task_id, "old").ok
+    outcome = json.dumps({"invocation_phase": "never_dispatched"})
+    assert record_outcome(task_id, "old", 1, "failed", None, None, outcome).ok
+    with Session(db) as session:
+        node = session.exec(select(SwarmPlanNode)).one()
+        node.cancelled_in_version = 1
+        run = session.exec(select(SwarmNodeRun)).one()
+        run.reserved_cost_usd = None
+        run.pin_json = None
+        session.add_all([node, run])
+        session.commit()
+    assert add_work(task_id, "old", 1, max_cost_usd=0.5).ok
+    assert node_runs(task_id, "old")[0]["accounted_cost_usd"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        {},
+        {"invocation_phase": "guest_cessation_confirmed"},
+        {"invocation_phase": "response_lost"},
+        {"previous_outcome": {"invocation_phase": "not_invoked"}},
+        {"not_invoked": {"invocation_phase": "guest_cessation_confirmed"}},
+    ],
+)
+def test_terminal_null_cost_without_no_post_proof_keeps_reservation(db, outcome):
+    task_id = make_task(db)
+    assert add_work(task_id, "one", 0).ok
+    assert admit_dispatch(task_id, "one").ok
+    assert record_outcome(
+        task_id, "one", 1, "failed", None, None, json.dumps(outcome)
+    ).ok
+    row = node_runs(task_id, "one")[0]
+    assert row["accounted_cost_usd"] == 1.0
+    assert row["accounting_basis"] == "reserved_unknown_cost"
+    assert admit_dispatch(task_id, "one").refusal_code == "node_budget_exhausted"
+
+
+def test_no_post_marker_does_not_release_an_active_or_measured_attempt(db):
+    task_id = make_task(db, budget=2.0)
+    assert add_work(task_id, "active", 0).ok
+    assert add_work(task_id, "measured", 1).ok
+    assert admit_dispatch(task_id, "active").ok
+    outcome = json.dumps({"invocation_phase": "not_invoked"})
+    assert record_outcome(
+        task_id, "active", 1, "uncertain", None, None, outcome
+    ).ok
+    active = node_runs(task_id, "active")[0]
+    assert active["accounted_cost_usd"] == 1.0
+    assert active["accounting_basis"] == "active_reservation"
+    assert admit_dispatch(task_id, "active").refusal_code == "active_attempt"
+
+    assert admit_dispatch(task_id, "measured").ok
+    assert record_outcome(
+        task_id, "measured", 1, "failed", 0.25, None, outcome
+    ).ok
+    measured = node_runs(task_id, "measured")[0]
+    assert measured["accounted_cost_usd"] == 0.25
+    assert measured["accounting_basis"] == "reported"
+
+
+@pytest.mark.parametrize(
     "context",
     [
         {"max_cost_usd": 100.0},

@@ -1029,10 +1029,51 @@ def _reservation(run: SwarmNodeRun, budgets: dict[str, float]) -> float:
     return float(value)
 
 
+NO_MODEL_POST_PHASES = frozenset(
+    {"never_dispatched", "not_invoked", "lost_before_guest"}
+)
+
+
+def _invocation_phase(run: SwarmNodeRun) -> str | None:
+    """Read narrowly scoped proof that a terminal attempt never reached a model."""
+    if not run.outcome_json:
+        return None
+    try:
+        outcome = json.loads(run.outcome_json)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(outcome, dict):
+        return None
+    phase = outcome.get("invocation_phase")
+    if isinstance(phase, str):
+        return phase
+    recovery = outcome.get("recovery")
+    if isinstance(recovery, dict) and isinstance(
+        recovery.get("invocation_phase"), str
+    ):
+        return recovery["invocation_phase"]
+    # Typed reconciliation proofs are attached under the phase they prove.
+    # Do not search arbitrary nested history: a safe phase in a previous
+    # outcome must not refund a later attempt that may have reached the model.
+    for expected in NO_MODEL_POST_PHASES:
+        proof = outcome.get(expected)
+        if (
+            isinstance(proof, dict)
+            and proof.get("invocation_phase") == expected
+        ):
+            return expected
+    return None
+
+
 def _accounted_cost(run: SwarmNodeRun, budgets: dict[str, float]) -> float:
     measured = run.cost_usd if _valid_cost(run.cost_usd, zero=True) else None
     if run.status in TERMINAL_RUN_STATUSES and measured is not None:
         return float(measured)
+    if (
+        run.status in TERMINAL_RUN_STATUSES
+        and _invocation_phase(run) in NO_MODEL_POST_PHASES
+    ):
+        return 0.0
     return max(_reservation(run, budgets), float(measured or 0.0))
 
 
@@ -1087,9 +1128,9 @@ def budget_snapshot(task_id: str, *, session: Session | None = None) -> dict:
         }
 
 
-# A settled attempt charges its own cost rather than its whole reservation,
-# whether that cost was measured by the provider or priced from token usage.
-SETTLED_ACCOUNTING_BASES = ("reported", "list_priced")
+# A settled attempt charges its own cost rather than its whole reservation when
+# measured, list priced, or proven to have stopped before any model POST.
+SETTLED_ACCOUNTING_BASES = ("reported", "list_priced", "no_model_post")
 
 
 def _reported_cost_basis(run: SwarmNodeRun) -> str:
@@ -1108,9 +1149,11 @@ def _reported_cost_basis(run: SwarmNodeRun) -> str:
 def _accounting_basis(run: SwarmNodeRun) -> str:
     if run.status not in TERMINAL_RUN_STATUSES:
         return "active_reservation"
-    if not _valid_cost(run.cost_usd, zero=True):
-        return "reserved_unknown_cost"
-    return _reported_cost_basis(run)
+    if _valid_cost(run.cost_usd, zero=True):
+        return _reported_cost_basis(run)
+    if _invocation_phase(run) in NO_MODEL_POST_PHASES:
+        return "no_model_post"
+    return "reserved_unknown_cost"
 
 
 def admit_dispatch(
