@@ -5,12 +5,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import json
 
+import httpx
 import pytest
 from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from swarm import factory_conductor as conductor
 from swarm import factory_controls as controls
+from swarm import factory_landing as landing
 from swarm import factory_refine as refine
 from swarm import graph
 from swarm.factory_intake import admit_next, receive_issue
@@ -261,6 +263,49 @@ def test_verified_agent_ready_settles_succeeded(db, monkeypatch):
     }
 
 
+def test_verified_defer_settles_without_escalation_or_notification(db, monkeypatch):
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task, "needs-thought")
+    monkeypatch.setattr(
+        refine,
+        "_notify_once",
+        lambda *_args, **_kwargs: pytest.fail("defer notified a human"),
+    )
+    run = settle_attempt(
+        task,
+        "succeeded",
+        {
+            "outcome": "defer",
+            "comment_url": comment["html_url"],
+            "evidence": "The author must choose the storage model.",
+        },
+    )
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["state"] == "succeeded"
+    assert snapshot["evidence"]["state"] == "refine_deferred"
+    assert snapshot["escalation"] is None
+    assert "refine_needs_human_notified" not in audit_actions(db)
+    settled = [row for row in audit_rows(db) if row.action == "refine_settled"]
+    assert json.loads(settled[0].detail_json)["outcome"] == "defer"
+
+
+def test_defer_without_evidence_is_refused(db, monkeypatch):
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task, "needs-thought")
+    run = settle_attempt(
+        task,
+        "succeeded",
+        {"outcome": "defer", "comment_url": comment["html_url"]},
+    )
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["evidence"]["state"] == "refine_unverified"
+    assert "defer cites no evidence" in snapshot["evidence"]["reason"]
+
+
 def test_missing_claimed_label_is_terminal_mismatch(db, monkeypatch):
     task, policy = make_task()
     add_refine_node(task, policy)
@@ -340,7 +385,7 @@ def test_notify_failure_still_settles(db, monkeypatch):
     run = settle_attempt(
         task,
         "succeeded",
-        human_artifact(comment["html_url"], "defer", question="Choose one target"),
+        human_artifact(comment["html_url"], "split", question="Choose one target"),
     )
     refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
     assert controls.task_snapshot(task["id"])["state"] == "succeeded"
@@ -632,6 +677,513 @@ def test_a_verified_reject_closes_and_audits_its_evidence(db, monkeypatch):
     assert "ARCHITECTURE.md" in json.loads(closes[0].detail_json)["evidence"]
 
 
+@pytest.mark.parametrize(
+    ("artifact_extra", "reason"),
+    [
+        (
+            {"supersedes": 8},
+            "reject carries invalid superseded issue numbers",
+        ),
+        (
+            {"in_favour_of": "20"},
+            "reject carries an invalid issue in favour",
+        ),
+        ({"supersedes": [8]}, "supersedes names no issue in favour"),
+        (
+            {"supersedes": [8, 20], "in_favour_of": 20},
+            "supersedes includes the issue in favour",
+        ),
+        (
+            {"supersedes": [7, 8], "in_favour_of": 20},
+            "supersedes includes the briefed issue",
+        ),
+        (
+            {"supersedes": [8], "in_favour_of": 7},
+            "issue in favour is the briefed issue",
+        ),
+    ],
+)
+def test_reject_refuses_invalid_supersede_relationships_before_primary_checks(
+    db, monkeypatch, artifact_extra, reason
+):
+    task, policy = closing_task(monkeypatch)
+    add_refine_node(task, policy)
+    reads = []
+    writes = []
+    monkeypatch.setattr(
+        refine, "github_get", lambda *_args: reads.append(_args) or pytest.fail("read")
+    )
+    monkeypatch.setattr(refine, "github_list", lambda *_args: pytest.fail("read"))
+    monkeypatch.setattr(
+        landing,
+        "github_write",
+        lambda *args, **kwargs: writes.append((args, kwargs)),
+    )
+    run = settle_attempt(
+        task,
+        "succeeded",
+        {
+            "outcome": "reject",
+            "comment_url": "https://github.com/owner/repo/issues/7#issuecomment-2",
+            "evidence": "KG: duplicate work (verified)",
+            **artifact_extra,
+        },
+    )
+
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["evidence"]["state"] == "refine_unverified"
+    assert reason in snapshot["evidence"]["reason"]
+    assert "refine_mismatch" in audit_actions(db)
+    assert reads == []
+    assert writes == []
+
+
+@pytest.mark.parametrize("favoured", ["closed", "pull_request", "missing"])
+def test_reject_refuses_a_favoured_target_that_is_not_an_open_issue(
+    db, monkeypatch, favoured
+):
+    task, policy = closing_task(monkeypatch)
+    add_refine_node(task, policy)
+    reads = []
+
+    def get(_repo, suffix):
+        reads.append(suffix)
+        if favoured == "missing":
+            request = httpx.Request("GET", "https://api.github.test/issues/20")
+            response = httpx.Response(404, request=request)
+            raise httpx.HTTPStatusError("missing", request=request, response=response)
+        issue = {"state": "closed" if favoured == "closed" else "open"}
+        if favoured == "pull_request":
+            issue["pull_request"] = {"url": "https://api.github.test/pulls/20"}
+        return issue
+
+    monkeypatch.setattr(refine, "github_get", get)
+    monkeypatch.setattr(refine, "github_list", lambda *_args: pytest.fail("read"))
+    monkeypatch.setattr(
+        landing, "github_write", lambda *_args, **_kwargs: pytest.fail("write")
+    )
+    run = settle_attempt(
+        task,
+        "succeeded",
+        {
+            "outcome": "reject",
+            "comment_url": "https://github.com/owner/repo/issues/7#issuecomment-2",
+            "evidence": "KG: duplicate work (verified)",
+            "supersedes": [8],
+            "in_favour_of": 20,
+        },
+    )
+
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+
+    snapshot = controls.task_snapshot(task["id"])
+    assert "issue in favour is not an open issue" in snapshot["evidence"]["reason"]
+    assert "refine_mismatch" in audit_actions(db)
+    assert reads == ["issues/20"]
+
+
+def test_reject_retries_a_transient_favoured_issue_read(db, monkeypatch):
+    task, policy = closing_task(monkeypatch)
+    add_refine_node(task, policy)
+    request = httpx.Request("GET", "https://api.github.test/issues/20")
+    response = httpx.Response(503, request=request)
+
+    def get(_repo, suffix):
+        assert suffix == "issues/20"
+        raise httpx.HTTPStatusError("unavailable", request=request, response=response)
+
+    monkeypatch.setattr(refine, "github_get", get)
+    monkeypatch.setattr(refine, "github_list", lambda *_args: pytest.fail("read"))
+    monkeypatch.setattr(
+        landing, "github_write", lambda *_args, **_kwargs: pytest.fail("write")
+    )
+    run = settle_attempt(
+        task,
+        "succeeded",
+        {
+            "outcome": "reject",
+            "comment_url": "https://github.com/owner/repo/issues/7#issuecomment-2",
+            "evidence": "KG: duplicate work (verified)",
+            "supersedes": [8],
+            "in_favour_of": 20,
+        },
+    )
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+
+    assert exc_info.value.response.status_code == 503
+    assert "refine_mismatch" not in audit_actions(db)
+
+
+def test_reject_closes_eligible_siblings_and_audits_skips(db, monkeypatch):
+    task, policy = closing_task(monkeypatch, max_closes_per_day=2)
+    add_refine_node(task, policy)
+    admitted = controls.task_snapshot(task["id"])["admitted_at"]
+    comment = {
+        "body": "## Agent brief\n### Outcome\nNo\n### Why not\nDuplicate",
+        "created_at": (
+            datetime.fromisoformat(admitted) + timedelta(seconds=1)
+        ).isoformat(),
+        "html_url": "https://github.com/owner/repo/issues/7#issuecomment-2",
+        "user": {"login": "factory-bot"},
+    }
+    issues = {
+        7: {"state": "closed", "labels": [{"name": "wontfix"}]},
+        8: {"state": "open", "labels": [], "assignees": []},
+        9: {"state": "open", "labels": [{"name": "critical"}]},
+        10: {"state": "open", "labels": [], "milestone": {"number": 1}},
+        11: {"state": "open", "labels": []},
+        12: {"state": "open", "labels": []},
+        13: {"state": "open", "labels": [], "assignees": [{"login": "joe"}]},
+        14: {"state": "open", "labels": []},
+        15: {"state": "closed", "labels": [], "pull_request": {}},
+        20: {"state": "open", "labels": []},
+    }
+
+    def get(_repo, suffix):
+        return issues[int(suffix.rsplit("/", 1)[1])]
+
+    def listing(_repo, suffix):
+        return [comment] if suffix.startswith("issues/7/comments?") else []
+
+    writes = []
+
+    def write(_repo, suffix, payload, *, method="POST"):
+        writes.append((method, suffix, payload))
+        return {}
+
+    monkeypatch.setattr(refine, "github_get", get)
+    monkeypatch.setattr(refine, "github_list", listing)
+    monkeypatch.setattr(landing, "github_write", write)
+    with Session(db) as session:
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=11,
+                generation=9,
+                title="Sibling being decided",
+                body="",
+                url="https://github.com/owner/repo/issues/11",
+                actor="factory:intake",
+                task_class="refine",
+                state=controls.ESCALATED,
+            )
+        )
+        session.add(
+            FactoryReceipt(
+                repo="owner/repo",
+                issue_number=14,
+                generation=9,
+                title="Sibling queued for a brief",
+                body="",
+                url="https://github.com/owner/repo/issues/14",
+                actor="factory:intake",
+                task_class="refine",
+                state="queued",
+            )
+        )
+        session.commit()
+
+    run = settle_attempt(
+        task,
+        "succeeded",
+        {
+            "outcome": "reject",
+            "comment_url": comment["html_url"],
+            "evidence": "KG: duplicate work (verified)",
+            "in_favour_of": 20,
+            "supersedes": [8, 9, 10, 11, 13, 14, 15, 12],
+        },
+    )
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+
+    assert controls.task_snapshot(task["id"])["evidence"]["state"] == (
+        "refine_rejected"
+    )
+    assert any(
+        suffix == "issues/8/comments" and "factory-supersede:" in payload["body"]
+        for _method, suffix, payload in writes
+    )
+    assert ("POST", "issues/8/labels", {"labels": ["wontfix"]}) in writes
+    assert (
+        "PATCH",
+        "issues/8",
+        {"state": "closed", "state_reason": "not_planned"},
+    ) in writes
+    closes = [
+        json.loads(row.detail_json)
+        for row in audit_rows(db)
+        if row.action == "intake_closed"
+    ]
+    assert any(
+        detail.get("issue_number") == 8 and detail.get("superseded_by") == 20
+        for detail in closes
+    )
+    skipped = {
+        detail["sibling"]: detail["reason"]
+        for detail in (
+            json.loads(row.detail_json)
+            for row in audit_rows(db)
+            if row.action == "refine_supersede_skipped"
+        )
+    }
+    assert skipped == {
+        9: "protected_label",
+        10: "milestone",
+        11: "active_receipt",
+        12: "close_cap",
+        13: "assigned",
+        14: "active_receipt",
+        15: "pull_request",
+    }
+
+
+def test_superseded_retry_closes_and_comments_once_without_a_skip(db, monkeypatch):
+    task, policy = closing_task(monkeypatch, max_closes_per_day=2)
+    add_refine_node(task, policy)
+    admitted = controls.task_snapshot(task["id"])["admitted_at"]
+    brief = {
+        "body": "## Agent brief\n### Outcome\nNo\n### Why not\nDuplicate",
+        "created_at": (
+            datetime.fromisoformat(admitted) + timedelta(seconds=1)
+        ).isoformat(),
+        "html_url": "https://github.com/owner/repo/issues/7#issuecomment-2",
+        "user": {"login": "factory-bot"},
+    }
+    issues = {
+        7: {"state": "closed", "labels": [{"name": "wontfix"}]},
+        8: {"state": "open", "labels": []},
+        20: {"state": "open", "labels": []},
+    }
+    sibling_comments = []
+    writes = []
+
+    def get(_repo, suffix):
+        return issues[int(suffix.rsplit("/", 1)[1])]
+
+    def listing(_repo, suffix):
+        if suffix.startswith("issues/7/comments?"):
+            return [brief]
+        if suffix.startswith("issues/8/comments?"):
+            return list(sibling_comments)
+        return []
+
+    def write(_repo, suffix, payload, *, method="POST"):
+        writes.append((method, suffix, payload))
+        if suffix == "issues/8/comments":
+            sibling_comments.append({"body": payload["body"]})
+        if suffix == "issues/8" and method == "PATCH":
+            issues[8]["state"] = "closed"
+        return {}
+
+    real_finish = refine.finish_task
+    real_audit_once = refine._audit_once
+    finish_calls = 0
+    dropped_sibling_audit = False
+
+    def defer_once(*args, **kwargs):
+        nonlocal finish_calls
+        finish_calls += 1
+        if finish_calls == 1:
+            return {"ok": False, "reason": "start_unresolved"}
+        return real_finish(*args, **kwargs)
+
+    def miss_sibling_audit_once(task_id, cause, action, detail):
+        nonlocal dropped_sibling_audit
+        if (
+            not dropped_sibling_audit
+            and action == "intake_closed"
+            and detail.get("issue_number") == 8
+        ):
+            dropped_sibling_audit = True
+            return None
+        return real_audit_once(task_id, cause, action, detail)
+
+    monkeypatch.setattr(refine, "github_get", get)
+    monkeypatch.setattr(refine, "github_list", listing)
+    monkeypatch.setattr(landing, "github_write", write)
+    monkeypatch.setattr(refine, "finish_task", defer_once)
+    monkeypatch.setattr(refine, "_audit_once", miss_sibling_audit_once)
+    run = settle_attempt(
+        task,
+        "succeeded",
+        {
+            "outcome": "reject",
+            "comment_url": brief["html_url"],
+            "evidence": "KG: duplicate work (verified)",
+            "in_favour_of": 20,
+            "supersedes": [8],
+        },
+    )
+    nodes = graph.load_graph(task["id"])
+
+    refine.reconcile(task, policy, nodes, [run], 1)
+    refine.reconcile(task, policy, nodes, [run], 1)
+
+    assert controls.task_snapshot(task["id"])["evidence"]["state"] == (
+        "refine_rejected"
+    )
+    assert sum(suffix == "issues/8/comments" for _, suffix, _ in writes) == 1
+    assert (
+        sum(method == "PATCH" and suffix == "issues/8" for method, suffix, _ in writes)
+        == 1
+    )
+    sibling_closes = [
+        row
+        for row in audit_rows(db)
+        if row.action == "intake_closed"
+        and json.loads(row.detail_json).get("issue_number") == 8
+    ]
+    assert len(sibling_closes) == 1
+    assert "refine_supersede_skipped" not in audit_actions(db)
+    assert "refine_close_downgraded" not in audit_actions(db)
+
+
+def test_superseded_retry_finishes_a_close_after_the_label_write_failed(
+    db, monkeypatch
+):
+    task, policy = closing_task(monkeypatch, max_closes_per_day=2)
+    add_refine_node(task, policy)
+    admitted = controls.task_snapshot(task["id"])["admitted_at"]
+    brief = {
+        "body": "## Agent brief\n### Outcome\nNo\n### Why not\nDuplicate",
+        "created_at": (
+            datetime.fromisoformat(admitted) + timedelta(seconds=1)
+        ).isoformat(),
+        "html_url": "https://github.com/owner/repo/issues/7#issuecomment-2",
+        "user": {"login": "factory-bot"},
+    }
+    issues = {
+        7: {"state": "closed", "labels": [{"name": "wontfix"}]},
+        8: {"state": "open", "labels": []},
+        20: {"state": "open", "labels": []},
+    }
+    sibling_comments = []
+    writes = []
+    reads = []
+    label_attempts = 0
+
+    def get(_repo, suffix):
+        reads.append(suffix)
+        return issues[int(suffix.rsplit("/", 1)[1])]
+
+    def listing(_repo, suffix):
+        if suffix.startswith("issues/7/comments?"):
+            return [brief]
+        if suffix.startswith("issues/8/comments?"):
+            return list(sibling_comments)
+        return []
+
+    def write(_repo, suffix, payload, *, method="POST"):
+        nonlocal label_attempts
+        writes.append((method, suffix, payload))
+        if suffix == "issues/8/comments":
+            sibling_comments.append({"body": payload["body"]})
+        if suffix == "issues/8/labels":
+            label_attempts += 1
+            if label_attempts == 1:
+                raise RuntimeError("GitHub unavailable")
+            issues[8]["labels"] = [{"name": "wontfix"}]
+        if suffix == "issues/8" and method == "PATCH":
+            issues[8]["state"] = "closed"
+        return {}
+
+    real_finish = refine.finish_task
+    finish_calls = 0
+
+    def defer_once(*args, **kwargs):
+        nonlocal finish_calls
+        finish_calls += 1
+        if finish_calls == 1:
+            return {"ok": False, "reason": "start_unresolved"}
+        return real_finish(*args, **kwargs)
+
+    monkeypatch.setattr(refine, "github_get", get)
+    monkeypatch.setattr(refine, "github_list", listing)
+    monkeypatch.setattr(landing, "github_write", write)
+    monkeypatch.setattr(refine, "finish_task", defer_once)
+    run = settle_attempt(
+        task,
+        "succeeded",
+        {
+            "outcome": "reject",
+            "comment_url": brief["html_url"],
+            "evidence": "KG: duplicate work (verified)",
+            "in_favour_of": 20,
+            "supersedes": [8],
+        },
+    )
+    nodes = graph.load_graph(task["id"])
+
+    refine.reconcile(task, policy, nodes, [run], 1)
+    assert issues[8]["state"] == "open"
+    refine.reconcile(task, policy, nodes, [run], 1)
+
+    assert controls.task_snapshot(task["id"])["evidence"]["state"] == (
+        "refine_rejected"
+    )
+    assert issues[8]["state"] == "closed"
+    assert issues[8]["labels"] == [{"name": "wontfix"}]
+    assert reads.count("issues/8") == 3
+    assert sum(suffix == "issues/8/comments" for _, suffix, _ in writes) == 1
+    assert label_attempts == 2
+    assert (
+        sum(method == "PATCH" and suffix == "issues/8" for method, suffix, _ in writes)
+        == 1
+    )
+    sibling_closes = [
+        row
+        for row in audit_rows(db)
+        if row.action == "intake_closed"
+        and json.loads(row.detail_json).get("issue_number") == 8
+    ]
+    assert len(sibling_closes) == 1
+
+
+def test_a_failing_sibling_is_skipped_without_failing_settlement(db, monkeypatch):
+    task, policy = closing_task(monkeypatch)
+    add_refine_node(task, policy)
+    comment = closed_github(monkeypatch, task, "wontfix")
+    monkeypatch.setattr(
+        refine,
+        "github_get",
+        lambda _repo, suffix: (
+            {"state": "closed", "labels": [{"name": "wontfix"}]}
+            if suffix == "issues/7"
+            else {"state": "open", "labels": []}
+        ),
+    )
+
+    def write(_repo, suffix, _payload, *, method="POST"):
+        if suffix == "issues/8/labels":
+            raise RuntimeError("GitHub unavailable")
+        return {}
+
+    monkeypatch.setattr(landing, "github_write", write)
+    run = settle_attempt(
+        task,
+        "succeeded",
+        {
+            "outcome": "reject",
+            "comment_url": comment["html_url"],
+            "evidence": "git: abc123",
+            "in_favour_of": 20,
+            "supersedes": [8],
+        },
+    )
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    assert controls.task_snapshot(task["id"])["state"] == "succeeded"
+    skipped = [
+        json.loads(row.detail_json)
+        for row in audit_rows(db)
+        if row.action == "refine_supersede_skipped"
+    ]
+    assert skipped[0]["reason"] == "RuntimeError"
+
+
 def test_a_verified_stale_closes_under_its_own_label(db, monkeypatch):
     task, policy = closing_task(monkeypatch)
     add_refine_node(task, policy)
@@ -719,7 +1271,26 @@ def test_a_protected_issue_is_never_closed(db, monkeypatch):
             "comment_url": comment["html_url"],
             "evidence": "low value",
             "recommendation": "close",
+            "in_favour_of": 20,
+            "supersedes": [8],
         },
+    )
+    primary = {
+        "state": "open",
+        "labels": [{"name": "needs-human"}, {"name": "critical"}],
+    }
+    monkeypatch.setattr(
+        refine,
+        "github_get",
+        lambda _repo, suffix: (
+            {"state": "open", "labels": []} if suffix == "issues/20" else primary
+        ),
+    )
+    writes = []
+    monkeypatch.setattr(
+        landing,
+        "github_write",
+        lambda *args, **kwargs: writes.append((args, kwargs)),
     )
     refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
     assert controls.task_snapshot(task["id"])["evidence"]["state"] == (
@@ -729,6 +1300,8 @@ def test_a_protected_issue_is_never_closed(db, monkeypatch):
         row for row in audit_rows(db) if row.action == "refine_close_downgraded"
     ]
     assert json.loads(downgrade[0].detail_json)["reason"] == "protected_issue"
+    assert writes == []
+    assert "refine_supersede_skipped" not in audit_actions(db)
 
 
 def test_a_milestone_protects_an_issue_from_closing(db, monkeypatch):
@@ -772,13 +1345,31 @@ def test_the_daily_close_cap_downgrades_the_next_close(db, monkeypatch):
             "comment_url": comment["html_url"],
             "evidence": "duplicate",
             "recommendation": "close",
+            "in_favour_of": 20,
+            "supersedes": [8],
         },
+    )
+    primary = {"state": "open", "labels": [{"name": "needs-human"}]}
+    monkeypatch.setattr(
+        refine,
+        "github_get",
+        lambda _repo, suffix: (
+            {"state": "open", "labels": []} if suffix == "issues/20" else primary
+        ),
+    )
+    writes = []
+    monkeypatch.setattr(
+        landing,
+        "github_write",
+        lambda *args, **kwargs: writes.append((args, kwargs)),
     )
     refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
     downgrade = [
         row for row in audit_rows(db) if row.action == "refine_close_downgraded"
     ]
     assert json.loads(downgrade[0].detail_json)["reason"] == "close_cap"
+    assert writes == []
+    assert "refine_supersede_skipped" not in audit_actions(db)
 
 
 def test_a_close_verdict_without_evidence_is_refused(db, monkeypatch):
@@ -813,6 +1404,36 @@ def test_needs_human_without_a_recommendation_is_refused(db, monkeypatch):
     )
 
 
+def test_needs_human_may_not_recommend_defer(db, monkeypatch):
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task, "needs-human")
+    run = settle_attempt(
+        task,
+        "succeeded",
+        human_artifact(comment["html_url"], "defer"),
+    )
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    snapshot = controls.task_snapshot(task["id"])
+    assert snapshot["evidence"]["state"] == "refine_unverified"
+    assert "no recommendation" in snapshot["evidence"]["reason"]
+
+
+def test_close_recommendation_accepts_a_supersede_option():
+    artifact = {
+        "options": [
+            {
+                "key": "supersede",
+                "label": "Close the duplicates in favour of #20",
+                "effect": "supersede",
+                "detail": {"closes": [7, 8], "in_favour_of": 20},
+            },
+            {"key": "hold", "label": "Leave them open", "effect": "hold"},
+        ]
+    }
+    assert refine._verify_options(artifact, "close") is None
+
+
 def test_the_prompt_offers_closing_only_when_it_is_available():
     task = {"id": "t-1", "repo": "owner/repo"}
     receipt = {"issue_number": 7, "url": "u", "title": "t", "body": "b"}
@@ -820,9 +1441,15 @@ def test_the_prompt_offers_closing_only_when_it_is_available():
     assert "`reject` when the issue clearly should not be done" in open_lane
     assert "not_planned" in open_lane
     assert "critical" in open_lane
+    assert "search_knowledge" in open_lane
+    assert "report_knowledge" in open_lane
+    assert "decision a person can make in about a minute" in open_lane
+    assert "`defer` when the issue is worth doing" in open_lane
     shut = refine.refine_prompt(task, receipt, closing=False)
     assert "Closing is switched off for this run" in shut
     assert "recommend: close" in shut
+    assert "supersedes" not in shut
+    assert "### Supersedes" not in shut
 
 
 def test_needs_human_stores_the_options_on_the_receipt(db, monkeypatch):
@@ -909,12 +1536,10 @@ def test_the_server_refuses_a_malformed_option_list(db, monkeypatch, mutate, rea
     comment = verified_github(monkeypatch, task, "needs-human")
     artifact = human_artifact(comment["html_url"])
     artifact["options"] = mutate(artifact["options"])
-    # The close and defer heads above are still what `recommend:` names, so
-    # each case fails on the one thing it is testing rather than on order.
+    # The close head above is still what `recommend:` names, so that case
+    # fails on the one thing it is testing rather than on order.
     if artifact["options"] and artifact["options"][0]["effect"] == "close":
         artifact["recommendation"] = "close"
-    if artifact["options"] and artifact["options"][0]["effect"] == "defer":
-        artifact["recommendation"] = "defer"
     run = settle_attempt(task, "succeeded", artifact)
     refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
     evidence = controls.task_snapshot(task["id"])["evidence"]
@@ -1051,14 +1676,14 @@ def test_a_dismissed_escalation_is_replaced_by_the_next_brief(db, monkeypatch):
 
     refine._record_escalation(
         task["id"],
-        human_artifact(comment["html_url"], "defer"),
+        human_artifact(comment["html_url"], "deliver"),
         comment["html_url"],
         downgraded=False,
     )
 
     fresh = controls.task_snapshot(task["id"])["escalation"]
     assert fresh["resolved"] is None
-    assert fresh["recommendation"] == "defer"
+    assert fresh["recommendation"] == "deliver"
 
 
 def test_a_resolved_escalation_is_never_overwritten(db, monkeypatch):
@@ -1078,7 +1703,7 @@ def test_a_resolved_escalation_is_never_overwritten(db, monkeypatch):
     # would discard a decision already recorded against it.
     refine._record_escalation(
         task["id"],
-        human_artifact(comment["html_url"], "defer"),
+        human_artifact(comment["html_url"], "deliver"),
         comment["html_url"],
         downgraded=False,
     )

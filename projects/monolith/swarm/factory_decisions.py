@@ -370,6 +370,84 @@ def _apply_split(fields: dict, option: dict, marker: str) -> dict:
     return {"children": opened, "closed": True}
 
 
+def _apply_supersede(fields: dict, option: dict, suffix: str) -> dict:
+    """Close retired issues and send a surviving receipt for a fresh brief.
+
+    Each issue gets its own marker. A retry can therefore repeat the naturally
+    idempotent label and close writes without posting a second explanation on
+    anything the first attempt already reached.
+    """
+    repo, own = fields["repo"], fields["issue_number"]
+    detail = option.get("detail") or {}
+    closes = list(dict.fromkeys(detail.get("closes") or []))
+    favoured = detail.get("in_favour_of")
+    if favoured in closes:
+        raise DecisionError(422, "supersedes the issue it favours")
+    if own not in closes and own != favoured:
+        raise DecisionError(
+            422, "the receipt's issue must be closed or be the one favoured"
+        )
+
+    comment = str(detail.get("comment") or "").strip()
+    body = (
+        f"Closed by an operator decision: {option['label']}. Superseded by #{favoured}."
+    )
+    if comment:
+        body = f"{body}\n\n{comment}"
+
+    github_get, _list, _write = _github()
+    eligible: list[int] = []
+    skipped: list[dict] = []
+    for number in closes:
+        issue = github_get(repo, f"issues/{number}")
+        if "pull_request" in issue:
+            skipped.append({"number": number, "reason": "pull_request"})
+        elif issue.get("state") != "open":
+            skipped.append({"number": number, "reason": "not_open"})
+        else:
+            eligible.append(number)
+
+    for number in eligible:
+        if number == own:
+            continue
+        issue_marker = _marker(fields["id"], f"{option['key']}:{number}")
+        _comment(repo, number, issue_marker, body + suffix)
+        _label(repo, number, ["wontfix"], [])
+        _close(repo, number, "not_planned")
+
+    own_marker = _marker(fields["id"], f"{option['key']}:{own}")
+    labels_removed: list[str] = []
+    requeue_note = None
+    if own in eligible:
+        _comment(repo, own, own_marker, body + suffix)
+        _label(repo, own, ["wontfix"], [])
+        _close(repo, own, "not_planned")
+        # Match escape-close ordering: a partial failure leaves a closed issue
+        # carrying needs-human, never an open issue returned to intake.
+        _label(repo, own, [], [HUMAN_LABEL])
+        labels_removed.append(HUMAN_LABEL)
+    elif own == favoured:
+        _label(repo, own, [], [HUMAN_LABEL])
+        labels_removed.append(HUMAN_LABEL)
+        folded = ", ".join(f"#{number}" for number in closes)
+        _comment(
+            repo,
+            own,
+            own_marker,
+            f"Folded in by an operator decision: {folded}." + suffix,
+        )
+        requeue_note = (
+            f"Operator folded in {folded}: brief again with their scope included"
+        )
+    return {
+        "closed": eligible,
+        "skipped": skipped,
+        "in_favour_of": favoured,
+        "labels_removed": labels_removed,
+        "_requeue_refine_note": requeue_note,
+    }
+
+
 def _apply(fields: dict, option: dict, note: str | None) -> dict:
     """Perform one option's effect on GitHub and describe what it did."""
     repo, number = fields["repo"], fields["issue_number"]
@@ -400,6 +478,8 @@ def _apply(fields: dict, option: dict, note: str | None) -> dict:
         _comment(repo, number, marker, body + suffix)
         _close(repo, number, reason)
         return {"closed": True, "reason": reason}
+    if effect == "supersede":
+        return _apply_supersede(fields, option, suffix)
     if effect == "defer":
         _label(repo, number, [DEFER_LABEL], [HUMAN_LABEL])
         comment = str(detail.get("comment") or "").strip()
@@ -458,6 +538,8 @@ def _resolve(
     receipt_id: int, option: dict, actor: str, note: str | None, effects: dict
 ) -> dict:
     """Write the resolution onto the escalation and audit what it did."""
+    effects = dict(effects)
+    requeue_note = effects.pop("_requeue_refine_note", None)
     resolution = {
         "option_key": option["key"],
         "label": option["label"],
@@ -506,6 +588,12 @@ def _resolve(
                 # the lane spend an advisory slot briefing an issue that is
                 # already closed, split or labelled for delivery.
                 row.state = "succeeded"
+            if requeue_note is not None:
+                blocker = _requeue_refine(db, row, requeue_note, actor)
+                resolution["effects"].update(
+                    {"requeued": blocker is None, "blocked_by": blocker}
+                )
+                escalation = escalation_of(row) or escalation
             escalation["resolved"] = resolution
             row.escalation_json = json.dumps(escalation)
             row.updated_at = _now()

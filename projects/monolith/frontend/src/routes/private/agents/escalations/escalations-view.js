@@ -5,6 +5,7 @@
 export const EFFECT_WORD = {
   "agent-ready": "deliver",
   close: "close",
+  supersede: "supersede",
   split: "split",
   defer: "defer",
   hold: "hold",
@@ -91,6 +92,12 @@ const DELIVERY_EFFECT_LINE = {
 export function effectLine(option, kind) {
   if (!option) return "";
   const delivery = kind === "delivery";
+  if (option.effect === "supersede") {
+    const closes = (option.closes ?? [])
+      .map((number) => `#${number}`)
+      .join(", ");
+    return `Closes ${closes} as superseded by #${option.in_favour_of}`;
+  }
   if (option.effect === "split") {
     const n = option.children ?? 0;
     const opens = n === 1 ? "opens 1 issue" : `opens ${n} issues`;

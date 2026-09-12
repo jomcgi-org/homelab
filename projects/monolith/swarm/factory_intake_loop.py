@@ -66,6 +66,7 @@ _EXCLUSION_REASONS = (
     "escalated",
     "cooldown",
     "already_received",
+    "deferred",
     "refine_disabled",
     "lane_full",
 )
@@ -397,6 +398,9 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 continue
             delivery = bool(labels & include_labels)
             refine = not delivery
+            if refine and "needs-thought" in labels:
+                exclude("deferred")
+                continue
             task_class, class_reason = derive_task_class(labels, refine=refine)
             # Scoped to the class, not just the generation. A refine pass that
             # moved an issue to agent-ready has changed what the lane can do
