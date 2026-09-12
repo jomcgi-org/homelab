@@ -16,22 +16,33 @@ import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import FunctionModel
 from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
 
 from chat.agent import ChatDeps, create_agent
-from chat.reminders import create_reminder
+from chat.scheduled_tasks import create_task, list_tasks
+
+
+def create_reminder(session, channel_id, author_id, content, due_at):
+    """Compatibility-shaped test helper backed by the durable task model."""
+    return create_task(
+        session,
+        channel_id=channel_id,
+        author_id=author_id,
+        task_kind="reminder",
+        schedule_kind="one_shot",
+        content=content,
+        due_at=due_at,
+    )
 
 
 @pytest.fixture(name="engine")
-def engine_fixture():
-    """In-memory SQLite engine with the full chat schema, schema stripped so
+def engine_fixture(tmp_path):
+    """File-backed SQLite engine with the full chat schema, schema stripped so
     SQLite accepts the DDL -- mirrors chat.reminders_test's session_fixture,
     but yields the engine (not a session) since the tool code under test
     opens its own session per call via core.db.get_engine."""
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{tmp_path / 'agent-reminders.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     original = {}
     for table in SQLModel.metadata.tables.values():
@@ -106,11 +117,9 @@ class TestSetReminderHappyPath:
         assert "UTC." in result
 
         with Session(engine) as s:
-            from chat.reminders import list_pending
-
-            pending = list_pending(s, "user-1")
-        assert len(pending) == 1
-        assert pending[0].content == "stand up"
+            pending = list_tasks(s, "user-1")
+            assert len(pending) == 1
+            assert pending[0].payload_json == '{"content": "stand up"}'
 
     @pytest.mark.asyncio
     async def test_accepts_trailing_z_suffix(self, engine):
@@ -230,12 +239,14 @@ class TestSetReminderCrudErrorsPassThrough:
     async def test_pending_limit_returns_crud_error_verbatim(self, engine, future_iso):
         with Session(engine) as s:
             for i in range(10):
-                create_reminder(
+                create_task(
                     s,
-                    "ch1",
-                    "user-1",
-                    f"r{i}",
-                    datetime.now(timezone.utc) + timedelta(hours=i + 1),
+                    channel_id="ch1",
+                    author_id="user-1",
+                    task_kind="reminder",
+                    schedule_kind="one_shot",
+                    content=f"r{i}",
+                    due_at=datetime.now(timezone.utc) + timedelta(hours=i + 1),
                 )
             s.commit()
 
@@ -435,10 +446,10 @@ class TestCancelReminder:
         assert result == f"Reminder #{reminder_id} cancelled."
 
         with Session(engine) as s:
-            from chat.models import Reminder
+            from chat.models import ScheduledTask
 
-            refreshed = s.get(Reminder, reminder_id)
-        assert refreshed.status == "cancelled"
+            refreshed = s.get(ScheduledTask, reminder_id)
+            assert refreshed.status == "cancelled"
 
     @pytest.mark.asyncio
     async def test_returns_failure_string_for_missing_reminder(self, engine):
