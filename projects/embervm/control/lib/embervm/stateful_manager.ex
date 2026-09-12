@@ -2713,7 +2713,8 @@ defmodule Embervm.StatefulManager do
   defp stop_stateful_destroy(state, %{node_id: node_id, vm_id: vm_id}) when is_binary(node_id) and is_binary(vm_id) do
     req = %StopStatefulRequest{trace: %Trace{}, vm_id: vm_id, mode: :STOP_STATEFUL_MODE_DESTROY}
 
-    with {:ok, channel} <- safe_channel(state.channel_fun, node_id) do
+    with {:ok, dial_id} <- stateful_destroy_dial_id(state, node_id, vm_id),
+         {:ok, channel} <- safe_channel(state.channel_fun, dial_id) do
       try do
         case state.stop_stateful_fun.(channel, req) do
           {:ok, %{teardown_confirmed: true}} -> true
@@ -2725,7 +2726,7 @@ defmodule Embervm.StatefulManager do
         # Dead Mint ConnectionProcess: invalidate so the next verb re-dials
         # (best-effort verb, but leaving the corpse cached wedges later wakes).
         :exit, _ ->
-          _ = state.invalidate_fun.(node_id, channel)
+          _ = state.invalidate_fun.(dial_id, channel)
           false
 
         _, _ ->
@@ -2739,6 +2740,51 @@ defmodule Embervm.StatefulManager do
   # An instance without a reachable VM holds nothing on a node, so its teardown is
   # trivially confirmed.
   defp stop_stateful_destroy(_state, _instance), do: true
+
+  # Resolve the current daemon instance that reports this exact VM. A bare node
+  # name is only a valid NodeChannel key for a legacy node-scoped fact whose
+  # Brick.dial_id/1 deliberately falls back to that name. If a modern replacement
+  # pod reports the node but not the VM, fail closed instead of sending DESTROY to
+  # an unrelated daemon instance. A later ownership report lets the destroying
+  # reconcile redrive the same request against the proven owner.
+  defp stateful_destroy_dial_id(state, node_id, vm_id) do
+    owner =
+      state.capacity_table
+      |> NodeCapacity.all()
+      |> Enum.filter(fn fact ->
+        Map.get(fact, :configured_id) == node_id and
+          Enum.any?(Map.get(fact, :stateful_vms, []) || [], &(Map.get(&1, :vm_id) == vm_id))
+      end)
+      |> Enum.max_by(&Map.get(&1, :updated_at, 0), fn -> nil end)
+
+    case owner do
+      nil -> legacy_stateful_destroy_dial_id(state, node_id)
+      fact -> present_dial_id(fact)
+    end
+  end
+
+  # Pre-instance-key daemons do not report instance_id. Their configured node
+  # name is the registration key, so retaining this fallback preserves the
+  # static single-daemon lifecycle without making a modern node alias routable.
+  defp legacy_stateful_destroy_dial_id(state, node_id) do
+    case NodeCapacity.fetch(state.capacity_table, node_id) do
+      {:ok, fact} ->
+        case Brick.dial_id(fact) do
+          ^node_id -> {:ok, node_id}
+          _modern_instance_id -> :error
+        end
+
+      :error ->
+        :error
+    end
+  end
+
+  defp present_dial_id(fact) do
+    case Brick.dial_id(fact) do
+      dial_id when is_binary(dial_id) and dial_id != "" -> {:ok, dial_id}
+      _ -> :error
+    end
+  end
 
   # -- delete volume (management verb) -----------------------------------------
 
