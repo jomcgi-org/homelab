@@ -1,7 +1,10 @@
 # Observability and Alerting
 
 The in-cluster alert templates, alert synchronizer, and notification channel have
-been removed. There is no in-cluster alerting pipeline today.
+been removed. There is no in-cluster alerting pipeline today. A public CDN cache
+monitor is implemented to query Cloudflare Analytics directly and open a GitHub
+issue when the declared public-host cache MISS threshold is sustained, but no
+scheduler currently invokes it.
 
 ## Public probes
 
@@ -34,3 +37,20 @@ state, EmberVM safety properties, or Hubble network-policy denials.
 
 The collector and probe configuration is documented in
 [`docs/observability.md`](../observability.md).
+
+## Public CDN cache misses
+
+`projects/platform/cloudflare-cache/policy.json` declares a greater-than-5-
+percent MISS threshold over a complete 15-minute window for
+`public.jomcgi.dev`, with a 20-request minimum. The monitor queries
+Cloudflare's supported `httpRequestsAdaptiveGroups` dataset and filters its
+`cacheStatus` dimension for `miss`. It does not infer cache status from the
+OpenTelemetry HTTP probe, which does not export response headers.
+
+The alert opens one GitHub issue while firing and comments on and closes it
+after a healthy window. An API failure fails the command. Insufficient request
+volume leaves an existing alert unchanged, because absence of data is not
+evidence of recovery.
+
+Automated evaluation remains an operational gap until a scheduler can run the
+monitor with the existing Cloudflare API token and GitHub issue permissions.

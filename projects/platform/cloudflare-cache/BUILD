@@ -1,0 +1,44 @@
+# gazelle:resolve py cloudflare_cache //projects/platform/cloudflare-cache:cloudflare_cache_lib
+
+load("@aspect_rules_py//py:defs.bzl", "py_library")
+load("@aspect_rules_py//py/private/py_venv:defs.bzl", "py_venv_binary")
+load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test", "semgrep_test")
+load("//bazel/tools/pytest:defs.bzl", "py_test")
+
+py_library(
+    name = "cloudflare_cache_lib",
+    srcs = ["cloudflare_cache.py"],
+    data = ["policy.json"],
+    imports = ["."],
+    visibility = ["//:__subpackages__"],
+)
+
+py_venv_binary(
+    name = "cloudflare_cache",
+    srcs = ["cloudflare_cache.py"],
+    data = ["policy.json"],
+    main = "cloudflare_cache.py",
+    visibility = ["//:__subpackages__"],
+)
+
+py_test(
+    name = "cloudflare_cache_test",
+    srcs = ["cloudflare_cache_test.py"],
+    data = ["policy.json"],
+    deps = [
+        "//projects/platform/cloudflare-cache:cloudflare_cache_lib",
+        "@pip//pytest",
+    ],
+)
+
+semgrep_test(
+    name = "cloudflare_cache_test_semgrep_test",
+    srcs = ["cloudflare_cache_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_target_test(
+    name = "cloudflare_cache_semgrep_test",
+    rules = ["//bazel/semgrep/rules:python_rules"],
+    target = ":cloudflare_cache",
+)

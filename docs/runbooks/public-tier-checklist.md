@@ -28,6 +28,13 @@ If a package directory is gazelle-excluded, the public binary's BUILD glob may d
 
 Public reads must filter to the public corpus, for example `is_global = true`. A schema-wide grant without row-level filtering does not just fail to serve data correctly, it leaks private rows to the public tier. Granting a table is necessary but not sufficient: the query itself has to filter.
 
+## 5. Public CDN cache contract
+
+- [ ] Every new public data route follows the [public CDN cache pattern](../reference/services.md#public-cdn-cache-pattern).
+- [ ] The route emits explicit browser and Cloudflare cache headers on successful responses only.
+- [ ] The response is anonymous and does not depend on cookies or set `Set-Cookie`.
+- [ ] The route keeps private and authenticated handlers outside `public.jomcgi.dev`.
+
 ## Rollout: the public origin is `monolith-public`
 
 `jomcgi.dev` is served by the `monolith-public` chart, so a change that only moves the `monolith` chart does not move the public origin. Chart versions are written back on `main` after merge (ADR platform/009): a PR never touches `Chart.yaml` `version:` or `targetRevision:`. On the hub Kargo promotes `monolith-public` from that published version, so the git pin under `projects/gke-apps/monolith-public/` is a floor, not the deployed version. Confirm the `chart-version-bot` write-back landed, then read the live value before curling the route:
@@ -45,3 +52,25 @@ curl -sS -o /dev/null -w '%{http_code}\n' https://jomcgi.dev/<new-route>
 ```
 
 A 200 from a live curl of the actual public URL is the only verification that counts here. Passing tests and a green CI run do not confirm the public_reader grant, the proxy route, or the chart bump actually landed together in prod.
+
+## CDN cache verification
+
+Run this after a Cloudflare policy change, an origin cache-header change, or a
+deployment intended to satisfy live cache acceptance. Keep the hostname as
+`public.jomcgi.dev`; do not substitute a private or authenticated hostname.
+
+```sh
+curl -sSI https://public.jomcgi.dev/ | grep -i 'cf-cache-status\|age:\|cache-control'
+sleep 2
+curl -sSI https://public.jomcgi.dev/ | grep -i 'cf-cache-status\|age:\|cache-control'
+sleep 65
+curl -sSI https://public.jomcgi.dev/ | grep -i 'cf-cache-status\|age:\|cache-control'
+```
+
+- [ ] The second request is `HIT` and has an `age` header that advances within the fresh window.
+- [ ] The request after the 60-second TTL is `HIT`, `EXPIRED`, or `REVALIDATED`, then returns to `HIT`.
+- [ ] The browser `cache-control` value is the origin value. Cloudflare has not injected a fixed `max-age`.
+- [ ] A non-success origin response is not stored as a successful public response.
+- [ ] The policy reconciler and MISS monitor have run successfully. Their state
+      is not evidence for the live checks above. No scheduler currently invokes
+      them automatically.

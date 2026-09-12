@@ -18,6 +18,7 @@ This document provides an overview of all services running in the cluster.
 | **Argo Workflows**           | Namespace-scoped batch-job executor for monolith workflows                     | [projects/platform/argo-workflows](../../projects/platform/argo-workflows/)                                   |
 | **Atlas Operator**           | Declarative database schema migrations via Atlas CRDs                          | [projects/platform/atlas-operator](../../projects/platform/atlas-operator/)                                   |
 | **CloudNativePG**            | PostgreSQL operator for in-cluster databases                                   | [projects/platform/cloudnative-pg](../../projects/platform/cloudnative-pg/)                                   |
+| **Cloudflare cache policy** | Public-host cache configuration and sustained MISS-rate alerting | [projects/platform/cloudflare-cache](../../projects/platform/cloudflare-cache/) |
 | **KEDA**                     | Event-driven autoscaler, shared infrastructure                                 | [projects/platform/keda](../../projects/platform/keda/)                                                       |
 | **Node Traffic Shaper**      | Caps inbound node bandwidth with CAKE to protect control-plane traffic         | [projects/platform/node-traffic-shaper](../../projects/platform/node-traffic-shaper/)                         |
 | **1Password Operator**       | Secret management via OnePasswordItem CRDs                                     | External chart (Helm install, outside ArgoCD)                                                              |
@@ -49,6 +50,35 @@ the CV) is served by the monolith's read-only public tier, not standalone static
 sites. See [monolith-public](../../projects/monolith-public/) and the
 [monolith frontend](../../projects/monolith/frontend/). The old Astro/VitePress
 Cloudflare Pages frontends were decommissioned (ADR docs/002).
+
+## Public CDN cache pattern
+
+New public data routes use the hostname-scoped Cloudflare cache contract. They
+must be anonymous, cookie-free, idempotent responses under
+`public.jomcgi.dev`. A route whose payload depends on authentication, a session,
+or a user cookie belongs on a private hostname and must not opt into shared
+caching.
+
+Set an explicit origin `Cache-Control` policy through
+`cloudflareCacheHeaders()` in
+`projects/monolith/frontend/src/lib/cache-headers.js`. The shared helper keeps
+the browser policy separate from Cloudflare's higher-precedence policy. For the
+observability snapshot the exact browser policy is `public, max-age=0,
+s-maxage=60, stale-while-revalidate=86400, stale-if-error=31536000`, while the
+Cloudflare-only header uses `max-age=60` in place of `s-maxage=60`. The backend
+mirror must use the same values. Error responses must not receive either public
+cache header, and public responses must not set `Set-Cookie`.
+
+Use a polling interval of at least 1.5 to 2 times the shared TTL for changing
+public data. The homepage observability snapshot is shared for 60 seconds and
+refreshes every five minutes, with its independent display-age tick every 30
+seconds. Retain the most recent valid snapshot when a refresh fails so a
+transient origin error does not erase usable data.
+
+Cloudflare's declared settings and miss-rate guardrail live in
+`projects/platform/cloudflare-cache/`. A repository or CI pass does not prove a
+live edge hit. Use the public-tier checklist after deployment and leave live
+acceptance unverified until `cf-cache-status` and `age` demonstrate it.
 
 ## Service Details
 
