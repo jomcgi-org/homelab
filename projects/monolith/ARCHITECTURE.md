@@ -688,30 +688,22 @@ unpressured brick the control plane then left the guest running until
 `idle_ttl`, hours later. Eight guests leaked that way between 04:00 and 05:00
 UTC on 2026-09-12, the sixteen-guest `claude-runtime` workload cap filled, every
 create was denied and the factory stalled on 429s while two attempts burned
-their whole turn window (#6050). The fence now has an owner with a deadline at
-both ends. The invoke coroutine's terminal path releases the exact receipt it
-fenced, bound to the same session, receipt, guest, claim owner and dispatch
-count identity the observed path checks, so a stale coroutine can neither
-release a newer fence nor authorize destroying a newer guest, and then runs the
-ordinary completion cleanup. That release is optional work on a completion
-path, so a contended pool that answers `lock_not_available` inside its one
-second lock timeout is retried a bounded number of times and then logged: it
-never replaces the exception the turn was already raising, and never stands
-between that turn and the destroy and unbind that follow it. The two cleanup
-owners are the backstop for a crash between those steps, and for every session
-that keeps its guest resident rather than destroying it at turn completion.
-Both release a fence whose receipt is gone, whose body has arrived, or whose
-acceptance window has closed. The drainer releases inside its own cleanup
-transaction, so a refused cleanup rolls the release back with everything else
-it was going to write. The workflow reaper cannot, because `begin_guest_cleanup`
-refuses while any row bound to the guest carries a fence, so it releases first
-and puts the fence back when no claim follows: a committed claim blocks
-dispatch, receipt minting and rebinding in the fence's place, but between the
-release and the claim nothing does, and a row left pending with neither would
-let a queued follow-up claim a guest whose POST may still be streaming. What
-none of them will touch is a
-receipt still inside its acceptance window with nothing committed, because
-until that body arrives the guest is the only path to the turn. The release
+their whole turn window (#6050). The receipt fence is now the durable cleanup
+owner. Its retained receipt records the session, exact guest and `accept_until`.
+Receipt-first completion keeps that fence until the original POST's validated
+response is observed or the deadline expires. The observer records only
+`response_observed_at` and requests exact-guest cleanup; a leader-owned sweep
+retries the same cleanup every thirty seconds, so a dropped response, failed
+destroy or process restart cannot leave the guest waiting for `idle_ttl`.
+Cleanup destroys and authoritatively confirms the exact guest before clearing
+the matching binding and fence. A stale cleanup may destroy only the old guest
+and cannot clear a replacement binding. Failed or unconfirmed destruction
+retains the durable owner for another sweep, and receipt retention never prunes
+a row while a fence still names it. Workflow cleanup uses the same receipt
+owner, while the drainer releases only an observed or expired fence inside the
+transaction that installs its own cleanup claim. A receipt whose body has not
+arrived is never a receipt cleanup candidate, and a received receipt before
+both response observation and its deadline remains fenced. Deadline cleanup
 deliberately does not stamp `response_observed_at`: nothing observed a
 response, and the lease backstop and factory reconciliation read that stamp as
 evidence about the response itself, so the count of received receipts with no

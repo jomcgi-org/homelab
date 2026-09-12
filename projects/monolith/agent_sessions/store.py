@@ -99,7 +99,7 @@ def _assert_guest_reusable(
         raise PendingClaimLost("Workflow cleanup owns the guest")
     if row.result_receipt_fence_id is not None:
         raise PendingClaimLost(
-            "The previous native result still owns its transport observer"
+            "The previous native result still owns its guest cleanup"
         )
 
 
@@ -1349,7 +1349,7 @@ def clear_ember_bindings_by_ember_id(session: Session, ember_id: str) -> list[in
     ids: list[int] = []
     for row in rows:
         # A stale cleanup observation must not erase the identity needed by
-        # the original POST to clear its committed receipt fence.
+        # the committed receipt's exact-guest cleanup owner.
         if (
             row.result_receipt_fence_id is not None
             or admission.cleanup_pending(session, row)

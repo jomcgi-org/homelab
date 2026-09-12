@@ -5270,6 +5270,17 @@ py_test(
 )
 
 py_test(
+    name = "agent_sessions_receipt_cleanup_test",
+    srcs = ["agent_sessions/receipt_cleanup_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_agent_sessions",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
     name = "agent_sessions_response_lost_test",
     srcs = ["agent_sessions/response_lost_test.py"],
     imports = ["."],

@@ -51,9 +51,10 @@ class AgentSession(SQLModel, table=True):
     )  # Claude CLI session_id for resumption
     ember_session_id: str | None = Field(default=None)
     ember_session_token: str | None = Field(default=None)
-    # An exact native receipt completed before its synchronous observer. Keep
-    # this fence even if retention deletes the receipt; only the matching
-    # observer may clear it. This is deliberately not a cascading foreign key.
+    # An exact native receipt completed before its synchronous observer. The
+    # matching cleanup owner retains the receipt and clears this fence only
+    # after the exact guest is confirmed gone. This is deliberately not a
+    # cascading foreign key.
     result_receipt_fence_id: str | None = Field(default=None)
     # Durable workflow cleanup owns this exact guest until terminal confirmation.
     # No lease expiry: an interrupted DELETE may still be in flight remotely.
