@@ -78,7 +78,7 @@ describe("the decision write proxy", () => {
     };
   }
 
-  it("forwards the Access email and the body, and relays the status", async () => {
+  it("forwards the verified X-Auth-Email and the body, and relays the status", async () => {
     globalThis.fetch = vi.fn(async () => ({
       status: 200,
       text: async () => JSON.stringify({ ok: true }),
@@ -88,20 +88,18 @@ describe("the decision write proxy", () => {
       params: { id: "3" },
       request: request(
         { option_key: "close" },
-        { "Cf-Access-Authenticated-User-Email": "joe@example.test" },
+        { "x-auth-email": "joe@example.test" },
       ),
     });
 
     expect(res.status).toBe(200);
     const [url, init] = globalThis.fetch.mock.calls[0];
     expect(url).toBe("http://backend/api/agents/factory/decisions/3");
-    expect(init.headers["Cf-Access-Authenticated-User-Email"]).toBe(
-      "joe@example.test",
-    );
+    expect(init.headers["X-Auth-Email"]).toBe("joe@example.test");
     expect(JSON.parse(init.body)).toEqual({ option_key: "close" });
   });
 
-  it("sends no identity header when Access supplied none", async () => {
+  it("never forwards the unvalidated Cloudflare identity header", async () => {
     globalThis.fetch = vi.fn(async () => ({
       status: 403,
       text: async () => JSON.stringify({ detail: "not a factory operator" }),
@@ -109,11 +107,15 @@ describe("the decision write proxy", () => {
 
     const res = await POST({
       params: { id: "3" },
-      request: request({ option_key: "close" }),
+      request: request(
+        { option_key: "close" },
+        { "cf-access-authenticated-user-email": "forged@example.test" },
+      ),
     });
 
     expect(res.status).toBe(403);
     const [, init] = globalThis.fetch.mock.calls[0];
+    expect(init.headers["X-Auth-Email"]).toBeUndefined();
     expect(init.headers["Cf-Access-Authenticated-User-Email"]).toBeUndefined();
   });
 

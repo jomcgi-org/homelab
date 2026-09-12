@@ -1504,12 +1504,13 @@ swarm:
   # and starts on a later tick, so the factory is the one that yields. Zero lets
   # the factory race everything else to the last slot.
   factoryBackgroundReserve: 2
-  # Comma separated emails allowed to answer a factory escalation from the
-  # private agents page, matched against the address Cloudflare Access
-  # verified at the edge. Empty means nobody, so the decision buttons 403
-  # until an operator lists themselves. A caller holding a standing operator
-  # bearer uses /api/swarm/factory/decisions instead and ignores this.
-  factoryOperatorEmails: ""
+  # The 1Password key on the monolith-chat-secrets item holding the comma
+  # separated emails allowed to answer a factory escalation from the private
+  # agents page. The addresses themselves are never named here: this is a
+  # public repository and that list is real people. Until the key exists the
+  # environment variable is empty and every decision is 403, which is the
+  # state this capability ships in.
+  factoryOperatorEmailsSecretKey: FACTORY_OPERATOR_EMAILS
   enabled: false
   # The cheap implementer lane and the reviewer that gates it. The reviewer is
   # never below Opus: ADR 038 decision 5 floors anything assessable only by

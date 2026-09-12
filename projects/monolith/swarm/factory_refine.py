@@ -445,12 +445,21 @@ def _escalation_document(artifact: dict, comment_url: str, downgraded: bool) -> 
 def _record_escalation(
     task_id: str, artifact: dict, comment_url: str, *, downgraded: bool
 ) -> dict:
-    """Write the escalation document onto the receipt, once.
+    """Write the escalation document onto the receipt.
 
-    Settlement is reached again on every tick until it takes, so this is
-    written only when the receipt carries nothing yet. Re-writing it would
-    discard a resolution an operator had already recorded against an
-    escalation whose task settlement was still deferred.
+    A resolved document is never overwritten: settlement is reached again on
+    every tick until it takes, and re-writing one would discard a decision an
+    operator had already recorded against an escalation whose task settlement
+    was still deferred.
+
+    An UNRESOLVED document is replaced, and this is the case that matters.
+    A receipt the operator sent back for another brief already carries the
+    first brief's question and options, and the re-brief settles onto the same
+    receipt. Keeping the old document would leave the page showing the first
+    brief's options over the second brief's issue, so pressing 1 would apply
+    an option written before the operator's question was answered. The chat
+    history carries forward, because it is the record of what was asked rather
+    than part of any one brief's answer.
     """
     document = _escalation_document(artifact, comment_url, downgraded)
     with _locked_session() as (db, _control):
@@ -461,8 +470,11 @@ def _record_escalation(
         ).first()
         if row is None:
             return document
-        if row.escalation_json:
-            return json.loads(row.escalation_json)
+        stored = json.loads(row.escalation_json) if row.escalation_json else None
+        if stored is not None and stored.get("resolved") is not None:
+            return stored
+        if stored is not None:
+            document["chat"] = stored.get("chat") or []
         row.escalation_json = json.dumps(document)
         db.add(row)
     return document

@@ -319,26 +319,45 @@ def factory_decider(request: Request) -> str:
     The operator-gated /api/swarm/factory routes want a standing bearer, and
     the browser behind Cloudflare Access does not carry one: that is why the
     board next door is a view rather than a control. A decision IS a control,
-    so it needs an identity, and the only one the browser has is the email
-    Access verified at the edge and injected as a header.
+    so it needs an identity, and the only verified one the browser has is the
+    email claim Envoy projects into X-Auth-Email from the Access JWT.
 
-    So this trusts that header, and only for an address an operator listed in
-    FACTORY_OPERATOR_EMAILS. The allowlist is empty by default, which makes
-    this route inert until somebody sets it: the capability arrives switched
-    off, the same way landing and closing did. Agents with a real bearer keep
-    using POST /api/swarm/factory/decisions/{id} and never reach here.
+    X-Auth-Email and NOT Cf-Access-Authenticated-User-Email. The projected
+    header is the one the gateway-wide ClientTrafficPolicy strips on ingress
+    before the auth filter runs, so the only value that can arrive is the one
+    Envoy put there from a signature it verified. The Cf-Access-* header is
+    neither validated by anything in the cluster nor stripped at the listener,
+    so a caller that reaches the backend can set it to any address they like
+    (the class of gap #4628 was). It is read here only for attribution when
+    the verified header agrees with it, never for the authorization decision.
+
+    The address must also be listed in FACTORY_OPERATOR_EMAILS, which is
+    empty by default, so the route is inert until an operator is provisioned:
+    the capability arrives switched off, the same way landing and closing did.
+    Agents holding a real bearer use POST /api/swarm/factory/decisions/{id}
+    and never reach here.
     """
     allowed = {
         entry.strip().lower()
         for entry in os.environ.get("FACTORY_OPERATOR_EMAILS", "").split(",")
         if entry.strip()
     }
-    email = (request.headers.get("Cf-Access-Authenticated-User-Email") or "").strip()
     if not allowed:
         raise HTTPException(
             status_code=403,
             detail="no factory operator emails are configured",
         )
+    # Defence in depth behind the listener strip, the same check the moving
+    # planner's viewer makes: Envoy APPENDS its projected claim, so more than
+    # one value means a forged one arrived first and ordinary header reads
+    # would take it.
+    projected = request.headers.getlist("x-auth-email")
+    if len(projected) != 1:
+        raise HTTPException(
+            status_code=403,
+            detail="missing or ambiguous X-Auth-Email header",
+        )
+    email = projected[0].strip()
     if not email or email.lower() not in allowed:
         raise HTTPException(status_code=403, detail="not a factory operator")
     return email

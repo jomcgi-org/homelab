@@ -29,9 +29,14 @@
   // svelte-ignore state_referenced_locally
   let unavailable = $state(data.error);
   let cursor = $state(0);
-  let note = $state("");
+  // Notes are per receipt, never one box shared by the page. A single note
+  // state sent whatever was typed on one card along with a decision clicked
+  // on another, so a scope note written about one issue could land as the
+  // comment on a different one.
+  let notes = $state({});
   let busy = $state(null);
   let failure = $state(null);
+  let notice = $state(null);
   let now = $state(Date.now());
   let noteBox = $state(null);
 
@@ -52,10 +57,19 @@
     }
   }
 
+  function noteFor(item) {
+    return notes[item?.receipt_id] ?? "";
+  }
+
+  function setNote(item, value) {
+    notes = { ...notes, [item.receipt_id]: value };
+  }
+
   async function send(item, body, label) {
     if (!item || busy) return;
     busy = label;
     failure = null;
+    notice = null;
     try {
       const response = await fetch(
         `/agents/escalations/decisions/${item.receipt_id}`,
@@ -70,7 +84,16 @@
         failure = result.detail ?? `the decision failed (${response.status})`;
         return;
       }
-      note = "";
+      // A chat the lane could not take still posted the question, so the
+      // difference between "asked and scheduled" and "asked and nothing will
+      // answer" has to reach the operator rather than reading as success.
+      if (result.requeued === false) {
+        notice = `Asked on #${item.issue_number}, but no brief was queued: ${
+          result.blocked_by ?? "the lane would not admit it"
+        }`;
+      }
+      const { [item.receipt_id]: _spent, ...rest } = notes;
+      notes = rest;
       // The list is re-read rather than patched in place: the effect happened
       // on GitHub and the receipt is the record of it, so what the server says
       // now is the only honest thing to render.
@@ -84,16 +107,20 @@
   }
 
   function decide(item, option) {
-    return send(item, decisionBody(option.key, note), option.key);
+    if (item.briefing) {
+      failure = "a brief is running on this issue; decide when it settles";
+      return;
+    }
+    return send(item, decisionBody(option.key, noteFor(item)), option.key);
   }
 
   function chat(item) {
-    if (!note.trim()) {
+    if (!noteFor(item).trim()) {
       failure = "a chat request needs a note saying what is missing";
       noteBox?.focus();
       return;
     }
-    return send(item, chatBody(note), "chat");
+    return send(item, chatBody(noteFor(item)), "chat");
   }
 
   function typing(event) {
@@ -183,6 +210,9 @@
     {#if failure}
       <p class="warn-line" role="alert">{failure}</p>
     {/if}
+    {#if notice}
+      <p class="warn-line" role="status">{notice}</p>
+    {/if}
 
     <section aria-label="Open escalations">
       <p class="sec-label">/ Waiting on you</p>
@@ -198,6 +228,9 @@
             <span class="title">{item.title}</span>
             <span class="badge">{item.task_class}</span>
             <span class="badge">recommend {item.recommendation}</span>
+            {#if item.briefing}
+              <span class="badge briefing">briefing</span>
+            {/if}
           </header>
 
           <div class="body">
@@ -208,6 +241,12 @@
             {#each item.chat as asked, i (i)}
               <p class="asked code">
                 asked {relativeTime(asked.asked_at, now)}: {asked.note}
+                {#if asked.requeued === false}
+                  <span class="unqueued"
+                    >no brief queued: {asked.blocked_by ??
+                      "the lane would not admit it"}</span
+                  >
+                {/if}
               </p>
             {/each}
 
@@ -216,7 +255,7 @@
                 <button
                   class="option"
                   class:primary={i === 0}
-                  disabled={busy !== null}
+                  disabled={busy !== null || item.briefing}
                   onclick={() => decide(item, option)}
                 >
                   <span class="hotkey code">{HOTKEYS[i] ?? ""}</span>
@@ -231,11 +270,14 @@
 
             {#if index === cursor}
               <div class="chat">
-                <label class="sr-only" for="note">Note</label>
+                <label class="sr-only" for={`note-${item.receipt_id}`}>
+                  Note for issue {item.issue_number}
+                </label>
                 <textarea
-                  id="note"
+                  id={`note-${item.receipt_id}`}
                   bind:this={noteBox}
-                  bind:value={note}
+                  value={noteFor(item)}
+                  oninput={(event) => setNote(item, event.currentTarget.value)}
                   rows="2"
                   placeholder="What is missing, or a note to record with the decision"
                 ></textarea>
@@ -503,6 +545,13 @@
     margin: 0 0 0.6em;
     color: var(--ink-2);
     font-size: 0.74rem;
+  }
+  .unqueued {
+    color: var(--warn);
+  }
+  .badge.briefing {
+    border-color: var(--warn);
+    color: var(--warn);
   }
 
   .options {

@@ -812,3 +812,89 @@ def test_an_operator_question_reaches_the_next_prompt():
     text = refine.refine_prompt(task, receipt, closing=True)
     assert "Does this cover the friends tier too?" in text
     assert "asked for more before deciding" in text
+
+
+def test_a_re_brief_replaces_the_options_the_operator_sent_back(db, monkeypatch):
+    """The second brief's options must be the ones the page offers.
+
+    The receipt is re-briefed in place, so keeping the first document left the
+    page showing options written before the operator's question was answered,
+    and pressing 1 applied the stale first one.
+    """
+    from swarm import factory_decisions as decisions
+
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task, "needs-human")
+    run = settle_attempt(task, "succeeded", human_artifact(comment["html_url"]))
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    first = controls.task_snapshot(task["id"])["escalation"]
+    assert [option["key"] for option in first["options"]] == ["split", "hold"]
+
+    receipt_id = next(row.id for row in Session(db).exec(select(FactoryReceipt)).all())
+    monkeypatch.setattr(
+        "swarm.factory_conductor.github_list", lambda *_args: [], raising=False
+    )
+    monkeypatch.setattr(
+        "swarm.factory_landing.github_write",
+        lambda *_args, **_kwargs: {"id": 1},
+        raising=False,
+    )
+    assert decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")["ok"]
+
+    # The lane briefs it again and settles onto the same receipt.
+    admitted = admit_next("scheduler")
+    assert admitted["ok"]
+    second_task = conductor._task(admitted["task_id"])
+    add_refine_node(second_task, admitted["policy"])
+    second_comment = verified_github(monkeypatch, second_task, "needs-human")
+    second_run = settle_attempt(
+        second_task,
+        "succeeded",
+        human_artifact(
+            second_comment["html_url"],
+            "deliver",
+            question="The friends tier is out of scope.",
+            summary="Answered: only the private tier.",
+        ),
+    )
+    refine.reconcile(
+        second_task,
+        admitted["policy"],
+        graph.load_graph(second_task["id"]),
+        [second_run],
+        1,
+    )
+    second = controls.task_snapshot(second_task["id"])["escalation"]
+    assert [option["key"] for option in second["options"]] == ["deliver", "hold"]
+    assert second["question"] == "The friends tier is out of scope."
+    assert second["recommendation"] == "deliver"
+    # The chat history is the record of what was asked, so it survives.
+    assert [entry["note"] for entry in second["chat"]] == ["Which tier?"]
+
+
+def test_a_resolved_escalation_is_never_overwritten(db, monkeypatch):
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task, "needs-human")
+    run = settle_attempt(task, "succeeded", human_artifact(comment["html_url"]))
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        document = json.loads(row.escalation_json)
+        document["resolved"] = {"option_key": "hold", "actor": "joe"}
+        row.escalation_json = json.dumps(document)
+        session.add(row)
+        session.commit()
+    # Settlement is reached again on every tick until it takes; a rewrite here
+    # would discard a decision already recorded against it.
+    refine._record_escalation(
+        task["id"],
+        human_artifact(comment["html_url"], "defer"),
+        comment["html_url"],
+        downgraded=False,
+    )
+    assert controls.task_snapshot(task["id"])["escalation"]["resolved"] == {
+        "option_key": "hold",
+        "actor": "joe",
+    }

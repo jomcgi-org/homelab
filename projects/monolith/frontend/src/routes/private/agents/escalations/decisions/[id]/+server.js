@@ -1,12 +1,14 @@
-// Write proxy for one escalation decision. The Cloudflare Access email is the
-// only identity the browser has, and the backend gate reads it from this
-// header, so it is forwarded verbatim and nothing else is added: a request
-// that arrives here without it is one the backend must refuse, not one this
-// proxy should paper over.
+// Write proxy for one escalation decision. The verified identity is the email
+// claim Envoy projected into X-Auth-Email from the Access JWT, which the
+// gateway strips on ingress so it cannot be smuggled past the auth filter, and
+// that is the header the backend gate reads. Forwarded the way
+// ../../../sessions/+server.js and ../../../runs/+server.js forward it, and
+// nothing else is added: a request that arrives with no verified identity is
+// one the backend must refuse, not one this proxy should paper over.
 const API_BASE = process.env.API_BASE;
 
 export async function POST({ params, request }) {
-  const email = request.headers.get("Cf-Access-Authenticated-User-Email");
+  const email = request.headers.get("x-auth-email");
   try {
     const res = await fetch(
       `${API_BASE}/api/agents/factory/decisions/${encodeURIComponent(params.id)}`,
@@ -14,7 +16,7 @@ export async function POST({ params, request }) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(email ? { "Cf-Access-Authenticated-User-Email": email } : {}),
+          ...(email ? { "X-Auth-Email": email } : {}),
         },
         body: await request.text(),
         signal: AbortSignal.timeout(30000),

@@ -234,13 +234,23 @@ spec:
               value: {{ .Values.swarm.factoryMaxConcurrentTasks | default 1 | quote }}
             - name: FACTORY_BACKGROUND_RESERVE
               value: {{ .Values.swarm.factoryBackgroundReserve | default 2 | quote }}
-            # Who may answer a factory escalation from the private agents
-            # page. Empty by default, which leaves that route 403 for
-            # everybody: the decision capability arrives inert and an operator
-            # lists themselves to switch it on. Agents with a standing bearer
-            # use /api/swarm/factory/decisions and never read this.
+            {{- if .Values.chat.enabled }}
+            # Who may answer a factory escalation from the private agents page,
+            # matched against the X-Auth-Email claim Envoy projected from the
+            # verified Access token. A list of real people's addresses, so it
+            # comes from 1Password like every other secret rather than from a
+            # values file this repository publishes. optional: true means a
+            # cluster whose item has no such key gets an empty allowlist and
+            # the route 403s for everybody, which is the inert state this
+            # capability is meant to arrive in. Agents holding a standing
+            # bearer use /api/swarm/factory/decisions and never read this.
             - name: FACTORY_OPERATOR_EMAILS
-              value: {{ .Values.swarm.factoryOperatorEmails | default "" | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "monolith.fullname" . }}-chat-secrets
+                  key: {{ .Values.swarm.factoryOperatorEmailsSecretKey }}
+                  optional: true
+            {{- end }}
             # DBOS swarm layer (ADR agents/038, agents/053). SWARM_ENABLED is
             # the master switch the module reads: with it false the router still
             # mounts but every run endpoint 503s and DBOS is never launched, so

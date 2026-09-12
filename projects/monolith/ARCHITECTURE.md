@@ -382,10 +382,15 @@ a guest to be scheduled. Every write is idempotent on the receipt and option
 pair, fenced by a hidden marker in the comment and an audit row per child
 issue, because the operator who clicks twice is the operator whose first click
 looked like it did nothing. And the private tier reaches the decision endpoint
-on a Cloudflare Access identity rather than the standing bearer the rest of
+on the Access identity rather than the standing bearer the rest of
 `/api/swarm/factory` wants, because the browser behind Access carries no
-bearer at all: that route is gated on an allowlist which is empty in the chart,
-so the capability arrives switched off (#6002).
+bearer at all. That identity is `X-Auth-Email`, the claim Envoy projects from
+a signature it verified and the gateway strips on ingress so it cannot be
+smuggled past the auth filter, never `Cf-Access-Authenticated-User-Email`,
+which nothing in the cluster validates or strips and which any caller reaching
+the backend could therefore write. The address must also be on an allowlist
+delivered as a secret, empty until one is provisioned, so the capability
+arrives switched off (#6002).
 
 (see: /projects/monolith/swarm/factory_decisions.py)
 (see: /projects/monolith/frontend/src/routes/private/agents/escalations/+page.svelte)
