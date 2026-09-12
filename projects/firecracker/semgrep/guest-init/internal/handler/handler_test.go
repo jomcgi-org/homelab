@@ -236,6 +236,7 @@ func TestHandlerOverlappingScansKeepMetadataRequestLocal(t *testing.T) {
 	outcomes := make(chan outcome, 2)
 	var wg sync.WaitGroup
 	for _, id := range []string{"overlap-one", "overlap-two"} {
+		id := id
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
