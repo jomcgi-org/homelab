@@ -1862,7 +1862,7 @@ defmodule Embervm.WorkloadWatcher do
       cell_id = Map.get(row, :cell_id) || Map.get(row, "cell_id")
 
       Logger.warning(
-        "embervm workload watcher: skipping durable assignment for an unknown cell",
+        "embervm workload watcher: skipping durable assignment for an unknown cell: #{inspect(cell_id)}",
         workload: workload,
         cell_id: cell_id
       )
