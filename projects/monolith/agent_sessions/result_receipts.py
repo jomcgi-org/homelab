@@ -242,6 +242,16 @@ def _newer_work_exists(db: Session, receipt: dict) -> bool:
     )
 
 
+def _ownerless_interactive_session(agent: AgentSession | None) -> bool:
+    """Whether no workflow or drainer owns this session's fence cleanup."""
+    return bool(
+        agent is not None
+        and agent.workflow_id is None
+        and agent.admission_tier == "interactive"
+        and not agent.local_session_id.startswith("factory:")
+    )
+
+
 def _held_dispatch(db: Session, receipt: dict, now: datetime) -> bool:
     """Whether a live response-loss hold names this exact receipt.
 
@@ -483,8 +493,13 @@ def validate_active_result(
         raise ReceiptRejected(409, "receipt_result_changed")
     agent = _active_owner(db, receipt)
     result = _result(db, receipt)
-    if receipt["response_observed_at"] is None and not _held_dispatch(
-        db, receipt, _now()
+    if (
+        receipt["response_observed_at"] is None
+        and not (
+            _ownerless_interactive_session(agent)
+            and receipt["response_observer_released_at"] is not None
+        )
+        and not _held_dispatch(db, receipt, _now())
     ):
         # The fence exists so a follow-up dispatch waits for the original POST's
         # own response. A hold means that POST's observer is already gone and no
@@ -537,6 +552,58 @@ def mark_response_observed(
             and agent.ember_session_id == receipt["guest_id"]
             and agent.result_receipt_fence_id == receipt_id
             and receipt["superseded_at"] is None
+            and not _newer_work_exists(db, receipt)
+        ):
+            agent.result_receipt_fence_id = None
+            db.add(agent)
+        return True
+
+
+def mark_response_observer_released(
+    receipt_id: str,
+    session_id: int,
+    claim_owner: str,
+    dispatch_count: int,
+    guest_id: str,
+) -> bool:
+    """Record that the exact original POST can no longer consume its fence.
+
+    This is separate from ``response_observed_at`` because an exception,
+    timeout, or cancellation observes no response. The durable stamp closes
+    the race where the POST ends before the receipt winner writes its fence:
+    validation sees the stamp and never creates an ownerless fence. If the
+    fence already exists, only an ownerless interactive session with the same
+    local session, guest, receipt, turn, owner, and dispatch is released.
+    Workflow and drainer sessions keep their existing cleanup ownership.
+    """
+    from agent_sessions import store
+
+    with Session(get_engine()) as db, db.begin():
+        _bound_observer_transaction(db)
+        agent = store._lock_session(db, session_id)
+        db.execute(
+            update(AgentResultReceipt)
+            .where(AgentResultReceipt.id == receipt_id)
+            .values(created_at=AgentResultReceipt.created_at)
+        )
+        receipt = _receipt_metadata(db, receipt_id)
+        if receipt is None:
+            return False
+        _check_identity(receipt, session_id, claim_owner, dispatch_count, guest_id)
+        if receipt["response_observer_released_at"] is None:
+            db.execute(
+                update(AgentResultReceipt)
+                .where(AgentResultReceipt.id == receipt_id)
+                .values(response_observer_released_at=_now())
+            )
+        if (
+            receipt["received_at"] is not None
+            and receipt["response_observed_at"] is None
+            and receipt["superseded_at"] is None
+            and _ownerless_interactive_session(agent)
+            and agent.local_session_id == receipt["local_session_id"]
+            and agent.ember_session_id == receipt["guest_id"]
+            and agent.result_receipt_fence_id == receipt_id
             and not _newer_work_exists(db, receipt)
         ):
             agent.result_receipt_fence_id = None
@@ -617,6 +684,49 @@ def release_abandoned_fence(session_id: int, receipt_id: str) -> bool:
         _bound_observer_transaction(db)
         agent = store._lock_session(db, session_id)
         return release_abandoned_fence_locked(db, agent, receipt_id)
+
+
+def release_ownerless_fence_locked(db: Session, agent, receipt_id: str) -> bool:
+    """Release one completed ownerless fence after its observer or deadline.
+
+    Callers already hold the pool and session lock. Unlike workflow cleanup,
+    an interactive follow-up cannot declare every received receipt abandoned:
+    its original POST may still be returning the validated response. The
+    durable observer-release stamp, or the receipt acceptance deadline, is the
+    proof that the old observer no longer owns dispatch exclusion.
+    """
+    if (
+        not _ownerless_interactive_session(agent)
+        or not isinstance(receipt_id, str)
+        or not receipt_id
+        or agent.result_receipt_fence_id != receipt_id
+    ):
+        return False
+    db.execute(
+        update(AgentResultReceipt)
+        .where(AgentResultReceipt.id == receipt_id)
+        .values(created_at=AgentResultReceipt.created_at)
+    )
+    receipt = _receipt_metadata(db, receipt_id)
+    if (
+        receipt is None
+        or receipt["session_id"] != agent.id
+        or agent.local_session_id != receipt["local_session_id"]
+        or agent.ember_session_id != receipt["guest_id"]
+        or receipt["received_at"] is None
+        or receipt["superseded_at"] is not None
+        or _newer_work_exists(db, receipt)
+        or (
+            receipt["response_observed_at"] is None
+            and receipt["response_observer_released_at"] is None
+            and _now() < _aware(receipt["accept_until"])
+        )
+    ):
+        return False
+    agent.result_receipt_fence_id = None
+    db.add(agent)
+    db.flush()
+    return True
 
 
 def release_abandoned_fence_locked(db: Session, agent, receipt_id: str) -> bool:

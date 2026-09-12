@@ -8,7 +8,12 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from agent_sessions import mcp, model_family, store, voice
-from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
+from agent_sessions.models import (
+    AgentResultReceipt,
+    AgentSession,
+    AgentTurn,
+    PendingMessage,
+)
 from agent_sessions.transport import (
     EmberBrickGone,
     EmberSession,
@@ -2030,6 +2035,67 @@ def test_session_destroy_clears_matching_binding(monkeypatch, session):
     reloaded = store.get_session(session, row.id)
     assert reloaded.ember_session_id is None
     assert reloaded.ember_session_token is None
+
+
+def test_session_destroy_clears_released_receipt_fence_and_binding(
+    monkeypatch, session
+):
+    now = datetime.now(timezone.utc)
+    row = store.create_session(session, "mcp-fenced", "/workspace", "main")
+    store.set_ember_session(
+        session,
+        row.id,
+        "s-fenced",
+        "token-fenced",
+        None,
+        ember_lineage_id="lineage-fenced",
+        cli_session_id="cli-fenced",
+    )
+    receipt = AgentResultReceipt(
+        id="a" * 32,
+        token_sha256="b" * 64,
+        session_id=row.id,
+        local_session_id=row.local_session_id,
+        seq=1,
+        dispatch_count=1,
+        claim_owner="mcp-observer",
+        guest_id="s-fenced",
+        request_sha256="c" * 64,
+        created_at=now,
+        accept_until=now + timedelta(hours=1),
+        retain_until=now + timedelta(days=1),
+        received_at=now,
+        response_observer_released_at=now,
+        result_sha256="d" * 64,
+        result_body=b"{}",
+    )
+    session.add(receipt)
+    stored = session.get(AgentSession, row.id)
+    stored.result_receipt_fence_id = receipt.id
+    session.add(stored)
+    session.commit()
+
+    async def fake_destroy_session(ember_session_id):
+        return {"session_id": ember_session_id, "state": "destroyed"}
+
+    monkeypatch.setattr(mcp._transport, "destroy_session", fake_destroy_session)
+    result = asyncio.run(mcp.monolith_agent_session_destroy("s-fenced"))
+
+    assert result["cleared_bindings"] == [row.id]
+    session.expire_all()
+    reloaded = store.get_session(session, row.id)
+    assert reloaded.result_receipt_fence_id is None
+    assert reloaded.ember_session_id is None
+    assert reloaded.ember_session_token is None
+    assert reloaded.prior_ember_lineage_id == "lineage-fenced"
+    assert reloaded.prior_cli_session_id == "cli-fenced"
+
+    followup = store.create_pending_message(session, row.id, "continue")
+    assert followup.seq == 1
+    assert store.claim_pending_message_for_session_sync(row.id, "mcp-followup") == 1
+    store.set_ember_session(session, row.id, "s-rebound", "token-rebound", None)
+    session.expire_all()
+    assert store.get_session(session, row.id).ember_session_id == "s-rebound"
 
 
 def test_session_destroy_surfaces_transport_error(monkeypatch):

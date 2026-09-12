@@ -22,7 +22,12 @@ from agent_sessions.constants import (
     LEGACY_QWEN_SYNTHETIC_PROMPT,
     SYNTHETIC_SESSION_PREFIX,
 )
-from agent_sessions.models import AgentSession, AgentTurn, PendingMessage
+from agent_sessions.models import (
+    AgentResultReceipt,
+    AgentSession,
+    AgentTurn,
+    PendingMessage,
+)
 from agent_sessions.router import router
 from core.db import get_session
 from faas.embervm_client import EmberVMTransportError
@@ -1848,6 +1853,65 @@ def test_delete_session(client, session, monkeypatch):
     assert destroyed == ["ember-1"]
     assert body["cleared_bindings"] == [row.id]
     assert session.get(AgentSession, row.id).ember_session_id is None
+
+
+def test_delete_session_clears_released_receipt_fence_and_binding(
+    client, session, monkeypatch
+):
+    now = datetime.now(timezone.utc)
+    row = _session(
+        session,
+        "delete-fenced",
+        ember_session_id="ember-fenced",
+        ember_session_token="token-fenced",
+        ember_lineage_id="lineage-fenced",
+        cli_session_id="cli-fenced",
+    )
+    receipt = AgentResultReceipt(
+        id="e" * 32,
+        token_sha256="f" * 64,
+        session_id=row.id,
+        local_session_id=row.local_session_id,
+        seq=1,
+        dispatch_count=1,
+        claim_owner="http-observer",
+        guest_id="ember-fenced",
+        request_sha256="a" * 64,
+        created_at=now,
+        accept_until=now + timedelta(hours=1),
+        retain_until=now + timedelta(days=1),
+        received_at=now,
+        response_observer_released_at=now,
+        result_sha256="b" * 64,
+        result_body=b"{}",
+    )
+    session.add(receipt)
+    row.result_receipt_fence_id = receipt.id
+    session.add(row)
+    session.commit()
+
+    async def fake_destroy(ember_session_id):
+        return {"session_id": ember_session_id, "state": "destroyed"}
+
+    monkeypatch.setattr("agent_sessions.router._load_session_row", lambda _: row)
+    monkeypatch.setattr(
+        "agent_sessions.router._transport.destroy_session", fake_destroy
+    )
+    monkeypatch.setattr(
+        "agent_sessions.router._clear_ember_bindings_for",
+        lambda ember_id: store.clear_ember_bindings_by_ember_id(session, ember_id),
+    )
+
+    body = client.delete(f"/api/agents/sessions/{row.id}").json()
+
+    assert body["cleared_bindings"] == [row.id]
+    session.expire_all()
+    reloaded = session.get(AgentSession, row.id)
+    assert reloaded.result_receipt_fence_id is None
+    assert reloaded.ember_session_id is None
+    assert reloaded.ember_session_token is None
+    assert reloaded.prior_ember_lineage_id == "lineage-fenced"
+    assert reloaded.prior_cli_session_id == "cli-fenced"
 
 
 def test_delete_session_not_found(client, monkeypatch):
