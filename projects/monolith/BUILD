@@ -1392,6 +1392,7 @@ py_library(
     visibility = ["//:__subpackages__"],
     deps = [
         ":pkg_core",
+        ":pkg_shared",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],

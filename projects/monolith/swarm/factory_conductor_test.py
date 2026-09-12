@@ -489,9 +489,13 @@ def feedback_db(tmp_path, monkeypatch):
         db.commit()
     for module in (conductor, conductor.graph, controls):
         monkeypatch.setattr(module, "get_engine", lambda: engine)
-    monkeypatch.setattr(
-        conductor, "github_get", lambda *_args: pytest.fail("unexpected GitHub read")
-    )
+
+    def empty_pull(_repo, path):
+        if path.startswith("pulls/"):
+            return {"additions": 0, "deletions": 0}
+        pytest.fail("unexpected GitHub read")
+
+    monkeypatch.setattr(conductor, "github_get", empty_pull)
     # Dispatch reads the shared background pool now, the serial lane included,
     # and this fixture holds no admission tables. A test that cares about the
     # pool sets its own count afterwards, which wins over this one.
@@ -2010,6 +2014,102 @@ def test_budget_projection_shares_admission_accounting_and_retry_ceiling(feedbac
     )
 
 
+def test_reserve_node_names_the_turn_envelope_and_rolls_back_graph_admission(
+    feedback_db,
+):
+    task, policy = feedback_task(max_turns=1)
+    complete_feedback_node(
+        task,
+        policy,
+        "implement_first",
+        {
+            "status": "complete",
+            "summary": "done",
+            "pr_number": 21,
+            "head_sha": HEAD_ONE,
+        },
+        head=HEAD_ONE,
+    )
+    assert conductor._add(
+        task,
+        policy,
+        "implement_second",
+        "second bounded change",
+        [],
+        "luna",
+        "test:second",
+        "test fixture",
+    ).ok
+    key = f"factory-node:{task['id']}:implement_second:1"
+    result = conductor.reserve_node(
+        task["id"],
+        "implement_second",
+        key,
+        {
+            "repo": task["repo"],
+            "branch": f"factory/{task['id']}",
+            "workflow_id": key,
+            "artifact_path": ".factory/second.json",
+            "artifact_schema": conductor.RESULT_SCHEMA,
+            "hydration_branch": "main",
+            "retry_context": "[]",
+        },
+    )
+    assert not result
+    assert (result.limit, result.used, result.requested, result.allowed) == (
+        "max_task_turns_hard",
+        1,
+        2,
+        1,
+    )
+    assert not any(
+        run["node_key"] == "implement_second"
+        for run in conductor.graph.node_runs(task["id"])
+    )
+
+
+def test_reserve_node_names_the_planner_envelope(feedback_db):
+    task, policy = feedback_task(max_planner_turns=1)
+    complete_feedback_node(
+        task,
+        policy,
+        "conductor_1",
+        {"action": "pause", "reason": "fixture"},
+    )
+    assert conductor._add(
+        task,
+        policy,
+        "conductor_2",
+        "plan again",
+        [],
+        "opus",
+        "test:planner-two",
+        "test fixture",
+    ).ok
+    key = f"factory-node:{task['id']}:conductor_2:1"
+    result = conductor.reserve_node(
+        task["id"],
+        "conductor_2",
+        key,
+        {
+            "repo": task["repo"],
+            "branch": f"factory/{task['id']}",
+            "workflow_id": key,
+            "artifact_path": ".factory/planner-two.json",
+            "artifact_schema": conductor.DECISION_SCHEMA,
+            "hydration_branch": "main",
+            "retry_context": "[]",
+        },
+    )
+    assert not result
+    assert (result.limit, result.used, result.requested, result.allowed) == (
+        "max_planner_turns",
+        1,
+        2,
+        1,
+    )
+
+
 @pytest.fixture
 def queued_factory(feedback_db, monkeypatch):
     from sqlmodel import Session, SQLModel
@@ -2829,6 +2929,74 @@ def test_a_successful_old_version_workflow_still_returns_its_result(stranded_fac
     run = conductor.graph.node_runs(s.task["id"])[0]
     assert run["status"] == "succeeded"
     assert json.loads(run["outcome_json"])["cost_usd"] == 1.0
+
+
+def test_valid_completed_review_overspend_is_succeeded_charged_and_audited(
+    feedback_db,
+):
+    import json
+    from types import SimpleNamespace
+    from sqlmodel import Session, select
+    from swarm import factory_controls as controls
+    from swarm.factory_models import FactoryAudit
+
+    task, policy = feedback_task()
+    assert conductor._add(
+        task,
+        policy,
+        "review_delivery",
+        "Review the delivered pull request",
+        [],
+        "opus",
+        "test:review-overspend",
+        "test fixture",
+        review=True,
+    ).ok
+    key = f"factory-node:{task['id']}:review_delivery:1"
+    context = {
+        "repo": task["repo"],
+        "branch": f"factory/{task['id']}",
+        "workflow_id": key,
+        "artifact_path": ".factory/review-delivery.json",
+        "artifact_schema": conductor.REVIEW_SCHEMA,
+        "hydration_branch": "main",
+        "retry_context": "[]",
+    }
+    assert conductor.reserve_node(task["id"], "review_delivery", key, context)
+    run = conductor.graph.node_runs(task["id"])[0]
+    result = {
+        "status": "succeeded",
+        "cost_usd": 9.0,
+        "cost_basis": "provider",
+        "head_sha": HEAD_ONE,
+        "session_id": 101,
+        "value": {
+            "verdict": "approve",
+            "summary": "The exact delivered head is valid.",
+            "pr_number": 21,
+            "head_sha": HEAD_ONE,
+        },
+        "artifact": {"status": "ok"},
+    }
+    dbos = SimpleNamespace(
+        get_workflow_status=lambda _key: SimpleNamespace(status="SUCCESS"),
+        retrieve_workflow=lambda _key: SimpleNamespace(get_result=lambda: result),
+    )
+    conductor._submit_or_reconcile(task, run, dbos)
+    run = conductor.graph.node_runs(task["id"])[0]
+    assert run["status"] == "succeeded"
+    assert run["cost_usd"] == run["accounted_cost_usd"] == 9.0
+    assert json.loads(run["outcome_json"])["value"]["verdict"] == "approve"
+    assert controls.task_snapshot(task["id"])["committed_cost_usd"] == 9.0
+    with Session(feedback_db) as db:
+        audit = db.exec(
+            select(FactoryAudit).where(FactoryAudit.action == "cost_over_reservation")
+        ).one()
+        detail = json.loads(audit.detail_json)
+    assert detail["reserved_cost_usd"] == 8.0
+    assert detail["actual_cost_usd"] == 9.0
+    assert detail["overage_usd"] == 1.0
+    assert detail["model"] == "opus"
 
 
 def _stalled_dbos(s, *, idle_seconds, monkeypatch):
@@ -4824,7 +4992,9 @@ def test_first_planner_node_follows_conductor_pool_and_quota(
 ):
     task, policy = pooled_task(monkeypatch, quota)
     conductor.reconcile_task(task["id"], policy, object())
-    assert _node(task["id"], "conductor_1")["model"] == expected
+    planner = _node(task["id"], "conductor_1")
+    assert planner["model"] == expected
+    assert planner["max_cost_usd"] == 0.5
 
 
 def test_planner_add_node_without_model_uses_worker_pool_when_codex_walled(
@@ -5095,12 +5265,47 @@ def test_plan_applies_a_whole_dag_under_one_expected_version(feedback_db):
     assert conductor.graph.current_version(task["id"]) == 4
     assert nodes["review_check"]["deps"] == ["implement_fix"]
     assert nodes["review_check"]["model"] == "opus"
+    assert nodes["review_check"]["max_cost_usd"] == 8.0
     assert nodes["implement_fix"]["model"] == "luna"
     assert nodes["implement_fix"]["max_cost_usd"] == policy["turn_budget_usd"]
     assert nodes["review_check"]["prompt"].startswith(
         conductor._boundary(task, review=True)
     )
     assert feedback_audits(feedback_db, task["id"]) == []
+
+
+def test_review_insertion_prices_the_latest_pull_request_diff(feedback_db, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from shared import pricing
+
+    task, policy = feedback_task()
+    monkeypatch.setattr(
+        pricing,
+        "price_usage",
+        lambda _model, usage: SimpleNamespace(
+            cost_usd=usage["input_tokens"] / 1_000_000
+        ),
+    )
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda _repo, suffix: (
+            {"additions": 60_000, "deletions": 40_000}
+            if suffix == "pulls/21"
+            else pytest.fail(f"unexpected GitHub read {suffix}")
+        ),
+    )
+    runs = [
+        {
+            "id": 1,
+            "node_key": "implement_fix",
+            "outcome_json": json.dumps({"value": {"pr_number": 21}}),
+        }
+    ]
+    edit = conductor._prepare_add(task, policy, plan_edit("check", "review"), runs)
+    assert edit["model"] == "opus"
+    assert edit["max_cost_usd"] == 8.2
 
 
 @pytest.mark.parametrize(
@@ -5248,6 +5453,7 @@ def test_changes_requested_opens_an_engine_owned_correction_round(feedback_db):
     review = nodes["review_1"]
     assert review["max_attempts"] == 1
     assert review["deps"] == ["correct_1"] and review["model"] == "opus"
+    assert review["max_cost_usd"] == 8.0
     assert review["kind"] == "gate" and not review["side_effects"]
     assert review["prompt"].startswith(conductor._boundary(task, review=True))
     assert conductor._schema("correct_1") is conductor.RESULT_SCHEMA
@@ -6322,6 +6528,28 @@ def test_the_engine_fans_a_wave_back_into_the_task_branch(feedback_db):
     assert conductor._is_implementation("integrate_1")
 
 
+def test_fan_in_reinsertion_restores_the_opus_review_floor(feedback_db):
+    task, policy = parallel_plan()
+    nodes, runs = graph_state(task["id"])
+    for node in nodes:
+        if node["node_key"] == "review_check":
+            node["max_cost_usd"] = 4.0
+    edits = conductor._integration_edits(
+        task,
+        policy,
+        nodes,
+        runs,
+        ["implement_alpha", "implement_beta"],
+        "integrate_1",
+    )
+    review = next(
+        edit
+        for edit in edits
+        if edit["op"] == "add_node" and edit["node_key"] == "review_check"
+    )
+    assert review["max_cost_usd"] == 8.0
+
+
 def test_a_fan_in_never_spends_one_of_the_review_rounds(feedback_db):
     from sqlmodel import Session, select
     from swarm.models import SwarmPlanVersion
@@ -6923,7 +7151,9 @@ def test_an_over_envelope_plan_is_refused_whole_with_its_excess(feedback_db):
     # spare figure read off a graph with no review node would send the planner
     # back with a six-turn plan that derives eight and is refused again.
     assert detail["spare_turns"] == 4
-    assert detail["spare_usd"] == round(policy["task_budget_usd"] - 4.25, 6)
+    # The live planner cost is 0.25 USD. The prospective review round now
+    # reserves one 2 USD correction plus the 8 USD Opus review floor.
+    assert detail["spare_usd"] == round(policy["task_budget_usd"] - 10.25, 6)
     # Nothing was derived, so admission still reads the envelope.
     assert controls.task_snapshot(task["id"])["allowance"]["derived"] is False
     # The next planner is told exactly what to shrink.
@@ -7224,7 +7454,14 @@ def _review_node(node_key, model="opus"):
 
 
 def routed_dispatch(
-    monkeypatch, node_keys, *, reviewer, models=None, task_class="bug-fix"
+    monkeypatch,
+    node_keys,
+    *,
+    reviewer,
+    models=None,
+    task_class="bug-fix",
+    refusal=None,
+    fan_out=True,
 ):
     """Drive _dispatch_ready over a fixed ready set and record what was pinned."""
     import swarm.factory_quota_guard as quota_guard
@@ -7255,18 +7492,44 @@ def routed_dispatch(
         lambda task_id, key, action, detail: audited.append((action, detail)) or True,
     )
     started = []
+    reservations = []
+    escalated = []
+    monkeypatch.setattr(
+        conductor,
+        "_escalate_task",
+        lambda task, decision, cause, runs: escalated.append(
+            (task, decision, cause, runs)
+        ),
+    )
 
-    def reserve(_task_id, node_key, _key, _context, *, model=None):
+    def reserve(
+        _task_id,
+        node_key,
+        _key,
+        _context,
+        *,
+        model=None,
+        max_cost_usd=None,
+    ):
         started.append((node_key, model))
-        return True
+        reservations.append((node_key, max_cost_usd))
+        return refusal if refusal is not None else conductor.ReservationResult(True)
 
     monkeypatch.setattr(conductor, "reserve_node", reserve)
     task = {"id": "t-1", "repo": "owner/repo"}
-    policy = {"allowed_models": ["opus", "astra", "luna"]}
+    policy = {
+        "allowed_models": ["opus", "astra", "luna"],
+        "turn_budget_usd": 4.0,
+    }
     conductor._dispatch_ready(
-        task, nodes, [], len(nodes), fan_out=True, parallel=len(nodes), policy=policy
+        task, nodes, [], len(nodes), fan_out=fan_out, parallel=len(nodes), policy=policy
     )
-    return SimpleNamespace(started=started, audits=audited)
+    return SimpleNamespace(
+        started=started,
+        reservations=reservations,
+        audits=audited,
+        escalated=escalated,
+    )
 
 
 def test_a_spent_window_pins_the_fallback_reviewer_on_the_attempt(monkeypatch):
@@ -7282,6 +7545,17 @@ def test_a_quiet_window_pins_nothing_and_keeps_the_planned_reviewer(monkeypatch)
         monkeypatch, ["implement_fix", "review_1"], reviewer="opus"
     )
     assert result.started == [("implement_fix", None), ("review_1", None)]
+
+
+def test_dispatch_reprices_an_opus_override_at_its_floor(monkeypatch):
+    result = routed_dispatch(
+        monkeypatch,
+        ["review_1"],
+        reviewer="opus",
+        models={"review_1": "astra"},
+    )
+    assert result.started == [("review_1", "opus")]
+    assert result.reservations == [("review_1", 8.0)]
 
 
 def test_a_review_with_no_available_reviewer_waits_without_holding_the_rest(
@@ -7316,6 +7590,62 @@ def test_a_waiting_judgment_review_says_so_in_its_audit(monkeypatch):
     action, detail = result.audits[0]
     assert action == "review_node_waiting" and detail["judgment"] is True
     assert detail["task_class"] == "judgment-analysis"
+
+
+def test_dispatch_refusal_audits_numbers_and_offers_three_exits(monkeypatch):
+    refusal = conductor.ReservationResult(
+        False,
+        limit="task_budget",
+        used=7.02,
+        requested=15.02,
+        allowed=12.0,
+        refusal_code="task_budget_exhausted",
+    )
+    result = routed_dispatch(
+        monkeypatch,
+        ["implement_fix"],
+        reviewer="opus",
+        refusal=refusal,
+        fan_out=False,
+    )
+    action, detail = result.audits[0]
+    assert action == "dispatch_refused"
+    assert detail == {
+        "node_key": "implement_fix",
+        "attempt": 1,
+        "limit": "task_budget",
+        "used": 7.02,
+        "requested": 15.02,
+        "allowed": 12.0,
+        "refusal_code": "task_budget_exhausted",
+    }
+    decision = result.escalated[0][1]
+    assert [option["key"] for option in decision["options"]] == [
+        "raise_envelope",
+        "cancel",
+        "wait",
+    ]
+    assert "used 7.02, requested 15.02, allowed 12.0" in decision["question"]
+
+
+def test_a_non_envelope_dispatch_race_keeps_the_existing_pause_path(monkeypatch):
+    import swarm.factory_controls as controls_module
+
+    paused = []
+    monkeypatch.setattr(
+        controls_module,
+        "set_control",
+        lambda action, _actor, *, task_id: paused.append((action, task_id)),
+    )
+    result = routed_dispatch(
+        monkeypatch,
+        ["implement_fix"],
+        reviewer="opus",
+        refusal=conductor.ReservationResult(False, refusal_code="start_pending"),
+        fan_out=False,
+    )
+    assert result.escalated == []
+    assert paused == [("pause_task", "t-1")]
 
 
 def test_the_window_is_observed_before_any_task_reconciles(monkeypatch):

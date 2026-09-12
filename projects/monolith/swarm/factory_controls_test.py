@@ -3,6 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 import json
 from threading import Event
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import event
@@ -234,6 +235,33 @@ def test_actual_overrun_is_retained_and_blocks_later_budget(db, policy):
     controls.record_start_outcome(task, "one", "succeeded", "worker", cost_usd=9)
     assert controls.task_snapshot(task)["committed_cost_usd"] == 9
     assert grant(task, "two", cost=0.1)["reason"] == "budget_limit"
+
+
+def test_candidate_review_reservation_may_exceed_the_obsolete_turn_ceiling(db, policy):
+    policy["task_budget_usd"] = 8.0
+    task = admitted(policy)
+    result = grant(task, node_key(task, "review_delivery"), model="opus", cost=8.0)
+    assert result["ok"]
+    assert result["start"]["max_cost_usd"] == 8.0
+
+
+def test_turn_class_and_review_reservations_are_model_priced(monkeypatch):
+    from shared import pricing
+
+    assert controls.turn_reservation_usd("astra", "planner", 4.0) == 0.5
+    assert controls.turn_reservation_usd("spark", "refine", 4.0) == 0.5
+    assert controls.turn_reservation_usd("astra", "work", 4.0) == 4.0
+    assert controls.turn_reservation_usd("opus", "planner", 4.0) == 4.0
+
+    monkeypatch.setattr(
+        pricing,
+        "price_usage",
+        lambda _model, usage: SimpleNamespace(
+            cost_usd=usage["input_tokens"] / 1_000_000
+        ),
+    )
+    assert controls.review_reservation_usd("opus", 0, 4.0) == 8.0
+    assert controls.review_reservation_usd("opus", 100_000, 4.0) == 8.2
 
 
 def test_terminal_outcome_replay_is_exact(db, policy):
@@ -777,7 +805,9 @@ def test_a_three_node_plan_sizes_its_own_task(policy):
     # spent. The planner node costs money but never a work turn.
     assert allowance["turns"] == 3 * 2 + 2
     assert allowance["review_rounds_reserved"] == 1
-    assert allowance["usd"] == 4 * 2.0 + 2 * policy["turn_budget_usd"]
+    assert allowance["usd"] == (
+        4 * 2.0 + policy["turn_budget_usd"] + controls.OPUS_REVIEW_FLOOR_USD
+    )
     assert allowance["graph_revision"] == 4 and allowance["derived"] is True
 
 

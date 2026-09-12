@@ -269,7 +269,7 @@ def test_list_price_above_the_ceiling_settles_without_discarding_the_work(harnes
     assert result["cost_usd"] == 3.0
     assert result["cost_basis"] == "list"
     assert "above the admission ceiling" in result["reason"]
-    assert "cost_exceeded" not in result["reason"]
+    assert "cost_over_reservation" in result["reason"]
 
 
 def test_invalid_list_price_still_consumes_the_reservation(harness):
@@ -282,12 +282,13 @@ def test_invalid_list_price_still_consumes_the_reservation(harness):
     assert "full admission reservation" in result["reason"]
 
 
-def test_reported_cost_overrun_keeps_actual_spend_and_fails(harness):
+def test_reported_cost_overrun_keeps_actual_spend_and_valid_artifact(harness):
     harness.turn["cost_usd"] = 3
     result = nodes.execute_node.__wrapped__(pin())
-    assert result["status"] == "failed"
+    assert result["status"] == "succeeded"
     assert result["cost_usd"] == 3
-    assert "cost_exceeded" in result["reason"]
+    assert result["value"] == {"ok": True}
+    assert "cost_over_reservation" in result["reason"]
 
 
 @pytest.mark.parametrize(
@@ -929,7 +930,7 @@ def test_reconcile_retains_hold_when_session_has_more_work(reconciliation_db, pe
     "fields,status,cost",
     [
         ({"cost_usd": None}, "succeeded", None),
-        ({"cost_usd": 3.0}, "failed", 3.0),
+        ({"cost_usd": 3.0}, "succeeded", 3.0),
         ({"artifact_blob": b'{"ok":"bad"}'}, "failed", 0.5),
         (
             {
