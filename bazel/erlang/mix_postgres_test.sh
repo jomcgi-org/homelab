@@ -51,6 +51,13 @@ if [ -z "$postgres_bin" ] || [ -z "$pg_isready_bin" ] || [ -z "$pg_root" ]; then
 	exit 1
 fi
 
+case "$pg_root" in
+/*) ;;
+*) pg_root="$(pwd)/$pg_root" ;;
+esac
+
+postgres_bin="$pg_root/usr/lib/postgresql/16/bin/postgres"
+pg_isready_bin="$pg_root/usr/lib/postgresql/16/bin/pg_isready"
 initdb_bin="${postgres_bin%/postgres}/initdb"
 pg_share="$pg_root/usr/share/postgresql/16"
 pg_lib="$pg_root/usr/lib"
