@@ -15,6 +15,7 @@ from sqlmodel import select
 from swarm.factory_controls import (
     DEFAULT_TASK_CLASS,
     intake_policy,
+    terminal_resolution,
     _audit,
     _locked_session,
     _read_session,
@@ -450,7 +451,9 @@ def _record_escalation(
     A resolved document is never overwritten: settlement is reached again on
     every tick until it takes, and re-writing one would discard a decision an
     operator had already recorded against an escalation whose task settlement
-    was still deferred.
+    was still deferred. The one exception is a dismiss, which is a cleared
+    card rather than a decision and wrote nothing to GitHub, so a fresh brief
+    replaces it and the escalation comes back carrying the answer.
 
     An UNRESOLVED document is replaced, and this is the case that matters.
     A receipt the operator sent back for another brief already carries the
@@ -471,7 +474,11 @@ def _record_escalation(
         if row is None:
             return document
         stored = json.loads(row.escalation_json) if row.escalation_json else None
-        if stored is not None and stored.get("resolved") is not None:
+        # A dismiss is the one resolution a fresh brief replaces. It wrote
+        # nothing to GitHub, so preserving it would leave an operator who
+        # cleared a card and then asked for another brief with the answer
+        # recorded on a receipt whose card never comes back.
+        if stored is not None and terminal_resolution(stored.get("resolved")):
             return stored
         if stored is not None:
             document["chat"] = stored.get("chat") or []

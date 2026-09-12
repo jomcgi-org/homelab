@@ -13,6 +13,7 @@ from swarm import factory_conductor as conductor
 from swarm import factory_controls as controls
 from swarm import factory_decisions as decisions
 from swarm import factory_landing as landing
+from swarm import factory_refine as refine
 from swarm.factory_intake import receive_issue
 from swarm.factory_models import (
     FactoryAudit,
@@ -72,6 +73,17 @@ class Github:
         self.comments: list[dict] = []
         self.writes: list[tuple[str, str, dict]] = []
         self.next_issue = 100
+        # The issue as GitHub holds it, so a test can assert on the state a
+        # decision left behind rather than only on the calls it made.
+        self.labels: set[str] = {"needs-human"}
+        self.state = "open"
+
+    def get(self, _repo, _suffix):
+        return {
+            "number": ISSUE,
+            "state": self.state,
+            "labels": [{"name": name} for name in sorted(self.labels)],
+        }
 
     def list(self, _repo, suffix):
         if "comments" in suffix and "page=1" in suffix:
@@ -86,6 +98,15 @@ class Github:
         if suffix == "issues":
             self.next_issue += 1
             return {"number": self.next_issue}
+        if method == "POST" and suffix.endswith("/labels"):
+            self.labels.update(payload.get("labels") or [])
+            return {}
+        if method == "DELETE" and "/labels/" in suffix:
+            self.labels.discard(suffix.rsplit("/", 1)[1])
+            return {}
+        if method == "PATCH" and payload.get("state") == "closed":
+            self.state = "closed"
+            return {}
         return {}
 
     def bodies(self) -> str:
@@ -96,7 +117,7 @@ class Github:
 def github(monkeypatch):
     fake = Github()
     monkeypatch.setattr(conductor, "github_list", fake.list)
-    monkeypatch.setattr(conductor, "github_get", lambda *_a: {})
+    monkeypatch.setattr(conductor, "github_get", fake.get)
     monkeypatch.setattr(landing, "github_write", fake.write)
     return fake
 
@@ -559,6 +580,12 @@ def test_escape_close_closes_the_issue_and_drops_needs_human(db, github):
         f"issues/{ISSUE}",
         {"state": "closed", "state_reason": "not_planned"},
     ) in github.writes
+    # The reason is read off the option's detail rather than hardcoded in the
+    # effect, so the constant cannot go dead beside a close that ignores it.
+    assert (
+        result["resolution"]["effects"]["reason"]
+        == controls.ESCAPE_OPTIONS[0]["detail"]["reason"]
+    )
     assert ("DELETE", f"issues/{ISSUE}/labels/needs-human", {}) in github.writes
     # The label comes off after the close, never before: an open issue with
     # the label gone is the one state that puts it back in front of intake.
@@ -572,26 +599,26 @@ def test_escape_close_closes_the_issue_and_drops_needs_human(db, github):
     assert "decision_applied" in audit_actions(db)
 
 
-def test_escape_close_is_not_blocked_by_a_protected_label(db, github, monkeypatch):
-    """The rule that downgrades a node's close does not bind the operator.
+def test_escape_close_goes_through_on_an_issue_carrying_a_protected_label(db, github):
+    """`critical` downgrades a NODE's close. It does not bind the operator.
 
-    `critical` and `security-finding` turn a node's own close into an
-    escalation, because a node must not close one of those unwatched. This is
-    the person that rule was deferring to, so the close goes through.
+    The issue really carries the label here rather than the rule being stubbed
+    out: `refine.closing_allowed` and the protected-label check are what turn
+    a node's own close into this escalation in the first place, and the person
+    the rule was deferring to is the one clicking now. So the assertion is on
+    the end state GitHub is left in, not on the calls made to get there.
     """
+    assert "critical" in refine.PROTECTED_LABELS
+    github.labels.add("critical")
     receipt_id = escalate(db, "split")
-    monkeypatch.setattr(
-        conductor,
-        "github_get",
-        lambda *_a: {"labels": [{"name": "critical"}], "milestone": {"number": 1}},
-    )
+
     result = decisions.apply_decision(receipt_id, "escape:close", "joe@example.test")
+
     assert result["applied"] is True
-    assert (
-        "PATCH",
-        f"issues/{ISSUE}",
-        {"state": "closed", "state_reason": "not_planned"},
-    ) in github.writes
+    assert github.state == "closed"
+    # The escalation label is gone and the protected one is untouched: the
+    # operator closed the issue, they did not strip its classification.
+    assert github.labels == {"critical"}
 
 
 def test_escape_defer_swaps_needs_human_for_needs_thought(db, github):
@@ -660,12 +687,20 @@ def test_an_escape_retried_after_a_failure_does_not_comment_twice(
 
 
 def test_a_second_different_escape_is_refused_once_one_is_decided(db, github):
+    """The close is final, so the defer behind it is refused rather than run.
+
+    A dismiss is the exception and gets its own tests: it wrote nothing, so
+    there is nothing for the second decision to contradict.
+    """
     receipt_id = escalate(db, "split")
-    decisions.apply_decision(receipt_id, "escape:dismiss", "joe@example.test")
+    decisions.apply_decision(receipt_id, "escape:close", "joe@example.test")
     with pytest.raises(decisions.DecisionError) as raised:
         decisions.apply_decision(receipt_id, "escape:defer", "joe@example.test")
     assert raised.value.status == 409
-    assert "escape:dismiss" in raised.value.reason
+    assert "escape:close" in raised.value.reason
+    assert ("POST", f"issues/{ISSUE}/labels", {"labels": ["needs-thought"]}) not in (
+        github.writes
+    )
 
 
 def test_an_escape_waits_while_a_brief_is_running(db, github):
@@ -682,3 +717,61 @@ def test_an_unknown_escape_key_is_still_refused(db, github):
     with pytest.raises(decisions.DecisionError) as raised:
         decisions.apply_decision(receipt_id, "escape:nuke", "joe@example.test")
     assert raised.value.status == 422
+
+
+def test_a_dismiss_is_not_the_end_of_it_and_a_real_decision_lands_over_it(db, github):
+    """One keypress with no confirmation must not be the last word.
+
+    A dismiss writes nothing to GitHub, so the issue is untouched and there is
+    nothing for a later decision to contradict. Every other resolution stays
+    final: see the test below.
+    """
+    receipt_id = escalate(db, "close")
+    decisions.apply_decision(receipt_id, "escape:dismiss", "joe@example.test")
+    assert github.writes == []
+
+    result = decisions.apply_decision(receipt_id, "close", "joe@example.test")
+
+    assert result["applied"] is True
+    assert github.state == "closed"
+    # The decision replaces the dismiss on the record rather than sitting
+    # behind it, so the ledger says what actually happened to the issue.
+    resolved = escalation(db, receipt_id)["resolved"]
+    assert resolved["option_key"] == "close"
+    assert audit_actions(db).count("decision_applied") == 2
+
+
+def test_a_dismissed_escalation_can_still_be_asked_about(db, github):
+    """The chat request is the way back from a card you cleared by mistake."""
+    configure()
+    receipt_id = escalate(db)
+    decisions.apply_decision(receipt_id, "escape:dismiss", "joe@example.test")
+
+    result = decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")
+
+    assert result["requeued"] is True
+    assert "Operator asks: Which tier?" in github.bodies()
+    with Session(db) as session:
+        assert session.get(FactoryReceipt, receipt_id).state == "queued"
+
+
+def test_a_real_decision_is_still_the_last_word(db, github):
+    """The non-terminal rule is the dismiss alone, not resolutions in general."""
+    receipt_id = escalate(db, "close")
+    decisions.apply_decision(receipt_id, "close", "joe@example.test")
+    with pytest.raises(decisions.DecisionError) as raised:
+        decisions.apply_decision(receipt_id, "escape:dismiss", "joe@example.test")
+    assert raised.value.status == 409
+    with pytest.raises(decisions.DecisionError) as chat:
+        decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")
+    assert chat.value.status == 409
+
+
+def test_a_dismiss_repeated_returns_the_first_one_rather_than_a_second(db, github):
+    receipt_id = escalate(db, "split")
+    first = decisions.apply_decision(receipt_id, "escape:dismiss", "joe@example.test")
+    second = decisions.apply_decision(receipt_id, "escape:dismiss", "joe@example.test")
+    assert first["applied"] is True
+    assert second["applied"] is False
+    assert second["resolution"]["decided_at"] == first["resolution"]["decided_at"]
+    assert audit_actions(db).count("decision_applied") == 1

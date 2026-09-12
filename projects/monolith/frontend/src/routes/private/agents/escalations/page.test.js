@@ -246,11 +246,14 @@ describe("escalations page", () => {
     const target = renderPage({ escalations: [escalation()], error: false });
 
     const box = target.querySelector("textarea");
-    box.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "1", bubbles: true }),
-    );
+    // The escape keys are ordinary letters, so a note mentioning a deadline
+    // or an index would fire them if the guard did not cover them too.
+    for (const key of ["1", "x", "d", "Escape"]) {
+      box.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+    }
     await settle();
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(target.querySelector(".confirm")).toBeNull();
   });
 
   test("every card carries the escape row below the brief's own options", () => {
@@ -325,6 +328,57 @@ describe("escalations page", () => {
       option_key: "escape:defer",
       note: "after the hub migration",
     });
+  });
+
+  test("arming with the mouse moves the cursor, so a key cannot close another card", async () => {
+    const fetchMock = acceptingFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    const target = renderPage({
+      escalations: [
+        escalation(),
+        escalation({ receipt_id: 4, issue_number: 6003 }),
+      ],
+      error: false,
+    });
+
+    // Arm the close on the SECOND card with the mouse while the cursor is
+    // still on the first, then finish it from the keyboard.
+    const second = target.querySelectorAll(".panel")[1];
+    second.querySelector(".escape-btn").click();
+    await tick();
+    expect(
+      target.querySelectorAll(".panel")[1].classList.contains("here"),
+    ).toBe(true);
+    expect(target.querySelector(".confirm").textContent).toContain("#6003");
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "x" }));
+    await settle();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/agents/escalations/decisions/4");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      option_key: "escape:close",
+    });
+  });
+
+  test("clicking a brief option on another card moves the cursor to it", async () => {
+    const fetchMock = acceptingFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    const target = renderPage({
+      escalations: [
+        escalation(),
+        escalation({ receipt_id: 4, issue_number: 6003 }),
+      ],
+      error: false,
+    });
+
+    const second = target.querySelectorAll(".panel")[1];
+    second.querySelector(".option").click();
+    await tick();
+    expect(
+      target.querySelectorAll(".panel")[1].classList.contains("here"),
+    ).toBe(true);
+    await settle();
+    expect(fetchMock.mock.calls[0][0]).toBe("/agents/escalations/decisions/4");
   });
 
   test("a briefing card offers the escapes disabled rather than clickable", () => {

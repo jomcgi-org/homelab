@@ -437,12 +437,26 @@ swaps `needs-human` for `needs-thought`. `escape:dismiss` resolves the
 escalation on the factory side with no GitHub write at all, so the card leaves
 the list while the issue keeps `needs-human` and intake goes on skipping it.
 All three record the operator's note on the resolution, and the first two post
-it as the comment. The keys carry a colon, which the option key pattern
+it as the comment.
+
+The dismiss is the one resolution that is not final, and it has to be, because
+it is one keypress with no confirmation. Because it wrote nothing, the issue
+is still exactly what it was, so a later decision, a chat request, and a fresh
+brief are all still accepted on a dismissed escalation: the claim it holds is
+superseded the way a failed one is, `_resolve` overwrites it rather than
+returning it, and settlement replaces the whole document so the card comes
+back carrying the answer. Every other resolution stays final. This is a
+property of the record, not of the page, and the page has no control that
+un-dismisses a card: the way back is a chat request or another decision
+through `POST /api/agents/factory/decisions/{receipt_id}`. The keys carry a colon, which the option key pattern
 forbids, so a brief can never author one that collides; the brief's own
 options keep the numbers 1 to 4 and the escapes answer to `x`, `d` and `Esc`.
 
-`escape:close` is never weighed against the protected-label rule that
-downgrades a node's own close on a `critical` or `security-finding` issue.
+`escape:close` takes its close reason from the option's `detail`, the same way
+the brief's own `close` does, so the two read one field rather than one of
+them hardcoding `not_planned` beside a `detail` nothing consulted. It is never
+weighed against the protected-label rule that downgrades a node's own close on
+a `critical` or `security-finding` issue.
 That rule exists so a node does not close one of those unwatched, and the
 operator clicking here is the authority it was deferring to. It is the one
 escape the page confirms before sending, because it is the one no other button

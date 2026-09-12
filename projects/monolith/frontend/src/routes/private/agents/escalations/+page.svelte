@@ -49,7 +49,15 @@
 
   const pending = $derived(openOnes(escalations));
   const settled = $derived(resolvedOnes(escalations));
-  const current = $derived(pending[cursor] ?? null);
+  // The card a keypress acts on. An armed close pins it to the card that was
+  // armed rather than to the cursor: a poll can reorder the list under an
+  // armed confirmation, and the second press must never land on a different
+  // issue from the first.
+  const current = $derived(
+    pending.find((row) => row.receipt_id === confirming) ??
+      pending[cursor] ??
+      null,
+  );
 
   async function refresh() {
     try {
@@ -59,6 +67,14 @@
       escalations = body.escalations ?? [];
       unavailable = false;
       now = Date.now();
+      // An armed close whose card the refresh took away is disarmed, so the
+      // arming never outlives the issue it was about.
+      if (
+        confirming !== null &&
+        !openOnes(escalations).some((row) => row.receipt_id === confirming)
+      ) {
+        confirming = null;
+      }
     } catch {
       unavailable = true;
     }
@@ -113,7 +129,20 @@
     }
   }
 
+  /**
+   * Put the cursor on the card that was acted on. A mouse click used to leave
+   * the cursor where it was, so arming a close on one card and then pressing
+   * a key acted on another card entirely.
+   */
+  function focusOn(item) {
+    const index = pending.findIndex(
+      (row) => row.receipt_id === item.receipt_id,
+    );
+    if (index >= 0) cursor = index;
+  }
+
   function decide(item, option) {
+    focusOn(item);
     if (item.briefing) {
       failure = "a brief is running on this issue; decide when it settles";
       return;
@@ -128,6 +157,7 @@
    * once, because a defer is reversible and a dismiss writes nothing.
    */
   function escapeWith(item, option) {
+    focusOn(item);
     if (item.briefing) {
       failure = "a brief is running on this issue; decide when it settles";
       return;

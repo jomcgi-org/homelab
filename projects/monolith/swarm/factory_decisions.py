@@ -36,6 +36,8 @@ from swarm.factory_controls import (
     _now,
     _read_session,
     intake_policy,
+    terminal_effect,
+    terminal_resolution,
 )
 from swarm.factory_intake import INTAKE_ACTOR
 from swarm.factory_models import FactoryAudit, FactoryControl, FactoryReceipt
@@ -138,20 +140,22 @@ def _claim(receipt_id: int, option_key: str, actor: str) -> tuple[dict, dict, di
             raise DecisionError(409, "this receipt raised no escalation")
         option = _option(escalation, option_key)
         resolved = escalation.get("resolved")
-        if resolved is None and row.state in _RUNNING_STATES:
-            # A re-brief the operator asked for is running right now. Applying
-            # an option under it would close or relabel an issue a live node is
-            # still writing to, and the node would then settle against a
-            # verdict nobody asked it for.
-            raise DecisionError(
-                409, "a brief is running on this issue; decide when it settles"
-            )
-        if resolved is not None:
-            if resolved.get("option_key") == option_key:
-                return _fields(row), escalation, resolved
+        if resolved is not None and resolved.get("option_key") == option_key:
+            return _fields(row), escalation, resolved
+        if terminal_resolution(resolved):
             raise DecisionError(
                 409,
                 f"this escalation was already decided as {resolved.get('option_key')}",
+            )
+        # Anything still here is undecided or dismissed, and a dismiss is not
+        # a decision: it left the issue untouched, so a real one may land over
+        # it. Both cases wait on a live node for the same reason. A re-brief
+        # running right now would keep writing to an issue the decision has
+        # just closed or relabelled, and would then settle against a verdict
+        # nobody asked it for.
+        if row.state in _RUNNING_STATES:
+            raise DecisionError(
+                409, "a brief is running on this issue; decide when it settles"
             )
         holder = _live_claim(db, receipt_id, option_key)
         if holder is not None:
@@ -200,11 +204,19 @@ def _live_claim(db, receipt_id: int, option_key: str) -> str | None:
         detail.get("option_key")
         for detail in _decision_audits(db, receipt_id, "decision_failed")
     ]
+    # A claim whose decision applied a dismiss is superseded the same way. The
+    # dismiss only cleared the card, so leaving its claim standing would lock
+    # the escalation against the real decision that follows it.
+    dismissed = [
+        detail.get("option_key")
+        for detail in _decision_audits(db, receipt_id, "decision_applied")
+        if not terminal_effect(detail.get("effect"))
+    ]
     for detail in _decision_audits(db, receipt_id, "decision_claimed"):
         held = detail.get("option_key")
         if held == option_key:
             continue
-        if held in failed:
+        if held in failed or held in dismissed:
             continue
         return held
     return None
@@ -396,13 +408,14 @@ def _apply(fields: dict, option: dict, note: str | None) -> dict:
         # node's own close on a `critical` or `security-finding` issue. That
         # rule exists so a node does not close one of those unwatched, and the
         # operator clicking here is the authority it was deferring to.
+        reason = str(detail.get("reason") or "not_planned")
         _comment(
             repo,
             number,
             marker,
             "Closed by the operator from the escalations page." + suffix,
         )
-        _close(repo, number, "not_planned")
+        _close(repo, number, reason)
         # The label comes off after the close rather than before it. A failure
         # between the two leaves a closed issue still carrying `needs-human`,
         # which nothing acts on; the other order leaves an OPEN issue with the
@@ -411,7 +424,7 @@ def _apply(fields: dict, option: dict, note: str | None) -> dict:
         _label(repo, number, [], [HUMAN_LABEL])
         return {
             "closed": True,
-            "reason": "not_planned",
+            "reason": reason,
             "labels_removed": [HUMAN_LABEL],
         }
     if effect == "escape-defer":
@@ -425,7 +438,11 @@ def _apply(fields: dict, option: dict, note: str | None) -> dict:
         return {"labels_added": [DEFER_LABEL], "labels_removed": [HUMAN_LABEL]}
     if effect == "escape-dismiss":
         # Nothing is written to GitHub at all. The issue keeps `needs-human`,
-        # so intake goes on skipping it; only the card leaves the list.
+        # so intake goes on skipping it; only the card leaves the list. That
+        # is also why it is the one resolution that is not final: see
+        # NON_TERMINAL_EFFECTS. A dismiss is undone by deciding the issue
+        # properly, by asking for another brief, or by the brief that answers,
+        # none of which a closed or relabelled issue would allow.
         return {"dismissed": True}
     raise DecisionError(422, "unsupported option effect")
 
@@ -446,7 +463,10 @@ def _resolve(
     with _locked_session() as (db, _control):
         row = _receipt(db, receipt_id)
         escalation = escalation_of(row) or {}
-        if escalation.get("resolved") is None:
+        # A dismiss is overwritten rather than preserved: the operator who
+        # cleared the card and then decided the issue properly must end up
+        # with the decision on the record, not the dismiss.
+        if not terminal_resolution(escalation.get("resolved")):
             escalation["resolved"] = resolution
             row.escalation_json = json.dumps(escalation)
             # A decision cancels a re-brief the operator asked for and then
@@ -614,7 +634,9 @@ def request_chat(receipt_id: int, note: str, actor: str) -> dict:
         fields = _fields(row)
     if escalation is None:
         raise DecisionError(409, "this receipt raised no escalation")
-    if escalation.get("resolved") is not None:
+    # A dismiss is not a decision, so asking about a card you cleared is
+    # allowed: it is the way back from one keypress that wrote nothing.
+    if terminal_resolution(escalation.get("resolved")):
         raise DecisionError(409, "this escalation was already decided")
     # Keyed on how many times chat has been asked, so a second, different
     # question posts a second comment while a retry of the first does not.
