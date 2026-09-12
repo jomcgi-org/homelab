@@ -30,19 +30,21 @@ import httpx
 from sqlmodel import select
 
 from swarm.factory_controls import (
+    CLOSE_REASONS,
+    ESCALATED,
     ESCAPE_OPTIONS,
     _audit,
     _locked_session,
     _now,
     _read_session,
     intake_policy,
+    is_advisory,
     terminal_effect,
     terminal_resolution,
 )
 from swarm.factory_intake import INTAKE_ACTOR
 from swarm.factory_models import FactoryAudit, FactoryControl, FactoryReceipt
 from swarm.factory_refine import (
-    CLOSE_REASONS,
     DEFER_LABEL,
     HUMAN_LABEL,
     READY_LABEL,
@@ -63,6 +65,10 @@ CHAT_PREFIX = "Operator asks:"
 _RUNNING_STATES = ("admitted", "uncertain")
 # Receipt states a settled refine can be decided from.
 _SETTLED_STATES = ("succeeded", "failed")
+# The effects that put the work back in front of the lane rather than ending
+# it. A delivery escalation answered with one of these is re-admitted with the
+# operator's answer as direction; every other answer settles the receipt.
+READMITTING_EFFECTS = ("agent-ready",)
 
 
 class DecisionError(ValueError):
@@ -467,14 +473,31 @@ def _resolve(
         # cleared the card and then decided the issue properly must end up
         # with the decision on the record, not the dismiss.
         if not terminal_resolution(escalation.get("resolved")):
+            if row.state == ESCALATED and not is_advisory(row.task_class):
+                # A delivery escalation is a question inside a task, so an
+                # answer that says carry on puts the work back in the lane
+                # with that answer as its direction. A terminal answer ends
+                # the work: cancelled rather than succeeded, because nothing
+                # was delivered and marking it succeeded would put the issue
+                # in the permanent "delivered" exclusion intake keeps. A
+                # dismiss settles nothing, because it decided nothing: the
+                # card leaves the list and the receipt stays escalated so a
+                # later decision can still re-admit the work.
+                if option["effect"] in READMITTING_EFFECTS:
+                    resolution["effects"] = {
+                        **resolution["effects"],
+                        **_readmit(db, row, escalation, option, actor, note),
+                    }
+                elif terminal_effect(option["effect"]):
+                    _settle_escalated(row, "cancelled")
+            elif row.state == "queued":
+                # A decision cancels a re-brief the operator asked for and then
+                # answered without waiting. Leaving the receipt queued would have
+                # the lane spend an advisory slot briefing an issue that is
+                # already closed, split or labelled for delivery.
+                row.state = "succeeded"
             escalation["resolved"] = resolution
             row.escalation_json = json.dumps(escalation)
-            # A decision cancels a re-brief the operator asked for and then
-            # answered without waiting. Leaving the receipt queued would have
-            # the lane spend an advisory slot briefing an issue that is
-            # already closed, split or labelled for delivery.
-            if row.state == "queued":
-                row.state = "succeeded"
             row.updated_at = _now()
             db.add(row)
         else:
@@ -491,6 +514,36 @@ def _resolve(
             effects=resolution["effects"],
         )
     return resolution
+
+
+def resume_escalated(task_id: str, actor: str) -> dict:
+    """Apply the recommended option to the escalation this task left behind.
+
+    Resume is the control an operator already had for a paused task, so it
+    keeps working on the state that replaced pausing. There is nothing to
+    unpause: the option ordered first is the recommendation, and pressing
+    resume is choosing it without reading the card.
+    """
+    from swarm.factory_controls import status
+
+    with _read_session() as db:
+        row = db.exec(
+            select(FactoryReceipt)
+            .where(FactoryReceipt.task_id == task_id)
+            .execution_options(populate_existing=True)
+        ).first()
+        escalation = escalation_of(row) if row is not None else None
+        receipt_id = row.id if row is not None else None
+    options = (escalation or {}).get("options") or []
+    snapshot = status()
+    shape = {"state": snapshot.get("state"), "version": snapshot.get("version")}
+    if not options:
+        return {"ok": False, "reason": "no_escalation_options", **shape}
+    try:
+        result = apply_decision(receipt_id, options[0]["key"], actor)
+    except DecisionError as exc:
+        return {"ok": False, "reason": exc.reason, **shape}
+    return {"ok": True, "reason": None, **shape, "resolution": result["resolution"]}
 
 
 def apply_decision(
@@ -548,14 +601,21 @@ def _requeue_blocker(db, row: FactoryReceipt) -> str | None:
     a comment that reads like a request and a lane that never heard it is
     worse than a refusal.
     """
-    if row.task_class != TASK_CLASS:
-        return "this receipt is not a refine, so there is no brief to re-run"
     if row.state in _RUNNING_STATES:
-        return "a brief is already running on this issue"
+        return "work is already running on this issue"
     if row.state == "queued":
-        return "a brief is already queued for this issue"
-    if row.state not in _SETTLED_STATES:
-        return f"the receipt is {row.state}, so the lane will not admit it again"
+        return "this issue is already queued for another round"
+    if row.task_class == TASK_CLASS:
+        if row.state not in _SETTLED_STATES:
+            return f"the receipt is {row.state}, so the lane will not admit it again"
+    elif row.state != ESCALATED:
+        # A delivery receipt goes back to the lane only out of an escalation.
+        # Any other settled delivery is finished, and re-queueing one would
+        # run the same issue again with nothing saying what changed.
+        return (
+            f"the receipt is {row.state} rather than escalated, so there is "
+            "nothing waiting to be re-admitted"
+        )
     control = db.exec(
         select(FactoryControl)
         .where(FactoryControl.id == "factory")
@@ -580,13 +640,96 @@ def _requeue_blocker(db, row: FactoryReceipt) -> str | None:
     return None
 
 
-def _requeue_refine(db, row: FactoryReceipt, note: str, actor: str) -> str | None:
-    """Return this refine receipt to the queue so the lane briefs it again.
+def _requeue(row: FactoryReceipt) -> None:
+    """Clear the task link so admission can pin a fresh one to this receipt.
 
-    The same receipt rather than a new one, because admission selects on the
-    policy's generation and a receipt at any other generation would never be
-    admitted at all. The issue text is never rewritten: the operator's note
-    lives on the escalation document, and the prompt reads it from there.
+    The receipt keeps its identity, because admission selects on the policy's
+    generation and on the repo/issue/generation/class slot the receipt already
+    occupies: a second row for the same work could not be written, and one at
+    another generation would never be admitted. Clearing task_id is what makes
+    the next admission mint a new task with an empty graph, so the previous
+    attempt's nodes are history rather than something to resume into.
+    """
+    row.state = "queued"
+    row.task_id = None
+    row.policy_json = None
+    row.allowance_json = None
+    row.task_paused = False
+    row.cancellation_requested = False
+
+
+def _settle_escalated(row: FactoryReceipt, state: str) -> None:
+    """End an escalated receipt without re-admitting the work.
+
+    The task itself was settled when it escalated and keeps that as its own
+    outcome, because it is what happened to it. This is the lane's record of
+    what a person then decided, and it is cancelled rather than succeeded:
+    nothing was delivered, and a succeeded delivery receipt sits in the
+    exclusion intake keeps for good.
+    """
+    row.state = state
+
+
+def _direction(
+    row: FactoryReceipt,
+    escalation: dict,
+    option: dict,
+    actor: str,
+    note: str | None,
+) -> dict:
+    """The operator's answer, shaped for the next planner's first prompt.
+
+    It names the previous branch and pull request as well as the choice,
+    because the work the escalated attempt had already done is on them, and a
+    fresh graph that cannot find them would start the branch again.
+    """
+    return {
+        "option_key": option["key"],
+        "label": option["label"],
+        "effect": option["effect"],
+        "detail": option.get("detail") or {},
+        "note": (note or "").strip()[:MAX_NOTE] or None,
+        "actor": actor,
+        "decided_at": _iso(_now()),
+        "question": escalation.get("question"),
+        "prior_task_id": row.task_id,
+        "prior_branch": escalation.get("branch"),
+        "prior_pr_url": escalation.get("pr_url"),
+        "prior_pr_number": escalation.get("pr_number"),
+    }
+
+
+def _readmit(
+    db,
+    row: FactoryReceipt,
+    escalation: dict,
+    option: dict,
+    actor: str,
+    note: str | None,
+) -> dict:
+    """Put a decided delivery escalation back in the lane with its direction.
+
+    Returns what the resolution records: whether the lane took it, and when it
+    did not, why. A receipt the lane cannot admit is settled cancelled rather
+    than left escalated, because an escalation whose card has gone and whose
+    work is not scheduled is exactly the stuck state this replaced.
+    """
+    blocker = _requeue_blocker(db, row)
+    if blocker is not None:
+        _settle_escalated(row, "cancelled")
+        return {"readmitted": False, "blocked_by": blocker}
+    row.direction_json = json.dumps(_direction(row, escalation, option, actor, note))
+    _requeue(row)
+    return {"readmitted": True, "blocked_by": None}
+
+
+def _requeue_refine(db, row: FactoryReceipt, note: str, actor: str) -> str | None:
+    """Return this receipt to the queue so the lane runs it again.
+
+    The same receipt rather than a new one, for the reason ``_requeue``
+    gives. The issue text is never rewritten: the operator's note lives on the
+    escalation document for a refine, and on the direction for a delivery, and
+    the prompt reads it from there.
 
     Returns the reason it could not be re-queued, or None when it was. The
     question is recorded and posted either way, so the caller is the one that
@@ -611,12 +754,25 @@ def _requeue_refine(db, row: FactoryReceipt, note: str, actor: str) -> str | Non
     row.escalation_json = json.dumps(escalation)
     row.updated_at = _now()
     if blocker is None:
-        row.state = "queued"
-        row.task_id = None
-        row.policy_json = None
-        row.allowance_json = None
-        row.task_paused = False
-        row.cancellation_requested = False
+        # A delivery escalation carries the question into the next planner's
+        # prompt as direction, the same field an applied option writes. The
+        # chat path is the option-less answer: the note is the whole of it.
+        if row.task_class != TASK_CLASS:
+            row.direction_json = json.dumps(
+                _direction(
+                    row,
+                    escalation,
+                    {
+                        "key": "chat",
+                        "label": f"{CHAT_PREFIX} {note}"[:120],
+                        "effect": "chat",
+                        "detail": {},
+                    },
+                    actor,
+                    note,
+                )
+            )
+        _requeue(row)
     db.add(row)
     return blocker
 
@@ -642,12 +798,17 @@ def request_chat(receipt_id: int, note: str, actor: str) -> dict:
     # question posts a second comment while a retry of the first does not.
     sequence = len(escalation.get("chat") or [])
     marker = _marker(receipt_id, f"chat-{sequence}")
+    answer = (
+        "Re-queued for another brief that answers this."
+        if fields["task_class"] == TASK_CLASS
+        else "Re-admitted to the delivery lane with this as the direction."
+    )
     try:
         _comment(
             fields["repo"],
             fields["issue_number"],
             marker,
-            f"{CHAT_PREFIX} {note}\n\nRe-queued for another brief that answers this.",
+            f"{CHAT_PREFIX} {note}\n\n{answer}",
         )
     except (httpx.HTTPError, ValueError) as exc:
         raise DecisionError(502, "the question could not be posted on GitHub") from exc
@@ -675,4 +836,9 @@ def request_chat(receipt_id: int, note: str, actor: str) -> dict:
     }
 
 
-__all__ = ["DecisionError", "apply_decision", "request_chat"]
+__all__ = [
+    "DecisionError",
+    "apply_decision",
+    "request_chat",
+    "resume_escalated",
+]
