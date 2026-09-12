@@ -137,6 +137,35 @@ py_test(
     ],
 )
 
+# Keeps the published single-host overlay independent of the homelab reference
+# deployment. The test renders the real chart and checks the exact minimum lane.
+py_test(
+    name = "standalone_quickstart_test",
+    srcs = ["standalone_quickstart_test.py"],
+    data = [
+        "Chart.yaml",
+        "standalone-values.yaml",
+        "values.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+semgrep_test(
+    name = "standalone_quickstart_test_semgrep_test",
+    srcs = ["standalone_quickstart_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
 py_test(
     name = "chart_tokenbroker_spiffe_test",
     srcs = ["chart_tokenbroker_spiffe_test.py"],
