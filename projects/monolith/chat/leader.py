@@ -14,7 +14,6 @@ import logging
 import os
 
 from fastapi import FastAPI
-
 from framework import log_task_exception, register_leader_tasks
 
 logger = logging.getLogger("monolith.chat.leader")
@@ -46,9 +45,8 @@ async def leader_start(app: FastAPI) -> list[asyncio.Task]:
     No-op (returns []) when DISCORD_BOT_TOKEN is not configured: every chat
     singleton is coupled to the bot connection.
     """
-    from sqlmodel import Session
-
     from core.db import get_engine
+    from sqlmodel import Session
 
     discord_token = os.environ.get("DISCORD_BOT_TOKEN", "")
     if not discord_token:
@@ -96,10 +94,23 @@ async def leader_start(app: FastAPI) -> list[asyncio.Task]:
     tasks.append(drain_task)
     logger.info("Discord outbox drain starting")
 
+    # Persisted reminder/digest scheduler. Claims are database-leased, so a
+    # leader transition can recover abandoned work without double-enqueueing
+    # an occurrence. The framework tracks and cancels this task on resign or
+    # shutdown alongside the bot and outbox drain.
+    from chat.scheduled_tasks import run_scheduler
+
+    scheduler_task = asyncio.create_task(run_scheduler(get_engine()))
+    scheduler_task.add_done_callback(log_task_exception)
+    register_leader_tasks(app, [scheduler_task])
+    tasks.append(scheduler_task)
+    logger.info("Discord scheduled-task drain starting")
+
     # Bot-coupled lock sweep (reclaims expired message locks via SKIP LOCKED).
     async def _lock_sweep_loop():
-        from chat.store import MessageStore
         from shared.embedding import EmbeddingClient
+
+        from chat.store import MessageStore
 
         embed_client = EmbeddingClient()
         while not bot.is_ready():

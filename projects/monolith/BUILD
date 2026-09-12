@@ -2903,6 +2903,45 @@ py_test(
 )
 
 py_test(
+    name = "chat_scheduled_tasks_test",
+    srcs = ["chat/scheduled_tasks_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_cyclegroup",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "chat_outbox_scheduled_test",
+    srcs = ["chat/outbox_scheduled_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_cyclegroup",
+        "@pip//discord_py",
+        "@pip//pgvector",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "chat_leader_scheduled_tasks_test",
+    srcs = ["chat/leader_scheduled_tasks_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_cyclegroup",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+    ],
+)
+
+py_test(
     name = "chat_models_coverage_test",
     srcs = ["chat/models_coverage_test.py"],
     imports = ["."],
@@ -3968,6 +4007,20 @@ py_test(
 py_test(
     name = "chat_agent_reminder_tools_test",
     srcs = ["chat/agent_reminder_tools_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_cyclegroup",
+        "@pip//pgvector",
+        "@pip//pydantic_ai_slim",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "chat_agent_scheduled_tasks_test",
+    srcs = ["chat/agent_scheduled_tasks_test.py"],
     imports = ["."],
     deps = [
         ":pkg_cyclegroup",
