@@ -332,11 +332,11 @@ images build as uid 65532 (`bazel/tools/oci/go_image.bzl`) and most charts
 set the full hardened context (`readOnlyRootFilesystem`, `runAsNonRoot`,
 `allowPrivilegeEscalation: false`, `drop: [ALL]`, `seccompProfile:
 RuntimeDefault`). The private monolith applies that context to its backend,
-progress-ingest and frontend containers. Each gets a separate writable
-`/tmp` `emptyDir`, owned through pod `fsGroup: 65532`; the remainder of each
-root filesystem is read-only. No admission policy enforces any of it. Kyverno
-runs two
-`ClusterPolicy` objects, both `Audit` (`kubectl get clusterpolicies`):
+progress-ingest, frontend and optional WhatsApp gateway containers. Each gets
+a separate writable `/tmp` `emptyDir`, owned through pod `fsGroup: 65532`;
+the remainder of each root filesystem is read-only. No admission policy
+enforces any of it. Kyverno runs two `ClusterPolicy` objects, both `Audit`
+(`kubectl get clusterpolicies`):
 `require-resource-requests`, scoped to the `monolith` and `monolith-public`
 namespaces, and `clone-monolith-workflows-secrets`, which copies Secrets
 into the job namespace. The OTel injection policy is disabled. Nothing is

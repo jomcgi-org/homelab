@@ -98,4 +98,10 @@ spec:
             {{- toYaml .Values.whatsapp.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: whatsapp-tmp
+              mountPath: /tmp
+      volumes:
+        - name: whatsapp-tmp
+          emptyDir: {}
 {{- end }}
