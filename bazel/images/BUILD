@@ -65,6 +65,7 @@ multirun(
         "//projects/monolith:jobs_image.push",
         "//projects/monolith:main_agents_image.push",
         "//projects/monolith:progress_image.push",
+        "//projects/monolith:stars_grid_image.push",
         "//projects/operators/oci-model-cache/helm/oci-model-cache-operator:chart.push",
         "//projects/operators/oci-model-cache:image.push",
     ],
