@@ -124,8 +124,8 @@ class TestSingletonBotClose:
         ):
             await _start_singletons(app)
 
-        # Bot, outbox, lock sweep, and seven service loops including quota refresh.
-        assert len(tasks) == 10
+        # Bot, outbox, scheduled tasks, lock sweep, and seven service loops.
+        assert len(tasks) == 11
 
 
 # ---------------------------------------------------------------------------
