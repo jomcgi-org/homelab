@@ -117,6 +117,7 @@ def _seed_board(session, *, state: str = "admitted") -> FactoryReceipt:
         body="the first paragraph\n\nthe second paragraph",
         url=f"https://github.com/owner/repo/issues/{ISSUE_NUMBER}",
         actor=SEEDED_EMAIL,
+        source_key=f"issue:{ISSUE_NUMBER}",
         state=state,
         task_id=TASK_ID,
         policy_json=json.dumps(policy),
