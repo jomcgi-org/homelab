@@ -1842,6 +1842,33 @@ cfIngress:
       onepassword:
         itemPath: ""
 
+# Native Kubernetes egress policy for GKE Dataplane V2. The managed dataplane
+# has no Cilium CRDs, so this is the enforcing arm used by the hub overlay.
+# Internal destinations reuse the selector inventory under ciliumPolicy.egress
+# below. Standard NetworkPolicy cannot match DNS names, so required public HTTPS
+# is admitted only outside private, loopback, link-local, shared-address, and
+# multicast ranges. That denies arbitrary cluster egress but retains a broader
+# public HTTPS residual than the Cilium FQDN policy.
+networkPolicy:
+  egress:
+    enabled: false
+    # The GKE private control-plane endpoint, supplied by the hub overlay.
+    # Keep empty unless the policy is enabled on a cluster whose endpoint has
+    # been verified. Helm refuses to render an enabled policy without one.
+    apiServerCidrs: []
+    publicHttps:
+      cidr: 0.0.0.0/0
+      except:
+        - 0.0.0.0/8
+        - 10.0.0.0/8
+        - 100.64.0.0/10
+        - 127.0.0.0/8
+        - 169.254.0.0/16
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 224.0.0.0/4
+        - 240.0.0.0/4
+
 # Cilium policies for the k3s cluster only. GKE has no Cilium CRDs. See
 # templates/cilium-policy.yaml, templates/cilium-ingress-policy.yaml, and
 # templates/cilium-egress-policy.yaml.
@@ -1960,13 +1987,19 @@ ciliumPolicy:
         port: 8090
     # Exact DNS names only, all on 443. No suffix wildcard is accepted by the
     # regression test. The list covers the private request paths and enabled
-    # leader integrations visible in current code and deploy values. The R2
-    # hostname is deliberately exact rather than a Cloudflare-wide CIDR grant.
+    # leader integrations visible in current code and deploy values. A
+    # systematic register_job minus jobs.cronWorkflows[].replaces audit leaves
+    # only grimoire.load_chunks and grimoire.extract_entities in the app pod.
+    # The loader uses the internal S3 and embedding targets above. Extraction
+    # uses grimoire.extractBaseUrl, whose production host is included below.
+    # The R2 hostname is deliberately exact rather than a Cloudflare-wide CIDR
+    # grant.
     # ICAL_FEED_URL is secret-backed and cannot be proven from Git; its hostname
     # is an explicit pre-enforcement live-audit acceptance gap.
     externalFqdns:
       - 7c56b458cd657d96b095c63d181c051f.r2.cloudflarestorage.com
       - api.github.com
+      - api.deepseek.com
       - github.com
       - openrouter.ai
       - integrate.api.nvidia.com

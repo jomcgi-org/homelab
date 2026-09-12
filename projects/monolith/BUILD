@@ -93,6 +93,26 @@ filegroup(
     visibility = ["//projects/monolith/chart:__pkg__"],
 )
 
+# In-process scheduler registration sources parsed by the rendered egress
+# guard. The test mechanically subtracts CronWorkflow replacements before
+# checking app-pod destinations.
+filegroup(
+    name = "scheduler_registration_sources",
+    srcs = [
+        "campsites/__init__.py",
+        "chat/summarizer.py",
+        "dr_jobs/__init__.py",
+        "grimoire/__init__.py",
+        "hikes/__init__.py",
+        "home/__init__.py",
+        "home/observability/rollup.py",
+        "ships/__init__.py",
+        "stars/__init__.py",
+        "worldcup/__init__.py",
+    ],
+    visibility = ["//projects/monolith/chart:__pkg__"],
+)
+
 # Shared source closure for the monolith binaries. Both the API server
 # (:main / :image) and the batch-jobs entrypoint (:jobs / :jobs_image) glob the
 # same tree so their image dependency layers are byte-identical: Bazel caches

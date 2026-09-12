@@ -88,8 +88,16 @@ chat:
   movingChatInferenceUrl: "https://api.meta.ai"
   embeddingUrl: "http://inference-embeddings.inference.svc.cluster.local:8080"
 
-# Cilium CRDs are not installed on GKE. Native policy replacements can be
-# introduced separately when the dormant application is activated.
+# GKE Dataplane V2 enforces the native app egress policy. The private control
+# plane endpoint is the same hub endpoint validated for the recovery profile.
+networkPolicy:
+  egress:
+    enabled: true
+    apiServerCidrs:
+      - 10.10.0.2/32
+
+# Cilium CRDs are not installed on GKE. Keep those resources disabled while the
+# native NetworkPolicy arm above enforces app egress.
 ciliumPolicy:
   tokenReplayDeny:
     enabled: false

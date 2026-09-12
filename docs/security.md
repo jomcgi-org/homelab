@@ -188,7 +188,8 @@ admins listed in `projects/platform-gke/tailscale/values.yaml`, exposes the
 monolith API as a tailnet host, and runs three egress bridges to the home
 inference host.
 
-**GKE Dataplane V2 is the CNI, and there is no network policy on the hub.**
+**GKE Dataplane V2 is the CNI, and native policy protects private-monolith
+egress.**
 The managed dataplane exposes no `CiliumNetworkPolicy` or
 `CiliumClusterwideNetworkPolicy` CRD (`kubectl api-resources | grep cilium`)
 and reports `Encryption: Disabled`, so nothing on the wire is encrypted by
@@ -200,15 +201,27 @@ Cilium policy template in this repo is gated off in the hub overlays:
 `projects/monolith/deploy/values-gke.yaml`,
 `noded.networkPolicy` and `tokenBroker.networkPolicy` in
 `projects/embervm/deploy/values-gke.yaml`, `ciliumPolicy` in
-`projects/monolith-agents/deploy/values-gke.yaml`. The one live
-`NetworkPolicy` is the Context Forge redis rule from the upstream subchart
-(`kubectl get networkpolicies -A`). Every other pod is unrestricted in both
-directions: the public tier can dial any pod (#5276 and #5142 were closed on
-the chart, not the hub). The private monolith chart now carries a
-destination-scoped egress policy with additive audit and default-deny enforce
-modes, but its gate is off pending a representative Hubble audit and is forced
-off on GKE (#5277). A chart that carries a `CiliumNetworkPolicy` is documenting
-an intent the hub does not enforce.
+`projects/monolith-agents/deploy/values-gke.yaml`.
+
+The private monolith GKE overlay instead enables the chart's native Kubernetes
+`NetworkPolicy` egress arm. It selects only the app endpoint and default-denies
+unlisted cluster destinations and non-HTTPS internet flows. Required internal
+flows use namespace plus pod selectors and exact ports, and the Kubernetes API
+uses the verified private control-plane address. Standard NetworkPolicy cannot
+match FQDNs, so the public TCP 443 grant excludes private, loopback, link-local,
+shared-address, and multicast ranges but cannot deny an arbitrary public HTTPS
+host. That is an accepted GKE residual, not an exact replacement for Cilium's
+FQDN rules. Metadata-server access remains denied.
+
+The Cilium arm stays available, default-off, for clusters that expose its CRD.
+Its enforce mode uses exact external FQDNs. Its CoreDNS rule necessarily allows
+`matchPattern: "*"` so Cilium can learn addresses for those FQDNs, leaving a DNS
+channel as an accepted residual. Both arms intentionally scope default-deny to
+the private app endpoint. Searxng, WhatsApp, CNPG, Atlas migration jobs, and
+the separate `monolith-workflows` batch namespace retain their existing egress
+behavior because they are distinct workload and credential boundaries. They
+need their own destination-specific policies instead of inheriting a union of
+the app's privileges.
 
 **Guest egress is brokered.** Task and session guests have no NIC. The only
 way out is the vsock egress port, which noded forwards unparsed to the
