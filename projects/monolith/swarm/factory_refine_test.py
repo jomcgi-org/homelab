@@ -873,6 +873,42 @@ def test_a_re_brief_replaces_the_options_the_operator_sent_back(db, monkeypatch)
     assert [entry["note"] for entry in second["chat"]] == ["Which tier?"]
 
 
+def test_a_dismissed_escalation_is_replaced_by_the_next_brief(db, monkeypatch):
+    """A dismiss cleared the card. It did not decide anything.
+
+    It wrote nothing to GitHub, so an operator who cleared a card and then
+    asked for another brief has to get the card back carrying the answer.
+    Every other resolution still survives, which is the test below.
+    """
+    task, policy = make_task()
+    add_refine_node(task, policy)
+    comment = verified_github(monkeypatch, task, "needs-human")
+    run = settle_attempt(task, "succeeded", human_artifact(comment["html_url"]))
+    refine.reconcile(task, policy, graph.load_graph(task["id"]), [run], 1)
+    with Session(db) as session:
+        row = session.exec(select(FactoryReceipt)).one()
+        document = json.loads(row.escalation_json)
+        document["resolved"] = {
+            "option_key": "escape:dismiss",
+            "effect": "escape-dismiss",
+            "actor": "joe",
+        }
+        row.escalation_json = json.dumps(document)
+        session.add(row)
+        session.commit()
+
+    refine._record_escalation(
+        task["id"],
+        human_artifact(comment["html_url"], "defer"),
+        comment["html_url"],
+        downgraded=False,
+    )
+
+    fresh = controls.task_snapshot(task["id"])["escalation"]
+    assert fresh["resolved"] is None
+    assert fresh["recommendation"] == "defer"
+
+
 def test_a_resolved_escalation_is_never_overwritten(db, monkeypatch):
     task, policy = make_task()
     add_refine_node(task, policy)

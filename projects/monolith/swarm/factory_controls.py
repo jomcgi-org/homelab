@@ -1062,6 +1062,24 @@ ESCAPE_OPTIONS = (
     },
 )
 
+# The one effect that records a resolution without ending the conversation.
+# A dismiss writes nothing to GitHub: the issue is exactly as it was, still
+# carrying `needs-human`, and the only thing that changed is that the card
+# left the operator's list. Treating it as final would make one keypress the
+# end of the matter, so it is the one resolution a later decision, a chat
+# request, or a fresh brief is allowed to land over.
+NON_TERMINAL_EFFECTS = ("escape-dismiss",)
+
+
+def terminal_effect(effect: str | None) -> bool:
+    """Whether an effect closes the escalation for good."""
+    return effect not in NON_TERMINAL_EFFECTS
+
+
+def terminal_resolution(resolved: dict | None) -> bool:
+    """Whether a recorded resolution closes the escalation for good."""
+    return resolved is not None and terminal_effect(resolved.get("effect"))
+
 
 def escalation_view(receipt: dict) -> dict | None:
     """One escalation as the operator page renders it, from a board snapshot.
