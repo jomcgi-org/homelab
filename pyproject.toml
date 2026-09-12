@@ -93,6 +93,8 @@ dependencies = [
     "sqlmodel~=0.0.22",
     # Chat module dependencies
     "discord.py>=2.4",
+    # Timeout-bounded matching for persisted user-configured message triggers.
+    "regex>=2026.4.4",
     # >=1.102.0 closes CVE-2026-48782; <2 stays on the API-stable 1.x line
     # (v2.0 removes the deprecated prepare_tools= callable and result accessors
     # this repo still uses). Revisit the v2 migration separately.
