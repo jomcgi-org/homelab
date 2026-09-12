@@ -31,6 +31,7 @@ from sqlmodel import select
 
 from swarm.factory_controls import (
     CLOSE_REASONS,
+    CONTINUE_EFFECT,
     ESCALATED,
     ESCAPE_OPTIONS,
     _audit,
@@ -68,7 +69,7 @@ _SETTLED_STATES = ("succeeded", "failed")
 # The effects that put the work back in front of the lane rather than ending
 # it. A delivery escalation answered with one of these is re-admitted with the
 # operator's answer as direction; every other answer settles the receipt.
-READMITTING_EFFECTS = ("agent-ready",)
+READMITTING_EFFECTS = (CONTINUE_EFFECT,)
 
 
 class DecisionError(ValueError):
@@ -469,11 +470,20 @@ def _resolve(
     with _locked_session() as (db, _control):
         row = _receipt(db, receipt_id)
         escalation = escalation_of(row) or {}
+        # Read before the branch below, because re-admitting clears task_id and
+        # the audit has to name the task the decision was made against rather
+        # than the null a re-queued receipt carries.
+        task_id = row.task_id
         # A dismiss is overwritten rather than preserved: the operator who
         # cleared the card and then decided the issue properly must end up
         # with the decision on the record, not the dismiss.
         if not terminal_resolution(escalation.get("resolved")):
-            if row.state == ESCALATED and not is_advisory(row.task_class):
+            # Queued as well as escalated. A chat request re-queues a delivery
+            # receipt without resolving the escalation, so an option can land
+            # on a receipt already waiting for a slot, and reading that as the
+            # advisory re-brief case below settled it succeeded, which is the
+            # state intake reads as delivered for good.
+            if not is_advisory(row.task_class) and row.state in (ESCALATED, "queued"):
                 # A delivery escalation is a question inside a task, so an
                 # answer that says carry on puts the work back in the lane
                 # with that answer as its direction. A terminal answer ends
@@ -481,7 +491,7 @@ def _resolve(
                 # was delivered and marking it succeeded would put the issue
                 # in the permanent "delivered" exclusion intake keeps. A
                 # dismiss settles nothing, because it decided nothing: the
-                # card leaves the list and the receipt stays escalated so a
+                # card leaves the list and the receipt stays where it is so a
                 # later decision can still re-admit the work.
                 if option["effect"] in READMITTING_EFFECTS:
                     resolution["effects"] = {
@@ -506,7 +516,7 @@ def _resolve(
             db,
             actor,
             "decision_applied",
-            task_id=row.task_id,
+            task_id=task_id,
             receipt_id=receipt_id,
             issue_number=row.issue_number,
             option_key=resolution["option_key"],
@@ -670,6 +680,9 @@ def _settle_escalated(row: FactoryReceipt, state: str) -> None:
     row.state = state
 
 
+_PRIOR_KEYS = ("prior_task_id", "prior_branch", "prior_pr_url", "prior_pr_number")
+
+
 def _direction(
     row: FactoryReceipt,
     escalation: dict,
@@ -681,8 +694,27 @@ def _direction(
 
     It names the previous branch and pull request as well as the choice,
     because the work the escalated attempt had already done is on them, and a
-    fresh graph that cannot find them would start the branch again.
+    fresh graph that cannot find them would start the branch again. A receipt
+    that is already queued has no task_id to read them off, so they come from
+    the direction the earlier answer on the same escalation left, which is the
+    decide-after-chat case: the chat re-queued the receipt and the option is
+    landing on it afterwards.
     """
+    stored = json.loads(row.direction_json) if row.direction_json else {}
+    if row.task_id:
+        prior = {
+            "prior_task_id": row.task_id,
+            "prior_branch": escalation.get("branch"),
+            "prior_pr_url": escalation.get("pr_url"),
+            "prior_pr_number": escalation.get("pr_number"),
+        }
+    else:
+        prior = {key: stored.get(key) for key in _PRIOR_KEYS}
+    # Every attempt this issue has already spent, so the board can show what a
+    # re-admitted receipt cost before the task it is on now.
+    previous = list(stored.get("previous_task_ids") or [])
+    if prior["prior_task_id"] and prior["prior_task_id"] not in previous:
+        previous.append(prior["prior_task_id"])
     return {
         "option_key": option["key"],
         "label": option["label"],
@@ -692,10 +724,8 @@ def _direction(
         "actor": actor,
         "decided_at": _iso(_now()),
         "question": escalation.get("question"),
-        "prior_task_id": row.task_id,
-        "prior_branch": escalation.get("branch"),
-        "prior_pr_url": escalation.get("pr_url"),
-        "prior_pr_number": escalation.get("pr_number"),
+        "previous_task_ids": previous[-8:],
+        **prior,
     }
 
 
@@ -713,13 +743,21 @@ def _readmit(
     did not, why. A receipt the lane cannot admit is settled cancelled rather
     than left escalated, because an escalation whose card has gone and whose
     work is not scheduled is exactly the stuck state this replaced.
+
+    A receipt that is already queued is the decide-after-chat case: a chat
+    request re-queued it and this option is the operator following up before
+    the lane got to it. The re-queue already happened, so this only replaces
+    the direction the next planner will read, and re-queueing again would
+    refuse itself on its own state.
     """
-    blocker = _requeue_blocker(db, row)
+    queued = row.state == "queued"
+    blocker = None if queued else _requeue_blocker(db, row)
     if blocker is not None:
         _settle_escalated(row, "cancelled")
         return {"readmitted": False, "blocked_by": blocker}
     row.direction_json = json.dumps(_direction(row, escalation, option, actor, note))
-    _requeue(row)
+    if not queued:
+        _requeue(row)
     return {"readmitted": True, "blocked_by": None}
 
 

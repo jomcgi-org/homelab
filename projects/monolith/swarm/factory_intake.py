@@ -197,12 +197,21 @@ def admit_next(actor: str, *, lanes=LANES, session: Session | None = None) -> di
     times task_budget_usd, not by a counter a human has to re-arm.
     admitted_count is kept for status only.
 
-    One path returns a settled receipt to queued, and it is the only one: an
-    operator answering a refine escalation with "needs more chat"
-    (swarm/factory_decisions.py). That re-brief is an explicit human act on
-    one issue at a time, so the bound above becomes those receipts plus the
-    re-briefs somebody asked for by hand, rather than anything the lane can
-    do to itself.
+    Three paths return a settled receipt to queued, all of them in
+    swarm/factory_decisions.py and all of them an explicit human act on one
+    issue at a time: an operator answering a refine escalation with "needs
+    more chat", an operator answering an escalated delivery with the option
+    that says carry on, and the same chat action on an escalated delivery. So
+    the bound above becomes those receipts plus the rounds somebody asked for
+    by hand, rather than anything the lane can do to itself.
+
+    A refine re-brief costs one advisory node. A delivery re-admission is a
+    whole new task: a fresh graph, a fresh allowance and a fresh
+    task_budget_usd, because the escalated attempt's spend is history and the
+    new task has to be able to plan and deliver inside its own envelope. The
+    receipt carries its previous task ids so the board can show what the issue
+    has cost across all of them, and the escalations are the place to watch
+    that, since nothing here caps how many times one issue may be re-admitted.
     """
     actor = _text(actor, "actor")
     lanes = tuple(lane for lane in LANES if lane in lanes)

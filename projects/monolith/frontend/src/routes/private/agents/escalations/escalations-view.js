@@ -47,29 +47,59 @@ export function resolutionLine(item) {
 }
 
 /**
+ * What each effect does on a refine escalation, where the card is a briefing
+ * asking what the work should be and no task is waiting on the answer.
+ */
+const ADVISORY_EFFECT_LINE = {
+  "agent-ready": "labels it agent-ready for the delivery lane",
+  close: "closes the issue with a reason",
+  defer: "moves it to needs-thought with a wait condition",
+  hold: "leaves the issue exactly as it is",
+  "escape-close": "closes it as not planned and drops needs-human",
+  "escape-defer": "swaps needs-human for needs-thought",
+  "escape-dismiss": "clears the card, the issue keeps needs-human",
+};
+
+/**
+ * And on a delivery escalation, where a task escalated out of the lane with a
+ * branch and usually a pull request behind it. Everything except continue and
+ * dismiss ends that work, and the card has to say so: the same button that
+ * only relabels an issue on a refine card throws away an attempt here.
+ */
+const DELIVERY_EFFECT_LINE = {
+  "agent-ready": "re-admits the work with your answer as its direction",
+  close: "closes the issue, cancels the task, abandons the branch",
+  defer: "moves it to needs-thought, cancels the task, abandons the branch",
+  hold: "leaves the issue as it is, cancels the task, abandons the branch",
+  "escape-close":
+    "closes it as not planned, cancels the task, abandons the branch",
+  "escape-defer":
+    "swaps needs-human for needs-thought, cancels the task, abandons the branch",
+  "escape-dismiss":
+    "clears the card, the task stays escalated for a later answer",
+};
+
+/**
  * The effect of one option said in a few words, for the line under a button.
  * A split says how many issues it opens, because that is the part a person
  * cannot see from the label and would otherwise have to guess.
+ *
+ * ``kind`` is the escalation's own, because the same effect means two
+ * different things: on a refine card close is a triage decision, and on a
+ * delivery card it also cancels a task and abandons the branch it was on.
  */
-export function effectLine(option) {
+export function effectLine(option, kind) {
   if (!option) return "";
+  const delivery = kind === "delivery";
   if (option.effect === "split") {
     const n = option.children ?? 0;
-    return n === 1
-      ? "opens 1 issue, closes this one"
-      : `opens ${n} issues, closes this one`;
+    const opens = n === 1 ? "opens 1 issue" : `opens ${n} issues`;
+    return delivery
+      ? `${opens}, closes this one, cancels the task`
+      : `${opens}, closes this one`;
   }
-  return (
-    {
-      "agent-ready": "labels it agent-ready for the delivery lane",
-      close: "closes the issue with a reason",
-      defer: "moves it to needs-thought with a wait condition",
-      hold: "leaves the issue exactly as it is",
-      "escape-close": "closes it as not planned and drops needs-human",
-      "escape-defer": "swaps needs-human for needs-thought",
-      "escape-dismiss": "clears the card, the issue keeps needs-human",
-    }[option.effect] ?? option.effect
-  );
+  const lines = delivery ? DELIVERY_EFFECT_LINE : ADVISORY_EFFECT_LINE;
+  return lines[option.effect] ?? option.effect;
 }
 
 /** The escape options a card offers. Empty once the escalation is resolved. */

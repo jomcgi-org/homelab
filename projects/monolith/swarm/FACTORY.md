@@ -884,10 +884,19 @@ The delivery planner's fifth action is `pause`, and it now leaves the lane
 rather than sitting in it. A pause carries the one `question` a person must
 answer and the same two to four `options` a refine escalation carries, with the
 recommendation first, and the prompt asks for concrete ones: rescope to a named
-surface, close as stale, split, defer, continue with a stated assumption. A
-pause that arrives without them is refused as decision feedback with
-`pause_options_invalid`, so the planner repairs it inside the task it already
-has instead of settling a card nobody can act on.
+surface, close as stale, split, defer, continue with a stated assumption.
+
+Option one has to have effect `agent-ready`, which is the one that carries the
+work on. That is stricter than the refine rule, where the recommendation may be
+any of the four, and it is stricter for one reason: `resume_task` applies
+option one without showing the operator the card, so a pause recommending a
+close would turn pressing resume into closing the issue. The planner may still
+offer close, split, defer and hold; it may not recommend them from inside a
+task that has a branch and usually a pull request open. A pause missing its
+question, its options, or that first effect is refused as decision feedback
+with `pause_without_question`, `pause_options_invalid` or
+`pause_recommendation_not_continue`, so the planner repairs it inside the task
+it already has instead of settling a card nobody can safely act on.
 
 **Why.** A pause is a decision request, so it leaves the lane. It used to leave
 the receipt `admitted` with `task_paused` set, which held a delivery slot and
@@ -936,12 +945,27 @@ is scheduled nowhere is the stuck state this replaced.
 
 The `chat` action works on a delivery escalation too. It posts `Operator asks:`
 on the issue and re-admits the same way, with the note as the direction and no
-option applied. `resume_task` on an escalated receipt applies the recommended
+option applied. It does not resolve the escalation, so the card stays live and
+an option can still land on a receipt that is already queued: that answer
+replaces the direction the chat left rather than re-queueing a second time, and
+a terminal answer settles the receipt `cancelled`. The branch and the previous
+task come off the stored direction there, because a re-queued receipt no longer
+names a task of its own. `resume_task` on an escalated receipt applies the recommended
 option, because the first option is the recommendation and resume is choosing
 it without reading the card; `stop` settles every escalated receipt
 `cancelled`, since the reconciler only visits active tasks and would otherwise
 leave a card waiting on a decision for a lane that is shut. `pause_task` and
 `resume_task` are unchanged for a task that is still running.
+
+A re-admission is a whole new task with a fresh graph, a fresh allowance and a
+fresh `task_budget_usd`, because the escalated attempt's spend is history and
+the new task has to be able to plan and deliver inside its own envelope. So the
+receipt carries `previous_task_ids`, and the board shows what those attempts
+cost as `previous_spend` beside the current task's own accounting rather than
+folded into it: `turns_used` and `committed_cost_usd` are measured against this
+task's allowance, and adding a previous attempt's spend would read as a task
+over budget before a node had run. Nothing caps how many times one issue may be
+re-admitted, so that total is the number to watch.
 
 The receipt holds one escalation document at a time. A task that escalates a
 second time supersedes the first, moving it into `history` with its resolution,

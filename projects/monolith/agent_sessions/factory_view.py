@@ -164,6 +164,11 @@ def shape_receipt(
             "allowance",
             "task_class",
             "escalation",
+            # What this issue spent on the attempts before this one. A
+            # decision that re-admits an escalated delivery mints a new task,
+            # so without these the escalated attempt's cost leaves the board.
+            "previous_task_ids",
+            "previous_spend",
         )
     }
     shaped["policy"] = {

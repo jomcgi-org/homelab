@@ -75,6 +75,29 @@ describe("escalations view helpers", () => {
     );
     expect(effectLine({ effect: "hold" })).toContain("exactly as it is");
     expect(effectLine(null)).toBe("");
+    // A delivery card's buttons end a task and abandon its branch, which the
+    // identical button on a refine card does not.
+    expect(effectLine({ effect: "agent-ready" }, "delivery")).toContain(
+      "re-admits the work",
+    );
+    expect(effectLine({ effect: "close" }, "delivery")).toContain(
+      "abandons the branch",
+    );
+    expect(effectLine({ effect: "hold" }, "delivery")).toContain(
+      "cancels the task",
+    );
+    expect(effectLine({ effect: "escape-close" }, "delivery")).toContain(
+      "cancels the task",
+    );
+    expect(effectLine({ effect: "escape-defer" }, "delivery")).toContain(
+      "cancels the task",
+    );
+    expect(effectLine({ effect: "escape-dismiss" }, "delivery")).toContain(
+      "stays escalated",
+    );
+    expect(effectLine({ effect: "split", children: 2 }, "delivery")).toBe(
+      "opens 2 issues, closes this one, cancels the task",
+    );
   });
 
   test("the cursor is bounded rather than wrapping", () => {
