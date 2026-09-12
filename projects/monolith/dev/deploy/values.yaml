@@ -213,6 +213,11 @@ ciliumPolicy:
 jobs:
   image: ""
 
+# Never inherit the production database-writing geospatial job into dev.
+stars:
+  gridGenerator:
+    enabled: false
+
 agents:
   # What dev OFFERS in the console picker and the Discord /agent command
   # (GET /api/agents/models, issue #4859): Luna alone, matching the Codex lane

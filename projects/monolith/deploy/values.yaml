@@ -65,6 +65,14 @@ jobs:
   snapshotMergedPrs:
     suspend: false
 
+stars:
+  gridGenerator:
+    # The object locations remain intentionally unset in chart values. Keep the
+    # production object present but suspended until an operator configures the
+    # exact archived LP, road, admin boundary, and DEM inputs.
+    enabled: true
+    suspend: true
+
 postgres:
   # Nightly logical refresh of monolith-dev-pg, dumped from the production
   # PRIMARY (monolith-pg-rw), not the -ro replica: standby recovery conflicts
