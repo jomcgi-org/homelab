@@ -394,6 +394,24 @@ address decides on its own and the `FACTORY_OPERATOR_EMAILS` secret is empty by
 default. Setting it narrows the click to a named list while leaving the page
 readable to everyone Access admits (#6002).
 
+**Why.** A pause is a decision request, so it leaves the lane. A delivery
+planner that needed a person used to emit `pause`, and the receipt stayed
+admitted behind a `task_paused` flag, holding a delivery slot and its
+accounting until somebody resumed or cancelled by hand. Resuming replayed the
+same pause, because the planner's context is the issue body captured at
+admission plus graph evidence, so an answer posted as a comment never reached
+it: that happened twice in one day on #3824 and #3832. A pause now carries the
+question and the same two to four options a refine escalation carries, and
+settling it moves the receipt to `escalated`, which holds no slot, starts no
+node, and keeps the graph and the accounting for a decision to be read
+against. The answer comes back the other way rather than on the issue: an
+option that says carry on re-admits the receipt with the choice, its detail and
+the operator's note as direction, and the next task's first planner round reads
+that as a labelled untrusted section naming the previous branch and pull
+request. Every other answer settles the receipt cancelled rather than
+succeeded, because nothing was delivered and a succeeded delivery receipt is in
+the exclusion intake keeps for good (#6041).
+
 (see: /projects/monolith/swarm/factory_decisions.py)
 (see: /projects/monolith/frontend/src/routes/private/agents/escalations/+page.svelte)
 
