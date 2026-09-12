@@ -30,7 +30,7 @@ Public reads must filter to the public corpus, for example `is_global = true`. A
 
 ## Rollout: the public origin is `monolith-public`
 
-`jomcgi.dev` is served by the `monolith-public` chart, so a change that only moves the `monolith` chart does not move the public origin. Chart versions are written back on `main` after merge (ADR platform/009): a PR never touches `Chart.yaml` `version:` or `targetRevision:`. On the hub Kargo promotes `monolith-public` from that published version, so the git pin under `projects/gke-apps/monolith-public/` is a floor, not the deployed version. Confirm the `chart-version-bot` write-back landed, then read the live value before curling the route:
+`jomcgi.dev` is served by the `monolith-public` chart, so a change that only moves the `monolith` chart does not move the public origin. Chart versions can be written back on `main` after merge (ADR platform/009), so merged `main` history may contain chart-version write-back changes even though ordinary feature PRs do not edit `Chart.yaml` `version:` or `targetRevision:`. On the hub Kargo promotes `monolith-public` from that published version, so the git pin under `projects/gke-apps/monolith-public/` is a floor, not the deployed version. Confirm the `chart-version-bot` write-back landed, then read the live value before curling the route:
 
 ```bash
 kubectl get application monolith-public -n argocd -o jsonpath='{.spec.sources[0].targetRevision}'
