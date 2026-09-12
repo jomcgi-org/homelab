@@ -26,7 +26,17 @@ _BIGINT = BigInteger().with_variant(Integer(), "sqlite")
 
 class SwarmTask(SQLModel, table=True):
     __tablename__ = "swarm_task"
-    __table_args__ = {"schema": "swarm", "extend_existing": True}
+    __table_args__ = (
+        CheckConstraint(
+            "task_class != 'judgment-analysis' OR capability_tier = 'opus'",
+            name="swarm_task_judgment_floor_check",
+        ),
+        CheckConstraint(
+            "capability_tier IN ('small', 'opus')",
+            name="swarm_task_capability_tier_check",
+        ),
+        {"schema": "swarm", "extend_existing": True},
+    )
 
     id: str = Field(primary_key=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -34,6 +44,10 @@ class SwarmTask(SQLModel, table=True):
     repo: str | None = None
     base_branch: str | None = None
     conductor_model: str
+    # Persist the classification that admission used. A task must remain on
+    # the same capability floor after its receipt or operator policy changes.
+    task_class: str = Field(default="bug-fix", index=True)
+    capability_tier: str = Field(default="small", index=True)
     budget_usd: float | None = None
     workflow_id: str | None = Field(default=None, index=True)
     session_id: int | None = Field(default=None, index=True)
@@ -211,6 +225,8 @@ def create_task(
     start_model: str | None = None,
     start_triggered_by: str | None = None,
     start_state: str | None = None,
+    task_class: str = "bug-fix",
+    capability_tier: str = "small",
     *,
     session: Session | None = None,
 ) -> SwarmTask:
@@ -224,6 +240,8 @@ def create_task(
         repo=repo,
         base_branch=base_branch,
         conductor_model=conductor_model,
+        task_class=task_class,
+        capability_tier=capability_tier,
         budget_usd=budget_usd,
         workflow_id=workflow_id,
         session_id=session_id,

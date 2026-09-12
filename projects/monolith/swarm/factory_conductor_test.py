@@ -4970,6 +4970,18 @@ def test_judgment_task_uses_floor_and_refuses_named_cheap_model(feedback_db):
     assert exc.value.code == "below_judgment_floor"
 
 
+def test_judgment_task_refuses_a_policy_with_only_small_fallbacks(feedback_db):
+    task, policy = feedback_task(
+        task_class="judgment-analysis",
+        allowed_models=["luna"],
+        conductor_model="luna",
+        worker_model="luna",
+    )
+    with pytest.raises(conductor._EditRefused) as exc:
+        conductor._prepare_add(task, policy, plan_edit("work", "implement"))
+    assert exc.value.code == "below_judgment_floor"
+
+
 def test_machine_verified_task_still_uses_pool_selection(feedback_db, monkeypatch):
     task, policy = feedback_task(task_class="bug-fix")
     calls = []

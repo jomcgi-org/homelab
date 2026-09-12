@@ -226,6 +226,8 @@ spec:
             {{- if .Values.swarm.enabled }}
             - name: FACTORY_ENABLED
               value: {{ .Values.swarm.factoryEnabled | default false | quote }}
+            - name: SWARM_FEEDERS_ENABLED
+              value: {{ .Values.swarm.feedersEnabled | default false | quote }}
             - name: FACTORY_STOP_SUPERVISION_ENABLED
               value: {{ .Values.swarm.factoryStopSupervisionEnabled | default false | quote }}
             - name: FACTORY_LOST_BEFORE_GUEST_SETTLEMENT_ENABLED

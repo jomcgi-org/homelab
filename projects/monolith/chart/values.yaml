@@ -1471,6 +1471,9 @@ metaSpark:
 swarm:
   # Availability gate only. Operator policy and durable enable are separate.
   factoryEnabled: false
+  # Scheduled/event feeder polling is a producer-only switch. It defaults off,
+  # and the durable factory control must also be enabled before a row is written.
+  feedersEnabled: false
   # Consume exact durable Ember teardown proof for stopped/expired attempts.
   factoryStopSupervisionEnabled: false
   # Settle an attempt whose invoke was sent but whose guest was never bound, so

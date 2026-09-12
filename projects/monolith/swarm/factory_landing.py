@@ -350,6 +350,7 @@ def _deliveries(policy: dict) -> list[dict]:
             {
                 "task_id": row.task_id,
                 "issue_number": row.issue_number,
+                "requires_issue_close": row.requires_issue_close,
                 "pr_number": number,
                 # The head the newest arming was measured against, so a branch
                 # that moves under an armed pull request can be caught.
@@ -357,7 +358,7 @@ def _deliveries(policy: dict) -> list[dict]:
                 "armed": len(armed),
                 "ejected": len(ejected),
                 "merged": bool(audits["merged"]),
-                "closed": bool(audits["issue_closed"]),
+                "closed": not row.requires_issue_close or bool(audits["issue_closed"]),
             }
         )
     return result

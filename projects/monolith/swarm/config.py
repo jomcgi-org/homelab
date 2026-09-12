@@ -7,6 +7,11 @@ def enabled() -> bool:
     return os.environ.get("SWARM_ENABLED", "false").lower() == "true"
 
 
+def feeders_enabled() -> bool:
+    """Whether autonomous queue producers may inspect GitHub and write receipts."""
+    return os.environ.get("SWARM_FEEDERS_ENABLED", "false").lower() == "true"
+
+
 def implementer_model() -> str:
     return os.environ.get("SWARM_IMPLEMENTER_MODEL", "luna")
 
