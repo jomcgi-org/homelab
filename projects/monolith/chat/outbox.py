@@ -30,6 +30,27 @@ _MAX_ATTEMPTS = 5
 _BATCH = 20
 
 
+def _record_scheduled_outcome(
+    session: Session, row: DiscordOutbox, status: str, error: str | None = None
+) -> None:
+    """Mirror the outbox result onto its durable occurrence audit row."""
+    if row.kind != "scheduled_task" or not row.payload_json:
+        return
+    try:
+        from chat.models import ScheduledTaskOccurrence
+
+        occurrence_id = json.loads(row.payload_json)["occurrence_id"]
+        occurrence = session.get(ScheduledTaskOccurrence, occurrence_id)
+        if occurrence is not None:
+            occurrence.status = status
+            occurrence.last_error = error[:500] if error else None
+            session.add(occurrence)
+    except Exception:
+        # Delivery state on the outbox is authoritative. A corrupt legacy
+        # payload must not roll back that state transition or cause a resend.
+        logger.exception("outbox: failed to record scheduled outcome for row %s", row.id)
+
+
 def enqueue_message(
     session: Session,
     channel_id: str,
@@ -39,6 +60,7 @@ def enqueue_message(
     level: str = "info",
     kind: str = "",
     payload: dict | None = None,
+    dedupe_key: str | None = None,
 ) -> None:
     """Enqueue a Discord post. Exactly one of content/embed must be set.
 
@@ -60,6 +82,7 @@ def enqueue_message(
             level=level,
             kind=kind,
             payload_json=json.dumps(payload) if payload is not None else None,
+            dedupe_key=dedupe_key,
         )
     )
 
@@ -116,9 +139,27 @@ def _claim_pending(engine) -> list[dict]:
     """Read the oldest unposted, not-exhausted rows. Returns plain dicts so the
     async drain never holds an ORM row across an await."""
     with Session(engine) as session:
+        # A scheduled row left in sending across a process boundary has an
+        # unknowable Discord outcome. Quarantine it rather than risk a second
+        # post. This is deliberately at-most-once after dispatch begins, not a
+        # false exactly-once claim.
+        interrupted = session.exec(
+            select(DiscordOutbox).where(DiscordOutbox.delivery_state == "sending")
+        ).all()
+        for row in interrupted:
+            row.delivery_state = "uncertain"
+            row.uncertain_at = datetime.now(timezone.utc)
+            row.last_error = "process restarted while Discord send outcome was unknown"
+            _record_scheduled_outcome(
+                session, row, "uncertain", row.last_error
+            )
+            session.add(row)
+        if interrupted:
+            session.commit()
         rows = session.exec(
             select(DiscordOutbox)
             .where(DiscordOutbox.posted_at.is_(None))
+            .where(DiscordOutbox.delivery_state == "pending")
             .where(DiscordOutbox.attempts < _MAX_ATTEMPTS)
             # Order by (created_at, id) so a remove-then-add reaction pair enqueued
             # together drains in insertion order (id breaks created_at ties), never
@@ -138,6 +179,8 @@ def _claim_pending(engine) -> list[dict]:
                 "reaction_remove": r.reaction_remove,
                 "kind": r.kind,
                 "payload_json": r.payload_json,
+                "dedupe_key": r.dedupe_key,
+                "delivery_state": r.delivery_state,
             }
             for r in rows
         ]
@@ -148,6 +191,8 @@ def _mark_posted(engine, row_id: int) -> None:
         row = session.get(DiscordOutbox, row_id)
         if row is not None:
             row.posted_at = datetime.now(timezone.utc)
+            row.delivery_state = "posted"
+            _record_scheduled_outcome(session, row, "delivered")
             session.add(row)
             session.commit()
 
@@ -162,10 +207,48 @@ def _mark_failed(engine, row_id: int, error: str) -> None:
             session.commit()
 
 
+def _mark_sending(engine, row_id: int) -> bool:
+    """Durably cross the no-retry boundary for a scheduled Discord send."""
+    from sqlalchemy import update
+
+    with Session(engine) as session:
+        result = session.exec(
+            update(DiscordOutbox)
+            .where(DiscordOutbox.id == row_id)
+            .where(DiscordOutbox.delivery_state == "pending")
+            .values(
+                delivery_state="sending",
+                send_started_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+        return result.rowcount == 1
+
+
+def _mark_uncertain(engine, row_id: int, error: str) -> None:
+    with Session(engine) as session:
+        row = session.get(DiscordOutbox, row_id)
+        if row is not None and row.posted_at is None:
+            row.delivery_state = "uncertain"
+            row.uncertain_at = datetime.now(timezone.utc)
+            row.attempts += 1
+            row.last_error = f"Discord send outcome unknown: {error}"[:500]
+            _record_scheduled_outcome(session, row, "uncertain", row.last_error)
+            session.add(row)
+            session.commit()
+
+
 _LEVEL_PREFIX = {"info": "", "warn": "⚠️ ", "error": "\U0001f534 "}
 
 
-async def _post_row(bot, row: dict):
+async def _resolve_channel(bot, row: dict):
+    channel = bot.get_channel(int(row["channel_id"]))
+    if channel is None:
+        channel = await bot.fetch_channel(int(row["channel_id"]))
+    return channel
+
+
+async def _post_row(bot, row: dict, *, channel=None):
     """Post one outbox row via the bot. Mirrors chat.bot.send_message's channel
     resolution (cache, then API fetch).
 
@@ -175,9 +258,8 @@ async def _post_row(bot, row: dict):
     """
     import discord
 
-    channel = bot.get_channel(int(row["channel_id"]))
     if channel is None:
-        channel = await bot.fetch_channel(int(row["channel_id"]))
+        channel = await _resolve_channel(bot, row)
     if row.get("reaction") is not None:
         await _apply_reaction(bot, channel, row)
         return None
@@ -290,11 +372,31 @@ async def drain_once(bot, engine) -> int:
     rows = await asyncio.to_thread(_claim_pending, engine)
     posted = 0
     for row in rows:
+        scheduled = row.get("kind") == "scheduled_task"
+        channel = None
+        if scheduled:
+            # Channel lookup is known to happen before dispatch. A failure here
+            # is safely retryable and should not be labelled an uncertain send.
+            try:
+                channel = await _resolve_channel(bot, row)
+            except Exception as exc:  # noqa: BLE001 - row failure is isolated
+                logger.warning(
+                    "outbox: failed to resolve channel for row %s: %s",
+                    row["id"],
+                    exc,
+                )
+                await asyncio.to_thread(_mark_failed, engine, row["id"], str(exc))
+                continue
+            if not await asyncio.to_thread(_mark_sending, engine, row["id"]):
+                continue
         try:
-            posted_message = await _post_row(bot, row)
+            posted_message = await _post_row(bot, row, channel=channel)
         except Exception as exc:  # noqa: BLE001 - a bad row must not stall the rest
             logger.warning("outbox: failed to post row %s: %s", row["id"], exc)
-            await asyncio.to_thread(_mark_failed, engine, row["id"], str(exc))
+            if scheduled:
+                await asyncio.to_thread(_mark_uncertain, engine, row["id"], str(exc))
+            else:
+                await asyncio.to_thread(_mark_failed, engine, row["id"], str(exc))
         else:
             if row.get("kind") == "directive_proposal" and posted_message is not None:
                 await _run_directive_proposal_hook(row, posted_message)
