@@ -1171,3 +1171,137 @@ def test_optional_observers_set_only_postgres_transaction_limits_before_queries(
         "metadata_read" if operation == "read" else "session_lock"
     )
     assert calls[-1] == "session_closed"
+
+
+def release_unobserved(receipt, **changes):
+    return receipts.release_unobserved_fence(
+        **(
+            dict(
+                receipt_id=receipt["id"],
+                session_id=1,
+                claim_owner="executor-one",
+                dispatch_count=1,
+                guest_id="guest-one",
+            )
+            | changes
+        )
+    )
+
+
+def test_unobserved_release_frees_a_received_receipts_guest(database):
+    receipt = prepare()
+    capture(receipt)
+    with Session(database) as db, db.begin():
+        validate_active(db, receipt)
+    with Session(database) as db:
+        assert db.get(AgentSession, 1).result_receipt_fence_id == receipt["id"]
+    assert release_unobserved(receipt)
+    with Session(database) as db:
+        assert db.get(AgentSession, 1).result_receipt_fence_id is None
+        # Nothing observed a response, so the stamp every reconciliation and
+        # lease owner reads as evidence about the response stays unset.
+        assert db.get(AgentResultReceipt, receipt["id"]).response_observed_at is None
+
+
+def test_observed_response_leaves_nothing_for_the_unobserved_release(database):
+    receipt = prepare()
+    capture(receipt)
+    with Session(database) as db, db.begin():
+        validate_active(db, receipt)
+    assert observe_response(receipt)
+    before = execution_state(database)
+    assert before["AgentSession"][0]["result_receipt_fence_id"] is None
+    assert release_unobserved(receipt) is False
+    assert execution_state(database) == before
+
+
+def test_unreceived_receipt_keeps_its_guest_while_the_post_may_still_land(database):
+    receipt = prepare()
+    with Session(database) as db, db.begin():
+        # The normal writer cannot fence an uncaptured receipt, so build the
+        # shape by hand: a guest that is still the only path to the turn.
+        agent = store._lock_session(db, 1)
+        agent.result_receipt_fence_id = receipt["id"]
+        db.add(agent)
+    before = execution_state(database)
+    assert release_unobserved(receipt) is False
+    assert receipts.release_abandoned_fence(1, receipt["id"]) is False
+    assert execution_state(database) == before
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"dispatch_count": 2},
+        {"claim_owner": "newer-executor"},
+        {"guest_id": "newer-guest"},
+        {"session_id": 2},
+    ],
+)
+def test_stale_dispatch_never_releases_a_live_fence(database, changes):
+    receipt = prepare()
+    capture(receipt)
+    with Session(database) as db, db.begin():
+        validate_active(db, receipt)
+    before = execution_state(database)
+    with pytest.raises(receipts.ReceiptRejected):
+        release_unobserved(receipt, **changes)
+    assert execution_state(database) == before
+
+
+def test_release_refuses_a_fence_whose_guest_binding_has_moved(database):
+    receipt = prepare()
+    capture(receipt)
+    with Session(database) as db, db.begin():
+        validate_active(db, receipt)
+        agent = db.get(AgentSession, 1)
+        agent.ember_session_id = "newer-guest"
+        db.add(agent)
+    assert release_unobserved(receipt) is False
+    assert receipts.release_abandoned_fence(1, receipt["id"]) is False
+    with Session(database) as db:
+        assert db.get(AgentSession, 1).result_receipt_fence_id == receipt["id"]
+
+
+def test_reaper_release_frees_received_gone_and_expired_fences(database, monkeypatch):
+    receipt = prepare()
+    capture(receipt)
+    with Session(database) as db, db.begin():
+        validate_active(db, receipt)
+    # A fence naming a receipt whose body has arrived: the turn completed
+    # through it and only an unread synchronous response is outstanding.
+    assert receipts.release_abandoned_fence(1, receipt["id"])
+    with Session(database) as db, db.begin():
+        agent = store._lock_session(db, 1)
+        agent.result_receipt_fence_id = "e" * 32
+        db.add(agent)
+    # A fence naming a receipt retention has already deleted.
+    assert receipts.release_abandoned_fence(1, "e" * 32)
+    with Session(database) as db, db.begin():
+        agent = store._lock_session(db, 1)
+        agent.result_receipt_fence_id = receipt["id"]
+        db.add(agent)
+        row = db.get(AgentResultReceipt, receipt["id"])
+        row.received_at = None
+        row.result_sha256 = None
+        row.result_body = None
+        db.add(row)
+        accepts_until = receipts._aware(row.accept_until)
+    # Unreceived and inside the acceptance window: the guest stays.
+    assert receipts.release_abandoned_fence(1, receipt["id"]) is False
+    monkeypatch.setattr(receipts, "_now", lambda: accepts_until)
+    # Past it the body can never be captured, so the fence is dead.
+    assert receipts.release_abandoned_fence(1, receipt["id"])
+    with Session(database) as db:
+        assert db.get(AgentSession, 1).result_receipt_fence_id is None
+
+
+def test_reaper_release_ignores_a_fence_it_was_not_asked_for(database):
+    receipt = prepare()
+    capture(receipt)
+    with Session(database) as db, db.begin():
+        validate_active(db, receipt)
+    before = execution_state(database)
+    assert receipts.release_abandoned_fence(1, "f" * 32) is False
+    assert receipts.release_abandoned_fence(2, receipt["id"]) is False
+    assert execution_state(database) == before

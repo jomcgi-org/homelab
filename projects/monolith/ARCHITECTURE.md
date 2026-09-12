@@ -677,6 +677,35 @@ recovery, so off is byte-for-byte the behaviour that preceded this whatever the
 receipt flags say.
 (see: /projects/monolith/agent_sessions/store.py)
 
+**Why.** The guest reuse fence had a hold and no release. A receipt that beat
+its own POST completed the turn and fenced the session so a follow-up dispatch
+would wait for that POST's own validated response, and only that response ever
+cleared the fence. A POST that ends in an error, a timeout or a cancellation
+produces no such response, so the fence outlived every owner: turn completion
+skipped its destroy, the workflow reaper filed the row as pending, and
+admission, reconciliation and factory attempt stop all stood back. On an
+unpressured brick the control plane then left the guest running until
+`idle_ttl`, hours later. Eight guests leaked that way between 04:00 and 05:00
+UTC on 2026-09-12, the sixteen-guest `claude-runtime` workload cap filled, every
+create was denied and the factory stalled on 429s while two attempts burned
+their whole turn window (#6050). The fence now has an owner with a deadline at
+both ends. The invoke coroutine's terminal path releases the exact receipt it
+fenced, bound to the same session, receipt, guest, claim owner and dispatch
+count identity the observed path checks, so a stale coroutine can neither
+release a newer fence nor authorize destroying a newer guest, and then runs the
+ordinary completion cleanup. The workflow reaper is the backstop for a crash
+between those two steps: its workflow is over, so nothing will dispatch into
+that guest again and it releases a fence whose receipt is gone, whose body has
+arrived, or whose acceptance window has closed. What neither will touch is a
+receipt still inside its acceptance window with nothing committed, because
+until that body arrives the guest is the only path to the turn. The release
+deliberately does not stamp `response_observed_at`: nothing observed a
+response, and the lease backstop and factory reconciliation read that stamp as
+evidence about the response itself, so the count of received receipts with no
+observed response stays the honest health signal for how often the receipt is
+winning the race.
+(see: /projects/monolith/agent_sessions/result_receipts.py)
+
 Monolith batch work is rendered as Argo CronWorkflows in the workflows
 namespace, whose controller owns cadence, concurrency, deadlines, and history.
 Each entry runs the digest-pinned jobs image with one `jobs_main.py`

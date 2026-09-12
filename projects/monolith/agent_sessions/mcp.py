@@ -290,6 +290,32 @@ def _clear_ember_bindings_for(ember_id: str) -> list[int]:
         return store.clear_ember_bindings_by_ember_id(db_session, ember_id)
 
 
+def _release_receipt_fence_sync(native_receipt: dict) -> bool:
+    """Hand a receipt-won turn's guest back to its caller's normal cleanup.
+
+    A receipt winner leaves the original POST's fence in place so a follow-up
+    dispatch waits for that POST's own response. Only ``mark_response_observed``
+    clears it, and an invoke that ends in an error, a timeout or a cancellation
+    never calls that, so without this the fence outlives every owner and the
+    guest survives to ``idle_ttl`` while the workload cap fills (#6050). The
+    receipt has already been received here (it is what completed the turn), so
+    the guest is no longer the only path to the result and releasing is safe.
+    A moved identity is not an error: the caller simply does not own the fence.
+    """
+    from agent_sessions import result_receipts
+
+    try:
+        return result_receipts.release_unobserved_fence(
+            native_receipt["receipt_id"],
+            native_receipt["session_id"],
+            native_receipt["claim_owner"],
+            native_receipt["dispatch_count"],
+            native_receipt["guest_id"],
+        )
+    except result_receipts.ReceiptRejected:
+        return False
+
+
 def _persist_pending_message(
     session_id: int, message_text: str, model: str | None
 ) -> int:
@@ -1124,17 +1150,20 @@ async def _execute_pending_message(session_id: int) -> None:
             )
         # Honour the probe contract (run_synthetic_session in execution_api.py)
         # regardless of which path delivered the turn: a completed probe must
-        # not park its guest. Skip on any unknown-outcome signal, a stolen or
-        # separately released claim, or a receipt winner that keeps the guest
-        # resident until the original POST resolves.
+        # not park its guest. Skip on any unknown-outcome signal, or a stolen
+        # or separately released claim. A receipt winner releases its fence
+        # first: its POST may never resolve, and nothing else would.
         if (
             probe_turn_persisted
             and probe_ember is not None
             and not outcome_unknown
             and not claim_stolen
             and not claim_released
-            and probe_turn.native_receipt is None
         ):
+            if probe_turn.native_receipt is not None:
+                await asyncio.to_thread(
+                    _release_receipt_fence_sync, probe_turn.native_receipt
+                )
             try:
                 await _transport.destroy_session(probe_ember.session_id)
             except EmberSessionGone:
