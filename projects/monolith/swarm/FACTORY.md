@@ -878,6 +878,77 @@ and that the new image is live is the verify node #6002 phase 4 still owes; the
 `merged` audit carries a `rollout_verified` field that is null until that node
 exists.
 
+### A delivery pause is a decision request
+
+The delivery planner's fifth action is `pause`, and it now leaves the lane
+rather than sitting in it. A pause carries the one `question` a person must
+answer and the same two to four `options` a refine escalation carries, with the
+recommendation first, and the prompt asks for concrete ones: rescope to a named
+surface, close as stale, split, defer, continue with a stated assumption. A
+pause that arrives without them is refused as decision feedback with
+`pause_options_invalid`, so the planner repairs it inside the task it already
+has instead of settling a card nobody can act on.
+
+**Why.** A pause is a decision request, so it leaves the lane. It used to leave
+the receipt `admitted` with `task_paused` set, which held a delivery slot and
+its accounting until an operator resumed or cancelled by hand. Worse, resuming
+replayed the same pause: the planner's context is the issue body captured at
+admission plus graph evidence, so an answer posted as a comment never reached
+it. On 2026-09-12 that happened twice in one day, on #3824 and #3832. So the
+pause settles instead. The receipt goes to a new state, `escalated`: the slot
+and every reservation are free, no node runs, the graph and the accounting stay
+exactly where they are for a decision to be read against, and the question
+reaches a person as a card with buttons.
+
+Settling writes the `needs-human` label first and the decision card second. A
+card posted onto an issue intake can still pick up is the one ordering that
+lets the lane re-admit the work while somebody is reading the question. The
+card names the question, the planner's reason, where the task got to, the
+numbered options, and the branch and pull request the attempt left behind. Both
+writes are fenced, the label by being idempotent and the card by a hidden
+marker naming the task, because settlement is re-reached on every tick until it
+takes. One Discord warn carries the escalations link. Intake skips an escalated
+issue twice over: it carries `needs-human`, which the default exclusion list
+drops, and the sweep also excludes any issue holding an escalated receipt, for
+the operator who takes that label off while the decision is still open.
+
+**Deciding re-admits with direction.** An escalated delivery is decided through
+the same endpoint and the same escape group as a refine escalation. An option
+whose effect is `agent-ready`, which is what continue, rescope and assume all
+are, returns the receipt to `queued` under its own identity and records the
+choice, its detail and the operator's note as `direction_json`. The next
+admission mints a new task with an empty graph, and that task's first planner
+round carries the direction in its context as an `operator_direction` section:
+untrusted text and evidence, never authority, naming the previous task, its
+branch and its pull request so the work is carried on rather than started
+again. Later rounds do not repeat it, because the plan it shaped and the
+decision feedback under that are already the record of it. Reading it audits
+`operator_direction_read`.
+
+`close`, `defer`, `split` and the escape group behave exactly as they do for a
+refine escalation, and then settle the receipt `cancelled`. Cancelled rather
+than succeeded, because nothing was delivered and a succeeded delivery receipt
+sits in the `delivered` exclusion intake keeps for good, which would take the
+issue off the lane on a decision that never said to. A receipt the lane could
+not admit again, a generation the policy has moved past most often, is settled
+the same way with `blocked_by` on the resolution: an answered card whose work
+is scheduled nowhere is the stuck state this replaced.
+
+The `chat` action works on a delivery escalation too. It posts `Operator asks:`
+on the issue and re-admits the same way, with the note as the direction and no
+option applied. `resume_task` on an escalated receipt applies the recommended
+option, because the first option is the recommendation and resume is choosing
+it without reading the card; `stop` settles every escalated receipt
+`cancelled`, since the reconciler only visits active tasks and would otherwise
+leave a card waiting on a decision for a lane that is shut. `pause_task` and
+`resume_task` are unchanged for a task that is still running.
+
+The receipt holds one escalation document at a time. A task that escalates a
+second time supersedes the first, moving it into `history` with its resolution,
+because the same receipt is re-admitted under its own identity and keeping the
+answered document would leave the page showing options written before the
+question was answered.
+
 ## Controls and uncertainty
 
 `pause_admissions` allows already admitted work to finish. `pause_task` stops
