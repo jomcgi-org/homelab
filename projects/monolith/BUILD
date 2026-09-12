@@ -62,7 +62,7 @@ load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("//bazel/semgrep/defs:defs.bzl", "semgrep_target_test", "semgrep_test")
 load("//bazel/tools/js:exec_filegroup.bzl", "exec_filegroup")
-load("//bazel/tools/oci:apko_image.bzl", apko_base_image = "apko_image")
+load("//bazel/tools/oci:apko_image.bzl", "apko_image")
 load("//bazel/tools/oci:py3_image.bzl", "py3_image")
 load("//bazel/tools/pytest:defs.bzl", "py_test")
 load("//projects/monolith:bdd_test.bzl", "bdd_test")
@@ -1733,9 +1733,8 @@ py3_image(
 
 # The job's root filesystem is apko-built and package-locked. The application
 # layer is a separate, minimal py_venv_binary closure so GIS wheels never enter
-# the API or general-purpose jobs images. The apko base call is aliased so the
-# generated push-all list does not publish the implementation-only base image.
-apko_base_image(
+# the API or general-purpose jobs images.
+apko_image(
     name = "stars_grid_apko_base",
     arm64 = True,
     config = "stars/grid_gen/apko.yaml",
