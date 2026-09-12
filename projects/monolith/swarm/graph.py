@@ -1048,19 +1048,14 @@ def _invocation_phase(run: SwarmNodeRun) -> str | None:
     if isinstance(phase, str):
         return phase
     recovery = outcome.get("recovery")
-    if isinstance(recovery, dict) and isinstance(
-        recovery.get("invocation_phase"), str
-    ):
+    if isinstance(recovery, dict) and isinstance(recovery.get("invocation_phase"), str):
         return recovery["invocation_phase"]
     # Typed reconciliation proofs are attached under the phase they prove.
     # Do not search arbitrary nested history: a safe phase in a previous
     # outcome must not refund a later attempt that may have reached the model.
     for expected in NO_MODEL_POST_PHASES:
         proof = outcome.get(expected)
-        if (
-            isinstance(proof, dict)
-            and proof.get("invocation_phase") == expected
-        ):
+        if isinstance(proof, dict) and proof.get("invocation_phase") == expected:
             return expected
     return None
 

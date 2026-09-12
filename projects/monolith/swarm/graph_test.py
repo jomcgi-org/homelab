@@ -965,18 +965,14 @@ def test_no_post_marker_does_not_release_an_active_or_measured_attempt(db):
     assert add_work(task_id, "measured", 1).ok
     assert admit_dispatch(task_id, "active").ok
     outcome = json.dumps({"invocation_phase": "not_invoked"})
-    assert record_outcome(
-        task_id, "active", 1, "uncertain", None, None, outcome
-    ).ok
+    assert record_outcome(task_id, "active", 1, "uncertain", None, None, outcome).ok
     active = node_runs(task_id, "active")[0]
     assert active["accounted_cost_usd"] == 1.0
     assert active["accounting_basis"] == "active_reservation"
     assert admit_dispatch(task_id, "active").refusal_code == "active_attempt"
 
     assert admit_dispatch(task_id, "measured").ok
-    assert record_outcome(
-        task_id, "measured", 1, "failed", 0.25, None, outcome
-    ).ok
+    assert record_outcome(task_id, "measured", 1, "failed", 0.25, None, outcome).ok
     measured = node_runs(task_id, "measured")[0]
     assert measured["accounted_cost_usd"] == 0.25
     assert measured["accounting_basis"] == "reported"
