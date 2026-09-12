@@ -3497,11 +3497,9 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
         from swarm import factory_feedback, factory_refine
 
         task_class = factory_refine.task_class_for(task_id)
-        if (
-            factory_feedback.pinned_route(task_id)
-            == factory_feedback.ADVISORY_TIER
-            and not is_advisory(task_class)
-        ):
+        if factory_feedback.pinned_route(
+            task_id
+        ) == factory_feedback.ADVISORY_TIER and not is_advisory(task_class):
             # The original class stays attached to its verdict window. Only
             # this task's pinned completion contract changes to comment-only.
             factory_feedback.reconcile(
