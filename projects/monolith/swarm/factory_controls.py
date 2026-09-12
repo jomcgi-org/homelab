@@ -1953,6 +1953,69 @@ def finish_task(
         return {"ok": True, "state": outcome}
 
 
+def request_merge_conflict_correction(
+    task_id: str,
+    pr_number: int,
+    head_sha: str,
+    source: str,
+    actor: str,
+    *,
+    session: Session | None = None,
+) -> dict:
+    """Return a conflicting delivery to its bounded engine correction loop.
+
+    Landing reaches this after the task settled, while the conductor can reach
+    it before settlement. The exact pull request head is the idempotency key:
+    repeated GitHub observations of one conflict reopen the task and audit the
+    request once, while a later conflict at a newly reviewed head can spend the
+    next review round.
+    """
+    actor = _text(actor, "actor")
+    if type(pr_number) is not int or pr_number <= 0:
+        raise ValueError("invalid pr_number")
+    if not isinstance(head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+        raise ValueError("invalid head_sha")
+    if source not in ("delivered_pr", "merge_queue"):
+        raise ValueError("invalid merge conflict source")
+    with _locked_session(session) as (db, _control):
+        row = _receipt(db, task_id)
+        if row is None:
+            return {"ok": False, "reason": "unknown_task"}
+        previous = db.exec(
+            select(FactoryAudit.detail_json).where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == "merge_conflict_detected",
+            )
+        ).all()
+        if any(
+            (detail := json.loads(raw)).get("pr_number") == pr_number
+            and detail.get("head_sha") == head_sha
+            for raw in previous
+        ):
+            return {"ok": True, "replayed": True, "state": row.state}
+        if row.state not in ("admitted", "succeeded"):
+            return {"ok": False, "reason": "task_not_correctable"}
+        if row.state == "succeeded":
+            row.state = "admitted"
+            row.updated_at = _now()
+            db.add(row)
+            task = db.get(SwarmTask, task_id)
+            task.settled_at = None
+            task.start_state = "factory"
+            task.start_updated_at = _now()
+            db.add(task)
+        _audit(
+            db,
+            actor,
+            "merge_conflict_detected",
+            task_id=task_id,
+            pr_number=pr_number,
+            head_sha=head_sha,
+            source=source,
+        )
+        return {"ok": True, "replayed": False, "state": row.state}
+
+
 def settle_lost_attempt(
     task_id: str,
     node_key: str,
