@@ -3841,7 +3841,7 @@ def test_same_guest_restart_evidence_settles_the_old_invocation(
     after = _uncertain_snapshot(s)
     assert after["permits"][0]["state"] == "settled"
     assert after["permits"][0]["outcome"] == "guest_cessation_confirmed"
-    proof = after["factory"]["stop_events"][-1]["completion"]
+    proof = _stop_events(s)[-1]["completion"]
     assert proof["session_id"] == "s-exact-factory"
     assert (
         proof["replacement_evidence"]

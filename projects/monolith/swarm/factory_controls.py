@@ -1132,6 +1132,7 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
                         key: detail[key]
                         for key in (
                             "reason",
+                            "error",
                             "request_number",
                             "cessation_confirmed",
                             "intervention_required",
