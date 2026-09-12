@@ -279,7 +279,7 @@ defmodule Embervm.WorkloadWatcher do
 
     case load_assignments_fun.() do
       {:ok, assignments} ->
-        validate_loaded_assignments!(assignments, known_cell_ids)
+        assignments = validate_loaded_assignments!(assignments, known_cell_ids)
         Cell.seed(assignment_table, assignments)
 
       {:error, reason} -> raise "could not rebuild workload cell assignments: #{inspect(reason)}"
@@ -691,6 +691,16 @@ defmodule Embervm.WorkloadWatcher do
         :owned ->
           catalog_owned_cr(state, name, namespace, generation, spec)
 
+        {:owned_with_assignment_error, reason_code, message} ->
+          catalog_owned_cr(
+            state,
+            name,
+            namespace,
+            generation,
+            spec,
+            {reason_code, message}
+          )
+
         {:foreign, assigned_cell} ->
           WorkloadCatalog.drop(state.table, name)
           state.base_forget_fun.(name)
@@ -718,7 +728,7 @@ defmodule Embervm.WorkloadWatcher do
     end
   end
 
-  defp catalog_owned_cr(state, name, namespace, generation, spec) do
+  defp catalog_owned_cr(state, name, namespace, generation, spec, assignment_error \\ nil) do
     case validate(state, name, spec) do
         {:ok, class, floor, cap, session_cfg, serving_cfg, stateful_cfg, group_cfg} ->
           entry =
@@ -745,7 +755,20 @@ defmodule Embervm.WorkloadWatcher do
           # its own disjoint keys here (observedGeneration, primedFloorSatisfied)
           # so the two merge-patches never clobber each other's conditions
           # array, and hands the build descriptor to the builder.
-          write_valid_status(state, namespace, name, generation)
+          case assignment_error do
+            nil ->
+              write_valid_status(state, namespace, name, generation)
+
+            {reason_code, message} ->
+              write_status(
+                state,
+                namespace,
+                name,
+                generation,
+                ready_condition(state, "False", reason_code, message)
+              )
+          end
+
           state.base_reconcile_fun.(build_desc(entry))
 
         {:error, reason_code, message} ->
@@ -783,8 +806,17 @@ defmodule Embervm.WorkloadWatcher do
             if Cell.valid_id?(durable_owner) and durable_owner in state.known_cell_ids do
               Cell.put(state.assignment_table, name, durable_owner, true)
 
-              {:error, "CellAssignmentImmutable",
-               "workload is durably owned by #{inspect(durable_owner)} and cannot be reassigned to #{inspect(requested)}"}
+              assignment_error =
+                {"CellAssignmentImmutable",
+                 "workload is durably owned by #{inspect(durable_owner)} and cannot be reassigned to #{inspect(requested)}"}
+
+              if durable_owner == state.cell_id do
+                {reason_code, message} = assignment_error
+                {:owned_with_assignment_error, reason_code, message}
+              else
+                {reason_code, message} = assignment_error
+                {:error, reason_code, message}
+              end
             else
               Cell.deactivate(state.assignment_table, name)
 
@@ -1808,16 +1840,35 @@ defmodule Embervm.WorkloadWatcher do
   end
 
   defp validate_loaded_assignments!(assignments, known_cell_ids) when is_list(assignments) do
-    invalid =
-      Enum.reject(assignments, fn row ->
+    {valid, malformed} =
+      Enum.split_with(assignments, fn row ->
         workload = Map.get(row, :workload) || Map.get(row, "workload")
         cell_id = Map.get(row, :cell_id) || Map.get(row, "cell_id")
-        is_binary(workload) and workload != "" and Cell.valid_id?(cell_id) and cell_id in known_cell_ids
+        is_binary(workload) and workload != "" and Cell.valid_id?(cell_id)
       end)
 
-    if invalid != [] do
-      raise "durable workload cell registry contains unknown or invalid assignments: #{inspect(invalid)}"
+    if malformed != [] do
+      raise "durable workload cell registry contains invalid assignments: #{inspect(malformed)}"
     end
+
+    {known, unknown} =
+      Enum.split_with(valid, fn row ->
+        cell_id = Map.get(row, :cell_id) || Map.get(row, "cell_id")
+        cell_id in known_cell_ids
+      end)
+
+    Enum.each(unknown, fn row ->
+      workload = Map.get(row, :workload) || Map.get(row, "workload")
+      cell_id = Map.get(row, :cell_id) || Map.get(row, "cell_id")
+
+      Logger.warning(
+        "embervm workload watcher: skipping durable assignment for an unknown cell",
+        workload: workload,
+        cell_id: cell_id
+      )
+    end)
+
+    known
   end
 
   defp validate_loaded_assignments!(other, _known_cell_ids) do

@@ -11,7 +11,9 @@ defmodule Embervm.OpLog.PostgresLiveTest do
 
       EMBERVM_OPLOG_TEST_DSN=postgres://user:pass@localhost:5432/embervm mix test test/embervm/op_log/postgres_live_test.exs
 
-  CI skips this module because it does not set `EMBERVM_OPLOG_TEST_DSN`.
+  `//bazel/erlang:mix_postgres_test` starts an ephemeral PostgreSQL instance and
+  sets `EMBERVM_OPLOG_TEST_DSN` so Linux CI executes this module. The ordinary
+  all-ExUnit lane leaves the variable unset and skips it.
   """
 
   use ExUnit.Case, async: true
@@ -27,13 +29,22 @@ defmodule Embervm.OpLog.PostgresLiveTest do
   end
 
   setup do
-    schema = "test_#{System.unique_integer([:positive, :monotonic])}"
+    suffix = System.unique_integer([:positive, :monotonic])
+    schema = "test_#{suffix}"
+    role = "embervm_cell_test_#{suffix}"
     opts = dsn_opts(@dsn)
     {:ok, setup_conn} = Postgrex.start_link(Keyword.put(opts, :name, nil))
-    {:ok, _} = Postgrex.query(setup_conn, ~s(CREATE SCHEMA "#{schema}"), [])
+    {:ok, _} = Postgrex.query(setup_conn, ~s(CREATE ROLE "#{role}" NOSUPERUSER NOBYPASSRLS LOGIN), [])
+    {:ok, _} = Postgrex.query(setup_conn, ~s(CREATE SCHEMA "#{schema}" AUTHORIZATION "#{role}"), [])
     :ok = GenServer.stop(setup_conn)
 
     adapter_opts =
+      opts
+      |> Keyword.put(:name, nil)
+      |> Keyword.put(:username, role)
+      |> Keyword.put(:parameters, [search_path: schema])
+
+    superuser_opts =
       opts
       |> Keyword.put(:name, nil)
       |> Keyword.put(:parameters, [search_path: schema])
@@ -44,11 +55,12 @@ defmodule Embervm.OpLog.PostgresLiveTest do
       Embervm.TestProcess.stop_safely(server)
       {:ok, cleanup_conn} = Postgrex.start_link(Keyword.put(opts, :name, nil))
       {:ok, _} = Postgrex.query(cleanup_conn, ~s(DROP SCHEMA "#{schema}" CASCADE), [])
+      {:ok, _} = Postgrex.query(cleanup_conn, ~s(DROP ROLE "#{role}"), [])
       # Keep every on_exit stop on the race-safe #4078 path.
       Embervm.TestProcess.stop_safely(cleanup_conn)
     end)
 
-    %{server: server, adapter_opts: adapter_opts}
+    %{server: server, adapter_opts: adapter_opts, superuser_opts: superuser_opts}
   end
 
   test "two cells share ownership but isolate replay and projections", %{
@@ -65,8 +77,20 @@ defmodule Embervm.OpLog.PostgresLiveTest do
 
     on_exit(fn -> Embervm.TestProcess.stop_safely(cell_b) end)
 
+    cell_b_conn = :sys.get_state(cell_b).conn
+
+    assert {:ok, %Postgrex.Result{rows: [["cell-b"]]}} =
+             Postgrex.query(cell_b_conn, "SELECT current_setting('embervm.cell_id')", [])
+
     assert Postgres.claim_workload(cell_0, "owned", "cell-0") == {:ok, "cell-0"}
     assert Postgres.claim_workload(cell_b, "owned", "cell-b") == {:ok, "cell-0"}
+    assert Postgres.claim_workload(cell_b, "cell-b-workload", "cell-b") == {:ok, "cell-b"}
+
+    assert {:ok,
+            [
+              %{workload: "cell-b-workload", cell_id: "cell-b"},
+              %{workload: "owned", cell_id: "cell-0"}
+            ]} = Postgres.load_workload_cells(cell_0)
 
     assert {:ok, _} =
              append(cell_0, :submitted, 100,
@@ -88,6 +112,20 @@ defmodule Embervm.OpLog.PostgresLiveTest do
     assert {:ok, [%{task_id: "task-cell-b"}]} = Postgres.load_tasks(cell_b)
     assert {:ok, [%Op{cell_id: "cell-0", task_id: "task-cell-0"}]} = Postgres.read_from(cell_0, 0)
     assert {:ok, [%Op{cell_id: "cell-b", task_id: "task-cell-b"}]} = Postgres.read_from(cell_b, 0)
+  end
+
+  test "a non-default cell refuses a role that bypasses row-level security", %{
+    superuser_opts: superuser_opts
+  } do
+    Process.flag(:trap_exit, true)
+
+    assert {:error, {:connect_failed, :cell_role_bypasses_rls}} =
+             Postgres.start_link(
+               dsn: superuser_opts,
+               name: nil,
+               cell_id: "cell-b",
+               journal_horizon_ms: 0
+             )
   end
 
   test "strict session stop intent and completion project with nullable invocation identity", %{server: server} do

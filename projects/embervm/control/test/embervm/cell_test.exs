@@ -103,6 +103,52 @@ defmodule Embervm.CellTest do
     assert condition["reason"] == "CellAssignmentImmutable"
   end
 
+  test "an inconsistent CR stays catalogued on its durable owner" do
+    {watcher, catalog, assignments} =
+      start_watcher("cell-a", "cell-a", workload("cell-b"), self())
+
+    assert :ok = WorkloadWatcher.reconcile_now(watcher)
+    assert {:ok, %{cell_id: "cell-a"}} = WorkloadCatalog.fetch(catalog, "routed-workload")
+    assert Cell.route("routed-workload", assignments, "cell-a") == :owned
+
+    assert_receive {:base_reconcile, "cell-a", "routed-workload"}
+    assert_receive {:status, "cell-a", %{"conditions" => [condition]}}
+    assert condition["reason"] == "CellAssignmentImmutable"
+  end
+
+  test "rebuild skips assignments from valid but unknown cells" do
+    table = unique_table("cell_catalog")
+    assignments = unique_table("cell_assignments")
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        {:ok, watcher} =
+          WorkloadWatcher.start_link(
+            name: nil,
+            table: table,
+            assignment_table: assignments,
+            cell_id: "cell-a",
+            known_cell_ids: ["cell-a", "cell-b"],
+            load_assignments_fun: fn ->
+              {:ok,
+               [
+                 %{workload: "local", cell_id: "cell-a"},
+                 %{workload: "future", cell_id: "cell-c"}
+               ]}
+            end,
+            lister: fn -> {:ok, []} end,
+            watch_startup: false
+          )
+
+        assert Cell.owner("local", assignments) == {:ok, "cell-a"}
+        assert Cell.owner("future", assignments) == :error
+        GenServer.stop(watcher)
+      end)
+
+    assert log =~ "skipping durable assignment for an unknown cell"
+    assert log =~ "cell-c"
+  end
+
   test "SQLite persists immutable assignment and stamps replay records with its cell" do
     path = Path.join(System.tmp_dir!(), "embervm_cell_#{System.unique_integer([:positive, :monotonic])}.db")
     on_exit(fn -> File.rm_rf!(path) end)

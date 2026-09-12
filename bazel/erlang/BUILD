@@ -17,6 +17,7 @@ exports_files(
         # Cross-language node.proto round-trip test driver (see
         # //projects/embervm/proto/embervm/node/v1/roundtrip:node_roundtrip_test).
         "roundtrip_test.sh",
+        "mix_postgres_test.sh",
     ],
     visibility = ["//projects/embervm:__subpackages__"],
 )
@@ -134,6 +135,45 @@ genrule(
     # so every such PR ran green having tested none of it.
     tags = ["verification"],
     tools = ["mix_test.sh"],
+)
+
+# Executes the live multi-cell Postgres adapter tests on Linux. The ordinary
+# all-ExUnit lane intentionally has no database service and skips this module;
+# this target supplies a pinned, ephemeral PostgreSQL fixture and is tagged as
+# verification so control-plane changes cannot pass affected-target CI without
+# exercising the production multi-cell backend.
+genrule(
+    name = "mix_postgres_test",
+    srcs = [
+        "@otp_ubuntu2204_amd64//:otp",
+        "@otp_ubuntu2204_amd64//:Install",
+        "@elixir_1_18_4//:elixir",
+        "@elixir_1_18_4//:bin/elixir",
+        "//projects/embervm/control:srcs",
+        "//projects/embervm/control:mix.exs",
+        "@hex_archive//file",
+        "//projects/embervm/proto/embervm/node/v1:node_elixir_src",
+        ":hex_tarballs",
+        "@rebar3//file",
+        "@postgres_test//:postgres",
+    ],
+    outs = ["mix_postgres_test.txt"],
+    cmd = "$(location mix_postgres_test.sh) " +
+          "$(location mix_test.sh) " +
+          "$(location @otp_ubuntu2204_amd64//:Install) " +
+          "$(location @elixir_1_18_4//:bin/elixir) " +
+          "$(location //projects/embervm/control:mix.exs) " +
+          "\"$@\" " +
+          "$(location @hex_archive//file) " +
+          "$(location //projects/embervm/proto/embervm/node/v1:node_elixir_src) " +
+          "$(location @rebar3//file) " +
+          "$(locations @postgres_test//:postgres) " +
+          "--hex $(locations :hex_tarballs)",
+    tags = ["verification"],
+    tools = [
+        "mix_postgres_test.sh",
+        "mix_test.sh",
+    ],
 )
 
 bzl_library(

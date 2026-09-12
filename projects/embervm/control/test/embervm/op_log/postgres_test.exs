@@ -1,14 +1,12 @@
 defmodule Embervm.OpLog.PostgresTest do
   @moduledoc """
   Compile-time + no-connection coverage for `Embervm.OpLog.Postgres` (PR-4,
-  #18/#27). CI has no Postgres service for the control plane today (see the
-  fleet-finish plan's PR-4 section), so this deliberately does NOT stand one
-  up: a full round-trip conformance suite (re-running the SQLite test suite's
-  scenarios against a real Postgres) is that plan's acceptance bar for the
-  future DSN-cutover PR, not this one. What IS verifiable without a live
-  database: the module satisfies `@behaviour Embervm.OpLog` (a compile-time,
-  CI-visible check via `mix compile --warnings-as-errors` catching a missing
-  callback), and `db_size/1` is a plain function that never dials out.
+  #18/#27). The separate `Embervm.OpLog.PostgresLiveTest` module runs against
+  an ephemeral Postgres service in its Linux CI lane. These tests remain the
+  fast no-connection checks: the module satisfies `@behaviour Embervm.OpLog`
+  (a compile-time, CI-visible check via `mix compile --warnings-as-errors`
+  catching a missing callback), and `db_size/1` is a plain function that never
+  dials out.
   """
   use ExUnit.Case, async: true
 

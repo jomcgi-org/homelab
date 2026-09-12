@@ -636,9 +636,48 @@ defmodule Embervm.OpLog.Postgres do
   end
 
   defp configure_cell(conn, cell_id) do
-    case Postgrex.query(conn, "SELECT set_config('embervm.cell_id', $1, false)", [cell_id]) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
+    with {:ok, _} <- Postgrex.query(conn, "SELECT set_config('embervm.cell_id', $1, false)", [cell_id]),
+         :ok <- verify_cell_setting(conn, cell_id),
+         :ok <- verify_cell_role(conn, cell_id) do
+      :ok
+    end
+  end
+
+  defp verify_cell_setting(conn, cell_id) do
+    case Postgrex.query(conn, "SELECT current_setting('embervm.cell_id')", []) do
+      {:ok, %Postgrex.Result{rows: [[^cell_id]]}} ->
+        :ok
+
+      {:ok, %Postgrex.Result{rows: [[actual]]}} ->
+        {:error, {:cell_setting_mismatch, cell_id, actual}}
+
+      {:ok, result} ->
+        {:error, {:cell_setting_unreadable, result}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp verify_cell_role(_conn, cell_id) when cell_id == "cell-0", do: :ok
+
+  defp verify_cell_role(conn, _cell_id) do
+    case Postgrex.query(
+           conn,
+           "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user",
+           []
+         ) do
+      {:ok, %Postgrex.Result{rows: [[false]]}} ->
+        :ok
+
+      {:ok, %Postgrex.Result{rows: [[true]]}} ->
+        {:error, :cell_role_bypasses_rls}
+
+      {:ok, result} ->
+        {:error, {:cell_role_unverifiable, result}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -663,8 +702,8 @@ defmodule Embervm.OpLog.Postgres do
 
   @doc false
   # Split out from connect/1 and left reachable so the keepalive settings are
-  # assertable without a live database: CI has no Postgres for the control
-  # plane, and a silently dropped socket option would only surface as the
+  # assertable without a live database in the ordinary unit-test lane. A
+  # silently dropped socket option would otherwise only surface as the
   # months-apart connection reap this exists to prevent.
   def connect_opts(dsn) when is_binary(dsn) do
     uri = URI.parse(dsn)

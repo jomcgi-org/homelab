@@ -164,7 +164,12 @@ if [ -n "${EXUNIT_SEED:-}" ]; then
 	echo "MIX TEST replaying with EXUNIT_SEED=${EXUNIT_SEED}" >&2
 fi
 
-if mix test --no-deps-check $seed_args >"$out" 2>&1; then
+test_file_args=()
+if [ -n "${EMBERVM_MIX_TEST_FILE:-}" ]; then
+	test_file_args+=("$EMBERVM_MIX_TEST_FILE")
+fi
+
+if mix test --no-deps-check "${test_file_args[@]}" $seed_args >"$out" 2>&1; then
 	echo "MIX TEST OK on the executor" >&2
 	cat "$out" >&2
 else
