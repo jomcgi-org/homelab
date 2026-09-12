@@ -264,9 +264,9 @@ py_test(
     ],
 )
 
-# Rendered guard for the private app's default-deny egress policy (#3897): the
-# shipped overlays stay disabled, audit stays additive, enforce pins the exact
-# destination and port inventory, and GKE never emits an unsupported Cilium CR.
+# Rendered guard for the private app's default-deny egress policy (#3897):
+# Cilium audit stays additive, both enforcing arms pin required destinations,
+# and GKE emits native NetworkPolicy without an unsupported Cilium CR.
 py_test(
     name = "cilium_egress_allowlist_test",
     srcs = ["cilium_egress_allowlist_test.py"],
@@ -274,6 +274,7 @@ py_test(
         "Chart.lock",
         "Chart.yaml",
         "values.yaml",
+        "//projects/monolith:scheduler_registration_sources",
         "//projects/monolith/deploy:deploy_values",
         "//projects/monolith/deploy:gke_values",
         "//projects/monolith/dev/deploy:deploy_values",

@@ -1,0 +1,104 @@
+{{- /*
+Native Kubernetes default-deny egress for the private monolith app pod on GKE
+Dataplane V2 (issue #3897).
+
+The GKE hub does not expose CiliumNetworkPolicy CRDs, so the Cilium policy in
+cilium-egress-policy.yaml cannot enforce there. This policy selects the same
+app endpoint and reuses the same exact pod selectors and ports for internal
+dependencies. The GKE overlay enables it and supplies the verified private API
+endpoint.
+
+Kubernetes NetworkPolicy has no FQDN destination selector. Required external
+calls therefore use public TCP 443 while excluding cluster-addressable,
+loopback, link-local, shared-address, and multicast ranges. This is broader
+than the Cilium exact-FQDN arm, but it still default-denies arbitrary cluster
+egress and every non-HTTPS public flow. Metadata-server access remains denied.
+
+Like the Cilium arm, this intentionally selects only the app endpoint. Searxng,
+WhatsApp, CNPG, Atlas jobs, and monolith-workflows pods have separate trust and
+execution boundaries and are not made namespace-wide default-deny by this
+change.
+*/}}
+{{- if and .Values.networkPolicy.egress.enabled (empty .Values.networkPolicy.egress.apiServerCidrs) }}
+{{- fail "networkPolicy.egress.apiServerCidrs must contain the verified control-plane endpoint when enabled" }}
+{{- end }}
+{{- if .Values.networkPolicy.egress.enabled }}
+{{- $targets := .Values.ciliumPolicy.egress.targets }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-app-egress-native
+  labels:
+    {{- include "monolith.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: monolith
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: app
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $targets.dns.namespace }}
+          podSelector:
+            matchLabels:
+              k8s-app: {{ index $targets.dns.matchLabels "k8s:k8s-app" }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              cnpg.io/cluster: {{ .Release.Name }}-pg
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- range $target := list $targets.inference $targets.embeddings $targets.authentik $targets.otelCollector $targets.embervm $targets.tokenBroker $targets.embervmServing $targets.dcgmExporter $targets.inferenceBridge }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $target.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $target.matchLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ $target.port }}
+    {{- end }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: monolith
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: searxng
+      ports:
+        - protocol: TCP
+          port: 8080
+    {{- range .Values.networkPolicy.egress.apiServerCidrs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.egress.publicHttps.cidr | quote }}
+            except:
+              {{- toYaml .Values.networkPolicy.egress.publicHttps.except | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
