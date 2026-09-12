@@ -61,6 +61,14 @@ affinity: {}
 # metadata.name, which must match the secretKeyRef in web.env below.
 databaseSecretName: monolith-public-db
 
+# Non-secret expectations for the public DATABASE_URL. The credential stays a
+# full URI in the 1Password-synced Secret, but the public entrypoint validates
+# its service and role before serving. This makes a mistaken -rw or private app
+# URI fail closed without exposing or duplicating the password in chart values.
+publicReaderDatabase:
+  serviceName: monolith-pg-ro
+  username: public_reader
+
 # 1Password sync. itemPath is set in deploy/values.yaml; left empty here so a
 # bare `helm template` does not emit a OnePasswordItem with a null path.
 onepassword:
@@ -245,6 +253,12 @@ web:
         secretKeyRef:
           name: monolith-public-db
           key: uri
+    - name: PUBLIC_READER_DATABASE_SERVICE
+      # Replaced from publicReaderDatabase.serviceName by deployment.yaml.
+      value: monolith-pg-ro
+    - name: PUBLIC_READER_DATABASE_USER
+      # Replaced from publicReaderDatabase.username by deployment.yaml.
+      value: public_reader
     # name must equal publicWriter.databaseSecretName above (values.yaml is not
     # re-templated, so this is a literal, like DATABASE_URL).
     - name: PUBLIC_WRITER_DATABASE_URL

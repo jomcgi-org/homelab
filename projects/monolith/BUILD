@@ -53,6 +53,7 @@
 # gazelle:exclude public_httproute_chat_guard_test.py
 # gazelle:exclude public_api_chunks_grants_test.py
 # gazelle:exclude public_turnstile_secret_isolation_test.py
+# gazelle:exclude isolation_config_test.py
 # gazelle:exclude ember_public_savings_grants_test.py
 # gazelle:exclude ember_synthetic_probe_grants_test.py
 # gazelle:semgrep_exclude_rules avoid-sqlalchemy-text,sqlmodel-datetime-without-factory,tainted-fastapi-http-request-httpx,tainted-path-traversal-stdlib-fastapi,tainted-path-traversal-pillow-fastapi
@@ -6495,6 +6496,38 @@ py_test(
     },
     imports = ["."],
     deps = ["@pip//pyyaml"],
+)
+
+# ADR security/004 cross-chart guard: standby/public-reader endpoint isolation,
+# private app default-deny egress exceptions, and read-only root filesystems.
+# Hand-registered because this package is gazelle-excluded and the test renders
+# the real private chart with production and GKE overlays.
+py_test(
+    name = "isolation_config_test",
+    srcs = ["isolation_config_test.py"],
+    data = [
+        "//projects/monolith-public/chart:chart_render_inputs",
+        "//projects/monolith-public/chart:chart_values",
+        "//projects/monolith-public/deploy:deploy_values",
+        "//projects/monolith-public/deploy:gke_values",
+        "//projects/monolith/chart:docfix_review_test_data",
+        "//projects/monolith/deploy:deploy_values",
+        "//projects/monolith/deploy:gke_values",
+        "@multitool//tools/helm",
+    ],
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith/deploy:deploy_values)",
+        "GKE_VALUES": "$(rootpath //projects/monolith/deploy:gke_values)",
+        "PUBLIC_CHART_VALUES": "$(rootpath //projects/monolith-public/chart:chart_values)",
+        "PUBLIC_DEPLOY_VALUES": "$(rootpath //projects/monolith-public/deploy:deploy_values)",
+        "PUBLIC_GKE_VALUES": "$(rootpath //projects/monolith-public/deploy:gke_values)",
+    },
+    imports = ["."],
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
 )
 
 # Guard: the packaged homelab-library must deploy images by content digest, not

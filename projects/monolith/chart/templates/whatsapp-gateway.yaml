@@ -33,6 +33,10 @@ spec:
     spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      volumes:
+        - name: whatsapp-tmp
+          emptyDir:
+            sizeLimit: 32Mi
       containers:
         - name: whatsapp
           image: "{{ .Values.whatsapp.image.repository }}@{{ .Values.whatsapp.image.digest }}"
@@ -42,6 +46,8 @@ spec:
               containerPort: 8080
               protocol: TCP
           env:
+            - name: TMPDIR
+              value: /tmp
             # The whatsmeow sqlstore reuses the monolith CNPG app database; the Go
             # gateway appends search_path=whatsapp so it owns only its own schema.
             - name: WHATSAPP_DB_DSN
@@ -98,4 +104,7 @@ spec:
             {{- toYaml .Values.whatsapp.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: whatsapp-tmp
+              mountPath: /tmp
 {{- end }}

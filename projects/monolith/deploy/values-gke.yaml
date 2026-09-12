@@ -95,6 +95,9 @@ ciliumPolicy:
     enabled: false
   ingress:
     enabled: false
+  egress:
+    enabled: false
+    enforce: false
 
 whatsapp:
   # This singleton holds an external WhatsApp session and must not connect from

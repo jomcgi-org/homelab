@@ -14,8 +14,21 @@ framework/core.py.
 
 from __future__ import annotations
 
+import os
+
 from app.modules_public import PUBLIC_MODULES
+from core.db import require_database_identity
 from framework import PUBLIC_PROFILE, build_app
+
+_expected_database_service = os.environ.get("PUBLIC_READER_DATABASE_SERVICE")
+_expected_database_user = os.environ.get("PUBLIC_READER_DATABASE_USER")
+if bool(_expected_database_service) != bool(_expected_database_user):
+    raise RuntimeError(
+        "PUBLIC_READER_DATABASE_SERVICE and PUBLIC_READER_DATABASE_USER "
+        "must be configured together"
+    )
+if _expected_database_service and _expected_database_user:
+    require_database_identity(_expected_database_service, _expected_database_user)
 
 app = build_app(PUBLIC_PROFILE, PUBLIC_MODULES)
 
