@@ -217,6 +217,8 @@ teamMapping:
     - authentikGroup: homelab-admin
       team: homelab-admin
       description: Full monolith catalogue. Mapped from the authentik group of the same name.
+  publishTools:
+    enabled: true
 
 # ── External access: OAuth against authentik, RFC 9728 discovery by Envoy ──
 httpRoute:
