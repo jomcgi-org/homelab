@@ -212,7 +212,7 @@ describe("escalations page", () => {
 
     const box = target.querySelector("textarea");
     box.value = "Does this cover the friends tier?";
-    box.dispatchEvent(new Event("input"));
+    box.dispatchEvent(new Event("input", { bubbles: true }));
     await tick();
     target.querySelector(".chat-button").click();
     await settle();
@@ -262,7 +262,7 @@ describe("escalations page, per card state", () => {
     // Type on the first card, then move the cursor and decide on the second.
     const box = target.querySelector("textarea");
     box.value = "only about 6002";
-    box.dispatchEvent(new Event("input"));
+    box.dispatchEvent(new Event("input", { bubbles: true }));
     await tick();
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "j" }));
     await tick();
@@ -285,7 +285,7 @@ describe("escalations page, per card state", () => {
 
     const box = target.querySelector("textarea");
     box.value = "ship the console half";
-    box.dispatchEvent(new Event("input"));
+    box.dispatchEvent(new Event("input", { bubbles: true }));
     await tick();
     target.querySelector(".option").click();
     await settle();
@@ -329,7 +329,7 @@ describe("escalations page, per card state", () => {
 
     const box = target.querySelector("textarea");
     box.value = "Which tier?";
-    box.dispatchEvent(new Event("input"));
+    box.dispatchEvent(new Event("input", { bubbles: true }));
     await tick();
     target.querySelector(".chat-button").click();
     await settle();
