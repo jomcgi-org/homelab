@@ -251,6 +251,7 @@ def test_scan_and_report_happy_path(client):
     # skipped), each with its fetched content.
     scan.assert_awaited_once()
     scanned = scan.await_args.args[0]
+    assert scan.await_args.kwargs["correlation_id"] == "headsha123"
     scanned_paths = sorted(f["path"] for f in scanned)
     assert scanned_paths == ["app/main.py", "svc/handler.go"]
     assert all("content" in f for f in scanned)

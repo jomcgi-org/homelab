@@ -58,8 +58,9 @@ def test_python_returns_run_shape_with_trace_id(monkeypatch):
 
 
 def test_semgrep_returns_findings_shape_with_trace_id(monkeypatch):
-    async def fake_scan(files, dedupe=True):
+    async def fake_scan(files, dedupe=True, correlation_id=None):
         assert files == [{"path": "a.py", "content": "x = 1"}]
+        assert _HEX32.match(correlation_id)
         return {
             "findings": [{"path": "a.py", "line": 1, "rule_id": "r", "message": "m"}],
             "errors": [],
@@ -85,8 +86,9 @@ def test_semgrep_demo_bypasses_idempotency_dedupe(monkeypatch):
     EmberVM Idempotency-Key path (Task 4, R1)."""
     captured = {}
 
-    async def fake_scan(files, dedupe=True):
+    async def fake_scan(files, dedupe=True, correlation_id=None):
         captured["dedupe"] = dedupe
+        captured["correlation_id"] = correlation_id
         return {"findings": [], "errors": []}
 
     monkeypatch.setattr(fc, "scan_files", fake_scan)
@@ -97,6 +99,7 @@ def test_semgrep_demo_bypasses_idempotency_dedupe(monkeypatch):
     )
     assert resp.status_code == 200
     assert captured["dedupe"] is False
+    assert _HEX32.match(captured["correlation_id"])
 
 
 def test_trace_complete_true_when_spans_present(monkeypatch):

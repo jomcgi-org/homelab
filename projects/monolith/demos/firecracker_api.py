@@ -131,7 +131,7 @@ async def run_semgrep(body: SemgrepRequest) -> dict:
     with _tracer.start_as_current_span("demo.semgrep", context=Context()):
         trace_id = _current_trace_id()
         started = perf_counter()
-        result = await scan_files(body.files, dedupe=False)
+        result = await scan_files(body.files, dedupe=False, correlation_id=trace_id)
         elapsed_ms = (perf_counter() - started) * 1000
 
     return {

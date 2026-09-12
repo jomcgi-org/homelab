@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "scandriver",
@@ -9,4 +9,11 @@ go_library(
         "//projects/firecracker/semgrep/guest-init/internal/cliout",
         "//projects/firecracker/substrate/vsockproto",
     ],
+)
+
+go_test(
+    name = "scandriver_test",
+    srcs = ["driver_test.go"],
+    embed = [":scandriver"],
+    deps = ["//projects/firecracker/substrate/vsockproto"],
 )

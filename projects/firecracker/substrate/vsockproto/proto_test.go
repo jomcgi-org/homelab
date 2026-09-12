@@ -46,7 +46,7 @@ func TestSendRejectsEmptyKind(t *testing.T) {
 
 func TestScanRequestRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
-	in := ScanRequest{Files: []ScanFile{
+	in := ScanRequest{CorrelationID: "scan-123", Files: []ScanFile{
 		{Path: "a.py", Content: "import os\n"},
 		{Path: "b.py", Content: "x = 1\n"},
 	}}
@@ -65,6 +65,7 @@ func TestScanRequestRoundTrip(t *testing.T) {
 func TestScanResultRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
 	in := ScanResult{
+		CorrelationID: "scan-123",
 		Findings: []Finding{{
 			Path:     "a.py",
 			Line:     3,
@@ -84,6 +85,24 @@ func TestScanResultRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(in, out) {
 		t.Fatalf("round-trip mismatch:\n in=%+v\nout=%+v", in, out)
+	}
+}
+
+func TestScanMetadataIsOptionalOnTheWire(t *testing.T) {
+	var request bytes.Buffer
+	if err := WriteScanRequest(&request, ScanRequest{Files: []ScanFile{}}); err != nil {
+		t.Fatalf("WriteScanRequest: %v", err)
+	}
+	if bytes.Contains(request.Bytes(), []byte("correlation_id")) {
+		t.Fatalf("empty correlation_id should be omitted, got %s", request.Bytes())
+	}
+
+	var result bytes.Buffer
+	if err := WriteScanResult(&result, ScanResult{Findings: []Finding{}}); err != nil {
+		t.Fatalf("WriteScanResult: %v", err)
+	}
+	if bytes.Contains(result.Bytes(), []byte("correlation_id")) {
+		t.Fatalf("empty correlation_id should be omitted, got %s", result.Bytes())
 	}
 }
 

@@ -12,7 +12,7 @@ from semgrep_scan.client import scan_files
 
 
 @mcp.tool
-async def semgrep_scan(files: list[dict]) -> dict:
+async def semgrep_scan(files: list[dict], correlation_id: str | None = None) -> dict:
     """Scan changed source files for security and correctness issues with Semgrep.
 
     Send the whole content of each changed file to EmberVM and get back the
@@ -24,6 +24,9 @@ async def semgrep_scan(files: list[dict]) -> dict:
             relative file path, used to pick rules and report locations) and a
             ``content`` (the entire current text of that file). Pass the whole
             file, not just the changed lines, so Semgrep has full context.
+        correlation_id: Optional request-local identifier echoed in the result
+            and guest logs. It may contain letters, digits, dot, underscore,
+            colon, slash, and hyphen, up to 128 characters.
 
     Returns:
         On success, the daemon response: a ``findings`` list (each finding has
@@ -31,4 +34,4 @@ async def semgrep_scan(files: list[dict]) -> dict:
         an ``errors`` list for any per-file scan problems. On failure, a dict
         with a single ``error`` key describing what went wrong.
     """
-    return await scan_files(files)
+    return await scan_files(files, correlation_id=correlation_id)

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-import httpx
+import asyncio
+from typing import ClassVar
+
 import pytest
 
 from semgrep_scan import client
@@ -20,7 +22,7 @@ class _Resp:
 
 
 class _FakeClient:
-    posts: list[dict] = []
+    posts: ClassVar[list[dict]] = []
 
     def __init__(self, *args, **kwargs):
         pass
@@ -45,10 +47,13 @@ def _fake(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_posts_to_embervm_with_idempotency_key():
-    await client.scan_files([{"path": "a.py", "content": "print(1)"}])
+    await client.scan_files(
+        [{"path": "a.py", "content": "print(1)"}], correlation_id="scan-123"
+    )
     post = _FakeClient.posts[0]
     assert post["url"] == "http://ev/v1/workloads/semgrep/tasks?wait=true"
     assert "Idempotency-Key" in post["headers"]
+    assert post["json"]["correlation_id"] == "scan-123"
 
 
 @pytest.mark.asyncio
@@ -61,3 +66,43 @@ def test_content_key_is_order_independent():
     a = [{"path": "a.py", "content": "x"}, {"path": "b.py", "content": "y"}]
     b = [{"path": "b.py", "content": "y"}, {"path": "a.py", "content": "x"}]
     assert client._content_key(a) == client._content_key(b)
+
+
+@pytest.mark.asyncio
+async def test_successive_distinct_ids_and_omitted_id_do_not_share_task_identity():
+    files = [{"path": "a.py", "content": "print(1)"}]
+    await client.scan_files(files, correlation_id="first-id")
+    await client.scan_files(files, correlation_id="second-id")
+    await client.scan_files(files)
+
+    first, second, omitted = _FakeClient.posts
+    assert first["json"]["correlation_id"] == "first-id"
+    assert second["json"]["correlation_id"] == "second-id"
+    assert "correlation_id" not in omitted["json"]
+    keys = {post["headers"]["Idempotency-Key"] for post in _FakeClient.posts}
+    assert len(keys) == 3
+    assert omitted["headers"]["Idempotency-Key"] == client._content_key(files)
+
+
+@pytest.mark.asyncio
+async def test_invalid_correlation_id_is_not_sent_or_returned():
+    secret = "do not expose this secret"
+    result = await client.scan_files(
+        [{"path": "a.py", "content": "print(1)"}], correlation_id=secret
+    )
+    assert result == {"error": "invalid correlation_id"}
+    assert secret not in result["error"]
+    assert _FakeClient.posts == []
+
+
+@pytest.mark.asyncio
+async def test_overlapping_scans_keep_distinct_correlation_ids():
+    files = [{"path": "a.py", "content": "print(1)"}]
+    await asyncio.gather(
+        client.scan_files(files, correlation_id="overlap-one"),
+        client.scan_files(files, correlation_id="overlap-two"),
+    )
+    assert {post["json"]["correlation_id"] for post in _FakeClient.posts} == {
+        "overlap-one",
+        "overlap-two",
+    }

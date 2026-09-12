@@ -146,8 +146,12 @@ type ScanFile struct {
 }
 
 // ScanRequest is one scan job: a batch of files to run the warm rule set over.
+// CorrelationID is optional request-local metadata supplied by the caller. It is
+// echoed in ScanResult so callers can tie the response and guest logs to the
+// invocation without relying on process environment shared across scans.
 type ScanRequest struct {
-	Files []ScanFile `json:"files"`
+	Files         []ScanFile `json:"files"`
+	CorrelationID string     `json:"correlation_id,omitempty"`
 }
 
 // Finding is one semgrep result, normalised from an LSP diagnostic. Line and Col
@@ -166,8 +170,9 @@ type Finding struct {
 // ScanResult is the reply to a ScanRequest: every finding across the batch plus
 // any per-file or driver errors (so a partial failure still returns what it can).
 type ScanResult struct {
-	Findings []Finding `json:"findings"`
-	Errors   []string  `json:"errors,omitempty"`
+	Findings      []Finding `json:"findings"`
+	Errors        []string  `json:"errors,omitempty"`
+	CorrelationID string    `json:"correlation_id,omitempty"`
 	// RawCliOutput is the verbatim `semgrep --json` cli_output, preserved for
 	// consumers that need full match metadata (fingerprints, end positions,
 	// dataflow) the flattened Findings drop. Optional: existing callers that
