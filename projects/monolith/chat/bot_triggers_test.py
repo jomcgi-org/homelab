@@ -1,5 +1,6 @@
 """Focused Discord trigger wiring and action dispatch regression tests."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -69,6 +70,25 @@ async def test_crosspost_action_sends_to_target_channel():
 
 
 @pytest.mark.asyncio
+async def test_crosspost_action_fetches_uncached_target_channel():
+    bot = MagicMock()
+    bot.get_channel.return_value = None
+    target = MagicMock()
+    target.send = AsyncMock()
+    bot.fetch_channel = AsyncMock(return_value=target)
+    message = _message()
+
+    await ChatBot.fire_trigger(
+        bot,
+        _claim("crosspost", {"target_channel_id": "300", "content": "Alert"}),
+        message,
+    )
+
+    bot.fetch_channel.assert_awaited_once_with(300)
+    target.send.assert_awaited_once_with("Alert")
+
+
+@pytest.mark.asyncio
 async def test_agent_run_action_uses_owner_authority_and_starts_thread():
     class FakeTextChannel:
         id = 100
@@ -103,6 +123,59 @@ async def test_agent_run_action_uses_owner_authority_and_starts_thread():
     assert args[3] == "org/repo"
     assert kwargs["trigger_message"] is message
     assert kwargs["route_via_orchestrator"] is False
+
+
+@pytest.mark.asyncio
+async def test_agent_run_from_thread_uses_parent_without_trigger_message():
+    class FakeTextChannel:
+        id = 100
+
+    class FakeThread:
+        id = 101
+        parent = FakeTextChannel()
+
+    bot = MagicMock()
+    bot.start_agent_flow = AsyncMock(
+        return_value=AgentFlowOutcome(thread=SimpleNamespace(id=400))
+    )
+    message = _message()
+    message.channel = FakeThread()
+    with (
+        patch("chat.bot.discord.Thread", FakeThread),
+        patch("chat.bot.discord.TextChannel", FakeTextChannel),
+        patch("chat.bot.acl.is_owner", return_value=True),
+    ):
+        await ChatBot.fire_trigger(
+            bot,
+            _claim(
+                "agent_run",
+                {"prompt": "Investigate", "repo": "", "model": "luna"},
+            ),
+            message,
+        )
+
+    args, kwargs = bot.start_agent_flow.await_args
+    assert args[0] is message.channel.parent
+    assert kwargs["trigger_message"] is None
+
+
+@pytest.mark.asyncio
+async def test_agent_run_rejects_non_text_source_channel():
+    class FakeTextChannel:
+        pass
+
+    message = _message()
+    message.channel = SimpleNamespace(id=100)
+    with (
+        patch("chat.bot.discord.TextChannel", FakeTextChannel),
+        patch("chat.bot.acl.is_owner", return_value=True),
+        pytest.raises(TypeError, match="Discord text channel"),
+    ):
+        await ChatBot.fire_trigger(
+            MagicMock(),
+            _claim("agent_run", {"prompt": "go", "repo": "", "model": "luna"}),
+            message,
+        )
 
 
 @pytest.mark.asyncio
@@ -154,6 +227,7 @@ async def test_on_message_wires_humans_but_not_bots_to_triggers(
     bot = MagicMock()
     bot.user.id = 999
     bot._safeguards_tasks = set()
+    bot._trigger_tasks = set()
     bot._resolve_ambient = AsyncMock(return_value=False)
     bot._process_message = AsyncMock()
     bot.evaluate_triggers = AsyncMock()
@@ -175,3 +249,42 @@ async def test_on_message_wires_humans_but_not_bots_to_triggers(
 
     assert bot.evaluate_triggers.await_count == expected_calls
     bot._process_message.assert_awaited_once_with(message)
+
+
+@pytest.mark.asyncio
+async def test_trigger_dispatch_does_not_delay_normal_message_processing():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def evaluate(_message):
+        started.set()
+        await release.wait()
+
+    bot = MagicMock()
+    bot.user.id = 999
+    bot._safeguards_tasks = set()
+    bot._trigger_tasks = set()
+    bot._resolve_ambient = AsyncMock(return_value=False)
+    bot._process_message = AsyncMock()
+    bot.evaluate_triggers = AsyncMock(side_effect=evaluate)
+    message = _message()
+
+    store = MagicMock()
+    store.acquire_lock.return_value = True
+    session_cm = MagicMock()
+    session_cm.__enter__.return_value = MagicMock()
+    session_cm.__exit__.return_value = False
+    verdict = safeguards.Verdict(addressed=False)
+    with (
+        patch("chat.bot.Session", return_value=session_cm),
+        patch("chat.bot.MessageStore", return_value=store),
+        patch("chat.bot.get_engine"),
+        patch("chat.bot.safeguards.observe_message", return_value=verdict),
+    ):
+        on_message_task = asyncio.create_task(ChatBot.on_message(bot, message))
+        await started.wait()
+        await asyncio.wait_for(on_message_task, timeout=1)
+
+    bot._process_message.assert_awaited_once_with(message)
+    release.set()
+    await asyncio.gather(*bot._trigger_tasks)

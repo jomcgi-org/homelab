@@ -95,6 +95,13 @@ def test_invalid_action_and_cooldown_are_rejected(engine):
             )
         with pytest.raises(TriggerValidationError, match="cooldown_secs"):
             _create(session, name="negative", cooldown_secs=-1)
+        with pytest.raises(TriggerValidationError, match="model is invalid"):
+            _create(
+                session,
+                name="bad model",
+                action_type="agent_run",
+                action_config={"prompt": "investigate", "model": "lunna"},
+            )
 
 
 def test_positive_and_negative_regex_channel_user_and_inactive_matches(engine):
@@ -182,6 +189,15 @@ def test_small_template_vocabulary_is_expanded_and_bounded():
         channel_id="100",
     )
     assert rendered == "<@200> in 100: hello"
+    assert (
+        render_template(
+            "Message: {content}",
+            content="literal {author} in {channel_id}",
+            author="<@200>",
+            channel_id="100",
+        )
+        == "Message: literal {author} in {channel_id}"
+    )
     assert (
         len(render_template("x" * 3000, content="", author="", channel_id="")) == 2000
     )
