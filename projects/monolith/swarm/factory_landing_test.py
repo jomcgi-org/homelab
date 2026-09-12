@@ -506,9 +506,7 @@ def test_a_merge_conflict_ejection_reopens_for_correction_instead_of_rearming(
     assert audits(db, "merge_arm_refused", "t-1") == []
 
 
-def test_a_corrected_merge_conflict_rearms_at_the_newly_approved_head(
-    db, monkeypatch
-):
+def test_a_corrected_merge_conflict_rearms_at_the_newly_approved_head(db, monkeypatch):
     delivered(db, "t-1", 11, 3)
     pulls = {3: pull(3)}
     calls = github(monkeypatch, pulls=pulls)
