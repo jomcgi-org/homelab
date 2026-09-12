@@ -428,6 +428,32 @@ The escalation is stored on the receipt as `escalation_json`, which is also
 where the resolution lands, and the options are repeated on the
 `refine_settled` audit as what was offered at the time.
 
+**The escape group.** Every unresolved escalation also carries three fixed
+options the board view appends rather than a brief writing them, so an
+operator who agrees with none of the offered options can leave the card
+without a chat round trip and the wait for another brief. `escape:close`
+closes the issue as `not_planned` and takes `needs-human` off. `escape:defer`
+swaps `needs-human` for `needs-thought`. `escape:dismiss` resolves the
+escalation on the factory side with no GitHub write at all, so the card leaves
+the list while the issue keeps `needs-human` and intake goes on skipping it.
+All three record the operator's note on the resolution, and the first two post
+it as the comment. The keys carry a colon, which the option key pattern
+forbids, so a brief can never author one that collides; the brief's own
+options keep the numbers 1 to 4 and the escapes answer to `x`, `d` and `Esc`.
+
+`escape:close` is never weighed against the protected-label rule that
+downgrades a node's own close on a `critical` or `security-finding` issue.
+That rule exists so a node does not close one of those unwatched, and the
+operator clicking here is the authority it was deferring to. It is the one
+escape the page confirms before sending, because it is the one no other button
+on the card undoes.
+
+The close comments, closes, then drops the label, in that order. A failure
+between the close and the label leaves a closed issue still carrying
+`needs-human`, which nothing acts on. The other order leaves an open issue
+with the label gone, which is exactly the state that puts it back in front of
+intake.
+
 **Deciding.** `POST /api/swarm/factory/decisions/{receipt_id}` behind the same
 operator gate as `/control`, with `{"option_key": "...", "note": "..."}` or
 `{"action": "chat", "note": "..."}`. The private agents page at
@@ -456,7 +482,9 @@ operator addresses in a public `deploy/values.yaml`.
 A decision is refused while the receipt is `admitted` or `uncertain`, because a
 brief running on the issue would keep writing to something the decision has
 just closed or relabelled. The page shows that card as `briefing` with its
-buttons disabled rather than offering a click the server would refuse.
+buttons disabled rather than offering a click the server would refuse. The
+escape options are refused on the same terms: the reason is the live node, and
+it does not care which option the operator picked.
 
 Every write is idempotent on the pair of receipt and option. A comment carries
 a hidden marker naming that pair and is skipped when the marker is already on

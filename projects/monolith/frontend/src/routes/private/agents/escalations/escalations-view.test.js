@@ -1,10 +1,16 @@
 import { describe, expect, test } from "vitest";
 import {
+  ESCAPE_HOTKEYS,
   HOTKEYS,
   chatBody,
+  confirmLine,
   decisionBody,
   effectLine,
+  escapeForKey,
+  escapeHotkey,
+  escapesFor,
   moveCursor,
+  needsConfirm,
   open,
   optionForKey,
   resolutionLine,
@@ -25,6 +31,15 @@ function item(overrides = {}) {
         children: 2,
       },
       { key: "hold", label: "Leave it open", effect: "hold", children: 0 },
+    ],
+    escape: [
+      { key: "escape:close", label: "Close the issue", effect: "escape-close" },
+      { key: "escape:defer", label: "Defer it", effect: "escape-defer" },
+      {
+        key: "escape:dismiss",
+        label: "Dismiss the escalation",
+        effect: "escape-dismiss",
+      },
     ],
     ...overrides,
   };
@@ -75,6 +90,48 @@ describe("escalations view helpers", () => {
     expect(optionForKey(item(), "3")).toBeNull();
     expect(optionForKey(item(), "x")).toBeNull();
     expect(HOTKEYS).toEqual(["1", "2", "3", "4"]);
+  });
+
+  test("the escape keys never collide with the brief's numbered ones", () => {
+    expect(Object.values(ESCAPE_HOTKEYS)).toEqual(["x", "d", "Escape"]);
+    expect(
+      HOTKEYS.some((key) => Object.values(ESCAPE_HOTKEYS).includes(key)),
+    ).toBe(false);
+    expect(escapeForKey(item(), "x").key).toBe("escape:close");
+    expect(escapeForKey(item(), "d").key).toBe("escape:defer");
+    expect(escapeForKey(item(), "Escape").key).toBe("escape:dismiss");
+    expect(escapeForKey(item(), "1")).toBeNull();
+    expect(optionForKey(item(), "x")).toBeNull();
+  });
+
+  test("a resolved card offers no way out, because there is nothing to leave", () => {
+    expect(escapesFor(item({ escape: [] }))).toEqual([]);
+    expect(escapesFor(undefined)).toEqual([]);
+    expect(escapeForKey(item({ escape: [] }), "x")).toBeNull();
+  });
+
+  test("Escape reads as Esc on the button, the other two as themselves", () => {
+    const [close, defer, dismiss] = item().escape;
+    expect(escapeHotkey(close)).toBe("x");
+    expect(escapeHotkey(defer)).toBe("d");
+    expect(escapeHotkey(dismiss)).toBe("Esc");
+    expect(escapeHotkey({ key: "split" })).toBe("");
+  });
+
+  test("only the close is confirmed, and the line says what it will do", () => {
+    const [close, defer, dismiss] = item().escape;
+    expect(needsConfirm(close)).toBe(true);
+    expect(needsConfirm(defer)).toBe(false);
+    expect(needsConfirm(dismiss)).toBe(false);
+    expect(confirmLine(item())).toContain("Close #6002 as not planned");
+    expect(confirmLine(item())).toContain("drop needs-human");
+  });
+
+  test("each escape says what it does in the line under its label", () => {
+    const [close, defer, dismiss] = item().escape;
+    expect(effectLine(close)).toContain("not planned");
+    expect(effectLine(defer)).toContain("needs-thought");
+    expect(effectLine(dismiss)).toContain("keeps needs-human");
   });
 
   test("an empty note is left out of the body rather than sent blank", () => {

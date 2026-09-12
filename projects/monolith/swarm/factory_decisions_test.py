@@ -528,3 +528,157 @@ def test_a_generation_the_policy_has_moved_past_blocks_the_re_brief(db, github):
     result = decisions.request_chat(receipt_id, "Which tier?", "joe@example.test")
     assert result["requeued"] is False
     assert "generation 0 and the policy is on 4" in result["blocked_by"]
+
+
+def test_the_escape_group_is_offered_on_every_unresolved_escalation(db, github):
+    """No brief writes these, so the view is what has to carry them."""
+    receipt_id = escalate(db, "split")
+    view = controls.escalations(controls.status()["receipts"])[0]
+    assert [way["key"] for way in view["escape"]] == [
+        "escape:close",
+        "escape:defer",
+        "escape:dismiss",
+    ]
+    # The brief's own options are untouched, so the numbered keys still mean
+    # what the brief said they meant.
+    assert [option["key"] for option in view["options"]] == ["split", "hold"]
+    decisions.apply_decision(receipt_id, "escape:dismiss", "joe@example.test")
+    decided = controls.escalations(controls.status()["receipts"])[0]
+    assert decided["escape"] == []
+
+
+def test_escape_close_closes_the_issue_and_drops_needs_human(db, github):
+    receipt_id = escalate(db, "split")
+    result = decisions.apply_decision(
+        receipt_id, "escape:close", "joe@example.test", "not worth the slot"
+    )
+    assert result["applied"] is True
+    assert github.writes[0][1].endswith("/comments")
+    assert (
+        "PATCH",
+        f"issues/{ISSUE}",
+        {"state": "closed", "state_reason": "not_planned"},
+    ) in github.writes
+    assert ("DELETE", f"issues/{ISSUE}/labels/needs-human", {}) in github.writes
+    # The label comes off after the close, never before: an open issue with
+    # the label gone is the one state that puts it back in front of intake.
+    order = [write[0] for write in github.writes]
+    assert order.index("PATCH") < order.index("DELETE")
+    assert "not worth the slot" in github.bodies()
+    resolved = escalation(db, receipt_id)["resolved"]
+    assert resolved["option_key"] == "escape:close"
+    assert resolved["effects"]["labels_removed"] == ["needs-human"]
+    assert resolved["note"] == "not worth the slot"
+    assert "decision_applied" in audit_actions(db)
+
+
+def test_escape_close_is_not_blocked_by_a_protected_label(db, github, monkeypatch):
+    """The rule that downgrades a node's close does not bind the operator.
+
+    `critical` and `security-finding` turn a node's own close into an
+    escalation, because a node must not close one of those unwatched. This is
+    the person that rule was deferring to, so the close goes through.
+    """
+    receipt_id = escalate(db, "split")
+    monkeypatch.setattr(
+        conductor,
+        "github_get",
+        lambda *_a: {"labels": [{"name": "critical"}], "milestone": {"number": 1}},
+    )
+    result = decisions.apply_decision(receipt_id, "escape:close", "joe@example.test")
+    assert result["applied"] is True
+    assert (
+        "PATCH",
+        f"issues/{ISSUE}",
+        {"state": "closed", "state_reason": "not_planned"},
+    ) in github.writes
+
+
+def test_escape_defer_swaps_needs_human_for_needs_thought(db, github):
+    receipt_id = escalate(db, "split")
+    decisions.apply_decision(
+        receipt_id, "escape:defer", "joe@example.test", "after the hub migration"
+    )
+    assert ("POST", f"issues/{ISSUE}/labels", {"labels": ["needs-thought"]}) in (
+        github.writes
+    )
+    assert ("DELETE", f"issues/{ISSUE}/labels/needs-human", {}) in github.writes
+    assert [write for write in github.writes if write[0] == "PATCH"] == []
+    assert "after the hub migration" in github.bodies()
+    assert escalation(db, receipt_id)["resolved"]["option_key"] == "escape:defer"
+
+
+def test_escape_dismiss_resolves_without_writing_to_github(db, github):
+    """The card leaves the list; the issue keeps needs-human so intake skips."""
+    receipt_id = escalate(db, "split")
+    result = decisions.apply_decision(
+        receipt_id, "escape:dismiss", "joe@example.test", "handled elsewhere"
+    )
+    assert result["resolution"]["effects"] == {"dismissed": True}
+    assert github.writes == []
+    resolved = escalation(db, receipt_id)["resolved"]
+    assert resolved["option_key"] == "escape:dismiss"
+    assert resolved["note"] == "handled elsewhere"
+    assert controls.escalations(controls.status()["receipts"])[0]["open"] is False
+
+
+def test_an_escape_repeated_returns_the_first_result_rather_than_doubling(db, github):
+    receipt_id = escalate(db, "split")
+    first = decisions.apply_decision(receipt_id, "escape:close", "joe@example.test")
+    writes = list(github.writes)
+    second = decisions.apply_decision(receipt_id, "escape:close", "joe@example.test")
+    assert first["applied"] is True
+    assert second["applied"] is False
+    assert second["resolution"]["decided_at"] == first["resolution"]["decided_at"]
+    assert github.writes == writes
+    assert audit_actions(db).count("decision_applied") == 1
+
+
+def test_an_escape_retried_after_a_failure_does_not_comment_twice(
+    db, github, monkeypatch
+):
+    """The marker is keyed on the receipt and the escape key, like any option."""
+    receipt_id = escalate(db, "split")
+    calls = {"n": 0}
+    real = github.write
+
+    def flaky(repo, suffix, payload, *, method="POST"):
+        if method == "PATCH":
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise httpx.HTTPError("boom")
+        return real(repo, suffix, payload, method=method)
+
+    monkeypatch.setattr(landing, "github_write", flaky)
+    with pytest.raises(decisions.DecisionError):
+        decisions.apply_decision(receipt_id, "escape:close", "joe@example.test")
+    assert "decision_failed" in audit_actions(db)
+    comments = len(github.comments)
+    result = decisions.apply_decision(receipt_id, "escape:close", "joe@example.test")
+    assert result["applied"] is True
+    assert len(github.comments) == comments
+
+
+def test_a_second_different_escape_is_refused_once_one_is_decided(db, github):
+    receipt_id = escalate(db, "split")
+    decisions.apply_decision(receipt_id, "escape:dismiss", "joe@example.test")
+    with pytest.raises(decisions.DecisionError) as raised:
+        decisions.apply_decision(receipt_id, "escape:defer", "joe@example.test")
+    assert raised.value.status == 409
+    assert "escape:dismiss" in raised.value.reason
+
+
+def test_an_escape_waits_while_a_brief_is_running(db, github):
+    configure()
+    receipt_id = escalate(db, "split", state="admitted")
+    with pytest.raises(decisions.DecisionError) as raised:
+        decisions.apply_decision(receipt_id, "escape:close", "joe@example.test")
+    assert raised.value.status == 409
+    assert github.writes == []
+
+
+def test_an_unknown_escape_key_is_still_refused(db, github):
+    receipt_id = escalate(db, "split")
+    with pytest.raises(decisions.DecisionError) as raised:
+        decisions.apply_decision(receipt_id, "escape:nuke", "joe@example.test")
+    assert raised.value.status == 422

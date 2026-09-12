@@ -30,6 +30,7 @@ import httpx
 from sqlmodel import select
 
 from swarm.factory_controls import (
+    ESCAPE_OPTIONS,
     _audit,
     _locked_session,
     _now,
@@ -113,6 +114,12 @@ def _option(escalation: dict, option_key: str) -> dict:
     for option in escalation.get("options") or []:
         if option.get("key") == option_key:
             return option
+    # The escape options are synthetic: the view offers them on every
+    # unresolved escalation and no brief ever writes them into the document,
+    # so they are matched here rather than looked for in what was stored.
+    for option in ESCAPE_OPTIONS:
+        if option["key"] == option_key:
+            return dict(option)
     raise DecisionError(422, "the escalation offers no such option")
 
 
@@ -384,6 +391,42 @@ def _apply(fields: dict, option: dict, note: str | None) -> dict:
         return {"labels_added": [DEFER_LABEL], "labels_removed": [HUMAN_LABEL]}
     if effect == "split":
         return _apply_split(fields, option, marker)
+    if effect == "escape-close":
+        # Never weighed against the protected-label rule that downgrades a
+        # node's own close on a `critical` or `security-finding` issue. That
+        # rule exists so a node does not close one of those unwatched, and the
+        # operator clicking here is the authority it was deferring to.
+        _comment(
+            repo,
+            number,
+            marker,
+            "Closed by the operator from the escalations page." + suffix,
+        )
+        _close(repo, number, "not_planned")
+        # The label comes off after the close rather than before it. A failure
+        # between the two leaves a closed issue still carrying `needs-human`,
+        # which nothing acts on; the other order leaves an OPEN issue with the
+        # label gone, which is the one state that puts it back in front of
+        # intake.
+        _label(repo, number, [], [HUMAN_LABEL])
+        return {
+            "closed": True,
+            "reason": "not_planned",
+            "labels_removed": [HUMAN_LABEL],
+        }
+    if effect == "escape-defer":
+        _label(repo, number, [DEFER_LABEL], [HUMAN_LABEL])
+        _comment(
+            repo,
+            number,
+            marker,
+            "Deferred by the operator from the escalations page." + suffix,
+        )
+        return {"labels_added": [DEFER_LABEL], "labels_removed": [HUMAN_LABEL]}
+    if effect == "escape-dismiss":
+        # Nothing is written to GitHub at all. The issue keeps `needs-human`,
+        # so intake goes on skipping it; only the card leaves the list.
+        return {"dismissed": True}
     raise DecisionError(422, "unsupported option effect")
 
 
