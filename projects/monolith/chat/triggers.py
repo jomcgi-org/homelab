@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import regex
+from agent_sessions.api import SUPPORTED_MODELS
 from core.db import get_engine
 from sqlalchemy import or_, update
 from sqlalchemy.exc import IntegrityError
@@ -215,11 +216,6 @@ def validate_action(
             "agent_run repo must be a string up to 200 characters"
         )
     model = action_config.get("model", "luna")
-    # Keep durable trigger configuration aligned with the model tiers accepted
-    # by agent sessions. The import stays local to avoid loading that package
-    # for respond and crosspost validation.
-    from agent_sessions import SUPPORTED_MODELS
-
     if not isinstance(model, str) or model not in SUPPORTED_MODELS:
         raise TriggerValidationError("agent_run model is invalid")
     return canonical, {"prompt": prompt.strip(), "repo": repo.strip(), "model": model}
