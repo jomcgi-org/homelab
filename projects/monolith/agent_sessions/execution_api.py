@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from core.db import get_engine
@@ -29,7 +30,6 @@ from agent_sessions.mcp import (
     _persist_turn_from_pending_sync,
     _refresh_claim_sync,
     _release_pending_message_claim_sync,
-    _release_receipt_fence,
     _schedule_next_message,
     _set_session_status,
     _transport,
@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 # GET can report (creating, running, banking, parking, banked, parked,
 # relighting, destroying) is live or transitional and must retain the binding.
 _REAP_TERMINAL_STATES = frozenset({"destroyed", "expired", "evicted", "failed"})
+RECEIPT_CLEANUP_INTERVAL_SECONDS = 30
 
 
 def _synthetic_dispatch_count_sync(
@@ -333,16 +334,10 @@ async def run_synthetic_session(prompt: str, model: str = "luna"):
             and ember is not None
             and not outcome_unknown
             and not claim_stolen
+            # A receipt winner's fence owns exact-guest cleanup after the
+            # original POST resolves or the receipt deadline expires.
+            and turn.native_receipt is None
         ):
-            # A receipt winner used to preserve the resident guest until the
-            # original POST resolved, and nothing destroyed it when that POST
-            # instead errored, timed out or was cancelled: no owner, no
-            # deadline, one leaked guest per receipt-won turn (#6050). The
-            # receipt is already received here, so the guest is not the only
-            # path to the result. Release this exact receipt's fence, then run
-            # the ordinary completion cleanup.
-            if turn.native_receipt is not None:
-                await _release_receipt_fence(turn.native_receipt)
             try:
                 await _transport.destroy_session(ember.session_id)
             except EmberSessionGone:
@@ -441,18 +436,6 @@ def _begin_guest_cleanup(session_id: int, guest_id: str, workflow_id: str) -> di
         return store.begin_guest_cleanup(db_session, session_id, guest_id, workflow_id)
 
 
-def _release_abandoned_fence(session_id: int, receipt_id: str) -> bool:
-    from agent_sessions import result_receipts
-
-    return result_receipts.release_abandoned_fence(session_id, receipt_id)
-
-
-def _restore_abandoned_fence(session_id: int, receipt_id: str, guest_id: str) -> bool:
-    from agent_sessions import result_receipts
-
-    return result_receipts.restore_abandoned_fence(session_id, receipt_id, guest_id)
-
-
 def _finish_guest_cleanup(
     session_id: int, guest_id: str, workflow_id: str, claim_id: str
 ) -> bool:
@@ -494,7 +477,79 @@ async def destroy_and_confirm(
     return False
 
 
-async def reap_sessions_for_workflow(workflow_id: str) -> dict:
+async def reap_held_receipt_guests(
+    *, receipt_id: str | None = None, now: datetime | None = None
+) -> dict:
+    """Destroy receipt-held guests after response observation or their deadline.
+
+    The session fence and receipt row are the durable cleanup claim. Duplicate
+    callers may DELETE the same exact guest, but only a terminal confirmation
+    permits the matching binding and fence to be retired.
+    """
+    from agent_sessions import result_receipts
+
+    cleanup_now = now or datetime.now(timezone.utc)
+    candidates = await asyncio.to_thread(
+        result_receipts.held_guest_cleanup_candidates,
+        receipt_id=receipt_id,
+        now=cleanup_now,
+    )
+    summary: dict[str, list] = {"reaped": [], "pending": [], "failed": []}
+    for candidate in candidates:
+        try:
+            try:
+                confirmed = await destroy_and_confirm(candidate["guest_id"])
+            except EmberSessionGone:
+                confirmed = True
+            if not confirmed:
+                summary["pending"].append(candidate["session_id"])
+                continue
+            cleared = await asyncio.to_thread(
+                result_receipts.finish_held_guest_cleanup,
+                receipt_id=candidate["receipt_id"],
+                session_id=candidate["session_id"],
+                guest_id=candidate["guest_id"],
+                authorized_at=cleanup_now,
+            )
+            summary["reaped" if cleared else "pending"].append(candidate["session_id"])
+        except Exception as exc:  # noqa: BLE001 - every retained fence is retried
+            logger.warning(
+                "receipt guest cleanup failed for session %s (ember %s): %s",
+                candidate["session_id"],
+                candidate["guest_id"],
+                type(exc).__name__,
+            )
+            summary["failed"].append(
+                {
+                    "session_id": candidate["session_id"],
+                    "error": type(exc).__name__,
+                }
+            )
+    return summary
+
+
+def start_receipt_cleanup_loop():
+    """Start the leader's recurring cleanup of abandoned receipt-held guests."""
+    from framework import log_task_exception
+
+    async def run():
+        while True:
+            try:
+                await reap_held_receipt_guests()
+            except Exception as exc:  # noqa: BLE001 - the next sweep must survive
+                logger.warning(
+                    "receipt guest cleanup sweep failed: %s", type(exc).__name__
+                )
+            await asyncio.sleep(RECEIPT_CLEANUP_INTERVAL_SECONDS)
+
+    task = asyncio.create_task(run(), name="agent-result-receipt-cleanup")
+    task.add_done_callback(log_task_exception)
+    return [task]
+
+
+async def reap_sessions_for_workflow(
+    workflow_id: str, *, now: datetime | None = None
+) -> dict:
     """Destroy and unbind every guest session owned by a swarm workflow.
 
     Every list keys on the MONOLITH session id, never the EmberVM id, so a
@@ -520,16 +575,11 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
     receipt minting and guest rebinding until terminal confirmation. Interrupted
     or failed requests retain their exact claim for a later workflow reap.
 
-    A receipt fence used to send its row straight to pending, forever: the
-    fence is cleared only by the original POST's own validated response, and a
-    POST that errors, times out or is cancelled never produces one, so the
-    guest survived to idle_ttl and the workload cap filled (#6050). The
-    workflow is over by the time the reaper runs, so nothing will dispatch into
-    that guest again and the fence is releasable once it can no longer be
-    waited on: its receipt is gone, its body has arrived, or its acceptance
-    window has closed. A fence whose receipt is still unreceived inside that
-    window keeps today's behaviour and goes to pending, because its guest is
-    the only remaining path to the turn.
+    A receipt fence owns its exact guest until the original POST's response is
+    observed or accept_until expires. The workflow reaper uses that durable
+    owner rather than bypassing it: pre-deadline rows remain pending, eligible
+    rows are destroyed and confirmed before their matching binding is cleared,
+    and failed or interrupted cleanup remains retryable.
 
     This observes control-plane lifecycle state; it does not settle capacity
     or establish exact-attempt cessation for factory restart. That remains
@@ -547,16 +597,19 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
         if ember_session_id is None:
             summary["skipped"].append(row.id)
             continue
-        released_fence = None
+        receipt_fence_id = getattr(row, "result_receipt_fence_id", None)
+        if receipt_fence_id is not None:
+            receipt_cleanup = await reap_held_receipt_guests(
+                receipt_id=receipt_fence_id, now=now
+            )
+            if row.id in receipt_cleanup["reaped"]:
+                summary["reaped"].append(row.id)
+            elif receipt_cleanup["failed"]:
+                summary["failed"].extend(receipt_cleanup["failed"])
+            else:
+                summary["pending"].append(row.id)
+            continue
         try:
-            fence_id = getattr(row, "result_receipt_fence_id", None)
-            if fence_id is not None:
-                if not await asyncio.to_thread(
-                    _release_abandoned_fence, row.id, fence_id
-                ):
-                    summary["pending"].append(row.id)
-                    continue
-                released_fence = fence_id
             claim = await asyncio.to_thread(
                 _begin_guest_cleanup, row.id, ember_session_id, workflow_id
             )
@@ -564,13 +617,6 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
             if hold is not None:
                 summary["skipped" if hold == "unknown" else "pending"].append(row.id)
                 continue
-            # The claim is committed and now blocks dispatch, receipt minting
-            # and rebinding on its own, so it has taken over from the fence and
-            # a failure below can leave the fence released. Before it, nothing
-            # had: a row that goes to pending with its fence gone and no claim
-            # would let claim_pending_message_for_session_sync put a queued
-            # follow-up on a guest whose original POST may still be streaming.
-            released_fence = None
             try:
                 confirmed = await destroy_and_confirm(ember_session_id)
             except EmberSessionGone:
@@ -605,23 +651,6 @@ async def reap_sessions_for_workflow(workflow_id: str) -> dict:
                 exc,
             )
             summary["failed"].append({"session_id": row.id, "error": str(exc)})
-        finally:
-            if released_fence is not None:
-                try:
-                    await asyncio.to_thread(
-                        _restore_abandoned_fence,
-                        row.id,
-                        released_fence,
-                        ember_session_id,
-                    )
-                except Exception:  # noqa: BLE001 - one bad row cannot stop the rest
-                    logger.exception(
-                        "swarm reap could not restore the receipt fence for "
-                        "session %s (ember %s) of workflow %s",
-                        row.id,
-                        ember_session_id,
-                        workflow_id,
-                    )
     return summary
 
 

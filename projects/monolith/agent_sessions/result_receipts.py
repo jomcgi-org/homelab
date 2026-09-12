@@ -2,8 +2,9 @@
 
 The guest publishes before writing its synchronous response. A committed receipt
 survives a lost response and deletion of the original pending row. It is evidence
-only until the normal result writer validates and persists it. There is no
-restart adoption, capacity release, guest stop, or retry in this module.
+only until the normal result writer validates and persists it. A consumed receipt
+and its session fence then retain the exact guest cleanup identity and deadline;
+the execution API owns remote destruction and recurring retry.
 """
 
 import asyncio
@@ -17,7 +18,7 @@ import re
 import secrets
 from uuid import uuid4
 
-from sqlalchemy import delete, or_, text, update
+from sqlalchemy import delete, exists, or_, text, update
 from sqlmodel import Session, select
 
 from agent_sessions import admission
@@ -36,6 +37,7 @@ ACCEPT_HOURS = 13
 RETAIN_DAYS = 7
 PRUNE_BATCH = 100
 PRUNE_INTERVAL_SECONDS = 300
+CLEANUP_BATCH = 100
 logger = logging.getLogger(__name__)
 
 
@@ -461,7 +463,7 @@ def validate_active_result(
     dispatch_count: int,
     guest_id: str,
 ) -> dict:
-    """Validate and stage the observer fence in the native writer transaction.
+    """Validate and stage the guest cleanup fence in the writer transaction.
 
     The caller holds pool, session and pending locks, and must parse/compare the
     returned body before committing its normal turn write. This function never
@@ -507,15 +509,15 @@ def mark_response_observed(
 
     The trusted transport calls this after parsing its response, never for an
     error, cancellation or CP observation. It may arrive after turn persistence
-    deleted the pending row. Stale observations remain historical and cannot
-    clear another guest or receipt's fence. Missing retained evidence returns
-    False and never clears a fence.
+    deleted the pending row. The matching cleanup owner uses this timestamp as
+    permission to destroy the held guest; observing a response alone never
+    clears the binding or fence. Missing retained evidence returns False.
     """
     from agent_sessions import store
 
     with Session(get_engine()) as db, db.begin():
         _bound_observer_transaction(db)
-        agent = store._lock_session(db, session_id)
+        _agent = store._lock_session(db, session_id)
         db.execute(
             update(AgentResultReceipt)
             .where(AgentResultReceipt.id == receipt_id)
@@ -531,96 +533,110 @@ def mark_response_observed(
                 .where(AgentResultReceipt.id == receipt_id)
                 .values(response_observed_at=_now())
             )
-        if (
-            agent is not None
-            and agent.local_session_id == receipt["local_session_id"]
-            and agent.ember_session_id == receipt["guest_id"]
-            and agent.result_receipt_fence_id == receipt_id
-            and receipt["superseded_at"] is None
-            and not _newer_work_exists(db, receipt)
-        ):
-            agent.result_receipt_fence_id = None
-            db.add(agent)
         return True
 
 
-def release_unobserved_fence(
+def held_guest_cleanup_candidates(
+    *, receipt_id: str | None = None, now: datetime | None = None
+) -> list[dict]:
+    """Return exact receipt-held guests whose cleanup deadline has opened.
+
+    A received result owns the guest only after the writer atomically installs
+    its receipt fence. The original POST's observed response opens cleanup
+    immediately; otherwise ``accept_until`` is the durable backstop. An
+    unreceived live invoke can never appear here.
+    """
+    cleanup_now = now or _now()
+    with Session(get_engine()) as db:
+        query = (
+            select(
+                AgentResultReceipt.id,
+                AgentResultReceipt.session_id,
+                AgentResultReceipt.guest_id,
+                AgentResultReceipt.accept_until,
+                AgentResultReceipt.response_observed_at,
+            )
+            .join(
+                AgentSession,
+                AgentSession.result_receipt_fence_id == AgentResultReceipt.id,
+            )
+            .where(
+                AgentSession.id == AgentResultReceipt.session_id,
+                AgentSession.ember_session_id == AgentResultReceipt.guest_id,
+                AgentResultReceipt.received_at.isnot(None),
+                AgentResultReceipt.superseded_at.is_(None),
+                or_(
+                    AgentResultReceipt.response_observed_at.isnot(None),
+                    AgentResultReceipt.accept_until <= cleanup_now,
+                ),
+            )
+            .order_by(AgentResultReceipt.accept_until, AgentResultReceipt.id)
+            .limit(CLEANUP_BATCH)
+        )
+        if receipt_id is not None:
+            query = query.where(AgentResultReceipt.id == receipt_id)
+        return [
+            {
+                "receipt_id": row.id,
+                "session_id": row.session_id,
+                "guest_id": row.guest_id,
+                "accept_until": _aware(row.accept_until),
+                "response_observed_at": (
+                    None
+                    if row.response_observed_at is None
+                    else _aware(row.response_observed_at)
+                ),
+            }
+            for row in db.exec(query).all()
+        ]
+
+
+def finish_held_guest_cleanup(
+    *,
     receipt_id: str,
     session_id: int,
-    claim_owner: str,
-    dispatch_count: int,
     guest_id: str,
+    authorized_at: datetime,
 ) -> bool:
-    """Clear the fence of a receipt whose original POST observed nothing.
-
-    The mirror of ``mark_response_observed`` for every terminal path that is
-    not a validated native response: the invoke coroutine ended in an error, a
-    timeout or a cancellation, so nothing is coming that could clear the fence
-    and no other owner is watching. Identity is checked exactly as the observed
-    path checks it, so a stale coroutine can neither release a newer fence nor
-    authorize destroying a newer guest.
-
-    A receipt with no committed body is refused. While the result may still
-    arrive the guest is the only path to the turn, so the fence stays and the
-    guest lives. ``response_observed_at`` is deliberately left alone: nothing
-    here observed a response, and the reconciliation and lease owners read that
-    stamp as evidence about the response, not about this release.
-    """
+    """Clear one matching binding only after its exact guest is confirmed gone."""
     from agent_sessions import store
 
     with Session(get_engine()) as db, db.begin():
-        _bound_observer_transaction(db)
         agent = store._lock_session(db, session_id)
-        db.execute(
-            update(AgentResultReceipt)
-            .where(AgentResultReceipt.id == receipt_id)
-            .values(created_at=AgentResultReceipt.created_at)
-        )
         receipt = _receipt_metadata(db, receipt_id)
-        if receipt is None:
-            return False
-        _check_identity(receipt, session_id, claim_owner, dispatch_count, guest_id)
         if (
-            receipt["received_at"] is None
-            or receipt["response_observed_at"] is not None
-            or receipt["superseded_at"] is not None
-            or agent is None
-            or agent.local_session_id != receipt["local_session_id"]
-            or agent.ember_session_id != receipt["guest_id"]
+            agent is None
+            or receipt is None
+            or agent.ember_session_id != guest_id
             or agent.result_receipt_fence_id != receipt_id
-            or _newer_work_exists(db, receipt)
+            or receipt["session_id"] != session_id
+            or receipt["guest_id"] != guest_id
+            or receipt["received_at"] is None
+            or receipt["superseded_at"] is not None
+            or (
+                receipt["response_observed_at"] is None
+                and _aware(receipt["accept_until"]) > _aware(authorized_at)
+            )
+            or store.has_unknown_outcome(db, session_id)
+            or admission.cleanup_pending(db, agent)
         ):
             return False
+        if agent.ember_lineage_id:
+            agent.prior_ember_lineage_id = agent.ember_lineage_id
+        if agent.cli_session_id:
+            agent.prior_cli_session_id = agent.cli_session_id
+        agent.ember_session_id = None
+        agent.ember_session_token = None
+        agent.ember_session_expires_at = None
+        agent.ember_lineage_id = None
+        agent.cli_session_id = None
         agent.result_receipt_fence_id = None
         db.add(agent)
         return True
 
 
-def release_abandoned_fence(session_id: int, receipt_id: str) -> bool:
-    """Release a fence the workflow reaper can prove nobody is still waiting on.
-
-    The reaper owns sessions whose workflow is over, so no follow-up dispatch
-    will ever reuse the guest and the only thing a fence can still be holding
-    it for is a synchronous response nobody is left to read. Three shapes are
-    releasable: a fence naming a receipt retention has already deleted, a
-    receipt whose body has arrived (the turn completed through it), and a
-    receipt past its acceptance window, which can never be captured again.
-
-    A receipt still inside its acceptance window with no committed body is NOT
-    releasable: its guest remains the only path to the turn. Identity is bound
-    to the session's current binding, so a fence whose receipt names another
-    guest or another local session is left exactly where it is.
-    """
-    from agent_sessions import store
-
-    with Session(get_engine()) as db, db.begin():
-        _bound_observer_transaction(db)
-        agent = store._lock_session(db, session_id)
-        return release_abandoned_fence_locked(db, agent, receipt_id)
-
-
 def release_abandoned_fence_locked(db: Session, agent, receipt_id: str) -> bool:
-    """Release an abandoned fence inside a cleanup owner's own transaction.
+    """Release an eligible fence inside a cleanup owner's own transaction.
 
     The drainer decides whether its cleanup goes ahead while holding the pool
     and session locks, and ``begin_guest_cleanup`` refuses while any row bound
@@ -628,7 +644,8 @@ def release_abandoned_fence_locked(db: Session, agent, receipt_id: str) -> bool:
     transaction of its own means a refused cleanup rolls the release back with
     everything else it was going to write, and a cleanup that does commit
     commits the release alongside the claim that replaces it as the thing
-    keeping dispatch off the guest.
+    keeping dispatch off the guest. A retained receipt is eligible only after
+    its original response was observed or its acceptance deadline expired.
     """
     if (
         agent is None
@@ -647,7 +664,12 @@ def release_abandoned_fence_locked(db: Session, agent, receipt_id: str) -> bool:
         receipt["session_id"] != agent.id
         or agent.local_session_id != receipt["local_session_id"]
         or agent.ember_session_id != receipt["guest_id"]
-        or (receipt["received_at"] is None and _now() < _aware(receipt["accept_until"]))
+        or receipt["received_at"] is None
+        or receipt["superseded_at"] is not None
+        or (
+            receipt["response_observed_at"] is None
+            and _now() < _aware(receipt["accept_until"])
+        )
     ):
         return False
     agent.result_receipt_fence_id = None
@@ -657,36 +679,6 @@ def release_abandoned_fence_locked(db: Session, agent, receipt_id: str) -> bool:
     # this identity map.
     db.flush()
     return True
-
-
-def restore_abandoned_fence(session_id: int, receipt_id: str, guest_id: str) -> bool:
-    """Put a released fence back when the cleanup it was released for did not start.
-
-    The reaper has to release before ``begin_guest_cleanup``, which refuses
-    while any row bound to the guest carries a fence, so between those two
-    calls the fence is gone and no cleanup claim has replaced it. If the claim
-    does not follow, the released fence is the only thing that was keeping a
-    queued follow-up off a guest whose original POST may still be streaming,
-    so it goes back exactly as it was. A fence some other owner has taken in
-    the meantime, or a binding that has since moved, is left alone.
-    """
-    from agent_sessions import store
-
-    with Session(get_engine()) as db, db.begin():
-        _bound_observer_transaction(db)
-        agent = store._lock_session(db, session_id)
-        if (
-            agent is None
-            or not isinstance(receipt_id, str)
-            or not receipt_id
-            or agent.result_receipt_fence_id is not None
-            or not guest_id
-            or agent.ember_session_id != guest_id
-        ):
-            return False
-        agent.result_receipt_fence_id = receipt_id
-        db.add(agent)
-        return True
 
 
 def _check_credential_format(receipt_id: str, token: str) -> None:
@@ -775,14 +767,24 @@ def capture_result(receipt_id: str, token: str, body: bytes) -> dict:
 
 
 def prune_expired_receipts() -> int:
-    """Bound retained bodies and credentials; expiry never reconciles execution."""
+    """Bound retained bodies without deleting a durable guest cleanup owner."""
     with Session(get_engine()) as db, db.begin():
         ids = list(
             db.exec(
                 select(AgentResultReceipt.id)
-                .where(AgentResultReceipt.retain_until <= _now())
+                .where(
+                    AgentResultReceipt.retain_until <= _now(),
+                    ~exists().where(
+                        AgentSession.result_receipt_fence_id == AgentResultReceipt.id
+                    ),
+                )
                 .order_by(AgentResultReceipt.retain_until, AgentResultReceipt.id)
                 .limit(PRUNE_BATCH)
+                # Serialize with the writer's no-op receipt update. If the
+                # pruner wins, validation sees no receipt and installs no
+                # fence; if the writer wins, this query sees the fence and
+                # retains its durable cleanup identity.
+                .with_for_update(of=AgentResultReceipt, skip_locked=True)
             ).all()
         )
         if ids:

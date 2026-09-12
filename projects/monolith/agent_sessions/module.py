@@ -20,6 +20,7 @@ def _register_mcp() -> None:
 
 async def _leader_start(app):
     """Start leader-owned agent session maintenance loops."""
+    from agent_sessions.execution_api import start_receipt_cleanup_loop
     from agent_sessions.kg_feed import start_kg_feed_loop
     from agent_sessions.mcp import start_pending_message_sweep
     from agent_sessions.permit_supervision import start_permit_supervision_loop
@@ -33,6 +34,7 @@ async def _leader_start(app):
         start_kg_feed_loop,
         start_permit_supervision_loop,
         start_receipt_retention_loop,
+        start_receipt_cleanup_loop,
     ):
         started = start()
         register_leader_tasks(app, started)

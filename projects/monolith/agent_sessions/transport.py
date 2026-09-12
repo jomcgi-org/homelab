@@ -373,8 +373,8 @@ def parse_native_turn(
 
 
 # Receipt adoption can finish a logical turn while its original POST is still
-# being observed. Keep that observer alive to release the durable reuse fence
-# only on its own valid native response. Bound the retained requests per replica;
+# being observed. Keep that observer alive to open durable guest cleanup only
+# on its own valid native response. Bound the retained requests per replica;
 # above this bound a new delivery simply awaits its synchronous response.
 MAX_RECEIPT_OBSERVERS = 16
 RECEIPT_POLL_SECONDS = 2.0
@@ -489,10 +489,18 @@ async def _observe_native_result(
             return result
         for attempt in range(3):
             try:
-                await _receipt_database_call(
+                observed = await _receipt_database_call(
                     result_receipts.mark_response_observed,
                     **{k: v for k, v in identity.items() if k != "request_sha256"},
                 )
+                if observed:
+                    # A receipt winner may already have installed its durable
+                    # fence. Release that exact held guest now that this POST's
+                    # own response was observed; the recurring reaper retries
+                    # any failed or interrupted cleanup.
+                    from agent_sessions.execution_api import reap_held_receipt_guests
+
+                    await reap_held_receipt_guests(receipt_id=identity["receipt_id"])
                 break
             except result_receipts.ReceiptRejected:
                 break
