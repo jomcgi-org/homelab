@@ -16,6 +16,11 @@ def register(app) -> None:
     app.include_router(factory_router)
 
 
+def _register_mcp() -> None:
+    """Attach the swarm MCP tools to the shared instance (side-effect import)."""
+    import swarm.mcp  # noqa: F401, PLC0415
+
+
 async def _leader_start(app):
     from swarm import runtime
     from swarm.factory_conductor import start_loop
@@ -39,6 +44,7 @@ MODULE = _Module(
     name="swarm",
     leader_priority=0,
     register=register,
+    register_mcp=_register_mcp,
     leader_start=_leader_start,
     leader_stop=_leader_stop,
     register_health_advisory={"drainer": drainer_health, "kg": kg_health},

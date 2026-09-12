@@ -928,10 +928,10 @@ hosted agents and stores the private monolith `/mcp` server as a registered
 streamable-HTTP upstream. That mount is one shared FastMCP instance populated
 by modules whose profile enables MCP: cluster, agent, agent sessions, chat
 directives and trust, knowledge and tasks, sandbox, Semgrep scanning,
-screenshotting, and the updates journal. Most register by a side-effect import
-of their decorated tool module during application composition; shotter calls
-an explicit `register_mcp_tools()` instead, so its BDD specs can attach the
-tools deterministically.
+screenshotting, the swarm factory read tools, and the updates journal. Most
+register by a side-effect import of their decorated tool module during
+application composition; shotter calls an explicit `register_mcp_tools()`
+instead, so its BDD specs can attach the tools deterministically.
 (see: /projects/mcp/ARCHITECTURE.md)
 (see: /projects/monolith/core/mcp_app.py)
 (see: /projects/monolith/shotter/module.py)
