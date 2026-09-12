@@ -547,8 +547,8 @@ def test_intake_flags_require_bools(policy, key, value):
     [
         ("max_per_day", 0, False),
         ("max_per_day", 1, True),
-        ("max_per_day", 50, True),
-        ("max_per_day", 51, False),
+        ("max_per_day", 10000, True),
+        ("max_per_day", 10001, False),
         ("cooldown_hours", 0, False),
         ("cooldown_hours", 1, True),
         ("cooldown_hours", 168, True),

@@ -96,6 +96,28 @@ def fake_pages(monkeypatch, issues, pulls=()):
     return calls
 
 
+def intake_receipt(session, number, task_class="bug-fix", **overrides):
+    """One admission the daily cap may or may not count, already settled.
+
+    Terminal so it holds no lane: the cap reads the whole rolling window,
+    not just what is still running.
+    """
+    values = {
+        "repo": "owner/repo",
+        "issue_number": number,
+        "generation": 0,
+        "title": f"admitted {number}",
+        "body": "",
+        "url": f"https://github.com/owner/repo/issues/{number}",
+        "actor": intake_loop.ACTOR,
+        "task_class": task_class,
+        "state": "succeeded",
+        "created_at": NOW - timedelta(hours=1),
+    }
+    values.update(overrides)
+    session.add(FactoryReceipt(**values))
+
+
 def release_sweep(db):
     """Age the sweep clock so the next tick is allowed to read GitHub.
 
@@ -287,31 +309,32 @@ def test_expired_cooldown_is_admissible(db, monkeypatch):
     assert intake_loop.intake_tick(policy(cooldown_hours=24), generation=0)[0]["ok"]
 
 
-def test_daily_cap_and_expiry(db, monkeypatch):
-    calls = fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
+def test_daily_cap_counts_deliveries_and_expires(db, monkeypatch):
+    """The cap bounds delivery churn, so only delivery admissions fill it.
+
+    A refine costs cents and buys no review, so an advisory admission inside
+    the window is invisible to the cap however many of them there were.
+    """
+    fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
     with Session(db) as session:
-        session.add_all(
-            [
-                FactoryAudit(
-                    actor="factory:intake",
-                    action="intake_admitted",
-                    created_at=NOW - timedelta(hours=1),
-                )
-                for _ in range(2)
-            ]
-        )
+        intake_receipt(session, 90)
+        intake_receipt(session, 91)
+        for number in (92, 93, 94):
+            intake_receipt(session, number, task_class="refine")
+        # An operator allowlist admission is not autonomous intake's to count.
+        intake_receipt(session, 95, actor="operator")
         session.commit()
     assert intake_loop.intake_tick(policy(max_per_day=2), generation=0) == []
-    assert calls == []
     detail = json.loads(audits(db, "intake_idle")[0].detail_json)
     assert detail == {"admitted_today": 2, "max_per_day": 2, "reason": "daily_cap"}
     with Session(db) as session:
         for row in session.exec(
-            select(FactoryAudit).where(FactoryAudit.action == "intake_admitted")
+            select(FactoryReceipt).where(FactoryReceipt.issue_number.in_((90, 91)))
         ).all():
             row.created_at = NOW - timedelta(hours=25)
             session.add(row)
         session.commit()
+    release_sweep(db)
     assert intake_loop.intake_tick(policy(max_per_day=2), generation=0)[0]["ok"]
 
 
@@ -376,6 +399,12 @@ def test_refine_enabled_sets_class_while_labelled_stays_delivery(db, monkeypatch
 
 def test_intake_state_reports_policy_usage_and_latest_audits(db):
     with Session(db) as session:
+        # The board shows usage against the cap, so it counts what the cap
+        # counts: delivery admissions intake made, and nothing else.
+        intake_receipt(session, 90)
+        intake_receipt(session, 91, task_class="refine")
+        intake_receipt(session, 92, actor="operator")
+        intake_receipt(session, 93, created_at=NOW - timedelta(hours=25))
         session.add_all(
             [
                 FactoryAudit(
@@ -430,23 +459,20 @@ def test_an_hour_later_the_sweep_runs_again(db, monkeypatch):
 
 
 def test_the_daily_cap_does_not_blind_the_sweep_for_an_hour(db, monkeypatch):
-    """A refusal that never reached GitHub must not set the sweep clock."""
-    calls = fake_pages(monkeypatch, [])
+    """The idle row the cap writes must not be read as the sweep clock."""
+    calls = fake_pages(monkeypatch, [issue(1, ["agent-ready"])])
     with Session(db) as session:
-        session.add(
-            FactoryAudit(
-                actor="factory:intake",
-                action="intake_admitted",
-                detail_json="{}",
-                created_at=NOW - timedelta(hours=1),
-            )
-        )
+        intake_receipt(session, 90)
         session.commit()
     assert intake_loop.intake_tick(policy(max_per_day=1), generation=0) == []
-    assert calls == []
-    # The cap is what refused, so the next tick with room still sweeps.
-    assert intake_loop.intake_tick(policy(max_per_day=5), generation=0) == []
-    assert calls != []
+    swept = len(calls)
+    assert swept > 0
+    assert json.loads(audits(db, "intake_idle")[0].detail_json)["reason"] == "daily_cap"
+    # The idle row is a minute old. Only the sweep clock gates the read, so
+    # raising the cap takes effect on the next tick rather than in an hour.
+    release_sweep(db)
+    assert intake_loop.intake_tick(policy(max_per_day=5), generation=0)[0]["ok"]
+    assert len(calls) > swept
 
 
 def test_a_settlement_releases_the_sweep_immediately(db, monkeypatch):
@@ -622,14 +648,21 @@ def test_a_shut_lane_leaves_the_other_one_working(db, monkeypatch):
     assert detail["excluded"]["lane_full"] == 1
 
 
-def test_the_daily_cap_stops_the_second_lane_mid_tick(db, monkeypatch):
+def test_the_daily_cap_refuses_delivery_and_still_admits_advisory(db, monkeypatch):
+    """The lanes are independent, and the cap bounds only one of them."""
     fake_pages(monkeypatch, [issue(1, ["agent-ready"]), issue(2)])
+    with Session(db) as session:
+        intake_receipt(session, 90)
+        session.commit()
     admitted = intake_loop.intake_tick(
         policy(labels=["agent-ready"], refine_enabled=True, max_per_day=1),
         generation=0,
     )
-    assert [row["receipt"]["task_class"] for row in admitted] == ["bug-fix"]
-    assert json.loads(audits(db, "intake_idle")[0].detail_json)["reason"] == "daily_cap"
+    assert [row["receipt"]["task_class"] for row in admitted] == ["refine"]
+    detail = json.loads(audits(db, "intake_idle")[0].detail_json)
+    assert detail == {"admitted_today": 1, "max_per_day": 1, "reason": "daily_cap"}
+    # One idle row for the tick, not one per refused candidate.
+    assert len(audits(db, "intake_idle")) == 1
 
 
 def test_a_lane_filled_during_the_github_sweep_queues_nothing(db, monkeypatch):

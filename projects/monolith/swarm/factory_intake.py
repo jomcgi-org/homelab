@@ -17,6 +17,7 @@ from swarm.factory_controls import (
     _text,
     DEFAULT_TASK_CLASS,
     factory_max_concurrent_tasks,
+    INTAKE_ACTOR,
     LANES,
     intake_policy,
     lane_for,
@@ -30,8 +31,6 @@ from swarm.factory_controls import (
 )
 from swarm.factory_models import FactoryReceipt
 from swarm.models import SwarmTask, mint_task_id
-
-INTAKE_ACTOR = "factory:intake"
 
 
 def receive_issue(

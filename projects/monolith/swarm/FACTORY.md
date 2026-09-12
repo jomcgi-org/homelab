@@ -255,8 +255,9 @@ rather than what it takes in. It is optional and defaults to `false`.
 
 `enabled` controls autonomous issue discovery. `labels` names delivery-ready
 labels and may be empty, in which case no issue is a delivery candidate.
-`exclude_labels` rejects an issue before selection. `max_per_day` is between 1
-and 50, and `cooldown_hours` is between 1 and 168. `refine_enabled` allows an
+`exclude_labels` rejects an issue before selection. `max_per_day` counts
+delivery admissions only and is between 1 and 10000, and `cooldown_hours` is
+between 1 and 168. `refine_enabled` allows an
 otherwise eligible issue with none of the delivery labels to enter the refine
 path. `close_enabled` allows a refine verdict to close an issue and
 `max_closes_per_day` bounds how many it may close in a rolling 24 hours,
@@ -277,8 +278,15 @@ and open pull requests oldest first, up to five pages of one hundred each; a
 read that hits that cap records `truncated` on the audit, so a partial sweep
 reads as partial.
 
-Intake admits at most one issue per tick and never exceeds `max_per_day` over a
-rolling 24 hours. A failed or cancelled receipt cannot be selected again until
+Intake admits at most one issue per lane per tick, and never opens more than
+`max_per_day` deliveries over a rolling 24 hours. The cap bounds delivery
+churn, which is pull requests and the Opus reviews they cost. Advisory
+admissions are uncounted: a refine writes a comment for cents and buys no
+review, so letting one consume the cap would throttle a burn-down for nothing.
+A capped tick refuses the delivery candidate and audits `daily_cap` once, and
+still admits an advisory candidate on the same tick. The board reads
+`admitted_today` the same way, as deliveries. A failed or cancelled receipt
+cannot be selected again until
 its cooldown expires, whatever class it settled under. Assigned issues,
 excluded labels, issues linked from an open pull request, issues already
 delivered, and issues already received in the current generation under the same

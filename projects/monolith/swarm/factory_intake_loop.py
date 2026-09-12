@@ -17,6 +17,7 @@ from swarm.factory_controls import (
     _locked_session,
     _now,
     _read_session,
+    delivery_admissions,
     intake_policy,
     intake_state,
     lane_for,
@@ -181,11 +182,12 @@ def _listing_due(now: datetime) -> bool:
     genuinely changed, so the next tick sweeps immediately rather than waiting
     out the rest of the hour.
 
-    The clock is its own audit rather than the idle one. A refusal that never
-    reached GitHub, the daily cap above, also writes an idle row, and reading
-    that as a sweep would leave the lane blind for an hour after the cap
-    cleared. A settlement recorded in the same second as the sweep re-opens
-    it: one extra sweep costs two requests, a missed one costs an hour.
+    The clock is its own audit rather than the idle one. An idle row records a
+    refusal, which is not the same event as reading GitHub: the daily cap
+    writes one for a delivery candidate it turned away, and tying the sweep to
+    that would leave the lane blind for an hour after the cap had cleared. A
+    settlement recorded in the same second as the sweep re-opens it: one extra
+    sweep costs two requests, a missed one costs an hour.
 
     An admission re-opens it too, and that is what lets a lane fill. A sweep
     takes at most one candidate per lane, so at four delivery and eight
@@ -248,23 +250,10 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             room = open_lanes(policy, held, lanes)
             if not any(room.values()):
                 return []
-            admitted_today = len(
-                db.exec(
-                    select(FactoryAudit.id).where(
-                        FactoryAudit.action == "intake_admitted",
-                        FactoryAudit.created_at >= today,
-                    )
-                ).all()
-            )
-        if admitted_today >= intake["max_per_day"]:
-            _idle(
-                {
-                    "reason": "daily_cap",
-                    "admitted_today": admitted_today,
-                    "max_per_day": intake["max_per_day"],
-                }
-            )
-            return []
+            # Delivery only. The cap bounds delivery churn, and an advisory
+            # refine costs cents and produces a comment, so the cap is not
+            # consulted for one at all: it must never throttle a burn-down.
+            admitted_today = delivery_admissions(db, today)
 
         if not _listing_due(now):
             return []
@@ -465,6 +454,7 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
             chosen.append(candidate)
 
         received_all = []
+        capped = False
         for candidate in chosen:
             # Re-read the lane under the lock. The room that picked this
             # candidate was measured before a GitHub sweep that takes seconds,
@@ -481,15 +471,13 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 room = open_lanes(policy, held, lanes)
             if not room.get(candidate["lane"]):
                 continue
-            if admitted_today >= intake["max_per_day"]:
-                _idle(
-                    {
-                        "reason": "daily_cap",
-                        "admitted_today": admitted_today,
-                        "max_per_day": intake["max_per_day"],
-                    }
-                )
-                break
+            delivery = candidate["lane"] == "delivery"
+            # Refuse this candidate rather than the rest of the tick. The
+            # lanes are independent, and the advisory lane behind a capped
+            # delivery candidate has nothing to do with what the cap bounds.
+            if delivery and admitted_today >= intake["max_per_day"]:
+                capped = True
+                continue
             issue = candidate["issue"]
             received = receive_issue(
                 repo,
@@ -501,7 +489,8 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                 generation=generation,
                 task_class=candidate["task_class"],
             )
-            admitted_today += 1
+            if delivery:
+                admitted_today += 1
             received_all.append(received)
             with _locked_session() as (db, _control):
                 _audit(
@@ -527,6 +516,16 @@ def intake_tick(policy: dict, *, generation: int, lanes=LANES) -> list[dict]:
                     admitted_today=admitted_today,
                     **({"truncated": True} if truncated else {}),
                 )
+        # Once per tick, and only when the cap actually refused a delivery
+        # candidate. A tick that admitted an advisory one still says so.
+        if capped:
+            _idle(
+                {
+                    "reason": "daily_cap",
+                    "admitted_today": admitted_today,
+                    "max_per_day": intake["max_per_day"],
+                }
+            )
         return received_all
     except Exception:  # noqa: BLE001 - intake is optional and never stops the lane
         logger.exception("factory autonomous intake failed")

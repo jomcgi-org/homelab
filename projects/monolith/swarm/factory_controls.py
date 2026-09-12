@@ -15,7 +15,7 @@ import os
 import re
 from typing import Iterator
 
-from sqlalchemy import update
+from sqlalchemy import or_, update
 from sqlmodel import Session, select
 
 from core.db import get_engine
@@ -135,6 +135,11 @@ TASK_CLASSES = MACHINE_VERIFIED_CLASSES + ADVISORY_CLASSES + JUDGMENT_CLASSES
 # implementer and no review at all, so it is bounded separately rather than
 # competing with delivery for one number.
 LANES = ("delivery", "advisory")
+# The identity autonomous intake writes its receipts under. It lives here
+# rather than beside the loop because the daily cap counts those receipts and
+# the count is read from here, by both the loop and the board. factory_intake
+# re-exports it, so a caller that already knows the name still finds it there.
+INTAKE_ACTOR = "factory:intake"
 # Absent means one delivery task and no advisory work, which is the shape a
 # policy written before lanes existed asked for. The advisory lane is opt-in:
 # an operator who wants refine running says so.
@@ -327,11 +332,14 @@ def _validate_intake(value: object) -> dict:
         if not isinstance(labels, list) or len(labels) > 32:
             raise ValueError(f"invalid {key}")
         result[key] = sorted({_text(label, "label", 128) for label in labels})
+    # The cap bounds delivery churn, which is pull requests and the Opus
+    # reviews they cost, so the ceiling is high enough that an operator can
+    # take it out of the way of a burn-down rather than have it throttle one.
     result["max_per_day"] = _integer(
         value.get("max_per_day", DEFAULT_INTAKE["max_per_day"]),
         "max_per_day",
         1,
-        50,
+        10000,
     )
     result["cooldown_hours"] = _integer(
         value.get("cooldown_hours", DEFAULT_INTAKE["cooldown_hours"]),
@@ -989,6 +997,38 @@ def _snapshot(db: Session, row: FactoryReceipt, *, body: bool = False) -> dict:
     return result
 
 
+def delivery_admissions(db, since: datetime) -> int:
+    """Delivery receipts autonomous intake opened since ``since``.
+
+    This is what ``max_per_day`` bounds. The cap exists to bound delivery
+    churn, which is pull requests and the Opus reviews they cost; an advisory
+    refine writes a comment for cents and buys no review at all, so counting
+    one against the cap would let cheap work throttle a burn-down. Counting
+    receipts rather than ``intake_admitted`` audits is what makes the class
+    readable at all: the audit trail has no class-scoped query, the receipt
+    carries the class it was received under, and a receipt is written for
+    exactly the admissions the audits record.
+
+    Scoped to intake's own actor. An operator who names issues in the policy
+    allowlist has already decided how many to take, and reading their receipts
+    as autonomous admissions would close the lane on them.
+    """
+    return len(
+        db.exec(
+            select(FactoryReceipt.id).where(
+                FactoryReceipt.actor == INTAKE_ACTOR,
+                FactoryReceipt.created_at >= since,
+                # A receipt written before classes existed reads as the
+                # default, which is delivery, so an untyped row still counts.
+                or_(
+                    FactoryReceipt.task_class.is_(None),
+                    FactoryReceipt.task_class.notin_(ADVISORY_CLASSES),
+                ),
+            )
+        ).all()
+    )
+
+
 def intake_state(policy: dict, *, session: Session | None = None) -> dict:
     """What the board shows: the block, the last two audits, today's usage.
 
@@ -999,14 +1039,10 @@ def intake_state(policy: dict, *, session: Session | None = None) -> dict:
     block = intake_policy(policy)
     cutoff = _now() - timedelta(hours=24)
     with _read_session(session) as db:
-        admitted_today = len(
-            db.exec(
-                select(FactoryAudit.id).where(
-                    FactoryAudit.action == "intake_admitted",
-                    FactoryAudit.created_at >= cutoff,
-                )
-            ).all()
-        )
+        # Delivery admissions, which is what the cap beside it bounds. The
+        # board would otherwise show a fraction whose two halves counted
+        # different things.
+        admitted_today = delivery_admissions(db, cutoff)
 
         def latest(action: str) -> dict | None:
             row = db.exec(
