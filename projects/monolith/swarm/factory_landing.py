@@ -32,6 +32,7 @@ from swarm.factory_controls import (
     _now,
     _read_session,
     auto_merge_enabled,
+    request_merge_conflict_correction,
 )
 from swarm.factory_models import FactoryAudit, FactoryReceipt
 
@@ -115,6 +116,12 @@ def github_list(repo: str, suffix: str) -> list:
     from swarm.factory_conductor import github_list as read
 
     return read(repo, suffix)
+
+
+def _has_merge_conflict(pull: dict) -> bool:
+    from swarm.factory_conductor import pull_has_merge_conflict
+
+    return pull_has_merge_conflict(pull)
 
 
 def _headers() -> dict[str, str]:
@@ -440,6 +447,24 @@ def _arm(repo: str, item: dict) -> None:
             _refuse(item, "pull request is not open and ready")
             return
         head = (pr.get("head") or {}).get("sha")
+        approved = item["head_sha"]
+        if not isinstance(approved, str) or not re.fullmatch(r"[0-9a-f]{40}", approved):
+            _refuse(item, "approved_head_missing")
+            return
+        if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+            _refuse(item, "pull_request_head_missing", approved_head_sha=approved)
+            return
+        if head != approved:
+            _refuse(
+                item,
+                "head_moved",
+                approved_head_sha=approved,
+                head_sha=head,
+            )
+            return
+        if _has_merge_conflict(pr):
+            _recover_merge_conflict(item, head, "delivered_pr")
+            return
         node_id = pr.get("node_id")
         if not isinstance(node_id, str) or not node_id:
             _refuse(item, "pull request has no node id")
@@ -454,9 +479,8 @@ def _arm(repo: str, item: dict) -> None:
     except (httpx.HTTPError, ValueError) as exc:
         _error(item["task_id"], "arm", exc)
         return
-    # The head this arming is measured against is the head GitHub has now, not
-    # the head the review approved: a branch that moved between approval and
-    # arming is caught by the next observation rather than merged quietly.
+    # The exact approved head was checked immediately before this mutation.
+    # Record the same value so later observation catches any subsequent push.
     _append(
         item["task_id"],
         "merge_armed",
@@ -479,6 +503,27 @@ def _disarm(repo: str, pr: dict) -> None:
         github_graphql(_DISARM_AUTO_MERGE, {"pullRequestId": node_id})
     except (GraphQLRefused, httpx.HTTPError, ValueError):
         logger.warning("factory landing could not disarm pull request", exc_info=True)
+
+
+def _recover_merge_conflict(item: dict, head: object, source: str) -> dict:
+    """Durably hand one exact-head conflict back to the active conductor."""
+    item["refused"] = True
+    if not isinstance(head, str):
+        return {"ok": False, "reason": "pull request has no head sha"}
+    result = request_merge_conflict_correction(
+        item["task_id"],
+        item["pr_number"],
+        head,
+        source,
+        ACTOR,
+    )
+    if not result["ok"]:
+        logger.warning(
+            "factory landing could not reopen merge conflict for task %s: %s",
+            item["task_id"],
+            result["reason"],
+        )
+    return result
 
 
 def _observe(repo: str, item: dict) -> None:
@@ -515,6 +560,18 @@ def _observe(repo: str, item: dict) -> None:
         _refuse(item, "head_moved", armed_head_sha=item["head_sha"], head_sha=head)
         return
     if pr.get("auto_merge") is not None:
+        return
+    if _has_merge_conflict(pr):
+        recovered = _recover_merge_conflict(item, head, "merge_queue")
+        if recovered.get("ok") and not recovered.get("replayed"):
+            _append(
+                item["task_id"],
+                "merge_ejected",
+                pr_number=number,
+                reason="merge_conflict",
+                attempt=item["armed"],
+            )
+            item["ejected"] += 1
         return
     # Open, still unmerged, and GitHub has turned auto-merge off: the merge
     # queue ejected it. Without this the holder wedged forever, because the
