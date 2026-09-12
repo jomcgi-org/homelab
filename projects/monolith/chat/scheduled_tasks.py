@@ -551,9 +551,7 @@ async def drain_once(
                 finalized += 1
         except Exception as exc:
             logger.exception("scheduled task occurrence %s failed", claim.occurrence_id)
-            await asyncio.to_thread(
-                _release_with_engine, engine, claim, str(exc), now
-            )
+            await asyncio.to_thread(_release_with_engine, engine, claim, str(exc), now)
     return finalized
 
 
