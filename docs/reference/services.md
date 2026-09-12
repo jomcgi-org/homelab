@@ -50,6 +50,58 @@ sites. See [monolith-public](../../projects/monolith-public/) and the
 [monolith frontend](../../projects/monolith/frontend/). The old Astro/VitePress
 Cloudflare Pages frontends were decommissioned (ADR docs/002).
 
+### Public response cache contract
+
+The shared Cloudflare cache contract applies only to public, anonymous,
+cookie-free responses covered by the `public.jomcgi.dev` hostname Cache Rule.
+A cacheable response must not depend on `Authorization`, a session, cookies, or
+any other caller-specific state, must not contain personalized data, and must
+not set a cookie. Authenticated or personalized responses are outside this
+contract and must not be marked `public` for shared caching.
+
+Every new public data route must set its cache policy explicitly at the
+internet-facing response. For a SvelteKit same-origin proxy, select the
+route-specific constant from
+[`cache-headers.js`](../../projects/monolith/frontend/src/lib/cache-headers.js)
+and pass it through `cloudflareCacheHeaders()`. Do not rely on a backend header
+surviving the proxy, on a Cloudflare default TTL, or on the hostname rule to
+invent a policy. Keep a mirrored backend policy synchronized when the backend
+also emits the header.
+
+The stats proxy is the canonical short-lived data example. Its policy is:
+
+```http
+Cache-Control: public, max-age=0, s-maxage=60, stale-while-revalidate=86400, stale-if-error=31536000
+Cloudflare-CDN-Cache-Control: public, max-age=60, stale-while-revalidate=86400, stale-if-error=31536000
+```
+
+The two headers deliberately address different caches. `max-age=0` in
+`Cache-Control` makes a browser revalidate on each use instead of retaining a
+stale JSON snapshot. `s-maxage=60` gives shared caches a 60-second lifetime.
+`cloudflareCacheHeaders()` converts that shared lifetime to `max-age=60` in the
+higher-precedence Cloudflare-only header because Cloudflare treats `s-maxage`
+as `proxy-revalidate`, which would disable the stale directives. See the
+canonical use in the
+[`/app/notes/stats` proxy](../../projects/monolith/frontend/src/routes/public/app/notes/stats/+server.js)
+and its mirrored backend value in
+[`home/observability/router.py`](../../projects/monolith/home/observability/router.py).
+
+Default a new public data poller to the existing five-minute cadence in
+[`homepage-stats.js`](../../projects/monolith/frontend/src/routes/public/homepage-stats.js),
+then choose a different interval only when the data's refresh rate and user
+experience justify it. The Notes app's 20-second live readout is an existing
+route-specific example: browser revalidation occurs on every poll, while the
+60-second shared lifetime lets the edge absorb those requests. Browser and edge
+freshness are separate decisions, so never use browser caching as a substitute
+for a polling interval.
+
+These headers establish the code-side contract, not proof that the live edge
+accepted the response. After deployment, verify repeated requests on the
+hostname covered by the rule and inspect `cf-cache-status` and `age`. Keep a
+route's live cache acceptance recorded as unverified until that check succeeds.
+The [public-tier checklist](../runbooks/public-tier-checklist.md) carries the
+implementation and rollout checks.
+
 ## Service Details
 
 The monolith drainer claims `kg-drain` routine jobs alongside `qwen-drain`
