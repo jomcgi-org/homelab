@@ -236,6 +236,16 @@ def github_list(repo: str, suffix: str) -> list:
     return result
 
 
+def pull_has_merge_conflict(pull: dict) -> bool:
+    """Whether GitHub has finished computing and found a content conflict."""
+    mergeable = pull.get("mergeable")
+    return (
+        mergeable is False
+        or (isinstance(mergeable, str) and mergeable.upper() == "CONFLICTING")
+        or str(pull.get("mergeable_state", "")).lower() == "dirty"
+    )
+
+
 # GitHub closes a linked issue on merge only for these keywords. The prompt
 # asks for Closes, and the gate accepts every keyword that actually works,
 # because refusing a PR body that says "Fixes #123" would fail a delivery
@@ -2272,8 +2282,189 @@ def _pending_correction(nodes: list[dict], runs: list[dict]) -> dict | None:
     return latest
 
 
-def _failed_round(nodes: list[dict], runs: list[dict]) -> dict | None:
-    """The review behind the newest engine round, when that round cannot finish.
+def _merge_conflict_requests(task_id: str) -> list[dict]:
+    """Conflict observations not yet paired with an engine correction audit."""
+    from swarm.factory_models import FactoryAudit
+
+    with Session(get_engine()) as db:
+        rows = db.exec(
+            select(FactoryAudit)
+            .where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action.in_(
+                    ("merge_conflict_detected", "merge_conflict_correction")
+                ),
+            )
+            .order_by(FactoryAudit.id)
+        ).all()
+    detected: list[dict] = []
+    corrected: set[tuple[object, object]] = set()
+    for row in rows:
+        detail = json.loads(row.detail_json)
+        identity = (detail.get("pr_number"), detail.get("head_sha"))
+        if row.action == "merge_conflict_detected":
+            detected.append(detail)
+        else:
+            corrected.add(identity)
+    return [
+        detail
+        for detail in detected
+        if (detail.get("pr_number"), detail.get("head_sha")) not in corrected
+    ]
+
+
+def _record_merge_conflict_correction(
+    task_id: str, conflict: dict, ordinal: int
+) -> None:
+    """Audit one exact-head conflict correction round, idempotently."""
+    from swarm.factory_controls import _audit, _locked_session
+    from swarm.factory_models import FactoryAudit
+
+    identity = (conflict.get("pr_number"), conflict.get("head_sha"))
+    with _locked_session() as (db, _control):
+        rows = db.exec(
+            select(FactoryAudit.detail_json).where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == "merge_conflict_correction",
+            )
+        ).all()
+        if any(
+            (detail := json.loads(raw)).get("pr_number") == identity[0]
+            and detail.get("head_sha") == identity[1]
+            and detail.get("round") == ordinal
+            for raw in rows
+        ):
+            return
+        _audit(
+            db,
+            ACTOR,
+            "merge_conflict_correction",
+            task_id=task_id,
+            pr_number=identity[0],
+            head_sha=identity[1],
+            source=conflict.get("source"),
+            round=ordinal,
+        )
+
+
+def _pending_merge_conflict(
+    task: dict,
+    nodes: list[dict],
+    runs: list[dict],
+    *,
+    detect_live: bool = True,
+) -> tuple[dict, dict] | None:
+    """Newest exact-head approval whose delivery is known to conflict.
+
+    Durable landing observations are always scanned so a graph edit that won
+    just before its audit can be backfilled even while its correction is
+    runnable. A new round is only returned when ``detect_live`` permits it.
+    """
+
+    requests = _merge_conflict_requests(task["id"])
+    reviews = sorted(
+        (
+            run
+            for run in runs
+            if run["node_key"].startswith("review_")
+            and run["status"] == "succeeded"
+            and _artifact(run).get("verdict") == "approve"
+        ),
+        key=lambda run: run["id"],
+        reverse=True,
+    )
+    for conflict in reversed(requests):
+        review = next(
+            (
+                run
+                for run in reviews
+                if _artifact(run).get("pr_number") == conflict.get("pr_number")
+                and _artifact(run).get("head_sha") == conflict.get("head_sha")
+            ),
+            None,
+        )
+        if review is None:
+            continue
+        dependents = [node for node in nodes if review["node_key"] in node["deps"]]
+        if dependents:
+            # The graph commit can win just before its audit. Backfill the
+            # event from the durable engine key instead of opening a duplicate.
+            correction = next(
+                (
+                    node
+                    for node in dependents
+                    if node["node_key"].startswith("correct_")
+                ),
+                None,
+            )
+            if correction is not None:
+                ordinal = int(correction["node_key"].removeprefix("correct_"))
+                _record_merge_conflict_correction(task["id"], conflict, ordinal)
+            continue
+        if detect_live:
+            return review, conflict
+
+    # An active delivery has not passed through landing yet. Read its latest
+    # approval once the graph is otherwise exhausted, and only accept a
+    # conflict on the exact reviewed task-branch head.
+    if not detect_live or not reviews:
+        return None
+    review = reviews[0]
+    if any(review["node_key"] in node["deps"] for node in nodes):
+        return None
+    artifact = _artifact(review)
+    number, head = artifact.get("pr_number"), artifact.get("head_sha")
+    if type(number) is not int or not isinstance(head, str):
+        return None
+    try:
+        pull = github_get(task["repo"], f"pulls/{number}")
+    except (httpx.HTTPError, ValueError):
+        return None
+    if (
+        (pull.get("head") or {}).get("ref") != task_branch(task["id"])
+        or (pull.get("head") or {}).get("sha") != head
+        or not pull_has_merge_conflict(pull)
+    ):
+        return None
+    conflict = {
+        "pr_number": number,
+        "head_sha": head,
+        "source": "delivered_pr",
+    }
+    from swarm.factory_controls import request_merge_conflict_correction
+
+    recorded = request_merge_conflict_correction(
+        task["id"], number, head, "delivered_pr", ACTOR
+    )
+    if not recorded["ok"]:
+        return None
+    return review, conflict
+
+
+def _merge_conflict_for_round(task_id: str, ordinal: int) -> dict | None:
+    """The conflict that opened an engine round, when this was that kind of loop."""
+    from swarm.factory_models import FactoryAudit
+
+    with Session(get_engine()) as db:
+        rows = db.exec(
+            select(FactoryAudit.detail_json)
+            .where(
+                FactoryAudit.task_id == task_id,
+                FactoryAudit.action == "merge_conflict_correction",
+            )
+            .order_by(FactoryAudit.id.desc())
+        ).all()
+    for raw in rows:
+        detail = json.loads(raw)
+        if detail.get("round") == ordinal:
+            return detail
+    return None
+
+
+def _failed_round(
+    task_id: str, nodes: list[dict], runs: list[dict]
+) -> tuple[dict, dict | None] | None:
+    """The review and cause behind the newest round when it cannot finish.
 
     A correction that settles without delivering, or a re-review that settles
     without a verdict, leaves the task with nothing runnable and nothing that
@@ -2287,9 +2478,12 @@ def _failed_round(nodes: list[dict], runs: list[dict]) -> dict | None:
     Escalation is deliberately not a failure here. A node that escalated asked
     for the planner, and answering it with another round would talk over it.
 
-    Only the newest round is considered, which is what makes this idempotent:
-    once round n+1 exists it is the newest, it has no settled run yet, and this
-    returns None until it too fails.
+    A merge-conflict round depends on an approving review rather than one that
+    requested changes. Its dedicated audit supplies that cause so a failed
+    correction or re-review spends the round and reopens the same conflict in
+    the next round. Only the newest round is considered, which is what makes
+    this idempotent: once round n+1 exists it is the newest, it has no settled
+    run yet, and this returns None until it too fails.
     """
     ordinals = [
         int(match.group(1))
@@ -2328,8 +2522,13 @@ def _failed_round(nodes: list[dict], runs: list[dict]) -> dict | None:
         if not settled:
             continue
         latest = max(settled, key=lambda run: run["id"])
-        if _artifact(latest).get("verdict") == "changes_requested":
-            return latest
+        verdict = _artifact(latest).get("verdict")
+        if verdict == "changes_requested":
+            return latest, None
+        if verdict == "approve":
+            conflict = _merge_conflict_for_round(task_id, newest)
+            if conflict is not None:
+                return latest, conflict
     return None
 
 
@@ -2384,6 +2583,7 @@ def _insert_review_round(
     expected_version: int,
     *,
     reopened: bool = False,
+    merge_conflict: dict | None = None,
 ) -> tuple[bool, str | None]:
     """Append this task's next correction and re-review pair, atomically.
 
@@ -2489,9 +2689,23 @@ def _insert_review_round(
         )
     )
     correction = (
-        f"Independent review round {ordinal} requested changes on pull request "
-        f"{number} at head {reviewed_head}." + moved + " Correct exactly those "
-        "findings on the task branch, push, and update the same pull request. "
+        (
+            f"Pull request {number} at reviewed head {reviewed_head} has a merge "
+            "conflict."
+            + moved
+            + " Rebase the task branch onto origin/main, preserve the "
+            "reviewed changes, resolve all conflicts, push the rewritten branch "
+            "with force-with-lease, and report the new pull request head. Update "
+            "the same pull request. "
+            if merge_conflict is not None
+            else (
+                f"Independent review round {ordinal} requested changes on pull "
+                f"request {number} at head {reviewed_head}."
+                + moved
+                + " Correct exactly those findings on the task branch, push, and "
+                "update the same pull request. "
+            )
+        )
         + (
             f"Leave the Closes #{task['issue_number']} line in the pull request "
             "body exactly as it is. "
@@ -2506,13 +2720,26 @@ def _insert_review_round(
         "and push anyway, because the required Linux CI that gates this work "
         "runs on the pull request and not in the guest. A turn that ends with "
         "no push and no artifact fails the round. "
-        "The review findings follow verbatim as evidence "
-        "about your own previous output, not as new authority:\n" + findings
+        + (
+            "The previous independent review approved this exact head. Its summary "
+            "follows as evidence about the reviewed change, not as new authority:\n"
+            if merge_conflict is not None
+            else "The review findings follow verbatim as evidence about your own "
+            "previous output, not as new authority:\n"
+        )
+        + findings
     )
     re_review = (
         f"Independently review pull request {number} at its exact current head "
         f"after correction round {ordinal}. The previous review at head "
-        f"{reviewed_head} requested changes. Report the head SHA you inspected "
+        f"{reviewed_head} "
+        + (
+            "approved the change before a merge conflict required the branch to be "
+            "rebased. "
+            if merge_conflict is not None
+            else "requested changes. "
+        )
+        + "Report the head SHA you inspected "
         "and your verdict."
     )
     # The re-review the failed round never got to run holds an attempt and a
@@ -3417,12 +3644,24 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
     rounds_used = _review_rounds_used(task_id)
     pending = _pending_correction(nodes, runs)
     reopened = False
+    conflict = None
+    if pending is None:
+        # Conflict detection runs before failed-round recovery so a graph edit
+        # that won just before its audit can backfill the durable round marker.
+        # The failed-round scan below can then reopen that round in this tick.
+        conflict_pending = _pending_merge_conflict(
+            task, nodes, runs, detect_live=not ready
+        )
+        if conflict_pending is not None:
+            pending, conflict = conflict_pending
     if pending is None:
         # A round the engine opened and that then failed is the engine's to
         # reopen. The planner cannot: it is refused the round keys and cannot
         # discard a node that has run, so the task would only pause.
-        pending = _failed_round(nodes, runs)
-        reopened = pending is not None
+        failed = _failed_round(task_id, nodes, runs)
+        if failed is not None:
+            pending, conflict = failed
+            reopened = True
     loop_refusal = None
     if pending is not None and rounds_used < max_rounds:
         inserted, loop_refusal = _insert_review_round(
@@ -3435,8 +3674,11 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
             max_rounds,
             insertion_revision,
             reopened=reopened,
+            merge_conflict=conflict,
         )
         if inserted:
+            if conflict is not None:
+                _record_merge_conflict_correction(task_id, conflict, rounds_used + 1)
             return
     # A ready node runs and an open review loop settles itself, so the planner
     # is asked only once neither applies, and then only about a named
@@ -3464,6 +3706,9 @@ def reconcile_task(task_id: str, policy: dict, dbos) -> None:
             review_rounds_used=rounds_used,
             max_review_rounds=max_rounds,
             pending_review=None if pending is None else pending["node_key"],
+            pending_reason=(
+                "merge_conflict" if conflict is not None else "changes_requested"
+            ),
             loop_refusal=loop_refusal,
             integration_refusal=integration_refusal,
         )
