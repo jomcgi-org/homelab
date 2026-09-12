@@ -1281,6 +1281,7 @@ py_library(
         "@pip//pydantic_ai_slim",
         "@pip//python_multipart",
         "@pip//pyyaml",
+        "@pip//regex",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
         "@pip//tzdata",
@@ -1623,6 +1624,7 @@ py_library(
         "@pip//pydantic_ai_slim",
         "@pip//python_multipart",  # trips/ingest_router.py (UploadFile / form parsing)
         "@pip//pyyaml",
+        "@pip//regex",
         # PyJWT is currently locked transitively through mcp and semgrep.
         "@pip//pyjwt",
         # NOTE: semgrep_scan/report.py uploads to the Semgrep App via plain
@@ -3365,6 +3367,32 @@ py_test(
         "@pip//pytest",
         "@pip//pytest_asyncio",
         "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "chat_triggers_test",
+    srcs = ["chat/triggers_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_cyclegroup",
+        "@pip//pydantic_ai_slim",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
+        "@pip//sqlalchemy",
+        "@pip//sqlmodel",
+    ],
+)
+
+py_test(
+    name = "chat_bot_triggers_test",
+    srcs = ["chat/bot_triggers_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_cyclegroup",
+        "@pip//discord_py",
+        "@pip//pytest",
+        "@pip//pytest_asyncio",
     ],
 )
 

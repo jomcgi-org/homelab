@@ -38,6 +38,7 @@ from chat import safeguards
 from chat import orchestrator
 from chat import reply_repair_log
 from chat import summarizer
+from chat import triggers
 from chat.reply_sanitize import repair_leaked_reply
 from chat.models import ReactionEvent
 from core.db import get_engine
@@ -244,6 +245,14 @@ class AgentFlowOutcome:
     chat_reply: str | None = None
     generated_files: list = field(default_factory=list)
     pending_proposal: list = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _TriggerInvoker:
+    """Minimal Discord-user shape for an owner-authored agent trigger."""
+
+    id: int
+    mention: str
 
 
 def _render_reply_guidance(verdict: "orchestrator.ChatVerdict") -> str:
@@ -633,9 +642,9 @@ class ChatBot(discord.Client):
         # synced to the guild in on_ready.
         self.tree = discord.app_commands.CommandTree(self)
         self._register_commands()
-        # Live references to fire-and-forget safeguards intent classifies
-        # (asyncio only holds weak refs to tasks; without this set a scoring
-        # task could be garbage-collected mid-flight).
+        # Live references to fire-and-forget safeguards intent classifies and
+        # trigger actions. asyncio only holds weak refs to tasks; without this
+        # set background work could be garbage-collected mid-flight.
         self._safeguards_tasks: set[asyncio.Task] = set()
 
     def _register_commands(self) -> None:
@@ -879,6 +888,15 @@ class ChatBot(discord.Client):
                     logger.exception("safeguards: enforcement log dispatch failed")
             return
 
+        # Configured triggers are an additional side effect, not a replacement
+        # for existing mention, ambient, storage, or response behavior. Trust
+        # lockout above takes precedence, and all bot-authored messages are
+        # excluded so responses and crossposts cannot feed back into triggers.
+        if not message.author.bot:
+            task = asyncio.create_task(self.evaluate_triggers(message))
+            self._safeguards_tasks.add(task)
+            task.add_done_callback(self._safeguards_tasks.discard)
+
         # The LLM intent lane runs fire-and-forget on messages worth the
         # classify (bot-addressed, heuristic-flagged, or ambient-engaged
         # below): it never delays the reply, and its verdict lands on the
@@ -952,6 +970,109 @@ class ChatBot(discord.Client):
                 return
 
         await self._process_message(message)
+
+    async def evaluate_triggers(self, message: discord.Message) -> None:
+        """Claim matching active triggers and isolate each action dispatch."""
+        if message.author.bot:
+            return
+        try:
+            claims = await asyncio.to_thread(
+                triggers.claim_matching_for_message,
+                str(message.channel.id),
+                str(message.author.id),
+                message.content or "",
+            )
+        except Exception:
+            logger.exception("triggers: evaluation failed")
+            return
+
+        for claim in claims:
+            try:
+                await self.fire_trigger(claim, message)
+            except Exception:
+                # One bad target channel, Discord failure, or agent startup
+                # must not block later triggers or normal message handling.
+                logger.exception(
+                    "triggers: dispatch failed for %s (#%s)", claim.name, claim.id
+                )
+
+    async def fire_trigger(
+        self, claim: triggers.TriggerClaim, message: discord.Message
+    ) -> None:
+        """Dispatch one already-claimed respond, crosspost, or agent action."""
+        author = getattr(message.author, "mention", f"<@{message.author.id}>")
+        channel_id = str(message.channel.id)
+
+        if claim.action_type == "respond":
+            body = triggers.render_template(
+                claim.action_config["content"],
+                content=message.content or "",
+                author=author,
+                channel_id=channel_id,
+            )
+            await message.reply(body)
+            return
+
+        if claim.action_type == "crosspost":
+            target_id = int(claim.action_config["target_channel_id"])
+            target = self.get_channel(target_id)
+            if target is None:
+                target = await self.fetch_channel(target_id)
+            template = claim.action_config.get(
+                "content",
+                "Cross-posted from <#{channel_id}> by {author}:\n{content}",
+            )
+            body = triggers.render_template(
+                template,
+                content=message.content or "",
+                author=author,
+                channel_id=channel_id,
+            )
+            await target.send(body)
+            return
+
+        if claim.action_type == "agent_run":
+            # Authorization is re-checked at fire time. Revoking/changing the
+            # configured owner immediately disables previously created agent
+            # triggers instead of leaving a durable budget/code-execution bypass.
+            if not acl.is_owner(claim.created_by_user_id):
+                raise PermissionError("agent trigger creator is no longer the owner")
+            source_channel = message.channel
+            trigger_message = message
+            if isinstance(source_channel, discord.Thread):
+                source_channel = source_channel.parent
+                # Discord cannot create a child thread from a message that is
+                # already inside a thread. Open a standalone thread on the
+                # parent channel in this case.
+                trigger_message = None
+            if not isinstance(source_channel, discord.TextChannel):
+                raise TypeError("agent triggers require a Discord text channel")
+            prompt = triggers.render_template(
+                claim.action_config["prompt"],
+                content=message.content or "",
+                author=author,
+                channel_id=channel_id,
+                max_length=4000,
+            )
+            creator_id = int(claim.created_by_user_id)
+            invoker = _TriggerInvoker(
+                id=creator_id,
+                mention=f"<@{creator_id}>",
+            )
+            outcome = await self.start_agent_flow(
+                source_channel,
+                invoker,
+                prompt,
+                claim.action_config.get("repo", ""),
+                trigger_message=trigger_message,
+                route_via_orchestrator=False,
+                model=claim.action_config.get("model", DEFAULT_AGENT_MODEL),
+            )
+            if outcome.thread is None:
+                raise RuntimeError("agent trigger did not start a thread")
+            return
+
+        raise ValueError(f"unknown trigger action {claim.action_type!r}")
 
     async def _resolve_ambient(
         self, guild_id, channel_id: str, message: discord.Message

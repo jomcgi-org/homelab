@@ -18,6 +18,7 @@ from sandbox.client import run_code_in_sandbox
 from shared.embedding import EmbeddingClient
 from chat.models import Attachment, Blob, Message
 from chat.store import MessageStore
+from chat import triggers as trigger_store
 from chat.web_search import search_web
 
 LLAMA_CPP_URL = os.environ.get("LLAMA_CPP_URL", "")
@@ -328,6 +329,8 @@ def build_system_prompt(channel: str = "discord") -> str:
         "action items from it, when asked.\n"
         "- Set a one-shot reminder for someone in this channel, list what "
         "they've got pending, or cancel one.\n"
+        "- If you are the configured owner, create and manage regex message "
+        "triggers that respond, crosspost, or start an agent run.\n"
         "- Run short code in one of six isolated language sandboxes for exact "
         "math, data crunching, or a quick chart, and attach the output.\n"
         "- Kick off an agent thread for heavier work, which runs in an "
@@ -902,6 +905,59 @@ def create_agent(
             logger.exception("directives: reset_channel_directive failed")
             return "I couldn't reset the directive right now, try again in a bit."
         return "This channel's directive is back to the default."
+
+    @agent.tool
+    @signposted(
+        "Only when the configured owner explicitly asks to create, inspect, "
+        "change, enable, disable, or delete a regex automation for Discord messages."
+    )
+    async def manage_triggers(
+        ctx: RunContext[ChatDeps],
+        operation: str,
+        name: str = "",
+        pattern: str | None = None,
+        channel_ids: list[str] | None = None,
+        user_ids: list[str] | None = None,
+        action_type: str | None = None,
+        action_config: dict[str, Any] | None = None,
+        cooldown_secs: int | None = None,
+        enabled: bool | None = None,
+    ) -> str:
+        """Manage persisted Discord message triggers.
+
+        operation is create, list, update, enable, disable, or delete. Create
+        requires name, pattern, action_type, and action_config. Omitted
+        channel_ids on create scopes the trigger to this channel; an explicit
+        empty list means all channels. An empty user_ids list means all users.
+        Actions use these payloads: respond {"content": "..."}, crosspost
+        {"target_channel_id": "...", "content": "optional ..."}, or
+        agent_run {"prompt": "...", "repo": "optional", "model": "luna"}.
+        The templates may use {content}, {author}, and {channel_id}.
+        """
+        from chat import acl
+
+        if not ctx.deps.author_id or not acl.is_owner(ctx.deps.author_id):
+            return "Only the configured owner can manage message triggers."
+        try:
+            return await asyncio.to_thread(
+                trigger_store.manage_triggers,
+                operation,
+                author_id=ctx.deps.author_id,
+                current_channel_id=ctx.deps.channel_id,
+                name=name,
+                pattern=pattern,
+                channel_ids=channel_ids,
+                user_ids=user_ids,
+                action_type=action_type,
+                action_config=action_config,
+                cooldown_secs=cooldown_secs,
+                enabled=enabled,
+            )
+        except trigger_store.TriggerValidationError as exc:
+            return f"Invalid trigger configuration: {exc}."
+        except Exception:
+            logger.exception("manage_triggers failed")
+            return "I couldn't manage triggers right now, try again in a bit."
 
     @agent.tool
     @signposted(

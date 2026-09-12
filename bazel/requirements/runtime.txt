@@ -3564,6 +3564,7 @@ regex==2026.4.4 \
     --hash=sha256:fe896e07a5a2462308297e515c0054e9ec2dd18dfdc9427b19900b37dfe6f40b \
     --hash=sha256:ffa81f81b80047ba89a3c69ae6a0f78d06f4a42ce5126b0eb2a0a10ad44e0b2e
     # via
+    #   homelab (pyproject.toml)
     #   dateparser
     #   tiktoken
 requests==2.33.0 \

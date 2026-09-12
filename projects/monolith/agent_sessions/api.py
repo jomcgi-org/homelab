@@ -5,6 +5,7 @@ Existing execution functions resolve lazily to their unchanged implementation.
 """
 
 from agent_sessions import admission as _admission
+from agent_sessions import SUPPORTED_MODELS as SUPPORTED_MODELS
 from agent_sessions.constants import DRAINER_NODE_KEY as DRAINER_NODE_KEY
 from agent_sessions.constants import KG_NODE_KEY as KG_NODE_KEY
 from agent_sessions.reconciliation import (

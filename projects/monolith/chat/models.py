@@ -538,6 +538,48 @@ class Reminder(SQLModel, table=True):
     delivered_at: datetime | None = Field(default=None)
 
 
+class MessageTrigger(SQLModel, table=True):
+    """A configurable regex action evaluated for inbound Discord messages.
+
+    Empty channel_ids or user_ids arrays mean "all". The action_config shape
+    is validated by chat.triggers before writes; the database action CHECK and
+    cooldown CHECK provide a second line of defense for direct SQL writes.
+    last_fired_at is claimed atomically before dispatch, giving cooldowns
+    at-most-once behavior across bot replicas.
+    """
+
+    __tablename__ = "triggers"
+    __table_args__ = (
+        CheckConstraint(
+            "action_type IN ('respond', 'crosspost', 'agent_run')",
+            name="triggers_action_type_valid",
+        ),
+        CheckConstraint(
+            "cooldown_secs >= 0 AND cooldown_secs <= 604800",
+            name="triggers_cooldown_valid",
+        ),
+        {"schema": "chat", "extend_existing": True},
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(unique=True, max_length=100)
+    pattern: str = Field(max_length=512)
+    channel_ids: list[str] = Field(
+        default_factory=list, sa_column=Column(_JSONB, nullable=False)
+    )
+    user_ids: list[str] = Field(
+        default_factory=list, sa_column=Column(_JSONB, nullable=False)
+    )
+    action_type: str
+    action_config: dict = Field(sa_column=Column(_JSONB, nullable=False))
+    cooldown_secs: int = Field(default=0)
+    last_fired_at: datetime | None = Field(default=None)
+    enabled: bool = Field(default=True)
+    created_by_user_id: str = Field(default="")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class UserStylePref(SQLModel, table=True):
     """Per-user style preference (ADR 035 phase 5).
 
