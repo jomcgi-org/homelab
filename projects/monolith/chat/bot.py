@@ -642,13 +642,10 @@ class ChatBot(discord.Client):
         # synced to the guild in on_ready.
         self.tree = discord.app_commands.CommandTree(self)
         self._register_commands()
-        # Live references to fire-and-forget safeguards intent classifies
-        # (asyncio only holds weak refs to tasks; without this set a scoring
-        # task could be garbage-collected mid-flight).
+        # Live references to fire-and-forget safeguards intent classifies and
+        # trigger actions. asyncio only holds weak refs to tasks; without this
+        # set background work could be garbage-collected mid-flight.
         self._safeguards_tasks: set[asyncio.Task] = set()
-        # Trigger actions may start a guest session and must not delay the
-        # ordinary chat response path. Retain those background tasks too.
-        self._trigger_tasks: set[asyncio.Task] = set()
 
     def _register_commands(self) -> None:
         """Register application (slash) commands on the tree."""
@@ -897,8 +894,8 @@ class ChatBot(discord.Client):
         # excluded so responses and crossposts cannot feed back into triggers.
         if not message.author.bot:
             task = asyncio.create_task(self.evaluate_triggers(message))
-            self._trigger_tasks.add(task)
-            task.add_done_callback(self._trigger_tasks.discard)
+            self._safeguards_tasks.add(task)
+            task.add_done_callback(self._safeguards_tasks.discard)
 
         # The LLM intent lane runs fire-and-forget on messages worth the
         # classify (bot-addressed, heuristic-flagged, or ambient-engaged

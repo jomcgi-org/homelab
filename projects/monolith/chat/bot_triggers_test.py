@@ -227,7 +227,6 @@ async def test_on_message_wires_humans_but_not_bots_to_triggers(
     bot = MagicMock()
     bot.user.id = 999
     bot._safeguards_tasks = set()
-    bot._trigger_tasks = set()
     bot._resolve_ambient = AsyncMock(return_value=False)
     bot._process_message = AsyncMock()
     bot.evaluate_triggers = AsyncMock()
@@ -264,7 +263,6 @@ async def test_trigger_dispatch_does_not_delay_normal_message_processing():
     bot = MagicMock()
     bot.user.id = 999
     bot._safeguards_tasks = set()
-    bot._trigger_tasks = set()
     bot._resolve_ambient = AsyncMock(return_value=False)
     bot._process_message = AsyncMock()
     bot.evaluate_triggers = AsyncMock(side_effect=evaluate)
@@ -288,4 +286,4 @@ async def test_trigger_dispatch_does_not_delay_normal_message_processing():
 
     bot._process_message.assert_awaited_once_with(message)
     release.set()
-    await asyncio.gather(*bot._trigger_tasks)
+    await asyncio.gather(*bot._safeguards_tasks)
