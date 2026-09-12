@@ -1953,6 +1953,124 @@ defmodule Embervm.StatefulManagerTest do
     assert instance.state == :destroyed
   end
 
+  test "gated: destroy dials the reporting VM owner's instance key" do
+    {:ok, dialed} = Agent.start_link(fn -> [] end)
+    {:ok, stopped} = Agent.start_link(fn -> [] end)
+
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        channel_fun: fn dial_id ->
+          Agent.update(dialed, &[dial_id | &1])
+          {:ok, dial_id}
+        end,
+        stop_stateful_fun: fn dial_id, req ->
+          Agent.update(stopped, &[{dial_id, req} | &1])
+          {:ok, %{teardown_confirmed: true}}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4", instance_id: "node-4/owner-pod")
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert [instance] = StatefulStore.list(ctx.store, "wl-a")
+
+    stateful_node(ctx, "node-4",
+      instance_id: "node-4/owner-pod",
+      stateful_vms: [
+        %{vm_id: instance.vm_id, workload: "wl-a", ip: "10.88.0.5", port: 5432}
+      ]
+    )
+
+    Agent.update(dialed, fn _ -> [] end)
+
+    assert %{destroyed: 1, evicted: 0} = StatefulManager.destroy_instance(ctx.mgr, "wl-a")
+    assert Agent.get(dialed, & &1) == ["node-4/owner-pod"]
+    assert [{"node-4/owner-pod", req}] = Agent.get(stopped, & &1)
+    assert req.vm_id == instance.vm_id
+    assert req.mode == :STOP_STATEFUL_MODE_DESTROY
+  end
+
+  test "gated: destroy with absent ownership facts does not dial a bare node alias" do
+    {:ok, dialed} = Agent.start_link(fn -> [] end)
+    parent = self()
+
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        channel_fun: fn dial_id ->
+          Agent.update(dialed, &[dial_id | &1])
+          {:ok, dial_id}
+        end,
+        stop_stateful_fun: fn _dial_id, _req ->
+          send(parent, :stop_stateful_called)
+          {:ok, %{teardown_confirmed: true}}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4", instance_id: "node-4/owner-pod")
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+
+    NodeCapacity.drop(ctx.cap_table, "node-4")
+    Agent.update(dialed, fn _ -> [] end)
+
+    assert %{destroyed: 0, evicted: 0} = StatefulManager.destroy_instance(ctx.mgr, "wl-a")
+    assert Agent.get(dialed, & &1) == []
+    refute_received :stop_stateful_called
+    assert [%{state: :destroying}] = StatefulStore.list(ctx.store, "wl-a")
+  end
+
+  test "gated: a replacement pod is dialed only after it reports the destroying VM" do
+    {:ok, dialed} = Agent.start_link(fn -> [] end)
+    {:ok, stopped} = Agent.start_link(fn -> [] end)
+
+    ctx =
+      start_stack(
+        node_confirmed_destroy: true,
+        channel_fun: fn dial_id ->
+          Agent.update(dialed, &[dial_id | &1])
+          {:ok, dial_id}
+        end,
+        stop_stateful_fun: fn dial_id, req ->
+          Agent.update(stopped, &[{dial_id, req} | &1])
+          {:ok, %{teardown_confirmed: true}}
+        end
+      )
+
+    stateful_workload(ctx, "wl-a")
+    stateful_node(ctx, "node-4", instance_id: "node-4/old-pod")
+    assert {:ok, _} = StatefulManager.wake(ctx.mgr, "wl-a", "p")
+    assert [instance] = StatefulStore.list(ctx.store, "wl-a")
+
+    # The replacement is current capacity, but its first report does not claim
+    # the old pod's VM. It must not receive that VM's destructive request.
+    stateful_node(ctx, "node-4", instance_id: "node-4/replacement-pod", stateful_vms: [])
+    Agent.update(dialed, fn _ -> [] end)
+
+    assert %{destroyed: 0, evicted: 0} = StatefulManager.destroy_instance(ctx.mgr, "wl-a")
+    assert Agent.get(dialed, & &1) == []
+    assert Agent.get(stopped, & &1) == []
+    assert {:ok, %{state: :destroying}} = StatefulStore.get(ctx.store, instance.instance_id)
+
+    # Once that same replacement reports the VM, reconcile has exact ownership
+    # evidence and safely re-drives DESTROY to its instance key.
+    stateful_node(ctx, "node-4",
+      instance_id: "node-4/replacement-pod",
+      stateful_vms: [
+        %{vm_id: instance.vm_id, workload: "wl-a", ip: "10.88.0.5", port: 5432}
+      ]
+    )
+
+    :ok = StatefulManager.reconcile(ctx.mgr)
+
+    assert Agent.get(dialed, & &1) == ["node-4/replacement-pod"]
+    assert [{"node-4/replacement-pod", req}] = Agent.get(stopped, & &1)
+    assert req.vm_id == instance.vm_id
+    assert req.mode == :STOP_STATEFUL_MODE_DESTROY
+    assert {:ok, %{state: :destroyed}} = StatefulStore.get(ctx.store, instance.instance_id)
+  end
+
   test "gated: an unconfirmed teardown stays destroying and reconcile re-drives it" do
     {:ok, confirmations} = Agent.start_link(fn -> [false, true] end)
 
