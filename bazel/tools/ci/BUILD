@@ -1,9 +1,26 @@
 # gazelle:exclude
+load("@aspect_rules_py//py:defs.bzl", "py_library")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//bazel/tools/pytest:defs.bzl", "py_test")
 
 package(default_visibility = ["//visibility:public"])
 
 exports_files(["ci"])
+
+py_library(
+    name = "central_build_ratchet_lib",
+    srcs = ["central_build_ratchet.py"],
+    imports = ["."],
+)
+
+py_test(
+    name = "central_build_ratchet_test",
+    srcs = ["central_build_ratchet_test.py"],
+    deps = [
+        ":central_build_ratchet_lib",
+        "@pip//pytest",
+    ],
+)
 
 sh_test(
     name = "ci_test",
