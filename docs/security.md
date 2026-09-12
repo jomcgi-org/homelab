@@ -188,8 +188,8 @@ admins listed in `projects/platform-gke/tailscale/values.yaml`, exposes the
 monolith API as a tailnet host, and runs three egress bridges to the home
 inference host.
 
-**GKE Dataplane V2 is the CNI, and native policy protects private-monolith
-egress.**
+**GKE Dataplane V2 is the CNI, and there is no enforced private-monolith
+egress policy on the hub.**
 The managed dataplane exposes no `CiliumNetworkPolicy` or
 `CiliumClusterwideNetworkPolicy` CRD (`kubectl api-resources | grep cilium`)
 and reports `Encryption: Disabled`, so nothing on the wire is encrypted by
@@ -203,15 +203,19 @@ Cilium policy template in this repo is gated off in the hub overlays:
 `projects/embervm/deploy/values-gke.yaml`, `ciliumPolicy` in
 `projects/monolith-agents/deploy/values-gke.yaml`.
 
-The private monolith GKE overlay instead enables the chart's native Kubernetes
-`NetworkPolicy` egress arm. It selects only the app endpoint and default-denies
-unlisted cluster destinations and non-HTTPS internet flows. Required internal
-flows use namespace plus pod selectors and exact ports, and the Kubernetes API
-uses the verified private control-plane address. Standard NetworkPolicy cannot
-match FQDNs, so the public TCP 443 grant excludes private, loopback, link-local,
+The chart carries a native Kubernetes `NetworkPolicy` egress arm for the
+private app endpoint, but the GKE overlay leaves it disabled. Kubernetes
+NetworkPolicy has no additive audit mode, so the policy remains staged until
+GKE network-policy logs cover a representative window, including periodic
+leader jobs and the secret-backed ICAL feed. Its API and DNS address lists are
+also empty until an enabling change validates them against the live hub.
+
+When enabled, required internal flows use namespace plus pod selectors, exact
+ports, and a paired resolver address. Standard NetworkPolicy cannot match
+FQDNs, so its public TCP 443 grant excludes private, loopback, link-local,
 shared-address, and multicast ranges but cannot deny an arbitrary public HTTPS
 host. That is an accepted GKE residual, not an exact replacement for Cilium's
-FQDN rules. Metadata-server access remains denied.
+FQDN rules. Metadata-server access would remain denied.
 
 The Cilium arm stays available, default-off, for clusters that expose its CRD.
 Its enforce mode uses exact external FQDNs. Its CoreDNS rule necessarily allows
@@ -557,7 +561,7 @@ document carries what shipped.
 | security/001 Hermetic Semgrep via Bazel | vendor `semgrep-core` as an OCI artifact and run rules as cached Bazel tests | Accepted; every target passes without scanning (#4777, #3893) | deleted |
 | security/002 Semgrep rule generation via RL | RL-finetuned model generates rules from CVEs | Deprecated; nothing live | deleted |
 | security/003 gVisor RuntimeClass | `runsc` for agent sandbox pods | Accepted, never built (#3894); the sandboxes it targeted became Firecracker guests | deleted |
-| security/004 Public read-only service isolation | separate public composition, `public_reader` on a replica, default-deny egress | Accepted; composition, role, replica and imports test shipped; private egress policy is gated pending live audit and inert on the hub (#5277); read-only rootfs open (#3898); tracking #3895 | deleted |
+| security/004 Public read-only service isolation | separate public composition, `public_reader` on a replica, default-deny egress | Accepted; composition, role, replica and imports test shipped; private egress policy is gated pending live audit and inert on the hub (#3897, #5277); read-only rootfs open (#3898); tracking #3895 | deleted |
 | security/005 Public chat adversarial hardening | Turnstile sessions, reserved headroom, server-side limits, DB-confined retrieval | Implemented except the purge (#3899); inference moved off-cluster | deleted |
 | security/006 Friends authorization lane | `/moving` on `friends.jomcgi.dev` behind an authentik `family` group | Accepted, shipped (#4968) | deleted |
 | security/007 Aggregate threat model index | one ranked index over labelled issues, re-ranked by hand | Accepted; decisions 1, 2 and 4 live, decision 3 superseded by STPA lenses (#5294) | deleted |

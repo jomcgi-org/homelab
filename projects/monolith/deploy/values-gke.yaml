@@ -88,16 +88,19 @@ chat:
   movingChatInferenceUrl: "https://api.meta.ai"
   embeddingUrl: "http://inference-embeddings.inference.svc.cluster.local:8080"
 
-# GKE Dataplane V2 enforces the native app egress policy. The private control
-# plane endpoint is the same hub endpoint validated for the recovery profile.
+# Kubernetes NetworkPolicy has no additive audit mode. Keep the native app
+# egress policy off until GKE network-policy logs cover a representative live
+# window, including periodic leader jobs and the secret-backed ICAL feed.
+# Populate the API and DNS addresses from the live hub in the enabling change;
+# the addresses in the inactive recovery profile are revalidation hints only.
 networkPolicy:
   egress:
-    enabled: true
-    apiServerCidrs:
-      - 10.10.0.2/32
+    enabled: false
+    apiServerCidrs: []
+    dnsServiceCidrs: []
 
-# Cilium CRDs are not installed on GKE. Keep those resources disabled while the
-# native NetworkPolicy arm above enforces app egress.
+# Cilium CRDs are not installed on GKE. Keep those resources disabled; the
+# native NetworkPolicy arm above is staged but does not enforce on the hub.
 ciliumPolicy:
   tokenReplayDeny:
     enabled: false

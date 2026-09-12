@@ -2,12 +2,12 @@
 
 The Cilium policy is deliberately default-off. Audit mode must remain additive,
 while enforce mode must select the app pod for default-deny and permit only the
-exact endpoint, entity, FQDN, and port inventory declared here. GKE instead
-enables a native policy with the same internal inventory and the documented
-public-HTTPS residual. A missing dependency causes a silent dial timeout; a
-broad destination repairs that outage by reopening the compromise path this
-policy exists to close. Both changes must therefore fail in CI instead of being
-accepted as harmless allowlist cleanup.
+exact endpoint, entity, FQDN, and port inventory declared here. GKE carries a
+default-off native policy template with the same internal inventory and the
+documented public-HTTPS residual. A missing dependency causes a silent dial
+timeout; a broad destination repairs that outage by reopening the compromise
+path this policy exists to close. Both changes must therefore fail in CI
+instead of being accepted as harmless allowlist cleanup.
 """
 
 from __future__ import annotations
@@ -253,6 +253,19 @@ def _enabled(mode: str = "audit", token_replay: bool = False) -> dict:
     }
 
 
+def _native_enabled() -> dict:
+    """Enable the native template with inactive-profile render fixtures."""
+    return {
+        "networkPolicy": {
+            "egress": {
+                "enabled": True,
+                "apiServerCidrs": ["10.10.0.2/32"],
+                "dnsServiceCidrs": ["10.10.16.10/32"],
+            }
+        }
+    }
+
+
 def _prod(mode: str = "audit", token_replay: bool = False) -> list[dict]:
     return _render(
         "monolith",
@@ -387,8 +400,9 @@ def test_shipped_overlays_render_only_their_supported_egress_policy():
         [_chart_dir() / "values.yaml", _deploy_values(), _gke_values()],
     )
     cilium_names = {doc["metadata"]["name"] for doc in _cnps(gke_docs)}
+    native_names = {doc["metadata"]["name"] for doc in _network_policies(gke_docs)}
     assert "monolith-app-egress" not in cilium_names
-    _native_policy(gke_docs, "monolith")
+    assert "monolith-app-egress-native" not in native_names
 
 
 def test_audit_is_additive_and_enforce_carries_default_deny():
@@ -498,11 +512,12 @@ def test_no_broad_cluster_or_internet_escape_hatch():
     assert ports == {("443", "TCP"), ("6443", "TCP")}
 
 
-def test_gke_native_policy_denies_cluster_egress_and_keeps_required_flows():
+def test_gke_native_policy_template_denies_cluster_egress_and_keeps_required_flows():
     docs = _render(
         "monolith",
         "monolith",
         [_chart_dir() / "values.yaml", _deploy_values(), _gke_values()],
+        _native_enabled(),
     )
     policy = _native_policy(docs, "monolith")
     assert policy["spec"]["podSelector"]["matchLabels"] == {
@@ -520,6 +535,13 @@ def test_gke_native_policy_denies_cluster_egress_and_keeps_required_flows():
         if "ipBlock" in destination
     ]
     assert ip_blocks == [
+        (
+            {"cidr": "10.10.16.10/32"},
+            [
+                {"protocol": "UDP", "port": 53},
+                {"protocol": "TCP", "port": 53},
+            ],
+        ),
         (
             {"cidr": "10.10.0.2/32"},
             [{"protocol": "TCP", "port": 443}],
@@ -554,6 +576,29 @@ def test_gke_native_policy_denies_cluster_egress_and_keeps_required_flows():
         )
     }
     assert _native_endpoint_rules(policy) == expected_endpoints
+
+
+def test_native_policy_rejects_dns_selector_without_cilium_prefix():
+    override = _native_enabled()
+    override["ciliumPolicy"] = {
+        "egress": {
+            "targets": {
+                "dns": {
+                    "matchLabels": {
+                        "k8s:k8s-app": None,
+                        "k8s-app": "kube-dns",
+                    }
+                }
+            }
+        }
+    }
+    with pytest.raises(RuntimeError, match="k8s:k8s-app"):
+        _render(
+            "monolith",
+            "monolith",
+            [_chart_dir() / "values.yaml", _deploy_values(), _gke_values()],
+            override,
+        )
 
 
 def test_egress_gate_does_not_change_existing_api_ingress():

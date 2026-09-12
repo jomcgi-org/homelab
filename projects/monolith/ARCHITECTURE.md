@@ -77,13 +77,20 @@ needs an entry in the same change. The app endpoint also has an exact-FQDN
 egress arm there. Its required CoreDNS `matchPattern: "*"` lets Cilium learn
 addresses for `toFQDNs`, but accepts DNS-channel exfiltration as a residual.
 
-The GKE hub has no Cilium policy CRDs, so its overlay instead enables a native
-Kubernetes `NetworkPolicy` for the same app endpoint. Exact pod selectors and
-ports admit internal dependencies, the verified private endpoint admits the
-Kubernetes API, and a public TCP 443 rule excludes cluster-addressable,
-loopback, link-local, shared-address, and multicast ranges. Native policy
-cannot select FQDNs, so arbitrary public HTTPS remains an accepted residual on
-GKE while arbitrary cluster and non-HTTPS internet egress is default-denied.
+The GKE hub has no Cilium policy CRDs, so the chart carries a native Kubernetes
+`NetworkPolicy` for the same app endpoint. Its overlay leaves that template
+disabled because Kubernetes NetworkPolicy has no additive audit mode. The API
+and resolver address lists also stay empty until GKE network-policy logs cover
+a representative live window, including periodic leader jobs and the
+secret-backed ICAL feed. An enabling change must validate both addresses from
+the live hub. Until then, the hub has no private-monolith egress enforcement.
+
+When enabled, exact pod selectors and ports admit internal dependencies. The
+resolver pod selector is paired with its validated service address so policy
+does not depend on the dataplane's service-translation order. A public TCP 443
+rule excludes cluster-addressable, loopback, link-local, shared-address, and
+multicast ranges. Native policy cannot select FQDNs, so arbitrary public HTTPS
+remains an accepted residual.
 
 Both egress arms intentionally select only the private app endpoint, not every
 pod rendered into the namespace. Searxng, WhatsApp, CNPG, Atlas migration jobs,

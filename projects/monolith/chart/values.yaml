@@ -1843,7 +1843,10 @@ cfIngress:
         itemPath: ""
 
 # Native Kubernetes egress policy for GKE Dataplane V2. The managed dataplane
-# has no Cilium CRDs, so this is the enforcing arm used by the hub overlay.
+# has no Cilium CRDs, so this is the staged replacement for the hub overlay.
+# Kubernetes NetworkPolicy has no additive audit mode. Leave it disabled until
+# GKE network-policy logs show no unmatched live flows across a representative
+# window that covers periodic jobs and secret-backed destinations.
 # Internal destinations reuse the selector inventory under ciliumPolicy.egress
 # below. Standard NetworkPolicy cannot match DNS names, so required public HTTPS
 # is admitted only outside private, loopback, link-local, shared-address, and
@@ -1856,6 +1859,10 @@ networkPolicy:
     # Keep empty unless the policy is enabled on a cluster whose endpoint has
     # been verified. Helm refuses to render an enabled policy without one.
     apiServerCidrs: []
+    # Resolver addresses observed on the target cluster. Pair these with the
+    # kube-dns pod selector because service translation order is dataplane
+    # specific. Helm refuses to render an enabled policy without one.
+    dnsServiceCidrs: []
     publicHttps:
       cidr: 0.0.0.0/0
       except:
