@@ -14,14 +14,25 @@ import re
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlmodel import Session
 
 from grimoire.models import Campaign
 
 CAMPAIGN_SCHEMA_PREFIX = "grimoire_campaign_"
+CAMPAIGN_ACCESS_ROLE = "grimoire_campaign_access"
 _CAMPAIGN_SCHEMA_RE = re.compile(r"^grimoire_campaign_[0-9a-f]{32}$")
+
+
+@dataclass(frozen=True)
+class CampaignRoute:
+    """Validated routing metadata that cannot retain a registry checkout."""
+
+    campaign_id: str
+    schema_name: str
+    role_name: str
 
 
 def campaign_schema_name(campaign_id: str) -> str:
@@ -42,6 +53,16 @@ def validate_campaign_schema(campaign: Campaign) -> str:
     return schema_name
 
 
+def campaign_route(campaign: Campaign) -> CampaignRoute:
+    """Capture and validate immutable routing metadata from the registry row."""
+    schema_name = validate_campaign_schema(campaign)
+    return CampaignRoute(
+        campaign_id=campaign.id,
+        schema_name=schema_name,
+        role_name=CAMPAIGN_ACCESS_ROLE,
+    )
+
+
 def provision_campaign_schema(session: Session, campaign: Campaign) -> None:
     """Provision a campaign schema in the registry transaction.
 
@@ -60,7 +81,7 @@ def provision_campaign_schema(session: Session, campaign: Campaign) -> None:
 
 @contextmanager
 def campaign_session(
-    registry_session: Session, campaign: Campaign
+    registry_session: Session, campaign: Campaign | CampaignRoute
 ) -> Iterator[Session]:
     """Yield a session routed to one trusted campaign schema.
 
@@ -69,7 +90,10 @@ def campaign_session(
     the shared corpus plus this campaign's homebrew overlay. The registry lookup
     itself always happens through ``registry_session`` before this function.
     """
-    schema_name = validate_campaign_schema(campaign)
+    route = (
+        campaign if isinstance(campaign, CampaignRoute) else campaign_route(campaign)
+    )
+    schema_name = route.schema_name
     bind = registry_session.get_bind()
     if bind.dialect.name == "sqlite":
         yield registry_session
@@ -86,4 +110,19 @@ def campaign_session(
         }
     )
     with Session(routed_bind, expire_on_commit=False) as routed_session:
-        yield routed_session
+        # SET LOCAL is transaction-scoped, so it is safe under connection
+        # pooling. Reapply it after each commit when SQLAlchemy begins the next
+        # transaction. The role has DML only in this campaign schema and SELECT
+        # only on its view surface.
+        def _assume_campaign_role(_session, _transaction, connection) -> None:
+            connection.execute(
+                text("SELECT grimoire.set_campaign_access_context(:campaign_id)"),
+                {"campaign_id": route.campaign_id},
+            )
+            connection.exec_driver_sql(f'SET LOCAL ROLE "{route.role_name}"')
+
+        event.listen(routed_session, "after_begin", _assume_campaign_role)
+        try:
+            yield routed_session
+        finally:
+            event.remove(routed_session, "after_begin", _assume_campaign_role)

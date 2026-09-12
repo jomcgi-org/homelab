@@ -30,6 +30,7 @@ from sqlmodel import Session, or_, select
 
 from grimoire import library
 from grimoire.campaign_db import (
+    campaign_route,
     campaign_schema_name,
     campaign_session,
     provision_campaign_schema,
@@ -83,7 +84,10 @@ def get_campaign_session(
 ):
     """Route one request from the shared registry into its campaign schema."""
     campaign = _get_campaign_or_404(registry_session, campaign_id)
-    with campaign_session(registry_session, campaign) as routed_session:
+    route = campaign_route(campaign)
+    registry_session.expunge(campaign)
+    registry_session.rollback()
+    with campaign_session(registry_session, route) as routed_session:
         yield routed_session
 
 
@@ -653,7 +657,10 @@ def get_chunk(
     entity chips projected for the (campaign, viewpoint). The campaign/viewpoint
     only shape the entity chips; the chunk body is corpus-global."""
     campaign_record = _get_campaign_or_404(session, campaign)
-    with campaign_session(session, campaign_record) as routed_session:
+    route = campaign_route(campaign_record)
+    session.expunge(campaign_record)
+    session.rollback()
+    with campaign_session(session, route) as routed_session:
         viewer = _resolve_viewer(routed_session, campaign, as_)
         chunk = library.get_chunk(routed_session, campaign, viewer, chunk_id)
         if chunk is None:

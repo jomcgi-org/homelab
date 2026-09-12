@@ -38,10 +38,15 @@ only registry metadata stays shared.
 
 Routing uses SQLAlchemy's per-session `schema_translate_map`, never a
 connection `search_path`. The schema name comes only from a registry row and is
-checked against the campaign UUID before use. This keeps pooled connection and
-transaction reuse from carrying one campaign's route into another request.
-Campaign schemas are owned by the application role that provisions them;
-`PUBLIC` has neither schema creation nor table privileges.
+checked against the campaign UUID before use. The registry checkout is released
+after that immutable metadata is captured, before the routed session checks out
+the same pool. Each routed transaction records its validated campaign against
+its backend PID and transaction ID, then assumes the
+`grimoire_campaign_access` role with `SET LOCAL ROLE`. Row security and view
+predicates bind that role to the recorded schema, so commits and pooled
+connection reuse cannot carry one campaign's route or authority into another
+request. The trusted application role retains provisioning and corpus ingestion
+ownership; `PUBLIC` has neither schema creation nor table privileges.
 
 Queryable values use typed columns. Irregular display-only structures may use
 JSON. Embeddings share one pgvector-backed retrieval surface.
@@ -51,11 +56,13 @@ JSON. Embeddings share one pgvector-backed retrieval surface.
 Private DM routes can read the complete shared corpus and their campaign's
 homebrew. Player-scoped reads join the campaign-local grant table to the shared
 corpus/homebrew read view, centralize the `is_global OR granted-to-player` rule,
-and apply the grant scope when projecting details. The union read views are not
-updatable, so campaign-routed sessions cannot mutate shared corpus rows. Public
-corpus routes are read-only. Full text and page images fail closed unless the
-book is explicitly classified as open-licensed; copyrighted books expose only
-derived entities, graph structure, and bounded snippets.
+and apply the grant scope when projecting details. Campaign roles receive
+`SELECT` only on every read view, including the otherwise-updatable direct
+corpus views, DML only on their own campaign backing tables, and no access to
+shared tables or another campaign schema. Public corpus routes are read-only.
+Full text and page images fail closed unless the book is explicitly classified
+as open-licensed; copyrighted books expose only derived entities, graph
+structure, and bounded snippets.
 
 The separate `grimoire_chat` schema remains anonymous public corpus chat under
 ADR security/005. It has no campaign identity, so its sessions and opt-in shared

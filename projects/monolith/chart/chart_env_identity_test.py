@@ -681,6 +681,23 @@ _CLIENT_ROLE_SPECS = [
     ),
 ]
 _CLIENT_ROLE_KEYS = [entry[0] for entry in _CLIENT_ROLE_SPECS]
+_GRIMOIRE_CAMPAIGN_ROLES = [
+    {
+        "name": "grimoire_campaign_access",
+        "ensure": "present",
+        "login": False,
+        "inherit": False,
+        "comment": "RLS-scoped Grimoire campaign request identity (#3909)",
+    },
+    {
+        "name": "app",
+        "ensure": "present",
+        "login": True,
+        "inherit": False,
+        "inRoles": ["grimoire_campaign_access"],
+        "comment": "Trusted monolith schema owner and campaign provisioner",
+    },
+]
 
 
 def _expected_cnpg_roles(environment):
@@ -726,7 +743,7 @@ def _expected_cnpg_roles(environment):
                 "comment": "Dev refresh dump reader",
             }
         )
-    return [*clients[:2], *optional, clients[2]]
+    return [*clients[:2], *optional, clients[2], *_GRIMOIRE_CAMPAIGN_ROLES]
 
 
 def _cnpg_cluster(documents):
@@ -818,7 +835,7 @@ def test_cnpg_nologin_roles_allow_cleared_secret_references(tmp_path, secret):
         },
     )
     expected = _expected_cnpg_roles("defaults")
-    for role in expected:
+    for role in expected[: len(_CLIENT_ROLE_KEYS)]:
         role["login"] = False
         del role["passwordSecret"]
     assert _cnpg_cluster(documents)["spec"]["managed"]["roles"] == expected
@@ -862,7 +879,7 @@ def test_cnpg_fresh_dev_database_and_consumers_have_isolated_references(tmp_path
     assert "externalClusters" not in spec
     assert "backup" not in spec
     expected = _expected_cnpg_roles("defaults")
-    for role in expected:
+    for role in expected[: len(_CLIENT_ROLE_KEYS)]:
         role["login"] = False
         del role["passwordSecret"]
     expected.insert(
@@ -1575,7 +1592,14 @@ def test_recovery_gke_uses_fresh_database_and_local_consumers(recovery_gke_rende
     assert "externalClusters" not in spec
     assert "backup" not in spec
     roles = {r["name"]: r for r in spec["managed"]["roles"]}
-    assert set(roles) == {"public_reader", "agents_writer", "public_writer", "embervm"}
+    assert set(roles) == {
+        "public_reader",
+        "agents_writer",
+        "public_writer",
+        "grimoire_campaign_access",
+        "app",
+        "embervm",
+    }
     for name in ("public_reader", "agents_writer", "public_writer"):
         assert roles[name]["login"] is False
         assert "passwordSecret" not in roles[name]
