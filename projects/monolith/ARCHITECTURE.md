@@ -783,6 +783,18 @@ fails open to direct submit.
 (see: /projects/monolith/chat/orchestrator_client.py)
 (see: /projects/monolith/chat/acl.py)
 
+Persisted message triggers match bounded regular expressions after optional
+channel and user filters, then dispatch a response, crosspost, or owner-gated
+agent run. A conditional database update claims each trigger's cooldown before
+the action runs, and trigger dispatch stays off the normal chat response path.
+(see: /projects/monolith/chat/triggers.py)
+(see: /projects/monolith/chart/migrations/20260912120000_chat_triggers.sql)
+
+**Why.** Multiple bot replicas can observe the same eligible trigger, so the
+cooldown claim is a conditional database write committed before dispatch. The
+database selects one winner and prevents duplicate side effects after a
+restart, while accepting that a failed action still consumes its cooldown.
+
 Trust and safety is a per-server, per-user ledger with three detection lanes:
 narrow regex heuristics on every observed message, an asynchronous LLM intent
 classifier on relevant messages, and an offline-trained random forest that is
@@ -1117,7 +1129,7 @@ this table when the work ships or the issue closes without it.
 | Shared admission and reservations schedule product-goal work across lanes with downstream backpressure | The factory conductor | #5804 | not started |
 | Autonomous intake selects bounded issue work and refines or escalates issues that are not delivery-ready | section 4 | #6002 | in progress: policy, intake selection, and the refine path are implemented behind disabled defaults |
 | Per-caller result scoping restricts what each MCP caller's tool calls can return | section 7 | #4569 | not started |
-| Discord chat automation gets persisted scheduled tasks, configurable message triggers, and per-channel memory notes | Decision history (services/002) | #3901 | not started |
+| Discord chat automation gets persisted scheduled tasks, configurable message triggers, and per-channel memory notes | Decision history (services/002) | #3901 | in progress: configurable message triggers are implemented; persisted scheduled tasks and per-channel memory notes remain |
 | Grimoire post-extraction quality passes (evidence-grounded stat verification, review-approved alias merges) ship | Decision history (services/014) | #3912 | not started |
 | Public chat retention and takedown purge tooling ships | Decision history (security/005) | #3899 | not started |
 | A role-separated GitHub App review gate lets swarm merge autonomously | Decision history (agents/027) | #3835 | not started |

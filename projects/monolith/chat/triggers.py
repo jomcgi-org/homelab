@@ -26,7 +26,7 @@ MAX_MATCH_CONTENT = 4000
 MATCH_TIMEOUT_SECS = 0.02
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.:-]{0,99}$")
-_MODEL_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
+_TEMPLATE_FIELD_RE = re.compile(r"\{(?:content|author|channel_id)\}")
 # Nested repetition is a common catastrophic backtracking shape. Runtime
 # matching is independently timeout-bounded for other ambiguous patterns.
 _NESTED_REPEAT_RE = re.compile(
@@ -87,7 +87,8 @@ def validate_pattern(pattern: object) -> str:
     # Exercise typical adversarial non-matches at write time. The same timeout
     # is enforced against real messages, so an exotic costly pattern is still
     # isolated even when these probes do not expose it.
-    for probe in ("a" * 2048 + "!", "0" * 2048 + "!", " " * 2048 + "!"):
+    for character in ("a", "0", " "):
+        probe = character * (MAX_MATCH_CONTENT - 1) + "!"
         try:
             compiled.search(probe, timeout=MATCH_TIMEOUT_SECS)
         except TimeoutError as exc:
@@ -214,7 +215,12 @@ def validate_action(
             "agent_run repo must be a string up to 200 characters"
         )
     model = action_config.get("model", "luna")
-    if not isinstance(model, str) or not _MODEL_RE.fullmatch(model):
+    # Keep durable trigger configuration aligned with the model tiers accepted
+    # by agent sessions. The import stays local to avoid loading that package
+    # for respond and crosspost validation.
+    from agent_sessions import SUPPORTED_MODELS
+
+    if not isinstance(model, str) or model not in SUPPORTED_MODELS:
         raise TriggerValidationError("agent_run model is invalid")
     return canonical, {"prompt": prompt.strip(), "repo": repo.strip(), "model": model}
 
@@ -525,11 +531,10 @@ def render_template(
     max_length: int = 2000,
 ) -> str:
     """Expand the deliberately small trigger template vocabulary."""
-    rendered = template
-    for key, value in (
-        ("{content}", content),
-        ("{author}", author),
-        ("{channel_id}", channel_id),
-    ):
-        rendered = rendered.replace(key, value)
+    values = {
+        "{content}": content,
+        "{author}": author,
+        "{channel_id}": channel_id,
+    }
+    rendered = _TEMPLATE_FIELD_RE.sub(lambda match: values[match.group()], template)
     return rendered[:max_length]
