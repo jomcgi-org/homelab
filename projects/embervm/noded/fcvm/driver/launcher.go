@@ -38,7 +38,8 @@ type LaunchSpec struct {
 // Launcher; tests inject a fake. fc-agentd owns FC process supervision (crash
 // cleanup, orphan reaping), mirroring E2B's patterns.
 type ExecLauncher struct {
-	// Logger receives line-delimited Firecracker and guest output. It defaults to
+	// Logger receives line-delimited Firecracker output. Guest UART output is
+	// routed separately from the bounded serial sink by Driver. It defaults to
 	// slog.Default when unset.
 	Logger *slog.Logger
 	// Bin is the firecracker binary (/opt/fc/firecracker in the noded image).
@@ -163,6 +164,11 @@ func (p *execProcess) Pid() int {
 	return p.cmd.Process.Pid
 }
 
+func (p *execProcess) SetGuestPhase(phase string) {
+	p.stdout.SetPhase(phase)
+	p.stderr.SetPhase(phase)
+}
+
 // Launch starts firecracker with its API socket at spec.SocketPath and blocks until
 // the socket is connectable (or the timeout/context fires).
 func (l *ExecLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, error) {
@@ -247,16 +253,15 @@ func (l *ExecLauncher) Launch(ctx context.Context, spec LaunchSpec) (Process, er
 	} else {
 		cmd = exec.Command(l.Bin, buildDirectArgs(spec.VMID, spec.SocketPath)...)
 	}
-	// Firecracker's inherited stdout/stderr and any guest bytes emitted before
-	// PUT /serial are line-delimited into the daemon's structured log. The bounded
-	// serial file installed before guest start remains the steady-state console
-	// sink and failure-tail source (issue #4404).
+	// Firecracker's own inherited stdout/stderr are line-delimited into the
+	// daemon's structured log. Guest UART bytes never use these streams: the
+	// driver follows the separately rate-limited serial sink (issue #4404).
 	logger := l.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	stdout := newTagWriter(logger, spec.Workload, spec.Phase)
-	stderr := newTagWriter(logger, spec.Workload, spec.Phase)
+	stdout := newTagWriter(logger.With("stream", "stdout"), "firecracker", spec.Workload, spec.Phase)
+	stderr := newTagWriter(logger.With("stream", "stderr"), "firecracker", spec.Workload, spec.Phase)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {

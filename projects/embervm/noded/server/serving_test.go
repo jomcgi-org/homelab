@@ -153,6 +153,9 @@ type fakeServingDriver struct {
 	// artifact drive with the exact byte length (D-R3.11.2).
 	lastHandlerDiskPath string
 	lastHandlerZipBytes int64
+	lastWorkload        string
+	lastRestoreWorkload string
+	guestReady          int
 }
 
 func newFakeServingDriver(dir string) *fakeServingDriver {
@@ -172,7 +175,7 @@ func writeFile(t *testing.T, path, s string) {
 	}
 }
 
-func (f *fakeServingDriver) ClaimServing(_ context.Context, _ string, _ string, _ string, _ int, _ int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64) (substrate.Handle, error) {
+func (f *fakeServingDriver) ClaimServing(_ context.Context, workload, _ string, _ string, _ int, _ int, nic substrate.NICSpec, handlerDiskPath string, handlerZipBytes int64) (substrate.Handle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failClaim != nil {
@@ -180,10 +183,17 @@ func (f *fakeServingDriver) ClaimServing(_ context.Context, _ string, _ string, 
 	}
 	f.live++
 	f.claims++
+	f.lastWorkload = workload
 	f.lastClaimNIC = nic
 	f.lastHandlerDiskPath = handlerDiskPath
 	f.lastHandlerZipBytes = handlerZipBytes
 	return substrate.Handle{ID: "serv-vm-" + strconv.Itoa(f.claims), ThreadID: "t-" + strconv.Itoa(f.claims), Node: "node-4"}, nil
+}
+
+func (f *fakeServingDriver) MarkGuestReady(_ substrate.Handle) {
+	f.mu.Lock()
+	f.guestReady++
+	f.mu.Unlock()
 }
 
 // WriteServingHandlerArtifact records the handler artifact + runtime ref for a base key
@@ -256,9 +266,10 @@ func (f *fakeServingDriver) SnapshotServing(_ context.Context, _ substrate.Handl
 	return substrate.SnapshotRef{ID: snapshotRef, SizeBytes: 4096}, nil
 }
 
-func (f *fakeServingDriver) RestoreServing(_ context.Context, _, snapshotRef string) (substrate.Handle, error) {
+func (f *fakeServingDriver) RestoreServing(_ context.Context, workload, snapshotRef string) (substrate.Handle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.lastRestoreWorkload = workload
 	if _, ok := f.banked[snapshotRef]; !ok {
 		return substrate.Handle{}, status.Errorf(codes.FailedPrecondition, "no such banked serving snapshot %q", snapshotRef)
 	}
@@ -449,6 +460,12 @@ func TestStartServingFresh(t *testing.T) {
 	}
 	if fsd.claims != 1 {
 		t.Errorf("ClaimServing calls = %d want 1", fsd.claims)
+	}
+	if fsd.lastWorkload != "wl-serve" {
+		t.Errorf("ClaimServing workload = %q want wl-serve", fsd.lastWorkload)
+	}
+	if fsd.guestReady != 1 {
+		t.Errorf("guest readiness transitions = %d want 1", fsd.guestReady)
 	}
 	// The cold boot carried a NIC with the allocated IP and the gateway.
 	if fsd.lastClaimNIC.IP != "127.0.0.1" || fsd.lastClaimNIC.GatewayIP != "172.31.0.1" {
@@ -664,6 +681,12 @@ func TestServingBankRelightRoundTrip(t *testing.T) {
 	}
 	if relit.GetIp() != "127.0.0.1" {
 		t.Errorf("relit ip = %q want the pinned 127.0.0.1", relit.GetIp())
+	}
+	if fsd.lastRestoreWorkload != "wl-serve" {
+		t.Errorf("RestoreServing workload = %q want wl-serve", fsd.lastRestoreWorkload)
+	}
+	if fsd.guestReady != 2 {
+		t.Errorf("guest readiness transitions = %d want 2", fsd.guestReady)
 	}
 	pins := fsn.pinReacquires()
 	if len(pins) != 1 || pins[0] != "127.0.0.1" {

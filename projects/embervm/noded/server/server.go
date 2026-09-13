@@ -105,6 +105,19 @@ type BuildDriver interface {
 	VsockUDSPath(threadID string) string
 }
 
+// guestLifecycle is optional so narrow test drivers and non-Firecracker
+// substrates do not need a no-op method. The real fcvm driver uses the signal
+// to drain init output and attribute subsequent console lines to the live VM.
+type guestLifecycle interface {
+	MarkGuestReady(substrate.Handle)
+}
+
+func markGuestReady(driver any, h substrate.Handle) {
+	if lifecycle, ok := driver.(guestLifecycle); ok {
+		lifecycle.MarkGuestReady(h)
+	}
+}
+
 // transport is the host-side HTTP-over-vsock client (the forked vsockhttp
 // Transport). Tests inject a fake.
 type transport interface {
@@ -1069,6 +1082,7 @@ func (s *Server) runBuild(ctx context.Context, bd BuildDriver, baseKey, workload
 	if err := s.transport.WaitReady(readyCtx, uds, readyPath); err != nil {
 		return 0, fmt.Errorf("guest readiness: %w", err)
 	}
+	markGuestReady(bd, h)
 	ref, err := bd.SnapshotBase(ctx, h, baseKey)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -1305,6 +1319,7 @@ func (s *Server) Prime(ctx context.Context, req *nodev1.PrimeRequest) (*nodev1.P
 		s.reap(h, func() {})
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: restored guest not ready: %v", readyErr)
 	}
+	markGuestReady(s.driver, h)
 
 	rtCtx, rtCancel := context.WithTimeout(ctx, readyTimeout)
 	if err := s.transport.SetClock(rtCtx, uds, time.Now().UnixMilli()); err != nil {
@@ -1851,6 +1866,7 @@ func (s *Server) Relight(ctx context.Context, req *nodev1.RelightRequest) (*node
 		s.reap(h, relitEgressCancel)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: relit guest not ready: %v", readyErr)
 	}
+	markGuestReady(s.sessionDriver, h)
 
 	rtCtx, rtCancel := context.WithTimeout(ctx, s.cfg.RestoreReadyTimeout)
 	if err := s.transport.SetClock(rtCtx, uds, time.Now().UnixMilli()); err != nil {

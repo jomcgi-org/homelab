@@ -87,6 +87,8 @@ type fakeDriver struct {
 	blockSnapshotSession       <-chan struct{}
 	restoreSessions            int
 	lastRestoreTrackDirtyPages bool
+	lastRestoreWorkload        string
+	guestReady                 int
 	removeSessions             int
 	nextBankMarker             string // the marker the NEXT Bank persists (the pre-bank guest state)
 }
@@ -247,7 +249,7 @@ func (f *fakeDriver) snapshotSessionCount() int {
 // banked (else it errors, exactly the unrestorable-ref case Relight maps to
 // FAILED_PRECONDITION), and the restored handle's threadID is bound to the banked
 // marker so a post-relight round-trip can echo the persisted state.
-func (f *fakeDriver) RestoreSession(_ context.Context, _, snapshotRef string, trackDirtyPages bool) (substrate.Handle, error) {
+func (f *fakeDriver) RestoreSession(_ context.Context, workload, snapshotRef string, trackDirtyPages bool) (substrate.Handle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	marker, ok := f.sessionBundles[snapshotRef]
@@ -255,6 +257,7 @@ func (f *fakeDriver) RestoreSession(_ context.Context, _, snapshotRef string, tr
 		return substrate.Handle{}, context.Canceled // stand-in for "bundle missing"
 	}
 	f.restoreSessions++
+	f.lastRestoreWorkload = workload
 	f.lastRestoreTrackDirtyPages = trackDirtyPages
 	f.claims++
 	f.live++
@@ -264,6 +267,12 @@ func (f *fakeDriver) RestoreSession(_ context.Context, _, snapshotRef string, tr
 	}
 	f.restoreMarkers[threadID] = marker
 	return substrate.Handle{ThreadID: threadID, ID: "vm-" + threadID, Node: "node-4"}, nil
+}
+
+func (f *fakeDriver) MarkGuestReady(_ substrate.Handle) {
+	f.mu.Lock()
+	f.guestReady++
+	f.mu.Unlock()
 }
 
 func (f *fakeDriver) RemoveSessionBundle(snapshotRef string) error {
@@ -586,6 +595,12 @@ func TestPrimeAssignAutoDestroy(t *testing.T) {
 	}
 	if got := drv.LiveCount(); got != 1 {
 		t.Fatalf("after Prime LiveCount = %d, want 1", got)
+	}
+	if got := drv.claimSpec().Workload; got != "echo" {
+		t.Errorf("Prime workload = %q, want echo", got)
+	}
+	if drv.guestReady != 1 {
+		t.Errorf("guest readiness transitions = %d, want 1", drv.guestReady)
 	}
 
 	// NodeStatus reflects one free primed slot for echo, one live VM.
@@ -2876,6 +2891,9 @@ func TestBankRelightRoundTrip(t *testing.T) {
 	}
 	if rl.GetVmId() == "" || rl.GetVmId() == vmID {
 		t.Fatalf("relit vm_id = %q, want a fresh id (was %q)", rl.GetVmId(), vmID)
+	}
+	if drv.lastRestoreWorkload != "echo" {
+		t.Errorf("RestoreSession workload = %q, want echo", drv.lastRestoreWorkload)
 	}
 	resp, err := client.SessionAssign(ctx, &nodev1.SessionAssignRequest{
 		VmId:      rl.GetVmId(),

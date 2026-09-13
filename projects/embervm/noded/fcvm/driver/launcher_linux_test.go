@@ -5,8 +5,10 @@ package driver
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -27,7 +29,9 @@ func TestExecLauncherJailerLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	released := 0
+	var output lockedBuffer
 	launcher := &ExecLauncher{
+		Logger:        slog.New(slog.NewJSONHandler(&output, nil)),
 		Bin:           os.Args[0],
 		JailerBin:     wrapper,
 		JailerEnabled: true,
@@ -70,6 +74,83 @@ func TestExecLauncherJailerLifecycle(t *testing.T) {
 	if released != 1 {
 		t.Fatalf("uid release count = %d, want 1", released)
 	}
+	records := decodeLogRecords(t, output.Bytes())
+	want := map[string]string{
+		"stdout line": "stdout",
+		"stdout tail": "stdout",
+		"stderr line": "stderr",
+		"stderr tail": "stderr",
+	}
+	if len(records) != len(want) {
+		t.Fatalf("Firecracker records = %d, want %d: %s", len(records), len(want), output.Bytes())
+	}
+	for _, record := range records {
+		message, _ := record["msg"].(string)
+		assertTaggedRecord(t, record, message, "firecracker", "test", "vm")
+		if got := record["stream"]; got != want[message] {
+			t.Errorf("record stream = %#v, want %q: %#v", got, want[message], record)
+		}
+	}
+}
+
+func TestExecProcessWaitFlushesBothStreams(t *testing.T) {
+	var output lockedBuffer
+	logger := slog.New(slog.NewJSONHandler(&output, nil))
+	stdout := newTagWriter(logger.With("stream", "stdout"), "firecracker", "wait-workload", "vm")
+	stderr := newTagWriter(logger.With("stream", "stderr"), "firecracker", "wait-workload", "vm")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestExecOutputHelperProcess$")
+	cmd.Env = append(os.Environ(), "EMBER_OUTPUT_HELPER=1")
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	proc := &execProcess{cmd: cmd, stdout: stdout, stderr: stderr}
+	if err := proc.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	records := decodeLogRecords(t, output.Bytes())
+	if len(records) != 4 {
+		t.Fatalf("records = %d, want 4: %s", len(records), output.Bytes())
+	}
+}
+
+func TestExecLauncherReadinessFailureFlushesFinalOutput(t *testing.T) {
+	t.Setenv("EMBER_JAILER_HELPER", "1")
+	t.Setenv("EMBER_JAILER_TEST_BINARY", os.Args[0])
+	t.Setenv("EMBER_JAILER_NO_SOCKET", "1")
+	tmp := t.TempDir()
+	wrapper := filepath.Join(tmp, "firecracker-helper")
+	script := "#!/bin/sh\nexec \"$EMBER_JAILER_TEST_BINARY\" -test.run=TestExecLauncherHelperProcess -- \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var output lockedBuffer
+	launcher := &ExecLauncher{
+		Bin:          wrapper,
+		Logger:       slog.New(slog.NewJSONHandler(&output, nil)),
+		ReadyTimeout: 500 * time.Millisecond,
+	}
+	_, err := launcher.Launch(context.Background(), LaunchSpec{
+		VMID: "not-ready", SocketPath: filepath.Join(tmp, "api.sock"),
+		Workload: "readiness-workload", Phase: guestPhaseInit,
+	})
+	if err == nil {
+		t.Fatal("Launch should fail when the API socket never appears")
+	}
+	records := decodeLogRecords(t, output.Bytes())
+	if len(records) != 4 {
+		t.Fatalf("records = %d, want 4 after readiness cleanup: %s", len(records), output.Bytes())
+	}
+}
+
+func TestExecOutputHelperProcess(t *testing.T) {
+	if os.Getenv("EMBER_OUTPUT_HELPER") != "1" {
+		return
+	}
+	_, _ = os.Stdout.Write([]byte("stdout line\nstdout tail"))
+	_, _ = os.Stderr.Write([]byte("stderr line\nstderr tail"))
+	os.Exit(0)
 }
 
 func TestExecLauncherCgroupFailureCleansJailAndFallsBack(t *testing.T) {
@@ -120,6 +201,11 @@ func TestExecLauncherCgroupFailureCleansJailAndFallsBack(t *testing.T) {
 func TestExecLauncherHelperProcess(t *testing.T) {
 	if os.Getenv("EMBER_JAILER_HELPER") != "1" {
 		return
+	}
+	_, _ = os.Stdout.Write([]byte("stdout line\nstdout tail"))
+	_, _ = os.Stderr.Write([]byte("stderr line\nstderr tail"))
+	if os.Getenv("EMBER_JAILER_NO_SOCKET") == "1" {
+		select {}
 	}
 	args := os.Args
 	base := argumentValue(args, "--chroot-base-dir")

@@ -220,6 +220,7 @@ func (s *Server) finishGroupMemberStart(ctx context.Context, h substrate.Handle,
 		s.reapGroupMember(h, groupInstanceID, tap, ip)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: group member %q not ready over tap within %s: %v", memberName, readyBudget, err)
 	}
+	markGuestReady(s.groupDriver, h)
 	// Install the entry DNAT for the ENTRY member (entry_guest_port > 0) so the entry
 	// endpoint the control plane publishes, {pod_ip, vmPort}, actually routes to this
 	// member's tap:entry_guest_port. Mirrors serving/stateful, which call EnsureDNAT

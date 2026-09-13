@@ -47,10 +47,13 @@ type fakeStatefulDriver struct {
 	failResume     error
 	// pinnedIPs maps a banked snapshotRef -> the tap IP it was banked with, so a
 	// test can assert relight re-pins it (ADR embervm/008 relight IP fix).
-	pinnedIPs      map[string]string
-	restoreStarted chan struct{}
-	releaseRestore chan struct{}
-	apiSocketPath  string
+	pinnedIPs           map[string]string
+	restoreStarted      chan struct{}
+	releaseRestore      chan struct{}
+	apiSocketPath       string
+	lastWorkload        string
+	lastRestoreWorkload string
+	guestReady          int
 }
 
 type fakeCheckpoint struct {
@@ -68,7 +71,7 @@ func newFakeStatefulDriver(dir string) *fakeStatefulDriver {
 	}
 }
 
-func (f *fakeStatefulDriver) ClaimStateful(_ context.Context, _ string, _ string, _ string, _ int, _ int, _ substrate.NICSpec, _ string, _ int64, volumeDiskPath, volumeMount string, mmdsEnv map[string]string) (substrate.Handle, error) {
+func (f *fakeStatefulDriver) ClaimStateful(_ context.Context, workload, _ string, _ string, _ int, _ int, _ substrate.NICSpec, _ string, _ int64, volumeDiskPath, volumeMount string, mmdsEnv map[string]string) (substrate.Handle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failClaim != nil {
@@ -77,10 +80,17 @@ func (f *fakeStatefulDriver) ClaimStateful(_ context.Context, _ string, _ string
 	f.live++
 	f.claims++
 	f.claimCount++
+	f.lastWorkload = workload
 	f.lastVolPath = volumeDiskPath
 	f.lastVolMount = volumeMount
 	f.lastMmdsEnv = mmdsEnv
 	return substrate.Handle{ID: "state-vm-" + strconv.Itoa(f.claims), ThreadID: "t-" + strconv.Itoa(f.claims), Node: "node-4"}, nil
+}
+
+func (f *fakeStatefulDriver) MarkGuestReady(_ substrate.Handle) {
+	f.mu.Lock()
+	f.guestReady++
+	f.mu.Unlock()
 }
 
 func (f *fakeStatefulDriver) SnapshotStateful(_ context.Context, _ substrate.Handle, snapshotRef string, generation uint64, pinnedIP string) (substrate.SnapshotRef, error) {
@@ -103,8 +113,9 @@ func (f *fakeStatefulDriver) StatefulAPISocketPath(_ substrate.Handle) string {
 	return f.apiSocketPath
 }
 
-func (f *fakeStatefulDriver) RestoreStateful(_ context.Context, _, snapshotRef, _ string) (substrate.Handle, error) {
+func (f *fakeStatefulDriver) RestoreStateful(_ context.Context, workload, snapshotRef, _ string) (substrate.Handle, error) {
 	f.mu.Lock()
+	f.lastRestoreWorkload = workload
 	if _, ok := f.banked[snapshotRef]; !ok {
 		f.mu.Unlock()
 		return substrate.Handle{}, status.Errorf(codes.FailedPrecondition, "no such banked stateful snapshot %q", snapshotRef)
@@ -410,6 +421,12 @@ func TestStartStatefulFreshCreatesVolumeAndBoots(t *testing.T) {
 	if fsd.claimCount != 1 {
 		t.Errorf("ClaimStateful calls = %d want 1", fsd.claimCount)
 	}
+	if fsd.lastWorkload != "wl-state" {
+		t.Errorf("ClaimStateful workload = %q want wl-state", fsd.lastWorkload)
+	}
+	if fsd.guestReady != 1 {
+		t.Errorf("guest readiness transitions = %d want 1", fsd.guestReady)
+	}
 	if fsd.lastVolMount != "/var/lib/postgresql/data" {
 		t.Errorf("volume mount = %q want the requested mount path", fsd.lastVolMount)
 	}
@@ -654,7 +671,12 @@ func TestStartStatefulRelightMatchedGeneration(t *testing.T) {
 	if relit.GetGeneration() != 2 {
 		t.Errorf("relight generation = %d want 2 (the CP-issued next generation, recorded on resume)", relit.GetGeneration())
 	}
-	_ = fsd
+	if fsd.lastRestoreWorkload != "wl-state" {
+		t.Errorf("RestoreStateful workload = %q want wl-state", fsd.lastRestoreWorkload)
+	}
+	if fsd.guestReady != 2 {
+		t.Errorf("guest readiness transitions = %d want 2", fsd.guestReady)
+	}
 }
 
 // TestStartStatefulRelightGenerationMismatchFallsBackAndEvicts proves a

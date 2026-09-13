@@ -386,6 +386,7 @@ func (s *Server) finishStatefulStart(ctx context.Context, h substrate.Handle, wo
 		s.reapStateful(h, ip, workload)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: stateful guest not ready over tap: %v", err)
 	}
+	markGuestReady(s.statefulDriver, h)
 	if err := s.servingNet.EnsureDNAT(ctx, ip, port); err != nil {
 		s.reapStateful(h, ip, workload)
 		return nil, status.Errorf(codes.FailedPrecondition, "noded: install stateful DNAT for %s: %v", ip, err)
