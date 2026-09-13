@@ -233,6 +233,47 @@ def test_scan_waits_for_execute_and_cannot_overwrite_merged_status(lane, monkeyp
         assert session.get(AliasCandidate, pair.candidate_id).status == "merged"
 
 
+def test_prepare_refresh_preserves_concurrently_completed_merge(lane, monkeypatch):
+    pair = _seed_pair(lane)
+    first_read = Event()
+    release_first = Event()
+    original_lock = aliases._lock_candidate
+
+    def pause_first_before_lock(session, candidate_id):
+        if candidate_id == pair.candidate_id and not first_read.is_set():
+            first_read.set()
+            assert release_first.wait(WAIT_SECONDS)
+        return original_lock(session, candidate_id)
+
+    monkeypatch.setattr(aliases, "_lock_candidate", pause_first_before_lock)
+
+    def execute(actor):
+        with _session(lane.engine(actor)) as session:
+            return asyncio.run(
+                aliases.execute_approved_candidate(
+                    session, pair.candidate_id, FakeEmbedClient()
+                )
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(execute, "prepare-first")
+        assert first_read.wait(WAIT_SECONDS)
+        second = pool.submit(execute, "merge-second")
+        try:
+            assert second.result(timeout=WAIT_SECONDS)["replay"] is False
+        finally:
+            release_first.set()
+        assert first.result(timeout=WAIT_SECONDS) == {
+            "status": "merged",
+            "candidate_id": pair.candidate_id,
+            "replay": True,
+        }
+
+    with _session(lane.observer) as session:
+        assert session.get(AliasCandidate, pair.candidate_id).status == "merged"
+        assert session.get(Entity, pair.short_id) is None
+
+
 def test_concurrent_scans_publish_one_candidate_without_lost_updates(lane):
     with _session(lane.observer) as session:
         short = _entity(session, lane, "Gundren")
