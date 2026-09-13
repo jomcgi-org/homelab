@@ -876,6 +876,8 @@ class TestGenDuneDir:
         assert 'menhir = ["Parser"]' in out
         assert 'menhir_flags = ["--unused-tokens", "--explain"]' in out
         assert 'menhir_tool = "@ocaml_menhir//:menhir"' in out
+        assert '"EstimatedComputeUnits": "4"' in out
+        assert '"default-timeout": "15m"' in out
 
     def test_menhir_without_library_exits(self, tmp_path):
         path = self._write(tmp_path, "(menhir (modules Parser))\n")
