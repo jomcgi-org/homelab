@@ -19,6 +19,7 @@ from sqlalchemy import (
     Computed,
     DateTime,
     ForeignKey,
+    Integer,
     String,
     UniqueConstraint,
     text,
@@ -456,6 +457,25 @@ class EntityVerification(SQLModel, table=True):
     )
 
 
+class EntityVerificationRetry(SQLModel, table=True):
+    """Retry schedule for a verifier failure that is not a success marker."""
+
+    __tablename__ = "entity_verification_retry"
+    __table_args__ = {"schema": "grimoire", "extend_existing": True}
+
+    entity_id: str = Field(
+        sa_column=_uuid_column(
+            primary_key=True, nullable=False, fk="grimoire.entity.id"
+        )
+    )
+    verifier_version: str = Field(
+        sa_column=Column(String, primary_key=True, nullable=False)
+    )
+    attempts: int = Field(default=1, sa_column=Column(Integer, nullable=False))
+    retry_after: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    last_error: str = Field(sa_column=Column(String, nullable=False))
+
+
 class EntityAliasReview(SQLModel, table=True):
     """Human decision and candidate evidence for one survivor/twin pair.
 
@@ -504,6 +524,14 @@ class EntityAliasReview(SQLModel, table=True):
     merged_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
+    verification_history: list[dict] = Field(
+        default_factory=list, sa_column=Column(_JSONB, nullable=False)
+    )
+    merge_attempts: int = Field(default=0, sa_column=Column(Integer, nullable=False))
+    merge_retry_after: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    merge_error: str | None = None
 
 
 class Relationship(SQLModel, table=True):

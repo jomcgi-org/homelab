@@ -14,7 +14,7 @@ from grimoire.models import (
     EntityVerification,
     KnowledgeChunk,
 )
-from grimoire.verify import verify_entities
+from grimoire.verify import _Field, _value_grounded, verify_entities
 
 
 @pytest.fixture(name="session")
@@ -213,3 +213,206 @@ def test_malformed_response_is_retried_next_run_without_mutation(session: Sessio
         "Bite": "9 piercing damage"
     }
     assert session.get(EntityVerification, (entity.id, "v1")) is None
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value", "content"),
+    [
+        ("speed", {"fly": 3}, "Armor Class 13. Speed 30 feet."),
+        ("ability_scores", {"str": 8, "dex": 18}, "STR 18 DEX 8"),
+        ("detail", {"1": "cold", "2": "fire"}, "Table: 1 fire; 2 cold"),
+        (
+            "actions",
+            {"Claw": "9 piercing damage"},
+            "Bite deals 9 piercing damage.",
+        ),
+    ],
+)
+def test_structured_evidence_keeps_field_and_row_associations(
+    attribute, value, content
+):
+    field = _Field(f"creature.{attribute}", None, attribute, value)
+
+    assert _value_grounded(field, value, content) is False
+
+
+def test_structured_evidence_accepts_complete_supported_correction():
+    field = _Field("detail.rows", None, "detail", {"1": "fire", "2": "cold"})
+
+    assert _value_grounded(field, field.value, "Table: 1 fire; 2 cold") is True
+
+
+def test_numeric_evidence_uses_complete_number_boundaries():
+    field = _Field("creature.ac", None, "ac", 13)
+
+    assert _value_grounded(field, 13, "Armor Class 13.") is True
+    assert _value_grounded(field, 13, "Armor Class 130.") is False
+    assert _value_grounded(field, 13, "Armor Class 13.5.") is False
+
+
+@pytest.mark.parametrize(
+    "correction",
+    [
+        "30",
+        [30],
+        {"walk": "30"},
+    ],
+)
+def test_invalid_container_or_nested_correction_is_atomic(
+    session: Session, correction
+):
+    entity, chunk = _seed_creature(
+        session,
+        content="Speed 30 feet. Bite deals 9 piercing damage.",
+        speed={"walk": 25},
+    )
+    client = FakeVerifier(
+        {
+            "results": [
+                {
+                    "field": "creature.speed",
+                    "verdict": "corrected",
+                    "correction": correction,
+                    "evidence_chunk_id": chunk.id,
+                },
+                {
+                    "field": "creature.actions",
+                    "verdict": "confirmed",
+                    "correction": None,
+                    "evidence_chunk_id": chunk.id,
+                },
+            ]
+        }
+    )
+
+    summary = asyncio.run(verify_entities(session, client))
+
+    assert summary["failures"] == 1
+    assert session.get(EntityCreature, entity.id).speed == {"walk": 25}
+    assert session.get(EntityVerification, (entity.id, "v1")) is None
+
+
+def test_non_integral_integer_stat_correction_is_atomic(session: Session):
+    entity, chunk = _seed_creature(
+        session,
+        content="Armor Class 12.5. Bite deals 9 piercing damage.",
+    )
+    detail = session.get(EntityCreature, entity.id)
+    detail.ac = 12
+    session.add(detail)
+    session.commit()
+    client = FakeVerifier(
+        {
+            "results": [
+                {
+                    "field": "creature.ac",
+                    "verdict": "corrected",
+                    "correction": 12.5,
+                    "evidence_chunk_id": chunk.id,
+                },
+                {
+                    "field": "creature.actions",
+                    "verdict": "confirmed",
+                    "correction": None,
+                    "evidence_chunk_id": chunk.id,
+                },
+            ]
+        }
+    )
+
+    summary = asyncio.run(verify_entities(session, client))
+
+    assert summary["failures"] == 1
+    assert session.get(EntityCreature, entity.id).ac == 12
+    assert session.get(EntityVerification, (entity.id, "v1")) is None
+
+
+def test_invalid_new_nested_action_value_is_atomic(session: Session):
+    entity, chunk = _seed_creature(
+        session,
+        content="Actions: Claw 7. Speed 25 feet.",
+        speed={"walk": 25},
+    )
+    client = FakeVerifier(
+        {
+            "results": [
+                {
+                    "field": "creature.speed",
+                    "verdict": "confirmed",
+                    "correction": None,
+                    "evidence_chunk_id": chunk.id,
+                },
+                {
+                    "field": "creature.actions",
+                    "verdict": "corrected",
+                    "correction": {"Claw": 7},
+                    "evidence_chunk_id": chunk.id,
+                },
+            ]
+        }
+    )
+
+    summary = asyncio.run(verify_entities(session, client))
+
+    assert summary["failures"] == 1
+    assert session.get(EntityCreature, entity.id).actions == {
+        "Bite": "9 piercing damage"
+    }
+    assert session.get(EntityVerification, (entity.id, "v1")) is None
+
+
+def test_failed_entity_is_deferred_so_later_work_progresses(session: Session):
+    first, _first_chunk = _seed_creature(
+        session,
+        content="Actions: Bite deals 9 piercing damage.",
+    )
+    second = Entity(
+        id="33333333-3333-3333-3333-333333333333",
+        entity_type="creature",
+        name="Ember Drake",
+        source_book="bestiary",
+    )
+    second_chunk = KnowledgeChunk(
+        id="44444444-4444-4444-4444-444444444444",
+        book_id="bestiary",
+        chunk_ref="ember-drake",
+        content="Actions: Claw deals 7 slashing damage.",
+        seq=2,
+    )
+    session.add_all(
+        [
+            second,
+            second_chunk,
+            EntityCreature(
+                entity_id=second.id, actions={"Claw": "7 slashing damage"}
+            ),
+            ChunkEntityMention(chunk_id=second_chunk.id, entity_id=second.id),
+        ]
+    )
+    session.commit()
+
+    class FailFirstVerifier:
+        model = "test-verifier"
+        verifier_version = "v1"
+
+        async def verify(self, entity_name, fields, evidence):
+            if entity_name == "Ash Drake":
+                raise RuntimeError("permanent failure")
+            return {
+                "results": [
+                    {
+                        "field": "creature.actions",
+                        "verdict": "confirmed",
+                        "correction": None,
+                        "evidence_chunk_id": evidence[0]["chunk_id"],
+                    }
+                ]
+            }
+
+    client = FailFirstVerifier()
+    assert asyncio.run(verify_entities(session, client, limit=1))["failures"] == 1
+    second_run = asyncio.run(verify_entities(session, client, limit=1))
+
+    assert session.get(EntityVerification, (first.id, "v1")) is None
+    assert session.get(EntityVerification, (second.id, "v1")) is not None
+    assert second_run["entities_checked"] == 1

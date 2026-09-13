@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Protocol
 
 from sqlalchemy import or_
@@ -18,6 +18,7 @@ from grimoire.models import (
     Entity,
     EntityAliasReview,
     EntityVerification,
+    EntityVerificationRetry,
     KnowledgeChunk,
     KnowledgeGrant,
     Relationship,
@@ -26,6 +27,10 @@ from grimoire.models import (
 
 class AliasMergeError(RuntimeError):
     """An approved pair could not be merged without violating invariants."""
+
+
+MERGE_RETRY_BASE_SECONDS = 60
+MERGE_RETRY_MAX_SECONDS = 3600
 
 
 class Embedder(Protocol):
@@ -304,6 +309,45 @@ def _embedding_text(session: Session, entity: Entity) -> str:
     return f"{entity.name}: {json.dumps(payload, sort_keys=True, default=str)}"
 
 
+def _verification_snapshot(marker: EntityVerification) -> dict[str, Any]:
+    """Serialize a marker before its entity key can be invalidated or deleted."""
+    return {
+        "entity_id": marker.entity_id,
+        "verifier_version": marker.verifier_version,
+        "model": marker.model,
+        "status": marker.status,
+        "evidence_chunk_ids": marker.evidence_chunk_ids,
+        "corrections": marker.corrections,
+        "verified_at": marker.verified_at.isoformat(),
+    }
+
+
+def _archive_and_invalidate_verification(
+    session: Session,
+    review: EntityAliasReview,
+    survivor_id: str,
+    twin_id: str,
+) -> None:
+    """Keep audit provenance while forcing the enriched survivor through verification."""
+    markers = session.exec(
+        select(EntityVerification)
+        .where(EntityVerification.entity_id.in_([survivor_id, twin_id]))
+        .order_by(EntityVerification.entity_id, EntityVerification.verifier_version)
+    ).all()
+    review.verification_history = [
+        *(review.verification_history or []),
+        *(_verification_snapshot(marker) for marker in markers),
+    ]
+    for marker in markers:
+        session.delete(marker)
+    for retry in session.exec(
+        select(EntityVerificationRetry).where(
+            EntityVerificationRetry.entity_id.in_([survivor_id, twin_id])
+        )
+    ).all():
+        session.delete(retry)
+
+
 async def _merge_pair(
     session: Session, embedder: Embedder, survivor_id: str, twin_id: str
 ) -> None:
@@ -345,11 +389,7 @@ async def _merge_pair(
     _repoint_mentions(session, survivor_id, twin_id)
     _repoint_relationships(session, survivor_id, twin_id)
     _merge_detail(session, survivor, twin)
-
-    for marker in session.exec(
-        select(EntityVerification).where(EntityVerification.entity_id == twin_id)
-    ).all():
-        session.delete(marker)
+    _archive_and_invalidate_verification(session, review, survivor_id, twin_id)
     for embedding in session.exec(
         select(Embedding).where(
             Embedding.embeddable_kind == "entity",
@@ -385,6 +425,9 @@ async def _merge_pair(
     session.delete(twin)
     review.status = "merged"
     review.merged_at = datetime.now(timezone.utc)
+    review.merge_attempts = 0
+    review.merge_retry_after = None
+    review.merge_error = None
     session.add(review)
     session.flush()
 
@@ -408,9 +451,23 @@ async def merge_approved_aliases(
             EntityAliasReview.survivor_id == survivor_id,
             EntityAliasReview.twin_id == twin_id,
         )
-    pairs = list(session.exec(statement.order_by(EntityAliasReview.reviewed_at)).all())[
-        :limit
-    ]
+    else:
+        now = datetime.now(timezone.utc)
+        statement = statement.where(
+            or_(
+                EntityAliasReview.merge_retry_after.is_(None),
+                EntityAliasReview.merge_retry_after <= now,
+            )
+        )
+    pairs = list(
+        session.exec(
+            statement.order_by(
+                EntityAliasReview.reviewed_at,
+                EntityAliasReview.survivor_id,
+                EntityAliasReview.twin_id,
+            )
+        ).all()
+    )[:limit]
     # End the report query transaction before starting one independent unit per pair.
     session.rollback()
     summary: dict[str, Any] = {
@@ -424,10 +481,23 @@ async def merge_approved_aliases(
             await _merge_pair(session, embedder, survivor_key, twin_key)
             session.commit()
             summary["merged"] += 1
-        except Exception as exc:  # noqa: BLE001 - every pair failure must roll back and remain retryable
+        # Every pair failure must roll back and remain retryable.
+        except Exception as exc:  # noqa: BLE001
             session.rollback()
             summary["failed"] += 1
             summary["errors"].append(
                 {"survivor_id": survivor_key, "twin_id": twin_key, "error": str(exc)}
             )
+            review = session.get(EntityAliasReview, (survivor_key, twin_key))
+            if review is not None and review.status == "approved":
+                review.merge_attempts += 1
+                review.merge_retry_after = datetime.now(timezone.utc) + timedelta(
+                    seconds=min(
+                        MERGE_RETRY_MAX_SECONDS,
+                        MERGE_RETRY_BASE_SECONDS * 2 ** (review.merge_attempts - 1),
+                    )
+                )
+                review.merge_error = str(exc)[:2000]
+                session.add(review)
+                session.commit()
     return summary

@@ -15,6 +15,21 @@ CREATE TABLE grimoire.entity_verification (
 CREATE INDEX entity_verification_version_status_idx
   ON grimoire.entity_verification (verifier_version, status);
 
+-- Failures remain retryable without acting as completion markers. Scheduling
+-- them separately prevents one permanently failing entity from monopolizing
+-- every bounded verifier batch.
+CREATE TABLE grimoire.entity_verification_retry (
+    entity_id         UUID NOT NULL REFERENCES grimoire.entity(id) ON DELETE CASCADE,
+    verifier_version  TEXT NOT NULL,
+    attempts           INTEGER NOT NULL DEFAULT 1,
+    retry_after        TIMESTAMPTZ NOT NULL,
+    last_error         TEXT NOT NULL,
+    PRIMARY KEY (entity_id, verifier_version)
+);
+
+CREATE INDEX entity_verification_retry_due_idx
+  ON grimoire.entity_verification_retry (verifier_version, retry_after);
+
 -- These ids deliberately are not foreign keys. The row is the durable human
 -- review and merge audit record, so it must survive deletion of the twin.
 CREATE TABLE grimoire.entity_alias_review (
@@ -27,6 +42,10 @@ CREATE TABLE grimoire.entity_alias_review (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     reviewed_at       TIMESTAMPTZ,
     merged_at         TIMESTAMPTZ,
+    verification_history JSONB NOT NULL DEFAULT '[]'::jsonb,
+    merge_attempts    INTEGER NOT NULL DEFAULT 0,
+    merge_retry_after TIMESTAMPTZ,
+    merge_error       TEXT,
     PRIMARY KEY (survivor_id, twin_id),
     CONSTRAINT entity_alias_review_status_chk
       CHECK (status IN ('pending', 'approved', 'rejected', 'merged')),
@@ -41,3 +60,6 @@ CREATE TABLE grimoire.entity_alias_review (
 
 CREATE INDEX entity_alias_review_status_created_idx
   ON grimoire.entity_alias_review (status, created_at);
+
+CREATE INDEX entity_alias_review_retry_idx
+  ON grimoire.entity_alias_review (status, merge_retry_after, reviewed_at);

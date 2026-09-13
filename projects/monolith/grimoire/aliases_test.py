@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -18,9 +19,11 @@ from grimoire.models import (
     Entity,
     EntityAliasReview,
     EntityNpc,
+    EntityVerification,
     KnowledgeChunk,
     Relationship,
 )
+from grimoire.verify import verify_entities
 
 
 @pytest.fixture(name="session")
@@ -252,6 +255,24 @@ def test_embed_failure_rolls_back_entire_pair(session: Session):
     survivor, twin, _other, _shared, twin_only = _seed_pair(session)
     generate_alias_candidates(session)
     record_alias_decision(session, survivor.id, twin.id, "approved", "dm@example.test")
+    session.add_all(
+        [
+            EntityVerification(
+                entity_id=survivor.id,
+                verifier_version="v1",
+                model="test-verifier",
+                status="verified",
+            ),
+            EntityVerification(
+                entity_id=twin.id,
+                verifier_version="v1",
+                model="test-verifier",
+                status="corrected",
+                corrections=[{"field": "npc.race", "before": None, "after": "dwarf"}],
+            ),
+        ]
+    )
+    session.commit()
 
     summary = asyncio.run(merge_approved_aliases(session, FakeEmbedder(fail=True)))
 
@@ -260,4 +281,103 @@ def test_embed_failure_rolls_back_entire_pair(session: Session):
     assert "embedding unavailable" in summary["errors"][0]["error"]
     assert session.get(Entity, twin.id) is not None
     assert session.get(ChunkEntityMention, (twin_only.id, twin.id)) is not None
-    assert session.get(EntityAliasReview, (survivor.id, twin.id)).status == "approved"
+    review = session.get(EntityAliasReview, (survivor.id, twin.id))
+    assert review.status == "approved"
+    assert review.verification_history == []
+    assert session.get(EntityVerification, (survivor.id, "v1")) is not None
+    assert session.get(EntityVerification, (twin.id, "v1")) is not None
+
+
+def test_merge_archives_provenance_and_reverifies_survivor_same_version(
+    session: Session,
+):
+    survivor, twin, _other, shared, _twin_only = _seed_pair(session)
+    survivor_detail = session.get(EntityNpc, survivor.id)
+    survivor_detail.description = "Gundren is a miner."
+    shared.content = "Traits: Gundren is a miner. Gundren Rockseeker is Gundren."
+    session.add_all(
+        [
+            survivor_detail,
+            shared,
+            EntityVerification(
+                entity_id=survivor.id,
+                verifier_version="v1",
+                model="test-verifier",
+                status="verified",
+                evidence_chunk_ids=[shared.id],
+            ),
+            EntityVerification(
+                entity_id=twin.id,
+                verifier_version="v1",
+                model="test-verifier",
+                status="corrected",
+                evidence_chunk_ids=[shared.id],
+                corrections=[
+                    {"field": "npc.race", "before": None, "after": "dwarf"}
+                ],
+            ),
+        ]
+    )
+    session.commit()
+    generate_alias_candidates(session)
+    record_alias_decision(session, survivor.id, twin.id, "approved", "dm@example.test")
+
+    assert asyncio.run(merge_approved_aliases(session, FakeEmbedder()))["merged"] == 1
+
+    review = session.get(EntityAliasReview, (survivor.id, twin.id))
+    assert {item["entity_id"] for item in review.verification_history} == {
+        survivor.id,
+        twin.id,
+    }
+    twin_history = next(
+        item for item in review.verification_history if item["entity_id"] == twin.id
+    )
+    assert twin_history["corrections"][0]["after"] == "dwarf"
+    assert twin_history["evidence_chunk_ids"] == [shared.id]
+    assert session.get(EntityVerification, (survivor.id, "v1")) is None
+
+    class ConfirmingVerifier:
+        model = "test-verifier"
+        verifier_version = "v1"
+
+        async def verify(self, entity_name, fields, evidence):
+            return {
+                "results": [
+                    {
+                        "field": "npc.description",
+                        "verdict": "confirmed",
+                        "correction": None,
+                        "evidence_chunk_id": shared.id,
+                    }
+                ]
+            }
+
+    assert asyncio.run(verify_entities(session, ConfirmingVerifier()))[
+        "entities_checked"
+    ] == 1
+    assert session.get(EntityVerification, (survivor.id, "v1")) is not None
+
+
+def test_failed_approved_pair_is_deferred_so_later_pair_progresses(session: Session):
+    survivor, twin, _other, _shared, _twin_only = _seed_pair(session)
+    generate_alias_candidates(session)
+    record_alias_decision(session, survivor.id, twin.id, "approved", "dm@example.test")
+    stale = EntityAliasReview(
+        survivor_id="99999999-9999-9999-9999-999999999998",
+        twin_id="99999999-9999-9999-9999-999999999999",
+        status="approved",
+        reviewed_by="dm@example.test",
+        reviewed_at=datetime(2000, 1, 1, tzinfo=timezone.utc),
+    )
+    session.add(stale)
+    session.commit()
+
+    first_run = asyncio.run(merge_approved_aliases(session, FakeEmbedder(), limit=1))
+    second_run = asyncio.run(merge_approved_aliases(session, FakeEmbedder(), limit=1))
+
+    assert first_run["failed"] == 1
+    assert second_run["merged"] == 1
+    assert session.get(EntityAliasReview, (stale.survivor_id, stale.twin_id)).status == (
+        "approved"
+    )
+    assert session.get(Entity, twin.id) is None
