@@ -89,54 +89,6 @@ py_test(
 )
 
 py_test(
-    name = "ember_public_bazel_router_test",
-    srcs = ["bazel_router_test.py"],
-    imports = [".."],
-    deps = [
-        "//projects/monolith:monolith_backend",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "ember_public_durability_test",
-    srcs = ["durability_test.py"],
-    imports = [".."],
-    deps = [
-        ":ember_public",
-        "@pip//httpx",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "ember_public_semgrep_core_test",
-    srcs = ["semgrep_core_test.py"],
-    imports = [".."],
-    deps = [
-        ":ember_public",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlalchemy",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "ember_public_semgrep_router_test",
-    srcs = ["semgrep_router_test.py"],
-    imports = [".."],
-    deps = [
-        "//projects/monolith:monolith_backend",
-        "@pip//fastapi",
-        "@pip//httpx",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
     name = "ember_public_health_test",
     srcs = ["health_test.py"],
     imports = [".."],

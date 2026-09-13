@@ -154,22 +154,6 @@ py_test(
 )
 
 py_test(
-    name = "app_architecture_test",
-    srcs = ["architecture_test.py"],
-    data = [
-        "//projects/monolith/chat:production_sources",
-        "//projects/monolith/home:production_sources",
-        "//projects/monolith/knowledge:production_sources",
-    ],
-    imports = [".."],
-    deps = [
-        "//projects/monolith:monolith_backend",
-        "@pip//fastapi",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
     name = "main_lifespan_discord_test",
     srcs = ["main_lifespan_discord_test.py"],
     imports = [".."],

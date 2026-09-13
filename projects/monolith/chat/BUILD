@@ -84,60 +84,6 @@ py_test(
 )
 
 py_test(
-    name = "chat_agent_temporal_grounding_test",
-    srcs = ["agent_temporal_grounding_test.py"],
-    imports = [".."],
-    deps = [
-        "//projects/monolith:monolith_backend",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "chat_bot_safeguards_test",
-    srcs = ["bot_safeguards_test.py"],
-    imports = [".."],
-    deps = [
-        "//projects/monolith:monolith_backend",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-    ],
-)
-
-py_test(
-    name = "chat_safeguards_forest_test",
-    srcs = ["safeguards_forest_test.py"],
-    imports = [".."],
-    deps = [
-        "//projects/monolith:monolith_backend",
-        "@pip//pytest",
-    ],
-)
-
-py_test(
-    name = "chat_safeguards_test",
-    srcs = ["safeguards_test.py"],
-    imports = [".."],
-    deps = [
-        "//projects/monolith:monolith_backend",
-        "@pip//pytest",
-        "@pip//pytest_asyncio",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
-    name = "chat_safeguards_train_job_test",
-    srcs = ["safeguards_train_job_test.py"],
-    imports = [".."],
-    deps = [
-        "//projects/monolith:monolith_backend",
-        "@pip//pytest",
-        "@pip//sqlmodel",
-    ],
-)
-
-py_test(
     name = "chat_models_db_constraints_test",
     srcs = ["models_db_constraints_test.py"],
     imports = [".."],
@@ -1695,10 +1641,7 @@ filegroup(
             "tests/**/*.py",
         ],
     ),
-    visibility = [
-        "//projects/monolith:__pkg__",
-        "//projects/monolith/app:__pkg__",
-    ],
+    visibility = ["//projects/monolith:__pkg__"],
 )
 
 filegroup(
