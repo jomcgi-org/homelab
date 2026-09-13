@@ -83,10 +83,15 @@ TAR="$(abspath "$SYSROOT_TAR")"
 BOOTSTRAP_TOOL="$(abspath "$BOOTSTRAP_TOOL")"
 S="$("$BOOTSTRAP_TOOL" mktemp -d)"
 TMP_WORK=""
+ACTION_LOG=""
 STAGE="sysroot setup"
 cleanup() {
 	rc=$?
 	trap - EXIT
+	if [ -n "$ACTION_LOG" ] && [ "$rc" -ne 0 ]; then
+		exec 2>&3
+		"$BOOTSTRAP_TOOL" tail -c 12000 "$ACTION_LOG" >&2
+	fi
 	if [ "$rc" -ne 0 ]; then
 		echo "ocaml_compile: $NAME failed during $STAGE (exit $rc)" >&2
 	fi
@@ -260,6 +265,10 @@ else
 	TMP_WORK="$WORK"
 fi
 mkdir -p "$WORK"
+if [ "$NAME" = "parser_ocaml_menhir" ]; then
+	ACTION_LOG="$WORK/.ocaml_compile.log"
+	exec 3>&2 2>"$ACTION_LOG"
+fi
 for s in $SRCS; do cp "$s" "$WORK/$(basename "$s")"; done
 # preprocess_data files (dune (preprocessor_deps (file X))) are staged by
 # basename into $WORK alongside the sources. ppx_blob's [%blob "X"] resolves X
