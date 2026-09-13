@@ -717,3 +717,149 @@ def test_executor_cancellation_before_create_retains_unknown_hold(
     assert state["turns"][0]["stop_reason"] == UNKNOWN_INVOCATION
     assert state["turns"][0]["cost_usd"] is None
     assert state["pending"] == []
+
+
+def test_named_synthetic_setup_rolls_back_session_if_pending_insert_fails(
+    database, monkeypatch
+):
+    original = Session.add
+
+    def add(self, row, **kwargs):
+        if isinstance(row, PendingMessage):
+            raise RuntimeError("pending insert failed")
+        return original(self, row, **kwargs)
+
+    monkeypatch.setattr(Session, "add", add)
+    with pytest.raises(RuntimeError, match="pending insert failed"):
+        execution_api._persist_synthetic_request(
+            "synthetic:factory-quota:atomic", "OK", "haiku", "test-owner"
+        )
+    with Session(database) as db:
+        assert db.exec(select(AgentSession)).all() == []
+        assert db.exec(select(PendingMessage)).all() == []
+
+
+@pytest.mark.parametrize("cleanup", ["timeout", "destroying", "destroyed"])
+def test_named_haiku_probe_retains_binding_until_cleanup_confirmed(
+    database, monkeypatch, cleanup
+):
+    async def handler(request):
+        if request.method == "DELETE":
+            if cleanup == "timeout":
+                raise httpx.ReadTimeout("delete uncertain", request=request)
+            return httpx.Response(200, json={"state": cleanup}, request=request)
+        if request.url.path.endswith("/invoke"):
+            assert json.loads(request.content)["model"] == "haiku"
+        return _probe_response(request)
+
+    _http(monkeypatch, handler)
+
+    async def run():
+        return await execution_api.run_synthetic_session(
+            "OK",
+            "haiku",
+            session_key="synthetic:factory-quota:test",
+            read_timeout=120,
+        )
+
+    if cleanup == "timeout":
+        with pytest.raises(transport.EmberVMTimeout):
+            asyncio.run(run())
+    else:
+        assert asyncio.run(run()).result == "synthetic ok"
+    state = _snapshot(database, _synthetic_id(database))
+    assert state["pending"] == []
+    assert state["session"]["ember_session_id"] == (
+        None if cleanup == "destroyed" else "probe-guest"
+    )
+
+
+def test_named_probe_is_already_claimed_when_visible_to_other_replica(database):
+    row, seq = execution_api._persist_synthetic_request(
+        "synthetic:factory-quota:owned",
+        "OK",
+        "haiku",
+        "probe-owner",
+    )
+    assert store.claim_pending_message_for_session_sync(row.id, "sweeper") is None
+    with Session(database) as db:
+        pending = db.exec(select(PendingMessage)).one()
+        assert pending.seq == seq
+        assert pending.claimed_by_replica == "probe-owner"
+        assert pending.dispatch_count == 1
+
+
+def test_probe_admission_denial_leaves_no_delayed_request(database, monkeypatch):
+    monkeypatch.setattr(admission, "claim_pending", lambda *args: False)
+    with pytest.raises(transport.EmberTurnNotInvoked, match="No immediate capacity"):
+        execution_api._persist_synthetic_request(
+            "synthetic:factory-quota:denied",
+            "OK",
+            "haiku",
+            "probe-owner",
+        )
+    with Session(database) as db:
+        assert db.exec(select(AgentSession)).all() == []
+        assert db.exec(select(PendingMessage)).all() == []
+
+
+def test_named_probe_capacity_response_does_not_wait_or_queue(database, monkeypatch):
+    calls = []
+
+    async def handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(
+            429, json={"error": "capacity_exceeded", "retryable": True}, request=request
+        )
+
+    _http(monkeypatch, handler)
+    with pytest.raises(transport.EmberTurnNotInvoked):
+        asyncio.run(
+            execution_api.run_synthetic_session(
+                "OK",
+                "haiku",
+                session_key="synthetic:factory-quota:capacity",
+                read_timeout=120,
+            )
+        )
+    assert len(calls) == 1
+    state = _snapshot(database, _synthetic_id(database))
+    assert state["pending"] == []
+    assert state["permit"]["state"] == "settled"
+
+
+@pytest.mark.parametrize("stage", ["create", "bound", "invoke"])
+def test_named_probe_cancel_preserves_only_ambiguous_outcomes(
+    database, monkeypatch, stage
+):
+    async def handler(request):
+        if stage == "create" or request.url.path.endswith("/invoke"):
+            raise asyncio.CancelledError()
+        return _probe_response(request)
+
+    _http(monkeypatch, handler)
+    if stage == "bound":
+        original = admission.recheck
+        checks = []
+
+        def recheck(*args):
+            checks.append(True)
+            if len(checks) == 2:
+                raise asyncio.CancelledError()
+            return original(*args)
+
+        monkeypatch.setattr(admission, "recheck", recheck)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            execution_api.run_synthetic_session(
+                "OK",
+                "haiku",
+                session_key="synthetic:factory-quota:cancel",
+                read_timeout=120,
+            )
+        )
+    state = _snapshot(database, _synthetic_id(database))
+    assert state["permit"]["state"] == ("settled" if stage == "bound" else "uncertain")
+    assert (state["turns"][0]["stop_reason"] == UNKNOWN_INVOCATION) == (
+        stage != "bound"
+    )

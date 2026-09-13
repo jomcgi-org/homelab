@@ -1154,6 +1154,7 @@ def create_session(
     node_key: str | None = None,
     node_attempt: int | None = None,
     admission_tier: str = "interactive",
+    commit: bool = True,
 ) -> AgentSession:
     if admission_tier not in admission.TIERS:
         raise ValueError("Invalid server admission tier")
@@ -1180,7 +1181,8 @@ def create_session(
     session.add(row)
     session.flush()
     admission.bind_session(session, row)
-    session.commit()
+    if commit:
+        session.commit()
     session.refresh(row)
     return row
 

@@ -69,7 +69,7 @@ def model_family(model: str | None) -> str:
         return "codex"
     if model == "spark":
         return "muse"
-    if model in {None, "opus", "sonnet", "fable"}:
+    if model in {None, "opus", "sonnet", "fable", "haiku"}:
         return "claude"
     raise ValueError(
         f"Unknown model {model!r}; valid models: opus, sonnet, fable, luna, terra, sol, astra, spark, pi-spark"
