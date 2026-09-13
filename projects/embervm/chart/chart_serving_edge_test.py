@@ -58,6 +58,13 @@ def _edge_bootstrap(docs: list[dict]) -> dict:
     return yaml.safe_load(rendered)
 
 
+def _edge_health_bootstrap(docs: list[dict]) -> dict:
+    rendered = _one(docs, "ConfigMap", "serving-edge")["data"][
+        "envoy-health-proxy.yaml"
+    ]
+    return yaml.safe_load(rendered)
+
+
 def _listener(config: dict, name: str) -> dict:
     return next(
         item for item in config["static_resources"]["listeners"] if item["name"] == name
@@ -104,34 +111,50 @@ def test_cold_edge_waits_for_rds_before_becoming_ready() -> None:
         "path": "/ready",
         "port": "health",
     }
+    assert config["admin"]["address"]["socket_address"] == {
+        "address": "127.0.0.1",
+        "port_value": 9911,
+    }
 
 
-def test_warmed_edge_keeps_liveness_separate_from_ads_readiness() -> None:
+def test_startup_health_uses_pre_initialization_admin_surface() -> None:
     docs = _render()
     edge = _one(docs, "Deployment", "serving-edge")
-    container = edge["spec"]["template"]["spec"]["containers"][0]
+    containers = edge["spec"]["template"]["spec"]["containers"]
+    container = next(item for item in containers if item["name"] == "envoy")
+    health_container = next(
+        item for item in containers if item["name"] == "health-proxy"
+    )
     config = _edge_bootstrap(docs)
-    probe_listener = _listener(config, "serving_edge_probe_listener")
-    manager = probe_listener["filter_chains"][0]["filters"][0]["typed_config"]
+    health_config = _edge_health_bootstrap(docs)
+    health_listener = _listener(health_config, "serving_edge_health_listener")
+    manager = health_listener["filter_chains"][0]["filters"][0]["typed_config"]
     routes = manager["route_config"]["virtual_hosts"][0]["routes"]
 
-    # /live is static and never depends on ADS. /ready delegates to Envoy's
-    # initialization state, which remains LIVE with the last ACKed RDS config if
-    # the ADS stream later disconnects.
-    assert routes[0] == {
-        "match": {"path": "/live"},
-        "direct_response": {"status": 200, "body": {"inline_string": "live\n"}},
-    }
-    assert routes[1] == {
-        "match": {"path": "/ready"},
-        "route": {"cluster": "admin_loopback"},
+    # Normal listeners in the main process do not start workers until RDS
+    # initialization completes. The separate static proxy starts independently
+    # and forwards only health paths to the main process's loopback admin.
+    assert [item["name"] for item in config["static_resources"]["listeners"]] == [
+        "serving_edge_listener"
+    ]
+    assert routes[:2] == [
+        {"match": {"path": "/server_info"}, "route": {"cluster": "admin_loopback"}},
+        {"match": {"path": "/ready"}, "route": {"cluster": "admin_loopback"}},
+    ]
+    assert routes[2] == {
+        "match": {"prefix": "/"},
+        "direct_response": {"status": 403},
     }
     assert container["startupProbe"]["httpGet"] == {
-        "path": "/live",
+        "path": "/server_info",
         "port": "health",
     }
     assert container["livenessProbe"]["httpGet"] == {
-        "path": "/live",
+        "path": "/server_info",
+        "port": "health",
+    }
+    assert health_container["readinessProbe"]["httpGet"] == {
+        "path": "/server_info",
         "port": "health",
     }
 

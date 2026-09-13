@@ -46,6 +46,7 @@ spec:
           args:
             - --config-path
             - /etc/envoy/envoy-bootstrap.yaml
+            - --disable-hot-restart
             - --service-node
             - {{ .Values.servingEnvoy.edge.nodeId | quote }}
             - --service-cluster
@@ -56,7 +57,7 @@ spec:
             - name: health
               containerPort: {{ .Values.servingEnvoy.edge.healthPort }}
           readinessProbe:
-            # Envoy admin stays unready while the main listener waits for its
+            # Admin /ready stays false while the main listener waits for its
             # first RDS response. After configuration is applied, ADS loss keeps
             # the last ACKed routes and therefore preserves readiness.
             httpGet:
@@ -64,15 +65,16 @@ spec:
               port: health
             periodSeconds: 2
           startupProbe:
-            # Process startup is independent of dynamic route availability.
+            # Envoy starts its admin listener before server initialization waits
+            # for RDS, so cold process health is independent of ADS availability.
             httpGet:
-              path: /live
+              path: /server_info
               port: health
             periodSeconds: 2
             failureThreshold: 30
           livenessProbe:
             httpGet:
-              path: /live
+              path: /server_info
               port: health
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -90,10 +92,56 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+        # A second static Envoy process exposes only health routes. Its listener
+        # starts before the main process receives RDS, while main admin remains
+        # unreachable outside the pod network namespace.
+        - name: health-proxy
+          image: "{{ .Values.servingEnvoy.image.repository }}:{{ .Values.servingEnvoy.image.tag }}"
+          imagePullPolicy: {{ .Values.servingEnvoy.image.pullPolicy }}
+          command:
+            - /usr/local/bin/envoy
+          args:
+            - --config-path
+            - /etc/envoy/envoy-health-proxy.yaml
+            - --disable-hot-restart
+            - --service-node
+            - {{ printf "%s-health" .Values.servingEnvoy.edge.nodeId | quote }}
+            - --service-cluster
+            - {{ printf "%s-health" (include "embervm.servingEdge.fullname" .) }}
+          ports:
+            - name: health
+              containerPort: {{ .Values.servingEnvoy.edge.healthPort }}
+          readinessProbe:
+            httpGet:
+              path: /server_info
+              port: health
+            periodSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /server_info
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.servingEnvoy.edge.healthResources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: bootstrap
+              mountPath: /etc/envoy
+              readOnly: true
+            - name: health-tmp
+              mountPath: /tmp
       volumes:
         - name: bootstrap
           configMap:
             name: {{ include "embervm.servingEdge.fullname" . }}-bootstrap
         - name: tmp
+          emptyDir: {}
+        - name: health-tmp
           emptyDir: {}
 {{- end }}

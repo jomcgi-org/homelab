@@ -14,5 +14,8 @@ go_library(
 go_binary(
     name = "xds",
     embed = [":cmd_lib"],
-    visibility = ["//projects/embervm/xds:__subpackages__"],
+    visibility = [
+        "//projects/embervm/chart:__pkg__",
+        "//projects/embervm/xds:__subpackages__",
+    ],
 )

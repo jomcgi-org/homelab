@@ -228,6 +228,36 @@ py_test(
     deps = ["@pip//pyyaml"],
 )
 
+# Runs only on the Linux CI gate because it launches the chart's pinned Envoy
+# binary and the real xDS sidecar over loopback.
+py_test(
+    name = "chart_serving_edge_runtime_test",
+    size = "large",
+    timeout = "long",
+    srcs = ["chart_serving_edge_runtime_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "//projects/embervm/xds/cmd:xds",
+        "@envoy_test_binary//:envoy",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "ENVOY_BIN": "$(rootpath @envoy_test_binary//:envoy)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+        "XDS_BIN": "$(rootpath //projects/embervm/xds/cmd:xds)",
+    },
+    tags = ["requires-network"],
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    deps = ["@pip//pyyaml"],
+)
+
 py_test(
     name = "chart_hypervisor_epoch_test",
     srcs = ["chart_hypervisor_epoch_test.py"],
@@ -357,5 +387,11 @@ semgrep_test(
 semgrep_test(
     name = "chart_serving_edge_test_semgrep_test",
     srcs = ["chart_serving_edge_test.py"],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "chart_serving_edge_runtime_test_semgrep_test",
+    srcs = ["chart_serving_edge_runtime_test.py"],
     rules = ["//bazel/semgrep/rules:python_rules"],
 )

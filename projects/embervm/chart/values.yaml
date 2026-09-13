@@ -516,6 +516,12 @@ servingEnvoy:
         memory: 48Mi
       limits:
         memory: 96Mi
+    healthResources:
+      requests:
+        cpu: 5m
+        memory: 16Mi
+      limits:
+        memory: 32Mi
   # The R4 stateful TCP listenerPort range, exposed as container ports on the node
   # Envoy DaemonSet and as TCP ports on the serving Service (named state-<port>).
   # This is CAPACITY: static GitOps config declaring which ports exist. The CRD

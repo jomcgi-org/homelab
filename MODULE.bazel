@@ -460,6 +460,17 @@ oci.pull(
 )
 use_repo(oci, "pgvector_pg16", "pgvector_pg16_linux_amd64")
 
+# The serving-edge runtime regression launches the same Envoy image release as
+# the chart. Only the Linux amd64 binary is extracted into the test runfiles.
+oci.pull(
+    name = "envoy_test",
+    digest = "sha256:d59f7f5fa10cff6d5892b6c5e7df5c9297ddfb2c3683e33fbfb82da24de4fa66",
+    image = "docker.io/envoyproxy/envoy",
+    platforms = ["linux/amd64"],
+    tag = "v1.39-latest",
+)
+use_repo(oci, "envoy_test", "envoy_test_linux_amd64")
+
 #########################
 # Semgrep Pro — engine + per-language rule packs from GHCR
 # Digests auto-updated by .github/workflows/update-semgrep-pro.yaml
@@ -513,6 +524,11 @@ use_repo(
 # PostgreSQL test fixtures — extract PG16 + pgvector binaries from OCI
 postgres = use_extension("//bazel/tools/postgres:extensions.bzl", "postgres")
 use_repo(postgres, "postgres_test")
+
+#########################
+# Envoy test fixture, extracted from the serving-edge OCI image
+envoy_fixture = use_extension("//bazel/tools/envoy:extensions.bzl", "envoy")
+use_repo(envoy_fixture, "envoy_test_binary")
 
 # Configure apko for container images
 apko = use_extension("@rules_apko//apko:extensions.bzl", "apko")

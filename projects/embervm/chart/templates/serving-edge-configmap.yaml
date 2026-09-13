@@ -14,6 +14,9 @@ data:
       id: {{ .Values.servingEnvoy.edge.nodeId | quote }}
       cluster: {{ include "embervm.servingEdge.fullname" . }}
     admin:
+      # Admin is the main process's only HTTP surface available before its
+      # server initialization callback starts listener workers. Keep it on
+      # loopback. The static health proxy below exposes only the two probe paths.
       address:
         socket_address:
           address: 127.0.0.1
@@ -30,21 +33,6 @@ data:
         ads: {}
     static_resources:
       clusters:
-        # Admin remains loopback-only. The static probe listener below exposes
-        # only /ready and a direct /live response to the kubelet.
-        - name: admin_loopback
-          type: STATIC
-          connect_timeout: 0.25s
-          lb_policy: ROUND_ROBIN
-          load_assignment:
-            cluster_name: admin_loopback
-            endpoints:
-              - lb_endpoints:
-                  - endpoint:
-                      address:
-                        socket_address:
-                          address: 127.0.0.1
-                          port_value: {{ .Values.servingEnvoy.edge.adminPort }}
         - name: xds_cluster
           type: STRICT_DNS
           connect_timeout: 1s
@@ -67,45 +55,6 @@ data:
                           address: {{ include "embervm.fullname" . }}.{{ .Release.Namespace }}.svc
                           port_value: {{ .Values.xds.grpcPort }}
       listeners:
-        # This listener is independent of ADS. /live establishes process health;
-        # /ready proxies Envoy's initialization state without exposing the rest
-        # of the loopback admin API.
-        - name: serving_edge_probe_listener
-          address:
-            socket_address:
-              address: 0.0.0.0
-              port_value: {{ .Values.servingEnvoy.edge.healthPort }}
-          filter_chains:
-            - filters:
-                - name: envoy.filters.network.http_connection_manager
-                  typed_config:
-                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
-                    stat_prefix: serving_edge_probe
-                    codec_type: AUTO
-                    route_config:
-                      name: serving_edge_probe
-                      virtual_hosts:
-                        - name: probe
-                          domains: ["*"]
-                          routes:
-                            - match:
-                                path: /live
-                              direct_response:
-                                status: 200
-                                body:
-                                  inline_string: "live\n"
-                            - match:
-                                path: /ready
-                              route:
-                                cluster: admin_loopback
-                            - match:
-                                prefix: /
-                              direct_response:
-                                status: 403
-                    http_filters:
-                      - name: envoy.filters.http.router
-                        typed_config:
-                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
         - name: serving_edge_listener
           address:
             socket_address:
@@ -133,6 +82,60 @@ data:
                         # loss and remains ready.
                         initial_fetch_timeout: 0s
                       route_config_name: embervm-serving
+                    http_filters:
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  # This separate Envoy process has no dynamic resources, so its listener starts
+  # without waiting for the main process's RDS initialization. It is the narrow
+  # pod-network window onto main-process startup health and readiness.
+  envoy-health-proxy.yaml: |
+    static_resources:
+      clusters:
+        - name: admin_loopback
+          type: STATIC
+          connect_timeout: 0.25s
+          lb_policy: ROUND_ROBIN
+          load_assignment:
+            cluster_name: admin_loopback
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: 127.0.0.1
+                          port_value: {{ .Values.servingEnvoy.edge.adminPort }}
+      listeners:
+        - name: serving_edge_health_listener
+          address:
+            socket_address:
+              address: 0.0.0.0
+              port_value: {{ .Values.servingEnvoy.edge.healthPort }}
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: serving_edge_health
+                    codec_type: AUTO
+                    route_config:
+                      name: serving_edge_health
+                      virtual_hosts:
+                        - name: health
+                          domains: ["*"]
+                          routes:
+                            - match:
+                                path: /server_info
+                              route:
+                                cluster: admin_loopback
+                            - match:
+                                path: /ready
+                              route:
+                                cluster: admin_loopback
+                            - match:
+                                prefix: /
+                              direct_response:
+                                status: 403
                     http_filters:
                       - name: envoy.filters.http.router
                         typed_config:
