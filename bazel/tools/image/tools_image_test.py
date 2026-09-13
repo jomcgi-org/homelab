@@ -13,6 +13,7 @@ import tarfile
 import tempfile
 
 import pytest
+from python.runfiles import Runfiles
 
 
 REQUIRED_COMMANDS = {
@@ -29,16 +30,14 @@ SUPPORTED_PLATFORMS = ["linux_amd64", "linux_arm64", "darwin_arm64"]
 RUNTIME_PLATFORM = os.environ.get("TOOLS_IMAGE_RUNTIME_PLATFORM")
 TEST_PLATFORMS = [RUNTIME_PLATFORM] if RUNTIME_PLATFORM else SUPPORTED_PLATFORMS
 ARM64_CPU_TYPE = 0x0100000C
+RUNFILES = Runfiles.Create()
 
 
 @functools.cache
 def _runfile(name: str) -> pathlib.Path:
-    path = (
-        pathlib.Path(os.environ["TEST_SRCDIR"])
-        / os.environ["TEST_WORKSPACE"]
-        / "bazel/tools/image"
-        / name
-    )
+    resolved = RUNFILES.Rlocation(f"homelab/bazel/tools/image/{name}")
+    assert resolved is not None, f"unknown runfile: {name}"
+    path = pathlib.Path(resolved)
     assert path.is_file(), f"missing runfile: {path}"
     return path
 
