@@ -4,6 +4,9 @@ import (
 	"context"
 	"testing"
 
+	cachev3 "github.com/envoyproxy/go-control-plane/pkg/cache/v3"
+	resourcev3 "github.com/envoyproxy/go-control-plane/pkg/resource/v3"
+
 	"github.com/jomcgi/homelab/projects/embervm/xds/snapshot"
 )
 
@@ -57,6 +60,43 @@ func TestStore_perNodeVersionsAreIndependent(t *testing.T) {
 	// A different node starting at a lower version is not blocked by node-a.
 	if err := s.Apply(ctx, "node-b", desired("0000000001")); err != nil {
 		t.Fatalf("node-b apply should be independent: %v", err)
+	}
+}
+
+func TestStore_nodeAndEdgeSnapshotsRemainIndependent(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore()
+	if err := s.Apply(ctx, "node-4", desired("0000000002")); err != nil {
+		t.Fatalf("node snapshot: %v", err)
+	}
+	edge := &snapshot.Desired{
+		Version: "0000000001",
+		Clusters: []snapshot.Cluster{{
+			Name:          "serve|ping",
+			DiscoveryType: "strict_dns",
+			Endpoints:     []snapshot.Endpoint{{IP: "embervm-serving.embervm.svc", Port: 10000}},
+		}},
+		Routes: []snapshot.Route{{Host: "ping.embervm.internal", Cluster: "serve|ping"}},
+	}
+	if err := s.Apply(ctx, "embervm-serving-edge", edge); err != nil {
+		t.Fatalf("edge snapshot: %v", err)
+	}
+
+	// Both node ids retain independent cache entries. This is a unit-level cache
+	// assertion only; Envoy retaining last-ACKed resources through control-plane
+	// deletion is exercised by the deployment drill, not simulated here.
+	for node, cluster := range map[string]string{
+		"node-4":               "c1",
+		"embervm-serving-edge": "serve|ping",
+	} {
+		raw, err := s.Cache().GetSnapshot(node)
+		if err != nil {
+			t.Fatalf("cached snapshot for %s: %v", node, err)
+		}
+		got := raw.(*cachev3.Snapshot).GetResources(resourcev3.ClusterType)
+		if _, ok := got[cluster]; !ok {
+			t.Fatalf("snapshot %s lost cluster %s: %v", node, cluster, got)
+		}
 	}
 }
 

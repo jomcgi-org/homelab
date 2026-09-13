@@ -64,14 +64,20 @@ type Desired struct {
 	Listeners []Listener `json:"listeners,omitempty"`
 }
 
-// Cluster is one upstream: a name, its serving-VM endpoints, and a connect
-// timeout. Endpoints are served as a separate EDS resource (ClusterLoadAssignment
-// keyed by the cluster name), so endpoint churn does not re-push the CDS entry.
+// Cluster is one upstream: a name, endpoints, and a connect timeout. Node-tier
+// endpoints are served as a separate EDS resource (ClusterLoadAssignment keyed
+// by the cluster name), so VM churn does not re-push the CDS entry. The cluster
+// edge instead embeds its stable node-Service endpoint in a STRICT_DNS cluster.
 type Cluster struct {
 	Name             string       `json:"name"`
 	Endpoints        []Endpoint   `json:"endpoints"`
 	ConnectTimeoutMs int          `json:"connect_timeout_ms"`
 	HealthCheck      *HealthCheck `json:"health_check,omitempty"`
+	// DiscoveryType is empty/"eds" for node-tier clusters whose VM endpoints
+	// churn over EDS. "strict_dns" is reserved for the cluster edge snapshot:
+	// its stable upstream is the Kubernetes node-tier Service, so pod membership
+	// changes are resolved by DNS/kube-proxy rather than republishing VM churn.
+	DiscoveryType string `json:"discovery_type,omitempty"`
 }
 
 // Endpoint is one serving-VM tap IP + port. In v1 these are node-local routable
@@ -131,7 +137,9 @@ func Build(d *Desired) (*cachev3.Snapshot, error) {
 	for i := range d.Clusters {
 		c := &d.Clusters[i]
 		clusters = append(clusters, buildCluster(c))
-		endpoints = append(endpoints, buildEndpoint(c))
+		if c.DiscoveryType != "strict_dns" {
+			endpoints = append(endpoints, buildEndpoint(c))
+		}
 	}
 
 	routeConfig := buildRouteConfig(d.Routes)
@@ -177,6 +185,12 @@ func (d *Desired) validate() error {
 			return fmt.Errorf("cluster[%d]: duplicate cluster name %q", i, c.Name)
 		}
 		seen[c.Name] = struct{}{}
+		if c.DiscoveryType != "" && c.DiscoveryType != "eds" && c.DiscoveryType != "strict_dns" {
+			return fmt.Errorf("cluster[%d]: unsupported discovery_type %q", i, c.DiscoveryType)
+		}
+		if c.DiscoveryType == "strict_dns" && len(c.Endpoints) == 0 {
+			return fmt.Errorf("cluster[%d]: strict_dns requires at least one endpoint", i)
+		}
 		priorities := make(map[uint32]struct{})
 		maxPriority := uint32(0)
 		for j := range c.Endpoints {
@@ -251,10 +265,9 @@ func (d *Desired) validate() error {
 	return nil
 }
 
-// buildCluster renders one CDS entry as an EDS-type cluster: the endpoints are
-// carried by a same-named ClusterLoadAssignment (buildEndpoint) served over EDS,
-// so a cluster definition is stable across endpoint churn. EdsConfig ADS means
-// Envoy fetches the assignment over the same aggregated stream.
+// buildCluster renders one CDS entry. Node snapshots use EDS, where endpoints
+// are carried by a same-named ClusterLoadAssignment over ADS. The cluster-edge
+// snapshot uses STRICT_DNS with an embedded assignment for its stable Service.
 func buildCluster(c *Cluster) *clusterv3.Cluster {
 	timeout := defaultConnectTimeout
 	if c.ConnectTimeoutMs > 0 {
@@ -275,6 +288,11 @@ func buildCluster(c *Cluster) *clusterv3.Cluster {
 			// Fetch the ClusterLoadAssignment named after the cluster.
 			ServiceName: c.Name,
 		},
+	}
+	if c.DiscoveryType == "strict_dns" {
+		cluster.ClusterDiscoveryType = &clusterv3.Cluster_Type{Type: clusterv3.Cluster_STRICT_DNS}
+		cluster.EdsClusterConfig = nil
+		cluster.LoadAssignment = buildEndpoint(c)
 	}
 	if h := c.HealthCheck; h != nil {
 		cluster.CommonLbConfig = &clusterv3.Cluster_CommonLbConfig{

@@ -2,12 +2,12 @@
 {{- /*
 Operator-owned ingress routes for serving workloads (Gateway API).
 
-embervm exposes each serving workload as a BACKEND (the serving Service + an internal
-vhost authority the node Envoy matches, pushed via xDS by the control plane). This
+embervm exposes each serving workload as a BACKEND (the cluster edge Service + an
+internal vhost authority both Envoy tiers match, pushed via xDS by the control plane). This
 template renders the operator's HTTPRoutes from servingEnvoy.routes: each entry binds a
 gateway + hostname + path and rewrites the external Host to the workload's internal
-vhost authority (rewriteHost) before the request reaches the serving Service, so the
-node Envoy's xDS-published virtual host matches. Public vs private is purely which
+vhost authority (rewriteHost) before the request reaches the edge Service, so the
+xDS-published virtual host matches. Public vs private is purely which
 gateway/hostname an entry binds (and whether Cloudflare Access fronts that hostname);
 the serving substrate knows none of it. A path on an already-routed host needs no
 DNS/cert/tunnel change, which is why the demo routes are paths, not subdomains
@@ -46,7 +46,9 @@ spec:
           urlRewrite:
             hostname: {{ .rewriteHost | quote }}
       backendRefs:
-        - name: {{ include "embervm.serving.fullname" $ }}
+        # Static Gateway API exposure terminates at the cluster edge. Runtime
+        # workload and node churn stays behind it in the two xDS snapshots.
+        - name: {{ if $.Values.servingEnvoy.edge.enabled }}{{ include "embervm.servingEdge.fullname" $ }}{{ else }}{{ include "embervm.serving.fullname" $ }}{{ end }}
           port: {{ $.Values.servingEnvoy.listenerPort }}
 {{- if .rateLimit }}
 ---

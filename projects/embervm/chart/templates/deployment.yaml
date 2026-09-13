@@ -315,6 +315,17 @@ spec:
             # port, so both derive from values.xds.httpPort.
             - name: EMBERVM_XDS_HTTP_PORT
               value: {{ .Values.xds.httpPort | quote }}
+            {{- if and .Values.servingEnvoy.enabled .Values.servingEnvoy.edge.enabled }}
+            # The cluster edge consumes a SECOND snapshot under one shared node
+            # id. Its stable upstream is the node-tier Service, not VM endpoints,
+            # keeping bank/wake churn node-local and Kubernetes writes static.
+            - name: EMBERVM_SERVING_EDGE_NODE_ID
+              value: {{ .Values.servingEnvoy.edge.nodeId | quote }}
+            - name: EMBERVM_SERVING_EDGE_UPSTREAM_HOST
+              value: {{ printf "%s.%s.svc" (include "embervm.serving.fullname" .) .Release.Namespace | quote }}
+            - name: EMBERVM_SERVING_EDGE_UPSTREAM_PORT
+              value: {{ .Values.servingEnvoy.listenerPort | quote }}
+            {{- end }}
             # Activator endpoint (R3, Task 8): the publisher renders THIS pod's
             # ip:port as the fallback endpoint of an empty serve|<workload> cluster,
             # so the node Envoy routes a miss to the activator route on this

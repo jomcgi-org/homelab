@@ -146,8 +146,9 @@ graph TB
     CALLER["task/session caller"] --> API
     API --> DISP -->|gRPC| NODED
     NODED -->|vsock| VM1
-    EDGE["Gateway API HTTPRoute"] --> ENVOY
-    XDS --> ENVOY
+    GATEWAY["Gateway API HTTPRoute"] --> EDGE["cluster edge Envoy"]
+    EDGE -->|stable node-tier Service| ENVOY
+    XDS --> EDGE & ENVOY
     ENVOY -->|DNAT into tap| VM2
     VM1 --> PROXY
     VM2 --> PROXY
@@ -158,7 +159,13 @@ graph TB
 ```
 
 Diagram edges: solid = request path; thick = facts; dotted = definitions.
-The edge Envoy tier is the Gateway API ingress in front of node Envoy.
+The Gateway API exposure is static and terminates at the cluster edge Envoy.
+Every edge replica shares one xDS node id and consumes a second, cluster-scoped
+snapshot whose `serve|<workload>` clusters resolve the stable node-tier Service.
+Each node Envoy consumes its node snapshot and routes to the globally routable
+noded pod-IP DNAT endpoint. Kubernetes removes unready node Envoy pods from the
+Service; VM health, bank, and wake churn changes only node xDS snapshots. Neither
+path writes runtime EndpointSlices or HTTPRoutes.
 
 **Division of labour** (each responsibility placed where it is cheapest to
 make correct):
@@ -192,10 +199,12 @@ involved at all:
 ```mermaid
 sequenceDiagram
     participant C as Caller
-    participant E as node Envoy
+    participant E as cluster edge Envoy
+    participant N as node Envoy
     participant VM as Serving VM
-    C->>E: edge HTTPRoute
-    E->>VM: kernel DNAT into tap NIC
+    C->>E: static edge HTTPRoute
+    E->>N: stable node-tier Service
+    N->>VM: kernel DNAT into tap NIC
     VM-->>C: response
 ```
 
@@ -206,16 +215,18 @@ its EndpointPublisher:
 ```mermaid
 sequenceDiagram
     participant C as Caller
-    participant E as node Envoy
+    participant E as cluster edge Envoy
+    participant N as node Envoy
     participant A as Fallback activator
     participant CP as Control plane
     participant VM as Guest VM
     C->>E: request (workload scaled to zero)
-    E->>A: fallback endpoint, request parks
+    E->>N: stable node-tier Service
+    N->>A: fallback endpoint, request parks
     A->>CP: wake request
     CP->>VM: single-flighted restore or cold boot
-    CP-->>E: real endpoint published via xDS
-    E->>VM: parked bytes splice through
+    CP-->>N: real endpoint published via node xDS
+    N->>VM: parked bytes splice through
     VM-->>C: response
 ```
 

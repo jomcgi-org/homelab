@@ -196,6 +196,47 @@ func TestBuild_activatorOnlyAssignmentKeepsStableHealthCheckedCluster(t *testing
 	}
 }
 
+func TestBuild_strictDNSClusterEmbedsStableEdgeUpstream(t *testing.T) {
+	d := &Desired{
+		Version: "1",
+		Clusters: []Cluster{
+			{
+				Name:             "serve|ping",
+				DiscoveryType:    "strict_dns",
+				ConnectTimeoutMs: 1000,
+				Endpoints: []Endpoint{
+					{IP: "embervm-serving.embervm.svc", Port: 10000},
+				},
+			},
+		},
+		Routes: []Route{{Host: "ping.embervm.internal", Cluster: "serve|ping"}},
+	}
+
+	snap, err := Build(d)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	cluster := snap.GetResources(resourcev3.ClusterType)["serve|ping"].(*clusterv3.Cluster)
+	if got := cluster.GetType(); got != clusterv3.Cluster_STRICT_DNS {
+		t.Fatalf("discovery type = %v, want STRICT_DNS", got)
+	}
+	if cluster.GetEdsClusterConfig() != nil {
+		t.Fatal("strict DNS cluster must not subscribe to EDS")
+	}
+	assignment := cluster.GetLoadAssignment()
+	if assignment == nil || assignment.GetClusterName() != "serve|ping" {
+		t.Fatalf("embedded assignment = %v", assignment)
+	}
+	address := assignment.GetEndpoints()[0].GetLbEndpoints()[0].GetEndpoint().GetAddress().GetSocketAddress()
+	if address.GetAddress() != "embervm-serving.embervm.svc" || address.GetPortValue() != 10000 {
+		t.Errorf("edge upstream = %s:%d, want embervm-serving.embervm.svc:10000", address.GetAddress(), address.GetPortValue())
+	}
+	if got := snap.GetResources(resourcev3.EndpointType); len(got) != 0 {
+		t.Fatalf("strict DNS edge snapshot must not publish EDS resources: %v", got)
+	}
+}
+
 func TestBuild_defaultsConnectTimeoutAndPathPrefix(t *testing.T) {
 	d := &Desired{
 		Version:  "1",
@@ -420,6 +461,8 @@ func TestBuild_rejectsMalformed(t *testing.T) {
 		name string
 		d    *Desired
 	}{
+		{"unsupported discovery type", &Desired{Version: "1", Clusters: []Cluster{{Name: "c", DiscoveryType: "original_dst"}}}},
+		{"strict dns without endpoint", &Desired{Version: "1", Clusters: []Cluster{{Name: "c", DiscoveryType: "strict_dns"}}}},
 		{"missing version", &Desired{Clusters: []Cluster{{Name: "c"}}}},
 		{"missing cluster name", &Desired{Version: "1", Clusters: []Cluster{{Name: ""}}}},
 		{"duplicate cluster name", &Desired{Version: "1", Clusters: []Cluster{{Name: "c"}, {Name: "c"}}}},

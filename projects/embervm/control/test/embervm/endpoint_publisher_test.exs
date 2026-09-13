@@ -83,7 +83,9 @@ defmodule Embervm.EndpointPublisherTest do
         # "cold + no activator => emit nothing" case is the default). A single IP,
         # NOT an {ip, port} pair (Task 8, D-R4.PR-4.1): each stateful workload's
         # fallback port is derived from its OWN catalog listen_port.
-        activator_ip: Keyword.get(opts, :activator_ip, nil)
+        activator_ip: Keyword.get(opts, :activator_ip, nil),
+        edge_node_id: Keyword.get(opts, :edge_node_id, "embervm-serving-edge"),
+        edge_upstream: Keyword.get(opts, :edge_upstream, nil)
       ]
 
     {:ok, pub} = EndpointPublisher.start_link(pub_opts)
@@ -143,14 +145,14 @@ defmodule Embervm.EndpointPublisherTest do
     NodeCapacity.put(ctx.cap_table, node_id, facts)
   end
 
-  defp start_published(ctx, instance_id, workload, ip, port) do
+  defp start_published(ctx, instance_id, workload, ip, port, node_id \\ "node-4") do
     {:ok, _} =
       ServingStore.start(ctx.store, %{
         instance_id: instance_id,
         tenant: "homelab",
         principal: "p1",
         workload: workload,
-        node_id: "node-4",
+        node_id: node_id,
         vm_id: "vm-" <> instance_id,
         ip: ip,
         port: port
@@ -419,6 +421,68 @@ defmodule Embervm.EndpointPublisherTest do
     serving_node(ctx, "node-4")
     :ok = EndpointPublisher.flush(ctx.pub)
     assert [{"node-4", _desired}] = last_puts(ctx)
+  end
+
+  test "publishes a stable second snapshot while node snapshots carry cross-node endpoints" do
+    ctx =
+      start_stack(
+        edge_node_id: "embervm-serving-edge",
+        edge_upstream: %{host: "embervm-serving.embervm.svc", port: 10_000}
+      )
+
+    serving_workload(ctx, "wl-a", "wl-a.example")
+    serving_node(ctx, "node-4")
+    serving_node(ctx, "node-5")
+    start_published(ctx, "srv-a", "wl-a", "10.42.4.8", 30_011, "node-4")
+    start_published(ctx, "srv-b", "wl-a", "10.42.5.9", 30_017, "node-5")
+
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    initial = Map.new(last_puts(ctx), fn {node_id, desired} -> {node_id, desired} end)
+    assert Map.keys(initial) |> Enum.sort() == ["embervm-serving-edge", "node-4", "node-5"]
+
+    for node_id <- ["node-4", "node-5"] do
+      assert [cluster] = initial[node_id].clusters
+      assert cluster.name == "serve|wl-a"
+
+      assert cluster.endpoints == [
+               %{ip: "10.42.4.8", port: 30_011, priority: 0},
+               %{ip: "10.42.5.9", port: 30_017, priority: 0},
+               %{ip: "10.1.1.1", port: 7000, priority: 1}
+             ]
+    end
+
+    edge = initial["embervm-serving-edge"]
+
+    assert edge.clusters == [
+             %{
+               name: "serve|wl-a",
+               endpoints: [%{ip: "embervm-serving.embervm.svc", port: 10_000}],
+               connect_timeout_ms: 1_000,
+               health_check: @health_check,
+               discovery_type: "strict_dns"
+             }
+           ]
+
+    assert [%{cluster: "serve|wl-a", host: "wl-a.example"}] = edge.routes
+
+    # VM health/withdrawal changes both node snapshots, but the edge snapshot is
+    # stable: it still targets the Service and therefore stays outside node-local
+    # endpoint churn.
+    {:ok, _} = ServingStore.set_health(ctx.store, "srv-b", false)
+    :ok = EndpointPublisher.flush(ctx.pub)
+
+    puts = last_puts(ctx)
+    assert Enum.count(puts, fn {node_id, _} -> node_id == "embervm-serving-edge" end) == 1
+
+    for node_id <- ["node-4", "node-5"] do
+      node_puts = for {^node_id, desired} <- puts, do: desired
+      assert length(node_puts) == 2
+      assert List.last(node_puts).clusters |> hd() |> Map.fetch!(:endpoints) == [
+               %{ip: "10.42.4.8", port: 30_011, priority: 0},
+               %{ip: "10.1.1.1", port: 7000, priority: 1}
+             ]
+    end
   end
 
   # -- debounce coalescing ----------------------------------------------------

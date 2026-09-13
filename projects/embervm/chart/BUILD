@@ -212,6 +212,26 @@ py_test(
 )
 
 py_test(
+    name = "chart_serving_edge_test",
+    srcs = ["chart_serving_edge_test.py"],
+    data = [
+        "Chart.yaml",
+        "values.yaml",
+        "@multitool//tools/helm",
+    ] + glob([
+        "templates/**/*",
+        "crds/**/*",
+    ]),
+    env = {
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    deps = [
+        "@pip//pytest",
+        "@pip//pyyaml",
+    ],
+)
+
+py_test(
     name = "chart_hypervisor_epoch_test",
     srcs = ["chart_hypervisor_epoch_test.py"],
     data = [

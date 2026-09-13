@@ -2,9 +2,9 @@ defmodule Embervm.EndpointPublisher do
   @moduledoc """
   The ONLY writer to the xDS sidecar's snapshot API. Holds the desired Envoy
   routing state as a PURE FUNCTION of `Embervm.ServingStore` + `Embervm.StatefulStore`
-  facts + the `Embervm.WorkloadCatalog`, and PUTs it (per serving node) to the
-  loopback snapshot API the sidecar serves as CDS/RDS/EDS/LDS to the node Envoys
-  (Task 6/7). Serving is the L7 (host/path) fan-out; stateful (R4) adds the L4
+  facts + the `Embervm.WorkloadCatalog`, and PUTs node snapshots plus one
+  cluster-edge snapshot to the loopback snapshot API the sidecar serves as
+  CDS/RDS/EDS/LDS. Serving is the L7 (host/path) fan-out; stateful (R4) adds the L4
   (raw TCP) singleton-sandbox listeners + clusters, both rendered from ETS facts.
 
   ## the sole-writer boundary (reviewer-enforced)
@@ -131,6 +131,11 @@ defmodule Embervm.EndpointPublisher do
   # stateful workloads never collide on a listener name either.
   @stateful_listener_prefix "state-"
 
+  # One cluster-scoped node id shared by every replica of the edge Deployment.
+  # The publisher may override/disable it through opts, but production wires this
+  # exact value into both the publisher and edge Envoy bootstrap.
+  @default_edge_node_id "embervm-serving-edge"
+
   # The cluster name for a COMPOSITE group's single L4 entry endpoint (R5). The
   # `group|` prefix namespaces group clusters from serving (`serve|`) and stateful
   # (`state|`) ones so a workload named the same in more than one class never
@@ -241,6 +246,24 @@ defmodule Embervm.EndpointPublisher do
     end
   end
 
+  @doc """
+  The PURE cluster-edge desired-state document. It deliberately contains only
+  serving routes and stable STRICT_DNS upstreams to the node-tier Service. VM
+  endpoint health, withdrawal, and activator fallback remain in each node
+  snapshot, so bank/wake churn cannot replace this second snapshot or put the
+  control plane on an established request path.
+  """
+  @spec desired_for_edge(map(), String.t()) :: map()
+  def desired_for_edge(ctx, version) do
+    workloads = serving_catalog_workloads(ctx.catalog_table)
+
+    %{
+      version: version,
+      clusters: Enum.map(workloads, &edge_cluster_for(ctx, &1)),
+      routes: workloads |> Enum.map(&route_for(ctx, &1)) |> Enum.reject(&is_nil/1)
+    }
+  end
+
   # -- GenServer callbacks ---------------------------------------------------
 
   @impl true
@@ -279,6 +302,11 @@ defmodule Embervm.EndpointPublisher do
       # because the serving activator resolves the workload from the injected
       # x-ember-workload HTTP header instead).
       activator_ip: Keyword.get(opts, :activator_ip, nil),
+      # Cluster edge snapshot target. nil disables edge publication (tests and
+      # half-rolled charts); production supplies the shared Envoy node id plus
+      # the stable node-tier Service host/port.
+      edge_node_id: Keyword.get(opts, :edge_node_id, @default_edge_node_id),
+      edge_upstream: Keyword.get(opts, :edge_upstream, nil),
       connect_timeout_ms: Keyword.get(opts, :connect_timeout_ms, 1_000),
       health_check: %{
         timeout_ms: Keyword.get(opts, :health_check_timeout_ms, @default_health_check_timeout_ms),
@@ -398,7 +426,11 @@ defmodule Embervm.EndpointPublisher do
   defp do_flush(state) do
     state = cancel_debounce(state)
     ctx = render_ctx(state)
-    registrations = serving_registrations(ctx.node_facts)
+    registrations =
+      ctx.node_facts
+      |> serving_registrations()
+      |> add_edge_registration(state.edge_node_id, state.edge_upstream)
+
     nodes = registrations |> Map.keys() |> Enum.sort()
     state = refresh_registrations(state, registrations)
     now_ms = state.clock.()
@@ -409,7 +441,12 @@ defmodule Embervm.EndpointPublisher do
 
     state =
       Enum.reduce(nodes, state, fn node_id, acc ->
-        canonical = desired_for_node(ctx, "")
+        canonical =
+          if node_id == state.edge_node_id do
+            desired_for_edge(ctx, "")
+          else
+            desired_for_node(ctx, "")
+          end
         hash = snapshot_hash(canonical)
 
         if push_required?(acc, node_id, hash, now_ms) do
@@ -558,7 +595,8 @@ defmodule Embervm.EndpointPublisher do
       # rebuild property EDS relies on).
       node_facts: NodeCapacity.all(state.capacity_table),
       connect_timeout_ms: state.connect_timeout_ms,
-      health_check: state.health_check
+      health_check: state.health_check,
+      edge_upstream: state.edge_upstream
     }
   end
 
@@ -596,6 +634,13 @@ defmodule Embervm.EndpointPublisher do
     cidr = Map.get(fact, :serving_subnet_cidr)
     is_binary(cidr) and cidr != ""
   end
+
+  defp add_edge_registration(registrations, node_id, %{host: host, port: port})
+       when is_binary(node_id) and node_id != "" and is_binary(host) and host != "" and is_integer(port) do
+    Map.put(registrations, node_id, [{host, port}])
+  end
+
+  defp add_edge_registration(registrations, _node_id, _upstream), do: registrations
 
   # -- pure projection -------------------------------------------------------
 
@@ -650,6 +695,18 @@ defmodule Embervm.EndpointPublisher do
       endpoints: endpoints,
       connect_timeout_ms: ctx.connect_timeout_ms,
       health_check: health_check(ctx)
+    }
+  end
+
+  defp edge_cluster_for(ctx, workload) do
+    %{host: host, port: port} = ctx.edge_upstream
+
+    %{
+      name: @cluster_prefix <> workload,
+      endpoints: [%{ip: host, port: port}],
+      connect_timeout_ms: ctx.connect_timeout_ms,
+      health_check: health_check(ctx),
+      discovery_type: "strict_dns"
     }
   end
 
