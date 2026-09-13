@@ -1060,3 +1060,34 @@ async def test_private_lifespan_true_enables_leader_singletons(monkeypatch):
     assert _FakeLeaderElector.constructed == 1
     assert app.state.elector is not None
     assert log == ["a:start", "a:stop"]
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_private_liveness_reports_failed_domain_and_recovers(raises):
+    healthy = False
+
+    def progress():
+        if raises and not healthy:
+            raise RuntimeError("internal details must not escape")
+        return {"ok": healthy, "detail": "local progress"}
+
+    module = Module(name="worker", register_liveness={"worker": progress})
+    app = FastAPI()
+    framework_core._add_health(app, _PLAIN_PRIVATE, [module])
+    client = TestClient(app)
+    response = client.get("/healthz")
+    assert response.status_code == 503
+    assert response.json()["components"]["worker"]["ok"] is False
+    assert "internal details" not in response.text
+    healthy = True
+    assert client.get("/healthz").json() == {"status": "ok"}
+    assert client.get("/healthz").status_code == 200
+
+
+def test_public_liveness_does_not_run_private_domain_checks():
+    check = mock.Mock(side_effect=AssertionError("private check on public tier"))
+    module = Module(name="worker", register_liveness={"worker": check})
+    app = FastAPI()
+    framework_core._add_health(app, PUBLIC_PROFILE, [module])
+    assert TestClient(app).get("/healthz").status_code == 200
+    check.assert_not_called()

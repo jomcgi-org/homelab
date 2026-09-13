@@ -1148,3 +1148,29 @@ latest-review evidence, and the complete issue/planner/work/review/PR sequence.
 Transport tests cover stop during capacity retries and independent concurrent
 contexts. Linux orchestrator CI and a real bounded operating trial remain the
 delivery gates; local tests are advisory.
+
+
+### Independent conductor watchdog
+
+The factory owns task decisions and durable recovery state. Kubernetes owns
+process recovery through the existing backend `/healthz` liveness probe, so
+watchdog execution does not depend on the conductor, DBOS, a model grant, or
+the agent session queue. The swarm module supplies a process-local liveness
+check through the framework's `register_liveness` hook. Public profiles do not
+run private liveness checks.
+
+The watchdog arms when the elected leader starts the conductor. A stopped
+conductor task fails immediately; a running loop fails after 600 seconds
+without a completed reconciliation pass. The existing kubelet probe then
+requires six consecutive failures, checked every ten seconds, before replacing
+the backend container. Healthy followers and disabled factories stay healthy.
+Leadership resignation disarms the watchdog before runtime shutdown.
+
+A completed pass counts as progress even when it returns an error, because
+the reconciler can retry a dependency outage without a process restart. Agent
+turn duration, quota waits, and paused admissions do not age this signal while
+reconciliation continues. The probe performs no I/O and does not cancel work,
+re-admit issues, settle uncertain outcomes, raise budgets, or make model calls.
+After replacement, normal workflow recovery and reconciliation use the existing
+receipt, attempt, session, and accounting identities. HTTP responsiveness alone
+no longer hides a conductor that has stopped making progress.

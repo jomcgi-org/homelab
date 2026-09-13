@@ -48,6 +48,13 @@ from swarm.models import SwarmConductorCall, SwarmPlanVersion, SwarmTask
 logger = logging.getLogger(__name__)
 ACTOR = "factory:reconciler"
 TICK_SECONDS = 15
+# Independent kubelet liveness tolerates forty missed tick intervals before
+# replacing this process. Task duration and task policy do not affect it.
+WATCHDOG_STALL_SECONDS = 600
+_loop_task: asyncio.Task | None = None
+_last_loop_progress: float | None = None
+_watchdog_clock = time.monotonic
+
 FACTORY_RECOVERY_ABANDON_SECONDS = 900
 FACTORY_RECONCILER_PAUSE_TTL_SECONDS = 7200
 # Process start, for the settling window stall detection waits out. Monotonic
@@ -4209,7 +4216,27 @@ def cancel_owned(task_id: str, dbos) -> None:
         finish_task(task_id, "cancelled", ACTOR)
 
 
+def watchdog_health() -> dict:
+    """Cheap local signal; kubelet owns recovery outside the factory process."""
+    if _loop_task is None:
+        return {"ok": True, "detail": "factory watchdog inactive"}
+    if _loop_task.done():
+        return {"ok": False, "detail": "factory reconciliation loop stopped"}
+    age = _watchdog_clock() - _last_loop_progress
+    if age > WATCHDOG_STALL_SECONDS:
+        return {"ok": False, "detail": "factory reconciliation progress expired"}
+    return {"ok": True, "detail": "factory reconciliation progressing"}
+
+
+def disarm_watchdog() -> None:
+    """Leadership resignation is intentional, not a failed conductor."""
+    global _loop_task, _last_loop_progress
+    _loop_task = None
+    _last_loop_progress = None
+
+
 async def run_loop() -> None:
+    global _last_loop_progress
     while True:
         try:
             await asyncio.to_thread(tick)
@@ -4217,10 +4244,17 @@ async def run_loop() -> None:
             # A later tick reconciles the same durable identity. It never
             # creates a new attempt merely because this observation failed.
             logger.exception("factory reconciliation failed")
+        # Returning with an error still means the loop can retry. Dependency
+        # failures must not turn into a restart storm. A hung tick never gets
+        # here and a cancelled loop is detected through its task state.
+        _last_loop_progress = _watchdog_clock()
         await asyncio.sleep(TICK_SECONDS)
 
 
 def start_loop() -> list[asyncio.Task]:
+    global _loop_task, _last_loop_progress
     if os.environ.get("FACTORY_ENABLED", "false").lower() != "true":
         return []
-    return [asyncio.create_task(run_loop(), name="factory-conductor")]
+    _last_loop_progress = _watchdog_clock()
+    _loop_task = asyncio.create_task(run_loop(), name="factory-conductor")
+    return [_loop_task]
