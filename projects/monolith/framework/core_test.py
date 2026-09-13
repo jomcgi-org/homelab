@@ -885,59 +885,61 @@ async def test_failing_leader_start_keeps_incrementally_registered_task():
 
 
 @pytest.mark.asyncio
-async def test_successful_reacquire_clears_failure_set_and_health(
+async def test_lifespan_retries_failed_singletons_and_clears_health(
     _sqlite_engine, monkeypatch
 ):
+    # Exercise the production callback wiring. A test-only acquire wrapper
+    # used to propagate failures while the real lifespan swallowed them.
     monkeypatch.setattr(leadership, "_acquire_or_renew", lambda *_a: True)
-    monkeypatch.setattr(leadership, "_release", mock.Mock())
+    release = mock.Mock()
+    monkeypatch.setattr(leadership, "_release", release)
     monkeypatch.setattr(leadership, "RENEW_INTERVAL", 0)
     monkeypatch.setattr(leadership, "ACQUIRE_BACKOFF_INITIAL", 0)
+    monkeypatch.delenv("MONOLITH_LEADER_SINGLETONS", raising=False)
     monkeypatch.setenv("SWARM_ENABLED", "false")
     monkeypatch.setenv("DRAINER_ENABLED", "false")
     attempts = 0
     reacquired = asyncio.Event()
+    partial_tasks = []
+    stops = []
 
     async def leader_start(app: FastAPI) -> list[asyncio.Task]:
         nonlocal attempts
         attempts += 1
         if attempts == 1:
+            task = asyncio.create_task(asyncio.Event().wait())
+            partial_tasks.append(task)
+            register_leader_tasks(app, [task])
             raise RuntimeError("first startup failed")
+        assert partial_tasks[0].cancelled()
+        assert stops == ["stop"]
+        release.assert_called_once_with(_PLAIN_PRIVATE.leader_lease_key)
         reacquired.set()
         return []
 
-    module = Module(name="singleton", leader_start=leader_start)
+    async def leader_stop(app: FastAPI) -> None:
+        stops.append("stop")
+
+    module = Module(
+        name="singleton", leader_start=leader_start, leader_stop=leader_stop
+    )
     app = FastAPI()
     framework_core._add_health(app, _PLAIN_PRIVATE, [module])
-
-    async def on_acquire() -> None:
-        await start_leader_singletons(app, [module])
-        if app.state.leader_singleton_failures:
-            raise RuntimeError("leader startup incomplete")
-
-    elector = leadership.LeaderElector()
-    app.state.elector = elector
-    task = asyncio.create_task(
-        elector.run(
-            on_acquire,
-            lambda: stop_leader_singletons(app, [module]),
-        )
-    )
-    await asyncio.wait_for(reacquired.wait(), timeout=0.5)
+    async with build_private_lifespan(_PLAIN_PRIVATE, [module])(app):
+        await asyncio.wait_for(reacquired.wait(), timeout=2)
+        await asyncio.sleep(0)
+        assert attempts == 2
+        assert app.state.elector.is_leader is True
+        assert app.state.elector.consecutive_acquire_failures == 0
+        assert app.state.leader_singleton_failures == set()
+        response = TestClient(app).get("/api/health")
+        assert response.status_code == 200
+        assert response.json()["components"]["leader_singletons"] == {
+            "ok": True,
+            "detail": "leader singletons healthy",
+        }
     await asyncio.sleep(0)
-
-    assert elector.is_leader is True
-    assert elector.consecutive_acquire_failures == 0
-    assert app.state.leader_singleton_failures == set()
-    response = TestClient(app).get("/api/health")
-    assert response.status_code == 200
-    assert response.json()["components"]["leader_singletons"] == {
-        "ok": True,
-        "detail": "leader singletons healthy",
-    }
-
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    assert stops == ["stop", "stop"]
 
 
 @pytest.mark.asyncio

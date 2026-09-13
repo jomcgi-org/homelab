@@ -550,9 +550,21 @@ def build_private_lifespan(profile: Profile, modules: Sequence[Module]):
 
             elector = LeaderElector(lease_key=profile.leader_lease_key)
             app.state.elector = elector
+
+            async def acquire_singletons() -> None:
+                await start_leader_singletons(app, modules)
+                failures = app.state.leader_singleton_failures
+                if failures:
+                    # Module startup records failures so every module gets its
+                    # hook. Propagate the aggregate to the elector afterward:
+                    # it owns cleanup, lease release and backoff before retry.
+                    raise RuntimeError(
+                        "leader startup incomplete: " + ", ".join(sorted(failures))
+                    )
+
             elector_task = asyncio.create_task(
                 elector.run(
-                    on_acquire=lambda: start_leader_singletons(app, modules),
+                    on_acquire=acquire_singletons,
                     on_resign=lambda: stop_leader_singletons(app, modules),
                 )
             )
