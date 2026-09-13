@@ -18,17 +18,20 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from auth.api import Authority, Principal, PrincipalKind, get_principal
+from core.db import get_session
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from knowledge.api import get_embedding_client
+from pydantic import BaseModel, ConfigDict, Field
+from shared.embedding import EmbeddingClient
 from sqlalchemy import func
 from sqlmodel import Session, or_, select
 
-from core.db import get_session
 from grimoire import aliases, library
 from grimoire.models import (
-    Campaign,
     ENTITY_DETAIL_MODELS,
+    Campaign,
     Entity,
     EntityType,
     GameSession,
@@ -41,8 +44,6 @@ from grimoire.models import (
 )
 from grimoire.search import search_campaign
 from grimoire.visibility import project_entity, visible_entities_query
-from knowledge.api import get_embedding_client
-from shared.embedding import EmbeddingClient
 
 logger = logging.getLogger("monolith.grimoire.router")
 
@@ -53,8 +54,26 @@ router = APIRouter(prefix="/api/grimoire", tags=["grimoire"])
 
 
 class AliasApprovalRequest(BaseModel):
-    reviewer: str = Field(min_length=1, max_length=200)
+    model_config = ConfigDict(extra="forbid")
+
     survivor_entity_id: str
+    expected_state_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class AliasDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_state_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+def _alias_operator(principal: Principal = Depends(get_principal)) -> Principal:
+    if (
+        principal.authority is not Authority.STANDING
+        or principal.kind is not PrincipalKind.HUMAN
+        or not principal.has_group("operators")
+    ):
+        raise HTTPException(status_code=403, detail="operator access required")
+    return principal
 
 
 def _alias_http_error(exc: aliases.AliasError) -> HTTPException:
@@ -65,6 +84,7 @@ def _alias_http_error(exc: aliases.AliasError) -> HTTPException:
 @router.post("/alias-candidates/scan")
 def scan_alias_candidates(
     session: Session = Depends(get_session),
+    _principal: Principal = Depends(_alias_operator),
 ) -> dict[str, Any]:
     """Refresh and publish the conservative candidate report for human review."""
     return aliases.generate_candidates(session)
@@ -74,6 +94,7 @@ def scan_alias_candidates(
 def get_alias_candidates(
     status: Literal["pending", "approved", "rejected", "stale", "merged"] | None = None,
     session: Session = Depends(get_session),
+    _principal: Principal = Depends(_alias_operator),
 ) -> list[dict[str, Any]]:
     """List durable candidates with bounded co-mention snippets and approvals."""
     return aliases.list_candidates(session, status=status)
@@ -84,14 +105,54 @@ def approve_alias_candidate(
     candidate_id: str,
     body: AliasApprovalRequest,
     session: Session = Depends(get_session),
+    principal: Principal = Depends(_alias_operator),
 ) -> dict[str, Any]:
     """Record explicit reviewer approval for the exact current candidate state."""
     try:
         return aliases.approve_candidate(
             session,
             candidate_id,
-            reviewer=body.reviewer,
+            reviewer=principal.subject,
             survivor_id=body.survivor_entity_id,
+            expected_state_hash=body.expected_state_hash,
+        )
+    except aliases.AliasError as exc:
+        raise _alias_http_error(exc) from exc
+
+
+@router.post("/alias-candidates/{candidate_id}/reject")
+def reject_alias_candidate(
+    candidate_id: str,
+    body: AliasDecisionRequest,
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(_alias_operator),
+) -> dict[str, Any]:
+    """Persist a human rejection for the exact reviewed candidate state."""
+    try:
+        return aliases.reject_candidate(
+            session,
+            candidate_id,
+            reviewer=principal.subject,
+            expected_state_hash=body.expected_state_hash,
+        )
+    except aliases.AliasError as exc:
+        raise _alias_http_error(exc) from exc
+
+
+@router.post("/alias-candidates/{candidate_id}/reopen")
+def reopen_alias_candidate(
+    candidate_id: str,
+    body: AliasDecisionRequest,
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(_alias_operator),
+) -> dict[str, Any]:
+    """Deliberately return a rejected or stale candidate to pending review."""
+    try:
+        return aliases.reopen_candidate(
+            session,
+            candidate_id,
+            reviewer=principal.subject,
+            expected_state_hash=body.expected_state_hash,
         )
     except aliases.AliasError as exc:
         raise _alias_http_error(exc) from exc
@@ -102,6 +163,7 @@ async def execute_alias_candidate(
     candidate_id: str,
     session: Session = Depends(get_session),
     embed_client: EmbeddingClient = Depends(get_embedding_client),
+    _principal: Principal = Depends(_alias_operator),
 ) -> dict[str, Any]:
     """Transactionally execute one still-current, explicitly approved pair."""
     try:

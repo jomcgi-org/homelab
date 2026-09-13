@@ -1131,6 +1131,7 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":pkg_auth",
         ":pkg_core",
         ":pkg_framework",
         ":pkg_knowledge",
@@ -5927,11 +5928,18 @@ py_test(
     imports = ["."],
     deps = [
         ":pkg_grimoire",
+        "@pip//fastapi",
+        "@pip//httpx",
         "@pip//pgvector",
         "@pip//pytest",
         "@pip//sqlalchemy",
         "@pip//sqlmodel",
     ],
+)
+
+bdd_test(
+    name = "grimoire_aliases_postgres_test",
+    srcs = ["grimoire/aliases_postgres_test.py"],
 )
 
 py_test(

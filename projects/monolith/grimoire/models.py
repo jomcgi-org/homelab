@@ -517,6 +517,8 @@ class AliasCandidate(SQLModel, table=True):
     full_name: str
     short_site: str | None = None
     full_site: str | None = None
+    short_temporality: str | None = None
+    full_temporality: str | None = None
     signal_version: str
     evidence: list = Field(
         default_factory=list, sa_column=Column(_JSONB, nullable=False)
@@ -532,6 +534,15 @@ class AliasCandidate(SQLModel, table=True):
     approved_state_hash: str | None = None
     approved_by: str | None = None
     approved_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+    rejected_state_hash: str | None = None
+    rejected_by: str | None = None
+    rejected_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+    reopened_by: str | None = None
+    reopened_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True))
     )
     merged_at: datetime | None = Field(
