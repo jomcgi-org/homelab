@@ -484,9 +484,7 @@ class EntityAliasReview(SQLModel, table=True):
         {"schema": "grimoire", "extend_existing": True},
     )
 
-    survivor_id: str = Field(
-        sa_column=_uuid_column(primary_key=True, nullable=False)
-    )
+    survivor_id: str = Field(sa_column=_uuid_column(primary_key=True, nullable=False))
     twin_id: str = Field(sa_column=_uuid_column(primary_key=True, nullable=False))
     evidence_chunk_ids: list[str] = Field(
         default_factory=list, sa_column=Column(_JSONB, nullable=False)
