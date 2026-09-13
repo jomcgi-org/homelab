@@ -19,7 +19,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from typer.testing import CliRunner
 
 import app.jobs_main as jobs_main
-from agent_sessions.models import AgentSession, AgentTurn
+from factory.execution.models import AgentSession, AgentTurn
 from faas.reconcile import ReconcileReport
 from knowledge.models import RawInput
 

@@ -1,0 +1,151 @@
+import pytest
+
+from factory.orchestration.policy import (
+    implementer_prompt,
+    implementer_prompt_parts,
+    next_action,
+    parse_review_verdict,
+    reviewer_prompt,
+    reviewer_prompt_parts,
+    verdict_trailer_instruction,
+    work_branch,
+)
+
+
+def test_work_branch():
+    assert work_branch("wf-123") == "claude/swarm-wf-123"
+    # Must live in the agent branch namespace agents can actually push to.
+    assert work_branch("wf-123").startswith("claude/")
+
+
+@pytest.mark.parametrize(
+    ("attempt", "maximum", "head", "prior", "expected"),
+    [
+        (
+            attempt,
+            maximum,
+            head,
+            prior,
+            "review"
+            if head and head != prior
+            else "retry"
+            if attempt < maximum
+            else "escalate",
+        )
+        for maximum in (1, 2, 3)
+        for attempt in (0, 1, 2, 3, 4)
+        for head in (None, "", "abc", "def")
+        for prior in (None, "abc", "def")
+    ],
+)
+def test_next_action_is_exhaustive(attempt, maximum, head, prior, expected):
+    assert next_action(attempt, maximum, head, prior) == expected
+
+
+def test_next_action_rejects_stale_head_after_failed_attempt():
+    assert next_action(2, 3, "sha1", "sha1") == "retry"
+    assert next_action(2, 2, "sha1", "sha1") == "escalate"
+
+
+@pytest.mark.parametrize(("prior", "head"), [(None, "sha"), ("sha1", "sha2")])
+def test_next_action_routes_new_head_to_review(prior, head):
+    assert next_action(2, 3, head, prior) == "review"
+
+
+def test_prompt_builders():
+    prompt = implementer_prompt("fix bug", "claude/swarm-wf-123", None)
+    assert "claude/swarm-wf-123" in prompt
+    assert "Do not open a pull request" in prompt
+    assert "Do not push to main" in prompt
+    assert "Previous attempt failed: tests failed" in implementer_prompt(
+        "fix bug", "claude/swarm-wf-123", "tests failed"
+    )
+    prompt = reviewer_prompt("fix bug", "feature", "abc123")
+    assert "fix bug" in prompt
+    assert "feature" in prompt
+    assert "abc123" in prompt
+    assert prompt.endswith(
+        "VERDICT: APPROVE\nVERDICT: REQUEST_CHANGES\nVERDICT: BLOCKED"
+    )
+
+
+def test_implementer_prompt_contains_rationale_trailer_instruction():
+    prompt = implementer_prompt("t", "b", None)
+    assert "RATIONALE" in prompt
+    assert "- deviation:" in prompt
+
+
+def test_implementer_retry_appends_previous_failure_after_rationale():
+    prompt = implementer_prompt("t", "b", "x")
+    assert prompt.index("RATIONALE") < prompt.index("Previous attempt failed")
+
+
+def test_reviewer_prompt_does_not_contain_rationale_trailer_instruction():
+    assert "RATIONALE" not in reviewer_prompt("t", "b", "sha")
+
+
+def test_verdict_trailer_instruction_exists():
+    instruction = verdict_trailer_instruction()
+    assert isinstance(instruction, str)
+    assert "VERDICT: APPROVE" in instruction
+    assert "VERDICT: REQUEST_CHANGES" in instruction
+    assert "VERDICT: BLOCKED" in instruction
+
+
+def test_implementer_prompt_parts_returns_tuple():
+    parts = implementer_prompt_parts("t", "b")
+    assert isinstance(parts, tuple)
+    assert len(parts) == 2
+    assert all(isinstance(part, str) for part in parts)
+
+
+def test_reviewer_prompt_parts_returns_tuple():
+    parts = reviewer_prompt_parts("t", "b", "sha")
+    assert isinstance(parts, tuple)
+    assert len(parts) == 2
+    assert all(isinstance(part, str) for part in parts)
+
+
+def test_sent_prompt_is_byte_identical_implementer():
+    args = ("t", "b", "failed", "please fix")
+    assert implementer_prompt(*args) == "\n".join(implementer_prompt_parts(*args))
+
+
+def test_sent_prompt_is_byte_identical_reviewer():
+    args = ("t", "b", "sha")
+    assert reviewer_prompt(*args) == "\n".join(reviewer_prompt_parts(*args))
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (None, "unparseable"),
+        ("", "unparseable"),
+        ("no verdict", "unparseable"),
+        ("VERDICT: APPROVE", "approve"),
+        ("  verdict: request_changes  \n", "request_changes"),
+        ("\n VERDICT: blocked \n", "blocked"),
+        ("VERDICT: MAYBE", "unparseable"),
+        ("**VERDICT: APPROVE**", "approve"),
+        ("VERDICT: APPROVE.", "approve"),
+        ("VERDICT:APPROVE", "approve"),
+        ("- VERDICT: APPROVE", "approve"),
+        ("## VERDICT: BLOCKED", "blocked"),
+        ("Looks good.\n\nVERDICT: APPROVE\n```\n", "approve"),
+        ("VERDICT: APPROVE\nVERDICT: APPROVE", "approve"),
+        ("VERDICT: REQUEST_CHANGES\nVERDICT: APPROVE", "unparseable"),
+    ],
+)
+def test_parse_review_verdict(text, expected):
+    assert parse_review_verdict(text) == expected
+
+
+def test_parse_review_verdict_uses_clean_final_line():
+    text = (
+        "The review discusses VERDICT: BLOCKED as a possibility.\n\nVERDICT: APPROVE\n"
+    )
+    assert parse_review_verdict(text) == "approve"
+
+
+def test_parse_review_verdict_rejects_conflicting_final_lines():
+    assert parse_review_verdict("VERDICT: APPROVE VERDICT: BLOCKED") == "unparseable"

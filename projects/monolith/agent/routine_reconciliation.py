@@ -16,7 +16,7 @@ from sqlalchemy import text
 from sqlmodel import Session, select
 
 from agent.routine_reconciliation_models import RoutineReconciliation
-from agent_sessions.api import (
+from factory.api import (
     DRAINER_NODE_KEY,
     KG_NODE_KEY,
     confirm_reconciled_guest_cessation,

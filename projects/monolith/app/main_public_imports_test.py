@@ -31,7 +31,10 @@ import pytest  # noqa: F401  (keeps the gazelle pytest dep; see module docstring
 FORBIDDEN_MODULES = [
     # Factory public composition must never load mutation or execution code.
     "factory.module",
+    "factory.execution",
+    "factory.orchestration",
     "factory.access",
+    "factory.api",
     "factory.private_view",
     "factory.publication",
     "swarm",

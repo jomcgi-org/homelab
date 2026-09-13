@@ -3,11 +3,15 @@
 Factory ownership is consolidated under `factory.module` within this application.
 The factory owns private interactions/MCP, its published public viewer, and the
 orchestration/session execution lifecycle. Its public descriptor is composed
-separately from private mutation and execution hooks. Legacy `swarm` and
-`agent_sessions` packages retain implementation and storage identities during
-consolidation; they no longer register as separate application domains.
+separately from private mutation and execution hooks. Execution and orchestration
+implementations live in `factory.execution` and `factory.orchestration`. Legacy
+`swarm` and `agent_sessions` modules only retain persisted exception names and
+the existing Discord thread adapter. SQL schemas and DBOS workflow names keep
+their deployed identities. The workflow source fingerprint normalizes only the
+relocated import module names, preserving active workflow recovery across this
+package move.
 The public reader ships `factory.public_view` and excludes the entire
-`agent_sessions` implementation package. It reads only published public API
+private execution and orchestration packages. It reads only published public API
 views and snapshots with the existing restricted database role.
 The private board and snapshot publisher live in `factory.private_view` and
 `factory.publication`. Factory bearer controls and MCP status tools share the
@@ -15,6 +19,9 @@ standing human operator rule in `factory.access`; browser decisions retain the
 verified gateway email gate in that same module. None of these private modules
 ship in the public image.
 
+Routine-job reconciliation and knowledge interventions use the narrow existing
+contracts in `factory.api`. The domain boundary test checks factory internals
+and requires its dependencies on other domains to pass through their APIs.
 Discord integration is outside this consolidation.
 (see: /projects/monolith/factory/module.py)
 (see: /projects/monolith/factory/public_module.py)
@@ -226,8 +233,8 @@ are claimed in sequence by one replica, refreshed by heartbeat, and reclaimed
 after a stale lease so a crashed worker does not strand work. A turn whose
 brick is preempted mid-flight is resumed or re-issued rather than lost, and the
 model the guest actually ran is persisted on the turn.
-(see: /projects/monolith/agent_sessions/models.py)
-(see: /projects/monolith/agent_sessions/store.py)
+(see: /projects/monolith/factory/execution/models.py)
+(see: /projects/monolith/factory/execution/store.py)
 (see: /projects/monolith/chart/migrations/20260903030000_agent_session_recovery.sql)
 
 Model names map to three runtime families. `spark` selects the Pi family and
@@ -239,8 +246,8 @@ Discord command without a values change. Turns cross the EmberVM boundary
 through a session API: the Claude, Codex and Pi runtimes are `session` class
 guests, while `run_code` selects disposable language-specific task workloads,
 and both kinds are vsock-only with no NIC.
-(see: /projects/monolith/agent_sessions/__init__.py)
-(see: /projects/monolith/agent_sessions/transport.py)
+(see: /projects/monolith/factory/execution/__init__.py)
+(see: /projects/monolith/factory/execution/transport.py)
 (see: /projects/monolith/sandbox/mcp.py)
 (see: /projects/embervm/ARCHITECTURE.md)
 
@@ -254,9 +261,9 @@ artifact channel validated at ingestion; nothing structured is parsed out of
 prose. For a legacy swarm run the workflow's Python control flow is still the
 graph, so the orchestration-level mutable DAG that ADR agents/062 decided
 reaches those runs only when this engine is retired (#5419, #4781).
-(see: /projects/monolith/swarm/workflows.py)
-(see: /projects/monolith/swarm/budget.py)
-(see: /projects/monolith/swarm/turn_artifact.py)
+(see: /projects/monolith/factory/orchestration/workflows.py)
+(see: /projects/monolith/factory/orchestration/budget.py)
+(see: /projects/monolith/factory/orchestration/turn_artifact.py)
 
 The factory lane is where that mutable DAG does exist. `swarm/factory_conductor.py`
 reconciles a versioned graph outside durable replay, and `swarm/graph.py` owns
@@ -283,8 +290,8 @@ for this path. The lock order stays factory control, capacity pool, session,
 and the UNKNOWN transition commits or rolls back with the factory's stop intent.
 Ember still owns physical execution cessation; a cancellation acknowledgment
 alone never releases the permit.
-(see: /projects/monolith/agent_sessions/factory_stop.py)
-(see: /projects/monolith/swarm/factory_attempt_stop.py)
+(see: /projects/monolith/factory/execution/factory_stop.py)
+(see: /projects/monolith/factory/orchestration/factory_attempt_stop.py)
 
 The accepted plan sizes the task. Its allowance is the sum over live
 unsucceeded nodes of `max_attempts`, plus the work turns history already spent,
@@ -342,11 +349,11 @@ and so does any review when no pool member has quota, because review is the
 gate. Transitions are recorded once each in the audit ledger, so a replica
 restart cannot forget a fallback mid-task, and an unknown or stale reading
 neither starts nor ends one.
-(see: /projects/monolith/swarm/factory_conductor.py)
-(see: /projects/monolith/swarm/factory_quota_guard.py)
-(see: /projects/monolith/swarm/graph.py)
-(see: /projects/monolith/swarm/deviations.py)
-(see: /projects/monolith/swarm/FACTORY.md)
+(see: /projects/monolith/factory/orchestration/factory_conductor.py)
+(see: /projects/monolith/factory/orchestration/factory_quota_guard.py)
+(see: /projects/monolith/factory/orchestration/graph.py)
+(see: /projects/monolith/factory/orchestration/deviations.py)
+(see: /projects/monolith/factory/orchestration/FACTORY.md)
 
 **Why.** Autonomous intake lets the bounded lane discover delivery-ready work
 without making the operator continually copy issue numbers into policy, while
@@ -451,7 +458,7 @@ good. Re-admission mints a whole new task on a fresh budget, so the receipt
 keeps its previous task ids and the board shows what they spent beside the
 current task rather than inside its limits (#6041).
 
-(see: /projects/monolith/swarm/factory_decisions.py)
+(see: /projects/monolith/factory/orchestration/factory_decisions.py)
 (see: /projects/monolith/frontend/src/routes/private/agents/escalations/+page.svelte)
 
 **Why.** The factory has two lanes because Opus review is the only scarce
@@ -506,7 +513,7 @@ autonomous lands on main, and the only agent-merged path is docfix auto-merge,
 off by default and refusing agent instructions, skills, runbooks and ADRs even
 when on.
 (see: /projects/monolith/chart/migrations/20260822230000_swarm_decision.sql)
-(see: /projects/monolith/swarm/router.py)
+(see: /projects/monolith/factory/orchestration/router.py)
 (see: /projects/monolith/deploy/values.yaml)
 
 The work-queue drainer turns a standing backlog into continuous progress. An
@@ -519,7 +526,7 @@ legacy name kept so registered rows stay claimable) and knowledge extraction
 design, the tick's suspend and the `agents.drainer.enabled` value are the two
 kill switches, and a stall advisory rather than a Discord notify is the default
 failure surface.
-(see: /projects/monolith/swarm/drainer.py)
+(see: /projects/monolith/factory/orchestration/drainer.py)
 (see: /projects/monolith/agent/routine_jobs.py)
 (see: /projects/monolith/chart/values.yaml)
 
@@ -547,7 +554,7 @@ factory strip above the knowledge extraction queue strip.
 (see: /projects/monolith/frontend/src/routes/private/agents/+page.svelte)
 (see: /projects/monolith/frontend/src/routes/private/agents/factory/+page.svelte)
 (see: /projects/monolith/factory/private_view.py)
-(see: /projects/monolith/agent_sessions/voice.py)
+(see: /projects/monolith/factory/execution/voice.py)
 (see: /projects/monolith/chart/values.yaml)
 
 A factory start reserves a ceiling and settles at the cost its node result
@@ -561,8 +568,8 @@ still consumes its ceiling. The receipt counts work starts as `turns_used` and
 conductor rounds separately as `planner_turns_used`. Work starts meet
 `max_turns_per_task` and planning rounds meet `max_planner_turns`, an optional
 policy field that inherits the work cap when a policy predates it.
-(see: /projects/monolith/swarm/factory_controls.py)
-(see: /projects/monolith/swarm/node_workflows.py)
+(see: /projects/monolith/factory/orchestration/factory_controls.py)
+(see: /projects/monolith/factory/orchestration/node_workflows.py)
 (see: /projects/monolith/shared/pricing.py)
 
 **Why.** Booking an unpriced completion at its full ceiling is the conservative
@@ -653,7 +660,7 @@ no bound guest remain held until that path can prove no delivery. Legacy swarm
 they are project tier with no routine job and no factory pin, so nothing
 settles them, and covering them needs a check that their DBOS workflow is
 terminal, which this loop does not have.
-(see: /projects/monolith/agent_sessions/permit_supervision.py)
+(see: /projects/monolith/factory/execution/permit_supervision.py)
 
 **Why.** A lost invoke response is not a lost invocation. Every monolith
 rollout cancelled the executor watching an in-flight turn, and the guest went
@@ -709,7 +716,7 @@ would only delay the same unknown outcome. Every owner that writes, finishes or
 ends a hold reads that one flag, including the lease backstop and the node
 recovery, so off is byte-for-byte the behaviour that preceded this whatever the
 receipt flags say.
-(see: /projects/monolith/agent_sessions/store.py)
+(see: /projects/monolith/factory/execution/store.py)
 
 **Why.** The guest reuse fence had a hold and no release. A receipt that beat
 its own POST completed the turn and fenced the session so a follow-up dispatch
@@ -751,7 +758,7 @@ response, and the lease backstop and factory reconciliation read that stamp as
 evidence about the response itself, so the count of received receipts with no
 observed response stays the honest health signal for how often the receipt is
 winning the race.
-(see: /projects/monolith/agent_sessions/result_receipts.py)
+(see: /projects/monolith/factory/execution/result_receipts.py)
 
 Monolith batch work is rendered as Argo CronWorkflows in the workflows
 namespace, whose controller owns cadence, concurrency, deadlines, and history.
@@ -875,7 +882,7 @@ routines and the in-process gardener that preceded this are retired. No
 knowledge CronWorkflow remains today except the publication lane (15-minute
 visibility flip for verified/unverified agent facts).
 (see: /projects/monolith/knowledge/extraction.py)
-(see: /projects/monolith/agent_sessions/kg_feed.py)
+(see: /projects/monolith/factory/execution/kg_feed.py)
 (see: /projects/monolith/chart/migrations/20260903000000_knowledge_scoped_assertions.sql)
 (see: /projects/monolith/deploy/values.yaml)
 
@@ -1061,7 +1068,7 @@ with a 2.5x staleness allowance. Codex is the one automatically scheduled
 agent probe; the Spark session probe is manual-only with no health component.
 (see: /projects/monolith/ember_public/health.py)
 (see: /projects/monolith/core/platform_probe.py)
-(see: /projects/monolith/swarm/health.py)
+(see: /projects/monolith/factory/orchestration/health.py)
 (see: /projects/monolith/chart/values.yaml)
 
 The private profile instruments FastAPI and outbound HTTP calls and exports
@@ -1286,10 +1293,10 @@ mismatch without silently rewriting the decision record.
 | `agents/013` | Knowledge Gardener Gemma4-Only Pipeline | Deprecated; the routines it fed were retired 2026-09-04 | deleted |
 | 014 | AX + Substrate as the Agent Runtime Substrate | Deprecated | deleted |
 | `agents/015` | Temporal as the Orchestration Substrate | Deprecated | deleted |
-| `agents/016` | NATS as the Canonical Event Stream | Accepted, built then retired (see: /projects/monolith/agent_sessions/router.py) | deleted |
+| `agents/016` | NATS as the Canonical Event Stream | Accepted, built then retired (see: /projects/monolith/factory/execution/router.py) | deleted |
 | `agents/017` | Domain Event Schema and Tombstone Semantics | Accepted, not shipped | deleted |
 | `agents/018` | Event-Driven Gardener Triggering via Remote-Trigger Runs | Deprecated; the routines are retired | deleted |
-| 019 | Substrate Executor Interface and AgentWorkflow over Argo | Accepted, not shipped as designed (see: /projects/monolith/swarm/workflows.py) | deleted |
+| 019 | Substrate Executor Interface and AgentWorkflow over Argo | Accepted, not shipped as designed (see: /projects/monolith/factory/orchestration/workflows.py) | deleted |
 | 020 | Deprecate Context Forge, Serve MCP Directly from the Monolith | Superseded by 059 | deleted |
 | 021 | Discord-Triggered AgentWorkflow with a Fast Hosted Model and Snapshot/Resume | Draft, evolved into agent sessions (see: /projects/monolith/agent_sessions) | deleted |
 | 022 | Firecracker Snapshot/Restore Controller for AgentWorkflow (FC-Direct) | Accepted, shipped through EmberVM (see: /projects/embervm/ARCHITECTURE.md) | deleted |
@@ -1319,19 +1326,19 @@ mismatch without silently rewriting the decision record.
 | 046 | MMDS for Dynamic Per-Workload Guest Env | Accepted, shipped as the EmberVM metadata seam | deleted |
 | 047 | Per-Principal Egress Credentials and the Broker Identity Envelope | Draft, not shipped | deleted |
 | 048 | Codex Subscription OAuth, a Single-Owner Token Broker for Guest Turns | Accepted, shipped (see: /projects/embervm/tokenbroker) | deleted |
-| `agents/049` | Turn-Granular, Poll-Shaped Agent Session UI on Durable Postgres, Not a Live Event Stream | Accepted, shipped (see: /projects/monolith/agent_sessions/router.py) | deleted |
+| `agents/049` | Turn-Granular, Poll-Shaped Agent Session UI on Durable Postgres, Not a Live Event Stream | Accepted, shipped (see: /projects/monolith/factory/execution/router.py) | deleted |
 | 050 | Workspace Hydration for Agent Sessions from the Hot Git Mirror | Accepted, hydration shipped with direct HTTPS instead of the mirror | deleted |
-| 051 | Mid-Turn Session Progress Pushed by the Guest, Not Polled Through the Control Plane | Accepted, shipped (see: /projects/monolith/agent_sessions/progress_ingest.py) | deleted |
+| 051 | Mid-Turn Session Progress Pushed by the Guest, Not Polled Through the Control Plane | Accepted, shipped (see: /projects/monolith/factory/execution/progress_ingest.py) | deleted |
 | 052 | Cross-Family Agent Session Handoff via a Luna-Compiled Brief | Accepted, not shipped: no handoff code exists (#4350) | deleted |
 | `agents/053` | Swarm Development, Bounded Conductor Orchestration for Feature-Scale Agent DAGs | Draft, partially shipped (plan pin, recording schema, `implement_then_review`) and amended by 062, whose engine rewrite is pending (#4584, #5419) | deleted |
-| `agents/054` | The Run View: Pinned Plans, Epistemic Registers, and Recorded-Not-Inferred Data | Draft header, shipped in the console redesign (see: /projects/monolith/swarm/view.py); #4625 closed | deleted |
+| `agents/054` | The Run View: Pinned Plans, Epistemic Registers, and Recorded-Not-Inferred Data | Draft header, shipped in the console redesign (see: /projects/monolith/factory/orchestration/view.py); #4625 closed | deleted |
 | 055 | Tool-Mediated GitHub Access for Agent Principals | Superseded by 059 | deleted |
-| `agents/056` | Agent-Authored Walkthroughs: the Diff is Fact, the Points are Testimony | Draft header, shipped (see: /projects/monolith/swarm/walkthrough_composer.py); #4600 and #4614 closed | deleted |
+| `agents/056` | Agent-Authored Walkthroughs: the Diff is Fact, the Points are Testimony | Draft header, shipped (see: /projects/monolith/factory/orchestration/walkthrough_composer.py); #4600 and #4614 closed | deleted |
 | 057 | Per-Language Sandbox Guests and the Retirement of Sessioned Execution | Draft header, shipped | deleted |
-| `agents/058` | The Voice Companion: a Ledger-First Screen the Conversation Drives, Never Load-Bearing | Accepted, shipped (see: /projects/monolith/agent_sessions/voice.py) | deleted |
+| `agents/058` | The Voice Companion: a Ledger-First Screen the Conversation Drives, Never Load-Bearing | Accepted, shipped (see: /projects/monolith/factory/execution/voice.py) | deleted |
 | 059 | Authentik Federates MCP Identity; the Monolith Serves MCP Directly | Draft, not shipped (#3832, #3833) | deleted |
-| `agents/060` | Escalation as a Pause, Not a Return, With a Decision Row | Accepted, shipped: decision row, endpoint, `agent_run_decide`, console buttons (see: /projects/monolith/swarm/router.py) | deleted |
-| `agents/061` | The Qwen Work-Queue Drainer | Accepted, shipped; the drained sessions moved from qwen to Luna on 2026-09-01 and the `qwen-drain` kind is a legacy name (see: /projects/monolith/swarm/drainer.py) | deleted |
+| `agents/060` | Escalation as a Pause, Not a Return, With a Decision Row | Accepted, shipped: decision row, endpoint, `agent_run_decide`, console buttons (see: /projects/monolith/factory/orchestration/router.py) | deleted |
+| `agents/061` | The Qwen Work-Queue Drainer | Accepted, shipped; the drained sessions moved from qwen to Luna on 2026-09-01 and the `qwen-drain` kind is a legacy name (see: /projects/monolith/factory/orchestration/drainer.py) | deleted |
 | `agents/062` | A Mutable DAG Owned by an Opus Conductor, Executed Per-Node in VMs | Accepted, partially shipped: typed artifact channel, rationale records, and the factory lane's plan-time graph with per-node dispatch exist; legacy swarm runs still execute `implement_then_review` (#5419, #4781) | deleted |
 | `agents/063` | The Factory Knowledge Graph Learns From Evidence Lanes | Accepted, shipped with its 2026-09-03 amendment: schema, `kg-drain` lane, feeds, report tools, recall (see: /projects/monolith/knowledge/extraction.py); #5527 tracks the program | deleted |
 | 064 | A factory conductor coordinating conductors under a charter | Proposed in PR #5792, never merged; rolled into the Direction subsection above on 2026-09-06 and the full text preserved on #5784 | not merged |

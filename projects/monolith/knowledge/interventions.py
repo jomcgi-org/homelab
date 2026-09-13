@@ -45,6 +45,6 @@ def create_intervention(session: Session, raw_id: str) -> bool:
 
 def decision_reference(session: Session, decision_id: int) -> dict | None:
     """Return an exact decision identity and state without mutating swarm."""
-    from swarm.api import get_decision_reference
+    from factory.api import get_decision_reference
 
     return get_decision_reference(session, decision_id)

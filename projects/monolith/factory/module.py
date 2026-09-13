@@ -1,24 +1,26 @@
 """Factory composition and lifecycle, hosted inside the monolith.
 
-Legacy swarm and agent_sessions packages are implementation details during
-consolidation. Keep durable workflow functions and storage identities stable.
+Execution and orchestration are factory internals. Legacy package names remain
+only for persisted exception identities and the existing Discord adapter.
 """
 
 from framework import Module as _Module
 from framework import register_leader_tasks
-from agent_sessions.provider_quota import provider_quota_health
+from factory.execution.provider_quota import provider_quota_health
 
 from knowledge.api import kg_health
-from swarm.health import drainer_health
+from factory.orchestration.health import drainer_health
 
 
 def register(app) -> None:
-    from swarm.factory_router import router as factory_router
-    from swarm.drain_console_router import router as drain_console_router
-    from swarm.drainer_router import router as drainer_router
-    from swarm.router import router
+    from factory.orchestration.factory_router import router as factory_router
+    from factory.orchestration.drain_console_router import (
+        router as drain_console_router,
+    )
+    from factory.orchestration.drainer_router import router as drainer_router
+    from factory.orchestration.router import router
 
-    from agent_sessions.router import router as sessions_router
+    from factory.execution.router import router as sessions_router
     from factory.public_view import router as public_router
 
     app.include_router(sessions_router)
@@ -31,14 +33,14 @@ def register(app) -> None:
 
 def _register_mcp() -> None:
     """Attach the factory interaction and status MCP tools to the shared instance (side-effect import)."""
-    import agent_sessions.mcp  # noqa: F401, PLC0415
-    import swarm.mcp  # noqa: F401, PLC0415
+    import factory.execution.mcp  # noqa: F401, PLC0415
+    import factory.orchestration.mcp  # noqa: F401, PLC0415
 
 
 async def _leader_start(app):
-    from swarm import runtime
-    from swarm.factory_conductor import start_loop
-    from swarm import node_workflows  # noqa: F401 - register before DBOS launch
+    from factory.orchestration import runtime
+    from factory.orchestration.factory_conductor import start_loop
+    from factory.orchestration import node_workflows  # noqa: F401 - register before DBOS launch
 
     runtime.launch()
     app.state.leader_singletons_dbos_launched = runtime.is_launched()
@@ -51,8 +53,8 @@ async def _leader_start(app):
 
 
 async def _leader_stop(app):
-    from swarm import runtime
-    from swarm.factory_conductor import disarm_watchdog
+    from factory.orchestration import runtime
+    from factory.orchestration.factory_conductor import disarm_watchdog
 
     disarm_watchdog()
     try:
@@ -62,18 +64,18 @@ async def _leader_stop(app):
 
 
 def _factory_liveness() -> dict:
-    from swarm.factory_conductor import watchdog_health
+    from factory.orchestration.factory_conductor import watchdog_health
 
     return watchdog_health()
 
 
 async def _start_session_maintenance(app):
     """Start leader-owned agent session maintenance loops."""
-    from agent_sessions.kg_feed import start_kg_feed_loop
-    from agent_sessions.mcp import start_pending_message_sweep
-    from agent_sessions.permit_supervision import start_permit_supervision_loop
-    from agent_sessions.result_receipts import start_receipt_retention_loop
-    from agent_sessions.titles import start_title_refresh_loop
+    from factory.execution.kg_feed import start_kg_feed_loop
+    from factory.execution.mcp import start_pending_message_sweep
+    from factory.execution.permit_supervision import start_permit_supervision_loop
+    from factory.execution.result_receipts import start_receipt_retention_loop
+    from factory.execution.titles import start_title_refresh_loop
 
     tasks = []
     for start in (
@@ -97,7 +99,7 @@ async def _shutdown(_app) -> None:
     executor that does not finish in time is covered by the claim lease exactly
     as it was before (#5938).
     """
-    from agent_sessions.mcp import drain_inflight_executors
+    from factory.execution.mcp import drain_inflight_executors
 
     await drain_inflight_executors()
 

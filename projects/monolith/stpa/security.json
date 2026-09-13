@@ -247,7 +247,7 @@
       ],
       "status": "none",
       "issue": "#4569",
-      "evidence": "projects/monolith/agent_sessions/mcp.py:660"
+      "evidence": "projects/monolith/factory/execution/mcp.py:660"
     },
     {
       "key": "mcp.chat-pardon.providing",

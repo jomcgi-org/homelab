@@ -409,7 +409,7 @@ def test_supplied_claim_session_rolls_back_lease_without_committing_other_work(
 
 @pytest.fixture
 def worker_database(freshness_engine, monkeypatch):
-    from agent_sessions import admission
+    from factory.execution import admission
 
     def lock(db):
         db.execute(
@@ -524,7 +524,7 @@ def test_two_completing_workers_retry_same_snapshot_and_keep_both_successors(
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier, local
     from types import SimpleNamespace
-    from swarm.queues import prepare_drainer_workers
+    from factory.orchestration.queues import prepare_drainer_workers
 
     original_ids = routine_jobs.reserve_drainer_workers({}, {}, set())
     barrier = Barrier(2)

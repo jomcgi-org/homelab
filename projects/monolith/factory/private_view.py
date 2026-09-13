@@ -23,7 +23,7 @@ RESULT_HEAD = 240
 ACTIVE_STATES = ("admitted", "uncertain")
 QUEUED_STATES = ("queued",)
 
-# Node run statuses come from swarm.graph; a node with no run yet is pending
+# Node run statuses come from factory.orchestration.graph; a node with no run yet is pending
 # and a node the planner discarded or cancelled in a later plan revision is
 # retired whatever its runs say.
 _RUN_STATE = {
@@ -205,7 +205,7 @@ def shape_receipt(
 
 
 def _session_summaries(db: Session, ids: set[int]) -> dict[int, dict]:
-    from agent_sessions.models import AgentSession, AgentTurn
+    from factory.execution.models import AgentSession, AgentTurn
 
     if not ids:
         return {}
@@ -251,7 +251,7 @@ def build_factory_view(
     every task it publishes, and asking for them one board-read at a time
     would re-read the whole control state per task.
     """
-    from swarm.factory_controls import escalations, status
+    from factory.orchestration.factory_controls import escalations, status
 
     from core.db import get_engine
 
@@ -290,7 +290,7 @@ def build_factory_view(
             # Imported here, not at module scope: the graph module lives in
             # the swarm package, which the agent_sessions test target does not
             # link, and a board with no plans never needs it.
-            from swarm import graph
+            from factory.orchestration import graph
 
             nodes = graph.load_graph(task, session=db)
             runs = graph.node_runs(task, session=db)

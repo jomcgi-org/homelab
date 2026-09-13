@@ -81,7 +81,7 @@ def _price_turns_backfill_core(
     """Price eligible tracked turns, committing each bounded result page."""
     from sqlmodel import Session, select
 
-    from agent_sessions.models import AgentTurn
+    from factory.execution.models import AgentTurn
     from shared.pricing import price_usage
 
     priced_count = 0

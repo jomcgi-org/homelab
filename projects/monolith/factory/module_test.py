@@ -64,9 +64,11 @@ def test_public_surface_has_no_private_hooks_or_mutations():
 
 @pytest.mark.asyncio
 async def test_partial_factory_start_is_tracked_and_stopped(monkeypatch):
-    from swarm import factory_conductor, runtime
+    from factory.orchestration import factory_conductor, runtime
 
-    monkeypatch.setitem(sys.modules, "swarm.node_workflows", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules, "factory.orchestration.node_workflows", SimpleNamespace()
+    )
     monkeypatch.setattr(runtime, "launch", lambda: None)
     monkeypatch.setattr(runtime, "is_launched", lambda: True)
     shutdowns = []
@@ -95,7 +97,7 @@ async def test_partial_factory_start_is_tracked_and_stopped(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_maintenance_failure_keeps_previously_started_tasks_owned(monkeypatch):
-    from agent_sessions import kg_feed, mcp, titles
+    from factory.execution import kg_feed, mcp, titles
 
     task = asyncio.create_task(asyncio.Event().wait())
     monkeypatch.setattr(mcp, "start_pending_message_sweep", lambda: [task])
@@ -117,9 +119,11 @@ async def test_maintenance_failure_keeps_previously_started_tasks_owned(monkeypa
 
 @pytest.mark.asyncio
 async def test_disabled_orchestration_still_starts_session_maintenance(monkeypatch):
-    from swarm import factory_conductor, runtime
+    from factory.orchestration import factory_conductor, runtime
 
-    monkeypatch.setitem(sys.modules, "swarm.node_workflows", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules, "factory.orchestration.node_workflows", SimpleNamespace()
+    )
     monkeypatch.setattr(runtime, "launch", lambda: None)
     monkeypatch.setattr(runtime, "is_launched", lambda: False)
     monkeypatch.setattr(

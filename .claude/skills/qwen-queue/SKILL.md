@@ -5,7 +5,7 @@ description: Operate and improve the qwen work-queue drainer. Use when queueing 
 
 # qwen queue
 
-The drainer (ADR agents/061, `projects/monolith/swarm/drainer.py`) runs
+The drainer (ADR agents/061, `projects/monolith/factory/orchestration/drainer.py`) runs
 `claude_agent.routine_jobs` rows of kind `qwen-drain` as one fresh qwen pi
 session each, strictly serially, claimed by a `*/15` CronWorkflow tick. The
 lane bills nothing, so it exists to convert idle overnight capacity into

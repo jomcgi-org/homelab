@@ -123,7 +123,7 @@ emits nothing to stdout while a Bash tool executes, so the bound has to exceed
 the slowest realistic in-guest command (a build or a test run) rather than the
 slowest turn. Its job is spotting a genuinely wedged CLI. Total turn duration is
 bounded separately by the caller (`read_timeout` in
-`projects/monolith/agent_sessions/transport.py`), and this value must stay
+`projects/monolith/factory/execution/transport.py`), and this value must stay
 comfortably below that one so the inner watchdog fires first and reports a
 specific error instead of the caller timing out generically.
 

@@ -222,7 +222,7 @@ def test_attach_recall_skips_kg_drain_and_combines_prompts(monkeypatch):
 
 def test_kg_node_key_matches_the_drain_lane_constants():
     """knowledge may not import agent_sessions, so the key is copied; pin it."""
-    from agent_sessions.constants import KG_NODE_KEY as sessions_key
+    from factory.execution.constants import KG_NODE_KEY as sessions_key
     from knowledge.extraction import KG_NODE_KEY as extraction_key
 
     assert recall.KG_NODE_KEY == sessions_key == extraction_key

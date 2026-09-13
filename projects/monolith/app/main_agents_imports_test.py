@@ -32,6 +32,7 @@ FORBIDDEN_MODULES = [
     # Private domains.
     "agent",
     "agent_sessions",
+    "factory",
     "cluster",
     "demos",
     "goosecracker",

@@ -169,7 +169,7 @@ async def test_probe_codex_success(monkeypatch):
         assert model == "luna"
         return Turn()
 
-    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
+    monkeypatch.setattr("factory.execution.api.run_synthetic_session", run_session)
 
     result = await probe.probe_codex()
 
@@ -182,7 +182,7 @@ async def test_probe_codex_handles_none_from_run_synthetic_session(monkeypatch):
     async def run_session(*_, **__):
         return None
 
-    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
+    monkeypatch.setattr("factory.execution.api.run_synthetic_session", run_session)
 
     result = await probe.probe_codex()
 
@@ -199,7 +199,7 @@ async def test_probe_codex_bad_terminal_reason(monkeypatch):
     async def run_session(*_, **__):
         return Turn()
 
-    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
+    monkeypatch.setattr("factory.execution.api.run_synthetic_session", run_session)
 
     result = await probe.probe_codex()
 
@@ -216,7 +216,7 @@ async def test_probe_codex_empty_result(monkeypatch):
     async def run_session(*_, **__):
         return Turn()
 
-    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
+    monkeypatch.setattr("factory.execution.api.run_synthetic_session", run_session)
 
     result = await probe.probe_codex()
 
@@ -229,7 +229,7 @@ async def test_probe_codex_exception(monkeypatch):
     async def run_session(*_, **__):
         raise RuntimeError("Codex transport unavailable")
 
-    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
+    monkeypatch.setattr("factory.execution.api.run_synthetic_session", run_session)
 
     result = await probe.probe_codex()
 
@@ -248,7 +248,7 @@ async def test_probe_spark_success(monkeypatch):
         assert model == "spark"
         return Turn()
 
-    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
+    monkeypatch.setattr("factory.execution.api.run_synthetic_session", run_session)
 
     result = await probe.probe_spark()
 
@@ -265,7 +265,7 @@ async def test_probe_spark_bad_terminal_reason(monkeypatch):
     async def run_session(*_, **__):
         return Turn()
 
-    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
+    monkeypatch.setattr("factory.execution.api.run_synthetic_session", run_session)
 
     result = await probe.probe_spark()
 
@@ -282,7 +282,7 @@ async def test_probe_spark_empty_result(monkeypatch):
     async def run_session(*_, **__):
         return Turn()
 
-    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
+    monkeypatch.setattr("factory.execution.api.run_synthetic_session", run_session)
 
     result = await probe.probe_spark()
 
@@ -295,7 +295,7 @@ async def test_probe_spark_exception(monkeypatch):
     async def run_session(*_, **__):
         raise RuntimeError("Spark transport unavailable")
 
-    monkeypatch.setattr("agent_sessions.api.run_synthetic_session", run_session)
+    monkeypatch.setattr("factory.execution.api.run_synthetic_session", run_session)
 
     result = await probe.probe_spark()
 

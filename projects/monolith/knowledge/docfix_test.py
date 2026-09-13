@@ -13,7 +13,7 @@ from sqlalchemy import text
 from sqlmodel import Session, create_engine
 
 from knowledge import docfix
-import swarm.drainer as drainer
+import factory.orchestration.drainer as drainer
 
 
 @pytest.fixture(name="session")
