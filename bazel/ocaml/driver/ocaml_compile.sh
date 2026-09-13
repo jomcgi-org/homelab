@@ -349,8 +349,13 @@ if [ -n "$MENHIR_MODULES" ]; then
 		if "$MENHIR_TOOL" $MENHIR_FLAGS --base "$WORK/$g" "$GMLY" 2>"$DIRECT_LOG"; then
 			cat "$DIRECT_LOG" >&2
 		else
+			echo "ocaml_compile: direct menhir generation for $g failed; trying type inference" >&2
+			cat "$DIRECT_LOG" >&2
 			"$MENHIR_TOOL" $MENHIR_FLAGS --infer-write-query "$SCRATCH/${g}__query.ml" "$GMLY"
-			"$OCAMLOPT" $CFLAGS -I "$SCRATCH" $INCFLAGS -i "$SCRATCH/${g}__query.ml" >"$SCRATCH/${g}.inferred"
+			if ! "$OCAMLOPT" $CFLAGS -I "$SCRATCH" $INCFLAGS -i "$SCRATCH/${g}__query.ml" >"$SCRATCH/${g}.inferred"; then
+				echo "ocaml_compile: menhir type inference for $g failed" >&2
+				exit 2
+			fi
 			"$MENHIR_TOOL" $MENHIR_FLAGS --infer-read-reply "$SCRATCH/${g}.inferred" --base "$WORK/$g" "$GMLY"
 		fi
 		rm -f "$GMLY"
