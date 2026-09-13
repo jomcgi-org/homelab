@@ -19,7 +19,7 @@ def register(app) -> None:
     from swarm.router import router
 
     from agent_sessions.router import router as sessions_router
-    from agent_sessions.public_router import router as public_router
+    from factory.public_view import router as public_router
 
     app.include_router(sessions_router)
     app.include_router(public_router)

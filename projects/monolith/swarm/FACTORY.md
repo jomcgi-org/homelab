@@ -16,6 +16,10 @@ domains. Their durable workflow functions, database schemas, and existing route
 paths remain stable while ownership moves. Remaining consolidation work moves
 those internals and removes the competing session-facing product concepts.
 
+The public reader ships `factory.public_view` and excludes the entire
+`agent_sessions` implementation package. It reads only published public API
+views and snapshots with the existing restricted database role.
+
 Discord integration is outside this consolidation. Existing integration behavior
 is preserved pending an explicit retirement or redesign. This change introduces
 no general-purpose cross-domain factory API or separate factory deployment.

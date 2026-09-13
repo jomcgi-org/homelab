@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 
-from agent_sessions.public_router import router
+from factory.public_view import router
 from core.db import get_session
 
 
