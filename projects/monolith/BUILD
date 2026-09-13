@@ -392,7 +392,7 @@ py3_image(
         "SSL_CERT_FILE": "/projects/monolith/main.runfiles/_main/projects/monolith/.main/lib/python3.13/site-packages/certifi/cacert.pem",
         "REPO_DOCS_MANIFEST_PATH": "/etc/monolith/repo_docs_manifest.ndjson",
     },
-    main = "app/main.py",
+    main = "//projects/monolith/app:main.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/backend",
     tars = [":repo_docs_manifest_layer"],
 )
@@ -412,7 +412,7 @@ py3_image(
         "SSL_CERT_FILE": "/projects/monolith/jobs.runfiles/_main/projects/monolith/.jobs/lib/python3.13/site-packages/certifi/cacert.pem",
         "REPO_DOCS_MANIFEST_PATH": "/etc/monolith/repo_docs_manifest.ndjson",
     },
-    main = "app/jobs_main.py",
+    main = "//projects/monolith/app:jobs_main.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/jobs",
     tars = [":repo_docs_manifest_layer"],
 )
@@ -428,7 +428,7 @@ py3_image(
     env = {
         "PYTHONPATH": "/projects/monolith/progress.runfiles/_main:/projects/monolith/progress.runfiles/_main/projects/monolith",
     },
-    main = "app/progress_main.py",
+    main = "//projects/monolith/app:progress_main.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/progress",
 )
 
@@ -440,7 +440,7 @@ py3_image(
     env = {
         "PYTHONPATH": "/projects/monolith/main_agents.runfiles/_main:/projects/monolith/main_agents.runfiles/_main/projects/monolith",
     },
-    main = "app/agents_main.py",
+    main = "//projects/monolith/app:agents_main.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/agents",
 )
 
@@ -550,7 +550,7 @@ py3_image(
         # at certifi's bundle so outbound HTTPS works.
         "SSL_CERT_FILE": "/projects/monolith/main_public.runfiles/_main/projects/monolith/.main_public/lib/python3.13/site-packages/certifi/cacert.pem",
     },
-    main = "app/main_public.py",
+    main = "//projects/monolith/app:main_public.py",
     repository = "ghcr.io/jomcgi/homelab/projects/monolith/public-backend",
 )
 
@@ -588,7 +588,7 @@ monolith_domain_images(
     domains = MONOLITH_DOMAINS,
     extra_env = {"REPO_DOCS_MANIFEST_PATH": "/etc/monolith/repo_docs_manifest.ndjson"},
     extra_tars = [":repo_docs_manifest_layer"],
-    main = "app/main_domain.py",
+    main = "//projects/monolith/app:main_domain.py",
 )
 
 # Reads every domain source file from disk (via rglob) to enforce that domains

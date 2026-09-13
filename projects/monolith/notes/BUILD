@@ -4,7 +4,10 @@
 package(default_visibility = ["//visibility:private"])
 
 exports_files(
-    glob(["**/*.py"]),
+    glob(
+        ["**/*.py"],
+        allow_empty = True,
+    ),
     visibility = ["//projects/monolith:private_backend_consumers"],
 )
 
@@ -12,6 +15,7 @@ filegroup(
     name = "production_sources",
     srcs = glob(
         ["**/*.py"],
+        allow_empty = True,
         exclude = [
             "**/*_test.py",
             "**/test_*.py",
@@ -25,6 +29,7 @@ filegroup(
     name = "non_test_python_sources",
     srcs = glob(
         ["**/*.py"],
+        allow_empty = True,
         exclude = [
             "**/*_test.py",
             "**/test_*.py",
