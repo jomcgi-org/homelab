@@ -123,6 +123,7 @@ http_file(
 
 http_file(
     name = "ocaml_native_toybox_linux_x86_64",
+    downloaded_file_path = "toybox",
     executable = True,
     sha256 = "836ba9d6821fb3bcd85f4e2c511115d677930796ef76418799e0df95526d4e65",
     urls = ["https://landley.net/toybox/downloads/binaries/0.8.14/toybox-x86_64"],
@@ -130,6 +131,7 @@ http_file(
 
 http_file(
     name = "ocaml_native_toybox_linux_aarch64",
+    downloaded_file_path = "toybox",
     executable = True,
     sha256 = "223b5ff5929371225d0bc62fb3b99a148692295fb6f85ad86bb924f689a55ea4",
     urls = ["https://landley.net/toybox/downloads/binaries/0.8.14/toybox-aarch64"],
