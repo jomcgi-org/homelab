@@ -65,6 +65,9 @@ def covered_changes(
     history = git(
         repo,
         "log",
+        # Show merge diffs against their first parent so resolution changes
+        # are not omitted without re-reporting changes from older parents.
+        "--diff-merges=first-parent",
         "--format=",
         "--name-only",
         f"{full_revision}..HEAD",
