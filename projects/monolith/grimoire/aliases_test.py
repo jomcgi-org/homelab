@@ -399,6 +399,27 @@ def test_changed_entity_makes_approval_stale_without_embedding(session: Session)
     assert session.get(Entity, short.id) is not None
 
 
+def test_changed_evidence_text_makes_approval_stale(session: Session):
+    short = _entity(session, "npc", "Gundren")
+    full = _entity(session, "npc", "Gundren Rockseeker")
+    chunk = _chunk(session, "c1", "Gundren Rockseeker was called Gundren.")
+    _mention(session, chunk, short, "short summary")
+    _mention(session, chunk, full, "full summary")
+    session.commit()
+    candidate = _candidate(session)
+    _approve(session, candidate)
+    chunk.content = "The reviewed source text changed after approval."
+    session.commit()
+    embedder = FakeEmbedClient()
+
+    with pytest.raises(aliases.StaleApproval, match="approval is stale"):
+        asyncio.run(aliases.execute_approved_candidate(session, candidate.id, embedder))
+
+    assert embedder.calls == []
+    assert session.get(AliasCandidate, candidate.id).status == "stale"
+    assert session.get(Entity, short.id) is not None
+
+
 def test_successful_execution_is_replay_safe(session: Session):
     short = _entity(session, "npc", "Gundren")
     full = _entity(session, "npc", "Gundren Rockseeker")

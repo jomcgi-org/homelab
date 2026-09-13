@@ -160,6 +160,7 @@ def _co_mentions(
     fingerprint_rows = [
         {
             "chunk_id": chunk.id,
+            "content_hash": hashlib.sha256(chunk.content.encode()).hexdigest(),
             "short_mention": short_text,
             "full_mention": full_text,
         }
@@ -317,6 +318,7 @@ def generate_candidates(session: Session) -> dict[str, Any]:
         entry["fingerprint"].append(
             {
                 "chunk_id": chunk.id,
+                "content_hash": hashlib.sha256(chunk.content.encode()).hexdigest(),
                 "short_mention": short_text,
                 "full_mention": full_text,
             }
