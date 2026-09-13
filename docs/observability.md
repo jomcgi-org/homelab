@@ -1,14 +1,15 @@
 # Observability Architecture
 
 One OpenTelemetry Collector Deployment exports admitted telemetry to Honeycomb.
-Production currently sends synthetic probe metrics only. No service is admitted
-to the traces pipeline.
+Production sends synthetic probe metrics and traces from the services named in
+the production or GKE `allowedServices` overlay.
 
 ## Current signal paths
 
 ```mermaid
 graph LR
     HC[http_check receiver] -->|probe metrics| OC[otel-collector]
+    EV[embervm-control] -->|OTLP traces| OC
     OC -->|OTLP| H[Honeycomb]
     UR[UptimeRobot] -->|direct HTTPRoute| HEALTH[collector health_check]
     DCGM[DCGM exporter] -->|direct scrape| STATS[public stats ticker]
@@ -20,7 +21,8 @@ The collector's `http_check` receiver probes these public URLs every 60 seconds:
 - `https://jomcgi.dev/`
 
 The metrics pipeline accepts only the `http_check` receiver. It has no OTLP
-metrics receiver, so workloads cannot send arbitrary metrics through it.
+metrics receiver, so workloads cannot send arbitrary metrics through it. Service
+telemetry uses the separately allow-listed traces pipeline.
 
 UptimeRobot metamonitors the collector at
 `https://jomcgi.dev/health/otel-collector`. The `HTTPRoute` sends traffic
@@ -59,6 +61,32 @@ reporting the mismatch.
 
 The metrics pipeline remains restricted to `http_check` after a trace service is
 admitted.
+
+## EmberVM session API request telemetry
+
+The EmberVM control plane emits one root span named `embervm.http.request` for
+every request that reaches either session namespace. This happens inside the
+Bandit listener, so ClusterIP, pod-IP, and loopback traffic has the same signal.
+The span carries these query fields:
+
+| Field | Type and unit | Meaning |
+| ----- | ------------- | ------- |
+| `service.name` | string | `embervm-control` |
+| `deployment.environment` | string | Collector-stamped environment, `homelab-hub` on GKE |
+| `ember.surface` | string | `session_api` |
+| `ember.http.duration_ms` | number, milliseconds | Time from policy entry until the response is sent |
+| `ember.policy.allowed` | boolean | Whether the method and canonical path passed the session allow-list |
+| `http.request.method` | string | Uppercase HTTP method |
+| `http.response.status_code` | integer | Response status seen by the caller |
+| `http.route` | string | Low-cardinality route template, or `unmatched` for a policy denial |
+
+The collector retains these isolated request traces through the bounded
+`embervm-session-api` tail-sampling slice. This gives Honeycomb a complete
+request denominator and latency distribution without enabling the OTLP metrics
+receiver. The application and collector wiring is active in the GKE overlays:
+EmberVM exports with `OTEL_SERVICE_NAME=embervm-control`, the collector admits
+that exact service name, and the hub collector uses its proven OTLP/HTTP export
+path to Honeycomb.
 
 ## Automatic injection is off
 

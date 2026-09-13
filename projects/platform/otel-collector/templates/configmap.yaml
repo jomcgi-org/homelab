@@ -126,8 +126,17 @@ data:
             type: composite
             composite:
               max_total_spans_per_second: {{ .Values.sampling.maxTotalSpansPerSecond }}
-              policy_order: [errors, slow-traces, baseline]
+              # The application emits each EmberVM session API observation as
+              # its own one-span root trace. Keep those request records without
+              # enabling arbitrary OTLP metrics, so Honeycomb error-rate
+              # denominators and latency percentiles consume complete data.
+              policy_order: [embervm-session-api, errors, slow-traces, baseline]
               composite_sub_policy:
+                - name: embervm-session-api
+                  type: string_attribute
+                  string_attribute:
+                    key: ember.surface
+                    values: [session_api]
                 - name: errors
                   type: status_code
                   status_code:
@@ -141,6 +150,8 @@ data:
                   probabilistic:
                     sampling_percentage: {{ .Values.sampling.probabilisticPercentage }}
               rate_allocation:
+                - policy: embervm-session-api
+                  percent: {{ .Values.sampling.rateAllocation.sessionApiPercent }}
                 - policy: errors
                   percent: {{ .Values.sampling.rateAllocation.errorsPercent }}
                 - policy: slow-traces

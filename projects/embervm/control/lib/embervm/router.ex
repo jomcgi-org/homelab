@@ -64,6 +64,11 @@ defmodule Embervm.Router do
   @default_task_ttl_ms 86_400_000
   @conformance_default_lookback_ms 3_600_000
 
+  # Enforce the session API's closed method/path set before Plug.Router can
+  # route an unmatched request into the serving activator catch-all. Because
+  # this is inside the Bandit listener, calling the pod IP directly cannot
+  # bypass it.
+  plug(Embervm.SessionApiPolicy)
   plug(:match)
   plug(:fetch_query)
   plug(:authenticate)

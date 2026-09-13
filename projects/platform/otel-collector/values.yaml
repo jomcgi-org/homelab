@@ -136,18 +136,22 @@ sampling:
   # latency threshold to catch pathological outliers makes this worse, because
   # deep traces are exactly what a small slice cannot hold.
   #
-  # So every slice has to exceed a typical trace, not just the errors slice.
+  # So every general trace slice has to meet a typical trace, while the session
+  # request slice only has to hold its deliberately isolated one-span traces.
   # embervm-control has ~107 span callsites and its traces are deep, so at 400
-  # the slices are 200/100/100 spans/sec and all three can admit a deep trace.
-  # The 27-hour exhaustion figure at 200 was better on paper and bought with
-  # silent drops.
+  # the four 25% slices are 100 spans/sec. The three general slices can admit a
+  # typical trace and the session slice admits up to 100 request observations
+  # each second. The 27-hour exhaustion figure at 200 was better on paper and
+  # bought with silent drops.
   #
   # Recheck against measured span-per-trace depth once real data lands. If
   # traces run deeper than 100 spans, raise this rather than rebalancing:
   # shrinking any slice to feed another just moves the silent drop.
   maxTotalSpansPerSecond: 400
-  # Budget split. Errors keep the largest slice, but every slice is sized to
-  # hold a whole trace, per the per-trace rule above.
+  # Budget split. Session API request observations are deliberately emitted as
+  # one-span root traces and retained in full so request-rate denominators and
+  # latency percentiles are sound. The remaining slices stay at 100 spans/sec,
+  # the measured lower bound for a typical deep application trace.
   #
   # These do NOT have to sum to 100 and nothing validates them, so a sum over
   # 100 quietly raises the real ceiling above maxTotalSpansPerSecond. A
@@ -155,7 +159,8 @@ sampling:
   # rather than erroring or getting nothing, so keep the names in step with the
   # composite_sub_policy entries in the ConfigMap template.
   rateAllocation:
-    errorsPercent: 50
+    sessionApiPercent: 25
+    errorsPercent: 25
     slowPercent: 25
     baselinePercent: 25
 

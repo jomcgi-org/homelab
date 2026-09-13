@@ -172,9 +172,12 @@ def test_allowlisted_service_gets_a_filtered_traces_pipeline():
 def test_prod_allowlist_includes_monolith_emitters():
     values = yaml.safe_load(_values("values-prod").read_text())
 
-    assert {"monolith-backend", "monolith-jobs", "monolith-public"} <= set(
-        values["allowedServices"]
-    )
+    assert {
+        "embervm-control",
+        "monolith-backend",
+        "monolith-jobs",
+        "monolith-public",
+    } <= set(values["allowedServices"])
 
 
 def test_allowlist_drops_services_not_named():
@@ -192,6 +195,46 @@ def test_metrics_pipeline_never_accepts_otlp_even_when_traces_are_on():
     assert config["service"]["pipelines"]["metrics"]["receivers"] == ["http_check"], (
         "the metrics pipeline accepts otlp: an opted-in service could push "
         "unbounded metric events, which is the easiest way to burn quota"
+    )
+
+
+def test_session_api_request_spans_are_retained_with_a_bounded_budget():
+    """Honeycomb request alerts need an unsampled denominator and percentile.
+
+    The application emits these as isolated one-span traces, so a dedicated
+    bounded sampler slice retains complete request events without admitting
+    arbitrary OTLP metrics or letting a deep invoke consume the whole slice.
+    """
+    config = _collector_config(_render())
+    composite = config["processors"]["tail_sampling"]["policies"][0]["composite"]
+    policies = composite["composite_sub_policy"]
+    session_policy = next(
+        policy for policy in policies if policy["name"] == "embervm-session-api"
+    )
+
+    assert session_policy["type"] == "string_attribute"
+    assert session_policy["string_attribute"] == {
+        "key": "ember.surface",
+        "values": ["session_api"],
+    }
+    assert composite["policy_order"][0] == "embervm-session-api"
+
+    allocations = {
+        allocation["policy"]: allocation["percent"]
+        for allocation in composite["rate_allocation"]
+    }
+    assert allocations == {
+        "embervm-session-api": 25,
+        "errors": 25,
+        "slow-traces": 25,
+        "baseline": 25,
+    }
+    assert sum(allocations.values()) == 100
+    assert (
+        composite["max_total_spans_per_second"]
+        * allocations["embervm-session-api"]
+        / 100
+        == 100
     )
 
 
