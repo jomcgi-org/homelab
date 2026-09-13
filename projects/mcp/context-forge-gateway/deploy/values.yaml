@@ -165,12 +165,19 @@ mcp-stack:
       - name: GATEWAY_AUTO_REFRESH_INTERVAL
         value: "600"
     probes:
+      # Startup must actually gate on the app being up. The previous exec
+      # `sleep 10` succeeded regardless of app state, so liveness ran from 60s
+      # and its 5x20s budget killed the container every ~2.5 min while a cold
+      # start (DB/Redis connect, cache init, gateway service startup, ~90-160s
+      # observed in logs) still had /health unresponsive. With a real startup
+      # gate on the same endpoint, liveness only engages once the app answers.
       startup:
-        type: exec
-        command: ["sh", "-c", "sleep 10"]
-        timeoutSeconds: 15
+        type: http
+        path: /health
+        port: 4444
+        timeoutSeconds: 5
         periodSeconds: 10
-        failureThreshold: 18
+        failureThreshold: 24
       liveness:
         type: http
         path: /health
