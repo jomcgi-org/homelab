@@ -221,6 +221,16 @@ actions:
             exit 0
           fi
 
+          # ---- 1. central BUILD ratchet -----------------------------------
+          # Compare semantic entries, not totals, so deleting one legacy entry
+          # cannot pay for a new gazelle exclusion or named-package glob. The
+          # checker fails closed when the base ref is unavailable and tells the
+          # author to move new package ownership into a package-local BUILD.
+          base_ref="origin/${GIT_REPO_DEFAULT_BRANCH:-main}"
+          git fetch origin "${GIT_REPO_DEFAULT_BRANCH:-main}" --quiet
+          base_ref="$(git merge-base "$base_ref" HEAD)"
+          python3 ./bazel/tools/ci/central_build_ratchet.py "$base_ref" HEAD
+
           # ORDER IS LOAD-BEARING: everything that analyses //... runs BEFORE the
           # format stage. `:format` runs gazelle, which generates BUILD files for
           # packages that have none committed, and some of them do not analyse
@@ -230,7 +240,7 @@ actions:
           # clean tree and `git add -u` never commits them. While Format check and
           # Test were separate actions that damage died with the Format check
           # runner; in one runner it would poison the very next bazel test //....
-          # ---- 1. tests ---------------------------------------------------
+          # ---- 2. tests ---------------------------------------------------
           # -future excludes future-feature BDD specs (executable specs for
           # not-yet-built features): those are intentionally red.
           # The PR run uses affected-targets to query a global test-only
@@ -245,9 +255,8 @@ actions:
           if [[ "${GIT_BRANCH:-}" =~ ^gh-readonly-queue/ ]] || [ "${GIT_PR_NUMBER:-0}" = "0" ]; then
             bazel test //... --config=ci --deleted_packages=bazel/tools/python --test_tag_filters=-external,-future
           else
-            git fetch origin "${GIT_REPO_DEFAULT_BRANCH:-main}" --quiet
             targets_file=$(mktemp)
-            ./bazel/tools/ci/affected-targets.sh "origin/${GIT_REPO_DEFAULT_BRANCH:-main}" HEAD -- --config=ci --deleted_packages=bazel/tools/python > "$targets_file"
+            ./bazel/tools/ci/affected-targets.sh "$base_ref" HEAD -- --config=ci --deleted_packages=bazel/tools/python > "$targets_file"
             target_count=$(grep -c . "$targets_file" || true)
             if [ "$target_count" -eq 0 ]; then
               echo "No Bazel targets affected by this PR; skipping bazel test (the queue candidate runs //...)"

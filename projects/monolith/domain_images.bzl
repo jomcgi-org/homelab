@@ -72,6 +72,7 @@ def monolith_domain_images(
         binary,
         main,
         domains,
+        main_label = None,
         base = "@python_base",
         config_test_domain = None,
         extra_tars = [],
@@ -85,6 +86,8 @@ def monolith_domain_images(
         binary: The shared ``py_venv_binary`` (app/main_domain.py entrypoint).
         main: The entrypoint source file, layered in explicitly because
             ``py_venv_binary`` omits ``ctx.file.main`` from runfiles.
+        main_label: Optional source label when main belongs to a different
+            Bazel package. The main path remains its runfiles destination.
         domains: Domain package names; each must export ``MODULE``.
         base: Base image.
         config_test_domain: Domain whose amd64 image gets a non-manual
@@ -121,7 +124,10 @@ def monolith_domain_images(
 
     # py_venv_binary omits ctx.file.main from runfiles; layer the entrypoint
     # source at its runfiles path (same supplementary layer py3_image creates).
-    main_label = "//{}:{}".format(binary_label.package, main)
+    if main_label == None:
+        main_label = "//{}:{}".format(binary_label.package, main)
+    else:
+        main_label = native.package_relative_label(main_label)
     tar(
         name = name + "_srcs",
         srcs = [main_label],
