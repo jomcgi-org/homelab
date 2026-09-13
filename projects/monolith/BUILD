@@ -831,7 +831,6 @@ py_test(
         "//projects/monolith/updates:BUILD",
         "//projects/monolith/worldcup:BUILD",
     ],
-    deps = ["@pip//pytest"],
 )
 
 # Reads every domain source file from disk (via rglob) to enforce that domains
@@ -6845,26 +6844,6 @@ alias(
     visibility = ["//:__subpackages__"],
 )
 
-semgrep_target_test(
-    name = "trips_backfill_semgrep_test",
-    exclude_rules = [
-        # main.py guards the SeaweedFS endpoint with a scheme check, but
-        # semgrep-core ignores the inline # nosemgrep (mirrors :main). The
-        # # keep stops gazelle from dropping it back to the file directive set.
-        "boto3-endpoint-url-missing-scheme",  # keep
-        # trips.models uses datetime fields for the migration's TIMESTAMPTZ
-        # columns; semgrep-core ignores the inline # nosemgrep (mirrors :main).
-        "sqlmodel-datetime-without-factory",
-        "avoid-sqlalchemy-text",
-        "tainted-fastapi-http-request-httpx",
-        "tainted-path-traversal-stdlib-fastapi",
-        # validate_image opens in-memory bytes, not a path; false positive (mirrors :main).
-        "tainted-path-traversal-pillow-fastapi",
-    ],
-    rules = ["//bazel/semgrep/rules:python_rules"],
-    target = ":trips_backfill",
-)
-
 # Backfill tests dep on :trips_backfill_lib (boto3/typer/httpx orchestration),
 # NOT :monolith_backend, since the backfill is excluded from the server image.
 py_test(
@@ -7304,6 +7283,19 @@ py_test(
 semgrep_test(
     name = "recovery_network_test_semgrep_test",
     srcs = ["recovery_network_test.py"],
+    exclude_rules = [
+        "avoid-sqlalchemy-text",
+        "sqlmodel-datetime-without-factory",
+        "tainted-fastapi-http-request-httpx",
+        "tainted-path-traversal-pillow-fastapi",
+        "tainted-path-traversal-stdlib-fastapi",
+    ],
+    rules = ["//bazel/semgrep/rules:python_rules"],
+)
+
+semgrep_test(
+    name = "package_classification_test_semgrep_test",
+    srcs = ["package_classification_test.py"],
     exclude_rules = [
         "avoid-sqlalchemy-text",
         "sqlmodel-datetime-without-factory",

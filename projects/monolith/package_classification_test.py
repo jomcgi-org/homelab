@@ -42,7 +42,7 @@ PACKAGE_DIRS = [
     "swarm",
     "trips",
     "updates",
-    "worldcup"
+    "worldcup",
 ]
 PUBLIC_PACKAGE_DIRS = [
     "agent_sessions",
@@ -66,7 +66,7 @@ PUBLIC_PACKAGE_DIRS = [
     "ships",
     "stars",
     "trips",
-    "worldcup"
+    "worldcup",
 ]
 
 
@@ -102,10 +102,7 @@ def test_public_membership_uses_only_explicit_markers() -> None:
     for package in PUBLIC_PACKAGE_DIRS:
         public = _rule(_build(package), "public")
         assert 'tags = ["monolith-public"]' in public
-        assert (
-            'visibility = ["//projects/monolith/public_backend:__pkg__"]'
-            in public
-        )
+        assert 'visibility = ["//projects/monolith/public_backend:__pkg__"]' in public
 
     for package in set(PACKAGE_DIRS) - set(PUBLIC_PACKAGE_DIRS):
         assert 'name = "public"' not in _build(package)
