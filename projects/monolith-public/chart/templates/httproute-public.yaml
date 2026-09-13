@@ -162,11 +162,47 @@ spec:
 }}
 {{- include "cf-ingress.rate-limit" $rlParams }}
 ---
-{{- $fnRlParams := dict
-  "name" (printf "%s-functions" (include "monolith-public.fullname" .))
-  "rateLimit" .Values.cfIngress.public.functionsRateLimit
-}}
-{{- include "cf-ingress.rate-limit" $fnRlParams }}
+# The public function route is intentionally different from the shared
+# cf-ingress.rate-limit helper above and below. Cloudflare overwrites
+# CF-Connecting-IP at the edge, and the origin Envoy Service is ClusterIP-only,
+# so this is the trustworthy internet-client identity at the gateway. The first
+# rule is a fail-safe bucket for a missing or malformed header. A valid address
+# matches the Distinct descriptor in the second rule instead, and Envoy Gateway
+# 1.8.3 sets always_consume_default_token_bucket=false for descriptor rules, so
+# valid clients neither consume nor inherit that shared fallback budget.
+#
+# Keep the regular-expression matcher alongside Distinct. Distinct alone would
+# give every arbitrary malformed value a fresh bucket if the tunnel contract
+# ever regressed. The expression accepts canonical IPv4 and IPv6 addresses; a
+# non-canonical value safely falls back to the first rule.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: {{ include "monolith-public.fullname" . }}-functions-rate-limit
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: {{ include "monolith-public.fullname" . }}-functions
+  rateLimit:
+    type: Local
+    local:
+      rules:
+        # Requests without a valid Cloudflare identity land only in this
+        # fail-safe bucket. Descriptor matches do not consume it.
+        - limit:
+            requests: {{ .Values.cfIngress.public.functionsRateLimit.requests }}
+            unit: {{ .Values.cfIngress.public.functionsRateLimit.unit }}
+        - clientSelectors:
+            - headers:
+                - name: {{ .Values.cfIngress.public.functionsRateLimit.clientHeader.name | quote }}
+                  type: Distinct
+                - name: {{ .Values.cfIngress.public.functionsRateLimit.clientHeader.name | quote }}
+                  type: RegularExpression
+                  value: {{ .Values.cfIngress.public.functionsRateLimit.clientHeader.valuePattern | quote }}
+          limit:
+            requests: {{ .Values.cfIngress.public.functionsRateLimit.requests }}
+            unit: {{ .Values.cfIngress.public.functionsRateLimit.unit }}
 ---
 {{- $emberRlParams := dict
   "name" (printf "%s-ember-reads" (include "monolith-public.fullname" .))

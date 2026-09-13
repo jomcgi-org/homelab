@@ -51,6 +51,7 @@
 # gazelle:exclude public_knowledge_views_test.py
 # gazelle:exclude chat_public_grants_test.py
 # gazelle:exclude public_httproute_chat_guard_test.py
+# gazelle:exclude public_faas_rate_limit_test.py
 # gazelle:exclude public_api_chunks_grants_test.py
 # gazelle:exclude public_turnstile_secret_isolation_test.py
 # gazelle:exclude ember_public_savings_grants_test.py
@@ -6497,6 +6498,26 @@ py_test(
     data = ["//projects/monolith-public/chart:httproute_public_template"],
     imports = ["."],
     deps = ["@pip//pytest"],
+)
+
+# Guard (#3957): only the public /functions/ route gets a client-IP keyed
+# budget. Render the shipping chart, check the exact pinned Envoy Gateway CRD,
+# and exercise the independent/fallback budget semantics in a focused model.
+py_test(
+    name = "public_faas_rate_limit_test",
+    srcs = ["public_faas_rate_limit_test.py"],
+    data = [
+        "//projects/monolith-public/chart:chart_render_inputs",
+        "//projects/monolith-public/deploy:deploy_values",
+        "//projects/platform/cloudflare-gateway:gateway_crds",
+        "@multitool//tools/helm",
+    ],
+    env = {
+        "DEPLOY_VALUES": "$(rootpath //projects/monolith-public/deploy:deploy_values)",
+        "HELM_BIN": "$(rootpath @multitool//tools/helm)",
+    },
+    imports = ["."],
+    deps = ["@pip//pyyaml"],
 )
 
 # Guard (#5142): the public tier's destination-scoped Cilium egress policies
