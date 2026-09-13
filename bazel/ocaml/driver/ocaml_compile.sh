@@ -16,7 +16,7 @@ echo "ocaml_compile: driver started" >&2
 MODE="" NAME="" SYSROOT_TAR="" BOOTSTRAP_TOOL="" USE_FIND="0" WRAPPED="0" LINKALL="0"
 INCLUDES="" OPAM_PKGS="" SRCS="" CSRCS="" CHDRS="" CMXAS="" CFLAGS=""
 PP_TOOL="" PP_ARGS="" CPPO_TOOL="" PPX="" PPX_DATA=""
-MENHIR_TOOL="" MENHIR_MODULES="" MENHIR_FLAGS=""
+MENHIR_TOOL="" MENHIR_MODULES="" MENHIR_FLAGS="" DRIVER_PROTOCOL=""
 CC_INCLUDES="" CC_ARCHIVES="" CC_LINKFLAGS=""
 OBJS_OUT="" CMXA_OUT="" A_OUT="" EXE_OUT=""
 
@@ -41,6 +41,7 @@ consume_arg() {
 	--cppo-tool) CPPO_TOOL="$2" ;;
 	--ppx) PPX="$2" ;;
 	--ppx-data) PPX_DATA="$PPX_DATA $2" ;;
+	--driver-protocol) DRIVER_PROTOCOL="$2" ;;
 	--menhir-tool) MENHIR_TOOL="$2" ;;
 	--menhir-module) MENHIR_MODULES="$MENHIR_MODULES $2" ;;
 	--menhir-flag) MENHIR_FLAGS="$MENHIR_FLAGS $2" ;;
@@ -83,6 +84,11 @@ case "${1:-}" in
 	done
 	;;
 esac
+
+if [ -n "$MENHIR_MODULES" ] && [ "$DRIVER_PROTOCOL" != "menhir-stream-v1" ]; then
+	echo "ocaml_compile: unsupported Menhir driver protocol: $DRIVER_PROTOCOL" >&2
+	exit 2
+fi
 
 # Inputs are staged at exec-root-relative paths; later steps cd around, so
 # resolve anything we execute or read from another directory to an absolute path.

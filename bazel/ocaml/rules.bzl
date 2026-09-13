@@ -169,6 +169,9 @@ def _driver_args(ctx, tc, mode, include_dirs, opam_pkgs, srcs, c_srcs, cc = None
         for d in getattr(ctx.files, "preprocess_data", []):
             args.add("--ppx-data", d.path)
     if getattr(ctx.attr, "menhir", None):
+        # Stamp the source-generation protocol into the command so changes to
+        # response-file handling cannot reuse an incompatible cached action.
+        args.add("--driver-protocol", "menhir-stream-v1")
         args.add("--menhir-tool", ctx.executable.menhir_tool.path)
         for m in ctx.attr.menhir:
             args.add("--menhir-module", m)
