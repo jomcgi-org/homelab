@@ -1,6 +1,6 @@
 """Unit tests for grimoire/library.py and the Library/reader endpoints.
 
-In-memory SQLite + a minimal FastAPI app mounting only the grimoire router,
+File-backed SQLite + a minimal FastAPI app mounting only the grimoire router,
 mirroring the schema-stripping + ``app.dependency_overrides[get_session]``
 pattern in router_test.py / entities_test.py. Aggregations are asserted both
 directly (calling library.*) and through the HTTP endpoints.
@@ -11,13 +11,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from core.db import get_session
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
 
-from core.db import get_session
 from grimoire import library
+from grimoire.access import get_authenticated_email, get_grimoire_operator_email
 from grimoire.extract import current_extraction_key
 from grimoire.models import (
     Book,
@@ -30,11 +30,10 @@ from grimoire.router import router
 
 
 @pytest.fixture(name="session")
-def session_fixture():
+def session_fixture(tmp_path):
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{tmp_path / 'grimoire-library.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     original_schemas = {}
     for table in SQLModel.metadata.tables.values():
@@ -56,6 +55,12 @@ def client_fixture(session):
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_session] = lambda: session
+
+    def authenticated_email(request: Request) -> str:
+        return request.headers.get("X-Test-Auth-Email", "dm@example.test")
+
+    app.dependency_overrides[get_authenticated_email] = authenticated_email
+    app.dependency_overrides[get_grimoire_operator_email] = authenticated_email
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -393,13 +398,13 @@ class TestReadBook:
 class TestGetChunk:
     def test_content_neighbours_and_image_url(self, session, client):
         seed = seed_book(session)
-        body = client.get(f"/api/grimoire/chunks/{seed.c2.id}?campaign=none&as=dm")
+        body = client.get(f"/api/grimoire/chunks/{seed.c2.id}?campaign=none")
         # campaign "none" does not exist -> 404 before viewpoint resolution.
         assert body.status_code == 404
 
         campaign = client.post("/api/grimoire/campaigns", json={"name": "C"}).json()
         chunk = client.get(
-            f"/api/grimoire/chunks/{seed.c2.id}?campaign={campaign['id']}&as=dm"
+            f"/api/grimoire/chunks/{seed.c2.id}?campaign={campaign['id']}"
         ).json()
         assert chunk["seq"] == 2
         assert chunk["prev_id"] == seed.c1.id
@@ -410,7 +415,7 @@ class TestGetChunk:
         assert chunk["chunk_count"] == 4
 
         first = client.get(
-            f"/api/grimoire/chunks/{seed.c0.id}?campaign={campaign['id']}&as=dm"
+            f"/api/grimoire/chunks/{seed.c0.id}?campaign={campaign['id']}"
         ).json()
         assert first["prev_id"] is None
         assert first["image_url"] is None
@@ -418,7 +423,7 @@ class TestGetChunk:
 
     def test_missing_chunk_404(self, session, client):
         campaign = client.post("/api/grimoire/campaigns", json={"name": "C"}).json()
-        r = client.get(f"/api/grimoire/chunks/nope?campaign={campaign['id']}&as=dm")
+        r = client.get(f"/api/grimoire/chunks/nope?campaign={campaign['id']}")
         assert r.status_code == 404
 
     def test_on_page_entities_respect_viewpoint(self, session, client):
@@ -429,19 +434,35 @@ class TestGetChunk:
         session.commit()
 
         campaign = client.post("/api/grimoire/campaigns", json={"name": "C"}).json()
+        game_session = client.post(
+            f"/api/grimoire/campaigns/{campaign['id']}/sessions"
+        ).json()
+        seed.aboleth.created_in_session = game_session["id"]
+        session.add(seed.aboleth)
+        session.commit()
         pc = client.post(
             f"/api/grimoire/campaigns/{campaign['id']}/characters",
             json={"character_name": "Rogue"},
         ).json()
+        player_email = "rogue@example.test"
+        provisioned = client.post(
+            f"/api/grimoire/campaigns/{campaign['id']}/members",
+            json={
+                "email": player_email,
+                "player_character_id": pc["id"],
+            },
+        )
+        assert provisioned.status_code == 200
 
         chunk = client.get(
-            f"/api/grimoire/chunks/{seed.c0.id}?campaign={campaign['id']}&as={pc['id']}"
+            f"/api/grimoire/chunks/{seed.c0.id}?campaign={campaign['id']}",
+            headers={"X-Test-Auth-Email": player_email},
         ).json()
         assert chunk["entities"] == []
 
         # The DM still sees it.
         dm = client.get(
-            f"/api/grimoire/chunks/{seed.c0.id}?campaign={campaign['id']}&as=dm"
+            f"/api/grimoire/chunks/{seed.c0.id}?campaign={campaign['id']}"
         ).json()
         assert {e["name"] for e in dm["entities"]} == {"Aboleth"}
 
@@ -451,7 +472,7 @@ class TestMentions:
         seed = seed_book(session)
         campaign = client.post("/api/grimoire/campaigns", json={"name": "C"}).json()
         body = client.get(
-            f"/api/grimoire/campaigns/{campaign['id']}/entities/e-aboleth/mentions?as=dm"
+            f"/api/grimoire/campaigns/{campaign['id']}/entities/e-aboleth/mentions"
         ).json()
         chunk_ids = {m["chunk_id"] for m in body}
         assert chunk_ids == {seed.c0.id, seed.c1.id}
@@ -467,9 +488,18 @@ class TestMentions:
             f"/api/grimoire/campaigns/{campaign['id']}/characters",
             json={"character_name": "Rogue"},
         ).json()
+        player_email = "rogue@example.test"
+        provisioned = client.post(
+            f"/api/grimoire/campaigns/{campaign['id']}/members",
+            json={
+                "email": player_email,
+                "player_character_id": pc["id"],
+            },
+        )
+        assert provisioned.status_code == 200
         r = client.get(
-            f"/api/grimoire/campaigns/{campaign['id']}/entities/e-aboleth/mentions"
-            f"?as={pc['id']}"
+            f"/api/grimoire/campaigns/{campaign['id']}/entities/e-aboleth/mentions",
+            headers={"X-Test-Auth-Email": player_email},
         )
         assert r.status_code == 404
 
@@ -477,6 +507,7 @@ class TestMentions:
 class TestRenameBook:
     def test_rename_and_404(self, session, client):
         seed_book(session)
+        client.post("/api/grimoire/campaigns", json={"name": "C"})
         r = client.patch(
             "/api/grimoire/books/mm", json={"display_name": "The Monster Manual"}
         )

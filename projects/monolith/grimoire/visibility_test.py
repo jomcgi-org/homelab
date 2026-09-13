@@ -3,7 +3,6 @@ the scope-projection function every read path shares."""
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
 
 from grimoire.models import (
     Campaign,
@@ -18,11 +17,10 @@ from grimoire.visibility import project_entity, visible_entities_query
 
 
 @pytest.fixture(name="session")
-def session_fixture():
+def session_fixture(tmp_path):
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{tmp_path / 'grimoire-visibility.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     original_schemas = {}
     for table in SQLModel.metadata.tables.values():
@@ -162,7 +160,7 @@ def test_bob_sees_only_global(session: Session):
     assert visible == {seed.creature.id}
 
 
-def test_dm_sees_everything(session: Session):
+def test_dm_sees_global_and_current_campaign_entities(session: Session):
     seed = seed_campaign(session)
 
     visible = _visible_ids(session, seed.campaign.id, "dm")
@@ -172,8 +170,8 @@ def test_dm_sees_everything(session: Session):
         seed.npc.id,
         seed.location.id,
         seed.spell.id,
-        seed.faction.id,
     }
+    assert seed.faction.id not in visible
 
 
 def test_global_entity_projects_with_detail_for_any_player(session: Session):

@@ -13,11 +13,11 @@ code in later tasks composes this module.
 
 from typing import Any, Literal
 
-from sqlmodel import SQLModel, and_, or_, select
+from sqlmodel import Session, SQLModel, and_, or_, select
 
-from grimoire.models import Entity, KnowledgeGrant
+from grimoire.models import Entity, GameSession, KnowledgeGrant
 
-Viewer = str  # "dm" or a player_character_id
+Viewer = str | None  # "dm", a player_character_id, or None before association
 Context = Literal["lookup", "relationship"]
 
 # Spine identity fields returned even for the most restrictive scope
@@ -45,31 +45,34 @@ def visible_entities_query(campaign_id: str, viewer: Viewer):
     entity is_global or a grant exists. This is the base predicate from ADR
     011: `is_global OR g.id IS NOT NULL`.
 
-    DM view (viewer == "dm"): no predicate, every entity is visible, but
-    grants still need to reach the caller as annotations (e.g. so the DM UI
-    can show "alice has a partial grant on this"). The join here is scoped
-    to the campaign only, not to a single player_character_id, so an entity
-    granted to multiple PCs yields one result row per grant (plus one
-    grant-less row if the entity is_global with no grants, or none if it's
-    non-global with no grants and thus dangling for this campaign). Callers
-    that want a single row per entity should aggregate the grant column
-    themselves (e.g. group by entity id). This keeps the query itself simple
-    and pushes the "one row vs one entity" choice to the read path that
-    actually needs it, rather than baking an aggregation here that most
-    callers (which only care about is-there-a-grant, not which one) would
-    have to undo.
+    DM view (viewer == "dm"): global corpus entities plus private entities
+    associated with this campaign by a grant or by their creating game session.
+    Grants reach the caller as annotations. The campaign-scoped outer join can
+    yield one row per grant; callers that need one row per entity aggregate it.
 
     Returns a select() yielding (Entity, KnowledgeGrant | None) row tuples.
     """
     if viewer == "dm":
         join_condition = KnowledgeGrant.entity_id == Entity.id
         grant_filter = KnowledgeGrant.campaign_id == campaign_id
-        query = select(Entity, KnowledgeGrant).join(
-            KnowledgeGrant,
-            and_(join_condition, grant_filter),
-            isouter=True,
+        campaign_session_ids = select(GameSession.id).where(
+            GameSession.campaign_id == campaign_id
         )
-        return query
+        return (
+            select(Entity, KnowledgeGrant)
+            .join(
+                KnowledgeGrant,
+                and_(join_condition, grant_filter),
+                isouter=True,
+            )
+            .where(
+                or_(
+                    Entity.is_global,
+                    KnowledgeGrant.id.is_not(None),
+                    Entity.created_in_session.in_(campaign_session_ids),
+                )
+            )
+        )
 
     join_condition = and_(
         KnowledgeGrant.entity_id == Entity.id,
@@ -82,6 +85,30 @@ def visible_entities_query(campaign_id: str, viewer: Viewer):
         .where(or_(Entity.is_global, KnowledgeGrant.id.is_not(None)))
     )
     return query
+
+
+def entity_belongs_to_campaign(
+    session: Session, campaign_id: str, entity: Entity
+) -> bool:
+    """Whether a DM may use an entity in a campaign-scoped mutation."""
+    if entity.is_global:
+        return True
+    if entity.created_in_session is not None:
+        game_session = session.exec(
+            select(GameSession.id).where(
+                GameSession.id == entity.created_in_session,
+                GameSession.campaign_id == campaign_id,
+            )
+        ).first()
+        if game_session is not None:
+            return True
+    grant = session.exec(
+        select(KnowledgeGrant.id).where(
+            KnowledgeGrant.entity_id == entity.id,
+            KnowledgeGrant.campaign_id == campaign_id,
+        )
+    ).first()
+    return grant is not None
 
 
 def _flatten_detail(detail: SQLModel | None) -> dict[str, Any]:

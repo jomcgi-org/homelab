@@ -1,24 +1,27 @@
 """Unit tests for the grant-filtered entity read endpoints in
 grimoire/router.py: list, single detail, and relationships.
 
-In-memory SQLite + a minimal FastAPI app mounting only the grimoire router,
+File-backed SQLite + a minimal FastAPI app mounting only the grimoire router,
 mirroring the pattern in router_test.py.
 """
 
 from __future__ import annotations
 
 import pytest
-from fastapi import FastAPI
+from core.db import get_session
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
 
-from core.db import get_session
+from grimoire.access import get_authenticated_email
 from grimoire.models import (
+    AppUser,
     Campaign,
+    CampaignMember,
     Entity,
     EntityCreature,
     EntityNpc,
+    GameSession,
     KnowledgeGrant,
     PlayerCharacter,
     Relationship,
@@ -27,11 +30,10 @@ from grimoire.router import router
 
 
 @pytest.fixture(name="session")
-def session_fixture():
+def session_fixture(tmp_path):
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{tmp_path / 'grimoire-entities.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     # SQLite can't span schemas, so strip the Postgres-only schema= overrides so
     # SQLModel.metadata.create_all() lands every table in the default schema.
@@ -55,6 +57,11 @@ def client_fixture(session):
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_session] = lambda: session
+
+    def authenticated_email(request: Request) -> str:
+        return request.headers.get("X-Test-Auth-Email", "dm@example.test")
+
+    app.dependency_overrides[get_authenticated_email] = authenticated_email
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -82,6 +89,43 @@ def seed_scenario(session: Session) -> Seed:
     seed.alice = alice
     seed.bob = bob
 
+    dm_user = AppUser(email="dm@example.test")
+    alice_user = AppUser(email="alice@example.test")
+    bob_user = AppUser(email="bob@example.test")
+    session.add(dm_user)
+    session.add(alice_user)
+    session.add(bob_user)
+    session.flush()
+    session.add(
+        CampaignMember(
+            campaign_id=campaign.id,
+            app_user_id=dm_user.id,
+            role="dm",
+        )
+    )
+    session.add(
+        CampaignMember(
+            campaign_id=campaign.id,
+            app_user_id=alice_user.id,
+            role="player",
+            player_character_id=alice.id,
+        )
+    )
+    session.add(
+        CampaignMember(
+            campaign_id=campaign.id,
+            app_user_id=bob_user.id,
+            role="player",
+            player_character_id=bob.id,
+        )
+    )
+    game_session = GameSession(campaign_id=campaign.id, status="ended")
+    session.add(game_session)
+    session.commit()
+    session.refresh(game_session)
+    seed.alice_email = alice_user.email
+    seed.bob_email = bob_user.email
+
     creature = Entity(entity_type="creature", name="Umbrasyl", is_global=True)
     session.add(creature)
     session.commit()
@@ -89,7 +133,12 @@ def seed_scenario(session: Session) -> Seed:
     session.add(EntityCreature(entity_id=creature.id, size="Gargantuan", ac=19))
     seed.creature = creature
 
-    npc = Entity(entity_type="npc", name="Strahd", is_global=False)
+    npc = Entity(
+        entity_type="npc",
+        name="Strahd",
+        is_global=False,
+        created_in_session=game_session.id,
+    )
     session.add(npc)
     session.commit()
     session.refresh(npc)
@@ -98,20 +147,33 @@ def seed_scenario(session: Session) -> Seed:
     session.add(EntityNpc(entity_id=npc.id))
     seed.npc = npc
 
-    location = Entity(entity_type="location", name="Castle Ravenloft", is_global=False)
+    location = Entity(
+        entity_type="location",
+        name="Castle Ravenloft",
+        is_global=False,
+        created_in_session=game_session.id,
+    )
     session.add(location)
     session.commit()
     session.refresh(location)
     seed.location = location
 
-    spell = Entity(entity_type="spell", name="Vampiric Touch", is_global=False)
+    spell = Entity(
+        entity_type="spell",
+        name="Vampiric Touch",
+        is_global=False,
+        created_in_session=game_session.id,
+    )
     session.add(spell)
     session.commit()
     session.refresh(spell)
     seed.spell = spell
 
     faction = Entity(
-        entity_type="faction", name="The Keepers of the Feather", is_global=False
+        entity_type="faction",
+        name="The Keepers of the Feather",
+        is_global=False,
+        created_in_session=game_session.id,
     )
     session.add(faction)
     session.commit()
@@ -171,7 +233,8 @@ class TestListEntities:
     ):
         seed = seed_scenario(session)
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/entities?as={seed.alice.id}"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/entities",
+            headers={"X-Test-Auth-Email": seed.alice_email},
         )
         assert r.status_code == 200
         names = {item["name"] for item in r.json()["items"]}
@@ -180,7 +243,8 @@ class TestListEntities:
     def test_bob_sees_global_only(self, session, client):
         seed = seed_scenario(session)
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/entities?as={seed.bob.id}"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/entities",
+            headers={"X-Test-Auth-Email": seed.bob_email},
         )
         assert r.status_code == 200
         names = {item["name"] for item in r.json()["items"]}
@@ -188,7 +252,7 @@ class TestListEntities:
 
     def test_dm_sees_all_with_grant_annotations_aggregated(self, session, client):
         seed = seed_scenario(session)
-        r = client.get(f"/api/grimoire/campaigns/{seed.campaign.id}/entities?as=dm")
+        r = client.get(f"/api/grimoire/campaigns/{seed.campaign.id}/entities")
         assert r.status_code == 200
         body = r.json()
         by_name = {item["name"]: item for item in body["items"]}
@@ -215,7 +279,7 @@ class TestListEntities:
     def test_type_filter(self, session, client):
         seed = seed_scenario(session)
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/entities?as=dm&type=creature"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/entities?type=creature"
         )
         assert r.status_code == 200
         names = {item["name"] for item in r.json()["items"]}
@@ -223,18 +287,16 @@ class TestListEntities:
 
     def test_q_filter(self, session, client):
         seed = seed_scenario(session)
-        r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/entities?as=dm&q=cast"
-        )
+        r = client.get(f"/api/grimoire/campaigns/{seed.campaign.id}/entities?q=cast")
         assert r.status_code == 200
         names = {item["name"] for item in r.json()["items"]}
         assert names == {"Castle Ravenloft"}
 
     def test_pagination_limit_and_cursor(self, session, client):
         seed = seed_scenario(session)
-        base = f"/api/grimoire/campaigns/{seed.campaign.id}/entities?as=dm"
+        base = f"/api/grimoire/campaigns/{seed.campaign.id}/entities"
 
-        first = client.get(f"{base}&limit=2")
+        first = client.get(f"{base}?limit=2")
         assert first.status_code == 200
         first_body = first.json()
         assert first_body["total"] == 5
@@ -246,7 +308,7 @@ class TestListEntities:
         seen = list(first_body["items"])
         cursor = first_body["next_cursor"]
         while cursor is not None:
-            page = client.get(f"{base}&limit=2&cursor={cursor}").json()
+            page = client.get(f"{base}?limit=2&cursor={cursor}").json()
             seen.extend(page["items"])
             cursor = page["next_cursor"]
         names = [item["name"] for item in seen]
@@ -254,10 +316,11 @@ class TestListEntities:
         assert len(names) == 5
         assert len(set(names)) == 5
 
-    def test_unknown_viewer_pc_404(self, session, client):
+    def test_nonmember_404(self, session, client):
         seed = seed_scenario(session)
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/entities?as=does-not-exist"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/entities",
+            headers={"X-Test-Auth-Email": "outsider@example.test"},
         )
         assert r.status_code == 404
 
@@ -266,8 +329,8 @@ class TestGetEntity:
     def test_alice_full_npc_includes_detail(self, session, client):
         seed = seed_scenario(session)
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/entities/{seed.npc.id}"
-            f"?as={seed.alice.id}"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/entities/{seed.npc.id}",
+            headers={"X-Test-Auth-Email": seed.alice_email},
         )
         assert r.status_code == 200
         body = r.json()
@@ -278,8 +341,8 @@ class TestGetEntity:
     def test_alice_partial_location_reveals_details_no_columns(self, session, client):
         seed = seed_scenario(session)
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/entities/{seed.location.id}"
-            f"?as={seed.alice.id}"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/entities/{seed.location.id}",
+            headers={"X-Test-Auth-Email": seed.alice_email},
         )
         assert r.status_code == 200
         body = r.json()
@@ -290,16 +353,16 @@ class TestGetEntity:
     def test_alice_name_only_spell_404s(self, session, client):
         seed = seed_scenario(session)
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/entities/{seed.spell.id}"
-            f"?as={seed.alice.id}"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/entities/{seed.spell.id}",
+            headers={"X-Test-Auth-Email": seed.alice_email},
         )
         assert r.status_code == 404
 
     def test_alice_ungranted_faction_404s(self, session, client):
         seed = seed_scenario(session)
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/entities/{seed.faction.id}"
-            f"?as={seed.alice.id}"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/entities/{seed.faction.id}",
+            headers={"X-Test-Auth-Email": seed.alice_email},
         )
         assert r.status_code == 404
 
@@ -307,10 +370,9 @@ class TestGetEntity:
         seed = seed_scenario(session)
         faction_response = client.get(
             f"/api/grimoire/campaigns/{seed.campaign.id}/entities/{seed.faction.id}"
-            f"?as=dm"
         )
         spell_response = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/entities/{seed.spell.id}?as=dm"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/entities/{seed.spell.id}"
         )
         assert faction_response.status_code == 200
         assert spell_response.status_code == 200
@@ -327,7 +389,6 @@ class TestGetEntity:
         seed = seed_scenario(session)
         r = client.get(
             f"/api/grimoire/campaigns/{seed.campaign.id}/entities/{seed.creature.id}"
-            f"?as=dm"
         )
         assert r.status_code == 200
         body = r.json()
@@ -340,7 +401,8 @@ class TestEntityRelationships:
         seed = seed_scenario(session)
         r = client.get(
             f"/api/grimoire/campaigns/{seed.campaign.id}/entities/{seed.creature.id}"
-            f"/relationships?as={seed.alice.id}"
+            "/relationships",
+            headers={"X-Test-Auth-Email": seed.alice_email},
         )
         assert r.status_code == 200
         body = r.json()
@@ -371,7 +433,8 @@ class TestEntityRelationships:
 
         r = client.get(
             f"/api/grimoire/campaigns/{seed.campaign.id}/entities/{seed.location.id}"
-            f"/relationships?as={seed.alice.id}"
+            "/relationships",
+            headers={"X-Test-Auth-Email": seed.alice_email},
         )
         assert r.status_code == 200
         body = r.json()
@@ -388,11 +451,12 @@ class TestEntityRelationships:
         assert stub_edge["entity"]["recognition_only"] is True
         assert stub_edge["entity"]["name"] == "Vampiric Touch"
 
-    def test_bad_viewer_pc_id_404s(self, session, client):
+    def test_nonmember_404s(self, session, client):
         seed = seed_scenario(session)
         r = client.get(
             f"/api/grimoire/campaigns/{seed.campaign.id}/entities/{seed.creature.id}"
-            f"/relationships?as=does-not-exist"
+            "/relationships",
+            headers={"X-Test-Auth-Email": "outsider@example.test"},
         )
         assert r.status_code == 404
 
@@ -400,7 +464,8 @@ class TestEntityRelationships:
         seed = seed_scenario(session)
         r = client.get(
             f"/api/grimoire/campaigns/{seed.campaign.id}/entities/{seed.faction.id}"
-            f"/relationships?as={seed.alice.id}"
+            "/relationships",
+            headers={"X-Test-Auth-Email": seed.alice_email},
         )
         assert r.status_code == 404
 
@@ -408,7 +473,7 @@ class TestEntityRelationships:
         seed = seed_scenario(session)
         r = client.get(
             f"/api/grimoire/campaigns/{seed.campaign.id}/entities/{seed.location.id}"
-            f"/relationships?as=dm"
+            "/relationships"
         )
         assert r.status_code == 200
         rel_types = {edge["rel_type"] for edge in r.json()}

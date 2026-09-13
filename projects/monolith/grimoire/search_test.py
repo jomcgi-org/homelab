@@ -1,6 +1,6 @@
 """Unit tests for grimoire/search.py's grant-filtered vector search endpoint.
 
-In-memory SQLite + a minimal FastAPI app mounting only the grimoire router,
+File-backed SQLite + a minimal FastAPI app mounting only the grimoire router,
 mirroring the pattern in entities_test.py/router_test.py. knn_embeddings is
 monkeypatched (SQLite has no cosine_distance operator) to return a fixed,
 ordered list of (Embedding, distance) candidates so the visibility, scoring,
@@ -12,31 +12,33 @@ knowledge's own tests use.
 from __future__ import annotations
 
 import pytest
-from fastapi import FastAPI
+from core.db import get_session
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
+from knowledge.api import get_embedding_client
 from sqlmodel import Session, SQLModel, create_engine
-from sqlmodel.pool import StaticPool
 
 import grimoire.search as search_module
-from core.db import get_session
+from grimoire.access import get_authenticated_email
 from grimoire.models import (
+    AppUser,
     Campaign,
+    CampaignMember,
     Embedding,
     Entity,
+    GameSession,
     KnowledgeChunk,
     KnowledgeGrant,
     PlayerCharacter,
 )
 from grimoire.router import router
-from knowledge.api import get_embedding_client
 
 
 @pytest.fixture(name="session")
-def session_fixture():
+def session_fixture(tmp_path):
     engine = create_engine(
-        "sqlite://",
+        f"sqlite:///{tmp_path / 'grimoire-search.db'}",
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
     )
     # SQLite can't span schemas, so strip the Postgres-only schema= overrides so
     # SQLModel.metadata.create_all() lands every table in the default schema.
@@ -66,6 +68,11 @@ def client_fixture(session):
     app.include_router(router)
     app.dependency_overrides[get_session] = lambda: session
     app.dependency_overrides[get_embedding_client] = lambda: FakeEmbedClient()
+
+    def authenticated_email(request: Request) -> str:
+        return request.headers.get("X-Test-Auth-Email", "dm@example.test")
+
+    app.dependency_overrides[get_authenticated_email] = authenticated_email
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -101,26 +108,65 @@ def seed_scenario(session: Session) -> Seed:
     session.refresh(alice)
     seed.alice = alice
 
+    dm_user = AppUser(email="dm@example.test")
+    alice_user = AppUser(email="alice@example.test")
+    session.add(dm_user)
+    session.add(alice_user)
+    session.flush()
+    session.add(
+        CampaignMember(
+            campaign_id=campaign.id,
+            app_user_id=dm_user.id,
+            role="dm",
+        )
+    )
+    session.add(
+        CampaignMember(
+            campaign_id=campaign.id,
+            app_user_id=alice_user.id,
+            role="player",
+            player_character_id=alice.id,
+        )
+    )
+    game_session = GameSession(campaign_id=campaign.id, status="ended")
+    session.add(game_session)
+    session.commit()
+    session.refresh(game_session)
+    seed.alice_email = alice_user.email
+
     creature = Entity(entity_type="creature", name="Umbrasyl", is_global=True)
     session.add(creature)
     session.commit()
     session.refresh(creature)
     seed.creature = creature
 
-    location = Entity(entity_type="location", name="Castle Ravenloft", is_global=False)
+    location = Entity(
+        entity_type="location",
+        name="Castle Ravenloft",
+        is_global=False,
+        created_in_session=game_session.id,
+    )
     session.add(location)
     session.commit()
     session.refresh(location)
     seed.location = location
 
-    spell = Entity(entity_type="spell", name="Vampiric Touch", is_global=False)
+    spell = Entity(
+        entity_type="spell",
+        name="Vampiric Touch",
+        is_global=False,
+        created_in_session=game_session.id,
+    )
     session.add(spell)
     session.commit()
     session.refresh(spell)
     seed.spell = spell
 
     faction = Entity(
-        entity_type="faction", name="The Keepers of the Feather", is_global=False
+        entity_type="faction",
+        name="The Keepers of the Feather",
+        is_global=False,
+        created_in_session=game_session.id,
     )
     session.add(faction)
     session.commit()
@@ -208,8 +254,8 @@ class TestSearchCampaign:
         _patch_knn(monkeypatch, _candidates(seed))
 
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/search"
-            f"?as={seed.alice.id}&q=strahd&k=3"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/search?q=strahd&k=3",
+            headers={"X-Test-Auth-Email": seed.alice_email},
         )
         assert r.status_code == 200
         body = r.json()
@@ -232,8 +278,8 @@ class TestSearchCampaign:
         _patch_knn(monkeypatch, _candidates(seed))
 
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/search"
-            f"?as={seed.alice.id}&q=strahd&k=1"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/search?q=strahd&k=1",
+            headers={"X-Test-Auth-Email": seed.alice_email},
         )
         assert r.status_code == 200
         body = r.json()
@@ -251,8 +297,8 @@ class TestSearchCampaign:
         seed = seed_scenario(session)
         _patch_knn(monkeypatch, [(_embedding("entity", seed.spell.id), 0.1)])
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/search"
-            f"?as={seed.alice.id}&q=touch&k=10"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/search?q=touch&k=10",
+            headers={"X-Test-Auth-Email": seed.alice_email},
         )
         assert r.status_code == 200
         assert r.json() == []
@@ -261,8 +307,8 @@ class TestSearchCampaign:
         seed = seed_scenario(session)
         _patch_knn(monkeypatch, [(_embedding("entity", seed.faction.id), 0.1)])
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/search"
-            f"?as={seed.alice.id}&q=keepers&k=10"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/search?q=keepers&k=10",
+            headers={"X-Test-Auth-Email": seed.alice_email},
         )
         assert r.status_code == 200
         assert r.json() == []
@@ -273,8 +319,8 @@ class TestSearchCampaign:
         seed = seed_scenario(session)
         _patch_knn(monkeypatch, [(_embedding("entity", seed.location.id), 0.1)])
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/search"
-            f"?as={seed.alice.id}&q=castle&k=10"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/search?q=castle&k=10",
+            headers={"X-Test-Auth-Email": seed.alice_email},
         )
         assert r.status_code == 200
         body = r.json()
@@ -287,8 +333,8 @@ class TestSearchCampaign:
         seed = seed_scenario(session)
         _patch_knn(monkeypatch, [(_embedding("entity", seed.creature.id), 0.1)])
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/search"
-            f"?as={seed.alice.id}&q=dragon&k=10"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/search?q=dragon&k=10",
+            headers={"X-Test-Auth-Email": seed.alice_email},
         )
         assert r.status_code == 200
         body = r.json()
@@ -303,7 +349,7 @@ class TestSearchCampaign:
         _patch_knn(monkeypatch, _candidates(seed))
 
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/search?as=dm&q=strahd&k=10"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/search?q=strahd&k=10"
         )
         assert r.status_code == 200
         body = r.json()
@@ -327,14 +373,14 @@ class TestSearchCampaign:
         captured = _patch_knn(monkeypatch, _candidates(seed))
 
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/search"
-            f"?as={seed.alice.id}&q=strahd&k=100"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/search?q=strahd&k=100",
+            headers={"X-Test-Auth-Email": seed.alice_email},
         )
         assert r.status_code == 422
 
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/search"
-            f"?as={seed.alice.id}&q=strahd&k=5"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/search?q=strahd&k=5",
+            headers={"X-Test-Auth-Email": seed.alice_email},
         )
         assert r.status_code == 200
         assert captured["limit"] == 20
@@ -345,21 +391,23 @@ class TestSearchCampaign:
         _patch_knn(monkeypatch, _candidates(seed))
 
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/search?as={seed.alice.id}"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/search",
+            headers={"X-Test-Auth-Email": seed.alice_email},
         )
         assert r.status_code == 422
 
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/search?as={seed.alice.id}&q="
+            f"/api/grimoire/campaigns/{seed.campaign.id}/search?q=",
+            headers={"X-Test-Auth-Email": seed.alice_email},
         )
         assert r.status_code == 422
 
-    def test_unknown_viewer_404s(self, session, client, monkeypatch):
+    def test_nonmember_404s(self, session, client, monkeypatch):
         seed = seed_scenario(session)
         _patch_knn(monkeypatch, _candidates(seed))
 
         r = client.get(
-            f"/api/grimoire/campaigns/{seed.campaign.id}/search"
-            f"?as=does-not-exist&q=strahd"
+            f"/api/grimoire/campaigns/{seed.campaign.id}/search?q=strahd",
+            headers={"X-Test-Auth-Email": "outsider@example.test"},
         )
         assert r.status_code == 404

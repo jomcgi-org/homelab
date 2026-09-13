@@ -1133,6 +1133,7 @@ py_library(
     imports = ["."],
     visibility = ["//:__subpackages__"],
     deps = [
+        ":pkg_auth",
         ":pkg_core",
         ":pkg_framework",
         ":pkg_knowledge",
@@ -5777,6 +5778,24 @@ py_test(
     deps = [
         ":pkg_core",
         ":pkg_grimoire",
+        "@pip//fastapi",
+        "@pip//httpx",
+        "@pip//pytest",
+        "@pip//sqlmodel",
+    ],
+)
+
+# Hand-registered because grimoire is gazelle-excluded: authenticated campaign
+# ACL enforcement across the private HTTP surface.
+py_test(
+    name = "grimoire_acl_test",
+    srcs = ["grimoire/acl_test.py"],
+    imports = ["."],
+    deps = [
+        ":pkg_auth",
+        ":pkg_core",
+        ":pkg_grimoire",
+        ":pkg_knowledge",
         "@pip//fastapi",
         "@pip//httpx",
         "@pip//pytest",
