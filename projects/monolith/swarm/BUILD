@@ -121,6 +121,7 @@ py_library(
         "//projects/monolith/framework:pkg_framework",
         "//projects/monolith/knowledge:pkg_knowledge",
         "//projects/monolith/swarm:swarm_factory_controls",
+        "//projects/monolith/swarm:swarm_rationale",
         "@pip//certifi",
         "@pip//dbos",
         "@pip//fastapi",

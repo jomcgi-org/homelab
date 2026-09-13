@@ -97,6 +97,13 @@ def test_package_classification_is_colocated_and_private_by_default() -> None:
     assert "glob(" not in backend
     assert backend.count('"//projects/monolith/') >= 30
 
+    # pkg_swarm splits this cycle-breaking module into a helper target. Keep
+    # that helper in the full backend closure when package ownership moves.
+    assert '"//projects/monolith/swarm:swarm_rationale"' in _rule(
+        _build("swarm"),
+        "pkg_swarm",
+    )
+
 
 def test_public_membership_uses_only_explicit_markers() -> None:
     for package in PUBLIC_PACKAGE_DIRS:
