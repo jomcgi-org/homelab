@@ -402,17 +402,15 @@ async def test_start_bot_when_ready_calls_wait_for_sidecar_before_bot_start():
     mock_chat_module = MagicMock()
     mock_chat_module.create_bot.return_value = mock_bot
 
-    # Capture the first coroutine passed to create_task (bot=1)
+    # Factory maintenance starts before chat. Select the bot coroutine by
+    # identity so this test never executes an unrelated background worker.
     captured_bot_coro: list = []
-    task_counter = [0]
 
     def capture_create_task(coro, **kwargs):
-        task_counter[0] += 1
-        if task_counter[0] == 1:
-            # Task 1 is the bot coroutine — capture it for sequencing test
+        if coro.cr_code.co_name == "_start_bot_when_ready":
             captured_bot_coro.append(coro)
         else:
-            # Drain scheduler (2) and sweep (3) coroutines
+            # Close other background coroutines without executing them.
             if hasattr(coro, "close"):
                 coro.close()
         return MagicMock()
