@@ -246,9 +246,9 @@ def test_eslint_preserves_versioned_dependency_graph_and_lints() -> None:
         _extract_layers(_layers(platform), root)
 
         eslint = (root / "usr/local/lib/node_modules/eslint").resolve(strict=True)
-        eslint_utils = (
-            eslint / "node_modules/@eslint-community/eslint-utils"
-        ).resolve(strict=True)
+        eslint_utils = (eslint / "node_modules/@eslint-community/eslint-utils").resolve(
+            strict=True
+        )
         espree = (eslint / "node_modules/espree").resolve(strict=True)
         resolved_versions = {
             _assert_caret_dependency_resolves(consumer, "eslint-visitor-keys")
@@ -258,14 +258,12 @@ def test_eslint_preserves_versioned_dependency_graph_and_lints() -> None:
             "expected two eslint-visitor-keys versions in the pnpm graph, got "
             f"{resolved_versions}"
         )
-        assert (
-            _resolved_dependency_version(eslint, "eslint-visitor-keys")
-            == _resolved_dependency_version(espree, "eslint-visitor-keys")
-        )
-        assert (
-            _resolved_dependency_version(eslint_utils, "eslint-visitor-keys")
-            != _resolved_dependency_version(eslint, "eslint-visitor-keys")
-        )
+        assert _resolved_dependency_version(
+            eslint, "eslint-visitor-keys"
+        ) == _resolved_dependency_version(espree, "eslint-visitor-keys")
+        assert _resolved_dependency_version(
+            eslint_utils, "eslint-visitor-keys"
+        ) != _resolved_dependency_version(eslint, "eslint-visitor-keys")
 
         (root / "home").mkdir()
         lint_target = root / "relocated-lint-target.js"
