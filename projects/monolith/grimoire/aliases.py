@@ -777,6 +777,9 @@ def _prepare_merge(
     candidate = session.get(AliasCandidate, candidate_id)
     if candidate is None:
         raise AliasNotFound("alias candidate not found")
+    candidate = _lock_candidate(session, candidate_id)
+    if candidate is None:
+        raise AliasNotFound("alias candidate not found")
     if candidate.status == "merged":
         return _MergePlan(candidate_id, candidate.state_hash, False, "", replay=True)
     if candidate.status != "approved" or not candidate.approved_state_hash:
