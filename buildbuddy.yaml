@@ -297,7 +297,7 @@ actions:
           bazel test \
             //bazel/tools/image:tools_image_linux_arm64_test \
             --config=ci \
-            --platforms=//bazel/tools/platforms:linux_aarch64 \
+            --platforms=//bazel/ocaml/platforms:linux_aarch64 \
             --cache_test_results=no \
             --test_output=all
 
