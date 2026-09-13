@@ -94,20 +94,15 @@ find_changed_chart() {
 }
 
 CHANGED_FILES="$(mktemp "${TMPDIR:-/tmp}/helm-lint-changed.XXXXXX")"
-SORTED_FILES="$(mktemp "${TMPDIR:-/tmp}/helm-lint-sorted.XXXXXX")"
-cleanup() {
-	rm -f "$CHANGED_FILES" "$SORTED_FILES"
-}
-trap cleanup EXIT
+trap 'rm -f "$CHANGED_FILES"' EXIT
 {
-	git diff --name-only --diff-filter=ACMRD "$MERGE_BASE" --
-	git ls-files --others --exclude-standard
+	git diff --no-renames --name-only -z --diff-filter=ACMRD "$MERGE_BASE" --
+	git ls-files --others --exclude-standard -z
 } >"$CHANGED_FILES"
-sed '/^$/d' "$CHANGED_FILES" | sort -u >"$SORTED_FILES"
 
-while IFS= read -r changed_file; do
+while IFS= read -r -d '' changed_file; do
 	[[ -n "$changed_file" ]] && find_changed_chart "$changed_file"
-done <"$SORTED_FILES"
+done <"$CHANGED_FILES"
 
 if [[ ${#CHARTS[@]} -eq 0 ]]; then
 	printf 'No changed Helm charts relative to %s\n' "$BASE_REF"
