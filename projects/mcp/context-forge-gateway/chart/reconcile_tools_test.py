@@ -53,6 +53,9 @@ class FakeApi:
         self.writes: list[tuple[str, str, dict]] = []
         # Simulate an upstream that fails to retain some ids on write.
         self.drop_on_write: set[str] = set()
+        # The real gateway pages every list at 50 unless asked for limit=0.
+        self.page_size = 50
+        self.queries: list[tuple[str, str]] = []
 
     def _server_read(self):
         by_id = {
@@ -68,13 +71,23 @@ class FakeApi:
             "associatedToolIds": list(self.server_tool_ids),
         }
 
+    def _page(self, rows, query):
+        if query == "limit=0" or not isinstance(rows, list):
+            return rows
+        return rows[: self.page_size]
+
     def __call__(self, method, path, body=None):
+        path, _, query = path.partition("?")
+        if method == "GET":
+            self.queries.append((path, query))
         if method == "GET" and path == "/gateways":
-            return 200, self.gateways
+            return 200, self._page(self.gateways, query)
         if method == "GET" and path == "/tools":
-            return 200, self.tools
+            return 200, self._page(self.tools, query)
         if method == "GET" and path == "/servers":
-            return 200, ([self._server_read()] if self.has_server else [])
+            return 200, self._page(
+                [self._server_read()] if self.has_server else [], query
+            )
         if method == "GET" and path == "/servers/s1":
             return 200, self._server_read()
         if method == "PUT" and path.startswith("/tools/"):
@@ -253,7 +266,7 @@ def test_a_paginated_envelope_is_read_like_a_bare_list():
     original = api.__call__
 
     def call(method, path, body=None):
-        if method == "GET" and path == "/tools":
+        if method == "GET" and path.startswith("/tools?"):
             return 200, envelope
         return original(method, path, body)
 
@@ -267,7 +280,7 @@ def test_an_unreadable_payload_is_an_error():
     original = api.__call__
 
     def call(method, path, body=None):
-        if method == "GET" and path == "/tools":
+        if method == "GET" and path.startswith("/tools?"):
             return 200, "nonsense"
         return original(method, path, body)
 
@@ -290,3 +303,37 @@ def test_an_http_error_is_surfaced():
         reconcile_tools.reconcile(
             call, gateway_name="monolith", server_name="homelab-admin"
         )
+
+
+# --- pagination -----------------------------------------------------------
+
+
+def test_every_list_is_read_unpaged():
+    """The gateway pages at 50 by default. The first live run read 50 of 60
+    tools and reconciled the truncated catalogue; the rest stayed hidden."""
+    tools = [_tool(f"t{i}", f"tool_{i}", visibility="public") for i in range(60)]
+    tools[59] = _tool("t59", "session_start")
+    api = FakeApi(tools=tools, server_tool_ids=[f"t{i}" for i in range(59)])
+    result = _run(api)
+    assert result["tools"] == 60
+    assert result["published"] == ["session_start"]
+    assert result["associated"] == ["t59"]
+    assert api.server_tool_ids == [f"t{i}" for i in range(60)]
+    lists = {p: q for p, q in api.queries if p in ("/gateways", "/tools", "/servers")}
+    assert lists == {"/gateways": "limit=0", "/tools": "limit=0", "/servers": "limit=0"}
+
+
+def test_a_paginated_tool_response_is_refused():
+    api = FakeApi(tools=[_tool("t1", "x")])
+    original = api.__call__
+
+    def call(method, path, body=None):
+        if method == "GET" and path.startswith("/tools?"):
+            return 200, {"data": api.tools, "nextCursor": "abc"}
+        return original(method, path, body)
+
+    with pytest.raises(ReconcileError, match="paginated"):
+        reconcile_tools.reconcile(
+            call, gateway_name="monolith", server_name="homelab-admin"
+        )
+    assert not api.writes
