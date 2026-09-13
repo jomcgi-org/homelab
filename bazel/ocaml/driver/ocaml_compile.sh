@@ -425,7 +425,7 @@ ORDER="$(
 		}' | tsort
 )"
 ORDER="$(printf '%s\n' "$ORDER" | tr '\n' ' ')"
-echo "ocaml_compile: compile order: $ORDER" >&2
+echo "ocaml_compile: compile order recovered for $NAME" >&2
 
 # --- Wrapping (dune scheme) --------------------------------------------------
 # Members become <lib>__<Module> behind a generated alias module; everything
@@ -532,7 +532,10 @@ done
 # --- Produce the output -----------------------------------------------------
 if [ "$MODE" = "library" ]; then
 	# ocamlopt -o NAME.cmxa also writes NAME.a alongside it.
-	"$OCAMLOPT" -a -o "$CMXA_OUT" $CMX_LIST
+	if ! "$OCAMLOPT" -a -o "$CMXA_OUT" $CMX_LIST; then
+		echo "ocaml_compile: failed to archive $NAME" >&2
+		exit 2
+	fi
 	[ "$A_OUT" = "${CMXA_OUT%.cmxa}.a" ] || cp "${CMXA_OUT%.cmxa}.a" "$A_OUT"
 	# Fold C stub objects into the library archive (the .a ocamlopt auto-finds
 	# next to the .cmxa), so binaries linking this library resolve the externals.
