@@ -431,6 +431,116 @@ def test_stale_unbound_permit_settles_only_after_grace(
         assert permit["state"] == "uncertain"
 
 
+@pytest.mark.parametrize(
+    ("age_seconds", "binding_evidence", "status", "expected_reason"),
+    [
+        (7200, False, "failed", "stale_unbound_permit"),
+        (300, False, "failed", "stale_unbound_grace"),
+        (7200, True, "failed", "prior_binding_evidence"),
+        (7200, False, "running", "ineligible_probe"),
+    ],
+)
+def test_probe_stale_unbound_settlement_requires_all_shape_gates(
+    database,
+    age_seconds,
+    binding_evidence,
+    status,
+    expected_reason,
+):
+    pid = seed(
+        database,
+        f"stale-probe-{age_seconds}-{binding_evidence}-{status}",
+        guest_bound=False,
+        created_at=datetime.now(timezone.utc) - timedelta(seconds=age_seconds),
+    )
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        permit.outcome = "unclassified_failure"
+        agent = db.get(AgentSession, permit.session_id)
+        agent.status = status
+        if binding_evidence:
+            agent.prior_ember_lineage_id = "prior-binding"
+        db.add_all([permit, agent])
+
+    sweep(None)
+
+    permit = before(database, pid)[0]
+    with Session(database) as db:
+        audit = db.get(ProbeObservation, pid)
+        assert audit.reason == expected_reason
+        if expected_reason == "stale_unbound_permit":
+            assert audit.settled_at is not None
+            assert permit["state"] == "settled"
+            assert permit["outcome"] == "stale_unbound_permit"
+        else:
+            assert audit.settled_at is None
+            assert permit["state"] == "uncertain"
+
+
+def test_probe_stale_unbound_flag_is_revalidated_before_settlement(
+    database, monkeypatch
+):
+    pid = seed(
+        database,
+        "stale-probe-flag-race",
+        guest_bound=False,
+        created_at=datetime.now(timezone.utc) - timedelta(hours=2),
+    )
+    with Session(database) as db, db.begin():
+        db.get(AgentCapacityReservation, pid).outcome = "unclassified_failure"
+
+    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "false")
+    assert pid not in supervision._candidates()
+    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "true")
+    candidate = supervision._prepare(pid)
+    assert candidate is not None
+
+    monkeypatch.setenv("AGENT_PROBE_SUPERVISION_ENABLED", "false")
+    supervision._record_stale_unbound(candidate)
+
+    assert before(database, pid)[0]["state"] == "uncertain"
+    with Session(database) as db:
+        assert db.get(ProbeObservation, pid).reason == "unrecognised_outcome"
+
+
+@pytest.mark.parametrize(
+    ("age_seconds", "guest_bound", "expected_reason"),
+    [
+        (7200, False, "stale_unbound_permit"),
+        (300, False, "stale_unbound_grace"),
+        (7200, True, "observation_unavailable"),
+    ],
+)
+def test_lease_expired_settles_only_via_stale_unbound_shape(
+    database, age_seconds, guest_bound, expected_reason
+):
+    pid = seed(
+        database,
+        f"lease-expired-{age_seconds}-{guest_bound}",
+        guest_bound=guest_bound,
+        created_at=datetime.now(timezone.utc) - timedelta(seconds=age_seconds),
+    )
+    with Session(database) as db, db.begin():
+        permit = db.get(AgentCapacityReservation, pid)
+        permit.outcome = "lease_expired"
+        with pytest.raises(ValueError, match="unrecognised_outcome"):
+            supervision._no_guest_delivery(permit, {})
+
+    sweep(None)
+
+    permit = before(database, pid)[0]
+    with Session(database) as db:
+        audit = db.get(ProbeObservation, pid)
+        assert audit.reason == expected_reason
+        if expected_reason == "stale_unbound_permit":
+            assert audit.settled_at is not None
+            assert permit["state"] == "settled"
+            assert permit["outcome"] == "stale_unbound_permit"
+        else:
+            assert audit.settled_at is None
+            assert permit["state"] == "uncertain"
+
+
 def test_binding_evidence_prevents_stale_unbound_settlement(database, monkeypatch):
     monkeypatch.setenv("AGENT_UNCERTAIN_PERMIT_SUPERVISION_ENABLED", "true")
     pid = seed(
