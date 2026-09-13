@@ -500,7 +500,9 @@ def test_probe_stale_unbound_flag_is_revalidated_before_settlement(
 
     assert before(database, pid)[0]["state"] == "uncertain"
     with Session(database) as db:
-        assert db.get(ProbeObservation, pid).reason == "unrecognised_outcome"
+        assert (
+            db.get(ProbeObservation, pid).reason == "no_guest_supervision_disabled"
+        )
 
 
 @pytest.mark.parametrize(
