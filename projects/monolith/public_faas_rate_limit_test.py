@@ -137,7 +137,13 @@ def _functions_rules(docs: list[dict]) -> list[dict]:
 def _translation_resources(public_docs: list[dict]) -> list[dict]:
     gateway_docs = _render_gateway(gke=True)
     resources: list[dict] = []
-    gateway_kinds = {"ClientTrafficPolicy", "EnvoyProxy", "Gateway", "GatewayClass"}
+    gateway_kinds = {
+        "ClientTrafficPolicy",
+        "EnvoyPatchPolicy",
+        "EnvoyProxy",
+        "Gateway",
+        "GatewayClass",
+    }
     for document in gateway_docs:
         if document.get("kind") in gateway_kinds:
             resources.append(copy.deepcopy(document))
@@ -439,6 +445,47 @@ def test_active_gke_render_scopes_identity_and_preserves_other_budgets():
 def test_gateway_render_enforces_the_cloudflared_origin_boundary():
     for gke in (False, True):
         documents = _render_gateway(gke=gke)
+        gateway_config = yaml.safe_load(
+            _named(documents, "ConfigMap", "envoy-gateway-config")["data"][
+                "envoy-gateway.yaml"
+            ]
+        )
+        assert gateway_config["extensionApis"]["enableEnvoyPatchPolicy"] is True
+
+        descriptor_patch = _named(
+            documents,
+            "EnvoyPatchPolicy",
+            "cloudflare-ingress-functions-rate-limit-capacity",
+        )
+        assert descriptor_patch["metadata"]["namespace"] == "envoy-gateway-system"
+        assert descriptor_patch["spec"] == {
+            "targetRef": {
+                "group": "gateway.networking.k8s.io",
+                "kind": "Gateway",
+                "name": "cloudflare-ingress",
+            },
+            "type": "JSONPatch",
+            "jsonPatches": [
+                {
+                    "type": "type.googleapis.com/envoy.config.route.v3.RouteConfiguration",
+                    "name": "envoy-gateway-system/cloudflare-ingress/http",
+                    "operation": {
+                        "op": "add",
+                        "jsonPath": (
+                            '..routes[?(@.name=~"^httproute/monolith-public/'
+                            'monolith-public-functions/")]'
+                        ),
+                        "path": (
+                            "typed_per_filter_config/"
+                            "envoy.filters.http.local_ratelimit/"
+                            "max_dynamic_descriptors"
+                        ),
+                        "value": 10000,
+                    },
+                }
+            ],
+        }
+
         service = _named(documents, "Service", "cloudflare-ingress")
         assert service["spec"]["type"] == "ClusterIP"
         proxy = _named(documents, "EnvoyProxy", "cloudflare-ingress-proxy")
@@ -481,8 +528,12 @@ def test_gateway_render_enforces_the_cloudflared_origin_boundary():
 def test_envoy_processes_independent_fallback_and_worker_budgets():
     with _running_envoy(_render_public()) as port:
         abusive = "203.0.113.10"
-        unrelated = "198.51.100.20"
+        unrelated = "192.0.2.200"
         assert [_request(port, abusive) for _ in range(120)] == [200] * 120
+        assert _request(port, abusive) == 429
+
+        for address in range(1, 26):
+            assert _request(port, f"198.51.100.{address}") == 200
         assert _request(port, abusive) == 429
 
         assert [_request(port, unrelated) for _ in range(120)] == [200] * 120
