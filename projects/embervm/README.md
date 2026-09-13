@@ -22,6 +22,7 @@ Five workload classes ride one substrate:
 
 | Read | For |
 | ---- | --- |
+| [QUICKSTART.md](QUICKSTART.md) | Bootstrap one Linux host, run a hello-world task, and exercise session bank/relight continuity |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The design, standalone: current state and decided future, the capability matrix, invariants, threat model, and platform contract |
 | [STPA.md](STPA.md) | The safety model: unsafe control actions and feedback that drive the system into a loss, with severity |
 | [deploy/README.md](deploy/README.md) | The reference deployment: fleet shape, node enrollment, warmth GC operations |
