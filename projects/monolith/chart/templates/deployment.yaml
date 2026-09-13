@@ -691,6 +691,9 @@ spec:
             {{- toYaml .Values.backend.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: backend-tmp
+              mountPath: /tmp
         # ADR agents/051: the progress-ingest listener is its own image and
         # port so the EmberVM egress allowlist entry (host:port granular)
         # exposes exactly one write-only route, never the main API on 8000.
@@ -729,6 +732,9 @@ spec:
               memory: "256Mi"
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: progress-ingest-tmp
+              mountPath: /tmp
         - name: frontend
           image: "{{ .Values.frontend.image.repository }}@{{ .Values.frontend.image.digest }}"
           imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
@@ -776,3 +782,16 @@ spec:
             {{- toYaml .Values.frontend.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: frontend-tmp
+              mountPath: /tmp
+      # Keep temporary writes isolated between the three containers. The
+      # serving images have no persistent filesystem state; Python tempfile
+      # users and any language cache fallback can use only these mounts.
+      volumes:
+        - name: backend-tmp
+          emptyDir: {}
+        - name: progress-ingest-tmp
+          emptyDir: {}
+        - name: frontend-tmp
+          emptyDir: {}
