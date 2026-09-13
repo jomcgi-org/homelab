@@ -83,7 +83,17 @@ TAR="$(abspath "$SYSROOT_TAR")"
 BOOTSTRAP_TOOL="$(abspath "$BOOTSTRAP_TOOL")"
 S="$("$BOOTSTRAP_TOOL" mktemp -d)"
 TMP_WORK=""
-trap 'rm -rf "$S" $TMP_WORK' EXIT
+STAGE="sysroot setup"
+cleanup() {
+	rc=$?
+	trap - EXIT
+	if [ "$rc" -ne 0 ]; then
+		echo "ocaml_compile: $NAME failed during $STAGE (exit $rc)" >&2
+	fi
+	rm -rf "$S" $TMP_WORK
+	exit "$rc"
+}
+trap cleanup EXIT
 "$BOOTSTRAP_TOOL" tar -xf "$TAR" -C "$S"
 "$BOOTSTRAP_TOOL" mkdir -p "$S/native/zig"
 "$BOOTSTRAP_TOOL" tar -xJf "$S/native/zig.tar.xz" -C "$S/native/zig" --strip-components=1
@@ -309,25 +319,6 @@ if [ -n "$PP_TOOL" ]; then
 		mv "$f.pp" "$f"
 	done
 fi
-if [ -n "$PPX" ]; then
-	# Rewriting in place keeps file/unit names stable so wrapping and ocamldep
-	# are untouched downstream. --dump-ast emits the marshalled AST (the same
-	# thing dune passes between ppx and the compiler; ocamldep/ocamlopt sniff
-	# the magic): a text print + reparse roundtrip is NOT semantics-preserving
-	# -- ppxlib's printer drops `let x : t = e` constraints (pvb_constraint),
-	# which cost ppx_sexp_conv's expander its field disambiguation.
-	for f in "$WORK"/*.ml; do
-		[ -e "$f" ] || continue
-		"$PPX" --impl "$f" --dump-ast -o "$f.pp"
-		mv "$f.pp" "$f"
-	done
-	for f in "$WORK"/*.mli; do
-		[ -e "$f" ] || continue
-		"$PPX" --intf "$f" --dump-ast -o "$f.pp"
-		mv "$f.pp" "$f"
-	done
-fi
-
 # --- menhir grammars (with OCaml type inference) -----------------------------
 # menhir's --infer protocol needs the OCaml types of the semantic actions. We
 # (1) compile the library's other modules into a scratch dir (best effort;
@@ -376,6 +367,28 @@ if [ -n "$MENHIR_MODULES" ]; then
 	rm -rf "$SCRATCH"
 fi
 
+# Dune preprocesses generated modules as library modules too, so run the ppx
+# only after ocamllex, ocamlyacc, cppo, and Menhir have produced their sources.
+# Rewriting in place keeps file/unit names stable so wrapping and ocamldep are
+# untouched downstream. --dump-ast emits the marshalled AST (the same thing
+# dune passes between ppx and the compiler; ocamldep/ocamlopt sniff the magic):
+# a text print + reparse roundtrip is not semantics-preserving because ppxlib's
+# printer drops `let x : t = e` constraints (pvb_constraint), which cost
+# ppx_sexp_conv's expander its field disambiguation.
+if [ -n "$PPX" ]; then
+	STAGE="ppx preprocessing"
+	for f in "$WORK"/*.ml; do
+		[ -e "$f" ] || continue
+		"$PPX" --impl "$f" --dump-ast -o "$f.pp"
+		mv "$f.pp" "$f"
+	done
+	for f in "$WORK"/*.mli; do
+		[ -e "$f" ] || continue
+		"$PPX" --intf "$f" --dump-ast -o "$f.pp"
+		mv "$f.pp" "$f"
+	done
+fi
+
 # --- Recover compile order over the sources ---------------------------------
 # Sort .ml AND .mli together: an interface may depend on a module whose
 # implementation sorts late (re's category.mli references Fmt), so interface
@@ -390,6 +403,7 @@ fi
 # the staged files (both `foo.ml` and `Foo.ml` spellings exist in the wild),
 # skip self-references, order x.mli before x.ml, and tsort. Real cycles
 # still fail loudly (tsort reports them and exits non-zero).
+STAGE="dependency ordering"
 ALLB="$(cd "$WORK" && ls -- *.ml *.mli 2>/dev/null || true)"
 DEPOUT="$(cd "$WORK" && "$OCAMLDEP" -modules $ALLB)"
 ORDER="$(
@@ -493,6 +507,7 @@ fi
 # --- Compile each file in sorted order ---------------------------------------
 # -no-alias-deps is harmless when unwrapped (OPENFLAG empty, no alias module).
 for f in $ORDER; do
+	STAGE="compiling $f"
 	if ! "$OCAMLOPT" $CFLAGS $INCFLAGS $OPENFLAG -no-alias-deps -c "$WORK/$f"; then
 		echo "ocaml_compile: failed to compile $f in $NAME" >&2
 		exit 2
@@ -532,6 +547,7 @@ done
 # --- Produce the output -----------------------------------------------------
 if [ "$MODE" = "library" ]; then
 	# ocamlopt -o NAME.cmxa also writes NAME.a alongside it.
+	STAGE="archiving"
 	if ! "$OCAMLOPT" -a -o "$CMXA_OUT" $CMX_LIST; then
 		echo "ocaml_compile: failed to archive $NAME" >&2
 		exit 2
@@ -553,5 +569,6 @@ else
 	# stub objects that reference their symbols (static link resolves L-to-R).
 	LINKFLAGS=""
 	[ "$LINKALL" = "1" ] && LINKFLAGS="-linkall"
+	STAGE="linking"
 	"$OCAMLOPT" $CFLAGS $LINKFLAGS $INCFLAGS $PKG_LINK $CMXAS $CMX_LIST $STUB_OBJS $CC_ARCH_ABS $CC_CCLIB -o "$EXE_OUT"
 fi
