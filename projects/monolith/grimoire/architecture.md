@@ -25,6 +25,8 @@ prototype's Firestore and polymorphic JSON model:
   type-specific queryable fields.
 - `knowledge_chunk`, `chunk_entity_mention`, `chunk_extraction`, `relationship`,
   and `embedding` provide corpus, graph, extraction, and retrieval state.
+- `alias_candidate` records review evidence, state hashes, explicit approvals,
+  and completed alias-merge provenance.
 - `book` and `adventure` organize source material.
 - `campaign`, `player_character`, `game_session`, and `knowledge_grant` hold
   mutable play state and per-player knowledge visibility.
@@ -53,6 +55,38 @@ Batch commands in `app/jobs_main.py` invoke the domain jobs:
 
 The jobs are discrete read, compute, and write stages with recorded provenance.
 Bad inputs fail or dead-letter without partially publishing a book.
+
+## Alias review and merge
+
+The private API exposes the report-first alias pass from ADR services/014:
+
+1. `POST /api/grimoire/alias-candidates/scan` refreshes candidates from
+   same-type, same-book short/full-name pairs with co-mention evidence.
+2. `GET /api/grimoire/alias-candidates?status=pending` returns the durable review
+   queue, including bounded source snippets and the exact state hash.
+3. After inspecting that evidence, a verified standing human in the `operators`
+   group may call `POST /api/grimoire/alias-candidates/{id}/approve` with
+   `survivor_entity_id` and the report's `expected_state_hash`. Reviewer
+   attribution comes from the verified principal, never request data.
+4. `POST /api/grimoire/alias-candidates/{id}/execute` revalidates the approval,
+   rewrites the graph in one transaction, and refreshes the survivor embedding
+   when its persisted mention-summary input changes.
+
+The same authorized human may persist a version-bound rejection through
+`POST /api/grimoire/alias-candidates/{id}/reject`. Scans refresh its evidence but
+never silently reopen it or make it executable. Returning a rejected or stale
+candidate to review requires a deliberate, version-bound
+`POST /api/grimoire/alias-candidates/{id}/reopen` call. All alias report,
+decision, scan, and execution routes require the same standing-human operator
+authorization.
+
+Scanning never approves or merges a pair. Approval records the reviewer, time,
+survivor, and reviewed state hash. Any later entity, detail, mention, type, book,
+site, temporality, or evidence change makes that approval stale and requires
+another review.
+Execution is replay-safe: a completed candidate returns its existing merged
+status, while embedding or database failures leave an approved pair retryable.
+The endpoints are registered only on the private Grimoire router.
 
 ## Loom compatibility
 
