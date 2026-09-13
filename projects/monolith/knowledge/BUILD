@@ -32,19 +32,21 @@ exports_files(
 )
 
 # Recursive sources and reviewed runtime dependencies are package-owned.
+_RUNTIME_SOURCES = glob(
+    [
+        "**/*.py",
+    ],
+    exclude = [
+        "**/*_test.py",
+        "**/test_*.py",
+        "tests/**/*.py",
+    ],
+)
+
 # keep
 py_library(
     name = "knowledge",
-    srcs = glob(
-        [
-            "**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
+    srcs = _RUNTIME_SOURCES,
     # entities.yaml is 2.5 KB and deliberately ships as runfiles data, unlike
     # the multi-megabyte ndjson manifest isolated in its own image layer below.
     data = ["entities.yaml"],
@@ -1049,14 +1051,7 @@ py_library(
 
 filegroup(
     name = "production_sources",
-    srcs = glob(
-        ["**/*.py"],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "tests/**/*.py",
-        ],
-    ),
+    srcs = _RUNTIME_SOURCES,
     visibility = ["//projects/monolith:__pkg__"],
 )
 

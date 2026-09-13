@@ -124,6 +124,44 @@ def test_concatenated_package_glob_is_rejected():
     )
 
 
+def test_concatenated_list_variables_check_each_pattern():
+    _assert_rejected(
+        LEGACY
+        + 'COMMON = ["**/*.py"]\n'
+        + 'PACKAGES = ["chat/**/*.py"]\n'
+        + 'filegroup(srcs = glob(COMMON + PACKAGES))\n',
+        "package glob",
+        "chat/**/*.py",
+    )
+
+
+@pytest.mark.parametrize(
+    "setup",
+    [
+        "",
+        'PATTERNS = ["**/*.py"] + package_patterns()\n',
+    ],
+)
+def test_partially_dynamic_list_addition_is_rejected(setup):
+    expression = "PATTERNS" if setup else '["**/*.py"] + package_patterns()'
+    additions = ratchet.new_findings(
+        LEGACY,
+        LEGACY + setup + f"filegroup(srcs = glob({expression}))\n",
+    )
+
+    assert [(finding.kind, finding.value) for finding in additions] == [
+        ("dynamic glob", "['**/*.py'] + package_patterns()")
+    ]
+
+
+def test_positional_exclude_package_glob_is_rejected():
+    _assert_rejected(
+        LEGACY + 'filegroup(srcs = glob(["**/*.py"], ["chat/**/*.py"]))\n',
+        "package glob",
+        "chat/**/*.py",
+    )
+
+
 @pytest.mark.parametrize(
     ("expression", "rendered"),
     [

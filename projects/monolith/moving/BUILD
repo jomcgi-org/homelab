@@ -20,19 +20,21 @@ exports_files(
 )
 
 # Recursive sources and reviewed runtime dependencies are package-owned.
+_RUNTIME_SOURCES = glob(
+    [
+        "**/*.py",
+    ],
+    exclude = [
+        "**/*_test.py",
+        "**/test_*.py",
+        "tests/**/*.py",
+    ],
+)
+
 # keep
 py_library(
     name = "moving",
-    srcs = glob(
-        [
-            "**/*.py",
-        ],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "*/tests/**/*.py",
-        ],
-    ),
+    srcs = _RUNTIME_SOURCES,
     imports = [".."],
     tags = ["monolith-backend"],
     visibility = ["//projects/monolith:private_backend_consumers"],
@@ -152,14 +154,7 @@ py_test(
 
 filegroup(
     name = "production_sources",
-    srcs = glob(
-        ["**/*.py"],
-        exclude = [
-            "**/*_test.py",
-            "**/test_*.py",
-            "tests/**/*.py",
-        ],
-    ),
+    srcs = _RUNTIME_SOURCES,
     visibility = ["//projects/monolith:__pkg__"],
 )
 

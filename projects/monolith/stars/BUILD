@@ -245,6 +245,19 @@ filegroup(
 )
 
 filegroup(
+    name = "architecture_sources",
+    srcs = glob(
+        ["**/*.py"],
+        exclude = [
+            "**/*_test.py",
+            "**/test_*.py",
+            "tests/**/*.py",
+        ],
+    ),
+    visibility = ["//projects/monolith:__pkg__"],
+)
+
+filegroup(
     name = "non_test_python_sources",
     srcs = glob(
         ["**/*.py"],

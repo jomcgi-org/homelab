@@ -68,6 +68,19 @@ class _StringValue:
     line: int
 
 
+@dataclass(frozen=True)
+class _UnresolvedValue:
+    value: str
+    line: int
+
+
+@dataclass(frozen=True)
+class _ExpressionValue:
+    kind: str | None
+    strings: tuple[_StringValue, ...] = ()
+    unresolved: tuple[_UnresolvedValue, ...] = ()
+
+
 def _call_name(node: ast.expr) -> str:
     if isinstance(node, ast.Name):
         return node.id
@@ -84,31 +97,69 @@ def _assignment_name(node: ast.expr) -> str:
     return "<assignment>"
 
 
-def _string_values(
+def _expression_value(
     node: ast.AST,
-    variables: dict[str, tuple[_StringValue, ...]],
-) -> tuple[_StringValue, ...]:
+    variables: dict[str, _ExpressionValue],
+) -> _ExpressionValue:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return (_StringValue(node.value, node.lineno),)
+        return _ExpressionValue(
+            kind="string",
+            strings=(_StringValue(node.value, node.lineno),),
+        )
     if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-        return tuple(
-            value for item in node.elts for value in _string_values(item, variables)
+        strings: list[_StringValue] = []
+        unresolved: list[_UnresolvedValue] = []
+        for item in node.elts:
+            item_value = _expression_value(item, variables)
+            if item_value.kind == "string":
+                strings.extend(item_value.strings)
+                unresolved.extend(item_value.unresolved)
+            else:
+                unresolved.extend(
+                    item_value.unresolved
+                    or (_UnresolvedValue(ast.unparse(item), item.lineno),)
+                )
+        return _ExpressionValue(
+            kind="sequence",
+            strings=tuple(strings),
+            unresolved=tuple(unresolved),
         )
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left = _string_values(node.left, variables)
-        right = _string_values(node.right, variables)
-        if isinstance(node.left, (ast.List, ast.Tuple, ast.Set)) or isinstance(
-            node.right, (ast.List, ast.Tuple, ast.Set)
-        ):
-            return left + right
-        return tuple(
-            _StringValue(left_value.value + right_value.value, node.lineno)
-            for left_value in left
-            for right_value in right
+        left = _expression_value(node.left, variables)
+        right = _expression_value(node.right, variables)
+        if left.kind == right.kind == "sequence":
+            return _ExpressionValue(
+                kind="sequence",
+                strings=left.strings + right.strings,
+                unresolved=left.unresolved + right.unresolved,
+            )
+        if left.kind == right.kind == "string":
+            return _ExpressionValue(
+                kind="string",
+                strings=tuple(
+                    _StringValue(left_value.value + right_value.value, node.lineno)
+                    for left_value in left.strings
+                    for right_value in right.strings
+                ),
+                unresolved=left.unresolved + right.unresolved,
+            )
+        return _ExpressionValue(
+            kind=None,
+            strings=left.strings + right.strings,
+            unresolved=(_UnresolvedValue(ast.unparse(node), node.lineno),),
         )
     if isinstance(node, ast.Name):
-        return variables.get(node.id, ())
-    return ()
+        return variables.get(
+            node.id,
+            _ExpressionValue(
+                kind=None,
+                unresolved=(_UnresolvedValue(node.id, node.lineno),),
+            ),
+        )
+    return _ExpressionValue(
+        kind=None,
+        unresolved=(_UnresolvedValue(ast.unparse(node), node.lineno),),
+    )
 
 
 def _is_package_pattern(pattern: str) -> bool:
@@ -121,45 +172,26 @@ def _is_package_pattern(pattern: str) -> bool:
     return first_component not in {"", ".", "..", "*", "**"}
 
 
-def _unresolved_string_expressions(
-    node: ast.AST,
-    variables: dict[str, tuple[_StringValue, ...]],
-) -> tuple[ast.AST, ...]:
-    """Return glob expressions that cannot be reduced to literal strings."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return ()
-    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-        return tuple(
-            unresolved
-            for item in node.elts
-            for unresolved in _unresolved_string_expressions(item, variables)
-        )
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        if _string_values(node, variables):
-            return ()
-        return (node,)
-    if isinstance(node, ast.Name) and node.id in variables:
-        return ()
-    return (node,)
-
-
 def _glob_findings(
     node: ast.AST,
     context: str,
-    variables: dict[str, tuple[_StringValue, ...]],
+    variables: dict[str, _ExpressionValue],
 ) -> list[Finding]:
     findings: list[Finding] = []
     if isinstance(node, ast.Call) and _call_name(node.func) == "glob":
         inputs: list[tuple[str, ast.AST]] = []
         if node.args:
             inputs.append(("include", node.args[0]))
+        if len(node.args) > 1:
+            inputs.append(("exclude", node.args[1]))
         inputs.extend(
             (keyword.arg, keyword.value)
             for keyword in node.keywords
             if keyword.arg in {"include", "exclude"}
         )
         for role, value_node in inputs:
-            for string in _string_values(value_node, variables):
+            expression = _expression_value(value_node, variables)
+            for string in expression.strings:
                 if _is_package_pattern(string.value):
                     findings.append(
                         Finding(
@@ -169,13 +201,13 @@ def _glob_findings(
                             line=string.line,
                         )
                     )
-            for unresolved in _unresolved_string_expressions(value_node, variables):
+            for unresolved in expression.unresolved:
                 findings.append(
                     Finding(
                         kind="dynamic glob",
                         context=f"{context} ({role})",
-                        value=ast.unparse(unresolved),
-                        line=unresolved.lineno,
+                        value=unresolved.value,
+                        line=unresolved.line,
                     )
                 )
         return findings
@@ -205,20 +237,19 @@ def scan_central_build(content: str) -> list[Finding]:
     except SyntaxError as error:
         raise RatchetError(f"cannot parse {CENTRAL_BUILD}: {error}") from error
 
-    variables: dict[str, tuple[_StringValue, ...]] = {}
+    variables: dict[str, _ExpressionValue] = {}
     for statement in tree.body:
         if isinstance(statement, ast.Assign):
-            values = _string_values(statement.value, variables)
-            if values:
-                for target in statement.targets:
-                    if isinstance(target, ast.Name):
-                        variables[target.id] = values
+            value = _expression_value(statement.value, variables)
+            for target in statement.targets:
+                if isinstance(target, ast.Name):
+                    variables[target.id] = value
         elif isinstance(statement, ast.AnnAssign) and isinstance(
             statement.target, ast.Name
         ):
-            values = _string_values(statement.value, variables)
-            if values:
-                variables[statement.target.id] = values
+            variables[statement.target.id] = _expression_value(
+                statement.value, variables
+            )
 
     for statement in tree.body:
         if isinstance(statement, ast.Assign):
