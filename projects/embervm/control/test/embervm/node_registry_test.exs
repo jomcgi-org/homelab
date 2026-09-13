@@ -1013,6 +1013,8 @@ defmodule Embervm.NodeRegistryTest do
     on_exit(fn -> Embervm.TestProcess.stop_safely(dialed) end)
     {:ok, chan} = Agent.start_link(fn -> [] end)
     on_exit(fn -> Embervm.TestProcess.stop_safely(chan) end)
+    {:ok, session_sweeps} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(session_sweeps) end)
 
     connect_fun = fn address ->
       Agent.update(dialed, &[address | &1])
@@ -1023,12 +1025,16 @@ defmodule Embervm.NodeRegistryTest do
       start_registry(
         register_seams(
           connect_fun: connect_fun,
-          channel_updater_fun: fn id, addr -> Agent.update(chan, &[{id, addr} | &1]) end
+          channel_updater_fun: fn id, addr -> Agent.update(chan, &[{id, addr} | &1]) end,
+          session_sweep_fun: fn node_id, pod_uid ->
+            Agent.update(session_sweeps, &[{node_id, pod_uid} | &1])
+          end
         )
       )
 
     :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "old-ip:9090"})
     eventually(fn -> "old-ip:9090" in Agent.get(dialed, & &1) end, 200)
+    before = :sys.get_state(reg).node_runtime["node-4/uid-1"]
 
     # Same instance (node+pod_uid), NEW address.
     :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "new-ip:9090"})
@@ -1038,6 +1044,17 @@ defmodule Embervm.NodeRegistryTest do
     # after a re-registration resolves the new address rather than the dead old endpoint.
     eventually(fn -> {"node-4/uid-1", "new-ip:9090"} in Agent.get(chan, & &1) end, 200)
     assert NodeRegistry.status(reg)["node-4/uid-1"].address == "new-ip:9090"
+
+    after_repoint = :sys.get_state(reg).node_runtime["node-4/uid-1"]
+    assert after_repoint.instance_id == before.instance_id
+    assert after_repoint.configured_id == before.configured_id
+    assert after_repoint.pod_uid == before.pod_uid
+    assert after_repoint.boot_id == before.boot_id
+
+    # Re-pointing the same instance never tells session lifecycle that the brick
+    # departed. Real expiry/unregister tests below retain that callback coverage.
+    Process.sleep(50)
+    assert Agent.get(session_sweeps, & &1) == []
   end
 
   test "dial-home registration keys NodeChannel ONLY by instance_id (node-name alias removed, PR-B0c)" do

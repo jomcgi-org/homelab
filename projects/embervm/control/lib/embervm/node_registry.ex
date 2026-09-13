@@ -1683,7 +1683,7 @@ defmodule Embervm.NodeRegistry do
         )
 
         state
-        |> expire_instance(instance_id)
+        |> expire_instance(instance_id, sweep_sessions: false)
         |> add_instance(norm, now)
 
       %{boot_id: boot_id} when boot_id != norm.boot_id ->
@@ -1836,7 +1836,7 @@ defmodule Embervm.NodeRegistry do
   # correct and, crucially, cannot affect a co-located sibling: siblings on the same
   # node now hold independent instance_id keys, so there is no shared node-name alias
   # left for one instance's expiry to clobber (the misroute PR-B0c eliminated).
-  defp expire_instance(state, instance_id) do
+  defp expire_instance(state, instance_id, opts \\ []) do
     Logger.info("embervm node registry: instance #{instance_id} expired; tearing down")
 
     rt = state.node_runtime[instance_id]
@@ -1896,12 +1896,15 @@ defmodule Embervm.NodeRegistry do
 
       state = put_in(state.instance_tombstones[instance_id], tombstone)
 
-      # The first sweep runs when an instance merely ages to :down, while it is
-      # still registered. Run the same idempotent callback again after the
-      # registry has removed it and installed its tombstone. Dormant banked and
-      # parked sessions may only terminalize on this authoritative departure
-      # signal; transient sessions were already settled by the first sweep.
-      start_session_sweep(state.session_sweep_fun, rt.configured_id, rt.pod_uid)
+      # An address-only re-registration removes and immediately re-adds the same
+      # instance identity, so it must not publish a false departure between those
+      # operations. Real expiry, unregister, and boot replacement still sweep
+      # after the tombstone is installed, which is the authoritative signal that
+      # dormant sessions may use for terminalization.
+      if Keyword.get(opts, :sweep_sessions, true) do
+        start_session_sweep(state.session_sweep_fun, rt.configured_id, rt.pod_uid)
+      end
+
       state
     else
       state

@@ -535,9 +535,12 @@ against them.
    follows its `node_id`, and an expired owner moves either row to `evicted`.
    A stale conflicting secondary ID cannot override that state-specific owner.
    The row remains non-terminal only when a healthy peer positively reports the
-   exact workspace volume or snapshot it needs, which is evidence that the
-   established relight path can still use it. Archival and node cleanup remain
-   best effort and never hold an irrecoverable row in `parked` or `banked`.
+   exact workspace volume or snapshot it needs, or when a banked row has an exact
+   snapshot reference plus an eligible peer that can restore it from reachable
+   object storage. Those are the recovery targets the established wake paths can
+   actually use. Archival and node cleanup remain best effort, and a transient
+   terminal-op append failure is retried without restamping a successful terminal
+   row, so neither can hold irrecoverable warmth indefinitely.
 
    **Why.** A replaced brick can never send the confirmation the gate waits
    for, so before #6004 the session sat in `destroying` forever and held every
