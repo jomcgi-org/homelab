@@ -152,9 +152,7 @@ def test_cold_edge_survives_startup_budget_and_warmed_edge_survives_ads_loss(
         if item["name"] == "envoy"
     )
     startup_probe = container["startupProbe"]
-    startup_budget = (
-        startup_probe["periodSeconds"] * startup_probe["failureThreshold"]
-    )
+    startup_budget = startup_probe["periodSeconds"] * startup_probe["failureThreshold"]
     assert startup_budget == 60
 
     xds_cluster = next(
@@ -162,17 +160,15 @@ def test_cold_edge_survives_startup_budget_and_warmed_edge_survives_ads_loss(
         for cluster in bootstrap["static_resources"]["clusters"]
         if cluster["name"] == "xds_cluster"
     )
-    socket_address = xds_cluster["load_assignment"]["endpoints"][0]["lb_endpoints"][
-        0
-    ]["endpoint"]["address"]["socket_address"]
+    socket_address = xds_cluster["load_assignment"]["endpoints"][0]["lb_endpoints"][0][
+        "endpoint"
+    ]["address"]["socket_address"]
     socket_address["address"] = "127.0.0.1"
 
     bootstrap_path = tmp_path / "envoy-bootstrap.yaml"
     bootstrap_path.write_text(yaml.safe_dump(bootstrap), encoding="utf-8")
     health_bootstrap_path = tmp_path / "envoy-health-proxy.yaml"
-    health_bootstrap_path.write_text(
-        yaml.safe_dump(health_bootstrap), encoding="utf-8"
-    )
+    health_bootstrap_path.write_text(yaml.safe_dump(health_bootstrap), encoding="utf-8")
     xds_log = tmp_path / "xds.log"
     envoy_log = tmp_path / "envoy.log"
     health_log = tmp_path / "health-proxy.log"
@@ -257,8 +253,7 @@ def test_cold_edge_survives_startup_budget_and_warmed_edge_survives_ads_loss(
             assert envoy_process.pid == cold_pid
             assert health_process.pid == health_pid
             assert (
-                _status(f"http://127.0.0.1:{snapshot_port}/snapshot/{_NODE_ID}")
-                == 404
+                _status(f"http://127.0.0.1:{snapshot_port}/snapshot/{_NODE_ID}") == 404
             )
 
             snapshot = {

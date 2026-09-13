@@ -7,11 +7,9 @@ exports_files(
 )
 """
 
-
 def _blob_path(layout, digest):
     algorithm, value = digest.split(":", 1)
     return str(layout) + "/blobs/" + algorithm + "/" + value
-
 
 def _oci_envoy_impl(rctx):
     layout = rctx.path(rctx.attr.image).dirname
@@ -49,7 +47,6 @@ def _oci_envoy_impl(rctx):
         fail("usr/local/bin/envoy was not found in the OCI image")
 
     rctx.file("BUILD.bazel", _BUILD_FILE)
-
 
 oci_envoy = repository_rule(
     implementation = _oci_envoy_impl,
