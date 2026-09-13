@@ -2,8 +2,8 @@
    Identical to the pinned source except the kind_testable value (an
    Alcotest.testable for the tests' use) is stripped, together with its
    mli declaration: no source in the tree references it (grep at the pin),
-   and keeping it would force alcotest into the lock just to link a value
-   nothing uses. The same dispatch as aliengrep's dune dropping alcotest. *)
+   so the production SCA library does not carry an unused helper. Alcotest is
+   still locked for the Menhir parser registry modules that reference it. *)
 
 (* Ben Kettle
  *

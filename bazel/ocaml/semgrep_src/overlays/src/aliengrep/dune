@@ -4,7 +4,8 @@
 ; (ocamldep -modules over src/aliengrep; see semgrep_src/README.md):
 ;   * alcotest dropped: no aliengrep source references Alcotest (its tests
 ;     subdir has its own dune and stays out of the glob); the git_wrapper
-;     pattern. Locking alcotest just to link it stays out of scope.
+;     pattern. Alcotest remains in the engine closure through commons for the
+;     C++ and OCaml Menhir parser registry modules that do reference it.
 
 ; New generic mode for Semgrep. Alternative to spacegrep.
 (library

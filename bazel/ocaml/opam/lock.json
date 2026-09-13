@@ -554,7 +554,36 @@
       "type": "tar.bz2",
       "libs": {
         "fmt": "fmt",
+        "fmt.cli": "fmt_cli",
         "fmt.tty": "fmt_tty"
+      },
+      "override": true
+    },
+    {
+      "name": "uutf",
+      "version": "1.0.4",
+      "repo": "ocaml_uutf",
+      "url": "https://erratique.ch/software/uutf/releases/uutf-1.0.4.tbz",
+      "sha256": "a7a578e6af9149a8894e18e3b4759c8565937a69c6c9ace7a30bbf0484619ca8",
+      "strip_prefix": "uutf-1.0.4",
+      "type": "tar.bz2",
+      "libs": {
+        "uutf": "uutf"
+      },
+      "override": true
+    },
+    {
+      "name": "alcotest",
+      "version": "1.9.1",
+      "repo": "ocaml_alcotest",
+      "url": "https://github.com/mirage/alcotest/releases/download/1.9.1/alcotest-1.9.1.tbz",
+      "sha256": "1e29c3b41d4329062105b723dfda3aff86b8cef5e7c7500d0e491fc5fd78e482",
+      "strip_prefix": "alcotest-1.9.1",
+      "type": "tar.bz2",
+      "libs": {
+        "alcotest": "alcotest",
+        "alcotest.engine": "alcotest_engine",
+        "alcotest.stdlib_ext": "alcotest_stdlib_ext"
       },
       "override": true
     },

@@ -175,6 +175,7 @@ ocaml_opam_ext = use_extension("//bazel/ocaml/opam:extension.bzl", "ocaml_opam")
 use_repo(
     ocaml_opam_ext,
     "ocaml_ANSITerminal",
+    "ocaml_alcotest",
     "ocaml_ambient_context",
     "ocaml_angstrom",
     "ocaml_astring",
@@ -284,6 +285,7 @@ use_repo(
     "ocaml_tree_sitter_typescript",
     "ocaml_tsort",
     "ocaml_uri",
+    "ocaml_uutf",
     "ocaml_uuidm",
     "ocaml_visitors",
     "ocaml_yaml",

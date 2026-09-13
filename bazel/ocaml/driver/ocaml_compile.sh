@@ -114,13 +114,6 @@ cleanup() {
 		echo "ocaml_compile: $NAME failed during $STAGE (exit $rc)" >&2
 	fi
 	rm -rf "$S" $TMP_WORK
-	# Temporary CI diagnostic: successful remote actions expose their buffered
-	# output, while this executor currently drops output from this failed action.
-	if [ "$rc" -ne 0 ] && [ "$NAME" = "parser_ocaml_menhir" ]; then
-		: >"$CMXA_OUT"
-		: >"$A_OUT"
-		exit 0
-	fi
 	exit "$rc"
 }
 trap cleanup EXIT
