@@ -3190,6 +3190,205 @@ defmodule Embervm.SessionManagerTest do
     assert {:ok, %{state: :banked}} = SessionStore.get(ctx.store, banked.session_id)
   end
 
+  test "a rescanned exact snapshot without session metadata survives departure and relights locally" do
+    parent = self()
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-rescanned"),
+        channel_fun: fn dial_id -> {:ok, {:channel, dial_id}} end,
+        relight_fun: fn channel, request ->
+          send(parent, {:rescanned_relight, channel, request.snapshot_ref})
+          {:ok, %RelightResponse{vm_id: "vm-rescanned-relit"}}
+        end,
+        evict_fun: fn _channel, request ->
+          send(parent, {:unexpected_snapshot_evict, request.snapshot_ref})
+          {:ok, %{}}
+        end,
+        evict_artifact_fun: fn _channel, request ->
+          send(parent, {:unexpected_artifact_evict, request.artifact.ref})
+          {:ok, %{}}
+        end,
+        brick_status_fun: fn _dial ->
+          %{health: :down, draining: false, registered: false, tombstoned: true, pod_uid: "pod-dead"}
+        end
+      )
+
+    put_session_workload(ctx, "wl-rescanned")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-rescanned", "p1")
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    banked = wait_for_state(ctx, created.session_id, :banked)
+
+    :ets.delete_all_objects(ctx.cap_table)
+
+    NodeCapacity.put(ctx.cap_table, {"node-4", "pod-live"}, %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      instance_id: "node-4/pod-live",
+      pod_uid: "pod-live",
+      workloads: %{},
+      session_vms: [],
+      session_snapshots: [%{snapshot_ref: banked.snapshot_ref}],
+      session_volumes: [],
+      live_vms: 0,
+      max_live_vms: 8,
+      store_reachable: false,
+      updated_at: 5_000_001
+    })
+
+    :sys.replace_state(ctx.mgr, fn state ->
+      %{state | session_dials: Map.delete(state.session_dials, banked.session_id)}
+    end)
+
+    assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-dead"}) == 0
+    assert {:ok, %{state: :banked}} = SessionStore.get(ctx.store, banked.session_id)
+    assert :sys.get_state(ctx.mgr).departure_retries == %{}
+    refute_receive {:unexpected_snapshot_evict, _}, 50
+    refute_receive {:unexpected_artifact_evict, _}, 50
+
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    refute Enum.any?(ops, &(&1.kind == :session_evicted and &1.session_id == banked.session_id))
+
+    assert {:ok, %{body: "after-rescan"}} =
+             SessionManager.invoke(ctx.mgr, banked.session_id, %{body: "after-rescan"})
+
+    assert_receive {:rescanned_relight, {:channel, "node-4/pod-live"}, snapshot_ref}, 1_000
+    assert snapshot_ref == banked.snapshot_ref
+    assert {:ok, %{state: :running, vm_id: "vm-rescanned-relit"}} =
+             SessionStore.get(ctx.store, banked.session_id)
+  end
+
+  test "a stale same-session snapshot cannot preserve a departed banked row after restart" do
+    {:ok, store_clock} = Agent.start_link(fn -> 100 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(store_clock) end)
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-stale-snapshot"),
+        store_clock: fn -> Agent.get(store_clock, & &1) end,
+        brick_status_fun: fn _dial ->
+          %{health: :down, draining: false, registered: false, tombstoned: true, pod_uid: "pod-dead"}
+        end
+      )
+
+    put_session_workload(ctx, "wl-stale-snapshot")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-stale-snapshot", "p1")
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    banked = wait_for_state(ctx, created.session_id, :banked)
+
+    :ets.delete_all_objects(ctx.cap_table)
+
+    NodeCapacity.put(ctx.cap_table, {"node-4", "pod-live"}, %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      instance_id: "node-4/pod-live",
+      pod_uid: "pod-live",
+      workloads: %{
+        banked.workload => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "base", free_primed_slots: 0}
+      },
+      session_vms: [],
+      session_snapshots: [
+        %{session_id: banked.session_id, snapshot_ref: "stale-#{banked.snapshot_ref}", workload: banked.workload}
+      ],
+      session_volumes: [],
+      live_vms: 0,
+      max_live_vms: 8,
+      mem_headroom_mib: 2_048,
+      mem_budget_mib: 4_096,
+      store_reachable: false,
+      updated_at: 5_000_001
+    })
+
+    :sys.replace_state(ctx.mgr, fn state ->
+      %{state | session_dials: Map.delete(state.session_dials, banked.session_id)}
+    end)
+
+    Agent.update(store_clock, fn _ -> 200 end)
+
+    assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-dead"}) == 1
+    assert {:ok, %{state: :evicted, updated_at: 200, terminal_reason: "node_gone"}} =
+             SessionStore.get(ctx.store, banked.session_id)
+    assert :sys.get_state(ctx.mgr).departure_retries == %{}
+
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    assert Enum.count(ops, &(&1.kind == :session_evicted and &1.session_id == banked.session_id)) == 1
+  end
+
+  test "an unknown departure retries a stale same-session snapshot without another notification" do
+    {:ok, store_clock} = Agent.start_link(fn -> 100 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(store_clock) end)
+    {:ok, status_lookups} = Agent.start_link(fn -> 0 end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(status_lookups) end)
+
+    ctx =
+      start_stack(
+        prime_fun: fake_prime_fun("vm-stale-retry"),
+        store_clock: fn -> Agent.get(store_clock, & &1) end,
+        departure_retry_interval_ms: 100,
+        brick_status_fun: fn _dial ->
+          case Agent.get_and_update(status_lookups, fn count -> {count, count + 1} end) do
+            0 -> raise "registry lookup unavailable"
+            _ -> %{health: :down, draining: false, registered: false, tombstoned: true, pod_uid: "pod-dead"}
+          end
+        end
+      )
+
+    put_session_workload(ctx, "wl-stale-retry")
+    {:ok, created} = SessionManager.create(ctx.mgr, "wl-stale-retry", "p1")
+    assert :ok = SessionManager.bank(ctx.mgr, created.session_id)
+    banked = wait_for_state(ctx, created.session_id, :banked)
+
+    :ets.delete_all_objects(ctx.cap_table)
+
+    NodeCapacity.put(ctx.cap_table, {"node-4", "pod-live"}, %{
+      node_id: "node-4",
+      configured_id: "node-4",
+      instance_id: "node-4/pod-live",
+      pod_uid: "pod-live",
+      workloads: %{
+        banked.workload => %{base_state: :BASE_BUILD_STATE_READY, snapshot_ref: "base", free_primed_slots: 0}
+      },
+      session_vms: [],
+      session_snapshots: [
+        %{session_id: banked.session_id, snapshot_ref: "stale-#{banked.snapshot_ref}", workload: banked.workload}
+      ],
+      session_volumes: [],
+      live_vms: 0,
+      max_live_vms: 8,
+      mem_headroom_mib: 2_048,
+      mem_budget_mib: 4_096,
+      store_reachable: false,
+      updated_at: 5_000_001
+    })
+
+    :sys.replace_state(ctx.mgr, fn state ->
+      %{state | session_dials: Map.delete(state.session_dials, banked.session_id)}
+    end)
+
+    # This is the only departure notification. The manager restart lost its dial
+    # cache, and the first registry lookup is inconclusive, so it must retain its
+    # own retry instead of trusting the stale same-session inventory entry.
+    assert SessionManager.node_down(ctx.mgr, "node-4", %{pod_uid: "pod-dead"}) == 0
+    assert {:ok, %{state: :banked}} = SessionStore.get(ctx.store, banked.session_id)
+    assert Map.has_key?(:sys.get_state(ctx.mgr).departure_retries, banked.session_id)
+
+    Agent.update(store_clock, fn _ -> 200 end)
+
+    assert eventually(fn ->
+             match?(
+               {:ok, %{state: :evicted, updated_at: 200, terminal_reason: "node_gone"}},
+               SessionStore.get(ctx.store, banked.session_id)
+             )
+           end)
+
+    assert :sys.get_state(ctx.mgr).departure_retries == %{}
+    assert Agent.get(status_lookups, & &1) >= 2
+
+    {:ok, ops} = SQLite.read_from(ctx.op_log, 0)
+    assert Enum.count(ops, &(&1.kind == :session_evicted and &1.session_id == banked.session_id)) == 1
+    assert {:ok, %{state: :evicted, updated_at: 200}} = SessionStore.get(ctx.store, banked.session_id)
+  end
+
   test "a departed banked session skips an unreachable preferred peer and restores on the next eligible peer" do
     parent = self()
 

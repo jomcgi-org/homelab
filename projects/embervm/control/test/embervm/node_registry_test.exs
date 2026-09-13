@@ -847,6 +847,65 @@ defmodule Embervm.NodeRegistryTest do
     assert [%{boot_id: "boot-new"}] = NodeRegistry.capacity(table)
   end
 
+  test "a daemon boot replacement at a new address settles the old instance sessions" do
+    {:ok, session_sweeps} = Agent.start_link(fn -> [] end)
+    on_exit(fn -> Embervm.TestProcess.stop_safely(session_sweeps) end)
+
+    {:ok, live_session} =
+      Agent.start_link(fn ->
+        %{
+          state: :running,
+          node_id: "node-4",
+          pod_uid: "uid-1",
+          boot_id: "boot-old",
+          vm_id: "vm-old-boot"
+        }
+      end)
+
+    on_exit(fn -> Embervm.TestProcess.stop_safely(live_session) end)
+
+    {reg, _table} =
+      start_registry(
+        register_seams(
+          session_sweep_fun: fn node_id, pod_uid ->
+            Agent.update(session_sweeps, &[{node_id, pod_uid} | &1])
+            Agent.update(live_session, &%{&1 | state: :failed})
+          end
+        )
+      )
+
+    old_registration = %{
+      "node" => "node-4",
+      "pod_uid" => "uid-1",
+      "address" => "old-ip:9090",
+      "boot_id" => "boot-old"
+    }
+
+    assert :ok = NodeRegistry.register(reg, old_registration)
+    await_initial_status(reg, "node-4/uid-1")
+
+    assert :ok =
+             NodeRegistry.register(reg, %{
+               old_registration
+               | "address" => "new-ip:9090",
+                 "boot_id" => "boot-new"
+             })
+
+    eventually(fn ->
+      NodeRegistry.status(reg)["node-4/uid-1"].address == "new-ip:9090" and
+        Agent.get(session_sweeps, & &1) == [{"node-4", "uid-1"}] and
+        Agent.get(live_session, & &1).state == :failed
+    end, 200)
+
+    assert Agent.get(live_session, & &1) == %{
+             state: :failed,
+             node_id: "node-4",
+             pod_uid: "uid-1",
+             boot_id: "boot-old",
+             vm_id: "vm-old-boot"
+           }
+  end
+
   test "a new instance does not supersede a healthy sibling (two instances on ONE node coexist)" do
     {reg, table} = start_registry(register_seams([]))
 
@@ -1045,12 +1104,26 @@ defmodule Embervm.NodeRegistryTest do
         )
       )
 
-    :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "old-ip:9090"})
+    :ok =
+      NodeRegistry.register(reg, %{
+        "node" => "node-4",
+        "pod_uid" => "uid-1",
+        "address" => "old-ip:9090",
+        "boot_id" => "boot-stable"
+      })
+
     eventually(fn -> "old-ip:9090" in Agent.get(dialed, & &1) end, 200)
     before = :sys.get_state(reg).node_runtime["node-4/uid-1"]
 
     # Same instance (node+pod_uid), NEW address.
-    :ok = NodeRegistry.register(reg, %{"node" => "node-4", "pod_uid" => "uid-1", "address" => "new-ip:9090"})
+    :ok =
+      NodeRegistry.register(reg, %{
+        "node" => "node-4",
+        "pod_uid" => "uid-1",
+        "address" => "new-ip:9090",
+        "boot_id" => "boot-stable"
+      })
+
     eventually(fn -> "new-ip:9090" in Agent.get(dialed, & &1) end, 200)
     # NodeChannel is re-pointed under the instance_id key (post-B0c the only key it is
     # registered under, and what every consumer resolves before dialing), so a lookup
