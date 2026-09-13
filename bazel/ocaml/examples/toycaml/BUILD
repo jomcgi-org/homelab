@@ -1,4 +1,5 @@
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel/ocaml:defs.bzl", "ocaml_binary", "ocaml_library", "ocaml_ppx", "ocaml_test")
 
 _OPTIMIZED = ["-O3"]
