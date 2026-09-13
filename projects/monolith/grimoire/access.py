@@ -1,23 +1,87 @@
-"""Trusted identity input for Grimoire's private campaign API."""
+"""Verified identity dependencies for Grimoire's private campaign API."""
 
-from fastapi import HTTPException, Request
+from auth.api import (
+    Authority,
+    Principal,
+    PrincipalKind,
+    get_default_resolver,
+    get_principal,
+)
+from auth.dependencies import resolve_authorization
+from auth.errors import AuthError, AuthErrorReason
+from fastapi import Depends, HTTPException, Request
 
 
-def get_authenticated_email(request: Request) -> str:
-    """Return the verified email projected by the private Envoy gateway.
+async def get_authenticated_identity(
+    request: Request,
+    principal: Principal = Depends(get_principal),
+) -> Principal:
+    """Return a verified human identity whose proxy projection is consistent.
 
-    The gateway strips inbound ``X-Auth-Email`` before validating the OIDC or
-    bearer JWT and appending its signed email claim. Rejecting absent,
-    duplicated, and empty values keeps this dependency fail-closed. Campaign
-    authorization remains separate and always reads current database state.
+    Gateway browser requests carry a signed Cloudflare Access assertion and an
+    ``X-Auth-Email`` projection. Direct callers carry a standing bearer token.
+    The shared principal resolver verifies either credential. A projection is
+    never authority by itself, and when present it must match the signed email.
     """
-    values = request.headers.getlist("x-auth-email")
-    if len(values) != 1:
+    if principal.authority is Authority.ANONYMOUS:
+        access_assertions = request.headers.getlist("cf-access-jwt-assertion")
+        if len(access_assertions) > 1:
+            raise AuthError(AuthErrorReason.MALFORMED)
+        if access_assertions:
+            resolver = getattr(request.app.state, "auth_resolver", None)
+            if resolver is None:
+                resolver = get_default_resolver()
+            principal = await resolve_authorization(
+                f"Bearer {access_assertions[0]}",
+                resolver,
+            )
+
+    if (
+        principal.authority is not Authority.STANDING
+        or principal.kind is not PrincipalKind.HUMAN
+        or principal.email is None
+    ):
         raise HTTPException(
             status_code=403,
-            detail="missing or ambiguous X-Auth-Email header",
+            detail="verified human identity required",
         )
-    email = values[0].strip().lower()
-    if not email:
-        raise HTTPException(status_code=403, detail="missing authenticated email")
+
+    email = principal.email.strip().lower()
+    if not email or len(email) > 320:
+        raise HTTPException(status_code=403, detail="verified email required")
+
+    projected = request.headers.getlist("x-auth-email")
+    if len(projected) > 1:
+        raise HTTPException(
+            status_code=403,
+            detail="ambiguous X-Auth-Email header",
+        )
+    if projected and projected[0].strip().lower() != email:
+        raise HTTPException(status_code=403, detail="identity projection mismatch")
+
+    return principal
+
+
+async def get_authenticated_email(
+    principal: Principal = Depends(get_authenticated_identity),
+) -> str:
+    """Return the normalized email of a verified human principal."""
+    email = principal.email
+    if email is None:  # Kept explicit for type narrowing after the dependency.
+        raise HTTPException(status_code=403, detail="verified email required")
+    return email.strip().lower()
+
+
+async def get_grimoire_operator_email(
+    principal: Principal = Depends(get_authenticated_identity),
+) -> str:
+    """Require the existing standing operators-group authorization rule."""
+    if principal.authority is not Authority.STANDING or not principal.has_group(
+        "operators"
+    ):
+        raise HTTPException(status_code=403, detail="operator role required")
+    email = principal.email
+    if email is None:
+        raise HTTPException(status_code=403, detail="verified email required")
+    email = email.strip().lower()
     return email

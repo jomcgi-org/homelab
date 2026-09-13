@@ -675,6 +675,15 @@ spec:
               value: {{ .Values.auth.authentik.issuer | quote }}
             - name: AUTH_AUTHENTIK_AUDIENCE
               value: {{ .Values.auth.authentik.audience | quote }}
+            {{- if and .Values.cfIngress.private.enabled (eq (.Values.cfIngress.private.auth | default "cloudflare") "cloudflare") }}
+            # Browser requests carry Cloudflare's signed Access assertion. The
+            # backend verifies it again because tailnet and ClusterIP paths do
+            # not traverse the Envoy SecurityPolicy that projects its email.
+            - name: AUTH_CLOUDFLARE_ACCESS_JWKS_URL
+              value: {{ printf "https://%s.cloudflareaccess.com/cdn-cgi/access/certs" .Values.cfIngress.private.team | quote }}
+            - name: AUTH_CLOUDFLARE_ACCESS_ISSUER
+              value: {{ printf "https://%s.cloudflareaccess.com" .Values.cfIngress.private.team | quote }}
+            {{- end }}
             {{- if .Values.auth.authentik.agentIssuer }}
             - name: AUTH_AUTHENTIK_AGENT_JWKS_URL
               value: {{ .Values.auth.authentik.agentJwksUrl | quote }}
